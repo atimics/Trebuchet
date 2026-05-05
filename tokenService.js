@@ -39,6 +39,8 @@ import { irysUploader } from '@metaplex-foundation/umi-uploader-irys';
 import { fromWeb3JsKeypair, toWeb3JsPublicKey } from '@metaplex-foundation/umi-web3js-adapters';
 import QRCode from 'qrcode';
 import dotenv from 'dotenv';
+import * as bip39 from 'bip39';
+import { derivePath } from 'ed25519-hd-key';
 import { getRpcUrl } from './rpcConfig.js';
 
 dotenv.config();
@@ -62,12 +64,31 @@ export function refreshConnection() {
   connection = makeConnection();
 }
 
-// Generate a temporary wallet
+// Generate a temporary wallet, with a BIP39 recovery phrase.
+//
+// We generate the mnemonic first (with bip39's CSPRNG) and derive the
+// keypair from it using Solana's standard derivation path. This is the
+// same path Phantom, Solflare, and Backpack use for the first account
+// on a seed, so when a user imports the recovery phrase into any of
+// those wallets, the address matches what they saw here.
+//
+// Why not Keypair.generate()? It produces a random keypair with no
+// associated mnemonic — there's no way to "back-derive" a phrase from
+// a key, so any such wallet can only be recovered by copying the raw
+// secret bytes. A mnemonic is far more user-friendly: 12 words a user
+// can write down accurately and paste into any wallet app.
 export async function generateTemporaryWallet() {
-  const keypair = Keypair.generate();
+  const mnemonic = bip39.generateMnemonic();          // 12 words, 128 bits of entropy
+  const seed = bip39.mnemonicToSeedSync(mnemonic);    // 64-byte seed
+  // Solana's BIP44 path: m / 44' / 501' / 0' / 0'.
+  // The first 0' is the account index; sticking with 0 means the user
+  // sees this wallet as "Account 1" when they import into Phantom.
+  const derivedSeed = derivePath("m/44'/501'/0'/0'", seed.toString('hex')).key;
+  const keypair = Keypair.fromSeed(derivedSeed);
   return {
     publicKey: keypair.publicKey.toString(),
-    secretKey: Array.from(keypair.secretKey)
+    secretKey: Array.from(keypair.secretKey),
+    mnemonic,
   };
 }
 

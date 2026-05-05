@@ -211,6 +211,23 @@
             margin: 10px 0;
             font-size: 0.85em;
         }
+        /* 12-word mnemonic display: 4-column grid for readability */
+        .mnemonic-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 6px 12px;
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 0.85em;
+        }
+        .mnemonic-grid .num {
+            color: #999;
+            margin-right: 4px;
+            user-select: none;
+        }
         .hidden { display: none; }
 
         /* Pool config */
@@ -333,7 +350,30 @@
         <div class="hero-body">
             <div class="container">
                 <h1 class="title is-2">
-                    <i class="fas fa-rocket"></i> Trebuchet
+                    <!--
+                      Inline trebuchet icon, matches the OS-level app icon design.
+                      Uses currentColor so it inherits the title text colour
+                      (white, here, because it's inside the hero) — no need to
+                      hard-code colour values that would drift if Bulma's
+                      hero variant ever changes.
+                    -->
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                         fill="none" stroke="currentColor" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round"
+                         style="height: 0.9em; width: 0.9em; vertical-align: -0.08em;"
+                         aria-hidden="true">
+                      <!-- A-frame -->
+                      <path d="M 5 19 L 12 9 L 19 19" />
+                      <!-- Cross-brace -->
+                      <line x1="8.5" y1="14" x2="15.5" y2="14" />
+                      <!-- Throwing arm -->
+                      <line x1="4" y1="6" x2="20" y2="13" />
+                      <!-- Counterweight (heavy end) -->
+                      <circle cx="20" cy="13" r="1.7" fill="currentColor" stroke="none" />
+                      <!-- Projectile end -->
+                      <circle cx="4" cy="6" r="1" fill="currentColor" stroke="none" />
+                    </svg>
+                    Trebuchet
                 </h1>
                 <p class="subtitle is-6">
                     A barebones Solana token launcher. SPL token + Metaplex metadata, single-sided CLMM liquidity on Raydium, locked via Burn &amp; Earn. No frills, no extractive nonsense.
@@ -402,6 +442,69 @@
             </div>
 
             <!-- ============================================================ -->
+            <!-- Public-RPC warning banner.                                    -->
+            <!--                                                               -->
+            <!-- Shown whenever the active RPC matches a known public          -->
+            <!-- mainnet endpoint. The public endpoints are aggressively       -->
+            <!-- rate-limited and pool creation almost always fails on them    -->
+            <!-- mid-flow, which can leave the user with partial-success state -->
+            <!-- and lost SOL. Toggled by renderRpcConfig() based on the       -->
+            <!-- active URL — once the user adds and selects a paid RPC, the   -->
+            <!-- banner disappears.                                            -->
+            <!-- ============================================================ -->
+            <div class="notification is-danger hidden mb-4" id="publicRpcWarning">
+                <h5 class="title is-6 mb-2 has-text-white">
+                    <span class="icon"><i class="fas fa-exclamation-triangle"></i></span>
+                    You're using a public RPC. Launches will likely fail.
+                </h5>
+                <p class="is-size-7 mb-2">
+                    The public Solana mainnet endpoint is heavily rate-limited.
+                    Pool creation requires a sustained burst of dozens of
+                    requests; you will be throttled mid-flow, transactions will
+                    fail, and you can lose SOL on partial failures that require
+                    manual recovery.
+                </p>
+                <p class="is-size-7">
+                    Get a free API key from
+                    <a href="https://www.helius.dev/" target="_blank" rel="noopener" class="has-text-white" style="text-decoration: underline;"><strong>Helius</strong></a>
+                    (or another paid Solana RPC provider — Triton, QuickNode,
+                    Alchemy) and add it via the RPC panel above before
+                    launching.
+                </p>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- Pending wallet recovery panel.                                -->
+            <!--                                                               -->
+            <!-- Shown when the server reports pending wallets — typically     -->
+            <!-- temporary wallets from a launch that didn't complete cleanly. -->
+            <!-- Each entry lets the user copy the secret key (so they can     -->
+            <!-- import it into Phantom etc. and recover funds) or discard the -->
+            <!-- entry once they've confirmed nothing is at stake.             -->
+            <!-- ============================================================ -->
+            <div class="notification is-warning is-light hidden mb-4" id="pendingWalletsPanel">
+                <h5 class="title is-6 mb-2">
+                    <span class="icon"><i class="fas fa-exclamation-triangle"></i></span>
+                    Recoverable wallets from previous sessions
+                </h5>
+                <p class="is-size-7 mb-3">
+                    These temporary wallets were generated for previous launches
+                    that didn't complete cleanly. If you sent funds to any of
+                    them, copy the recovery phrase and import it into a wallet
+                    app (Phantom, Solflare, Backpack) to recover the funds.
+                    Discard an entry only once you're sure there's nothing left
+                    to recover.
+                </p>
+                <p class="is-size-7 mb-3 has-text-grey">
+                    Recovery info is encrypted at rest using your OS keychain
+                    (Keychain on macOS, DPAPI on Windows, libsecret/kwallet on
+                    Linux) — the file on disk can't be read on another user
+                    account or another machine.
+                </p>
+                <div id="pendingWalletsList"></div>
+            </div>
+
+            <!-- ============================================================ -->
             <!-- STEP 1: Generate Wallet                                       -->
             <!-- ============================================================ -->
             <div class="box step-card is-active p-0" id="step1-card" data-step="1">
@@ -433,13 +536,13 @@
                                 </div>
                                 <button class="button is-warning is-small mt-2" id="showPrivateKeyBtn">
                                     <span class="icon"><i class="fas fa-key"></i></span>
-                                    <span>Show Private Key</span>
+                                    <span>Show Recovery Phrase</span>
                                 </button>
                                 <div id="privateKeyContainer" class="hidden mt-2">
                                     <div class="notification is-warning is-light is-size-7 py-2 px-3">
-                                        <strong>Keep this safe.</strong> If anything goes wrong mid-flow, you'll need this to recover funds.
+                                        <strong>Keep this safe.</strong> If anything goes wrong mid-flow, you'll need this to recover funds. Anyone with these words can take everything in this wallet.
                                     </div>
-                                    <div class="secret-key-container" id="privateKey"></div>
+                                    <div id="privateKey"></div>
                                 </div>
                             </div>
                         </div>

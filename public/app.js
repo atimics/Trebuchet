@@ -357,6 +357,13 @@ function renderRpcConfig(config) {
     : truncateUrl(config.active, 80);
   document.getElementById('rpcCurrentDisplay').textContent = display;
 
+  // Toggle the public-RPC warning. Anything matching the well-known
+  // public mainnet hosts is a launch hazard; paid RPCs (custom URLs
+  // the user has added) are fine. We match on hostname rather than
+  // exact URL so query-string variants and minor formatting
+  // differences all get caught.
+  togglePublicRpcWarning(config.active);
+
   const list = document.getElementById('rpcSavedList');
   list.innerHTML = '';
   config.saved.forEach((rpc) => {
@@ -400,6 +407,35 @@ function escapeHtml(s) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// Show a warning banner whenever the active RPC is one of the well-known
+// public mainnet endpoints. The list is matched by hostname so all the
+// quirky variants (with/without trailing slashes, query strings, etc.)
+// still get caught. If a new public alias appears in the wild, just add
+// its hostname here.
+const PUBLIC_RPC_HOSTS = new Set([
+  'api.mainnet-beta.solana.com',
+  'solana-api.projectserum.com',
+  'rpc.ankr.com',                    // free tier shows up here
+  'solana.public-rpc.com',
+]);
+
+function togglePublicRpcWarning(activeUrl) {
+  const banner = document.getElementById('publicRpcWarning');
+  if (!banner) return;
+
+  let isPublic = false;
+  try {
+    const host = new URL(activeUrl).hostname.toLowerCase();
+    isPublic = PUBLIC_RPC_HOSTS.has(host);
+  } catch {
+    // Malformed URL — treat as not-public (the existing test/validate
+    // flow will surface URL problems separately).
+    isPublic = false;
+  }
+
+  banner.classList.toggle('hidden', !isPublic);
 }
 
 async function selectRpc(url) {
@@ -587,15 +623,37 @@ bind('generateWalletBtn', 'click', async () => {
 
 bind('showPrivateKeyBtn', 'click', () => {
   const cont = document.getElementById('privateKeyContainer');
+  const target = document.getElementById('privateKey');
   if (!tempWallet) return;
   if (cont.classList.contains('hidden')) {
-    document.getElementById('privateKey').textContent =
-      JSON.stringify(tempWallet.secretKey);
+    // New wallets always have a mnemonic; the base58 fallback is only
+    // here in case something upstream changes and we end up without one.
+    if (tempWallet.mnemonic) {
+      target.innerHTML = '';
+      target.appendChild(buildMnemonicGrid(tempWallet.mnemonic));
+    } else {
+      target.className = 'secret-key-container';
+      target.textContent = tempWallet.secretKeyB58 || '(secret unavailable)';
+    }
     cont.classList.remove('hidden');
   } else {
     cont.classList.add('hidden');
   }
 });
+
+// Build a numbered 12-word grid for displaying a BIP39 mnemonic. Reads
+// nicely on screen, easy to copy down accurately on paper.
+function buildMnemonicGrid(mnemonic) {
+  const wrap = document.createElement('div');
+  wrap.className = 'mnemonic-grid';
+  const words = mnemonic.trim().split(/\s+/);
+  words.forEach((word, i) => {
+    const cell = document.createElement('div');
+    cell.innerHTML = `<span class="num">${i + 1}.</span>${word}`;
+    wrap.appendChild(cell);
+  });
+  return wrap;
+}
 
 // ===========================================================================
 // STEP 2: Token + Pool config
@@ -1597,6 +1655,10 @@ async function runTransfer() {
       document.getElementById('transferAssetsBtn').classList.add('hidden');
       log('Transfer complete', 'success');
       setStepSummary(6, 'transferred');
+      // The server has already removed this wallet from the recovery
+      // cache (provided the on-chain balance check confirmed it's empty).
+      // Refresh the panel so it reflects the new state.
+      loadPendingWallets();
     } catch (e) {
       log(`Transfer failed: ${e.message}`, 'danger');
     } finally {
@@ -1606,9 +1668,215 @@ async function runTransfer() {
 }
 
 // ===========================================================================
+// Pending-wallet recovery panel
+// ---------------------------------------------------------------------------
+// The server caches the secret key of any temporary wallet it generates and
+// only removes it once the final transfer step has confirmed the wallet is
+// on-chain empty. So if the app crashed or was closed mid-launch on a
+// previous session, those entries show up here and the user can copy the
+// secret key out for manual recovery.
+//
+// Important: the panel only ever shows entries that existed *at startup*.
+// Wallets generated during the current session are not surfaced here —
+// the user can already see them in Step 1, and showing them in a "recover
+// previous session" panel during the active flow is misleading and
+// alarming. After a refresh or restart, anything still in the cache then
+// becomes visible — which is exactly when the panel actually matters.
+//
+// `pendingWalletStartupKeys` is the snapshot taken on first load. Once
+// it's set, refreshes filter the server's response down to only entries
+// whose publicKey was in the snapshot.
+// ===========================================================================
+
+let pendingWalletStartupKeys = null;
+
+async function loadPendingWallets() {
+  const panel = document.getElementById('pendingWalletsPanel');
+  const list = document.getElementById('pendingWalletsList');
+  if (!panel || !list) return;
+
+  try {
+    const resp = await fetch('/api/pending-wallets').then((r) => r.json());
+    let wallets = (resp && resp.wallets) || [];
+
+    // First call: capture the set of pubkeys present at startup. Anything
+    // generated during this session is added to the server-side cache but
+    // won't be in this set, so it'll be filtered out below.
+    if (pendingWalletStartupKeys === null) {
+      pendingWalletStartupKeys = new Set(wallets.map((w) => w.publicKey));
+    }
+
+    // Filter: only show entries that were in the startup snapshot AND
+    // are still present in the cache. (An entry leaves the cache when
+    // transfer-assets verifies the wallet is empty, or when the user
+    // explicitly discards.)
+    wallets = wallets.filter((w) => pendingWalletStartupKeys.has(w.publicKey));
+
+    if (wallets.length === 0) {
+      panel.classList.add('hidden');
+      list.innerHTML = '';
+      return;
+    }
+
+    list.innerHTML = '';
+    for (const w of wallets) {
+      list.appendChild(buildPendingWalletRow(w));
+    }
+    panel.classList.remove('hidden');
+  } catch (e) {
+    console.warn('Failed to load pending wallets:', e);
+    // Don't show the panel if we couldn't fetch — better silent than
+    // misleading.
+    panel.classList.add('hidden');
+  }
+}
+
+// Construct one row in the recovery panel. Truncated public key, age,
+// "Copy secret key" button, "Discard" button.
+function buildPendingWalletRow(wallet) {
+  const wrap = document.createElement('div');
+  wrap.className = 'box p-3 mb-2 is-size-7';
+
+  const pubShort = `${wallet.publicKey.slice(0, 6)}…${wallet.publicKey.slice(-6)}`;
+  const ageStr = formatAge(wallet.createdAt);
+
+  // Decryption-failed branch: the file is on disk but we can't read the
+  // secret material. Most common cause is the OS keychain has rotated
+  // (e.g. file was copied from another machine, user account changed).
+  // We can't help recover it from the app — surface the situation, let
+  // the user discard.
+  if (wallet.decryptionFailed) {
+    wrap.innerHTML = `
+      <div class="mb-2">
+        <strong>Public key:</strong>
+        <span class="is-family-monospace">${pubShort}</span>
+        &nbsp;<span class="has-text-grey">(${ageStr})</span>
+      </div>
+      <div class="notification is-danger is-light is-size-7 py-2 px-3 mb-2">
+        <strong>Cannot decrypt this entry.</strong> The OS keychain key has
+        likely changed since this wallet was generated (file was copied to a
+        different user account or machine, or the keychain was reset). The
+        secret material in this entry is unrecoverable from inside the app.
+        If you have a backup of the recovery phrase elsewhere, use that.
+      </div>
+      <div class="field is-grouped">
+        <div class="control">
+          <button class="button is-small" data-action="copy-pubkey">
+            <span class="icon is-small"><i class="fas fa-copy"></i></span>
+            <span>Copy public key</span>
+          </button>
+        </div>
+        <div class="control">
+          <button class="button is-small is-danger is-light" data-action="dismiss">
+            <span class="icon is-small"><i class="fas fa-trash"></i></span>
+            <span>Discard</span>
+          </button>
+        </div>
+      </div>
+    `;
+    wireRowButtons(wrap, wallet, pubShort, /*hasMnemonic=*/false);
+    return wrap;
+  }
+
+  // Prefer the recovery phrase if this wallet was generated with one.
+  // Older cached entries from before mnemonic support fall back to the
+  // base58 secret key.
+  const hasMnemonic = !!wallet.mnemonic;
+  const copyLabel = hasMnemonic ? 'Copy recovery phrase' : 'Copy secret key';
+  const copyIcon = hasMnemonic ? 'fa-list-ol' : 'fa-key';
+
+  wrap.innerHTML = `
+    <div class="mb-2">
+      <strong>Public key:</strong>
+      <span class="is-family-monospace">${pubShort}</span>
+      &nbsp;<span class="has-text-grey">(${ageStr})</span>
+    </div>
+    <div class="field is-grouped">
+      <div class="control">
+        <button class="button is-small is-info" data-action="copy-secret">
+          <span class="icon is-small"><i class="fas ${copyIcon}"></i></span>
+          <span>${copyLabel}</span>
+        </button>
+      </div>
+      <div class="control">
+        <button class="button is-small" data-action="copy-pubkey">
+          <span class="icon is-small"><i class="fas fa-copy"></i></span>
+          <span>Copy public key</span>
+        </button>
+      </div>
+      <div class="control">
+        <button class="button is-small is-danger is-light" data-action="dismiss">
+          <span class="icon is-small"><i class="fas fa-trash"></i></span>
+          <span>Discard</span>
+        </button>
+      </div>
+    </div>
+  `;
+  wireRowButtons(wrap, wallet, pubShort, hasMnemonic);
+  return wrap;
+}
+
+// Wire the per-row buttons. Extracted so both the normal and the
+// decryption-failed render paths share the same handler logic.
+function wireRowButtons(wrap, wallet, pubShort, hasMnemonic) {
+  // copy-secret button only exists in the normal render path
+  const copySecretBtn = wrap.querySelector('[data-action="copy-secret"]');
+  if (copySecretBtn) {
+    copySecretBtn.addEventListener('click', async () => {
+      const text = hasMnemonic ? wallet.mnemonic : wallet.secretKeyB58;
+      if (!text) {
+        log(`No secret available for ${pubShort}`, 'warning');
+        return;
+      }
+      await navigator.clipboard.writeText(text);
+      const what = hasMnemonic ? 'Recovery phrase' : 'Secret key';
+      log(`${what} for ${pubShort} copied to clipboard`, 'info');
+    });
+  }
+
+  wrap.querySelector('[data-action="copy-pubkey"]').addEventListener('click', async () => {
+    await navigator.clipboard.writeText(wallet.publicKey);
+    log(`Public key ${pubShort} copied to clipboard`, 'info');
+  });
+
+  wrap.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
+    const ok = confirm(
+      `Discard recovery entry for ${pubShort}?\n\n` +
+      `Only do this if you've already moved any funds out of this wallet, ` +
+      `or you're sure none were ever sent there. This action cannot be undone.`,
+    );
+    if (!ok) return;
+    try {
+      await fetch('/api/pending-wallets/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ publicKey: wallet.publicKey }),
+      });
+      await loadPendingWallets();
+    } catch (e) {
+      log(`Failed to dismiss recovery entry: ${e.message}`, 'danger');
+    }
+  });
+}
+
+// "3 hours ago" / "5 days ago" / etc. Plain-English age display.
+function formatAge(isoString) {
+  const then = new Date(isoString).getTime();
+  if (!Number.isFinite(then)) return 'unknown age';
+
+  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (seconds < 60)        return 'just now';
+  if (seconds < 3600)      return `${Math.floor(seconds / 60)} min ago`;
+  if (seconds < 86400)     return `${Math.floor(seconds / 3600)} hr ago`;
+  if (seconds < 86400 * 7) return `${Math.floor(seconds / 86400)} days ago`;
+  return new Date(isoString).toLocaleDateString();
+}
+
+// ===========================================================================
 // Initial state
 // ===========================================================================
 log('Trebuchet is ready. Click "Generate Wallet" to begin.');
 loadRpcConfig();
+loadPendingWallets();
 bindStepHeaders();
 updateCancelButtonState();

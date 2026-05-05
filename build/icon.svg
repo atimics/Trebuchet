@@ -1,0 +1,29 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- Rounded-corner square background, picks up the app's purple gradient -->
+  <rect width="512" height="512" rx="96" fill="#5b4ec6"/>
+
+  <!-- A-frame base: two angled posts meeting at the pivot point -->
+  <path d="M 128 412 L 256 220 L 384 412"
+        stroke="#ffffff" stroke-width="28"
+        stroke-linecap="round" stroke-linejoin="round"
+        fill="none"/>
+
+  <!-- Horizontal cross-brace -->
+  <line x1="184" y1="328" x2="328" y2="328"
+        stroke="#ffffff" stroke-width="22"
+        stroke-linecap="round"/>
+
+  <!-- Throwing arm, slung diagonally through the pivot -->
+  <line x1="106" y1="150" x2="406" y2="290"
+        stroke="#ffffff" stroke-width="26"
+        stroke-linecap="round"/>
+
+  <!-- Counterweight: the heavy, yellow end -->
+  <circle cx="406" cy="290" r="38" fill="#ffd755"/>
+
+  <!-- Projectile end of the arm -->
+  <circle cx="106" cy="150" r="22" fill="#ffffff"/>
+
+  <!-- Pivot pin: small dark circle at the apex -->
+  <circle cx="256" cy="220" r="12" fill="#3a2f99"/>
+</svg>

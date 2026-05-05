@@ -36,6 +36,10 @@ import {
   testRpc,
 } from './rpcConfig.js';
 
+import * as pendingWallets from './pendingWallets.js';
+import { Keypair } from '@solana/web3.js';
+import bs58 from 'bs58';
+
 dotenv.config();
 
 // __dirname equivalent in ES modules
@@ -55,7 +59,11 @@ const upload = multer({
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
-app.use(express.static('public'));
+// Use __dirname-relative path so static file serving works regardless of
+// the current working directory. This matters when the package is run
+// from another directory (e.g. when consumed as a dependency by an
+// Electron wrapper, where cwd points at the wrapper, not at trebuchet).
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Routes
 app.get('/', (req, res) => {
@@ -71,11 +79,19 @@ app.post('/api/generate-wallet', async (req, res) => {
     console.log('Generating temporary wallet...');
     const walletInfo = await generateTemporaryWallet();
     const qrCode = await getWalletQRCode(walletInfo.publicKey);
+
+    // Stash the key on disk so the user can recover the wallet if the
+    // app crashes or is closed mid-launch. The entry is removed by
+    // /api/transfer-assets once the wallet is verified on-chain empty.
+    pendingWallets.add(walletInfo.publicKey, walletInfo.secretKey, walletInfo.mnemonic);
+
     res.json({
       success: true,
       wallet: {
         publicKey: walletInfo.publicKey,
         secretKey: walletInfo.secretKey,
+        secretKeyB58: secretKeyToBase58(walletInfo.secretKey),
+        mnemonic: walletInfo.mnemonic,
         qrCode,
       },
     });
@@ -367,6 +383,25 @@ app.post('/api/transfer-assets', async (req, res) => {
       tokenMint,
     });
 
+    // 3. Verify the wallet is on-chain empty before clearing the
+    //    recovery cache entry. Anything still there → leave the cached
+    //    key in place so the user has another shot at recovery.
+    //    A balance-check failure also keeps the entry (conservative).
+    try {
+      const tempPubkey = walletPubkeyFromSecretArray(secretKeyArr);
+      const remaining = await checkWalletBalanceMultiToken(tempPubkey);
+      if (isWalletEffectivelyEmpty(remaining)) {
+        pendingWallets.remove(tempPubkey);
+      } else {
+        console.warn(
+          `Wallet ${tempPubkey} not empty after sweep; keeping recovery entry. ` +
+          `SOL=${remaining.sol}, tokens=${Object.keys(remaining.tokens).length}`,
+        );
+      }
+    } catch (e) {
+      console.warn('Post-sweep verification failed; keeping recovery entry:', e.message);
+    }
+
     res.json({
       success: true,
       nftSweep,
@@ -377,6 +412,107 @@ app.post('/api/transfer-assets', async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Recovery cache for temporary wallets.
+//
+// /api/pending-wallets returns any wallet keys that were generated for a
+// launch but never confirmed-cleaned-up — typically because the app
+// crashed or the user closed it before reaching Step 6. The frontend
+// shows these at the top of the page so the user can copy the secret
+// key out and recover any funds manually.
+//
+// /api/pending-wallets/dismiss is the manual "Discard" action. It
+// removes a cache entry without doing any on-chain verification — it's
+// the user's explicit acknowledgement that they don't need recovery.
+// ---------------------------------------------------------------------------
+
+app.get('/api/pending-wallets', (req, res) => {
+  try {
+    // Augment each entry with a base58 form of the secret key, since
+    // that's what users actually paste into wallet apps.
+    //
+    // Tolerate entries whose decryption failed (e.g. the file was
+    // copied from another machine, or the OS keychain rotated): one
+    // bad entry must not break the whole panel, so we surface a
+    // `decryptionFailed` flag instead of crashing on Uint8Array.from
+    // of undefined.
+    const wallets = pendingWallets.list().map((w) => {
+      const out = {
+        publicKey: w.publicKey,
+        createdAt: w.createdAt,
+      };
+      if (Array.isArray(w.secretKey)) {
+        out.secretKey = w.secretKey;
+        out.secretKeyB58 = secretKeyToBase58(w.secretKey);
+      }
+      if (typeof w.mnemonic === 'string') {
+        out.mnemonic = w.mnemonic;
+      }
+      // If neither was decryptable, the front-end shows a "decryption
+      // failed" state with only a Discard button.
+      if (!out.secretKey && !out.mnemonic) {
+        out.decryptionFailed = true;
+      }
+      return out;
+    });
+    res.json({ success: true, wallets });
+  } catch (error) {
+    console.error('Error listing pending wallets:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/pending-wallets/dismiss', (req, res) => {
+  try {
+    const { publicKey } = req.body;
+    if (!publicKey) {
+      return res.status(400).json({ success: false, error: 'publicKey required' });
+    }
+    pendingWallets.remove(publicKey);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error dismissing pending wallet:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for the transfer-assets verification step.
+// ---------------------------------------------------------------------------
+
+// Derive a base58 public key from the secret-key array the frontend sends.
+// We do this here (rather than asking the frontend to send the public key
+// separately) because the secret key is the source of truth — pairing it
+// with a stale or wrong publicKey would be a recipe for clearing the
+// wrong recovery entry.
+function walletPubkeyFromSecretArray(secretKeyArr) {
+  return Keypair.fromSecretKey(Uint8Array.from(secretKeyArr)).publicKey.toBase58();
+}
+
+// Encode a secret-key byte array as a base58 string — the format wallet
+// apps (Phantom, Solflare, Backpack) display and accept on import.
+// We keep the byte-array form as the internal/storage representation
+// (it's what @solana/web3.js wants for signing) but expose this form on
+// API boundaries where a human might end up looking at or copying it.
+function secretKeyToBase58(secretKeyArr) {
+  return bs58.encode(Uint8Array.from(secretKeyArr));
+}
+
+// "Effectively empty" = SOL below a small threshold (so dust left over
+// for the final transaction fee doesn't keep the entry around forever)
+// AND every token account is zero. NFTs show up in `tokens` too, since
+// they're token accounts with decimals=0.
+function isWalletEffectivelyEmpty(balance) {
+  // 0.001 SOL — comfortably above network fee dust, well below anything
+  // worth recovering manually.
+  const SOL_DUST_THRESHOLD = 0.001;
+  if (balance.sol >= SOL_DUST_THRESHOLD) return false;
+  for (const t of Object.values(balance.tokens || {})) {
+    if (BigInt(t.amountRaw) > 0n) return false;
+  }
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Misc / safety endpoints (unchanged from original)

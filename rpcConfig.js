@@ -23,7 +23,12 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const CONFIG_FILE = path.join(__dirname, 'rpcConfig.json');
+
+// Allow the consumer (e.g. an Electron wrapper) to redirect persisted state
+// to a writable location outside the package directory. Defaults to
+// __dirname for backward compatibility with the standalone server use case.
+const CONFIG_DIR = process.env.TREBUCHET_CONFIG_DIR || __dirname;
+const CONFIG_FILE = path.join(CONFIG_DIR, 'rpcConfig.json');
 
 // Always-available fallback if the file is missing AND no env var is set
 const DEFAULT_RPC = {
@@ -67,6 +72,11 @@ function load() {
 
 function persist() {
   try {
+    // mkdirSync with recursive:true is a no-op when the directory already
+    // exists, so this is safe to call on every save. Necessary on first
+    // run when CONFIG_DIR is e.g. an Electron userData path that hasn't
+    // been touched yet.
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(state, null, 2) + '\n');
   } catch (e) {
     console.error('rpcConfig: failed to save config:', e.message);
