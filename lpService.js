@@ -87,9 +87,23 @@ const MAX_TICK = 443636;
 const DEFAULT_AMM_CONFIG_INDEX = 3;
 
 // Bootstrap geometry: how many tickSpacings on each side of currentTick the
-// bootstrap range should span. Width of 2*tickSpacing keeps it tight.
-const BOOTSTRAP_TICKS_BELOW = 1;
-const BOOTSTRAP_TICKS_ABOVE = 1;
+// bootstrap range spans. Width must be wide enough to stay in-range against
+// minute-scale price drift between phases. Phase 1 (main positions) and
+// phase 2 (bootstraps) can be separated by tens of seconds across all the
+// pools; a SOL pool's tick in particular drifts on its own clock since it
+// reflects external SOL/USD reality.
+//
+// Old value (1*tickSpacing each side) gave ~2.4% total width on a 1% pool.
+// That's well within real-world drift on a 30-60 second multi-pool launch,
+// and a single drift event past tickUpper or below tickLower made the
+// deposit math go single-sided in a way the SDK wasn't expecting and the
+// transaction failed.
+//
+// New value (10*tickSpacing each side) gives ~24% total width. Still
+// concentrated enough to be useful liquidity, wide enough that any drift
+// short of catastrophic stays in-range.
+const BOOTSTRAP_TICKS_BELOW = 10;
+const BOOTSTRAP_TICKS_ABOVE = 10;
 
 // Bootstrap funding: 1 whole token of each side. Just enough to make the
 // pool tradable; intentionally negligible value.
@@ -127,48 +141,23 @@ export const KNOWN_QUOTES = {
 };
 
 // ---------------------------------------------------------------------------
-// USD price lookup via GeckoTerminal
+// USD price + metadata lookup
 // ---------------------------------------------------------------------------
+//
+// Implementation lives in tokenInfoService.js; we re-export here so existing
+// callers (server.js for the /api/quote-token-info endpoint, the launch
+// orchestrator below for per-allocation price resolution) keep using the
+// same import paths they always have.
+//
+// What changed: getTokenMetadata used to be GeckoTerminal-only, and would
+// return null whenever a token wasn't indexed there — which happens often
+// for low-volume quote tokens, including the flywheel tokens this app is
+// designed around. The new implementation reads decimals + symbol on-chain
+// (always works for any real mint) and tries GeckoTerminal first then
+// Jupiter as a price fallback, with a small in-memory cache so the user
+// can flip between dropdown options without burning API quota.
 
-const GECKO_BASE = 'https://api.geckoterminal.com/api/v2/networks/solana';
-
-/**
- * Look up a token's metadata (symbol, decimals, USD price) from GeckoTerminal.
- * Returns null if the token isn't indexed there. Caller should fall back to
- * manual user-provided values when this returns null.
- */
-export async function getTokenMetadata(mintAddress) {
-  try {
-    const resp = await fetch(`${GECKO_BASE}/tokens/${mintAddress}`, {
-      headers: { Accept: 'application/json' },
-    });
-    if (!resp.ok) {
-      console.warn(`GeckoTerminal lookup for ${mintAddress}: HTTP ${resp.status}`);
-      return null;
-    }
-    const json = await resp.json();
-    const attrs = json?.data?.attributes;
-    if (!attrs) return null;
-    return {
-      symbol: attrs.symbol || null,
-      decimals: attrs.decimals ?? null,
-      priceUsd: attrs.price_usd ? new Decimal(attrs.price_usd) : null,
-      name: attrs.name || null,
-    };
-  } catch (e) {
-    console.warn(`GeckoTerminal error for ${mintAddress}:`, e.message);
-    return null;
-  }
-}
-
-/**
- * Convenience wrapper — just the USD price. Used internally by the pool
- * creation flow when we already know the decimals/symbol from elsewhere.
- */
-export async function getUsdPrice(mintAddress) {
-  const meta = await getTokenMetadata(mintAddress);
-  return meta?.priceUsd ?? null;
-}
+export { getTokenMetadata, getUsdPrice } from './tokenInfoService.js';
 
 // ---------------------------------------------------------------------------
 // Diagnostic helpers
@@ -199,6 +188,92 @@ async function logWalletBalances(connection, ownerPk, tokenMint, label) {
     console.log(`    [balances ${label}] SOL=${solBalance}, launched-token raw=${tokenBalance}`);
   } catch (e) {
     console.warn(`    [balances ${label}] lookup error: ${e.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CLMM fee tier listing (used by the UI dropdown)
+// ---------------------------------------------------------------------------
+//
+// Raydium's CLMM uses a fixed set of AmmConfig PDAs created on-chain when
+// the program was deployed. Each AmmConfig encodes a (tradeFeeRate,
+// tickSpacing) pair plus protocol/fund fee shares; pools reference one
+// at creation time via ammConfigIndex.
+//
+// The canonical list is published at api-v3.raydium.io/main/clmm-config.
+// At launch time we use raydium.api.getClmmConfigs() (which hits the same
+// endpoint via the SDK) but for the configuration UI we want the list
+// before the user has a wallet to drive the SDK with. So this is a thin
+// HTTP wrapper, with a process-lifetime cache and a hardcoded fallback
+// for the case where the endpoint is unreachable.
+//
+// As of late 2025 there are eight tiers per Raydium's docs: 2%, 1%,
+// 0.25%, 0.05%, 0.04%, 0.03%, 0.02%, 0.01%. We don't hardcode the
+// indices because Raydium can add tiers; we let the API tell us.
+
+const RAYDIUM_CLMM_CONFIG_URL = 'https://api-v3.raydium.io/main/clmm-config';
+
+// Hardcoded fallback for when the Raydium API is unreachable. These are
+// the indices that have been stable since CLMM launched; the broader
+// list (including 2%) is only available via the live API. Keeping this
+// minimal means it's safer to be wrong about what's still in the live
+// set — the user's launch will fall back to a known-good tier.
+const FALLBACK_FEE_TIERS = [
+  { index: 0, tradeFeeRate:  2500, tickSpacing:  60 }, // 0.25%
+  { index: 1, tradeFeeRate:   500, tickSpacing:  10 }, // 0.05%
+  { index: 2, tradeFeeRate:   100, tickSpacing:   1 }, // 0.01%
+  { index: 3, tradeFeeRate: 10000, tickSpacing: 120 }, // 1%
+];
+
+let cachedFeeTiers = null;
+
+/**
+ * Return the list of CLMM fee tiers available on Raydium. Each entry is
+ * a normalized object with { index, tradeFeeRate, tickSpacing }; the
+ * tradeFeeRate is in 1e-6 units (so 10000 = 1%).
+ *
+ * Caches the result for the process lifetime — Raydium adds new configs
+ * rarely enough that re-fetching on every UI load would be wasteful.
+ * Restart the server (or reload the Electron app) to pick up new tiers.
+ */
+export async function getClmmFeeTiers() {
+  if (cachedFeeTiers) return cachedFeeTiers;
+  try {
+    const resp = await fetch(RAYDIUM_CLMM_CONFIG_URL, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!resp.ok) {
+      console.warn(
+        `getClmmFeeTiers: HTTP ${resp.status} from Raydium API, using fallback list`,
+      );
+      cachedFeeTiers = FALLBACK_FEE_TIERS;
+      return cachedFeeTiers;
+    }
+    const json = await resp.json();
+    // The endpoint wraps the array in { id, success, data } in some
+    // versions and returns the bare array in others; accept both.
+    const list = Array.isArray(json) ? json : (json.data || []);
+    if (!Array.isArray(list) || list.length === 0) {
+      console.warn(
+        'getClmmFeeTiers: Raydium API returned empty/unexpected payload, using fallback list',
+      );
+      cachedFeeTiers = FALLBACK_FEE_TIERS;
+      return cachedFeeTiers;
+    }
+    cachedFeeTiers = list
+      .map((c) => ({
+        index: c.index,
+        tradeFeeRate: c.tradeFeeRate,
+        tickSpacing: c.tickSpacing,
+      }))
+      .filter((c) => Number.isInteger(c.index) && Number.isInteger(c.tradeFeeRate))
+      // Sort by ascending fee, the most natural way to display them.
+      .sort((a, b) => a.tradeFeeRate - b.tradeFeeRate);
+    return cachedFeeTiers;
+  } catch (e) {
+    console.warn(`getClmmFeeTiers: ${e.message}; using fallback list`);
+    cachedFeeTiers = FALLBACK_FEE_TIERS;
+    return cachedFeeTiers;
   }
 }
 
@@ -440,8 +515,8 @@ async function transferNftToRecipient({
  *     ],
  *     txIds: { createPool },
  *     // Internal — orchestrator strips this before exposing the result
- *     _bootstrapContext: { poolInfo, poolKeys, currentTick, tickSpacing,
- *                          launchedIsMintA, bootstrapBaseRaw,
+ *     _bootstrapContext: { poolId, poolInfo, poolKeys, currentTickAtCreation,
+ *                          tickSpacing, launchedIsMintA, bootstrapBaseRaw,
  *                          initialPrice, quoteToken },
  *   }
  */
@@ -711,9 +786,13 @@ async function createSinglePool({
     // Context the deferred bootstrap step needs. Not part of the user-facing
     // result shape — caller strips this before returning.
     _bootstrapContext: {
+      poolId,
       poolInfo,
       poolKeys,
-      currentTick,
+      // currentTick captured here is the phase-1 value. The bootstrap step
+      // re-fetches the fresh on-chain tick at deposit time to absorb any
+      // drift that happened between phases.
+      currentTickAtCreation: currentTick,
       tickSpacing,
       launchedIsMintA,
       bootstrapBaseRaw,
@@ -747,15 +826,34 @@ async function openBootstrapPosition({
 }) {
   const progress = (event) => onProgress && onProgress(event);
   const {
+    poolId,
     poolInfo,
     poolKeys,
-    currentTick,
+    currentTickAtCreation,
     tickSpacing,
     launchedIsMintA,
     bootstrapBaseRaw,
     initialPrice,
     quoteToken,
   } = ctx;
+
+  // Re-fetch the *current* on-chain tick rather than reusing the value
+  // captured during phase 1. Phase 2 typically runs tens of seconds after
+  // phase 1, and a SOL pool's tick in particular drifts on its own clock
+  // since it reflects external SOL/USD reality. Computing the bootstrap
+  // range against a stale tick was the proximate cause of bootstrap
+  // failures observed in earlier multi-pool launches: the deposit math
+  // ended up assuming current was inside the range when it was actually
+  // a few ticks outside, and the SDK's amount calculation produced a
+  // request the wallet couldn't fund.
+  const fresh = await raydium.clmm.getRpcClmmPoolInfo({ poolId });
+  const currentTick = fresh.tickCurrent;
+  if (currentTick !== currentTickAtCreation) {
+    console.log(
+      `  bootstrap: tick drifted ${currentTickAtCreation} → ${currentTick} ` +
+        `between phases; using fresh value`,
+    );
+  }
 
   const bsTicks = computeBootstrapTicks({ currentTick, tickSpacing });
   console.log(`  bootstrap range: [${bsTicks.tickLower}, ${bsTicks.tickUpper}]`);
@@ -773,13 +871,19 @@ async function openBootstrapPosition({
   // The actual amount the bootstrap needs on the other side is roughly the
   // launched-token deposit's USD value converted to quote tokens, since
   // the bootstrap straddles the current tick. We compute this from
-  // initialPrice (= quote per launched), apply a 100x safety multiplier to
-  // tolerate edge-of-range scenarios, and cap at 0.01 of the quote token
-  // as an absolute upper bound (which is still ~$1 worth — plenty for a
-  // bootstrap, never enough to drain a freshly-funded wallet).
+  // initialPrice (= quote per launched), apply a safety multiplier to
+  // tolerate edge-of-range scenarios after drift, and cap at 0.01 of the
+  // quote token as an absolute upper bound (which is still ~$1 worth —
+  // plenty for a bootstrap, never enough to drain a freshly-funded wallet).
+  //
+  // Multiplier note: bumped from 100x to 200x alongside the 10x widening of
+  // the bootstrap range. A wider range means more of the other token is
+  // potentially needed if current ends up near one of the range edges; the
+  // absoluteMaxRaw cap still bounds the worst case, so the larger multiplier
+  // mostly just means we hit the cap slightly more often (which is fine).
   const equivOtherRaw = initialPrice.mul(new Decimal(10).pow(quoteToken.decimals));
   const absoluteMaxRaw = new Decimal(10).pow(quoteToken.decimals - 2); // 0.01 of quote whole
-  const bsOtherMaxDecimal = Decimal.min(equivOtherRaw.mul(100), absoluteMaxRaw);
+  const bsOtherMaxDecimal = Decimal.min(equivOtherRaw.mul(200), absoluteMaxRaw);
   // Floor at 1000 raw — handles extreme micro-price launches where the
   // computed value rounds to 0.
   const bsOtherMax = BN.max(new BN(bsOtherMaxDecimal.toFixed(0)), new BN(1000));
@@ -1065,6 +1169,16 @@ export async function createPoolsAndPositions({
   // Brief settle so the last lock tx is fully visible to the RPC.
   await new Promise((r) => setTimeout(r, 1500));
 
+  // Phase 2 runs every bootstrap independently — a single failure does
+  // not abort the remaining attempts. The premise is that a freshly-locked
+  // main position whose pool just couldn't get a bootstrap is still better
+  // off than a main position whose pool was never even attempted because
+  // an earlier pool's bootstrap had a transient RPC error. The caller
+  // reports per-pool success/failure to the user so they can retry the
+  // failed ones (or manually open a Raydium position to make them
+  // tradable) without losing the successful pools.
+  const bootstrapFailures = [];
+
   for (const item of bootstrapQueue) {
     const { allocationIndex: allocIdx, quoteSymbol, ctx } = item;
     console.log(`\n[${quoteSymbol}] bootstrap`);
@@ -1082,14 +1196,39 @@ export async function createPoolsAndPositions({
       const resultEntry = results.find((r) => r.allocationIndex === allocIdx);
       if (resultEntry) resultEntry.bootstrap = bootstrap;
     } catch (err) {
-      // A bootstrap failure is recoverable — the pool's main positions are
-      // in place; the pool just isn't tradable yet. Caller can re-run the
-      // bootstrap step manually, or proceed to the final asset transfer.
-      err.partialResults = results;
-      err.failedAllocationIndex = allocIdx;
-      err.failedPhase = 'bootstrap';
-      throw err;
+      // Record the failure, surface it via the progress callback, but keep
+      // going — the next pool's bootstrap is independent.
+      console.error(`  bootstrap FAILED for ${quoteSymbol}:`, err.message);
+      bootstrapFailures.push({
+        allocationIndex: allocIdx,
+        quoteSymbol,
+        error: err.message,
+      });
+      onProgress && onProgress({
+        allocationIndex: allocIdx,
+        stage: 'bootstrap_failed',
+        error: err.message,
+      });
     }
+  }
+
+  if (bootstrapFailures.length > 0) {
+    // Some bootstraps failed; throw a structured error so the caller can
+    // present a partial-success result instead of an all-or-nothing.
+    // Main positions are intact for every pool; only the bootstrap leg
+    // is missing for the listed allocations.
+    const summary = bootstrapFailures
+      .map((f) => `${f.quoteSymbol} (${f.error})`)
+      .join('; ');
+    const err = new Error(
+      `${bootstrapFailures.length} of ${bootstrapQueue.length} bootstrap(s) ` +
+        `failed: ${summary}. Main positions are in place for every pool; ` +
+        `only the bootstrap leg is missing for the listed pools.`,
+    );
+    err.partialResults = results;
+    err.bootstrapFailures = bootstrapFailures;
+    err.failedPhase = 'bootstrap';
+    throw err;
   }
 
   console.log(`\n=== All ${results.length} pool(s) created and bootstrapped successfully ===`);

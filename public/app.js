@@ -46,6 +46,20 @@ let lpResult = null;
 let pools = [];
 let fundingRequirement = { solLamports: 0, byQuote: {} };
 
+// CLMM fee tiers populated at startup from /api/clmm-fee-tiers, which in
+// turn pulls from Raydium's published config endpoint. The hardcoded list
+// here is a fallback used while the fetch is in flight (so adding the
+// first pool before the network call returns doesn't blow up) and as a
+// last resort if the fetch fails entirely. Each entry is { index,
+// tradeFeeRate, tickSpacing }; tradeFeeRate is in 1e-6 units, so 10000
+// = 1%.
+let feeTiers = [
+  { index: 2, tradeFeeRate:   100, tickSpacing:   1 }, // 0.01%
+  { index: 1, tradeFeeRate:   500, tickSpacing:  10 }, // 0.05%
+  { index: 0, tradeFeeRate:  2500, tickSpacing:  60 }, // 0.25%
+  { index: 3, tradeFeeRate: 10000, tickSpacing: 120 }, // 1%
+];
+
 // Run state — when an operation is in flight, disable cancel and step toggles
 // to avoid sending a cancel sweep mid-transaction
 let isRunningOperation = false;
@@ -99,6 +113,77 @@ async function withRunState(fn) {
     isRunningOperation = false;
     updateCancelButtonState();
   }
+}
+
+// ===========================================================================
+// HTML confirm dialog
+// ===========================================================================
+//
+// Drop-in replacement for window.confirm(). Returns a Promise<boolean>:
+// resolves to true on OK, false on Cancel or Esc or background click.
+//
+// Why we have this: window.confirm() on Windows triggers a Chromium
+// compositor hit-testing bug — after the dialog dismisses, text inputs
+// in the app become un-clickable (single-clicks don't focus, double-
+// clicks can still select) until the user switches windows away and
+// back. HTML modals don't trigger the bug because they never leave
+// Chromium's compositor — they're just DOM elements styled as a modal.
+//
+// The dialog uses Bulma's .modal classes the same way the existing
+// cancelConfirmModal does. opts:
+//   title         — header text (default: "Confirm")
+//   body          — body content; can include <strong>, <p>, etc.
+//   confirmLabel  — text on the OK button (default: "OK")
+//   danger        — if true, OK button is styled red as is-danger
+//                   instead of is-primary blue
+async function confirmDialog(opts = {}) {
+  const {
+    title = 'Confirm',
+    body = '',
+    confirmLabel = 'OK',
+    danger = false,
+  } = opts;
+
+  const modal     = document.getElementById('genericConfirmModal');
+  const titleEl   = document.getElementById('genericConfirmTitle');
+  const bodyEl    = document.getElementById('genericConfirmBody');
+  const okBtn     = document.getElementById('genericConfirmOk');
+  const cancelBtn = document.getElementById('genericConfirmCancel');
+  const bgEl      = modal.querySelector('.modal-background');
+
+  titleEl.textContent = title;
+  // Use innerHTML so callers can pass <p>, <strong>, etc. Callers
+  // are responsible for escaping any user-supplied data they
+  // include — same trust model as the rest of the codebase.
+  bodyEl.innerHTML = body;
+  okBtn.textContent = confirmLabel;
+  okBtn.classList.remove('is-primary', 'is-danger');
+  okBtn.classList.add(danger ? 'is-danger' : 'is-primary');
+
+  modal.classList.add('is-active');
+  okBtn.focus();
+
+  return new Promise((resolve) => {
+    const cleanup = (result) => {
+      modal.classList.remove('is-active');
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      bgEl.removeEventListener('click', onCancel);
+      document.removeEventListener('keydown', onKey);
+      resolve(result);
+    };
+    const onOk     = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onKey    = (e) => {
+      if (e.key === 'Escape') onCancel();
+      else if (e.key === 'Enter') onOk();
+    };
+
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    bgEl.addEventListener('click', onCancel);
+    document.addEventListener('keydown', onKey);
+  });
 }
 
 // ===========================================================================
@@ -333,6 +418,32 @@ bind('activityLogHeader', 'click', () => {
 });
 
 // ===========================================================================
+// CLMM fee tier list — fetched at startup and used to populate the per-pool
+// Fee Tier dropdown in Step 2.
+// ===========================================================================
+
+// Fetch the canonical CLMM fee tier list from the server (which in turn
+// pulls from Raydium's published config endpoint, with its own fallback).
+// On success, replaces the hardcoded fallback in feeTiers with the live
+// list. If pools are already rendered when the call returns, re-render
+// them so the dropdown picks up newly-available tiers — this matters
+// only on the rare path where the user manages to add a pool faster than
+// the network call returns; usual case is the call completes first.
+async function loadFeeTiers() {
+  try {
+    const resp = await fetch('/api/clmm-fee-tiers').then((r) => r.json());
+    if (resp.success && Array.isArray(resp.tiers) && resp.tiers.length > 0) {
+      feeTiers = resp.tiers;
+      // If pools have already been rendered, the dropdowns were built
+      // from the fallback list. Re-render to pick up the live list.
+      if (pools.length > 0) renderPools();
+    }
+  } catch (e) {
+    console.error('Failed to load CLMM fee tiers, using fallback:', e);
+  }
+}
+
+// ===========================================================================
 // RPC settings (top of page) — unchanged from previous version
 // ===========================================================================
 
@@ -345,16 +456,40 @@ async function loadRpcConfig() {
   }
 }
 
-function truncateUrl(url, max = 50) {
-  if (url.length <= max) return url;
-  return url.slice(0, Math.floor(max * 0.6)) + '…' + url.slice(-Math.floor(max * 0.3));
+// Render an RPC URL safely for display. Keeps just the scheme and host
+// — everything else (path, query string) is redacted, because that's
+// where API keys typically live. Helius URLs look like
+// https://mainnet.helius-rpc.com/?api-key=<secret>; QuickNode/Triton
+// embed the key in the path. Showing the host only is enough for the
+// user to recognise which RPC is active without exposing their key in
+// screenshots, screen-shares, or tutorial videos.
+//
+// `host` mode returns just "https://mainnet.helius-rpc.com".
+// `hostWithIndicator` mode appends "/…" if the original had a path or
+// query, as a subtle hint that there's more in the URL the user just
+// can't see. That's the default — it makes it obvious the display is
+// truncated, not that the URL itself is bare.
+function safeRpcUrl(url, mode = 'hostWithIndicator') {
+  if (typeof url !== 'string' || url.length === 0) return '';
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // Malformed input — return a generic placeholder rather than
+    // leaking whatever raw text was passed in.
+    return '(invalid url)';
+  }
+  const base = `${parsed.protocol}//${parsed.host}`;
+  if (mode === 'host') return base;
+  const hasMore = parsed.pathname !== '/' || parsed.search.length > 0;
+  return hasMore ? `${base}/…` : base;
 }
 
 function renderRpcConfig(config) {
   const active = config.saved.find((r) => r.url === config.active);
   const display = active
-    ? `${active.name} — ${truncateUrl(active.url, 60)}`
-    : truncateUrl(config.active, 80);
+    ? `${active.name} — ${safeRpcUrl(active.url)}`
+    : safeRpcUrl(config.active);
   document.getElementById('rpcCurrentDisplay').textContent = display;
 
   // Toggle the public-RPC warning. Anything matching the well-known
@@ -376,7 +511,7 @@ function renderRpcConfig(config) {
       <strong>${escapeHtml(rpc.name)}</strong>
       ${isActive ? '<span class="tag is-success is-light is-small">active</span>' : ''}
       <br>
-      <span class="is-family-monospace is-size-7">${escapeHtml(rpc.url)}</span>
+      <span class="is-family-monospace is-size-7">${escapeHtml(safeRpcUrl(rpc.url))}</span>
     `;
     const actions = document.createElement('div');
     actions.className = 'rpc-actions';
@@ -447,7 +582,7 @@ async function selectRpc(url) {
     }).then((r) => r.json());
     if (resp.success) {
       renderRpcConfig(resp.config);
-      log(`Switched RPC to ${truncateUrl(url, 60)}`, 'success');
+      log(`Switched RPC to ${safeRpcUrl(url)}`, 'success');
     }
   } catch (e) {
     log(`Failed to switch RPC: ${e.message}`, 'danger');
@@ -455,7 +590,18 @@ async function selectRpc(url) {
 }
 
 async function removeRpc(url) {
-  if (!confirm(`Remove this RPC from saved list?\n\n${url}`)) return;
+  // The confirm dialog should identify which RPC is being removed
+  // without exposing the API key in the URL. Hostname is plenty for
+  // the user to recognise. escapeHtml because the URL goes into
+  // innerHTML; we don't trust user-supplied URL bytes.
+  const ok = await confirmDialog({
+    title: 'Remove RPC?',
+    body: `<p>Remove this RPC from your saved list?</p>
+           <p class="is-family-monospace is-size-7">${escapeHtml(safeRpcUrl(url))}</p>`,
+    confirmLabel: 'Remove',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     const resp = await fetch('/api/rpc-config/remove', {
       method: 'POST',
@@ -547,16 +693,25 @@ bind('generateWalletBtn', 'click', async () => {
   // far along the user is — past step 3 they may have funded the wallet.
   if (tempWallet && currentStep > 1) {
     const pastFunding = currentStep > 3;
-    const warning = pastFunding
-      ? 'You are mid-launch. Generating a new wallet will not recover any funds, ' +
-        'tokens, or NFTs already in the current ephemeral wallet — those will be ' +
-        'stranded unless you save the private key (currently visible above) FIRST. ' +
-        '\n\nCancel this dialog, click "Show Private Key", copy the key somewhere ' +
-        'safe, THEN regenerate.\n\nProceed anyway?'
-      : 'You already have a wallet from this session. Generating a new one will ' +
+    const body = pastFunding
+      ? '<p>You are mid-launch. Generating a new wallet will <strong>not</strong> ' +
+        'recover any funds, tokens, or NFTs already in the current ephemeral ' +
+        'wallet — those will be stranded unless you save the private key ' +
+        '(currently visible above) <strong>first</strong>.</p>' +
+        '<p>Cancel this dialog, click "Show Private Key", copy the key somewhere ' +
+        'safe, <strong>then</strong> regenerate.</p>' +
+        '<p>Proceed anyway?</p>'
+      : '<p>You already have a wallet from this session. Generating a new one will ' +
         'discard it. If you sent any SOL to it, you will lose access unless you ' +
-        'saved the private key first.\n\nProceed?';
-    if (!confirm(warning)) return;
+        'saved the private key first.</p>' +
+        '<p>Proceed?</p>';
+    const ok = await confirmDialog({
+      title: 'Discard current wallet?',
+      body,
+      confirmLabel: 'Generate new wallet',
+      danger: true,
+    });
+    if (!ok) return;
   }
 
   await withRunState(async () => {
@@ -678,6 +833,7 @@ function addPool(initial = {}) {
     resolvedSymbol: null,
     resolvedDecimals: null,
     resolvedPriceUsd: null,
+    resolvedMint: null,
     distribution: [{ sharePercent: 100, recipient: null, useExternalRecipient: false }],
   });
   renderPools();
@@ -742,10 +898,25 @@ function buildPoolNode(pool, idx) {
       <label class="label is-small">Quote Token</label>
       <div class="select is-small is-fullwidth">
         <select data-field="quoteSelect">
-          <option value="SOL">SOL</option>
-          <option value="USDC">USDC</option>
-          <option value="USDT">USDT</option>
-          <option value="__custom">Custom mint…</option>
+          <optgroup label="Native">
+            <option value="SOL">SOL</option>
+          </optgroup>
+          <optgroup label="Flywheels">
+            <option value="J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj">XLRT (wBTC + ETH reserve flywheel)</option>
+            <option value="7AL5rfx4Jf1DLFzZpQEPHkmR9BJjpcmWwne1f9xqfmTu">DGU (stable flywheel)</option>
+          </optgroup>
+          <optgroup label="Majors">
+            <option value="3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh">wBTC (Wormhole)</option>
+            <option value="7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs">ETH (Wormhole)</option>
+          </optgroup>
+          <optgroup label="Stables">
+            <option value="USDC">USDC</option>
+            <option value="USDT">USDT</option>
+            <option value="USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB">USD1 (World Liberty Financial)</option>
+          </optgroup>
+          <optgroup label="Other">
+            <option value="__custom">Custom mint…</option>
+          </optgroup>
         </select>
       </div>
       <input class="input is-small mt-1 hidden" type="text" data-field="quoteCustom" placeholder="SPL mint address">
@@ -764,23 +935,51 @@ function buildPoolNode(pool, idx) {
       <label class="label is-small">Fee Tier</label>
       <div class="select is-small is-fullwidth">
         <select data-field="ammConfig">
-          <option value="3" ${pool.ammConfigIndex === 3 ? 'selected' : ''}>1% / spacing 120 (default)</option>
-          <option value="0" ${pool.ammConfigIndex === 0 ? 'selected' : ''}>0.25% / spacing 60</option>
-          <option value="1" ${pool.ammConfigIndex === 1 ? 'selected' : ''}>0.05% / spacing 10</option>
-          <option value="2" ${pool.ammConfigIndex === 2 ? 'selected' : ''}>0.01% / spacing 1</option>
+          ${feeTiers.map((t) => {
+            const pct = (t.tradeFeeRate / 10000).toString();
+            const isDefault = t.index === 3;
+            const isSelected = pool.ammConfigIndex === t.index;
+            return `<option value="${t.index}" ${isSelected ? 'selected' : ''}>${pct}% / spacing ${t.tickSpacing}${isDefault ? ' (default)' : ''}</option>`;
+          }).join('')}
         </select>
       </div>
     </div>
   `;
   node.appendChild(row1);
 
-  const knownSymbols = ['SOL', 'USDC', 'USDT'];
   const quoteSelect = row1.querySelector('[data-field="quoteSelect"]');
   const quoteCustom = row1.querySelector('[data-field="quoteCustom"]');
   const quoteResolved = row1.querySelector('[data-field="quoteResolved"]');
 
-  if (knownSymbols.includes(pool.quoteToken.toUpperCase())) {
-    quoteSelect.value = pool.quoteToken.toUpperCase();
+  // The dropdown contains a mix of uppercase symbols (SOL/USDC/USDT — these
+  // are the tokens the server knows about via KNOWN_QUOTES) and raw mint
+  // addresses (the curated tokens in Flywheels/Majors/Stables — these go
+  // through the GeckoTerminal lookup path on resolve, same as any custom
+  // mint). To decide whether the saved pool.quoteToken matches a dropdown
+  // option, we collect all option values from the live <select> rather
+  // than maintaining a separate hardcoded list.
+  const dropdownValues = new Set(
+    Array.from(quoteSelect.querySelectorAll('option'))
+      .map((o) => o.value)
+      .filter((v) => v && v !== '__custom')
+  );
+
+  // Match symbols case-insensitively (SOL/USDC/USDT) and mint addresses
+  // case-sensitively (base58 is case-sensitive on Solana).
+  const isInDropdown = (() => {
+    const t = pool.quoteToken || '';
+    if (dropdownValues.has(t)) return true;
+    const upper = t.toUpperCase();
+    if (dropdownValues.has(upper)) return true;
+    return false;
+  })();
+
+  if (isInDropdown) {
+    // Snap to whichever case matches the option (symbols are uppercase in
+    // the dropdown; mint addresses are stored as-is).
+    quoteSelect.value = dropdownValues.has(pool.quoteToken)
+      ? pool.quoteToken
+      : pool.quoteToken.toUpperCase();
     quoteCustom.classList.add('hidden');
   } else {
     quoteSelect.value = '__custom';
@@ -789,10 +988,30 @@ function buildPoolNode(pool, idx) {
   }
 
   if (pool.resolvedSymbol) {
-    const priceTxt = pool.resolvedPriceUsd
-      ? `$${Number(pool.resolvedPriceUsd).toLocaleString(undefined, { maximumFractionDigits: 6 })}`
-      : '<em>price not in GeckoTerminal</em>';
-    quoteResolved.innerHTML = `${pool.resolvedSymbol} • ${pool.resolvedDecimals} decimals • ${priceTxt}`;
+    if (pool.resolvedDecimals == null) {
+      // On-chain read failed: the mint isn't a valid SPL token, the user's
+      // RPC is down, or the address is mistyped. Without decimals we
+      // can't do any of the launch math, so this is a hard stop. Tell
+      // the user clearly rather than rendering "null decimals" alongside
+      // a misleading price-only error.
+      quoteResolved.innerHTML =
+        `<span class="has-text-danger">Couldn't resolve ${pool.resolvedSymbol} on-chain — check the address and your RPC.</span>`;
+    } else if (pool.resolvedPriceUsd) {
+      const priceTxt = `$${Number(pool.resolvedPriceUsd).toLocaleString(
+        undefined,
+        { maximumFractionDigits: 6 },
+      )}`;
+      quoteResolved.innerHTML = `${pool.resolvedSymbol} • ${pool.resolvedDecimals} decimals • ${priceTxt}`;
+    } else {
+      // Symbol+decimals came back from on-chain reads but neither
+      // GeckoTerminal nor Jupiter could give us a USD price. Common for
+      // very-low-volume tokens, including the flywheel tokens this app
+      // is designed around. Tell the user clearly and point them at the
+      // Advanced section where they can paste a price manually.
+      quoteResolved.innerHTML =
+        `${pool.resolvedSymbol} • ${pool.resolvedDecimals} decimals • ` +
+        `<span class="has-text-danger">no USD price found — set one in Advanced below</span>`;
+    }
   }
 
   quoteSelect.addEventListener('change', () => {
@@ -804,9 +1023,14 @@ function buildPoolNode(pool, idx) {
       quoteCustom.classList.add('hidden');
       pool.quoteToken = v;
     }
+    // Clear ALL resolved-state fields, including resolvedMint. If we left
+    // resolvedMint stale and the new resolution fails (RPC error, indexer
+    // outage), the keypair search at token-creation time would seed with
+    // the previous mint — corrupting the launched=mintA invariant.
     pool.resolvedSymbol = null;
     pool.resolvedDecimals = null;
     pool.resolvedPriceUsd = null;
+    pool.resolvedMint = null;
     quoteResolved.innerHTML = '';
     resolvePoolQuote(idx);
   });
@@ -815,6 +1039,7 @@ function buildPoolNode(pool, idx) {
     pool.resolvedSymbol = null;
     pool.resolvedDecimals = null;
     pool.resolvedPriceUsd = null;
+    pool.resolvedMint = null;
     quoteResolved.innerHTML = '';
     resolvePoolQuote(idx);
   });
@@ -838,7 +1063,7 @@ function buildPoolNode(pool, idx) {
   const adv = document.createElement('div');
   adv.className = 'advanced-section hidden';
   adv.innerHTML = `
-    <p class="help mb-2">Override what GeckoTerminal returns. Required if the quote token isn't indexed.</p>
+    <p class="help mb-2">Override the auto-detected info for this quote token. Decimals are read on-chain so they should always be present; symbol comes from Metaplex metadata if available; USD price tries GeckoTerminal then Jupiter. Set anything here to override what the app found, or fill in a price if neither indexer had one.</p>
     <div class="columns is-mobile is-multiline">
       <div class="column">
         <label class="label is-small">Symbol override</label>
@@ -894,12 +1119,19 @@ function buildPoolNode(pool, idx) {
   node.appendChild(addSliceBtn);
 
   const sliceTotal = pool.distribution.reduce((s, x) => s + x.sharePercent, 0);
-  if (Math.abs(sliceTotal - 100) > 0.01) {
-    const warn = document.createElement('p');
-    warn.className = 'help is-danger mt-1';
-    warn.textContent = `Slice shares total ${sliceTotal}% — must be 100%.`;
-    node.appendChild(warn);
+  // Always render the slice warning paragraph, even when slices add up
+  // correctly. We keep it in the DOM with a stable data-attribute selector
+  // so updateSliceWarning() can find and update it in place rather than
+  // having to rebuild the whole pool tree on every keystroke. When
+  // slices are correct the element stays hidden via .hidden class.
+  const warn = document.createElement('p');
+  warn.className = 'help is-danger mt-1';
+  warn.dataset.sliceWarning = '';
+  warn.textContent = `Slice shares total ${sliceTotal.toFixed(2)}% — must be 100%.`;
+  if (Math.abs(sliceTotal - 100) <= 0.01) {
+    warn.classList.add('hidden');
   }
+  node.appendChild(warn);
 
   return node;
 }
@@ -924,7 +1156,15 @@ function buildSliceNode(pool, poolIdx, slice, sliceIdx) {
   const shareInput = node.querySelector('.slice-share');
   shareInput.addEventListener('input', (e) => {
     slice.sharePercent = Number(e.target.value);
-    renderPools();
+    // Targeted update only — we used to call renderPools() here, which
+    // destroyed and recreated *every* input element in *every* pool on
+    // every keystroke. The browser would lose focus on the input you were
+    // typing in, the cursor would reset, and typing felt broken. The
+    // visible state that actually depends on slice share is just (a) the
+    // slice-total warning at the bottom of this pool and (b) the continue
+    // button enabled-state. Update both directly.
+    updateSliceWarning(poolIdx);
+    updateContinueToFundingState();
   });
 
   const useExt = node.querySelector('[data-field="useExternal"]');
@@ -967,7 +1207,20 @@ async function resolvePoolQuote(idx) {
       pool.resolvedSymbol = data.info.symbol;
       pool.resolvedDecimals = data.info.decimals ?? null;
       pool.resolvedPriceUsd = data.info.priceUsd;
-      renderPools();
+      // Save the resolved on-chain mint too. We need it at token-creation
+      // time to seed the keypair search that ensures the launched token
+      // sorts as mintA in every pool (which puts the launched token in
+      // the *denominator* of the displayed Raydium price, matching user
+      // expectations of "launch price up to infinity").
+      pool.resolvedMint = data.info.address;
+      // Targeted update only — we used to call renderPools() here, which
+      // would destroy whatever input the user was typing in if the lookup
+      // completed mid-keystroke (typically 100–500ms after they changed
+      // the quote token). Now we update only the elements that actually
+      // depend on resolved info: the per-pool resolved-display paragraph
+      // and the continue-button validation state.
+      updateQuoteResolvedDisplay(idx);
+      updateContinueToFundingState();
     }
   } catch (e) {
     log(`Couldn't resolve quote info for ${pool.quoteToken}: ${e.message}`, 'warning');
@@ -981,6 +1234,65 @@ function updateAllocationSummary() {
   const note = document.getElementById('allocationSummary');
   note.classList.toggle('is-danger', total > 100);
   note.classList.toggle('is-info', total <= 100);
+}
+
+// Update one pool's slice-total warning in place.
+//
+// Used instead of full renderPools() when only the slice shares of a
+// single pool changed. Finds the pool's DOM node by index (poolList's
+// children are in the same order as the pools array, since renderPools
+// appends them in order), then finds the warning paragraph by its
+// data-slice-warning attribute and updates text + visibility.
+function updateSliceWarning(poolIdx) {
+  const pool = pools[poolIdx];
+  if (!pool) return;
+  const node = poolList.children[poolIdx];
+  if (!node) return;
+  const warn = node.querySelector('[data-slice-warning]');
+  if (!warn) return;
+  const total = pool.distribution.reduce((s, x) => s + x.sharePercent, 0);
+  warn.textContent = `Slice shares total ${total.toFixed(2)}% — must be 100%.`;
+  warn.classList.toggle('hidden', Math.abs(total - 100) <= 0.01);
+}
+
+// Update one pool's resolved-quote-info display in place.
+//
+// Used after resolvePoolQuote() finishes its async lookup and we've
+// updated pool.resolvedSymbol / decimals / priceUsd. Touches only the
+// help-text paragraph below the quote-token select; everything else in
+// the pool's DOM (including the input the user might be typing in)
+// stays untouched.
+function updateQuoteResolvedDisplay(poolIdx) {
+  const pool = pools[poolIdx];
+  if (!pool) return;
+  const node = poolList.children[poolIdx];
+  if (!node) return;
+  const display = node.querySelector('[data-field="quoteResolved"]');
+  if (!display) return;
+  if (pool.resolvedSymbol) {
+    if (pool.resolvedDecimals == null) {
+      // Same hard-stop case as in buildPoolNode. The on-chain read failed,
+      // so we can't compute anything for this pool until the user fixes
+      // the address or their RPC.
+      display.innerHTML =
+        `<span class="has-text-danger">Couldn't resolve ${pool.resolvedSymbol} on-chain — check the address and your RPC.</span>`;
+    } else if (pool.resolvedPriceUsd) {
+      const priceTxt = `$${Number(pool.resolvedPriceUsd).toLocaleString(
+        undefined,
+        { maximumFractionDigits: 6 },
+      )}`;
+      display.innerHTML = `${pool.resolvedSymbol} • ${pool.resolvedDecimals} decimals • ${priceTxt}`;
+    } else {
+      // Same actionable message as in buildPoolNode's initial render.
+      // Symbol/decimals are good (came from on-chain), price is the
+      // missing piece — direct the user to Advanced.
+      display.innerHTML =
+        `${pool.resolvedSymbol} • ${pool.resolvedDecimals} decimals • ` +
+        `<span class="has-text-danger">no USD price found — set one in Advanced below</span>`;
+    }
+  } else {
+    display.innerHTML = '';
+  }
 }
 
 function updateContinueToFundingState() {
@@ -997,6 +1309,14 @@ function updateContinueToFundingState() {
     if (p.supplyPercent <= 0) reasons.push(`Pool ${i + 1}: 0% allocation`);
     if ((p.quoteToken || '').toUpperCase() === 'SOL' && p.supplyPercent < 1) {
       reasons.push(`Pool ${i + 1}: SOL allocation must be ≥ 1%`);
+    }
+    // Decimals must be resolved before we can do any launch math. If the
+    // mint isn't on-chain or the user's RPC failed, p.resolvedDecimals is
+    // null and the Advanced override is the only escape hatch — but if
+    // they haven't supplied an override either, we can't continue.
+    const hasDecimals = p.resolvedDecimals != null || p.quoteDecimalsOverride != null;
+    if (!hasDecimals) {
+      reasons.push(`Pool ${i + 1}: couldn't resolve decimals for ${p.resolvedSymbol || p.quoteToken}`);
     }
     const hasPrice = p.resolvedPriceUsd != null || p.quoteUsdOverride != null;
     if (!hasPrice) {
@@ -1091,11 +1411,22 @@ function buildAllocationsForApi() {
       sharePercent: s.sharePercent,
       recipient: s.useExternalRecipient ? s.recipient : null,
     }));
+    // Pass the price the UI already resolved through to the server as
+    // quoteUsdOverride, unless the user explicitly typed an override
+    // (which always wins). This means the launch flow doesn't re-fetch
+    // a price the UI just looked up — fewer external API calls, and the
+    // price the user saw in the UI is the price the launch math uses.
+    // Server's lpService treats any non-null quoteUsdOverride as the
+    // source of truth, so this is a clean override path.
+    const effectiveUsdOverride =
+      p.quoteUsdOverride != null
+        ? p.quoteUsdOverride
+        : (p.resolvedPriceUsd != null ? Number(p.resolvedPriceUsd) : null);
     return {
       quoteToken: p.quoteToken,
       supplyPercent: p.supplyPercent,
       ammConfigIndex: p.ammConfigIndex,
-      quoteUsdOverride: p.quoteUsdOverride,
+      quoteUsdOverride: effectiveUsdOverride,
       quoteDecimalsOverride: p.quoteDecimalsOverride,
       quoteSymbolOverride: p.quoteSymbolOverride,
       distribution,
@@ -1109,6 +1440,11 @@ function buildAllocationsForApi() {
 
 function renderFundingRequirements() {
   document.getElementById('step3WalletAddr').textContent = tempWallet.publicKey;
+  // The QR data URL was generated server-side when the wallet was created
+  // and stashed on tempWallet alongside publicKey/secretKey. Reuse it here
+  // so users on mobile can scan rather than copy-paste the address.
+  const step3Qr = document.getElementById('step3QrCode');
+  if (step3Qr && tempWallet.qrCode) step3Qr.src = tempWallet.qrCode;
   const container = document.getElementById('balanceRows');
   container.innerHTML = '';
 
@@ -1273,6 +1609,16 @@ bind('createTokenBtn', 'click', async () => {
       formData.append('symbol', document.getElementById('tokenSymbol').value.trim());
       formData.append('description', document.getElementById('tokenDescription').value.trim());
       formData.append('totalSupply', document.getElementById('tokenSupply').value);
+      // Quote mints from every configured pool. The server uses these to
+      // search for a launched-token keypair that sorts smaller than all
+      // of them, so the launched token is mintA in every pool. Filter out
+      // pools whose mint hasn't resolved yet (e.g. user is mid-typing) —
+      // the server will validate and either succeed with whatever's
+      // present or fail loud.
+      const quoteMints = pools
+        .map((p) => p.resolvedMint)
+        .filter((m) => typeof m === 'string' && m.length > 0);
+      formData.append('quoteMints', JSON.stringify(quoteMints));
       const logoFile = document.getElementById('tokenLogo').files[0];
       if (logoFile) formData.append('logo', logoFile);
 
@@ -1840,11 +2186,15 @@ function wireRowButtons(wrap, wallet, pubShort, hasMnemonic) {
   });
 
   wrap.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
-    const ok = confirm(
-      `Discard recovery entry for ${pubShort}?\n\n` +
-      `Only do this if you've already moved any funds out of this wallet, ` +
-      `or you're sure none were ever sent there. This action cannot be undone.`,
-    );
+    const ok = await confirmDialog({
+      title: 'Discard recovery entry?',
+      body:
+        `<p>Discard recovery entry for <strong>${escapeHtml(pubShort)}</strong>?</p>` +
+        `<p>Only do this if you've already moved any funds out of this wallet, ` +
+        `or you're sure none were ever sent there. This action cannot be undone.</p>`,
+      confirmLabel: 'Discard',
+      danger: true,
+    });
     if (!ok) return;
     try {
       await fetch('/api/pending-wallets/dismiss', {
@@ -1878,5 +2228,6 @@ function formatAge(isoString) {
 log('Trebuchet is ready. Click "Generate Wallet" to begin.');
 loadRpcConfig();
 loadPendingWallets();
+loadFeeTiers();
 bindStepHeaders();
 updateCancelButtonState();

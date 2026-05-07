@@ -68,6 +68,18 @@
             margin-bottom: 0.75rem;
             transition: opacity 0.2s ease, border-color 0.2s ease;
             border-left: 4px solid transparent;
+            /*
+              When activateStep() calls scrollIntoView({block:'start'}),
+              the step card's top edge lines up with viewport y=0. The
+              position:sticky #stickyBar sits at y=0 with z-index 30 and
+              covers ~50px on top. Without this scroll-margin, the step
+              header (and possibly the first input) ends up *under* the
+              sticky bar. Clicks on the obscured area land on the bar
+              instead of the input — likely cause of focus issues
+              reported when typing into Token Name and similar fields.
+              80px gives a comfortable buffer above the sticky bar.
+            */
+            scroll-margin-top: 80px;
         }
         .step-card.is-pending {
             opacity: 0.55;
@@ -137,9 +149,35 @@
             padding: 0 1.25rem 1.25rem;
             border-top: 1px solid #f0f0f0;
             padding-top: 1rem;
+            /*
+              Establish a positioning context so any absolute-positioned
+              descendants (e.g. Bulma's .file-input which is
+              position:absolute width:100% height:100%) stay constrained
+              to their immediate parent rather than escaping all the way
+              up to the viewport if Bulma's CSS happens to be slow to
+              load or any intermediate ancestor's position:relative
+              gets overridden.
+            */
+            position: relative;
         }
         .step-card:not(.is-active) .step-body {
             display: none;
+        }
+
+        /*
+           Belt-and-suspenders: make sure form inputs are interactive
+           with a visible caret. A previous report described inputs that
+           appeared to take focus briefly ("flashes") but didn't show a
+           cursor and couldn't be typed into. Could not reproduce in
+           static analysis or jsdom; defensively asserting these
+           properties to rule out any inherited rule (from Bulma,
+           Electron's user-agent stylesheet, or anywhere else) that
+           might be making inputs non-interactive.
+        */
+        .step-body .input,
+        .step-body .textarea {
+            pointer-events: auto;
+            caret-color: auto;
         }
 
         /* ========================================================
@@ -653,8 +691,25 @@
                     <span class="icon step-chevron"><i class="fas fa-chevron-down"></i></span>
                 </div>
                 <div class="step-body">
-                    <p class="mb-2 is-size-7">Send the following to your ephemeral wallet:</p>
-                    <p class="is-family-monospace is-size-7 mb-3" id="step3WalletAddr"></p>
+                    <!--
+                      Wallet display block. Re-shows the QR alongside the
+                      wallet address, since this is the step where the user
+                      actually wants to send funds — typically by scanning
+                      the QR with a mobile wallet app rather than copying
+                      the address by hand. Same QR data URL we generated in
+                      Step 1; just rendered into a second img element here.
+                    -->
+                    <div class="columns is-vcentered mb-2">
+                        <div class="column is-narrow">
+                            <div class="qr-code">
+                                <img id="step3QrCode" alt="Wallet QR Code" style="max-width: 160px; display: block;" />
+                            </div>
+                        </div>
+                        <div class="column">
+                            <p class="mb-2 is-size-7">Send the following to your ephemeral wallet:</p>
+                            <p class="is-family-monospace is-size-7 mb-3" id="step3WalletAddr"></p>
+                        </div>
+                    </div>
 
                     <div class="box p-3" id="fundingRequirements">
                         <h5 class="subtitle is-6 mb-2">Required deposits</h5>
@@ -888,5 +943,33 @@
     </div>
 
     <script src="app.js"></script>
+    <!-- ============================================================ -->
+    <!-- Generic Confirm Modal                                          -->
+    <!-- ============================================================ -->
+    <!--
+      Used by the confirmDialog() helper in app.js as a drop-in
+      replacement for window.confirm(). HTML modals avoid a Chromium
+      compositor hit-testing bug on Windows where native dialogs
+      taking and releasing focus leave text inputs un-clickable
+      until the next focus cycle. Beyond fixing that, HTML dialogs
+      look like the rest of the app and don't show the page URL
+      the way confirm() does on Windows.
+    -->
+    <div class="modal" id="genericConfirmModal">
+        <div class="modal-background"></div>
+        <div class="modal-card">
+            <header class="modal-card-head">
+                <p class="modal-card-title" id="genericConfirmTitle">Confirm</p>
+            </header>
+            <section class="modal-card-body">
+                <div class="content is-size-7" id="genericConfirmBody"></div>
+            </section>
+            <footer class="modal-card-foot">
+                <button class="button" id="genericConfirmCancel">Cancel</button>
+                <button class="button is-primary" id="genericConfirmOk">OK</button>
+            </footer>
+        </div>
+    </div>
+
 </body>
 </html>

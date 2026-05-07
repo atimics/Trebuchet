@@ -20,6 +20,7 @@ import {
   estimateRequiredFunding,
   getUsdPrice,
   getTokenMetadata,
+  getClmmFeeTiers,
   KNOWN_QUOTES,
 } from './lpService.js';
 
@@ -198,8 +199,23 @@ app.post('/api/create-token', upload.single('logo'), async (req, res) => {
       symbol,
       description,
       totalSupply,
+      quoteMints: quoteMintsRaw,
     } = req.body;
     console.log('Creating token:', { name, symbol, totalSupply });
+
+    // Quote mints come over as a JSON-encoded string in the FormData. Parse
+    // and validate — invalid input falls back to an empty array, which
+    // means "no constraint" (the keypair search becomes a no-op and we
+    // get a random keypair, the previous behaviour).
+    let quoteMints = [];
+    try {
+      const parsed = quoteMintsRaw ? JSON.parse(quoteMintsRaw) : [];
+      if (Array.isArray(parsed)) {
+        quoteMints = parsed.filter((m) => typeof m === 'string' && m.length > 0);
+      }
+    } catch {
+      console.warn('quoteMints failed to parse — proceeding with no sort constraint');
+    }
 
     let logoBase64 = null;
     if (req.file) {
@@ -213,6 +229,7 @@ app.post('/api/create-token', upload.single('logo'), async (req, res) => {
       description,
       totalSupply: parseInt(totalSupply),
       logoBase64,
+      quoteMints,
     });
 
     res.json({ success: true, ...result });
@@ -225,6 +242,20 @@ app.post('/api/create-token', upload.single('logo'), async (req, res) => {
 // ---------------------------------------------------------------------------
 // LP / pool creation endpoints
 // ---------------------------------------------------------------------------
+
+// CLMM fee tier list: drives the per-pool fee dropdown in Step 2. Pulls
+// from Raydium's published config endpoint with a process-lifetime cache;
+// returns a hardcoded fallback list if the endpoint is unreachable so
+// the UI never breaks. Restart the app to pick up newly-added Raydium tiers.
+app.get('/api/clmm-fee-tiers', async (_req, res) => {
+  try {
+    const tiers = await getClmmFeeTiers();
+    res.json({ success: true, tiers });
+  } catch (error) {
+    console.error('Error fetching CLMM fee tiers:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // Quote-token info: when the user picks/enters a quote token in the UI,
 // we look up its symbol/decimals/USD price for inline display. For known
@@ -239,8 +270,8 @@ app.post('/api/quote-token-info', async (req, res) => {
 
     const upper = quoteToken.toUpperCase();
     if (KNOWN_QUOTES[upper]) {
-      // Known token — use built-in constants for symbol/decimals,
-      // GeckoTerminal for the live price
+      // Known token — use built-in constants for symbol/decimals/programId,
+      // and only hit external indexers for the live price.
       const info = { ...KNOWN_QUOTES[upper] };
       const priceUsd = await getUsdPrice(info.address);
       res.json({
@@ -250,9 +281,13 @@ app.post('/api/quote-token-info', async (req, res) => {
       return;
     }
 
-    // Unknown mint address — fetch full metadata from GeckoTerminal
+    // Arbitrary mint address. tokenInfoService reads decimals + symbol
+    // on-chain (always works for any real mint), then tries GeckoTerminal
+    // first then Jupiter as a price fallback. priceUsd may still come
+    // back null if both indexers fail; the frontend handles that by
+    // surfacing the Advanced overrides as the recommended next step.
     const meta = await getTokenMetadata(quoteToken);
-    if (meta && meta.symbol && meta.decimals != null) {
+    if (meta && meta.decimals != null) {
       res.json({
         success: true,
         info: {
@@ -265,8 +300,9 @@ app.post('/api/quote-token-info', async (req, res) => {
       return;
     }
 
-    // Not indexed by GeckoTerminal — return a placeholder symbol and let
-    // the user fill in manual overrides via the Advanced section
+    // Hit only when the mint doesn't actually exist on-chain (or the
+    // user's RPC is down / wrong). Return a placeholder so the UI can
+    // still render something sane while the user corrects the input.
     res.json({
       success: true,
       info: {

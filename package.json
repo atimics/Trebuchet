@@ -58,6 +58,7 @@
       "main.js",
       "server.js",
       "tokenService.js",
+      "tokenInfoService.js",
       "lpService.js",
       "walletHelpers.js",
       "rpcConfig.js",
@@ -82,6 +83,10 @@
     "win": {
       "icon": "build/icon.ico",
       "target": ["nsis", "portable"]
+    },
+
+    "portable": {
+      "artifactName": "${productName} ${version} Portable.${ext}"
     },
 
     "linux": {

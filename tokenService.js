@@ -145,6 +145,83 @@ export async function checkWalletBalance(publicKey) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Token-mint keypair search.
+//
+// Solana CLMM pools order their mintA / mintB by raw byte comparison of the
+// 32-byte pubkey, with the smaller-byte-ordered key taking the mintA slot.
+// Raydium then displays the pool's price as `mintB per mintA` — i.e. mintA
+// in the denominator.
+//
+// For a token launch this matters because users expect to see a price like
+// "X SOL per <launched>" trending upward as their token appreciates. That
+// only happens if the launched token is mintA. If it lands as mintB by the
+// luck of the keypair byte-order draw, Raydium displays "<launched> per SOL"
+// instead, the displayed price runs *downward* as the token appreciates,
+// and the position bounds get inverted ("0 — small" rather than "current —
+// infinity"). All of that is just display; the math underneath is
+// equivalent. But the visual result on Raydium looks wrong to anyone not
+// holding the inversion in their head.
+//
+// Fix: generate keypairs in a loop until we find one whose pubkey sorts
+// strictly smaller than every quote mint we'll be paired with. Solana's
+// Ed25519 keygen is fast — even with 4 quotes to beat, this typically
+// completes in well under a second. The constraint is fine-grained
+// (compare 32 bytes, not just first byte), so each candidate has roughly
+// a (1/(N+1))-th chance of beating N quotes when the quotes are spread
+// uniformly across the keyspace; in practice quotes cluster non-uniformly
+// and the rate varies, but the search is bounded by MAX_KEYPAIR_TRIES
+// regardless and we throw with a clear error if we exhaust it.
+// ---------------------------------------------------------------------------
+const MAX_KEYPAIR_TRIES = 200_000;
+
+// Compare two 32-byte pubkeys lexicographically. Returns negative if a<b,
+// positive if a>b, zero if equal. Matches the on-chain `Pubkey::cmp`
+// behaviour Raydium uses to assign mintA / mintB.
+function comparePubkeys(a, b) {
+  for (let i = 0; i < 32; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+// Find a Keypair whose pubkey sorts strictly smaller than every quote mint
+// in `quoteMints`. Returns the Keypair on success, or null if quoteMints is
+// empty (caller should fall back to a random keypair). Throws on exhaustion.
+function findMintAKeypair(quoteMints) {
+  if (!Array.isArray(quoteMints) || quoteMints.length === 0) {
+    return null; // no constraint — caller will use a random keypair
+  }
+
+  // Convert quote mints to raw byte arrays once, up front.
+  const quoteBytes = quoteMints.map((m) => new PublicKey(m).toBytes());
+
+  for (let i = 0; i < MAX_KEYPAIR_TRIES; i++) {
+    const kp = Keypair.generate();
+    const candidate = kp.publicKey.toBytes();
+    let beatsAll = true;
+    for (const qb of quoteBytes) {
+      if (comparePubkeys(candidate, qb) >= 0) {
+        beatsAll = false;
+        break;
+      }
+    }
+    if (beatsAll) {
+      console.log(
+        `findMintAKeypair: matched after ${i + 1} attempt${i === 0 ? '' : 's'}`,
+      );
+      return kp;
+    }
+  }
+
+  throw new Error(
+    `Could not find a launched-token keypair sorting smaller than all ` +
+      `${quoteMints.length} quote mints after ${MAX_KEYPAIR_TRIES} attempts. ` +
+      `This usually means one of the quote mints has unusually low byte ` +
+      `order (e.g. starts with 0x00) — try removing or replacing it.`,
+  );
+}
+
 // Create token with Metaplex
 export async function createTokenWithMetaplex({
   tempWalletSecretKey,
@@ -152,7 +229,8 @@ export async function createTokenWithMetaplex({
   symbol,
   description,
   totalSupply,
-  logoBase64
+  logoBase64,
+  quoteMints,
 }) {
   try {
     console.log('Starting token creation...');
@@ -217,6 +295,16 @@ export async function createTokenWithMetaplex({
     const metadataUri = await umi.uploader.uploadJson(metadata);
     console.log('Metadata uploaded:', metadataUri);
     
+    // Search for a keypair whose pubkey sorts smaller than every quote
+    // mint, so the launched token becomes mintA in every pool. Returns
+    // null if quoteMints is empty (caller falls back to random).
+    const mintKeypair = findMintAKeypair(quoteMints);
+    if (mintKeypair) {
+      console.log(`Using mintA-sorted keypair: ${mintKeypair.publicKey.toBase58()}`);
+    } else {
+      console.log('No quote mints provided; using random mint keypair');
+    }
+
     // Create mint using standard SPL token first
     console.log('Creating SPL token mint...');
     const mint = await createMint(
@@ -225,7 +313,7 @@ export async function createTokenWithMetaplex({
       tempWallet.publicKey, // mint authority
       null, // freeze authority (null = no freeze)
       9, // decimals
-      undefined, // default keypair
+      mintKeypair ?? undefined, // searched keypair, or undefined for random
       { commitment: 'finalized' },
       TOKEN_PROGRAM_ID
     );
