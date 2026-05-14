@@ -18,7 +18,11 @@
 // Keys silently disappeared from the sweep. This version handles both.
 //
 // These helpers don't replace tokenService.js — they sit alongside it. The
-// server orchestrates: (NFT sweep) → (existing transferTokensAndSol).
+// server orchestrates the post-launch sweep as:
+//   1. sweepNftsToDestination       — Fee Keys, position NFTs, etc.
+//   2. sweepAllTokensToDestination  — launched token + any auto-swap tokens
+//   3. sweepSolToDestination        — remaining SOL (must be last; the token
+//                                     transfers above consume SOL for fees)
 
 import {
   Connection,
@@ -26,6 +30,7 @@ import {
   PublicKey,
   LAMPORTS_PER_SOL,
   Transaction,
+  SystemProgram,
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
 import {
@@ -35,10 +40,7 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
   createTransferCheckedInstruction,
 } from '@solana/spl-token';
-import dotenv from 'dotenv';
 import { getRpcUrl } from './rpcConfig.js';
-
-dotenv.config();
 
 // Both token programs we need to query. Order matters only for log readability.
 const TOKEN_PROGRAMS = [
@@ -224,6 +226,145 @@ export async function sweepNftsToDestination({
   }
 
   return { transferred, errors };
+}
+
+/**
+ * Sweep ALL fungible SPL tokens (classic and Token-2022) from the temp
+ * wallet to the destination wallet. Filters out NFTs (decimals=0 with
+ * amount=1) since those are handled by sweepNftsToDestination, and
+ * filters out any caller-specified exclude mints.
+ *
+ * This is the part of the post-launch cleanup that recovers tokens
+ * acquired via auto-swap during funding (e.g. BITCOIN, GIGA, etc.) as
+ * well as the launched token itself. The previous implementation only
+ * handled the single launched-token mint, leaving any non-launched
+ * tokens stranded in the ephemeral wallet.
+ *
+ * Returns { transferred: [{ mint, amount, decimals, txId }], errors: [...] }.
+ * Per-token errors are isolated — one bad transfer doesn't abort the rest.
+ *
+ * IMPORTANT: this function does NOT touch SOL. Callers must invoke it
+ * BEFORE the SOL sweep, because each token transfer here costs SOL for
+ * tx fees and possibly destination-ATA rent (~0.002 SOL each). If SOL
+ * is swept first, these transfers fail with insufficient lamports.
+ */
+export async function sweepAllTokensToDestination({
+  tempWalletSecretKey,
+  destinationWallet,
+  excludeMints = [],
+}) {
+  const connection = makeConnection();
+  const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
+  const destPk = new PublicKey(destinationWallet);
+  const excludeSet = new Set(excludeMints.filter(Boolean));
+
+  // Read everything the wallet holds, then partition.
+  const { tokens } = await checkWalletBalanceMultiToken(
+    ownerKeypair.publicKey.toBase58(),
+  );
+
+  const fungibles = [];
+  for (const [mint, info] of Object.entries(tokens)) {
+    if (excludeSet.has(mint)) continue;
+    // Skip NFTs — they're handled by sweepNftsToDestination. The signature
+    // is decimals=0 with amount=1. Some pseudo-fungibles also have
+    // decimals=0; we keep amount>1 here since position-NFTs always have
+    // exactly 1 supply per holder.
+    if (info.decimals === 0 && info.amountRaw === '1') continue;
+    // Skip zero balances — common for ATAs that were created but never
+    // received tokens (e.g. an auto-swap that failed before output landed).
+    if (info.amountRaw === '0') continue;
+    fungibles.push({ mint, ...info });
+  }
+
+  console.log(
+    `Found ${fungibles.length} fungible token type(s) to sweep to ${destinationWallet}`,
+  );
+  for (const t of fungibles) {
+    console.log(`  - ${t.mint} (${t.amountUi}, ${t.decimals}d)`);
+  }
+
+  const transferred = [];
+  const errors = [];
+
+  for (const t of fungibles) {
+    try {
+      const programId = t.programId === TOKEN_2022_PROGRAM_ID.toBase58()
+        ? TOKEN_2022_PROGRAM_ID
+        : TOKEN_PROGRAM_ID;
+      const txId = await transferTokenWithProgram({
+        connection,
+        ownerKeypair,
+        mint: new PublicKey(t.mint),
+        destination: destPk,
+        amount: BigInt(t.amountRaw),
+        decimals: t.decimals,
+        programId,
+      });
+      console.log(`  swept ${t.mint} (${t.amountUi}): ${txId}`);
+      transferred.push({
+        mint: t.mint,
+        amount: t.amountUi,
+        decimals: t.decimals,
+        txId,
+      });
+    } catch (err) {
+      console.error(`  failed to sweep ${t.mint}:`, err.message);
+      errors.push({ mint: t.mint, error: err.message });
+    }
+  }
+
+  return { transferred, errors };
+}
+
+/**
+ * Transfer the wallet's remaining SOL to the destination, leaving only
+ * the minimum required to keep the account alive plus a small fee
+ * cushion. Returns 0 (no transfer needed) if the balance is too low.
+ *
+ * MUST be called AFTER all token/NFT sweeps. Each token transfer costs
+ * tx fees in SOL; if SOL is moved first, the subsequent token transfers
+ * fail with insufficient lamports.
+ */
+export async function sweepSolToDestination({
+  tempWalletSecretKey,
+  destinationWallet,
+}) {
+  const connection = makeConnection();
+  const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
+  const destPk = new PublicKey(destinationWallet);
+
+  const solBalance = await connection.getBalance(ownerKeypair.publicKey);
+  // Leave the account rent-exempt minimum plus a tiny cushion for the
+  // transfer tx fee itself. 5000 lamports is the base tx fee on Solana
+  // mainnet; we don't pay priority on the final sweep so this is enough.
+  const minRentExemption = await connection.getMinimumBalanceForRentExemption(0);
+  const transferAmount = solBalance - minRentExemption - 5000;
+
+  console.log(`SOL sweep: balance=${solBalance / LAMPORTS_PER_SOL}, ` +
+    `transferring=${transferAmount / LAMPORTS_PER_SOL}`);
+
+  if (transferAmount <= 0) {
+    return { solTransferred: 0 };
+  }
+
+  const tx = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: ownerKeypair.publicKey,
+      toPubkey: destPk,
+      lamports: transferAmount,
+    }),
+  );
+
+  const txId = await sendAndConfirmTransaction(connection, tx, [ownerKeypair], {
+    commitment: 'confirmed',
+  });
+  console.log(`  SOL sweep tx: ${txId}`);
+
+  return {
+    solTransferred: transferAmount / LAMPORTS_PER_SOL,
+    txId,
+  };
 }
 
 /**

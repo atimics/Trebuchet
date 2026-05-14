@@ -44,7 +44,7 @@ let fundingWallet = null;
 let balancePollHandle = null;
 let lpResult = null;
 let pools = [];
-let fundingRequirement = { solLamports: 0, byQuote: {} };
+let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 
 // ---------------------------------------------------------------------------
 // Flywheel presets
@@ -82,10 +82,10 @@ const FLYWHEELS = {
   },
   meme: {
     key: 'meme',
-    label: 'Meme (coming soon)',
-    mint: null, // not launched yet
+    label: 'Meme',
+    mint: 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r',
     description: 'Meme-token flywheel',
-    available: false,
+    available: true,
   },
 };
 
@@ -205,13 +205,140 @@ const STEP_TITLES = {
 const activityLog = document.getElementById('activityLog');
 
 function log(message, type = 'info') {
+  // Accept 'error' as a backwards-compatible alias for 'danger' — the CSS
+  // class is .danger (Bulma convention), but a lot of older / muscle-
+  // memory code calls log(msg, 'danger'). Without this normalization the
+  // 'error'-labeled entries would render as default (green) text, hiding
+  // real errors from the user.
+  if (type === 'error') type = 'danger';
+
+  // Escape HTML in the message — `message` is rendered via innerHTML
+  // so that we can include the timestamp span, and callers do frequently
+  // pass error messages that come from third-party indexers or RPC
+  // responses (potentially attacker-controlled). Without escaping, a
+  // crafted error string could inject script or break the layout.
+  // Doing it here means every log site is safe by construction; we
+  // don't have to audit every caller.
+  const safe = String(message)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
   const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
   const entry = document.createElement('div');
   entry.className = `log-entry ${type}`;
-  entry.innerHTML = `<span class="timestamp">[${ts}]</span><span>${message}</span>`;
+  entry.innerHTML = `<span class="timestamp">[${ts}]</span><span>${safe}</span>`;
   activityLog.appendChild(entry);
   activityLog.scrollTop = activityLog.scrollHeight;
 }
+
+// ===========================================================================
+// Server log streaming
+// ===========================================================================
+//
+// The packaged Electron app hides server.js's console output — only the
+// browser DevTools console and this activity log are visible to the user.
+// To make backend activity visible (especially during the auto-swap flow),
+// we continuously poll /api/server-logs and dump new entries here with a
+// [server] prefix.
+//
+// State:
+//   _lastSeenServerLogSeq — highest server log sequence number we've
+//     already shown. Sent as `since` on each poll so the server only
+//     returns new entries.
+//   _serverLogStreamStarted — guard so the streamer is only started once.
+//
+// The streamer runs forever (no abort path) — it just keeps polling until
+// the page is closed. Each poll is one cheap HTTP round-trip every 2s,
+// and returns nothing when the server is idle, so it's not chatty.
+
+let _lastSeenServerLogSeq = 0;
+let _serverLogStreamStarted = false;
+
+/**
+ * Append a single server log entry to the activity log. Uses a [server]
+ * prefix and dimmer styling (info -> grey color, warn -> warning, error
+ * -> danger) so server logs are visually distinguishable from frontend
+ * action logs.
+ */
+function appendServerLogEntry(entry) {
+  // Map server log levels to the activity log's CSS types.
+  let type;
+  if (entry.level === 'error') type = 'danger';
+  else if (entry.level === 'warn') type = 'warning';
+  else type = 'info';
+  // Use the entry's original server-side timestamp (not new Date()) so
+  // entries that arrive in a single poll preserve their actual ordering
+  // relative to one another, and the user can tell when a server event
+  // really happened. Format as HH:MM:SS to match the rest of the log.
+  const ts = new Date(entry.ts).toLocaleTimeString('en-US', { hour12: false });
+  const el = document.createElement('div');
+  el.className = `log-entry ${type} server-log`;
+  // escapeHtml is defined later in this file; use a small inline escape
+  // just in case the function isn't hoisted in some weird load order.
+  const safe = String(entry.msg)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  el.innerHTML =
+    `<span class="timestamp">[${ts}]</span>` +
+    `<span><span class="has-text-grey">[server]</span> ${safe}</span>`;
+  activityLog.appendChild(el);
+  activityLog.scrollTop = activityLog.scrollHeight;
+}
+
+/**
+ * Start a continuous polling loop that fetches new server logs every 2s
+ * and appends them to the activity log. Idempotent — calling more than
+ * once is a no-op.
+ */
+async function startServerLogStream() {
+  if (_serverLogStreamStarted) return;
+  _serverLogStreamStarted = true;
+
+  // Initial seed: fetch the last 30 entries so the user sees recent
+  // backend history immediately (boot logs, any prior activity). Capped
+  // at 30 so we don't drown the activity log on first load if the
+  // server has been running a while.
+  try {
+    const resp = await fetch('/api/server-logs?limit=30');
+    if (resp.ok) {
+      const data = await resp.json();
+      for (const entry of data.entries || []) {
+        appendServerLogEntry(entry);
+        if (entry.seq > _lastSeenServerLogSeq) _lastSeenServerLogSeq = entry.seq;
+      }
+    }
+  } catch (_) {
+    // Network error on initial seed — just continue to the polling loop,
+    // it'll catch up on next poll.
+  }
+
+  // Continuous poll. Every 2s, fetch entries with seq > our last seen.
+  // No error escalation: a single failed poll is silent, and we just
+  // try again on the next interval. The page-unload kills this loop.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      const resp = await fetch(`/api/server-logs?since=${_lastSeenServerLogSeq}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        for (const entry of data.entries || []) {
+          appendServerLogEntry(entry);
+          if (entry.seq > _lastSeenServerLogSeq) _lastSeenServerLogSeq = entry.seq;
+        }
+      }
+    } catch (_) {
+      // Ignore — try again on next poll.
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+// Kick off the streamer at module load. It runs for the lifetime of
+// the page, polling every 2s. No-op when the server has nothing new
+// to report.
+startServerLogStream();
 
 function setLoading(btn, loading) {
   if (!btn) return;
@@ -370,39 +497,53 @@ function setStepSummary(num, text) {
   if (summaryEl) summaryEl.textContent = text ? `  —  ${text}` : '';
 }
 
-// Click on a completed step's header — re-expand it for review.
-// Pending and active steps are non-clickable (CSS sets cursor: default,
-// and we only attach this handler conditionally below).
+// Click on a completed step's header — re-expand it for review, or
+// collapse if currently peeked. Pending and active-current steps are
+// non-interactive via this handler (the early return below handles them).
 function bindStepHeaders() {
   for (let i = 1; i <= 6; i++) {
     const header = document.querySelector(`#step${i}-card .step-header`);
     if (!header) continue;
     header.addEventListener('click', () => {
       const card = document.getElementById(`step${i}-card`);
-      // Only completed steps respond to clicks
-      if (!card.classList.contains('is-completed')) return;
-      // Toggle this step's body visibility — let user re-expand for review.
-      // We do this by briefly making it active. They can click it again to
-      // collapse, or click on the actual current step to navigate back.
-      if (card.classList.contains('is-active')) {
-        // Don't allow collapsing the active step from here — only via the
-        // step buttons. Re-collapse to completed.
+      const isCurrentStep = i === currentStep;
+      const isCompleted = card.classList.contains('is-completed');
+      // A peeked step is one that has been temporarily expanded for
+      // review via this handler. We detect this as "is-active but not
+      // the actual current step" — setStepState() removes is-completed
+      // when applying is-active, so we can't rely on is-completed alone
+      // to identify peekable steps once they've been peeked once.
+      const isPeeking = card.classList.contains('is-active') && !isCurrentStep;
+
+      // Pending or active-current steps don't respond to header clicks —
+      // they're navigated via the action buttons inside their body.
+      if (!isCompleted && !isPeeking) return;
+
+      if (isPeeking) {
+        // Currently peeked → collapse back to completed.
         setStepState(i, 'completed');
-      } else {
-        // Re-expand this completed step inline. We don't change currentStep
-        // because this is just a peek, not navigation. To keep the UI sane,
-        // collapse any other completed step that's currently expanded for review.
-        for (let j = 1; j <= 6; j++) {
-          if (j === i) continue;
-          const otherCard = document.getElementById(`step${j}-card`);
-          if (otherCard && otherCard.classList.contains('is-active') && j !== currentStep) {
-            setStepState(j, 'completed');
-          }
-        }
-        // Open this one for review (we set is-active for the CSS to show body,
-        // but we don't update currentStep)
-        setStepState(i, 'active');
+        card.classList.remove('is-peeking');
+        return;
       }
+
+      // is-completed and not currently peeked → open for peek. First
+      // collapse any OTHER peeked step so only one peek is visible at
+      // a time (avoids visual confusion with multiple expanded cards).
+      for (let j = 1; j <= 6; j++) {
+        if (j === i) continue;
+        if (j === currentStep) continue; // never collapse the active step
+        const otherCard = document.getElementById(`step${j}-card`);
+        if (otherCard && otherCard.classList.contains('is-active')) {
+          setStepState(j, 'completed');
+          otherCard.classList.remove('is-peeking');
+        }
+      }
+      // Open this completed step for peek. Marker class `is-peeking`
+      // additionally lets CSS disable form fields inside (see
+      // peek-readonly fix below) so the user doesn't silently
+      // invalidate downstream state by editing a completed step.
+      setStepState(i, 'active');
+      card.classList.add('is-peeking');
     });
   }
 }
@@ -423,47 +564,148 @@ function updateCancelButtonState() {
     : (currentStep === 6 ? 'Use the Transfer Assets button at this stage' : 'Cancel and refund leftover funds');
 }
 
-function openCancelConfirm() {
+// Tracks which mode the cancel modal is currently in. Set by
+// openCancelConfirm() based on the on-chain wallet balance; consumed
+// by the proceed-button handler so it knows whether to do a sweep or
+// just close the launch UI.
+//   'end_launch' — wallet is empty (no SOL, nothing to sweep). The
+//                  proceed action just locks the UI and logs, no
+//                  /api/transfer-assets call. The pending-wallets
+//                  recovery cache entry stays alive in case a delayed
+//                  deposit arrives later (user can claim via the
+//                  recovery panel).
+//   'refund'     — wallet has funds. Existing refund flow: require
+//                  destination address, call transfer-assets, sweep.
+let cancelMode = 'refund';
+
+async function openCancelConfirm() {
   if (isRunningOperation) {
     log('Wait for the current operation to finish before cancelling', 'warning');
     return;
   }
 
-  // Tailor the message to the current step so the user knows what's at stake
+  const titleEl = document.getElementById('cancelConfirmTitle');
   const intro = document.getElementById('cancelConfirmIntro');
+  const destSection = document.getElementById('cancelDestSection');
   const destInput = document.getElementById('cancelDestInput');
   const destHelp = document.getElementById('cancelDestHelp');
+  const finePrint = document.getElementById('cancelConfirmFinePrint');
+  const proceedBtn = document.getElementById('cancelConfirmProceedBtn');
+  const proceedLabel = document.getElementById('cancelConfirmProceedLabel');
 
-  let message;
-  if (currentStep <= 2) {
-    message = 'Nothing has been spent on-chain yet. Cancelling will sweep any SOL you may have sent to the ephemeral wallet back to you.';
-  } else if (currentStep === 3) {
-    message = 'You have funded the ephemeral wallet but no on-chain operations have run yet. Cancelling will refund the SOL.';
-  } else if (currentStep === 4) {
-    message = 'The token may have been created already. Cancelling will refund SOL and any leftover token supply, but the token itself stays on-chain (you cannot un-mint).';
-  } else if (currentStep === 5) {
-    message = 'The token exists. Some pools may have been created. Cancelling will sweep everything currently in the wallet (tokens, SOL, any Fee Key NFTs from completed pools), but already-created pools stay on-chain.';
-  } else {
-    message = 'This will sweep everything in the ephemeral wallet to your destination.';
+  // Fetch the wallet's current SOL balance so we can decide whether
+  // there's anything to refund. If the wallet has nothing, the whole
+  // refund-destination flow is unnecessary and the user just wants to
+  // end the launch and clean up the UI.
+  //
+  // Use the cached value from pollBalances if we have one; otherwise
+  // hit the balance endpoint directly. Falls back to assuming "funded"
+  // on RPC error — safer to show the refund flow than to silently let
+  // the user end-launch a wallet that might actually have funds.
+  let solBalance = 0;
+  let balanceCheckFailed = false;
+  if (tempWallet) {
+    try {
+      const resp = await fetch('/api/check-balance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ publicKey: tempWallet.publicKey }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        solBalance = Number(data.balance) || 0;
+      } else {
+        balanceCheckFailed = true;
+      }
+    } catch (e) {
+      balanceCheckFailed = true;
+    }
   }
-  intro.textContent = message;
 
-  // Pre-fill destination with the detected funding wallet if available
-  if (fundingWallet) {
-    destInput.value = fundingWallet;
-    destHelp.textContent = 'Pre-filled with the detected funding wallet. Verify before proceeding.';
-    document.getElementById('cancelConfirmProceedBtn').disabled = false;
+  // Dust threshold: 0.0001 SOL. Below this is too little to cover even
+  // a single transfer's fee (~5000 lamports), so there's effectively
+  // nothing to sweep anyway. Treat as empty.
+  const DUST_SOL = 0.0001;
+  const isEmpty = !balanceCheckFailed && solBalance < DUST_SOL;
+
+  if (isEmpty) {
+    // ---------- End-launch mode ----------
+    cancelMode = 'end_launch';
+    titleEl.textContent = 'End launch?';
+    let stepMsg;
+    if (currentStep <= 3) {
+      stepMsg =
+        'The ephemeral wallet hasn\'t been funded yet. Nothing has been ' +
+        'spent and there\'s nothing to refund — cancelling just ends the ' +
+        'launch flow and resets the UI.';
+    } else {
+      stepMsg =
+        'The ephemeral wallet is empty. Nothing to sweep. Anything created ' +
+        'on-chain so far (token, pools) stays on-chain. Cancelling just ends ' +
+        'the launch flow.';
+    }
+    intro.textContent = stepMsg;
+    destSection.classList.add('hidden');
+    finePrint.innerHTML =
+      '<p>The wallet\'s secret key stays in the recovery panel above so you ' +
+      'can claim any delayed deposits that may arrive later. To remove it ' +
+      'permanently, use Discard in that panel.</p>';
+    proceedLabel.textContent = 'End Launch';
+    proceedBtn.disabled = false;
   } else {
-    destInput.value = '';
-    destHelp.textContent = 'No funding wallet detected — paste your destination address.';
-    document.getElementById('cancelConfirmProceedBtn').disabled = true;
+    // ---------- Refund mode (existing flow) ----------
+    cancelMode = 'refund';
+    titleEl.textContent = 'Cancel and Refund?';
+    destSection.classList.remove('hidden');
+    finePrint.innerHTML =
+      '<p>This will sweep everything currently in the ephemeral wallet to ' +
+      'that destination, then end the launch. Anything created on-chain so ' +
+      'far (e.g., the SPL token if step 4 completed, or any pools created ' +
+      'in step 5) stays on-chain — only the wallet\'s contents move.</p>';
+    proceedLabel.textContent = 'Cancel and Refund';
+
+    // Tailor the lead message to the current step so the user knows
+    // what's at stake. (Now that we only reach this branch when the
+    // wallet actually has funds, "you have funded" is no longer a lie
+    // at step 3.)
+    let message;
+    if (currentStep <= 2) {
+      message = 'You have SOL in the ephemeral wallet. Cancelling will sweep it back to you.';
+    } else if (currentStep === 3) {
+      message = 'You have funded the ephemeral wallet but no on-chain operations have run yet. Cancelling will refund the SOL.';
+    } else if (currentStep === 4) {
+      message = 'The token may have been created already. Cancelling will refund SOL and any leftover token supply, but the token itself stays on-chain (you cannot un-mint).';
+    } else if (currentStep === 5) {
+      message = 'The token exists. Some pools may have been created. Cancelling will sweep everything currently in the wallet (tokens, SOL, any Fee Key NFTs from completed pools), but already-created pools stay on-chain.';
+    } else {
+      message = 'This will sweep everything in the ephemeral wallet to your destination.';
+    }
+    if (balanceCheckFailed) {
+      message =
+        'Couldn\'t verify the wallet balance — RPC may be down. ' +
+        'Defaulting to the refund flow. ' + message;
+    }
+    intro.textContent = message;
+
+    // Pre-fill destination with the detected funding wallet if available
+    if (fundingWallet) {
+      destInput.value = fundingWallet;
+      destHelp.textContent = 'Pre-filled with the detected funding wallet. Verify before proceeding.';
+      proceedBtn.disabled = false;
+    } else {
+      destInput.value = '';
+      destHelp.textContent = 'No funding wallet detected — paste your destination address.';
+      proceedBtn.disabled = true;
+    }
   }
 
   document.getElementById('cancelConfirmModal').classList.add('is-active');
 }
 
 bind('cancelDestInput', 'input', (e) => {
-  // Enable the proceed button only when destination looks like a Solana address
+  // Only relevant in refund mode (in end-launch mode the input is
+  // hidden and the proceed button is enabled unconditionally).
+  if (cancelMode !== 'refund') return;
   const v = e.target.value.trim();
   const looksValid = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v);
   document.getElementById('cancelConfirmProceedBtn').disabled = !looksValid;
@@ -474,6 +716,37 @@ bind('cancelConfirmDismissBtn', 'click', () => {
 });
 
 bind('cancelConfirmProceedBtn', 'click', async () => {
+  // ---------- End-launch path ----------
+  // Wallet is empty — nothing to sweep, nothing to refund. Just stop
+  // polling, lock the UI at step 6, and log it. The wallet's secret
+  // key stays in the pending-wallets recovery cache server-side so
+  // a delayed deposit (one the user sent right before clicking
+  // cancel, say) can still be claimed via that panel later.
+  if (cancelMode === 'end_launch') {
+    document.getElementById('cancelConfirmModal').classList.remove('is-active');
+
+    if (balancePollHandle) {
+      clearInterval(balancePollHandle);
+      balancePollHandle = null;
+    }
+
+    log('Launch ended. The ephemeral wallet was empty — no sweep needed.', 'info');
+    setStepSummary(currentStep, 'cancelled — wallet was empty');
+    // Lock subsequent step interactions. activateStep(6) marks every
+    // earlier step completed; combined with the step-card peek logic
+    // the user can still review (read-only) but can't proceed.
+    activateStep(6);
+    // Hide the normal transfer button — there's nothing in the wallet
+    // to transfer, and clicking it would error confusingly.
+    document.getElementById('transferAssetsBtn').classList.add('hidden');
+    // Refresh the pending-wallets panel — server kept this wallet
+    // in the recovery cache (we didn't dismiss), so the user can
+    // see it there if they want to claim later or discard.
+    loadPendingWallets();
+    return;
+  }
+
+  // ---------- Refund path (existing flow) ----------
   const dest = document.getElementById('cancelDestInput').value.trim();
   if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(dest)) {
     log('Invalid destination address', 'danger');
@@ -508,10 +781,46 @@ bind('cancelConfirmProceedBtn', 'click', async () => {
         data.nftSweep?.transferred?.length ? `${data.nftSweep.transferred.length} NFT(s)` : null,
       ].filter(Boolean).join(', ');
 
-      log(`Cancel complete. Swept: ${swept || 'nothing'}`, 'success');
-      setStepSummary(currentStep, `cancelled — funds returned`);
+      // Surface partial-failure modes — same detection logic as runTransfer().
+      // The cancel path uses the same /api/transfer-assets endpoint, so it
+      // has identical sub-step failure modes (SOL sweep failure with
+      // tokens already moved, individual token/NFT transfer errors).
+      // Without these warnings the user might think the cancel completed
+      // cleanly when SOL is actually stranded in the ephemeral wallet.
+      const tokenErrors = data.tokenSweep?.errors || [];
+      const nftErrors = data.nftSweep?.errors || [];
+      const hasPartialFailure =
+        data.solSweepError || tokenErrors.length > 0 || nftErrors.length > 0;
+
+      if (data.solSweepError) {
+        log(`Cancel: SOL sweep failed: ${data.solSweepError}`, 'warning');
+        log(
+          'Tokens and NFTs were moved, but SOL remained in the ephemeral wallet. ' +
+          'Use the pending-wallets panel above to recover the SOL with the wallet\'s ' +
+          'secret key.',
+          'warning',
+        );
+      }
+      for (const e of tokenErrors) {
+        log(`Cancel: token sweep error (${e.mint?.slice(0, 8) || 'unknown'}…): ${e.error}`, 'warning');
+      }
+      for (const e of nftErrors) {
+        log(`Cancel: NFT sweep error (${e.mint?.slice(0, 8) || 'unknown'}…): ${e.error}`, 'warning');
+      }
+
+      if (hasPartialFailure) {
+        log(`Cancel partially complete. Swept: ${swept || 'nothing'} — see warnings`, 'warning');
+        setStepSummary(currentStep, `cancelled — partial sweep, see warnings`);
+      } else {
+        log(`Cancel complete. Swept: ${swept || 'nothing'}`, 'success');
+        setStepSummary(currentStep, `cancelled — funds returned`);
+      }
       // Disable all step interactions — flow is over
       activateStep(6);
+      // Hide the normal transfer button — clicking it now would try to
+      // sweep an already-emptied wallet and produce a confusing
+      // "transferred 0" success message. Cancel is terminal.
+      document.getElementById('transferAssetsBtn').classList.add('hidden');
       // Show the same result block that the normal transfer would
       document.getElementById('transferResult').classList.remove('hidden');
       document.getElementById('tokensTransferred').textContent = data.tokensTransferred ?? '—';
@@ -664,6 +973,25 @@ function escapeHtml(s) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// Format a token amount in whole units for display in a balance row.
+// Uses Math.floor to avoid the rounding hazard where displayed >
+// actual — polling reads this text back as Number to compare against
+// the wallet balance, so wallet >= displayed must imply wallet >=
+// actual on-chain target. For small amounts (<10), keeps decimals so
+// USDC-like rows still display "1" not "0".
+function formatTokenDisplay(whole) {
+  const n = Number(whole);
+  if (!isFinite(n) || n <= 0) return '0';
+  if (n >= 10) {
+    // Big amounts: floor to integer for readability.
+    return String(Math.floor(n));
+  }
+  // Small amounts: keep up to 4 sig figs, floored.
+  // (toPrecision rounds — fine for display since the actual auto-swap
+  // target is already buffered with the 2x sizing multiplier.)
+  return Number(n.toPrecision(4)).toString();
 }
 
 // ---------------------------------------------------------------------------
@@ -948,9 +1276,11 @@ bind('generateWalletBtn', 'click', async () => {
       // Reset all per-launch state so a regenerate starts truly fresh
       tempWallet = data.wallet;
       fundingWallet = null;
+      fundingDetectionExhausted = false;
+      lastSolBalance = 0;
       createdTokenInfo = null;
       lpResult = null;
-      fundingRequirement = { solLamports: 0, byQuote: {} };
+      fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 
       // Reset UI panels that may carry stale info from a previous attempt
       document.getElementById('walletInfo').classList.remove('hidden');
@@ -1070,6 +1400,21 @@ function addPool(initial = {}) {
     // token — the UI just hides the logo or falls back to the symbol.
     resolvedName: null,
     resolvedImageUrl: null,
+    // Raydium CLMM compatibility info, set by resolvePoolQuote():
+    //   resolvedCompatible: true | false | null (null = couldn't check)
+    //   resolvedIsToken2022: bool — true when the mint is owned by the
+    //                        Token-2022 program (vs the classic SPL Token
+    //                        program). Token-2022 mints with allowlisted
+    //                        extensions are still compatible.
+    //   resolvedDisallowedNames: [string] — friendly names of any Token-2022
+    //                        extensions this mint has that Raydium CLMM
+    //                        doesn't accept. Empty when compatible.
+    //   resolvedCompatError: string | null — populated when the on-chain
+    //                        check failed (RPC issue / mint missing).
+    resolvedCompatible: null,
+    resolvedIsToken2022: false,
+    resolvedDisallowedNames: [],
+    resolvedCompatError: null,
     // Initial distribution. Defaults to a single 100% slice (one
     // position, one Fee Key NFT). The simple-config "Split the LP"
     // toggle passes a multi-slice distribution here for users who
@@ -1812,6 +2157,22 @@ function applyOverrideVisibility(node, pool) {
 // updateQuoteResolvedDisplay() that runs after async resolution returns,
 // to keep both rendering paths consistent.
 function renderResolvedInfoHtml(pool) {
+  // Resolution-failure case: show a clear error with a retry button.
+  // This is distinct from "haven't resolved yet" (pool.resolvedSymbol
+  // is null because the resolve call hasn't returned) and from "couldn't
+  // read from chain" (pool.resolvedDecimals is null). pool.resolvedFailed
+  // is the marker set by resolvePoolQuote when the fetch itself threw —
+  // typically a network/server issue where a retry is appropriate.
+  if (pool.resolvedFailed) {
+    const err = escapeHtml(pool.resolvedFailedError || 'unknown error');
+    return (
+      `<div class="has-text-danger is-size-7">` +
+      `<i class="fas fa-exclamation-circle"></i> ` +
+      `Couldn't fetch quote-token info (${err}). ` +
+      `<a data-action="retry-resolve" class="has-text-weight-bold">Retry</a>` +
+      `</div>`
+    );
+  }
   if (!pool.resolvedSymbol) return '';
 
   const safeSym = escapeHtml(pool.resolvedSymbol);
@@ -1824,15 +2185,24 @@ function renderResolvedInfoHtml(pool) {
   }
 
   // Logo (36px circle, left column). Falls back to an initial-letter
-  // circle when no image — same pattern as the header logo.
+  // circle when the image fails to load. Implemented with a structural
+  // sibling fallback (the initial-letter is always in the DOM, hidden
+  // behind the img) rather than an inline onerror= handler with
+  // interpolated content. The old approach worked but mixed HTML/JS
+  // contexts in a way that's hard to audit for injection — better to
+  // build it with regular HTML and CSS.
   const initial = escapeHtml((pool.resolvedSymbol.charAt(0) || '?').toUpperCase());
   let logoHtml;
   if (pool.resolvedImageUrl) {
     const safeUrl = escapeHtml(pool.resolvedImageUrl);
+    // The img sits on top of the fallback span. If the img's load fails,
+    // the data-action="logo-fail" listener (set up below) hides the img
+    // and reveals the fallback. The initial-letter is already in the
+    // markup, so the fallback content can't be injection-influenced.
     logoHtml =
-      `<span class="resolved-logo">` +
-      `<img src="${safeUrl}" alt="" loading="lazy" ` +
-      `onerror="this.parentNode.innerHTML='${initial}'; this.parentNode.classList.add('resolved-logo-fallback');">` +
+      `<span class="resolved-logo resolved-logo-with-image">` +
+      `<span class="resolved-logo-initial">${initial}</span>` +
+      `<img src="${safeUrl}" alt="" loading="lazy" data-action="logo-fail">` +
       `</span>`;
   } else {
     logoHtml = `<span class="resolved-logo resolved-logo-fallback">${initial}</span>`;
@@ -1873,6 +2243,43 @@ function renderResolvedInfoHtml(pool) {
     `<a class="resolved-info-icon" data-action="show-token-info" title="Token info">` +
     `<i class="fas fa-info-circle"></i> details</a>`;
 
+  // Raydium CLMM compatibility line. We surface three states:
+  //   - hard incompatible: red text, names the disallowed extensions.
+  //     updateContinueToFundingState also blocks "Continue" in this case.
+  //   - unknown (compatible === null): yellow note ("couldn't verify").
+  //     Continue is not blocked; user can override via Advanced settings
+  //     or fix RPC and retry.
+  //   - compatible: nothing (silent), OR a small "Token-2022" pill when
+  //     the user is dealing with a Token-2022 mint, so they know the
+  //     pool will involve transfer fees / extension semantics.
+  let compatLine = '';
+  if (pool.resolvedCompatible === false) {
+    const exts = (pool.resolvedDisallowedNames || []).join(', ');
+    compatLine =
+      `<div class="resolved-info-tech has-text-danger">` +
+        `<i class="fas fa-exclamation-triangle"></i> ` +
+        `Not compatible with Raydium CLMM — ` +
+        `unsupported Token-2022 extension${exts.split(',').length === 1 ? '' : 's'}: ` +
+        `${escapeHtml(exts)}` +
+      `</div>`;
+  } else if (pool.resolvedCompatible === null) {
+    compatLine =
+      `<div class="resolved-info-tech has-text-warning-dark">` +
+        `<i class="fas fa-question-circle"></i> ` +
+        `Couldn't verify Raydium compatibility ` +
+        `(${escapeHtml(pool.resolvedCompatError || 'RPC error')})` +
+      `</div>`;
+  } else if (pool.resolvedIsToken2022) {
+    // Compatible Token-2022. Quiet informational marker so the user
+    // knows this isn't a vanilla SPL token — relevant for understanding
+    // transfer fee behavior, metadata via on-chain extensions, etc.
+    compatLine =
+      `<div class="resolved-info-tech has-text-info">` +
+        `<i class="fas fa-shield-alt"></i> ` +
+        `Token-2022 (compatible)` +
+      `</div>`;
+  }
+
   return `${logoHtml}` +
          `<div class="resolved-info-stack">` +
          `<div class="resolved-info-top">` +
@@ -1881,6 +2288,7 @@ function renderResolvedInfoHtml(pool) {
          `</div>` +
          nameLine +
          techLine +
+         compatLine +
          `</div>`;
 }
 
@@ -1995,17 +2403,51 @@ function buildPoolNode(pool, idx) {
   const node = document.createElement('div');
   node.className = 'pool-row';
 
-  // Delegated click handler for the resolved-info row's icon button.
-  // The icon HTML is built by renderResolvedInfoHtml() and may be
-  // re-rendered later via updateQuoteResolvedDisplay() — using event
-  // delegation on the pool node means we don't need to re-attach this
-  // handler each time the inner HTML changes.
+  // Delegated click handler for the resolved-info row. Handles both the
+  // info-modal icon and the retry-resolve link, since both live inside
+  // the resolved-info block and may be re-rendered as state changes.
+  // Using delegation on the pool node means we don't need to re-attach
+  // these listeners each time the inner HTML rebuilds.
   node.addEventListener('click', (e) => {
-    const target = e.target.closest('[data-action="show-token-info"]');
-    if (!target) return;
-    e.preventDefault();
-    showTokenInfoModal(pool);
+    // Info icon → open the details modal.
+    if (e.target.closest('[data-action="show-token-info"]')) {
+      e.preventDefault();
+      showTokenInfoModal(pool);
+      return;
+    }
+    // Retry-resolve link (shown only when a prior resolve attempt failed)
+    // → re-run resolvePoolQuote. Clears the failure marker so the UI
+    // shows "resolving…" again, then the resolve call either succeeds
+    // (clearing resolvedFailed in its success path) or fails again
+    // (re-setting it in the catch).
+    if (e.target.closest('[data-action="retry-resolve"]')) {
+      e.preventDefault();
+      // Provisionally clear the failure state so the UI re-paints to a
+      // clean "resolving" state. If the retry fails too, resolvePoolQuote
+      // re-sets resolvedFailed in its catch block.
+      pool.resolvedFailed = false;
+      pool.resolvedFailedError = null;
+      updateQuoteResolvedDisplay(idx);
+      resolvePoolQuote(idx);
+      return;
+    }
   });
+
+  // Logo image error handler. Uses event capture (third argument true)
+  // because the `error` event doesn't bubble through normal DOM
+  // propagation — listeners attached to a parent see it only on the
+  // capture phase. When the img fails to load (404, CORS, etc), we add
+  // .resolved-logo-img-failed to the wrapping span, which CSS uses to
+  // hide the img and reveal the initial-letter fallback that's already
+  // sitting underneath it. Same delegation pattern as the click handler
+  // above: works across renders without re-attaching.
+  node.addEventListener('error', (e) => {
+    const img = e.target;
+    if (!img || img.tagName !== 'IMG') return;
+    if (img.dataset.action !== 'logo-fail') return;
+    const wrapper = img.closest('.resolved-logo-with-image');
+    if (wrapper) wrapper.classList.add('resolved-logo-img-failed');
+  }, true);
 
   const header = document.createElement('div');
   header.className = 'pool-row-header';
@@ -2157,6 +2599,32 @@ function buildPoolNode(pool, idx) {
   // constructed below (via renderResolvedInfoHtml). No need to set it
   // here.
 
+  // Clear every resolved-state field on the pool. Called whenever the
+  // quote-token identity changes (dropdown change OR custom-address
+  // change) so stale info from the prior token doesn't bleed through
+  // until the new resolution returns.
+  //
+  // The compat fields (resolvedCompatible, resolvedIsToken2022, etc) are
+  // particularly important to reset: if the previous token was flagged
+  // incompatible, the red warning would persist on the new token until
+  // resolvePoolQuote() returned, AND updateContinueToFundingState() would
+  // keep blocking the Continue button on the stale compatible=false. By
+  // resetting to compatible=null (unknown), the UI cleanly transitions
+  // through "unknown" → "compatible/incompatible" as resolution
+  // completes, with no stale-state lockout.
+  function clearResolvedFields() {
+    pool.resolvedSymbol = null;
+    pool.resolvedDecimals = null;
+    pool.resolvedPriceUsd = null;
+    pool.resolvedMint = null;
+    pool.resolvedName = null;
+    pool.resolvedImageUrl = null;
+    pool.resolvedCompatible = null;
+    pool.resolvedIsToken2022 = false;
+    pool.resolvedDisallowedNames = [];
+    pool.resolvedCompatError = null;
+  }
+
   quoteSelect.addEventListener('change', () => {
     const v = quoteSelect.value;
     if (v === '__custom') {
@@ -2166,29 +2634,20 @@ function buildPoolNode(pool, idx) {
       quoteCustom.classList.add('hidden');
       pool.quoteToken = v;
     }
-    // Clear ALL resolved-state fields, including resolvedMint. If we left
-    // resolvedMint stale and the new resolution fails (RPC error, indexer
-    // outage), the keypair search at token-creation time would seed with
-    // the previous mint — corrupting the launched=mintA invariant.
-    pool.resolvedSymbol = null;
-    pool.resolvedDecimals = null;
-    pool.resolvedPriceUsd = null;
-    pool.resolvedMint = null;
-    pool.resolvedName = null;
-    pool.resolvedImageUrl = null;
+    clearResolvedFields();
     // Refresh the resolved-info block (now empty) and header chrome.
     updateQuoteResolvedDisplay(idx);
+    // Also refresh the continue-state immediately — the previous quote
+    // may have been blocking via compatible=false; clearing it should
+    // unblock the button right away (subject to other pool validations).
+    updateContinueToFundingState();
     resolvePoolQuote(idx);
   });
   quoteCustom.addEventListener('change', () => {
     pool.quoteToken = quoteCustom.value;
-    pool.resolvedSymbol = null;
-    pool.resolvedDecimals = null;
-    pool.resolvedPriceUsd = null;
-    pool.resolvedMint = null;
-    pool.resolvedName = null;
-    pool.resolvedImageUrl = null;
+    clearResolvedFields();
     updateQuoteResolvedDisplay(idx);
+    updateContinueToFundingState();
     resolvePoolQuote(idx);
   });
 
@@ -2480,6 +2939,25 @@ async function resolvePoolQuote(idx) {
       // on the symbol where the name would have appeared.
       pool.resolvedName = data.info.name ?? null;
       pool.resolvedImageUrl = data.info.imageUrl ?? null;
+      // Raydium CLMM compatibility info. Server-side we check whether the
+      // quote token's mint program + Token-2022 extensions are allowed by
+      // Raydium's on-chain `is_supported_mint` rules. The values here:
+      //   compatible === true    → safe to use (either classic SPL, or
+      //                            Token-2022 with allowlisted extensions,
+      //                            or Token-2022 in Raydium's hardcoded
+      //                            mint whitelist like PYUSD/AUSD)
+      //   compatible === false   → pool creation WILL fail; we warn loudly
+      //                            and disable the Continue button
+      //   compatible === null    → couldn't check (mint missing on chain,
+      //                            RPC down). Treat as unknown — surface
+      //                            a note, don't block.
+      pool.resolvedCompatible = data.info.compatible;
+      pool.resolvedIsToken2022 = !!data.info.isToken2022;
+      pool.resolvedDisallowedNames = data.info.disallowedNames || [];
+      pool.resolvedCompatError = data.info.compatError || null;
+      // Mark resolution as succeeded so the retry hint goes away.
+      pool.resolvedFailed = false;
+      pool.resolvedFailedError = null;
       // Targeted update only — we used to call renderPools() here, which
       // would destroy whatever input the user was typing in if the lookup
       // completed mid-keystroke (typically 100–500ms after they changed
@@ -2490,7 +2968,16 @@ async function resolvePoolQuote(idx) {
       updateContinueToFundingState();
     }
   } catch (e) {
+    // Resolution failed (network blip, RPC error, server error). Surface
+    // this in the resolved-info block with a retry affordance, instead
+    // of just logging silently. Without this, the user sees an empty
+    // resolved-info area and has no obvious recovery — they'd have to
+    // edit the address field and tab away to re-trigger resolution.
+    pool.resolvedFailed = true;
+    pool.resolvedFailedError = e.message || 'unknown error';
     log(`Couldn't resolve quote info for ${pool.quoteToken}: ${e.message}`, 'warning');
+    updateQuoteResolvedDisplay(idx);
+    updateContinueToFundingState();
   }
 }
 
@@ -2616,6 +3103,19 @@ function updateContinueToFundingState() {
     const hasPrice = p.resolvedPriceUsd != null || p.quoteUsdOverride != null;
     if (!hasPrice) {
       reasons.push(`Pool ${i + 1}: no USD price for ${p.resolvedSymbol || p.quoteToken}`);
+    }
+    // Hard-block on known Raydium-CLMM incompatibility. We do NOT block on
+    // resolvedCompatible === null (couldn't verify) — that's a soft warning,
+    // user might be on a flaky RPC or the mint is new. Only resolvedCompatible
+    // === false (we positively read the mint and found unsupported extensions)
+    // gets blocked here. The pre-flight on the server side is a belt-and-
+    // suspenders catch if this somehow gets bypassed.
+    if (p.resolvedCompatible === false) {
+      const exts = (p.resolvedDisallowedNames || []).join(', ');
+      reasons.push(
+        `Pool ${i + 1}: ${p.resolvedSymbol || p.quoteToken} is not Raydium-CLMM ` +
+          `compatible (Token-2022 extensions: ${exts})`,
+      );
     }
     const sliceTotal = p.distribution.reduce((s, x) => s + x.sharePercent, 0);
     if (Math.abs(sliceTotal - 100) > 0.01) {
@@ -2827,11 +3327,23 @@ bind('continueToFundingBtn', 'click', async () => {
       if (!data.success) throw new Error(data.error);
 
       fundingRequirement = data.estimate;
+      // Track how much of the SOL requirement has been "consumed" by
+      // completed auto-swaps. The original solLamports requirement
+      // includes budgeted SOL for all auto-swaps; once a swap finishes,
+      // that portion is already spent, so we need to subtract its
+      // estSolSpend from the effective requirement. Without this, the
+      // SOL row stays red after auto-swaps complete (because the wallet
+      // balance has gone down by ~$4 per swap) even though the launch
+      // can proceed. See decrementSolRequirementForSwap() below.
+      fundingRequirement.solCreditedForCompletedSwaps = 0;
+      const manualCount = Object.keys(fundingRequirement.byQuote).length;
+      const autoCount = (fundingRequirement.autoSwapPlan || []).length;
+      const extras = [];
+      if (autoCount) extras.push(`${autoCount} auto-swap`);
+      if (manualCount) extras.push(`${manualCount} manual`);
       log(
         `Funding estimate: ${fundingRequirement.totalSol.toFixed(3)} SOL` +
-        (Object.keys(fundingRequirement.byQuote).length
-          ? ` + ${Object.keys(fundingRequirement.byQuote).length} other token(s)`
-          : ''),
+        (extras.length ? ` + ${extras.join(', ')} token row${(autoCount + manualCount) === 1 ? '' : 's'}` : ''),
         'info',
       );
 
@@ -2861,17 +3373,31 @@ function buildAllocationsForApi() {
     // price the user saw in the UI is the price the launch math uses.
     // Server's lpService treats any non-null quoteUsdOverride as the
     // source of truth, so this is a clean override path.
+    //
+    // Same pattern for symbol and decimals: prefer the explicit override
+    // (user-typed in customize), else the resolved value from the
+    // token-info lookup or flywheel preset. Without this fallback,
+    // backend-side fundingrequirement rows show a 6-char mint slice
+    // instead of the actual ticker (e.g. "7AL5rf" instead of "Stable").
     const effectiveUsdOverride =
       p.quoteUsdOverride != null
         ? p.quoteUsdOverride
         : (p.resolvedPriceUsd != null ? Number(p.resolvedPriceUsd) : null);
+    const effectiveSymbolOverride =
+      p.quoteSymbolOverride != null && p.quoteSymbolOverride !== ''
+        ? p.quoteSymbolOverride
+        : (p.resolvedSymbol || null);
+    const effectiveDecimalsOverride =
+      p.quoteDecimalsOverride != null
+        ? p.quoteDecimalsOverride
+        : (p.resolvedDecimals != null ? Number(p.resolvedDecimals) : null);
     return {
       quoteToken: p.quoteToken,
       supplyPercent: p.supplyPercent,
       ammConfigIndex: p.ammConfigIndex,
       quoteUsdOverride: effectiveUsdOverride,
-      quoteDecimalsOverride: p.quoteDecimalsOverride,
-      quoteSymbolOverride: p.quoteSymbolOverride,
+      quoteDecimalsOverride: effectiveDecimalsOverride,
+      quoteSymbolOverride: effectiveSymbolOverride,
       distribution,
     };
   });
@@ -2881,6 +3407,62 @@ function buildAllocationsForApi() {
 // STEP 3: Funding
 // ===========================================================================
 
+/**
+ * Find the pool config object for a given quote mint, so we can pull
+ * resolved metadata (symbol, logo, decimals) for the funding-step rows.
+ * The KNOWN_QUOTES (USDC/USDT/SOL) need explicit handling because their
+ * pool entries store the symbol ('USDC') in quoteToken rather than the
+ * mint address.
+ */
+function findPoolByMint(mint) {
+  return pools.find((p) => {
+    const upper = (p.quoteToken || '').toUpperCase();
+    if (upper === 'SOL') return false;
+    if (upper === 'USDC' && mint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return true;
+    if (upper === 'USDT' && mint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return true;
+    return p.quoteToken === mint;
+  });
+}
+
+/**
+ * Build the inline-logo HTML for a pool's resolved image. Falls back
+ * to a neutral placeholder when no image is available so the row
+ * layout stays consistent.
+ *
+ * For broken URLs (e.g. dead Imgur links — common for less-popular
+ * tokens whose metadata lists URLs that no longer resolve), the img's
+ * onerror swaps it out for the placeholder via a tiny global handler.
+ *
+ * NOTE: do not use `this.outerHTML = ...` here. That pattern fires
+ * onerror repeatedly in some browsers (the replacement node can
+ * trigger the load pipeline again, and on re-failure `this` may have
+ * already been detached, producing "Cannot read properties of null
+ * (reading 'classList')" spam in the console). The handler below
+ * removes the image directly and inserts a sibling placeholder, which
+ * is a one-shot operation the browser won't repeat.
+ */
+function rowLogoHtml(pool) {
+  if (pool && pool.resolvedImageUrl) {
+    return `<img src="${escapeHtml(pool.resolvedImageUrl)}" alt="" class="row-logo" ` +
+      `onerror="window.__rowLogoFallback&&window.__rowLogoFallback(this)">`;
+  }
+  return '<span class="row-logo-placeholder"></span>';
+}
+
+// Global helper for the inline onerror handler above. Module-scope
+// rather than inlined because inline `this.outerHTML = ...` patterns
+// can re-fire repeatedly and reference detached nodes. This swaps the
+// broken <img> for a placeholder once, with defensive null checks.
+window.__rowLogoFallback = function (img) {
+  if (!img || !img.parentNode) return;
+  // Detach the onerror first so any subsequent fire (browser quirk) is
+  // a no-op rather than another exception.
+  img.onerror = null;
+  const placeholder = document.createElement('span');
+  placeholder.className = 'row-logo-placeholder';
+  img.parentNode.replaceChild(placeholder, img);
+};
+
 function renderFundingRequirements() {
   document.getElementById('step3WalletAddr').textContent = tempWallet.publicKey;
   // The QR data URL was generated server-side when the wallet was created
@@ -2888,42 +3470,127 @@ function renderFundingRequirements() {
   // so users on mobile can scan rather than copy-paste the address.
   const step3Qr = document.getElementById('step3QrCode');
   if (step3Qr && tempWallet.qrCode) step3Qr.src = tempWallet.qrCode;
-  const container = document.getElementById('balanceRows');
-  container.innerHTML = '';
 
-  const solReqSol = fundingRequirement.solLamports / 1e9;
+  // ---- Section 1: things the user must send themselves ------------------
+  // SOL is always present. Manual-prefund tokens (no auto-swap route, or
+  // an auto-swap row that converted after a terminal failure) live here
+  // alongside SOL so the user has a single "what do I need to send?" list.
+  const sendContainer = document.getElementById('balanceRows');
+  sendContainer.innerHTML = '';
+
+  // Initial "needed" display shows the RECOMMENDED total (subtotal +
+  // safety buffer). This is what users should aim for when funding —
+  // landing exactly on the bare minimum leaves no margin for cost
+  // variance, so we encourage depositing the full recommended amount.
+  //
+  // pollBalances handles the green/red transition: it uses the bare
+  // minimum (subtotal - credits) as the "can proceed" threshold, so the
+  // row will go green once wallet >= subtotal even if below recommended.
+  // When that happens, a small grey/yellow note appears next to the
+  // numbers indicating the buffer is below recommended but the launch
+  // can still proceed.
+  const solReqSol = fundingRequirement.totalSol
+    || fundingRequirement.solLamports / 1e9;
   const solRow = document.createElement('div');
   solRow.className = 'balance-row';
   solRow.dataset.kind = 'sol';
   solRow.innerHTML = `
-    <span><span class="status-dot"></span><strong>SOL</strong> required</span>
-    <span><span data-field="actual">0</span> / <span data-field="needed">${solReqSol.toFixed(3)}</span></span>
+    <span><span class="status-dot"></span><strong>SOL</strong></span>
+    <span>
+      <span data-field="actual">0</span> /
+      <span data-field="needed">${solReqSol.toFixed(3)}</span>
+      <span data-field="buffer-note" class="is-size-7 has-text-grey ml-2"></span>
+    </span>
   `;
-  container.appendChild(solRow);
+  sendContainer.appendChild(solRow);
 
   Object.entries(fundingRequirement.byQuote).forEach(([mint, rawAmt]) => {
-    const pool = pools.find((p) => {
-      const upper = (p.quoteToken || '').toUpperCase();
-      if (upper === 'SOL') return false;
-      if (upper === 'USDC' && mint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return true;
-      if (upper === 'USDT' && mint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return true;
-      return p.quoteToken === mint;
-    });
+    const pool = findPoolByMint(mint);
     const decimals = pool?.resolvedDecimals ?? pool?.quoteDecimalsOverride ?? 6;
     const symbol = pool?.resolvedSymbol ?? pool?.quoteSymbolOverride ?? mint.slice(0, 6);
+    // neededWhole is the precise target (what the bootstrap actually
+    // needs on-chain). displayNeeded is the user-facing rounded form;
+    // displayed value may have lost precision via toPrecision/floor in
+    // formatTokenDisplay. Polling MUST compare against the precise
+    // value (stashed on dataset) — comparing against the rounded text
+    // would produce false "met" states for small fractional targets.
     const neededWhole = rawAmt / Math.pow(10, decimals);
+    const displayNeeded = formatTokenDisplay(neededWhole);
 
     const row = document.createElement('div');
     row.className = 'balance-row';
     row.dataset.kind = 'token';
     row.dataset.mint = mint;
     row.dataset.decimals = decimals;
+    row.dataset.target = String(neededWhole);
     row.innerHTML = `
-      <span><span class="status-dot"></span><strong>${symbol}</strong> required</span>
-      <span><span data-field="actual">0</span> / <span data-field="needed">${neededWhole}</span></span>
+      <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(symbol)}</strong></span>
+      <span><span data-field="actual">0</span> / <span data-field="needed">${displayNeeded}</span></span>
     `;
-    container.appendChild(row);
+    sendContainer.appendChild(row);
   });
+
+  // ---- Section 2: things the system will acquire on the user's behalf ----
+  // Each row shows the target amount and a status indicator. No "0 / X"
+  // ratio here — it'd read as "you need to send X" which is the opposite
+  // of what auto-swap means. The status text walks: Pending → Swapping…
+  // → Acquired ✓ → (or, on terminal failure, the row gets converted to
+  // a Section-1 manual row by convertAutoSwapRowToManual).
+  const autoContainer = document.getElementById('autoSwapRows');
+  const autoSection = document.getElementById('autoSwapSection');
+  autoContainer.innerHTML = '';
+  const autoPlan = fundingRequirement.autoSwapPlan || [];
+  if (autoPlan.length > 0) {
+    autoSection.style.display = '';
+    for (const item of autoPlan) {
+      const pool = findPoolByMint(item.quoteMint);
+      // Two different "target" concepts for an auto-swap row:
+      //   - acquireWhole: what the swap aims for (oversize, $2). This is
+      //     what we DISPLAY ("≈ 1000") so the user sees how much we're
+      //     trying to obtain.
+      //   - minWhole: the actual bootstrap on-chain need ($1). This is
+      //     what we use for the "met" check — a 50% partial fill of the
+      //     acquire target still meets minWhole, so the row marks green
+      //     and the user can proceed.
+      const acquireWhole = Number(item.targetRaw) / Math.pow(10, item.quoteDecimals);
+      const minWhole = Number(item.minRaw || item.targetRaw) / Math.pow(10, item.quoteDecimals);
+      const displayTarget = formatTokenDisplay(acquireWhole);
+
+      const row = document.createElement('div');
+      row.className = 'balance-row';
+      row.dataset.kind = 'token-autoswap';
+      row.dataset.mint = item.quoteMint;
+      row.dataset.decimals = item.quoteDecimals;
+      // data-target is what polling compares wallet balance against
+      // for the "met" state — use the actual bootstrap need.
+      row.dataset.target = String(minWhole);
+      row.dataset.allocationIndex = item.allocationIndex;
+      // Initial status: 'pending' (waiting for SOL + Acquire click). The
+      // poll loop and Acquire handler update this as the row progresses.
+      // The retry button stays hidden via CSS (.row-retry-btn) until the
+      // row enters a retryable failed state — then setRowStatus reveals
+      // it. Clicking it re-runs Acquire for just this one row.
+      row.innerHTML = `
+        <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(item.quoteSymbol)}</strong>
+          <span class="is-size-7 has-text-grey ml-2">≈ ${displayTarget}</span></span>
+        <span class="row-status-cell">
+          <span data-field="status" class="is-size-7 has-text-grey">Pending</span>
+          <button class="row-retry-btn" type="button" title="Retry this swap" aria-label="Retry">
+            <i class="fas fa-redo"></i>
+          </button>
+        </span>
+      `;
+      autoContainer.appendChild(row);
+    }
+  } else {
+    autoSection.style.display = 'none';
+  }
+
+  // Show the Acquire-quote-tokens button only if there's anything to swap.
+  const acquireWrap = document.getElementById('acquireQuoteTokensWrap');
+  if (acquireWrap) {
+    acquireWrap.style.display = autoPlan.length > 0 ? '' : 'none';
+  }
 
   renderFundingBreakdown();
 }
@@ -2976,37 +3643,242 @@ async function pollBalances() {
     if (!data.success) return;
 
     const { sol, tokens } = data.balance;
-    let allMet = true;
+    // -------------------------------------------------------------------
+    // SOL requirement: two-threshold model.
+    //
+    // The funding estimate exposes three numbers:
+    //   - subtotalSol: the sum of actual costs (pool creation, positions,
+    //                  Arweave, token mint, plus budgeted auto-swap spend).
+    //                  This is the BARE MINIMUM needed to complete the
+    //                  launch successfully if every step costs exactly
+    //                  what we expected.
+    //   - bufferSol:   a 20% safety margin layered on top of subtotal,
+    //                  to absorb variance (priority-fee spikes, slippage
+    //                  overshoots on auto-swaps, etc).
+    //   - totalSol:    subtotal + buffer. The "recommended" deposit
+    //                  amount, shown in the cost breakdown.
+    //
+    // Earlier we used totalSol as a hard floor for the "met" check,
+    // meaning if you'd eaten into the buffer (even by a tiny amount) the
+    // launch was blocked. That's wrong — the buffer is SAFETY MARGIN,
+    // not a fixed required reserve. As long as you still have enough for
+    // the actual costs, you can proceed; the buffer just gives you
+    // breathing room for unexpected variance.
+    //
+    // Now:
+    //   - solMet (can proceed):    wallet >= subtotal - swapCreditApplied
+    //   - solHasFullBuffer:        wallet >= total - swapCreditApplied
+    //
+    // The "needed" display shows the bare minimum (subtotal-credit). If
+    // we're between minimum and full-recommended, a small "buffer below
+    // recommended — launch may fail on cost overruns" hint shows beside
+    // the row but does NOT block proceeding.
+    //
+    // swapCreditApplied accumulates each completed auto-swap's
+    // estSolSpend (the SOL we budgeted to acquire that quote token). Once
+    // a swap has actually happened, that SOL is gone from the wallet and
+    // doesn't need to be reserved anymore — the credit subtracts the
+    // budget from both thresholds so the user sees the requirement
+    // shrink as the work completes.
+    const subtotalSol = fundingRequirement.subtotalSol || 0;
+    const totalSol = fundingRequirement.totalSol || (fundingRequirement.solLamports / 1e9);
+    const solCredit = fundingRequirement.solCreditedForCompletedSwaps || 0;
+    const solMinNeeded = Math.max(0, subtotalSol - solCredit);
+    const solRecommended = Math.max(0, totalSol - solCredit);
+    const solMet = sol >= solMinNeeded;
+    const solHasFullBuffer = sol >= solRecommended;
+    // The displayed "needed" is the bare minimum — the threshold that
+    // actually gates proceeding. The recommended figure is shown to the
+    // side when the user is below it but above the minimum.
+    const solNeeded = solMinNeeded;
 
+    let allMet = true;
+    let anyAutoSwapPending = false;
+
+    // ---- Section 1 (Send to wallet): SOL + manual-prefund tokens. -----
+    // Each row needs to be 'met' for the launch to proceed.
     document.querySelectorAll('#balanceRows .balance-row').forEach((row) => {
-      if (row.dataset.kind === 'sol') {
-        const needed = fundingRequirement.solLamports / 1e9;
+      const kind = row.dataset.kind;
+
+      if (kind === 'sol') {
         row.querySelector('[data-field="actual"]').textContent = sol.toFixed(4);
-        const met = sol >= needed;
-        row.classList.toggle('met', met);
-        if (!met) allMet = false;
-      } else if (row.dataset.kind === 'token') {
-        const mint = row.dataset.mint;
-        const decimals = Number(row.dataset.decimals);
-        const have = tokens[mint] ? tokens[mint].amountUi : 0;
-        const neededRaw = fundingRequirement.byQuote[mint];
-        const neededWhole = neededRaw / Math.pow(10, decimals);
-        row.querySelector('[data-field="actual"]').textContent = have.toFixed(6);
-        const met = have >= neededWhole;
-        row.classList.toggle('met', met);
-        if (!met) allMet = false;
+        // "Needed" shows the RECOMMENDED total (with buffer), even after
+        // swap credits are applied. This is what the user should aim for
+        // when funding — landing exactly at the bare minimum would mean
+        // any unexpected cost variance fails the launch.
+        //
+        // The row turns green when wallet >= bare minimum (subtotal - credit)
+        // so the user can still proceed if they've slightly eaten into the
+        // buffer post-funding (e.g. swaps cost a touch more than budgeted).
+        // The buffer-note span surfaces the situation when this happens.
+        row.querySelector('[data-field="needed"]').textContent = solRecommended.toFixed(3);
+        const bufferNote = row.querySelector('[data-field="buffer-note"]');
+        if (bufferNote) {
+          if (!solMet) {
+            // Below bare minimum — can't proceed. Show how much more SOL
+            // is actually needed for the launch to be viable (not the
+            // buffered amount, just enough to complete the work). This
+            // gives the user a clear "send me at least X more SOL" number.
+            const short = (solMinNeeded - sol).toFixed(4);
+            bufferNote.textContent = `(at least ${short} more SOL needed)`;
+            bufferNote.className = 'is-size-7 has-text-danger ml-2';
+          } else if (!solHasFullBuffer) {
+            // Above minimum, below recommended-with-buffer. Soft hint —
+            // launch will work but variance has eaten into the safety
+            // margin. Inform the user how much they're short of the
+            // recommended buffer so they can top up if they want full safety.
+            const short = (solRecommended - sol).toFixed(4);
+            bufferNote.textContent = `(below recommended +${short} SOL buffer — can proceed but launch may fail on cost overruns)`;
+            bufferNote.className = 'is-size-7 has-text-warning ml-2';
+          } else {
+            // Above recommended — full buffer intact. No annotation.
+            bufferNote.textContent = '';
+            bufferNote.className = 'is-size-7 has-text-grey ml-2';
+          }
+        }
+        row.classList.toggle('met', solMet);
+        if (!solMet) allMet = false;
+        return;
+      }
+
+      // Manual-prefund token row: balance goes up only when the user
+      // sends tokens themselves. Compares against data-target (precise)
+      // not the displayed text (may be rounded by formatTokenDisplay).
+      const mint = row.dataset.mint;
+      const have = tokens[mint] ? tokens[mint].amountUi : 0;
+      const neededWhole = Number(row.dataset.target);
+      row.querySelector('[data-field="actual"]').textContent = formatTokenDisplay(have);
+      const met = have >= neededWhole;
+      row.classList.toggle('met', met);
+      if (!met) allMet = false;
+    });
+
+    // ---- Section 2 (We'll acquire for you): auto-swap tokens. -----
+    // Status text drives the visible state. Possible states:
+    //   Pending          → waiting for SOL funding (or click Acquire)
+    //   Ready to acquire → SOL is funded, click Acquire button
+    //   Swapping…        → set by the Acquire handler during the call
+    //   Acquired ✓       → balance >= target
+    //   needs more SOL   → set by the Acquire handler on INSUFFICIENT_SOL
+    //   failed           → set by the Acquire handler on transient errors
+    //
+    // Polling only updates status when the row hasn't been explicitly
+    // set to a non-default state by the Acquire handler. We detect that
+    // by checking for a 'sticky' marker the handler sets — anything
+    // marked sticky is left alone here so we don't clobber a user-
+    // facing message with a generic 'Pending'.
+    document.querySelectorAll('#autoSwapRows .balance-row').forEach((row) => {
+      const mint = row.dataset.mint;
+      const target = Number(row.dataset.target);
+      const have = tokens[mint] ? tokens[mint].amountUi : 0;
+      const met = have >= target;
+      row.classList.toggle('met', met);
+      const status = row.querySelector('[data-field="status"]');
+      const sticky = row.dataset.statusSticky === '1';
+
+      if (met) {
+        // Acquired — overrides any sticky state since we're done.
+        // Also clear the retry button (the row was acquired, no need
+        // to retry).
+        status.textContent = 'Acquired ✓';
+        status.className = 'is-size-7 has-text-success';
+        row.dataset.statusSticky = '';
+        row.classList.remove('row-can-retry');
+        // Belt-and-suspenders SOL credit: if the row is met but its
+        // plan item's credit hasn't been applied yet (e.g. swap landed
+        // before our polling caught the result, or page state somehow
+        // missed the onResult call), apply it here. Idempotent via the
+        // _solCredited flag on the plan item.
+        const planItem = (fundingRequirement.autoSwapPlan || [])
+          .find((p) => p.quoteMint === mint);
+        if (planItem && !planItem._solCredited && planItem.estSolSpend) {
+          fundingRequirement.solCreditedForCompletedSwaps =
+            (fundingRequirement.solCreditedForCompletedSwaps || 0) + planItem.estSolSpend;
+          planItem._solCredited = true;
+        }
+      } else {
+        anyAutoSwapPending = true;
+        allMet = false;
+        if (!sticky) {
+          // Row isn't in a user-set state (failure message etc.) — write
+          // the default status. Also clear retry button since these are
+          // non-failure states.
+          row.classList.remove('row-can-retry');
+          if (solMet) {
+            status.textContent = 'Ready to acquire';
+            status.className = 'is-size-7 has-text-info';
+          } else {
+            status.textContent = 'Pending';
+            status.className = 'is-size-7 has-text-grey';
+          }
+        }
       }
     });
 
     document.getElementById('continueToTokenBtn').disabled = !allMet;
 
-    if (!fundingWallet && sol > 0) {
+    // Acquire-quote-tokens button: enabled when SOL is funded AND
+    // there are still pending auto-swaps. Disabled-but-visible when
+    // SOL is short so the user sees the button is there waiting.
+    const acquireBtn = document.getElementById('acquireQuoteTokensBtn');
+    if (acquireBtn) {
+      acquireBtn.disabled = !solMet || !anyAutoSwapPending;
+    }
+
+    // Funder detection: re-attempt whenever SOL goes up (new deposit
+    // arrived since last check) AND we don't already have a funder.
+    // Previously this used a one-shot exhausted flag that, once set,
+    // never tried again — so a transient RPC failure on the first
+    // attempt could permanently disable detection. Now we reset the
+    // flag on any balance increase, which is the only condition under
+    // which a new funder could appear anyway.
+    if (sol > lastSolBalance) {
+      fundingDetectionExhausted = false;
+    }
+    if (!fundingWallet && sol > 0 && !fundingDetectionExhausted) {
       detectFundingWallet();
     }
+    lastSolBalance = sol;
+
+    // Reset the consecutive-failure counter on any successful poll.
+    // (See catch block below.)
+    consecutivePollFailures = 0;
   } catch (e) {
-    // silent
+    // Polling errors mean we don't have fresh balance data. We don't
+    // want to spam the log with every failed poll, but staying silent
+    // forever is worse — if the user's RPC is down or the server has
+    // crashed, they'd see frozen balances with no indication of why.
+    // Compromise: log once at the 3rd consecutive failure (about 15s in)
+    // and stay quiet after that.
+    consecutivePollFailures++;
+    if (consecutivePollFailures === 3) {
+      log(
+        'Balance polling is failing — RPC or server may be unreachable. ' +
+        'Balances shown may be stale.',
+        'warning',
+      );
+    }
   }
 }
+
+// Module-scope counter so failure logs throttle across polls.
+// Reset in pollBalances() on any successful round-trip.
+let consecutivePollFailures = 0;
+
+// Tracks the SOL balance reading from the previous pollBalances cycle.
+// Used to detect deposits — when sol > lastSolBalance, a new deposit
+// landed and we should re-attempt funder detection (in case the first
+// attempt failed with no funder and got marked exhausted).
+let lastSolBalance = 0;
+
+// Per-attempt guard so we don't keep firing detection RPC every 5s
+// while the user is funding gradually. Reset when:
+//   - the wallet is regenerated (entirely new session)
+//   - the SOL balance goes up (new deposit, possibly from a new funder)
+// Set when:
+//   - detection returned no funder (the answer isn't going to change
+//     without a new deposit)
+let fundingDetectionExhausted = false;
 
 async function detectFundingWallet() {
   try {
@@ -3021,11 +3893,622 @@ async function detectFundingWallet() {
       document.getElementById('fundingWalletInfo').classList.remove('hidden');
       document.getElementById('detectedFundingWallet').textContent = fundingWallet;
       log(`Funding wallet identified: ${fundingWallet} (${data.result.amount} SOL)`, 'info');
+    } else {
+      // No funder found — stop retrying. The detection looks at recent
+      // inbound transfers; if there isn't a clear single funder, we
+      // shouldn't keep asking. The user can paste their destination
+      // address manually in Step 6 anyway.
+      fundingDetectionExhausted = true;
     }
-  } catch (e) {}
+  } catch (e) {
+    // Network/RPC failure — let the next pollBalances cycle try again
+    // (don't set fundingDetectionExhausted). One failure shouldn't
+    // permanently disable detection.
+  }
 }
 
 bind('refreshBalanceBtn', 'click', pollBalances);
+
+// Acquire-quote-tokens button: triggers SOL → quote-token swaps for
+// every allocation the funding-estimate flagged as auto-swappable.
+//
+// Failure handling:
+//   - The backend retries internally (multiple pools × retry ladder).
+//     We don't retry from here; we just present results.
+//   - SUCCESS  → row goes green, user proceeds.
+//   - INSUFFICIENT_SOL → row stays auto-swap, message asks user to fund
+//     more SOL. (Once they do, click Acquire again — idempotent.)
+//   - NO_USABLE_POOL / ALL_ATTEMPTS_FAILED → row CONVERTS to manual-
+//     prefund. The user sees the same wallet address + required amount
+//     they would have seen if the estimate had routed manual upfront.
+//     This is the "no friction" guarantee: even if the auto path
+//     completely fails, the user has a working path forward without
+//     restarting.
+//   - Any other error → treated as transient, row shows retry hint.
+// Set a row's status text/color/title and (optionally) mark it sticky
+// so the 5s balance-poll doesn't overwrite the message. `canRetry`
+// toggles the .row-can-retry class which reveals the per-row retry
+// button via CSS; pass true for failure states that the user can
+// recover from with another click.
+//
+// Module-scope (not closure-scoped to the Acquire handler) because the
+// per-row retry button needs to call it too.
+function setAutoSwapRowStatus(mint, text, color, { sticky = false, title = '', canRetry = false } = {}) {
+  const row = document.querySelector(
+    `#autoSwapRows .balance-row[data-kind="token-autoswap"][data-mint="${CSS.escape(mint)}"]`,
+  );
+  const status = row?.querySelector('[data-field="status"]');
+  if (!row || !status) return;
+  status.textContent = text;
+  status.className = `is-size-7 has-text-${color}`;
+  status.title = title;
+  row.dataset.statusSticky = sticky ? '1' : '';
+  row.classList.toggle('row-can-retry', !!canRetry);
+}
+
+// Guards against concurrent calls to runAcquireFlow. Both the bulk
+// Acquire button and per-row retry buttons consult this — running two
+// in parallel against the same wallet causes SOL-balance races (one
+// run depletes the funded SOL faster than the other can read it).
+// Backend would classify the loser as INSUFFICIENT_SOL, which is
+// recoverable but noisy. Avoiding the race entirely is cleaner.
+let isAcquireFlowRunning = false;
+
+/**
+ * Run the acquire-quote-tokens flow for a given subset of the plan.
+ * Used by both the global Acquire button (passing all pending rows)
+ * and the per-row retry button (passing just one row's plan item).
+ *
+ * Drives the UI state machine: Queued → Swapping → Acquired/Failed,
+ * updates the top-line progress label, and emits log lines.
+ *
+ * Returns nothing — failures are surfaced via row states and the log,
+ * not via thrown exceptions, so a single bad swap doesn't break the
+ * batch. If another acquire flow is already in flight, this returns
+ * immediately without doing anything (caller is expected to gate
+ * its UI affordance before calling, but we double-check here).
+ */
+async function runAcquireFlow(planSubset, btn) {
+  if (!planSubset.length) return;
+  if (isAcquireFlowRunning) {
+    log('Another acquire is in progress; please wait for it to finish.', 'warning');
+    return;
+  }
+  // Set the global guard and button-loading state INSIDE try so the
+  // finally block can reliably clean them up even if something between
+  // here and the network call throws. Without this wrapper, an
+  // unexpected exception in setLoading() or row-status-setup code
+  // would leave isAcquireFlowRunning permanently true and lock out
+  // future acquire attempts.
+  isAcquireFlowRunning = true;
+  if (btn) setLoading(btn, true);
+
+  const counts = { success: 0, solShort: 0, converted: 0, retryable: 0 };
+  let completed = 0;
+  const totalPlanned = planSubset.length;
+
+  const updateProgressLabel = () => {
+    const label = document.getElementById('autoSwapProgressLabel');
+    if (!label) return;
+    if (completed >= totalPlanned) {
+      label.textContent = `${completed} of ${totalPlanned} processed.`;
+    } else {
+      label.textContent = `Acquiring — ${completed} of ${totalPlanned} complete…`;
+    }
+  };
+
+  // Track which rows received a `result` event from the backend. Any
+  // rows still missing one after the stream closes are stragglers —
+  // either the swap was still running when the connection dropped, or
+  // it never got scheduled, or the response stream truncated. Either
+  // way we mark them as failed-retryable so the user can recover.
+  const resultsReceived = new Set();
+
+  // Mark every selected row as "Queued" so the user sees something
+  // happen immediately, even though only 4 workers are running at a
+  // time on the backend. Clears any previous retry button.
+  for (const item of planSubset) {
+    setAutoSwapRowStatus(item.quoteMint, 'Queued', 'grey', { sticky: true });
+  }
+  updateProgressLabel();
+
+  log(
+    `Acquiring ${totalPlanned} quote token${totalPlanned === 1 ? '' : 's'} via Raydium swap…`,
+  );
+
+  // Per-event handlers, defined here so they close over counts/progress.
+  // (We used to also have an onAttempt handler that flipped a row to
+  // "Swapping…" — now done inline in the polling loop based on the
+  // server's inProgressMints list, which is more accurate.)
+  const onResult = (r) => {
+    completed++;
+    resultsReceived.add(r.quoteMint);
+    if (r.success) {
+      counts.success++;
+      // Credit this swap's budgeted SOL against the requirement. The
+      // original solLamports estimate reserved ~$4 of SOL per auto-swap;
+      // now that the swap has completed (the SOL is gone), we subtract
+      // that reserve so the SOL row's "needed" reflects only what's
+      // still ahead (pool creation, positions, Arweave, headroom).
+      //
+      // We use estSolSpend from the plan item, not the swap's actual
+      // SOL consumption (which we don't have a precise measurement of).
+      // Slight over- or under-shoot from the actual cost is absorbed by
+      // the original estimate's safety buffer.
+      //
+      // Guard: only credit ONCE per row. The polling loop replays the
+      // full results array on every poll, so onResult might be called
+      // for the same mint multiple times across retries; resultsReceived
+      // catches that upstream (early-return at the top), but it's worth
+      // making the credit explicitly idempotent via the plan item's
+      // own flag.
+      const planItem = (fundingRequirement.autoSwapPlan || [])
+        .find((p) => p.quoteMint === r.quoteMint);
+      if (planItem && !planItem._solCredited && planItem.estSolSpend) {
+        fundingRequirement.solCreditedForCompletedSwaps =
+          (fundingRequirement.solCreditedForCompletedSwaps || 0) + planItem.estSolSpend;
+        planItem._solCredited = true;
+      }
+      setAutoSwapRowStatus(r.quoteMint, 'Acquired ✓', 'success', {
+        sticky: false,
+        title: r.txId ? `tx: ${r.txId}` : '',
+      });
+      log(
+        `Acquired ${r.quoteSymbol}` +
+          (r.txId ? ` (tx ${r.txId.slice(0, 8)}…)` : ' (already had enough)'),
+        'success',
+      );
+      updateProgressLabel();
+      return;
+    }
+    const err = String(r.error || '');
+    if (err.startsWith('INSUFFICIENT_SOL')) {
+      counts.solShort++;
+      setAutoSwapRowStatus(r.quoteMint, 'Needs more SOL — top up & retry', 'warning', {
+        sticky: true,
+        title: err,
+        canRetry: true,
+      });
+      log(`${r.quoteSymbol}: ${err}`, 'warning');
+    } else if (err.startsWith('NO_USABLE_POOL') || err.startsWith('ALL_ATTEMPTS_FAILED')) {
+      counts.converted++;
+      convertAutoSwapRowToManual(r.quoteMint, r.quoteSymbol);
+      log(
+        `${r.quoteSymbol}: auto-swap unavailable, switched to manual ` +
+          `(send ${r.quoteSymbol} to the wallet address above). Reason: ${err}`,
+        'warning',
+      );
+    } else {
+      counts.retryable++;
+      setAutoSwapRowStatus(r.quoteMint, 'Failed — click retry', 'danger', {
+        sticky: true,
+        title: err,
+        canRetry: true,
+      });
+      log(`${r.quoteSymbol}: ${err}`, 'danger');
+    }
+    updateProgressLabel();
+  };
+
+  // Now safe to enter the network phase — guard and loading state are
+  // both set, finally will clean them up.
+  try {
+    // 1. POST to kick off the job. Returns immediately with { jobId }.
+    //    The actual swap work runs in the background on the server.
+    const resp = await fetch('/api/acquire-quote-tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempWalletSecretKey: tempWallet.secretKey,
+        autoSwapPlan: planSubset,
+      }),
+    });
+    if (!resp.ok) {
+      log(`Acquire failed: HTTP ${resp.status}`, 'danger');
+      return;
+    }
+    const { jobId } = await resp.json();
+    if (!jobId) {
+      log('Acquire failed: no jobId returned', 'danger');
+      return;
+    }
+
+    // 2. Poll the job until it's done. Each poll is a fresh HTTP round-
+    //    trip, naturally robust against network blips: a failed poll
+    //    just retries on the next interval. Replaces our old SSE setup
+    //    which was unreliable in Electron's fetch+ReadableStream layer.
+    //
+    //    Update strategy: on each poll, we compute the diff between the
+    //    server's reported results and our local resultsReceived set,
+    //    and call onResult for each newly-finished swap. Rows shown as
+    //    "in progress" by the server get the "Swapping…" status, rows
+    //    listed as pending stay "Queued". On a 404 (job expired), we
+    //    fall back to polling on-chain balances and flagging stragglers.
+    const POLL_INTERVAL_MS = 2000;
+    const POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes, matches server-side JOB_EXPIRY_MS
+    const pollStartedAt = Date.now();
+    let consecutivePollFailures = 0;
+    const MAX_POLL_FAILURES = 5; // ~10 seconds of failures before giving up
+
+    while (true) {
+      // Bail out if we've been polling forever — defensive guard
+      // against a runaway loop if the server gets into an odd state.
+      if (Date.now() - pollStartedAt > POLL_TIMEOUT_MS) {
+        log('Acquire polling timed out after 10 minutes', 'warning');
+        break;
+      }
+
+      let pollResp;
+      try {
+        pollResp = await fetch(`/api/acquire-quote-tokens/${jobId}`);
+      } catch (netErr) {
+        // Network blip — retry on next interval. Only give up after
+        // MAX_POLL_FAILURES consecutive failures.
+        consecutivePollFailures++;
+        if (consecutivePollFailures >= MAX_POLL_FAILURES) {
+          log(
+            `Acquire polling failed ${consecutivePollFailures} times in a row — giving up`,
+            'warning',
+          );
+          break;
+        }
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        continue;
+      }
+
+      if (pollResp.status === 404) {
+        // Job is gone (expired or invalid). Could happen if the user
+        // hit Acquire again, getting a new jobId, while a previous
+        // poll loop is still running with the old one. Just exit
+        // cleanly — the finally block will sync row states from
+        // on-chain balances.
+        log('Acquire job no longer tracked by server', 'info');
+        break;
+      }
+      if (!pollResp.ok) {
+        consecutivePollFailures++;
+        if (consecutivePollFailures >= MAX_POLL_FAILURES) {
+          log(`Acquire polling HTTP ${pollResp.status} — giving up`, 'warning');
+          break;
+        }
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        continue;
+      }
+
+      consecutivePollFailures = 0;
+      const job = await pollResp.json();
+
+      // Apply new results that we haven't already processed. The job's
+      // results array is append-only on the server, so any entry we
+      // haven't seen yet is new since our last poll.
+      for (const r of job.results) {
+        if (resultsReceived.has(r.quoteMint)) continue;
+        // r might be the same shape as the old SSE result events —
+        // onResult handles success/failure/conversion routing.
+        onResult(r);
+      }
+
+      // Update in-progress rows to "Swapping…". Server reports
+      // inProgressMints as an array; loop through and set status on
+      // any row that isn't already met or already processed.
+      //
+      // The check for the `met` class is important: wallet-balance
+      // polling runs on a separate ~5s interval and may have already
+      // marked a row green because its on-chain balance reflects the
+      // new tokens. We don't want to flip such a row back to
+      // "Swapping…" — that's confusing and triggers a visible flicker.
+      // The race is real because swapSolForQuote waits POST_SWAP_SETTLE_MS
+      // after the tx confirms before returning, so for ~2 seconds the
+      // mint is still in inProgressMints even though the on-chain
+      // balance shows it's done.
+      const inProgress = new Set(job.inProgressMints || []);
+      for (const mint of inProgress) {
+        if (resultsReceived.has(mint)) continue;
+        const row = document.querySelector(
+          `#autoSwapRows .balance-row[data-kind="token-autoswap"][data-mint="${CSS.escape(mint)}"]`,
+        );
+        if (!row || row.classList.contains('met')) continue;
+        setAutoSwapRowStatus(mint, 'Swapping…', 'info', { sticky: true });
+      }
+
+      if (job.status === 'done') {
+        if (job.error) {
+          log(`Acquire job error: ${job.error}`, 'danger');
+        }
+        // Optimistically clean up the job server-side. Fire-and-forget;
+        // if it fails, the server's auto-expiry will catch it in 10 min.
+        fetch(`/api/acquire-quote-tokens/${jobId}`, { method: 'DELETE' })
+          .catch(() => { /* ignore */ });
+        break;
+      }
+
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    }
+
+    // Polling finished. The finally block runs the post-flow cleanup
+    // pass (poll balances, flag any leftover stragglers, log summary).
+  } catch (e) {
+    log(`Acquire error: ${e.message}`, 'danger');
+  } finally {
+    // Cleanup pass. Runs in finally so it executes regardless of how
+    // the try block exited (normal completion, polling timeout, network
+    // error, or thrown exception). The three things we need to do
+    // unconditionally on exit:
+    //
+    //   1. Re-poll on-chain balances first. The job's result list might
+    //      have missed a swap that landed at the last moment (between
+    //      the swap's confirmation and the job-state read). On-chain
+    //      balance is the source of truth — polling will mark such rows
+    //      Acquired ✓ via the met-class override.
+    //
+    //   2. Flag any leftover unresolved rows — anything in planSubset
+    //      that didn't produce a result AND isn't met on-chain. These
+    //      are rare with the polling architecture (only happens if the
+    //      polling loop bailed early via timeout or connection failure)
+    //      but we still need to give the user a recovery path.
+    //
+    //   3. Reset button state. setLoading(false) re-enables the button
+    //      and removes the spinner. isAcquireFlowRunning=false unlocks
+    //      the global guard so the user can click Acquire again.
+    try {
+      await pollBalances();
+      let unresolvedCount = 0;
+      for (const item of planSubset) {
+        if (resultsReceived.has(item.quoteMint)) continue;
+        const row = document.querySelector(
+          `#autoSwapRows .balance-row[data-kind="token-autoswap"][data-mint="${CSS.escape(item.quoteMint)}"]`,
+        );
+        if (!row || row.classList.contains('met')) continue;
+        unresolvedCount++;
+        setAutoSwapRowStatus(item.quoteMint, 'Unresolved — click retry', 'danger', {
+          sticky: true,
+          title: 'No final status was received for this swap. Click retry to try again, or click "Acquire quote tokens" to retry all unresolved swaps at once.',
+          canRetry: true,
+        });
+      }
+      if (unresolvedCount > 1) {
+        // Helpful hint: bulk retry is faster than clicking each row.
+        log(
+          `${unresolvedCount} swap${unresolvedCount === 1 ? '' : 's'} didn't complete cleanly — ` +
+            `click "Acquire quote tokens" to retry all at once, or use the per-row retry buttons.`,
+          'warning',
+        );
+      }
+
+      const parts = [];
+      if (counts.success) parts.push(`${counts.success} acquired`);
+      if (counts.solShort) parts.push(`${counts.solShort} need more SOL`);
+      if (counts.converted) parts.push(`${counts.converted} switched to manual`);
+      if (counts.retryable) parts.push(`${counts.retryable} retryable`);
+      if (unresolvedCount) parts.push(`${unresolvedCount} unresolved`);
+      if (parts.length > 0) {
+        log(
+          `Done — ${parts.join(', ')}.`,
+          counts.retryable || counts.solShort || unresolvedCount ? 'warning' : 'success',
+        );
+      }
+    } catch (cleanupErr) {
+      // Cleanup itself failed. Log but don't re-throw — we still want
+      // to reset button state below so the user isn't stuck.
+      console.error('Acquire flow cleanup failed:', cleanupErr);
+    }
+
+    if (btn) setLoading(btn, false);
+    isAcquireFlowRunning = false;
+  }
+}
+
+bind('acquireQuoteTokensBtn', 'click', async () => {
+  const btn = document.getElementById('acquireQuoteTokensBtn');
+  const plan = fundingRequirement.autoSwapPlan || [];
+  if (plan.length === 0) return;
+
+  // Filter to rows that aren't already satisfied. The backend handles
+  // idempotency too, but skipping here saves work and avoids blinking
+  // through "Queued" for rows that don't need anything.
+  const pendingMints = new Set();
+  document.querySelectorAll('#autoSwapRows .balance-row[data-kind="token-autoswap"]')
+    .forEach((row) => {
+      if (!row.classList.contains('met')) {
+        pendingMints.add(row.dataset.mint);
+      }
+    });
+  const pendingPlan = plan.filter((p) => pendingMints.has(p.quoteMint));
+  if (pendingPlan.length === 0) {
+    log('All auto-swap rows already satisfied — nothing to do.', 'info');
+    return;
+  }
+
+  await withRunState(async () => {
+    await runAcquireFlowWithAutoRetry(pendingPlan, btn);
+  });
+});
+
+/**
+ * Run the acquire flow, then if any stragglers remain (rows whose
+ * result events never arrived even though the stream closed),
+ * automatically re-run for just those rows ONCE before giving up.
+ *
+ * Rationale: the stream-disconnect bug we see in practice tends to be
+ * transient — a second pass through the same rows usually completes
+ * cleanly because the wallet's balance has stabilized (no more parallel
+ * RPC contention) and the SSE stream is starting fresh. Auto-retrying
+ * once handles 90%+ of these cases without making the user click anything.
+ *
+ * If auto-retry still leaves stragglers, the per-row retry buttons
+ * and the bulk Acquire button are the remaining recovery paths.
+ */
+async function runAcquireFlowWithAutoRetry(planSubset, btn) {
+  await runAcquireFlow(planSubset, btn);
+
+  // Find stragglers: rows in the original plan that didn't make it
+  // through. We have to look at the DOM here because runAcquireFlow
+  // returns void — the row state IS the source of truth.
+  const stragglers = [];
+  for (const item of planSubset) {
+    const row = document.querySelector(
+      `#autoSwapRows .balance-row[data-kind="token-autoswap"][data-mint="${CSS.escape(item.quoteMint)}"]`,
+    );
+    // Skip rows that:
+    //   - Don't exist anymore (converted to manual by a NO_USABLE_POOL error)
+    //   - Are already met (acquired successfully)
+    //   - Are in a non-retryable failure state (INSUFFICIENT_SOL, etc.)
+    //     We detect this via the "Needs more SOL" status text — retrying
+    //     won't help if the wallet is still short.
+    if (!row) continue;
+    if (row.classList.contains('met')) continue;
+    const statusText = row.querySelector('[data-field="status"]')?.textContent || '';
+    if (statusText.includes('Needs more SOL')) continue;
+    stragglers.push(item);
+  }
+
+  if (stragglers.length === 0) return; // Clean run, nothing to retry.
+
+  log(
+    `Auto-retrying ${stragglers.length} unresolved swap${stragglers.length === 1 ? '' : 's'}…`,
+    'info',
+  );
+  // Brief pause so the user notices the state change and so any
+  // in-flight RPC operations have a moment to settle.
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await runAcquireFlow(stragglers, btn);
+}
+
+// Per-row retry: delegated click handler on the auto-swap section.
+// Lives at module scope so it survives row re-renders and works on
+// rows added after page load. Looks up the row's mint, finds the
+// corresponding plan item, and calls runAcquireFlow with just that one.
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.row-retry-btn');
+  if (!btn) return;
+  const row = btn.closest('.balance-row[data-kind="token-autoswap"]');
+  if (!row) return;
+  const mint = row.dataset.mint;
+  const planItem = (fundingRequirement.autoSwapPlan || [])
+    .find((p) => p.quoteMint === mint);
+  if (!planItem) {
+    log('Retry: could not find plan item for this row', 'danger');
+    return;
+  }
+
+  // If another acquire is already running, give the user clear visual
+  // feedback rather than silently ignoring the click. Without this, the
+  // user can click multiple retry buttons in a row and have no idea why
+  // nothing's happening — the guard kicks in inside runAcquireFlow but
+  // the rejection message only goes to the log (which most users don't
+  // watch). Flash the row's status and shake the button briefly.
+  if (isAcquireFlowRunning) {
+    const status = row.querySelector('[data-field="status"]');
+    if (status) {
+      const original = { text: status.textContent, className: status.className };
+      status.textContent = 'Wait — another swap is running…';
+      status.className = 'is-size-7 has-text-warning';
+      setTimeout(() => {
+        // Only restore if nothing else has touched it (e.g. the running
+        // flow finished and polling overwrote the status to Acquired ✓).
+        if (status.textContent === 'Wait — another swap is running…') {
+          status.textContent = original.text;
+          status.className = original.className;
+        }
+      }, 2500);
+    }
+    return;
+  }
+
+  // Disable the row's button while running so the user can't fire
+  // multiple parallel retries on the same row. setLoading would dim
+  // the whole row visually; a simple disabled flag is less intrusive.
+  btn.disabled = true;
+  try {
+    await withRunState(async () => {
+      await runAcquireFlow([planItem], null);
+    });
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/**
+ * Convert an auto-swap row to a manual-prefund row. Used when the
+ * backend reports a terminal failure (no Raydium route available, or
+ * all swap attempts exhausted). We move the requirement from the
+ * "We'll acquire for you" section to the "Send to wallet" section so
+ * the user sees exactly what they need to send themselves, with the
+ * same address shown above. Polling picks up the new manual row by
+ * its data-kind on the next cycle.
+ *
+ * After conversion:
+ *   - The auto-swap section's row is removed entirely (not modified in
+ *     place — fresh element created in #balanceRows).
+ *   - autoSwapPlan and byQuote are updated to match the new layout.
+ *   - The Acquire button hides itself if no auto rows remain.
+ *   - The "send manually" tag distinguishes converted rows from the
+ *     manual rows the user saw from the start (visual cue that this
+ *     wasn't part of the original plan).
+ */
+function convertAutoSwapRowToManual(quoteMint, quoteSymbol) {
+  const oldRow = document.querySelector(
+    `#autoSwapRows .balance-row[data-kind="token-autoswap"][data-mint="${quoteMint}"]`,
+  );
+  if (!oldRow) return;
+  const decimals = Number(oldRow.dataset.decimals);
+  // data-target is already the actual bootstrap need (minWhole, not the
+  // ambitious acquire target). The auto-swap row was DISPLAYING a higher
+  // ≈ amount, but the underlying need is what we ask the user to send.
+  const manualTarget = Number(oldRow.dataset.target);
+
+  // Remove from the auto-swap section. If the section becomes empty,
+  // hide it entirely so the user doesn't see a stranded header.
+  oldRow.remove();
+  const autoSection = document.getElementById('autoSwapSection');
+  if (autoSection && document.querySelectorAll('#autoSwapRows .balance-row').length === 0) {
+    autoSection.style.display = 'none';
+  }
+
+  // Build the equivalent manual-prefund row in the send section. Same
+  // shape as a row created by renderFundingRequirements' Section 1
+  // loop, so polling treats it identically. data-target carries the
+  // precise value; the displayed text is formatted for readability.
+  const pool = findPoolByMint(quoteMint);
+  const displayTarget = formatTokenDisplay(manualTarget);
+  const newRow = document.createElement('div');
+  newRow.className = 'balance-row';
+  newRow.dataset.kind = 'token';
+  newRow.dataset.mint = quoteMint;
+  newRow.dataset.decimals = decimals;
+  newRow.dataset.target = String(manualTarget);
+  newRow.innerHTML = `
+    <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(quoteSymbol)}</strong>
+      <span class="tag is-warning is-light is-small ml-2">send manually</span></span>
+    <span><span data-field="actual">0</span> / <span data-field="needed">${displayTarget}</span></span>
+  `;
+  document.getElementById('balanceRows').appendChild(newRow);
+
+  // Update fundingRequirement state to match the new layout. Also
+  // credit this row's budgeted SOL back: it was reserved for the
+  // auto-swap, but the swap isn't happening anymore (the user will
+  // manually send the token instead). Without this, the SOL row
+  // would falsely report we need extra ~$4 of SOL we no longer do.
+  const removedPlanItem = (fundingRequirement.autoSwapPlan || [])
+    .find((p) => p.quoteMint === quoteMint);
+  if (removedPlanItem && !removedPlanItem._solCredited && removedPlanItem.estSolSpend) {
+    fundingRequirement.solCreditedForCompletedSwaps =
+      (fundingRequirement.solCreditedForCompletedSwaps || 0) + removedPlanItem.estSolSpend;
+    // No need to mark _solCredited on a plan item we're about to drop
+    // from the array, but it's cheap consistency.
+    removedPlanItem._solCredited = true;
+  }
+  fundingRequirement.autoSwapPlan = (fundingRequirement.autoSwapPlan || [])
+    .filter((p) => p.quoteMint !== quoteMint);
+  if (!fundingRequirement.byQuote) fundingRequirement.byQuote = {};
+  fundingRequirement.byQuote[quoteMint] = Math.ceil(manualTarget * Math.pow(10, decimals));
+
+  // Hide the Acquire button if no auto rows remain.
+  const acquireWrap = document.getElementById('acquireQuoteTokensWrap');
+  if (acquireWrap && fundingRequirement.autoSwapPlan.length === 0) {
+    acquireWrap.style.display = 'none';
+  }
+}
 
 bind('continueToTokenBtn', 'click', () => {
   if (balancePollHandle) {
@@ -3110,18 +4593,37 @@ bind('continueToLpBtn', 'click', () => {
 function renderLpSummary() {
   const summary = document.getElementById('lpSummary');
   const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
-  const launchedTokenUsd = targetMc / createdTokenInfo.totalSupply;
+  // Guard against zero / NaN total supply — the form field should never
+  // accept that, but if something upstream produced a degenerate value
+  // we surface a clear error instead of rendering "Infinity" or "NaN"
+  // and proceeding into a broken launch.
+  const totalSupply = Number(createdTokenInfo.totalSupply);
+  if (!isFinite(totalSupply) || totalSupply <= 0) {
+    summary.innerHTML =
+      '<p class="has-text-danger"><strong>Invalid token supply.</strong> ' +
+      'Please go back to Step 4, fix the total supply, and recreate the token.</p>';
+    return;
+  }
+  const launchedTokenUsd = targetMc / totalSupply;
+
+  // Escape every interpolation that includes user-provided or indexer-
+  // sourced text. Token symbols, names, and quote symbols can contain
+  // anything (the symbol field is free-form user input; resolvedSymbol
+  // comes from on-chain metadata or third-party indexers and is not
+  // sanitized at the source).
+  const symSafe = escapeHtml(createdTokenInfo.symbol || '');
 
   let html = `
     <p>Ready to create <strong>${pools.length}</strong> pool${pools.length === 1 ? '' : 's'}
-    for <strong>${createdTokenInfo.symbol}</strong> at <strong>$${launchedTokenUsd.toFixed(8)}</strong>
+    for <strong>${symSafe}</strong> at <strong>$${launchedTokenUsd.toFixed(8)}</strong>
     per token (${targetMc.toLocaleString()} USD market cap).</p>
     <ul>
   `;
   for (const p of pools) {
+    const quoteSafe = escapeHtml(p.resolvedSymbol || p.quoteToken || '');
     const sliceCount = p.distribution.length;
     const externalCount = p.distribution.filter((s) => s.useExternalRecipient && s.recipient).length;
-    html += `<li><strong>${p.resolvedSymbol || p.quoteToken}</strong> pool — ${p.supplyPercent}% of supply, `;
+    html += `<li><strong>${quoteSafe}</strong> pool — ${p.supplyPercent}% of supply, `;
     html += `${sliceCount} slice${sliceCount === 1 ? '' : 's'}`;
     if (externalCount > 0) html += ` (${externalCount} to external wallet${externalCount === 1 ? '' : 's'})`;
     html += `</li>`;
@@ -3138,14 +4640,21 @@ bind('createLpBtn', 'click', async () => {
     try {
       document.getElementById('lpProgress').classList.remove('hidden');
       document.getElementById('lpProgressTree').innerHTML = '';
+      // Hide any stale failure banner from a prior attempt. This matters
+      // for the pre-flight-retry case: if the previous attempt failed in
+      // pre-flight and the user fixed their allocation, the failure
+      // notification needs to go away when they re-click Create Pools so
+      // they don't see "Validation failed..." next to a now-running launch.
+      document.getElementById('lpFailInfo').classList.add('hidden');
 
       const allocations = buildAllocationsForApi();
       const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+      const lockPositions = document.getElementById('lockPositions').checked;
 
       log(`Starting pool creation for ${pools.length} pool(s)...`);
       addProgressIntro();
-      pools.forEach((p, i) => addProgressPool(i, p));
-      addBootstrapGroup(pools);
+      pools.forEach((p, i) => addProgressPool(i, p, lockPositions));
+      addBootstrapGroup(pools, lockPositions);
 
       const resp = await fetch('/api/create-lp', {
         method: 'POST',
@@ -3157,10 +4666,28 @@ bind('createLpBtn', 'click', async () => {
           tokenTotalSupply: createdTokenInfo.totalSupply,
           targetMarketCapUsd: targetMc,
           allocations,
-          lockPositions: document.getElementById('lockPositions').checked,
+          lockPositions,
         }),
       });
-      const data = await resp.json();
+      // The /api/create-lp endpoint returns JSON for both success (200)
+      // and structured failure (500 with body). A non-JSON 5xx response
+      // means something upstream of the route handler died (express
+      // crashed, proxy returned an error page, etc) and the user
+      // shouldn't see the cryptic "Unexpected token < in JSON" they'd
+      // get from a blind resp.json().
+      let data;
+      try {
+        data = await resp.json();
+      } catch (parseErr) {
+        if (!resp.ok) {
+          throw new Error(
+            `Server returned HTTP ${resp.status} with non-JSON body. ` +
+            `This usually means the server crashed or a proxy intervened. ` +
+            `Check the server console for details.`,
+          );
+        }
+        throw new Error(`Unexpected response: ${parseErr.message}`);
+      }
 
       if (data.success) {
         lpResult = data;
@@ -3174,12 +4701,22 @@ bind('createLpBtn', 'click', async () => {
         document.getElementById('createLpBtn').classList.add('hidden');
       } else {
         // Phase-aware partial-failure rendering. The orchestrator returns
-        // failedPhase = 'main_positions' or 'bootstrap' so we can mark the
-        // right rows as failed without misrepresenting what completed.
+        // failedPhase = 'pre_flight', 'main_positions', or 'bootstrap' so
+        // we can mark the right rows as failed without misrepresenting
+        // what completed.
         lpResult = { results: data.partialResults || [] };
         const failedPhase = data.failedPhase || 'main_positions';
 
-        if (failedPhase === 'main_positions') {
+        if (failedPhase === 'pre_flight') {
+          // Validation failed BEFORE any pool was created — nothing is on
+          // chain yet. Mark only the offending allocation as failed; the
+          // others stay as "pending" since they were never attempted.
+          // The lpFailInfo notification surfaces the reason (typically a
+          // Token-2022 mint with extensions Raydium doesn't support).
+          if (data.failedAllocationIndex != null) {
+            markPoolFailed(data.failedAllocationIndex, data.error);
+          }
+        } else if (failedPhase === 'main_positions') {
           // Pools whose main positions completed successfully; the failed
           // pool's main row gets the failure marker. No bootstraps ran yet.
           (data.partialResults || []).forEach((r) => {
@@ -3192,21 +4729,165 @@ bind('createLpBtn', 'click', async () => {
           // All main positions completed; bootstrapping failed partway.
           // Mark every pool's main rows as done, then mark each bootstrap
           // row done if its result entry has a populated bootstrap field,
-          // and mark the failed pool's bootstrap as failed.
+          // and mark every failed pool's bootstrap as failed.
           (data.partialResults || []).forEach((r) => {
             markPoolDone(r.allocationIndex, r);
             if (r.bootstrap) markBootstrapDoneForPool(r.allocationIndex);
           });
-          if (data.failedAllocationIndex != null) {
-            markBootstrapFailedForPool(data.failedAllocationIndex, data.error);
+          // bootstrapFailures is an array of { allocationIndex, quoteSymbol, error }
+          // for each bootstrap that failed. Falls back to failedAllocationIndex
+          // for backward compatibility with older error shapes that didn't carry
+          // the array.
+          const failures = data.bootstrapFailures
+            || (data.failedAllocationIndex != null
+              ? [{ allocationIndex: data.failedAllocationIndex, error: data.error }]
+              : []);
+          for (const f of failures) {
+            markBootstrapFailedForPool(f.allocationIndex, f.error);
           }
         }
 
         log(`Pool creation failed (phase: ${failedPhase}): ${data.error}`, 'danger');
         document.getElementById('lpFailInfo').classList.remove('hidden');
-        document.getElementById('lpFailSummary').textContent = data.error;
-        // Don't allow re-running. Recovery is via "Skip to Transfer Assets".
-        document.getElementById('createLpBtn').classList.add('hidden');
+
+        // Friendlier error summary. The raw on-chain error message is often
+        // an opaque JSON blob ("InstructionError: [2, {Custom: 2022}]"); if
+        // we recognize a known pattern, translate it into something a human
+        // can act on. Otherwise pass through the original.
+        const rawErr = String(data.error || 'unknown error');
+        let friendly = rawErr;
+        if (failedPhase === 'pre_flight') {
+          // Pre-flight errors are already human-readable (we wrote them).
+          // Pass through verbatim — they typically explain exactly which
+          // unsupported Token-2022 extensions were detected.
+          friendly = rawErr;
+        } else if (/Custom["':]\s*2022/.test(rawErr)) {
+          friendly =
+            'Anchor constraint violation (code 2022, ConstraintMintTokenProgram) — ' +
+            'this means a Token-2022 mint was passed where the SPL Token program was ' +
+            'expected. This commonly happens with pump.fun tokens and other Token-2022 ' +
+            'mints. The latest build should detect these automatically; if you\'re ' +
+            'still seeing this, the quote token may have an unusual extension that\'s ' +
+            'not yet supported.';
+        } else if (/insufficient.*lamports|0x1.*lamports/i.test(rawErr)) {
+          friendly =
+            'The ephemeral wallet ran out of SOL partway through. Cost variance ' +
+            'on this launch exceeded the safety buffer.';
+        }
+        document.getElementById('lpFailSummary').textContent = friendly;
+
+        // Show counts so the user knows what state things are in. These are
+        // useful for understanding what they're recovering vs what they've
+        // permanently put on-chain.
+        const successCount = (data.partialResults || []).length;
+        const totalCount = pools.length;
+        const failedAlloc = data.failedAllocation;
+        const failedSymbol = failedAlloc?.quoteSymbol
+          || failedAlloc?.quoteToken
+          || `allocation ${data.failedAllocationIndex}`;
+
+        if (failedPhase === 'pre_flight') {
+          // Nothing was attempted on chain. Tell the user this is a clean
+          // abort — no SOL spent, no on-chain artifacts to clean up. The
+          // "Skip to Transfer Assets" path is still available (they may
+          // want to abandon and try over) but the primary recovery is
+          // just to fix the allocation and re-click Create Pools.
+          document.getElementById('lpFailHeading').textContent =
+            'Validation failed before pool creation started.';
+          document.getElementById('lpFailSucceededCount').innerHTML =
+            `Nothing has been created on-chain yet — the failure is in ` +
+            `the pre-launch validation of <strong>${escapeHtml(failedSymbol)}</strong>. ` +
+            `Fix or remove this allocation and click Create Pools again; no SOL was spent.`;
+          document.getElementById('lpFailReassurance').innerHTML =
+            `<strong>No on-chain side effects.</strong> The ephemeral wallet still holds ` +
+            `everything it did before you clicked Create Pools (SOL, any auto-swapped ` +
+            `quote tokens). You can either fix the failing allocation above and retry, ` +
+            `or sweep everything back to your destination wallet.`;
+          document.getElementById('continueToTransferAfterFailBtnLabel').textContent =
+            'Or sweep wallet to destination';
+        } else {
+          // Mid-launch failure — at least one pool was created and the
+          // on-chain state can't be rolled back. Distinguish bootstrap-
+          // phase failures (recoverable in place via Retry bootstraps)
+          // from main-positions failures (not recoverable; must sweep
+          // and start over).
+          document.getElementById('lpFailHeading').textContent =
+            failedPhase === 'bootstrap'
+              ? 'Some pools couldn\'t be bootstrapped.'
+              : 'Pool creation failed partway through.';
+          document.getElementById('lpFailSucceededCount').innerHTML =
+            `<strong>${successCount} of ${totalCount}</strong> pool${successCount === 1 ? '' : 's'} ` +
+            `created successfully before the failure on <strong>${escapeHtml(failedSymbol)}</strong>. ` +
+            `The created pools are permanent on-chain; their LP NFTs are in your ephemeral wallet.`;
+          if (failedPhase === 'bootstrap') {
+            // Bootstrap-only failures: pools and main positions are all
+            // good, just the bootstrap leg is missing on some. Retrying
+            // is safe and the typical fix.
+            document.getElementById('lpFailReassurance').innerHTML =
+              `<strong>Main positions are in place for every pool.</strong> Only the bootstrap ` +
+              `leg failed for the pools listed above — these pools won't be tradable at the ` +
+              `intended price until their bootstraps land. Click <strong>Retry bootstraps</strong> ` +
+              `to try again (most bootstrap failures are transient RPC issues). If retrying ` +
+              `keeps failing, sweep the wallet to your destination and manually add bootstrap ` +
+              `liquidity in the Raydium UI later.`;
+          } else {
+            // Main-positions failure: at least one pool was created but
+            // its main positions couldn't be opened (or the next pool
+            // couldn't be created). The resume endpoint can pick up
+            // from where the failure happened — completed pools are
+            // skipped, only the missing work is retried.
+            document.getElementById('lpFailReassurance').innerHTML =
+              `<strong>Your assets are safe</strong> — they're still in the ephemeral wallet ` +
+              `(SOL, any auto-swapped quote tokens, and the LP NFTs from pools that did succeed). ` +
+              `Click <strong>Resume launch</strong> to retry just the missing pools — already-` +
+              `created pools will be skipped. If retrying keeps failing, you can sweep the wallet ` +
+              `back to your destination as a last resort; the pools that succeeded above are ` +
+              `permanent on-chain.`;
+          }
+          document.getElementById('continueToTransferAfterFailBtnLabel').textContent =
+            failedPhase === 'bootstrap'
+              ? 'Or sweep to destination instead'
+              : 'Skip to Transfer Assets';
+        }
+
+        // Resume button visibility: meaningful for any post-pre-flight
+        // failure (main_positions OR bootstrap). The button calls a
+        // unified /api/resume-launch endpoint that skips already-completed
+        // allocations and retries the rest. Pre-flight failures don't
+        // need the button (the regular Create Pools button handles those).
+        const retryBtn = document.getElementById('retryBootstrapsBtn');
+        const retryLabel = retryBtn.querySelector('span:last-child');
+        if (failedPhase === 'bootstrap' || failedPhase === 'main_positions') {
+          retryBtn.classList.remove('hidden');
+          // Phase-specific label so the user knows what's being retried.
+          if (retryLabel) {
+            retryLabel.textContent = failedPhase === 'bootstrap'
+              ? 'Retry bootstraps'
+              : 'Resume launch';
+          }
+          // Stash the data the retry endpoint needs. We pull it back out
+          // in the click handler instead of closing over it — the click
+          // handler is registered once at module load and shouldn't
+          // capture stale state from a specific failure.
+          retryBtn.dataset.lockPositions = String(lockPositions);
+        } else {
+          retryBtn.classList.add('hidden');
+        }
+
+        // For mid-launch failures, hide the Create Pools button — pools
+        // that were created already are immutable, and re-clicking would
+        // attempt to create duplicate pools for the same token (wasteful
+        // and confusing). Recovery is via "Skip to Transfer Assets".
+        //
+        // For pre-flight failures, KEEP the button visible — nothing was
+        // attempted on chain. The user just needs to fix their allocation
+        // (remove the incompatible quote, swap to a different mint, or
+        // fix RPC settings) and click Create Pools again. Hiding the
+        // button here would force them into "Skip to Transfer Assets",
+        // wasting the SOL they already spent on token creation.
+        if (failedPhase !== 'pre_flight') {
+          document.getElementById('createLpBtn').classList.add('hidden');
+        }
       }
     } catch (e) {
       log(`LP creation failed: ${e.message}`, 'danger');
@@ -3216,17 +4897,24 @@ bind('createLpBtn', 'click', async () => {
   });
 });
 
-function addProgressPool(idx, pool) {
+function addProgressPool(idx, pool, lockPositions) {
   const tree = document.getElementById('lpProgressTree');
   const el = document.createElement('div');
   el.className = 'progress-pool';
   el.id = `pp-${idx}`;
   const sliceCount = pool.distribution.length;
 
+  // The lock step only runs if the user opted into locking. Skip the row
+  // when lockPositions=false — otherwise the progress UI would show "Lock
+  // slice X" rows that never tick over to ✓ (because the orchestrator
+  // skips the lockPosition call entirely), and on success it'd misleadingly
+  // mark them green via the "all done" sweep even though nothing was locked.
   let stepsHtml = `<div class="progress-step pending" data-stage="pool"><span class="icon">◯</span>Create pool</div>`;
   for (let s = 0; s < sliceCount; s++) {
     stepsHtml += `<div class="progress-step pending" data-stage="slice-${s}"><span class="icon">◯</span>Open slice ${s + 1} of ${sliceCount}</div>`;
-    stepsHtml += `<div class="progress-step pending" data-stage="lock-${s}"><span class="icon">◯</span>Lock slice ${s + 1}</div>`;
+    if (lockPositions) {
+      stepsHtml += `<div class="progress-step pending" data-stage="lock-${s}"><span class="icon">◯</span>Lock slice ${s + 1}</div>`;
+    }
     if (pool.distribution[s].useExternalRecipient && pool.distribution[s].recipient) {
       stepsHtml += `<div class="progress-step pending" data-stage="xfer-${s}"><span class="icon">◯</span>Transfer slice ${s + 1} to recipient</div>`;
     }
@@ -3244,7 +4932,7 @@ function addProgressPool(idx, pool) {
 // positions, because bootstrapping runs as a single phase AFTER every
 // pool's main positions are in place — see the orchestrator in lpService.js
 // for why.
-function addBootstrapGroup(pools) {
+function addBootstrapGroup(pools, lockPositions) {
   const tree = document.getElementById('lpProgressTree');
   const group = document.createElement('div');
   group.className = 'progress-pool';
@@ -3253,7 +4941,11 @@ function addBootstrapGroup(pools) {
   pools.forEach((p, i) => {
     const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
     stepsHtml += `<div class="progress-step pending" data-bs-pool="${i}" data-stage="bs-open"><span class="icon">◯</span>${label} — open bootstrap</div>`;
-    stepsHtml += `<div class="progress-step pending" data-bs-pool="${i}" data-stage="bs-lock"><span class="icon">◯</span>${label} — lock bootstrap</div>`;
+    // Lock row only when locking is enabled — same reasoning as the
+    // main-positions lock row above.
+    if (lockPositions) {
+      stepsHtml += `<div class="progress-step pending" data-bs-pool="${i}" data-stage="bs-lock"><span class="icon">◯</span>${label} — lock bootstrap</div>`;
+    }
   });
   group.innerHTML = `
     <p class="has-text-weight-bold mt-3">Bootstrap pools (final phase)</p>
@@ -3326,25 +5018,45 @@ function markBootstrapDoneForPool(allocationIndex) {
   });
 }
 
-// Mark a specific pool's bootstrap rows as failed.
+// Mark a specific pool's bootstrap rows as failed. Each pool has TWO
+// progress rows (bs-open and bs-lock) — we mark every pending one as
+// failed because the bootstrap is atomic from the user's perspective.
+// If we only marked the first match, the bs-lock row would stay pending
+// forever, looking like work was still in progress.
 function markBootstrapFailedForPool(allocationIndex, err) {
   const group = document.getElementById('pp-bootstrap');
   if (!group) return;
-  const pending = group.querySelector(`[data-bs-pool="${allocationIndex}"].pending`);
-  if (pending) {
-    pending.classList.remove('pending');
-    pending.classList.add('failed');
-    pending.querySelector('.icon').textContent = '✗';
-    pending.title = err;
-  }
+  const pendingRows = group.querySelectorAll(`[data-bs-pool="${allocationIndex}"].pending`);
+  pendingRows.forEach((row) => {
+    row.classList.remove('pending');
+    row.classList.add('failed');
+    row.querySelector('.icon').textContent = '✗';
+    row.title = err;
+  });
 }
 
 function buildLpDoneSummary(results) {
+  // Build the success summary shown after all pools land. Note we escape
+  // quoteSymbol — for known quotes (SOL/USDC/etc) it's hard-coded safe,
+  // but for user-supplied custom mints the symbol may have been read from
+  // on-chain metadata or an indexer, which could contain anything. Better
+  // to be paranoid than to allow a malicious token symbol to inject
+  // markup into our success banner.
+  //
+  // Defensive on every field: mainPositions should always be populated
+  // on the success path (orchestrator guarantees it), but if the result
+  // shape ever changes or a partial result somehow lands here, we
+  // shouldn't throw inside an HTML-building function and leave the
+  // summary blank. A missing field renders as "0 main slices" — visibly
+  // odd but doesn't break the page.
   let s = '';
   for (const r of results) {
-    s += `<strong>${r.quoteSymbol}</strong> pool: ${r.poolId.slice(0, 8)}…, `;
-    s += `${r.mainPositions.length} main slice${r.mainPositions.length === 1 ? '' : 's'}`;
-    const ext = r.mainPositions.filter((p) => p.transferredTo).length;
+    const sym = escapeHtml(r.quoteSymbol || '');
+    const idShort = escapeHtml(r.poolId?.slice(0, 8) || '');
+    const slices = Array.isArray(r.mainPositions) ? r.mainPositions : [];
+    s += `<strong>${sym}</strong> pool: ${idShort}…, `;
+    s += `${slices.length} main slice${slices.length === 1 ? '' : 's'}`;
+    const ext = slices.filter((p) => p.transferredTo).length;
     if (ext > 0) s += ` (${ext} sent to external wallets)`;
     s += '<br>';
   }
@@ -3361,6 +5073,137 @@ bind('continueToTransferAfterFailBtn', 'click', () => {
   setStepSummary(5, `partial — proceed to refund`);
   prefillDestinationFromFunder();
   activateStep(6);
+});
+
+bind('retryBootstrapsBtn', 'click', async () => {
+  const btn = document.getElementById('retryBootstrapsBtn');
+  const lockPositions = btn.dataset.lockPositions === 'true';
+  const priorResults = lpResult?.results || [];
+
+  if (!createdTokenInfo) {
+    log('Token info missing — cannot resume launch.', 'danger');
+    return;
+  }
+
+  await withRunState(async () => {
+    setLoading(btn, true);
+    try {
+      log(`Resuming launch (${priorResults.length} pool${priorResults.length === 1 ? '' : 's'} carried over)…`);
+      // Hide the fail banner while the resume runs so the user sees a
+      // clean "in progress" state rather than the stale failure copy.
+      document.getElementById('lpFailInfo').classList.add('hidden');
+
+      // Reset any failed rows back to pending so progress is reflected.
+      // We don't know exactly which rows will run this attempt (depends
+      // on what got done last time), so we reset everything that's
+      // currently marked failed.
+      document.querySelectorAll('#lpProgressTree .progress-step.failed')
+        .forEach((row) => {
+          row.classList.remove('failed');
+          row.classList.add('pending');
+          const icon = row.querySelector('.icon');
+          if (icon) icon.textContent = '◯';
+          row.title = '';
+        });
+
+      const allocations = buildAllocationsForApi();
+      const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+      const resp = await fetch('/api/resume-launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tempWalletSecretKey: tempWallet.secretKey,
+          tokenMint: createdTokenInfo.mint,
+          tokenDecimals: createdTokenInfo.decimals,
+          tokenTotalSupply: createdTokenInfo.totalSupply,
+          targetMarketCapUsd: targetMc,
+          allocations,
+          lockPositions,
+          priorResults,
+        }),
+      });
+      let data;
+      try {
+        data = await resp.json();
+      } catch (parseErr) {
+        if (!resp.ok) {
+          throw new Error(
+            `Server returned HTTP ${resp.status} with non-JSON body. ` +
+            `Check the server console for details.`,
+          );
+        }
+        throw new Error(`Unexpected response: ${parseErr.message}`);
+      }
+
+      if (data.success) {
+        // Full success — every pool now has main positions + bootstrap.
+        // Replace lpResult with the canonical full result so downstream
+        // flows (transfer) see the up-to-date state.
+        lpResult = data;
+        data.results.forEach((r) => {
+          markPoolDone(r.allocationIndex, r);
+          markBootstrapDoneForPool(r.allocationIndex);
+        });
+        log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
+        document.getElementById('lpDoneInfo').classList.remove('hidden');
+        document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
+        return;
+      }
+
+      // Partial: at least one allocation still couldn't be completed.
+      // The data has the same shape as a fresh create-lp failure:
+      // partialResults, failedAllocationIndex, failedPhase, bootstrapFailures.
+      // Update our lpResult so the next retry sees the latest state.
+      lpResult = { results: data.partialResults || [] };
+      const newPhase = data.failedPhase || 'main_positions';
+      log(
+        `Resume: ${(data.partialResults || []).length} pool(s) done, ` +
+        `still failing (phase: ${newPhase}): ${data.error}`,
+        'warning',
+      );
+
+      // Repaint progress tree to reflect new state. Mark every entry in
+      // partialResults as done (both main and bootstrap rows depending
+      // on what's populated), and mark the still-failing ones.
+      (data.partialResults || []).forEach((r) => {
+        markPoolDone(r.allocationIndex, r);
+        if (r.bootstrap) markBootstrapDoneForPool(r.allocationIndex);
+      });
+      if (newPhase === 'bootstrap') {
+        const failures = data.bootstrapFailures
+          || (data.failedAllocationIndex != null
+            ? [{ allocationIndex: data.failedAllocationIndex, error: data.error }]
+            : []);
+        for (const f of failures) {
+          markBootstrapFailedForPool(f.allocationIndex, f.error);
+        }
+      } else if (data.failedAllocationIndex != null) {
+        markPoolFailed(data.failedAllocationIndex, data.error);
+      }
+
+      // Re-show the fail banner with updated counts so the user can
+      // either retry again or give up via sweep.
+      document.getElementById('lpFailInfo').classList.remove('hidden');
+      document.getElementById('lpFailHeading').textContent =
+        newPhase === 'bootstrap'
+          ? 'Bootstraps still failing.'
+          : 'Pool creation still failing.';
+      document.getElementById('lpFailSummary').textContent = data.error;
+      const successCount = (data.partialResults || []).length;
+      const totalCount = allocations.length;
+      document.getElementById('lpFailSucceededCount').innerHTML =
+        `<strong>${successCount}</strong> of ${totalCount} pool${totalCount === 1 ? '' : 's'} ` +
+        `completed; the rest are still failing. Click <strong>${newPhase === 'bootstrap' ? 'Retry bootstraps' : 'Resume launch'}</strong> ` +
+        `to try again, or sweep the wallet to start over.`;
+      // Resume button stays visible for another attempt.
+    } catch (e) {
+      log(`Resume failed: ${e.message}`, 'danger');
+      // Show the fail banner again so the user can see what to do next.
+      document.getElementById('lpFailInfo').classList.remove('hidden');
+    } finally {
+      setLoading(btn, false);
+    }
+  });
 });
 
 // Pre-fill the Step 6 destination input with the detected funding wallet,
@@ -3443,11 +5286,61 @@ async function runTransfer() {
       document.getElementById('solTransferred').textContent = data.solTransferred ?? '—';
       document.getElementById('nftsTransferred').textContent =
         data.nftSweep?.transferred?.length ?? '0';
+
+      // Detect partial-failure modes. The server's transfer endpoint can
+      // succeed at the top level (tokens + NFTs moved) but still have
+      // individual sub-steps fail. Without surfacing these the user thinks
+      // the transfer completed cleanly and may not realize funds were
+      // left behind in the ephemeral wallet:
+      //
+      //   solSweepError       — SOL sweep failed; tokens/NFTs succeeded.
+      //                         Most common cause: ephemeral wallet didn't
+      //                         have enough SOL left for the tx fee after
+      //                         the earlier transfers ate into it.
+      //   tokenSweep.errors[] — per-token transfer failures (e.g. an ATA
+      //                         creation that ran out of lamports).
+      //   nftSweep.errors[]   — per-NFT failures (e.g. a locked LP NFT
+      //                         that the lock contract rejected releasing).
+      //
+      // Each gets a warning log line so the user can investigate. The
+      // wallet's pending-recovery entry is also preserved server-side
+      // when the post-sweep balance check finds anything left, so the
+      // user can come back later with the secret key and try again.
+      const tokenErrors = data.tokenSweep?.errors || [];
+      const nftErrors = data.nftSweep?.errors || [];
+      const hasPartialFailure =
+        data.solSweepError || tokenErrors.length > 0 || nftErrors.length > 0;
+
+      if (data.solSweepError) {
+        log(`SOL sweep failed: ${data.solSweepError}`, 'warning');
+        log(
+          'Tokens and NFTs were transferred successfully, but SOL stayed in the ' +
+          'ephemeral wallet. Use the pending-wallets panel above to recover the ' +
+          'remaining SOL with the wallet\'s secret key.',
+          'warning',
+        );
+      }
+      for (const e of tokenErrors) {
+        log(`Token sweep error (${e.mint?.slice(0, 8) || 'unknown'}…): ${e.error}`, 'warning');
+      }
+      for (const e of nftErrors) {
+        log(`NFT sweep error (${e.mint?.slice(0, 8) || 'unknown'}…): ${e.error}`, 'warning');
+      }
+
       // Hide the Transfer button — flow is complete. Re-clicking would attempt
       // to transfer from an empty wallet, which would error confusingly.
-      document.getElementById('transferAssetsBtn').classList.add('hidden');
-      log('Transfer complete', 'success');
-      setStepSummary(6, 'transferred');
+      // EXCEPTION: when there was a partial failure (some assets stuck), leave
+      // the button visible so the user can retry. The server-side post-sweep
+      // verification keeps the recovery cache entry alive in this case, so a
+      // retry won't lose the wallet's secret key.
+      if (!hasPartialFailure) {
+        document.getElementById('transferAssetsBtn').classList.add('hidden');
+        log('Transfer complete', 'success');
+        setStepSummary(6, 'transferred');
+      } else {
+        log('Transfer partially complete — see warnings above', 'warning');
+        setStepSummary(6, 'partial — see warnings');
+      }
       // The server has already removed this wallet from the recovery
       // cache (provided the on-chain balance check confirmed it's empty).
       // Refresh the panel so it reflects the new state.
@@ -3612,6 +5505,25 @@ function buildPendingWalletRow(wallet) {
 // Wire the per-row buttons. Extracted so both the normal and the
 // decryption-failed render paths share the same handler logic.
 function wireRowButtons(wrap, wallet, pubShort, hasMnemonic) {
+  // Centralised clipboard helper so we don't duplicate the try/catch
+  // every time. navigator.clipboard.writeText can throw in non-secure
+  // contexts (older Electron, http://), if the page doesn't have focus,
+  // or if the user has denied clipboard permission. Without this guard
+  // the rejection floats up as an unhandled promise rejection and the
+  // user has no idea the copy didn't happen.
+  const copyToClipboard = async (text, description) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      log(`${description} copied to clipboard`, 'info');
+    } catch (e) {
+      log(
+        `Couldn't copy ${description} (${e.message}). ` +
+        `Open the file at the pendingWallets path and copy the secret manually.`,
+        'warning',
+      );
+    }
+  };
+
   // copy-secret button only exists in the normal render path
   const copySecretBtn = wrap.querySelector('[data-action="copy-secret"]');
   if (copySecretBtn) {
@@ -3621,15 +5533,13 @@ function wireRowButtons(wrap, wallet, pubShort, hasMnemonic) {
         log(`No secret available for ${pubShort}`, 'warning');
         return;
       }
-      await navigator.clipboard.writeText(text);
       const what = hasMnemonic ? 'Recovery phrase' : 'Secret key';
-      log(`${what} for ${pubShort} copied to clipboard`, 'info');
+      await copyToClipboard(text, `${what} for ${pubShort}`);
     });
   }
 
   wrap.querySelector('[data-action="copy-pubkey"]').addEventListener('click', async () => {
-    await navigator.clipboard.writeText(wallet.publicKey);
-    log(`Public key ${pubShort} copied to clipboard`, 'info');
+    await copyToClipboard(wallet.publicKey, `Public key ${pubShort}`);
   });
 
   wrap.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
@@ -3687,6 +5597,37 @@ applySimpleConfigMode();
 // pre-filled in the supply and market-cap inputs, the user sees the
 // placeholder name + a populated tech line right away.
 renderTokenPreview();
+
+// ---------------------------------------------------------------------------
+// Tab-close / reload guard
+// ---------------------------------------------------------------------------
+//
+// Once the user has progressed past wallet generation, accidentally
+// closing or reloading the tab loses session context (tempWallet, the
+// in-progress pools array, the funding-requirement estimate, etc).
+// The wallet's secret key is still in the pending-wallets recovery
+// cache server-side, so funds are never lost, but the user has to
+// re-enter their config and re-derive the wallet — friction we can
+// prevent with a simple browser confirmation prompt.
+//
+// We only fire the warning when there's genuine state worth preserving:
+//   - currentStep > 1   → wallet has been generated
+//   - currentStep < 6   → we're not on the terminal transfer step
+//   - !isAcquireFlowRunning isn't checked here on purpose; if a swap
+//     is in flight we DEFINITELY want the warning
+//
+// Browsers ignore the actual message text and show their own generic
+// "Leave site? Changes you made may not be saved" prompt — we just
+// need to call preventDefault and return a truthy value.
+window.addEventListener('beforeunload', (e) => {
+  if (currentStep <= 1 || currentStep >= 6) return;
+  e.preventDefault();
+  // Some browsers (older Chrome, Edge) still read the return value;
+  // newer ones ignore it. Set it for compatibility.
+  e.returnValue = 'A launch is in progress. Leaving now will reset the UI; ' +
+    'you\'ll need to recover the wallet from the pending-wallets panel.';
+  return e.returnValue;
+});
 
 // ---------------------------------------------------------------------------
 // First-run disclaimer

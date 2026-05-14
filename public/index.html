@@ -181,6 +181,42 @@
             opacity: 1;
             border-left-color: #48c774;
         }
+        /*
+         * Peek mode: a completed step that the user has clicked on the
+         * header to expand for review. We DON'T want them to edit form
+         * fields here because:
+         *   1. The data has already been used in subsequent steps
+         *      (e.g. funding estimate, token mint) — editing it doesn't
+         *      change anything that already happened on-chain.
+         *   2. Without explicit invalidation logic, changing pool or
+         *      token config here would silently desync downstream state
+         *      and make the launch use wrong numbers.
+         *
+         * So in peek mode we disable form interactions via pointer-events
+         * and visually dim them, and the body shows a small banner
+         * explaining the read-only state.
+         */
+        .step-card.is-peeking .step-body {
+            position: relative;
+        }
+        .step-card.is-peeking .step-body::before {
+            content: "Reviewing completed step — fields are read-only. Use Cancel & Refund (top-right) to start over.";
+            display: block;
+            background: #fff8d6;
+            border: 1px solid #f7d774;
+            border-radius: 4px;
+            padding: 0.4rem 0.6rem;
+            margin: 0 1.25rem 0.5rem 1.25rem;
+            font-size: 0.78rem;
+            color: #6b5e1f;
+        }
+        .step-card.is-peeking input,
+        .step-card.is-peeking select,
+        .step-card.is-peeking textarea,
+        .step-card.is-peeking button {
+            pointer-events: none;
+            opacity: 0.6;
+        }
 
         .step-header {
             padding: 0.85rem 1.25rem;
@@ -314,6 +350,14 @@
         .log-entry.success span:not(.timestamp) { color: #48c774; }
         .log-entry.danger span:not(.timestamp) { color: #ff5266; }
         .log-entry.warning span:not(.timestamp) { color: #ffdd57; }
+        /* Server-streamed log lines: slightly dimmed so they don't
+           visually compete with user-action feedback. The [server]
+           prefix and any error/warning coloring are still readable. */
+        .log-entry.server-log { opacity: 0.75; }
+        .log-entry.server-log span:not(.timestamp):first-of-type {
+          font-family: monospace;
+          font-size: 0.92em;
+        }
 
         /* Add bottom padding to body so log doesn't cover content */
         body.has-log { padding-bottom: 60px; }
@@ -624,11 +668,43 @@
             display: inline-flex;
             align-items: center;
             justify-content: center;
+            position: relative;
         }
         .resolved-logo img {
             width: 100%;
             height: 100%;
             object-fit: cover;
+        }
+        /*
+         * Image-loaded state: img stacks on top of the initial-letter
+         * fallback so when the img loads successfully, the user only
+         * sees the image. When loading fails, JS hides the img by adding
+         * .resolved-logo-img-failed which reveals the fallback letter
+         * underneath. Implemented this way (sibling stacking + class
+         * toggle) so we never have to inject HTML into an onerror
+         * attribute — keeps the symbol/initial out of mixed JS/HTML
+         * contexts where escaping is tricky to audit.
+         */
+        .resolved-logo-with-image .resolved-logo-initial {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #d8d8d8;
+            color: #555;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .resolved-logo-with-image img {
+            position: relative;
+            z-index: 1;
+        }
+        .resolved-logo-with-image.resolved-logo-img-failed img {
+            display: none;
         }
         .resolved-logo.resolved-logo-fallback {
             background: #d8d8d8;
@@ -878,6 +954,56 @@
             background: #b5b5b5;
         }
         .balance-row.met .status-dot { background: #48c774; }
+        .balance-row .row-logo {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            object-fit: cover;
+            background: #fff;
+            border: 1px solid #e5e5e5;
+            margin-right: 0.4rem;
+            vertical-align: middle;
+        }
+        .balance-row .row-logo-placeholder {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #f5f5f5;
+            border: 1px dashed #e5e5e5;
+            margin-right: 0.4rem;
+            vertical-align: middle;
+        }
+        /* Right-hand status cell on auto-swap rows: status text + an
+           optional retry button that appears only when the row is in
+           a recoverable failed state (set via .row-can-retry on the row). */
+        .balance-row .row-status-cell {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .balance-row .row-retry-btn {
+            display: none;
+            background: transparent;
+            border: 1px solid #dbdbdb;
+            border-radius: 4px;
+            cursor: pointer;
+            padding: 0.15rem 0.4rem;
+            color: #3273dc;
+            font-size: 0.75rem;
+            line-height: 1;
+        }
+        .balance-row .row-retry-btn:hover {
+            background: #f5f5f5;
+            border-color: #3273dc;
+        }
+        .balance-row .row-retry-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .balance-row.row-can-retry .row-retry-btn {
+            display: inline-flex;
+        }
 
         /* Progress tree (during pool creation) */
         .progress-pool { margin-bottom: 0.75rem; }
@@ -1406,10 +1532,36 @@
                     </div>
 
                     <div class="box p-3" id="fundingRequirements">
-                        <h5 class="subtitle is-6 mb-2">Required deposits</h5>
+                        <!-- Section 1: things the user has to send themselves.
+                             SOL is always here; non-SOL tokens land here when
+                             they don't have an auto-swap route available. -->
+                        <h5 class="subtitle is-6 mb-2">
+                            <span class="icon-text">
+                                <span class="icon has-text-info"><i class="fas fa-arrow-down"></i></span>
+                                <span>Send to wallet</span>
+                            </span>
+                        </h5>
                         <div id="balanceRows"></div>
 
-                        <details class="mt-2">
+                        <!-- Section 2: things the system will acquire on the
+                             user's behalf via Raydium swap. Hidden when there
+                             are no auto-swap rows so simple SOL launches keep
+                             the funding panel uncluttered. -->
+                        <div id="autoSwapSection" class="mt-4" style="display: none;">
+                            <h5 class="subtitle is-6 mb-2">
+                                <span class="icon-text">
+                                    <span class="icon has-text-link"><i class="fas fa-exchange-alt"></i></span>
+                                    <span>We'll acquire for you</span>
+                                </span>
+                            </h5>
+                            <p class="is-size-7 has-text-grey mb-2">
+                                Once SOL is funded, click <strong>Acquire quote tokens</strong> to swap for these automatically.
+                                <span id="autoSwapProgressLabel" class="ml-2 has-text-info"></span>
+                            </p>
+                            <div id="autoSwapRows"></div>
+                        </div>
+
+                        <details class="mt-3">
                             <summary class="is-clickable is-size-7 has-text-link">Show cost breakdown</summary>
                             <div id="fundingBreakdown" class="mt-2"></div>
                         </details>
@@ -1427,6 +1579,12 @@
                             <button class="button is-info is-small" id="refreshBalanceBtn">
                                 <span class="icon"><i class="fas fa-sync"></i></span>
                                 <span>Refresh balances</span>
+                            </button>
+                        </div>
+                        <div class="control" id="acquireQuoteTokensWrap" style="display: none;">
+                            <button class="button is-link is-small" id="acquireQuoteTokensBtn" disabled>
+                                <span class="icon"><i class="fas fa-exchange-alt"></i></span>
+                                <span>Acquire quote tokens</span>
                             </button>
                         </div>
                         <div class="control">
@@ -1504,12 +1662,27 @@
 
                     <div id="lpFailInfo" class="hidden mt-3">
                         <div class="notification is-warning is-light is-size-7 py-2 px-3">
-                            <p><strong>Pool creation failed partway through.</strong></p>
-                            <p id="lpFailSummary"></p>
-                            <p class="mt-2">You can still transfer everything back to your destination wallet.</p>
+                            <p><strong id="lpFailHeading">Pool creation failed partway through.</strong></p>
+                            <p id="lpFailSummary" class="mt-1"></p>
+                            <p id="lpFailSucceededCount" class="mt-2"></p>
+                            <p class="mt-2" id="lpFailReassurance">
+                                <strong>Your assets are safe</strong> — they're still in the ephemeral wallet
+                                (SOL, any auto-swapped quote tokens, and the LP NFTs from pools that did succeed).
+                                Click below to sweep everything back to your destination wallet.
+                                If the failure was a one-off (RPC blip, etc.), you can also rebuild from scratch
+                                in a new session — the pools that succeeded above are permanent on-chain.
+                            </p>
                         </div>
+                        <!-- Retry button. Shown only for bootstrap-phase failures
+                             where the pools exist on-chain and we just need to
+                             retry the bootstrap leg. Hidden by default; JS reveals
+                             when failedPhase==='bootstrap'. -->
+                        <button class="button is-primary mt-2 hidden" id="retryBootstrapsBtn">
+                            <span class="icon"><i class="fas fa-redo"></i></span>
+                            <span>Retry bootstraps</span>
+                        </button>
                         <button class="button is-warning mt-2" id="continueToTransferAfterFailBtn">
-                            <span>Skip to Transfer Assets</span>
+                            <span id="continueToTransferAfterFailBtnLabel">Skip to Transfer Assets</span>
                             <span class="icon"><i class="fas fa-arrow-right"></i></span>
                         </button>
                     </div>
@@ -1611,7 +1784,7 @@
         <div class="modal-background"></div>
         <div class="modal-card">
             <header class="modal-card-head">
-                <p class="modal-card-title">Cancel and Refund?</p>
+                <p class="modal-card-title" id="cancelConfirmTitle">Cancel and Refund?</p>
             </header>
             <section class="modal-card-body">
                 <p class="mb-3" id="cancelConfirmIntro"></p>
@@ -1622,7 +1795,7 @@
                     <p class="help" id="cancelDestHelp"></p>
                 </div>
 
-                <div class="content is-size-7 mt-3">
+                <div class="content is-size-7 mt-3" id="cancelConfirmFinePrint">
                     <p>This will sweep everything currently in the ephemeral wallet to that destination, then end the launch. Anything created on-chain so far (e.g., the SPL token if step 4 completed, or any pools created in step 5) stays on-chain — only the wallet's contents move.</p>
                 </div>
             </section>
@@ -1630,7 +1803,7 @@
                 <button class="button" id="cancelConfirmDismissBtn">Keep Going</button>
                 <button class="button is-danger" id="cancelConfirmProceedBtn" disabled>
                     <span class="icon"><i class="fas fa-times"></i></span>
-                    <span>Cancel and Refund</span>
+                    <span id="cancelConfirmProceedLabel">Cancel and Refund</span>
                 </button>
             </footer>
         </div>

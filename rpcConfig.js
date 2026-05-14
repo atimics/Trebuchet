@@ -2,8 +2,9 @@
 //
 // Manages a small JSON config file (rpcConfig.json in the project root) that
 // stores the list of saved RPC endpoints and which one is currently active.
-// On first run we seed the file from the SOLANA_RPC_URL env var (so existing
-// .env setups keep working), then everything happens via the UI from then on.
+// First run seeds the file with a public-mainnet default; from then on
+// everything is managed through the in-app RPC settings UI (addSavedRpc,
+// setActiveRpc, removeSavedRpc, testRpc).
 //
 // The file format is intentionally simple so it's easy to hand-edit:
 //   {
@@ -17,9 +18,6 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,7 +28,8 @@ const __dirname = path.dirname(__filename);
 const CONFIG_DIR = process.env.TREBUCHET_CONFIG_DIR || __dirname;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'rpcConfig.json');
 
-// Always-available fallback if the file is missing AND no env var is set
+// First-run default. Public mainnet works out of the box; users can
+// add their own faster/paid endpoints via the in-app RPC settings.
 const DEFAULT_RPC = {
   name: 'Public mainnet',
   url: 'https://api.mainnet-beta.solana.com',
@@ -58,15 +57,11 @@ function load() {
     console.warn('rpcConfig: failed to load existing config, will reinitialize:', e.message);
   }
 
-  // First-run init: seed from env if present, otherwise default
-  const envUrl = process.env.SOLANA_RPC_URL;
-  const seed = [];
-  if (envUrl && envUrl !== DEFAULT_RPC.url) {
-    seed.push({ name: 'From .env', url: envUrl });
-  }
-  seed.push(DEFAULT_RPC);
-
-  state = { active: seed[0].url, saved: seed };
+  // First-run init: seed the saved-RPCs list with our default. The user
+  // can add their own endpoints through the in-app RPC settings UI
+  // (addSavedRpc) and switch the active one (setActiveRpc). All changes
+  // are persisted to CONFIG_FILE and survive restarts.
+  state = { active: DEFAULT_RPC.url, saved: [DEFAULT_RPC] };
   persist();
 }
 

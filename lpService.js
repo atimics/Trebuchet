@@ -54,15 +54,15 @@ import {
 import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
-  getMint,
+  unpackMint,
+  getExtensionTypes,
+  ExtensionType,
 } from '@solana/spl-token';
 import { transferTokenWithProgram } from './walletHelpers.js';
+import { discoverRaydiumRoute } from './swapService.js';
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
-import dotenv from 'dotenv';
 import { getRpcUrl } from './rpcConfig.js';
-
-dotenv.config();
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -318,6 +318,205 @@ async function initSdk(ownerKeypair) {
 // Quote-token resolution
 // ---------------------------------------------------------------------------
 
+// =============================================================================
+// Raydium CLMM Token-2022 compatibility check
+// =============================================================================
+//
+// Raydium's CLMM program enforces a strict allowlist of Token-2022 extensions
+// in its on-chain `is_supported_mint` check. A mint with even one disallowed
+// extension makes pool creation revert with `NotSupportMint` (or sometimes
+// Anchor's ConstraintMintTokenProgram if a constraint catches it earlier).
+//
+// SOURCE OF TRUTH (verified against raydium-clmm/programs/amm/src/util/token.rs
+// at github.com/raydium-io/raydium-clmm, function `is_supported_mint`):
+//
+//   - classic SPL Token mints are always supported (no extensions)
+//   - Token-2022 mints with NO extensions are supported
+//   - Token-2022 mints whose extensions are ALL in this allowlist are supported:
+//       * TransferFeeConfig
+//       * MetadataPointer
+//       * TokenMetadata
+//       * InterestBearingConfig
+//       * ScaledUiAmount  (called ScaledUiAmountConfig in @solana/spl-token JS)
+//   - escape hatches that work case-by-case but we can't rely on:
+//       * hardcoded MINT_WHITELIST (a handful of specific stablecoin mints)
+//       * a per-mint "support mint associated" account that has to be created
+//         on chain by Raydium ahead of time
+//       * Superstate special case (ScaledUI compat)
+//
+// Anything else — Permanent Delegate, Non-Transferable, Default Account State,
+// Confidential Transfers, CPI Guard, Transfer Hooks, Pausable, Group Pointers,
+// etc — will fail pool creation.
+//
+// pump.fun graduated tokens have only TransferFeeConfig + MetadataPointer +
+// TokenMetadata, all of which are in this allowlist. They should always work.
+// If pump.fun ever adds an extension to their template that isn't in this
+// allowlist, this check is the trigger that tells us — and the user — clearly.
+const RAYDIUM_CLMM_ALLOWED_TOKEN2022_EXTENSIONS = new Set([
+  ExtensionType.TransferFeeConfig,
+  ExtensionType.MetadataPointer,
+  ExtensionType.TokenMetadata,
+  ExtensionType.InterestBearingConfig,
+  // The rust source spells this ScaledUiAmount; @solana/spl-token v0.4.x
+  // exports it as ScaledUiAmountConfig. Same on-chain extension. Reference
+  // both names so the check survives an SDK rename in either direction.
+  ExtensionType.ScaledUiAmountConfig,
+  ExtensionType.ScaledUiAmount,
+].filter((v) => v !== undefined));
+
+// Raydium's hardcoded MINT_WHITELIST. These 6 specific mints (mostly
+// regulated stablecoins like PYUSD and AUSD) are accepted by the CLMM
+// program even when they carry extensions that would otherwise fail the
+// `is_supported_mint` check — Raydium specifically vetted them.
+//
+// We mirror the same whitelist here so our pre-flight doesn't falsely
+// reject these tokens. Empirically: PYUSD has 8 extensions including
+// PermanentDelegate, ConfidentialTransferMint, and TransferHook — none
+// of which are in the generic allowlist — but it works as a Raydium pool
+// quote token because it's in this list.
+//
+// Source-of-truth (kept in sync with raydium-clmm/programs/amm/src/util/token.rs):
+const RAYDIUM_CLMM_MINT_WHITELIST = new Set([
+  'HVbpJAQGNpkgBaYBZQBR1t7yFdvaYVp2vCQQfKKEN4tM',
+  'Crn4x1Y2HUKko7ox2EZMT6N2t2ZyH7eKtwkBGVnhEq1g',
+  'FrBfWJ4qE5sCzKm3k3JaAtqZcXUh4LvJygDeketsrsH4',
+  '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo', // PYUSD
+  'DAUcJBg4jSpVoEzASxYzdqHMUN8vuTpQyG2TvDcCHfZg',
+  'AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9', // AUSD
+]);
+
+// Friendly names for error messages. These get surfaced in the UI so a
+// dev/user can google the extension name and understand why their token
+// isn't compatible. Keep these aligned with the ExtensionType enum
+// labels in @solana/spl-token; missing entries fall through to "#N".
+//
+// Note on numeric keys: @solana/spl-token v0.4.x doesn't export named
+// constants for ConfidentialTransferFeeConfig (16) and
+// ConfidentialTransferFeeAmount (17), so we hard-code those numbers.
+// They were stable in the spl-token-2022 program from the start.
+const EXTENSION_DISPLAY_NAMES = {
+  [ExtensionType.TransferFeeAmount]:        'TransferFeeAmount (account-side)',
+  [ExtensionType.MintCloseAuthority]:       'MintCloseAuthority',
+  [ExtensionType.ConfidentialTransferMint]: 'ConfidentialTransferMint',
+  [ExtensionType.DefaultAccountState]:      'DefaultAccountState (e.g. frozen-by-default)',
+  [ExtensionType.ImmutableOwner]:           'ImmutableOwner',
+  [ExtensionType.MemoTransfer]:             'MemoTransfer (memo required on transfer)',
+  [ExtensionType.NonTransferable]:          'NonTransferable (soulbound)',
+  [ExtensionType.CpiGuard]:                 'CpiGuard',
+  [ExtensionType.PermanentDelegate]:        'PermanentDelegate',
+  [ExtensionType.TransferHook]:             'TransferHook',
+  16:                                       'ConfidentialTransferFeeConfig',
+  17:                                       'ConfidentialTransferFeeAmount',
+  [ExtensionType.GroupPointer]:             'GroupPointer',
+  [ExtensionType.TokenGroup]:               'TokenGroup',
+  [ExtensionType.GroupMemberPointer]:       'GroupMemberPointer',
+  [ExtensionType.TokenGroupMember]:         'TokenGroupMember',
+  [ExtensionType.PausableConfig]:           'PausableConfig',
+  [ExtensionType.PausableAccount]:          'PausableAccount',
+};
+
+/**
+ * Read a mint account and determine whether it can be used as either side of
+ * a Raydium CLMM pool. Returns a richly-typed result so callers can decide
+ * how to surface incompatibility — fail-fast on the server, warning chip in
+ * the UI, etc.
+ *
+ * Returns:
+ *   {
+ *     programId:        PublicKey  (TOKEN_PROGRAM_ID or TOKEN_2022_PROGRAM_ID),
+ *     decimals:         number,
+ *     isToken2022:      bool,
+ *     extensions:       ExtensionType[]   (Token-2022 only; classic = []),
+ *     compatible:       bool,
+ *     disallowed:       ExtensionType[]   (subset of extensions not in allowlist),
+ *     disallowedNames:  string[]          (human-readable form of disallowed),
+ *   }
+ *
+ * Throws if:
+ *   - mint doesn't exist on chain
+ *   - mint is owned by a program that isn't one of the two token programs
+ *   - the account data can't be parsed as a mint (corrupt / not a mint)
+ */
+export async function getMintCompatibilityWithRaydiumClmm(connection, mintPk) {
+  const accountInfo = await connection.getAccountInfo(mintPk, 'confirmed');
+  if (!accountInfo) {
+    throw new Error(`Mint ${mintPk.toBase58()} does not exist on chain`);
+  }
+  const owner = accountInfo.owner;
+  if (!owner.equals(TOKEN_PROGRAM_ID) && !owner.equals(TOKEN_2022_PROGRAM_ID)) {
+    throw new Error(
+      `${mintPk.toBase58()} is owned by ${owner.toBase58()}, not a recognized ` +
+        `token program — this isn't a token mint at all.`,
+    );
+  }
+
+  // unpackMint validates the base mint struct and returns it; for Token-2022
+  // it also exposes the trailing TLV bytes that hold extensions.
+  const mint = unpackMint(mintPk, accountInfo, owner);
+  const isToken2022 = owner.equals(TOKEN_2022_PROGRAM_ID);
+
+  // Classic SPL Token mints have no extensions and are always supported.
+  if (!isToken2022) {
+    return {
+      programId: owner,
+      decimals: mint.decimals,
+      isToken2022: false,
+      extensions: [],
+      compatible: true,
+      whitelisted: false,
+      disallowed: [],
+      disallowedNames: [],
+    };
+  }
+
+  // Token-2022 path: pull the extension list from the TLV data. Some token
+  // accounts (with no extensions) have empty tlvData — getExtensionTypes
+  // returns [] in that case, which is fine.
+  const extensions = getExtensionTypes(mint.tlvData || Buffer.alloc(0));
+  const disallowed = extensions.filter(
+    (e) => !RAYDIUM_CLMM_ALLOWED_TOKEN2022_EXTENSIONS.has(e),
+  );
+  const disallowedNames = disallowed.map(
+    (e) => EXTENSION_DISPLAY_NAMES[e] || `extension #${e}`,
+  );
+
+  // Whitelist short-circuit. Raydium's CLMM hard-codes 6 specific mints as
+  // always-compatible — they have extensions that would otherwise fail the
+  // generic check (e.g. PYUSD has PermanentDelegate, ConfidentialTransfer,
+  // TransferHook, etc.) but the protocol team specifically vetted them.
+  // We have to mirror this here, otherwise our pre-flight would falsely
+  // reject these well-known stablecoins as quote tokens.
+  const isWhitelisted = RAYDIUM_CLMM_MINT_WHITELIST.has(mintPk.toBase58());
+  if (isWhitelisted && disallowed.length > 0) {
+    return {
+      programId: owner,
+      decimals: mint.decimals,
+      isToken2022: true,
+      extensions,
+      compatible: true,
+      whitelisted: true,
+      // Surface the extensions that WOULD be a problem if not whitelisted —
+      // good for diagnostics ("yes I know PYUSD has PermanentDelegate, it's
+      // fine because Raydium whitelisted it"). Empty for whitelisted mints
+      // whose extensions happen to all be in the allowlist already.
+      whitelistedDespite: disallowedNames,
+      disallowed: [],
+      disallowedNames: [],
+    };
+  }
+
+  return {
+    programId: owner,
+    decimals: mint.decimals,
+    isToken2022: true,
+    extensions,
+    compatible: disallowed.length === 0,
+    whitelisted: false,
+    disallowed,
+    disallowedNames,
+  };
+}
+
 /**
  * Resolve a quote-token spec to {address, programId, decimals, symbol}.
  * Accepts either a known symbol (SOL/USDC/USDT) or an arbitrary SPL mint
@@ -337,20 +536,48 @@ async function resolveQuoteToken(connection, spec, overrides = {}) {
     return base;
   }
 
-  // Treat as a mint address
+  // Treat as a mint address.
+  //
+  // We must detect (a) which token program owns this mint and (b) whether
+  // its Token-2022 extensions are all in Raydium CLMM's allowlist. Both
+  // checks are fail-fast safety nets — getting either wrong means the
+  // pool-creation tx will revert later with an opaque on-chain error, after
+  // we've already paid for it. One getAccountInfo + unpackMint roundtrip
+  // covers both, so the cost is negligible.
   const mintPk = new PublicKey(spec);
-  let decimals = overrides.decimals;
-  if (decimals === undefined || decimals === null) {
-    const mintInfo = await getMint(connection, mintPk, 'confirmed', TOKEN_PROGRAM_ID);
-    decimals = mintInfo.decimals;
-  } else {
-    decimals = Number(decimals);
+  const compat = await getMintCompatibilityWithRaydiumClmm(connection, mintPk);
+
+  if (!compat.compatible) {
+    // Surface BOTH the unsupported extensions and the allowlist so the
+    // user (or dev reading logs) knows exactly what changed.
+    throw new Error(
+      `Quote token ${spec} cannot be paired in a Raydium CLMM pool. ` +
+        `Its Token-2022 mint has these unsupported extensions: ` +
+        `${compat.disallowedNames.join(', ')}. ` +
+        `Raydium CLMM only allows: TransferFeeConfig, MetadataPointer, ` +
+        `TokenMetadata, InterestBearingConfig, ScaledUiAmount.`,
+    );
   }
+
+  // decimals: prefer caller override (helpful when Gecko returned them
+  // and we want to skip the extra round-trip), else use what we just read
+  // from the mint account.
+  const decimals =
+    overrides.decimals !== undefined && overrides.decimals !== null
+      ? Number(overrides.decimals)
+      : compat.decimals;
+
   return {
     address: mintPk.toBase58(),
-    programId: TOKEN_PROGRAM_ID.toBase58(),
+    programId: compat.programId.toBase58(),
     decimals,
     symbol: overrides.symbol || spec.slice(0, 6),
+    // Forward compatibility metadata so callers (e.g. progress logging,
+    // bootstrap fee math) can react to Token-2022 specifics without
+    // having to re-fetch the mint. Strictly informational — callers that
+    // don't care can ignore these fields.
+    isToken2022: compat.isToken2022,
+    extensions: compat.extensions,
   };
 }
 
@@ -875,35 +1102,71 @@ async function openBootstrapPosition({
 
   // Compute otherAmountMax for the bootstrap.
   //
-  // CRITICAL: this isn't just slippage protection — when useSOLBalance:true
-  // and the quote is wSOL, the SDK pre-funds the wSOL ATA with
-  // otherAmountMax lamports BEFORE opening the position (then closes the
-  // ATA at the end to refund the unused remainder). If we cap too high
-  // and the wallet doesn't have enough SOL to cover the pre-fund, the
-  // SystemProgram::Transfer to the wSOL ATA fails with InsufficientFunds.
+  // Background on what otherAmountMax does inside the SDK:
   //
-  // The actual amount the bootstrap needs on the other side is roughly the
+  //   - For SOL quote with useSOLBalance:true: the SDK pre-funds the
+  //     wSOL ATA with `otherAmountMax` lamports BEFORE opening the
+  //     position (refunding the unused remainder at the end). The
+  //     wallet must hold this many lamports during the tx. Setting too
+  //     high causes the SystemProgram::Transfer to the wSOL ATA to fail
+  //     with InsufficientFunds.
+  //
+  //   - For non-SOL quote: the SDK does NOT pre-fund the quote ATA. It
+  //     just transfers from the existing ATA up to the actual amount
+  //     required by the position math. otherAmountMax is purely a
+  //     slippage limit — the on-chain CLMM program checks
+  //     `actual_required <= otherAmountMax` and fails with
+  //     PriceSlippageCheck (custom error 6021) if it isn't. Setting
+  //     too LOW causes that failure; setting too HIGH costs nothing
+  //     because the actual transfer is bounded by the math, not by
+  //     this number.
+  //
+  // The actual amount needed on the other side is approximately the
   // launched-token deposit's USD value converted to quote tokens, since
-  // the bootstrap straddles the current tick. We compute this from
-  // initialPrice (= quote per launched), apply a safety multiplier to
-  // tolerate edge-of-range scenarios after drift, and cap at 0.01 of the
-  // quote token as an absolute upper bound (which is still ~$1 worth —
-  // plenty for a bootstrap, never enough to drain a freshly-funded wallet).
+  // the bootstrap straddles the current tick. We compute that from
+  // initialPrice (= quote per launched) and apply a 200x safety
+  // multiplier to absorb edge-of-range scenarios after tick drift.
   //
-  // Multiplier note: bumped from 100x to 200x alongside the 10x widening of
-  // the bootstrap range. A wider range means more of the other token is
-  // potentially needed if current ends up near one of the range edges; the
-  // absoluteMaxRaw cap still bounds the worst case, so the larger multiplier
-  // mostly just means we hit the cap slightly more often (which is fine).
+  // The previous formula also capped at 0.01 of one whole quote token
+  // (raw = 10^(decimals-2)) as an absolute safety brake. That made
+  // sense as a SOL guardrail — 0.01 SOL ≈ $2, comfortably under any
+  // reasonably-funded wallet — but it was WRONG for cheap quote tokens.
+  // For a quote token where 1 launched ≈ 0.1 quote (memecoin quote at
+  // similar USD scale to the launched token), the 200x multiplier wants
+  // 20 quote whole, but the cap allowed only 0.01 quote whole. The
+  // bootstrap deposit math then exceeds otherAmountMax and the
+  // transaction reverts with PriceSlippageCheck. Several users hit
+  // this on memecoin-quote launches.
+  //
+  // Fix: only apply the absolute cap when the quote is SOL (where the
+  // wSOL pre-fund concern is real). For all other quotes, trust the
+  // 200x multiplier — the SDK won't actually take more than necessary.
   const equivOtherRaw = initialPrice.mul(new Decimal(10).pow(quoteToken.decimals));
-  const absoluteMaxRaw = new Decimal(10).pow(quoteToken.decimals - 2); // 0.01 of quote whole
-  const bsOtherMaxDecimal = Decimal.min(equivOtherRaw.mul(200), absoluteMaxRaw);
+  const isQuoteSol = quoteToken.address === WSOL_MINT;
+  let bsOtherMaxDecimal;
+  if (isQuoteSol) {
+    // SOL: keep the 0.01-SOL absolute cap to prevent wSOL pre-fund
+    // exceeding wallet balance. The funding estimator budgets enough
+    // SOL for this; the cap just prevents the otherAmountMax from
+    // ballooning if initialPrice math somehow produces a huge value.
+    bsOtherMaxDecimal = Decimal.min(
+      equivOtherRaw.mul(200),
+      new Decimal(10).pow(quoteToken.decimals - 2),
+    );
+  } else {
+    // Non-SOL: no absolute cap. The SDK doesn't pre-fund the quote ATA,
+    // so the wallet's actual balance is the only physical limit on
+    // spend. A generous otherAmountMax protects against PriceSlippageCheck
+    // failures during pool-price drift without changing the on-chain
+    // outcome (actual spend = math result, not this number).
+    bsOtherMaxDecimal = equivOtherRaw.mul(200);
+  }
   // Floor at 1000 raw — handles extreme micro-price launches where the
   // computed value rounds to 0.
   const bsOtherMax = BN.max(new BN(bsOtherMaxDecimal.toFixed(0)), new BN(1000));
   console.log(
     `  bootstrap otherAmountMax: ${bsOtherMax.toString()} raw quote ` +
-      `(actual need ~${equivOtherRaw.toFixed(0)} raw)`,
+      `(actual need ~${equivOtherRaw.toFixed(0)} raw, isQuoteSol=${isQuoteSol})`,
   );
 
   const bsRes = await raydium.clmm.openPositionFromBase({
@@ -985,10 +1248,24 @@ export async function createPoolsAndPositions({
   allocations,
   lockPositions = true,
   onProgress,
+  // When resuming a partially-completed launch, pass the partialResults
+  // array from the failed attempt. The orchestrator will:
+  //   - For each allocation whose index appears in priorResults with a
+  //     poolId: skip createSinglePool, rebuild the bootstrap context from
+  //     chain state, and use the existing result entry.
+  //   - For other allocations: do the full create flow as if fresh.
+  //   - In Phase 2: skip allocations whose bootstrap is already populated
+  //     in priorResults.
+  // This means a single failed launch can be retried any number of times,
+  // each retry only attempting the work that didn't complete before.
+  priorResults = [],
 }) {
   console.log(`\n=== Creating pools and positions for ${tokenMint} ===`);
   console.log(`Total supply: ${tokenTotalSupply}, target MC: $${targetMarketCapUsd}`);
   console.log(`Allocations: ${allocations.length}, lock: ${lockPositions}`);
+  if (priorResults.length > 0) {
+    console.log(`Resume mode: ${priorResults.length} allocation(s) carried over from prior attempt`);
+  }
 
   // -----------------------------------------------------------------------
   // 1. Initialize SDK with the ephemeral wallet
@@ -1008,7 +1285,16 @@ export async function createPoolsAndPositions({
   // -----------------------------------------------------------------------
   const totalPct = allocations.reduce((s, a) => s + Number(a.supplyPercent), 0);
   if (totalPct > 100) {
-    throw new Error(`Allocations sum to ${totalPct}% — must be <= 100%`);
+    // Tagging as pre_flight so the orchestrator's caller (server) and the
+    // frontend treat this the same way as the Token-2022 compat check —
+    // nothing on-chain has happened yet, so the user can fix the config
+    // and retry without sweeping. Without this tag the frontend's
+    // failedPhase fallback defaults to 'main_positions' and incorrectly
+    // tells the user that pools may have been created.
+    const err = new Error(`Allocations sum to ${totalPct}% — must be <= 100%`);
+    err.failedPhase = 'pre_flight';
+    err.partialResults = priorResults;
+    throw err;
   }
 
   const solPct = allocations
@@ -1016,10 +1302,13 @@ export async function createPoolsAndPositions({
     .reduce((s, a) => s + Number(a.supplyPercent), 0);
 
   if (solPct > 0 && solPct < MIN_SOL_ALLOCATION_PCT) {
-    throw new Error(
+    const err = new Error(
       `SOL allocation is ${solPct}%, must be >= ${MIN_SOL_ALLOCATION_PCT}% ` +
         `(aggregator/scanner integration depends on a non-trivial SOL pool).`,
     );
+    err.failedPhase = 'pre_flight';
+    err.partialResults = priorResults;
+    throw err;
   }
 
   // -----------------------------------------------------------------------
@@ -1038,6 +1327,54 @@ export async function createPoolsAndPositions({
   };
 
   // -----------------------------------------------------------------------
+  // 5.5. PRE-FLIGHT: resolve and validate every quote token BEFORE we
+  //      touch the chain for pool creation. This catches:
+  //        - typos / non-mint addresses
+  //        - Token-2022 mints with Raydium-incompatible extensions
+  //          (e.g. PermanentDelegate, NonTransferable, TransferHook,
+  //          DefaultAccountState — any of these cause pool creation to
+  //          revert with NotSupportMint or an Anchor constraint error
+  //          AFTER we've already spent SOL on rent for the pool state)
+  //
+  //      Doing this upfront means we either commit to the full launch or
+  //      reject the whole thing — never the half-broken middle state the
+  //      previous Cm6f...pump failure left us in.
+  //
+  //      We hold onto the resolved tokens so the per-allocation loop
+  //      below can use them directly without re-resolving.
+  // -----------------------------------------------------------------------
+  console.log('Pre-flight: validating quote-token compatibility...');
+  const resolvedAllocs = [];
+  for (let i = 0; i < allocations.length; i++) {
+    const alloc = allocations[i];
+    try {
+      const quoteToken = await resolveQuoteToken(connection, alloc.quoteToken, {
+        decimals: alloc.quoteDecimalsOverride,
+        symbol: alloc.quoteSymbolOverride,
+      });
+      const programLabel = quoteToken.isToken2022 ? 'Token-2022' : 'SPL Token';
+      const extLabel = quoteToken.isToken2022
+        ? ` (extensions: ${quoteToken.extensions.length === 0 ? 'none' : quoteToken.extensions.join(',')})`
+        : '';
+      console.log(
+        `  [${i}] ${quoteToken.symbol} → ${programLabel}${extLabel} ✓`,
+      );
+      resolvedAllocs.push({ alloc, quoteToken });
+    } catch (err) {
+      // Annotate with which allocation failed so the caller can highlight
+      // the right row in the UI. partialResults preserves any priorResults
+      // we were given (resume case) so the user doesn't lose the
+      // already-completed pools' state in their lpResult.
+      err.failedAllocationIndex = i;
+      err.failedAllocation = alloc;
+      err.failedPhase = 'pre_flight';
+      err.partialResults = priorResults;
+      throw err;
+    }
+  }
+  console.log(`Pre-flight passed for all ${allocations.length} allocation(s).`);
+
+  // -----------------------------------------------------------------------
   // 6. Phase 1: iterate allocations sequentially, creating each pool and its
   //    main positions. Bootstrap is skipped here (queued for phase 2 below)
   //    so no pool becomes tradable until every pool's main positions are in
@@ -1051,12 +1388,79 @@ export async function createPoolsAndPositions({
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
     const alloc = allocations[allocIdx];
 
+    // RESUME CHECK: if this allocation completed Phase 1 in a prior attempt,
+    // skip the create flow and just rebuild the bootstrap context from
+    // on-chain state. The result entry from the prior attempt is reused
+    // verbatim (poolId, mainPositions, txIds are all immutable once they
+    // hit chain). Bootstrap context fields — poolInfo, poolKeys, current
+    // tick, etc. — get re-fetched fresh because they may have drifted
+    // between the prior attempt and this resume.
+    const prior = priorResults.find(
+      (p) => p.allocationIndex === allocIdx && p.poolId,
+    );
+    if (prior) {
+      const quoteToken = resolvedAllocs[allocIdx].quoteToken;
+      console.log(`\n[${quoteToken.symbol}] resume: pool ${prior.poolId} already created, rebuilding bootstrap context`);
+      try {
+        const { poolInfo, poolKeys } = await raydium.clmm.getPoolInfoFromRpc(prior.poolId);
+        const rpcData = await raydium.clmm.getRpcClmmPoolInfo({ poolId: prior.poolId });
+        const tickSpacing = poolInfo.config.tickSpacing;
+        const currentTick = rpcData.tickCurrent;
+        const launchedIsMintA = poolInfo.mintA.address === launchedToken.address;
+        // initialPrice for the bootstrap math = quote per launched.
+        // Recompute from the live on-chain price rather than reusing the
+        // value from the prior attempt — pool prices drift, especially
+        // SOL/USD-pegged pools.
+        const initialPrice = launchedIsMintA
+          ? new Decimal(poolInfo.price)
+          : new Decimal(1).div(poolInfo.price);
+
+        bootstrapQueue.push({
+          allocationIndex: allocIdx,
+          quoteSymbol: quoteToken.symbol,
+          ctx: {
+            poolId: prior.poolId,
+            poolInfo,
+            poolKeys,
+            currentTickAtCreation: currentTick,
+            tickSpacing,
+            launchedIsMintA,
+            bootstrapBaseRaw: new BN(BOOTSTRAP_BASE_TOKENS_WHOLE).mul(
+              new BN(10).pow(new BN(launchedToken.decimals)),
+            ),
+            initialPrice,
+            quoteToken,
+          },
+          // Stash any prior bootstrap result so Phase 2 can skip if done.
+          // (Bootstrap-only retries reach here with prior.bootstrap === null;
+          // main-positions-only retries that succeeded fully reach here
+          // with bootstrap populated.)
+          existingBootstrap: prior.bootstrap || null,
+        });
+        results.push(prior);
+        continue;
+      } catch (err) {
+        // Couldn't rebuild context — surface clearly so the user knows
+        // which prior pool is the blocker. Most likely cause: RPC
+        // unreachable when we tried to read the pool state.
+        const e = new Error(
+          `Resume failed: couldn't read prior pool ${prior.poolId} from RPC ` +
+            `(${err.message}). Retry once RPC connectivity recovers, or ` +
+            `sweep the wallet to start over.`,
+        );
+        e.partialResults = results;
+        e.failedAllocationIndex = allocIdx;
+        e.failedPhase = 'main_positions';
+        throw e;
+      }
+    }
+
     try {
-      // 6a. Resolve quote token info (with optional manual overrides)
-      const quoteToken = await resolveQuoteToken(connection, alloc.quoteToken, {
-        decimals: alloc.quoteDecimalsOverride,
-        symbol: alloc.quoteSymbolOverride,
-      });
+      // 6a. Use the quote token we already resolved + validated in the
+      //     pre-flight pass above. (Pre-flight has already verified the
+      //     mint exists, lives in a recognized token program, and has
+      //     only Raydium-supported Token-2022 extensions if any.)
+      const quoteToken = resolvedAllocs[allocIdx].quoteToken;
 
       // 6b. Determine USD price for the quote
       let quoteUsd;
@@ -1195,6 +1599,17 @@ export async function createPoolsAndPositions({
 
   for (const item of bootstrapQueue) {
     const { allocationIndex: allocIdx, quoteSymbol, ctx } = item;
+
+    // RESUME CHECK: if this allocation already has a bootstrap from a
+    // prior successful attempt (carried in via priorResults), don't redo
+    // it — the on-chain bootstrap position is locked and immutable.
+    // The result entry already has the bootstrap field populated; the
+    // resume-path took care of that when populating `results`.
+    if (item.existingBootstrap) {
+      console.log(`\n[${quoteSymbol}] resume: bootstrap already done, skipping`);
+      continue;
+    }
+
     console.log(`\n[${quoteSymbol}] bootstrap`);
     try {
       const bootstrap = await openBootstrapPosition({
@@ -1212,16 +1627,35 @@ export async function createPoolsAndPositions({
     } catch (err) {
       // Record the failure, surface it via the progress callback, but keep
       // going — the next pool's bootstrap is independent.
-      console.error(`  bootstrap FAILED for ${quoteSymbol}:`, err.message);
+      //
+      // Be defensive about message extraction: the Raydium SDK sometimes
+      // throws objects without a useful `.message` (e.g. simulation
+      // failures where the error is the parsed sim-logs object, not a
+      // standard Error). Fall back to String(err) so we don't end up
+      // logging "(undefined)" and leaving the user with no information.
+      // Also stringify the full error to the server console so we have
+      // it for debugging even when the wire form is trimmed.
+      const msg = (err && err.message)
+        || (typeof err === 'string' ? err : null)
+        || (err && err.toString && err.toString() !== '[object Object]' ? err.toString() : null)
+        || 'unknown error (see server logs)';
+      console.error(`  bootstrap FAILED for ${quoteSymbol}:`, msg);
+      console.error(`  full error object:`, err);
+      // If the error carries simulation logs (Raydium SDK convention),
+      // dump them too — these are the only useful diagnostic when a tx
+      // reverts inside the program.
+      if (err && Array.isArray(err.logs)) {
+        console.error(`  simulation logs:`, err.logs.join('\n'));
+      }
       bootstrapFailures.push({
         allocationIndex: allocIdx,
         quoteSymbol,
-        error: err.message,
+        error: msg,
       });
       onProgress && onProgress({
         allocationIndex: allocIdx,
         stage: 'bootstrap_failed',
-        error: err.message,
+        error: msg,
       });
     }
   }
@@ -1266,32 +1700,83 @@ const COST_TX_BUFFER_SOL    = 0.001;  // priority/network fees per pool
 const COST_TOKEN_CREATE_SOL = 0.05;   // SPL mint + Metaplex metadata + Arweave fee
 const SAFETY_BUFFER_PCT     = 0.20;   // overall safety margin
 
-// Budget for the bootstrap quote-side when quote is NOT SOL: 0.01 of the
-// quote token (whole units). Real consumption at our launch prices is
-// orders of magnitude less, this is just generous slack so the wallet
-// definitely has enough to cover it.
-const BS_QUOTE_BUDGET_WHOLE = 0.01;
+// Budget for the bootstrap quote-side when quote is NOT SOL: ~$1 worth
+// of the quote token (in USD value). Real on-chain consumption at our
+// launch prices is far less, this is just generous slack so the wallet
+// definitely has enough to cover it. USD-denominated so the requirement
+// stays the same regardless of whether the quote token is worth $0.0001
+// or $100 each.
+//
+// This is the amount the MANUAL PREFUND branch shows — what the user
+// has to send themselves if Raydium can't route their quote token.
+const BS_BOOTSTRAP_USD = 1;
+
+// Target USD value when ACQUIRING via auto-swap. Larger than the actual
+// bootstrap need because swaps are subject to slippage and price drift
+// between estimate and acquire time — if we aim for $1 and the swap
+// fills at 95%, we end up with $0.95 of tokens and the row never goes
+// "met". By aiming for $2 we have a fat buffer: even a 50% partial fill
+// still leaves us with the $1 the bootstrap actually needs. The extra
+// tokens get swept back to the user's destination wallet at the end of
+// the launch by sweepAllTokensToDestination, so nothing is wasted.
+const AUTOSWAP_TARGET_USD = 2;
+
+// Fallback whole-unit amount used in the manual-prefund branch when we
+// can't determine the quote token's USD price (oracle has no data and
+// no Raydium route either). Same value as the old behavior — keeps the
+// edge case predictable for tokens we know nothing about.
+const BS_FALLBACK_WHOLE = 0.01;
+
+// Multiplier on the SOL spend for an auto-swap. With the $2 acquire
+// target, 2x means we spend ~$4 of SOL per swap. That covers pool fees
+// + up to ~50% adverse slippage with margin. Leftover dust gets swept
+// to the destination wallet at the end of the launch.
+const AUTOSWAP_SIZING_MULTIPLIER = 2;
+
+// USD price assumed per SOL when the live price oracle isn't available
+// (offline, API down, etc.). Used only as a fallback for sizing the SOL
+// equivalent of an auto-swap line; safety buffer absorbs any inaccuracy.
+// Slightly conservative on the high side so we don't under-fund.
+const FALLBACK_SOL_USD = 200;
 
 /**
  * Estimate funding required for the configured pools, with a per-line
  * breakdown the UI can render so the user can see exactly what each cost
  * covers.
  *
+ * NOTE: this is now async. For each non-SOL allocation we look up
+ * whether a usable Raydium SOL pool exists for the quote token. If yes,
+ * the bootstrap quote-side cost is rolled into the SOL bucket (the user
+ * funds extra SOL, and we'll auto-swap on their behalf during the
+ * funding step). If no, the existing pre-fund flow stays in place for
+ * that allocation — the user sends the quote token themselves.
+ *
+ * The returned `autoSwapPlan` array tells the funding-step UI and the
+ * acquire-quote-tokens endpoint which allocations need a swap, with the
+ * per-allocation pool ID already resolved so the swap step doesn't
+ * have to repeat the lookup.
+ *
  * Returns:
  *   {
  *     solLamports:   <integer total SOL needed in lamports>,
- *     byQuote:       { <mintAddr>: <raw amount> }   // non-SOL quote tokens
+ *     byQuote:       { <mintAddr>: <raw amount> }   // non-SOL pre-fund tokens
  *     totalSol:      <number, total SOL in whole units>,
  *     subtotalSol:   <number, total before safety buffer>,
  *     bufferSol:     <number, the safety buffer line>,
  *     solBreakdown:  [ { label, sol }, ... ]        // line items in SOL
- *     quoteBreakdown:[ { label, symbol, amount, mint }, ... ]  // non-SOL line items
+ *     quoteBreakdown:[ { label, symbol, amount, mint }, ... ]  // pre-fund items
+ *     autoSwapPlan:  [ {
+ *       allocationIndex, quoteMint, quoteSymbol, quoteDecimals,
+ *       targetRaw, quoteUsd, solUsd, poolId, poolKind,
+ *       estSolSpend,    // approximate SOL we'll spend acquiring it
+ *     }, ... ]
  *   }
  */
-export function estimateRequiredFunding({ allocations }) {
+export async function estimateRequiredFunding({ allocations }) {
   const solBreakdown = [];
   const quoteBreakdown = [];
   const byQuote = {};
+  const autoSwapPlan = [];
   let subtotal = 0;
 
   // Helper to add a SOL line to both the breakdown and running total
@@ -1299,6 +1784,19 @@ export function estimateRequiredFunding({ allocations }) {
     solBreakdown.push({ label, sol });
     subtotal += sol;
   };
+
+  // Look up SOL price once. We use it for sizing the SOL equivalent of
+  // every auto-swap line; one lookup per estimate call rather than per
+  // allocation. Fallback constant if the price service is unavailable.
+  let solUsd;
+  try {
+    // getUsdPrice returns a Decimal or null
+    const p = await getUsdPrice(WSOL_MINT);
+    solUsd = p || new Decimal(FALLBACK_SOL_USD);
+  } catch (e) {
+    console.warn(`estimateRequiredFunding: SOL price fallback (${e.message})`);
+    solUsd = new Decimal(FALLBACK_SOL_USD);
+  }
 
   for (const [poolIdx, a] of allocations.entries()) {
     const slices = (a.distribution && a.distribution.length > 0)
@@ -1345,23 +1843,135 @@ export function estimateRequiredFunding({ allocations }) {
       COST_POSITION_SOL + COST_LOCK_SOL,
     );
 
-    // Bootstrap quote-side requirement: differs for SOL vs non-SOL quotes
+    // Bootstrap quote-side requirement: three branches.
+    //   (1) SOL pool       → auto-wrapped from SOL balance, dust budget.
+    //   (2) Trade API can route SOL→quoteMint (typical case)
+    //                      → roll cost into SOL bucket; we'll swap during funding.
+    //   (3) No route from Trade API
+    //                      → fall back to manual pre-fund.
     if (isSol) {
-      // SOL pool: bootstrap quote-side is auto-wrapped from SOL balance.
-      // At our launch prices, the actual amount consumed is sub-microsol;
-      // we just budget a tiny buffer so the wallet definitely has enough.
       addSol(`${poolLabel}: bootstrap quote-side (SOL, dust)`, COST_BS_QUOTE_SOL);
     } else {
-      // Non-SOL pool: need a small amount of quote token in the wallet.
-      // Budget 0.01 whole — generously larger than actual consumption.
-      const rawAmt = Math.ceil(BS_QUOTE_BUDGET_WHOLE * Math.pow(10, quoteDecimals));
-      byQuote[quoteAddr] = (byQuote[quoteAddr] || 0) + rawAmt;
-      quoteBreakdown.push({
-        label: `${poolLabel}: bootstrap quote-side`,
-        symbol: quoteSymbol,
-        amount: BS_QUOTE_BUDGET_WHOLE,
-        mint: quoteAddr,
-      });
+      // Try Raydium Trade API for route discovery. The probe quote also
+      // gives us the effective price (USD per whole quote token), which
+      // matters for low-volume tokens whose USD oracles often have no
+      // data. If the Trade API can route the swap at all, the route is
+      // viable and we get a usable price in the same call.
+      let route = null;
+      try {
+        route = await discoverRaydiumRoute({
+          quoteMint: quoteAddr,
+          quoteDecimals,
+          solUsd,
+        });
+      } catch (e) {
+        console.warn(
+          `estimateRequiredFunding: route discovery failed for ${quoteAddr}: ${e.message}`,
+        );
+      }
+
+      // Resolve a USD price for the quote token. Priority:
+      //   1. Explicit override on the allocation config
+      //   2. Effective price from Trade API probe (covers low-volume tokens)
+      //   3. Standard USD oracle fallback (Coingecko/Jupiter)
+      // Used for sizing both the auto-swap and manual-prefund branches.
+      let quoteUsd = null;
+      if (a.quoteUsdOverride !== undefined && a.quoteUsdOverride !== null) {
+        quoteUsd = new Decimal(a.quoteUsdOverride);
+      } else if (route && route.effectiveQuoteUsd && route.effectiveQuoteUsd.gt(0)) {
+        quoteUsd = route.effectiveQuoteUsd;
+      } else {
+        try {
+          quoteUsd = await getUsdPrice(quoteAddr);
+        } catch (e) {
+          quoteUsd = null;
+        }
+      }
+
+      // Pick a target USD value based on which branch we'll take. Auto-swap
+      // gets the larger value ($2) so partial fills still cover the
+      // bootstrap need. Manual prefund stays at $1 since the user can
+      // send exactly what's needed without slippage concerns.
+      const isAutoSwap = !!(route && route.available);
+      const targetUsd = isAutoSwap ? AUTOSWAP_TARGET_USD : BS_BOOTSTRAP_USD;
+
+      // Compute the target raw amount: targetUsd worth of quote token if
+      // we know the price, else fixed fallback. ceil() ensures we don't
+      // round down below the requirement.
+      let targetWhole;
+      if (quoteUsd && quoteUsd.gt(0)) {
+        targetWhole = new Decimal(targetUsd).div(quoteUsd).toNumber();
+      } else {
+        // Fallback: scale the fixed amount up for auto-swap to keep the
+        // same 2x relative buffer. The fallback path is rare (no price
+        // data anywhere); this keeps the behaviour proportional.
+        targetWhole = isAutoSwap ? BS_FALLBACK_WHOLE * 2 : BS_FALLBACK_WHOLE;
+      }
+      const rawAmt = Math.ceil(targetWhole * Math.pow(10, quoteDecimals));
+
+      if (isAutoSwap) {
+        // (2) Auto-swap branch.
+        // SOL spend scales with the target: ~$2 of token × 2x multiplier
+        // = ~$4 of SOL per swap. Constant regardless of quote-token price,
+        // since both target and spend are USD-denominated.
+        const estSolSpend = new Decimal(targetUsd)
+          .mul(AUTOSWAP_SIZING_MULTIPLIER)
+          .div(solUsd)
+          .toNumber();
+        addSol(
+          `${poolLabel}: bootstrap quote-side (auto-swap → ~$${targetUsd} ${quoteSymbol})`,
+          estSolSpend,
+        );
+        // Compute the actual bootstrap need (vs the ambitious acquire
+        // target) so the frontend can mark a row "met" once we have
+        // ENOUGH for the bootstrap, even if the swap underperformed
+        // (e.g. 50% partial fill of a $2 target still leaves $1 — the
+        // actual on-chain need). Without this, partial fills would
+        // leave the row blocked even though the launch would succeed.
+        let minWhole;
+        if (quoteUsd && quoteUsd.gt(0)) {
+          minWhole = new Decimal(BS_BOOTSTRAP_USD).div(quoteUsd).toNumber();
+        } else {
+          minWhole = BS_FALLBACK_WHOLE;
+        }
+        const minRaw = Math.ceil(minWhole * Math.pow(10, quoteDecimals));
+        autoSwapPlan.push({
+          allocationIndex: poolIdx,
+          quoteMint: quoteAddr,
+          quoteSymbol,
+          quoteDecimals,
+          // targetRaw is what swapSolForQuote tries to acquire
+          // (oversize for slippage buffer). minRaw is the actual
+          // bootstrap requirement on-chain. Frontend uses minRaw for
+          // the "met" check, targetRaw for the display "≈ N" amount.
+          targetRaw: String(rawAmt),
+          minRaw: String(minRaw),
+          // quoteUsd here is what swapSolForQuote uses to size the SOL
+          // spend at swap time (re-computes the same formula). Pass the
+          // effective price we used for the estimate so the budgets
+          // stay consistent between estimate and swap.
+          quoteUsd: quoteUsd.toString(),
+          solUsd: solUsd.toString(),
+          // poolId is informational only; the Trade API picks pools
+          // internally (potentially multi-hop). 'trade-api' sentinel
+          // makes that explicit in any logs the value flows into.
+          poolId: 'trade-api',
+          poolKind: 'route',
+          estSolSpend,
+        });
+      } else {
+        // (3) Manual pre-fund branch.
+        byQuote[quoteAddr] = (byQuote[quoteAddr] || 0) + rawAmt;
+        quoteBreakdown.push({
+          label: `${poolLabel}: bootstrap quote-side`,
+          symbol: quoteSymbol,
+          // Display-friendly: trim long decimals while keeping enough
+          // precision to be unambiguous (e.g. 33333.3 not 33333.333334).
+          // targetWhole is a JS Number; toPrecision returns a string.
+          amount: Number(Number(targetWhole).toPrecision(6)),
+          mint: quoteAddr,
+        });
+      }
     }
 
     // Per-pool transaction buffer (priority fees, retries, etc.)
@@ -1388,5 +1998,6 @@ export function estimateRequiredFunding({ allocations }) {
     bufferSol: buffer,
     solBreakdown,
     quoteBreakdown,
+    autoSwapPlan,
   };
 }

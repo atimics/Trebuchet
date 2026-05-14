@@ -38,16 +38,13 @@ import {
 import { irysUploader } from '@metaplex-foundation/umi-uploader-irys';
 import { fromWeb3JsKeypair, toWeb3JsPublicKey } from '@metaplex-foundation/umi-web3js-adapters';
 import QRCode from 'qrcode';
-import dotenv from 'dotenv';
 import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
 import { getRpcUrl } from './rpcConfig.js';
 
-dotenv.config();
-
-// The RPC URL is now sourced from rpcConfig.js (which seeds itself from the
-// SOLANA_RPC_URL env var on first run, then persists user-selected RPCs to
-// rpcConfig.json). The connection is rebuilt whenever the user switches RPCs
+// The RPC URL is sourced from rpcConfig.js, which seeds itself with a
+// public-mainnet default on first run and persists user-selected RPCs to
+// rpcConfig.json. The connection is rebuilt whenever the user switches RPCs
 // in the UI — server.js calls refreshConnection() after a successful change.
 let connection = makeConnection();
 
@@ -736,40 +733,57 @@ export async function findFundingWallet(publicKey) {
     const signatures = await connection.getSignaturesForAddress(pubKey, { limit: 50 });
     if (signatures.length === 0) return null;
 
-    // The OLDEST signature is the last element — that's the funding tx.
-    const oldestSig = signatures[signatures.length - 1];
+    // Walk signatures from OLDEST to NEWEST, returning the first one
+    // that has a parseable inbound SystemProgram transfer. Used to give
+    // up after inspecting only the oldest signature, but that fails in
+    // edge cases like:
+    //   - Wallet was initialized with a non-transfer first tx (rare but
+    //     possible — some indexers or front-ends do this).
+    //   - The "first" tx is a CEX withdrawal via a non-standard CPI
+    //     pattern that our parsed-instruction walk doesn't recognize.
+    // In both cases there's usually a normal transfer further along
+    // that we should surface. Cap at ~10 inspections so we don't fan
+    // out RPC calls indefinitely for a heavily-active wallet.
+    const MAX_INSPECTIONS = 10;
+    const inspectOrder = signatures.slice().reverse(); // oldest first
+    let inspections = 0;
 
-    const tx = await connection.getParsedTransaction(oldestSig.signature, {
-      maxSupportedTransactionVersion: 0,
-    });
-    if (!tx || !tx.meta || tx.meta.err) return null;
+    for (const sig of inspectOrder) {
+      if (inspections++ >= MAX_INSPECTIONS) break;
 
-    // The funding could be a top-level SystemProgram transfer (typical case:
-    // someone sending from Phantom or another wallet) or an inner instruction
-    // (typical case: CEX withdrawal where a withdrawal program does the
-    // transfer via CPI). Walk both.
-    const allInstructions = [...(tx.transaction.message.instructions || [])];
-    for (const inner of tx.meta.innerInstructions || []) {
-      allInstructions.push(...(inner.instructions || []));
-    }
+      const tx = await connection.getParsedTransaction(sig.signature, {
+        maxSupportedTransactionVersion: 0,
+      });
+      if (!tx || !tx.meta || tx.meta.err) continue;
 
-    for (const instruction of allInstructions) {
-      if (
-        instruction.program === 'system' &&
-        instruction.parsed?.type === 'transfer' &&
-        instruction.parsed.info.destination === publicKey
-      ) {
-        return {
-          funder: instruction.parsed.info.source,
-          amount: Number(instruction.parsed.info.lamports) / LAMPORTS_PER_SOL,
-          signature: oldestSig.signature,
-        };
+      // The funding could be a top-level SystemProgram transfer (typical case:
+      // someone sending from Phantom or another wallet) or an inner instruction
+      // (typical case: CEX withdrawal where a withdrawal program does the
+      // transfer via CPI). Walk both.
+      const allInstructions = [...(tx.transaction.message.instructions || [])];
+      for (const inner of tx.meta.innerInstructions || []) {
+        allInstructions.push(...(inner.instructions || []));
+      }
+
+      for (const instruction of allInstructions) {
+        if (
+          instruction.program === 'system' &&
+          instruction.parsed?.type === 'transfer' &&
+          instruction.parsed.info.destination === publicKey
+        ) {
+          return {
+            funder: instruction.parsed.info.source,
+            amount: Number(instruction.parsed.info.lamports) / LAMPORTS_PER_SOL,
+            signature: sig.signature,
+          };
+        }
       }
     }
 
-    // First tx exists but doesn't have a parseable SystemProgram transfer
-    // to our wallet. Unusual — could be a strange CEX withdrawal pattern.
-    // Return null so the caller knows we can't identify the funder.
+    // Inspected everything (or hit the cap) without finding a recognizable
+    // inbound SystemProgram transfer. Most likely the wallet was funded
+    // by an unusual on-chain pattern we can't auto-detect. The user can
+    // still paste their destination manually in the cancel/transfer flow.
     return null;
   } catch (error) {
     console.error('Error finding funding wallet:', error);
