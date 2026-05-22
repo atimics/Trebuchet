@@ -1,5 +1,4 @@
 import express from 'express';
-import cors from 'cors';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -184,8 +183,69 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 }, // 100KB Arweave free-tier limit
 });
 
-// Middleware
-app.use(cors());
+// ---------------------------------------------------------------------------
+// Host header allowlist — DNS rebinding defense.
+//
+// The server binds to 127.0.0.1 (see app.listen at the bottom of this file)
+// so externally-routed traffic from the LAN or internet can't reach us. But
+// there's a subtler attack class that survives a loopback bind: DNS
+// rebinding. The scenario:
+//
+//   1. The user has any browser open (Chrome, Firefox, Safari, Edge) —
+//      NOT the Trebuchet Electron window, just normal web browsing.
+//   2. The user visits attacker.com, or sees a malicious iframe/ad on
+//      an otherwise innocent page.
+//   3. attacker.com's JavaScript manipulates its own DNS so that the
+//      domain resolves to 127.0.0.1 mid-session.
+//   4. The attacker's JS, still thinking it's same-origin with
+//      attacker.com, does fetch('http://attacker.com:<port>/api/...').
+//      The TCP connection lands on our server here.
+//   5. With wildcard CORS and no Host check, we'd happily serve it —
+//      including /api/pending-wallets, which returns secret keys.
+//
+// The browser's same-origin policy can't protect us, because the
+// attacker's JS thinks it really IS same-origin with attacker.com.
+// What DOES protect us: the Host header. The browser sends
+// `Host: attacker.com:<port>` (whatever domain the JS believes it's
+// talking to), not `Host: 127.0.0.1:<port>`. The Host header is one
+// of the few things the browser, not the page, controls — page JS
+// cannot forge or override it.
+//
+// So we reject any request whose Host header doesn't claim to be
+// 127.0.0.1 or localhost. Legitimate requests from the Trebuchet
+// renderer (which loads from http://127.0.0.1:<port>) always have the
+// right Host header. DNS-rebound requests never do.
+//
+// This middleware is registered first, before the body parser, so a
+// rejected request never has its body read into memory.
+// ---------------------------------------------------------------------------
+const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost']);
+
+app.use((req, res, next) => {
+  const hostHeader = req.headers.host || '';
+  // Host header format is "hostname" or "hostname:port". Strip the
+  // port for the allowlist check — we don't care which port the
+  // client believes it's talking to (the connection wouldn't have
+  // reached us if it weren't on our actual port), only the hostname.
+  const hostname = hostHeader.split(':')[0];
+  if (!ALLOWED_HOSTS.has(hostname)) {
+    console.warn(
+      `Rejected request with disallowed Host header: ${hostHeader} ` +
+      `${req.method} ${req.url}`,
+    );
+    return res
+      .status(403)
+      .json({ success: false, error: 'invalid Host header' });
+  }
+  next();
+});
+
+// CORS is intentionally not configured. The Trebuchet frontend loads from
+// http://127.0.0.1:<port> and the API serves from the same origin, so no
+// CORS headers are needed for legitimate use. The previous wildcard
+// `app.use(cors())` set Access-Control-Allow-Origin: * — appropriate only
+// for genuinely public APIs, and it would weaken the Host-header defense
+// above by giving cross-origin preflights a free pass.
 app.use(express.json({ limit: '5mb' }));
 
 // Resolve the public/ directory's path on disk. Two cases:
@@ -1257,10 +1317,20 @@ app.post('/api/find-funder', async (req, res) => {
 // Start server
 // ---------------------------------------------------------------------------
 
-app.listen(PORT, () => {
+// Bind explicitly to 127.0.0.1 rather than all interfaces. Without the
+// host argument, Node binds to 0.0.0.0 and the API would be reachable
+// from anything on the local network (other machines on the LAN, a
+// guest device on the same wifi, etc). This is a desktop app — only
+// the Electron renderer on this machine should ever reach the API.
+//
+// Note: this loopback bind plus the Host header allowlist above are
+// the two together. The bind kills network-reachable access; the
+// Host check kills the DNS-rebinding-through-the-user's-browser path
+// that survives a loopback bind.
+app.listen(PORT, '127.0.0.1', () => {
   const cfg = getRpcConfig();
   const active = cfg.saved.find((r) => r.url === cfg.active);
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on http://127.0.0.1:${PORT}`);
   console.log(`Active RPC: ${active ? active.name : '(unnamed)'} — ${cfg.active}`);
   console.log(`Saved RPCs: ${cfg.saved.length} (manage in the UI)`);
   console.log('\nIMPORTANT: For pool creation, use a paid RPC (Helius, Triton, QuickNode).');
