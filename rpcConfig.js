@@ -28,8 +28,10 @@ const __dirname = path.dirname(__filename);
 const CONFIG_DIR = process.env.TREBUCHET_CONFIG_DIR || __dirname;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'rpcConfig.json');
 
-// First-run default. Public mainnet works out of the box; users can
-// add their own faster/paid endpoints via the in-app RPC settings.
+// First-run default. Public mainnet works out of the box; users
+// should add their own dedicated endpoint (Helius / QuickNode /
+// Triton / Alchemy — free tier is plenty) via the in-app RPC
+// settings before attempting a real launch.
 const DEFAULT_RPC = {
   name: 'Public mainnet',
   url: 'https://api.mainnet-beta.solana.com',

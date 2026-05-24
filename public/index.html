@@ -1247,8 +1247,8 @@
             <!-- rate-limited and pool creation almost always fails on them    -->
             <!-- mid-flow, which can leave the user with partial-success state -->
             <!-- and lost SOL. Toggled by renderRpcConfig() based on the       -->
-            <!-- active URL — once the user adds and selects a paid RPC, the   -->
-            <!-- banner disappears.                                            -->
+            <!-- active URL — once the user adds and selects a dedicated RPC,  -->
+            <!-- the banner disappears.                                        -->
             <!-- ============================================================ -->
             <div class="notification is-danger hidden mb-4" id="publicRpcWarning">
                 <h5 class="title is-6 mb-2 has-text-white">
@@ -1265,9 +1265,9 @@
                 <p class="is-size-7">
                     Get a free API key from
                     <a href="https://www.helius.dev/" target="_blank" rel="noopener" class="has-text-white" style="text-decoration: underline;"><strong>Helius</strong></a>
-                    (or another paid Solana RPC provider — Triton, QuickNode,
-                    Alchemy) and add it via the RPC panel above before
-                    launching.
+                    (or another dedicated Solana RPC provider — Triton, QuickNode,
+                    Alchemy; free tiers are plenty) and add it via the RPC panel
+                    above before launching.
                 </p>
             </div>
 
@@ -1494,10 +1494,27 @@
 
                     <div class="notification is-warning is-light is-size-7 py-2 px-3 hidden mt-3" id="continueReasons"></div>
 
-                    <button class="button is-primary mt-2" id="continueToFundingBtn" disabled>
-                        <span>Continue to Funding</span>
-                        <span class="icon"><i class="fas fa-arrow-right"></i></span>
-                    </button>
+                    <div class="field is-grouped mt-2">
+                        <div class="control">
+                            <!-- Visualize affordance: opens a modal with a
+                                 donut chart of the planned token-supply
+                                 distribution across pools and positions,
+                                 plus a textual breakdown. Helps the user
+                                 sanity-check what they configured before
+                                 committing to the funding stage where
+                                 changes get more expensive. -->
+                            <button class="button is-link is-light" id="visualizeTokenomicsBtn">
+                                <span class="icon"><i class="fas fa-chart-pie"></i></span>
+                                <span>Visualize tokenomics</span>
+                            </button>
+                        </div>
+                        <div class="control">
+                            <button class="button is-primary" id="continueToFundingBtn" disabled>
+                                <span>Continue to Funding</span>
+                                <span class="icon"><i class="fas fa-arrow-right"></i></span>
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1511,6 +1528,19 @@
                     <span class="icon step-chevron"><i class="fas fa-chevron-down"></i></span>
                 </div>
                 <div class="step-body">
+                    <!-- Back-to-configuration affordance. The funding step
+                         is where the user sees the actual SOL requirement
+                         for their launch; sticker-shock or "I should have
+                         configured X differently" is most likely to happen
+                         here. This button lets them go back to step 2
+                         without canceling the wallet or losing their token
+                         config. Balance polling stops on click. -->
+                    <div class="mb-3">
+                        <button class="button is-small is-light" id="backToConfigBtn">
+                            <span class="icon"><i class="fas fa-arrow-left"></i></span>
+                            <span>Edit configuration</span>
+                        </button>
+                    </div>
                     <!--
                       Wallet display block. Re-shows the QR alongside the
                       wallet address, since this is the step where the user
@@ -1654,10 +1684,26 @@
                             <p><strong>All pools created.</strong></p>
                             <p id="lpDoneSummary"></p>
                         </div>
-                        <button class="button is-primary mt-2" id="continueToTransferBtn">
-                            <span>Continue to Final Transfer</span>
-                            <span class="icon"><i class="fas fa-arrow-right"></i></span>
-                        </button>
+                        <div class="field is-grouped mt-2">
+                            <div class="control">
+                                <button class="button is-primary" id="continueToTransferBtn">
+                                    <span>Continue to Final Transfer</span>
+                                    <span class="icon"><i class="fas fa-arrow-right"></i></span>
+                                </button>
+                            </div>
+                            <div class="control">
+                                <!-- Launch report: addresses, lock proofs,
+                                     position breakdown. Available from
+                                     here on (also re-offered at step 6
+                                     after transfer completes) so the user
+                                     can grab it before they hand off the
+                                     destination wallet. -->
+                                <button class="button is-link is-light" id="downloadReportBtnStep5">
+                                    <span class="icon"><i class="fas fa-file-download"></i></span>
+                                    <span>Download launch report</span>
+                                </button>
+                            </div>
+                        </div>
                     </div>
 
                     <div id="lpFailInfo" class="hidden mt-3">
@@ -1732,6 +1778,15 @@
                                 <p>SOL transferred: <span id="solTransferred"></span></p>
                                 <p>NFTs transferred: <span id="nftsTransferred"></span></p>
                             </div>
+                            <!-- Final chance to grab the launch report.
+                                 Same content as the step-5 button — the
+                                 launch is fully committed by this point,
+                                 so this is just convenience for users who
+                                 skipped the earlier download. -->
+                            <button class="button is-link is-light mt-2" id="downloadReportBtnStep6">
+                                <span class="icon"><i class="fas fa-file-download"></i></span>
+                                <span>Download launch report</span>
+                            </button>
                         </div>
                     </div>
 
@@ -1745,8 +1800,23 @@
                     <div id="step6CancelledPanel" class="hidden">
                         <div class="notification is-info is-light is-size-7">
                             <p class="mb-2"><strong>Launch cancelled.</strong></p>
-                            <p class="mb-2">The ephemeral wallet was empty, so there was nothing to refund. Nothing was spent on-chain, and no token or pools were created.</p>
-                            <p class="mb-0">To start a new launch, close and reopen the app.</p>
+                            <p class="mb-2" id="step6CancelledPanelBody">The ephemeral wallet was empty, so there was nothing to refund. Nothing was spent on-chain, and no token or pools were created.</p>
+                            <!-- Start-over affordance: only shown when nothing
+                                 was created on-chain (cancel happened before
+                                 step 4). For step-4+ cancels we hide this so
+                                 the user doesn't accidentally create a second
+                                 stranded token without realizing the first
+                                 one is still on-chain. The wallet stays
+                                 ready — startOverWithSameWallet() resets
+                                 only the token config + pool state. -->
+                            <div id="step6StartOverWrap" class="hidden">
+                                <p class="mb-2">The wallet is still available. You can start over with a fresh token configuration without generating a new one.</p>
+                                <button class="button is-info is-small" id="startOverBtn">
+                                    <span class="icon"><i class="fas fa-redo"></i></span>
+                                    <span>Start over with the same wallet</span>
+                                </button>
+                            </div>
+                            <p class="mb-0" id="step6CancelledCloseHint">To start a new launch, close and reopen the app.</p>
                         </div>
                     </div>
                 </div>
@@ -1868,6 +1938,33 @@
     </div>
 
     <!-- ============================================================ -->
+    <!-- Tokenomics Preview Modal                                       -->
+    <!-- ============================================================ -->
+    <!--
+      Visual representation of the user's planned token supply
+      distribution. Opened from the "Visualize tokenomics" button on
+      step 2 before they commit to funding. Body is rendered by
+      showTokenomicsModal() in app.js — that function reads from the
+      live pool state (so the chart reflects whatever the user has
+      currently configured, including unsaved customize-mode edits).
+
+      Modal-card is wider than the default so the SVG chart + the
+      textual breakdown fit comfortably side-by-side.
+    -->
+    <div class="modal" id="tokenomicsModal">
+        <div class="modal-background" id="tokenomicsModalBackground"></div>
+        <div class="modal-card" style="width: 90vw; max-width: 980px;">
+            <header class="modal-card-head">
+                <p class="modal-card-title">Tokenomics preview</p>
+                <button class="delete" id="tokenomicsModalCloseBtn" aria-label="close"></button>
+            </header>
+            <section class="modal-card-body">
+                <div id="tokenomicsModalBody"></div>
+            </section>
+        </div>
+    </div>
+
+    <!-- ============================================================ -->
     <!-- Token Info Modal                                               -->
     <!-- ============================================================ -->
     <!--
@@ -1931,24 +2028,28 @@
                         volume.
                     </p>
 
-                    <h6 class="title is-6 mb-2 mt-4">Meme flywheel <span class="tag is-warning is-light is-small ml-2">higher risk, higher volume</span></h6>
+                    <h6 class="title is-6 mb-2 mt-4">Meme flywheel <span class="tag is-success is-light is-small ml-2">default · cross-network</span></h6>
                     <p>
                         Paired with popular meme tokens that have stood the test of time and retained active
-                        communities and attention. Has a <strong>higher chance of generating meaningful volume</strong>
-                        — meme markets trade actively — but more downside exposure if those paired memes lose
-                        value.
+                        communities and attention, <strong>plus the Reserve flywheel itself</strong>. Has a
+                        higher chance of generating meaningful volume — meme markets trade actively — and the
+                        Reserve pair means a Meme launch <strong>plugs into both networks at once</strong>:
+                        arbitrage cascades from Reserve-paired tokens reach your launch too. More downside
+                        exposure if the paired memes lose value, but the broader coverage is the reason Meme
+                        is the default even for non-meme launches.
                     </p>
 
                     <h6 class="title is-6 mb-2 mt-4">Which should I pick?</h6>
                     <p>
-                        Rule of thumb: <strong>if you're launching something serious</strong> — a project
-                        token, a utility token, a brand — <strong>use the Reserve flywheel</strong>. The lower
-                        risk profile matches the longer-term posture.
+                        <strong>Default is Meme.</strong> The cross-network exposure (Reserve is one of its
+                        pairs) means a Meme launch covers both networks at once, while a Reserve launch only
+                        covers Reserve. For most launches that's the right trade.
                     </p>
                     <p>
-                        <strong>If you're launching a meme token</strong>, <strong>use the Meme flywheel</strong>.
-                        The volume and attention dynamics are aligned, and the risk profile matches the
-                        meme-token category in general.
+                        Switch to <strong>Reserve</strong> if you'd rather optimize for lower downside
+                        variance over broader exposure — typically a fit for utility tokens, brand tokens,
+                        or anything you're positioning for the long term where you'd rather not be tied to
+                        meme momentum.
                     </p>
                 </div>
             </section>

@@ -101,6 +101,20 @@ const FLYWHEEL_MAX_PERCENT = 30;
 const SPLIT_MIN_COUNT = 1;
 const SPLIT_MAX_COUNT = 10;
 
+// Ladder bounds for the "Ladder positions" simple-config toggle. Sliders
+// control how much supply goes to ladder bands (20-80% default 50%) and
+// how many bands the supply is split across (3-10 default 5). The
+// ceiling is hardcoded at 1000× launch price — wide enough that the
+// last band doesn't act as an artificial cap for any realistic
+// price trajectory but small enough to keep bands meaningfully sized.
+const LADDER_DEFAULT_PERCENT = 50;
+const LADDER_MIN_PERCENT = 20;
+const LADDER_MAX_PERCENT = 80;
+const LADDER_DEFAULT_BANDS = 5;
+const LADDER_MIN_BANDS = 3;
+const LADDER_MAX_BANDS = 10;
+const LADDER_CEILING_MULTIPLIER = 1000;
+
 // State for the simple-config UI. `mode` is the master switch:
 //   'default'   — show the simple toggle+dropdown UI; pool list hidden
 //                 (rebuilt automatically on every config change)
@@ -120,13 +134,39 @@ const SPLIT_MAX_COUNT = 10;
 // enabled with count > 1, each pool's distribution is N equal slices,
 // producing N transferable Fee Key NFTs per pool. When disabled or at
 // 1, each pool has a single 100% slice (the historical default).
+//
+// bootstrapMode + bootstrapSolValue control the bootstrap position
+// thickness. Default mode 'minimal' preserves the historical 1-whole-
+// token-and-narrow-band behavior; 'custom' deposits bootstrapSolValue
+// SOL worth of total starting liquidity, split evenly across all pools
+// and using full-range positions so the support is visible across every
+// price level. The split is computed at submit time from the number of
+// pools in the current configuration.
 let simpleConfig = {
   mode: 'default',
   flywheelEnabled: true,
-  flywheelKey: 'reserve',
+  // Default flywheel: meme. The marketing site documents that the meme
+  // flywheel's pair set includes the reserve flywheel itself, so picking
+  // meme by default gets users into BOTH networks at once — reserve-pair
+  // arbitrage cascades reach meme-launched tokens automatically through
+  // the meme↔reserve pool, while reserve-launched tokens only see the
+  // reserve network. Users launching serious / utility tokens can still
+  // pick Reserve manually; the in-app flywheel explainer modal still
+  // documents both use cases.
+  flywheelKey: 'meme',
   flywheelPercent: DEFAULT_FLYWHEEL_PERCENT,
   splitEnabled: false,
   splitCount: 1,
+  bootstrapMode: 'minimal',
+  bootstrapSolValue: 1, // total SOL to commit, when bootstrapMode === 'custom'
+  // Ladder positions: when enabled, splits each pool's main allocation
+  // into a wide remainder plus N single-sided bands at log-spaced price
+  // ranges going from launch up to a 1000× ceiling. Distributes supply
+  // more evenly across mcap levels and creates natural support/resistance
+  // zones. Off by default for backward compatibility.
+  ladderEnabled: false,
+  ladderPercent: LADDER_DEFAULT_PERCENT,
+  ladderBandCount: LADDER_DEFAULT_BANDS,
 };
 
 // Build a distribution array of N equal slices that sum to exactly 100%.
@@ -135,26 +175,39 @@ let simpleConfig = {
 //   N=3  → 33.33, 33.33, 33.34   (sum 100.00)
 //   N=7  → 14.28 × 6, 14.32      (sum 100.00)
 //   N=10 → 10.00 × 10            (sum 100.00)
+// Build N equal slices that sum to a target total (default 100). Used by:
+//   - The simple-UI "Split the LP" toggle which produces N slices that
+//     subdivide the wide portion of a pool.
+//   - The customize-mode "Add slice" button which expands the slice count.
+//
+// totalPct is the sum these slices should add to. When the pool has no
+// bootstrap or ladder, the wide gets the full 100% of pool and slices
+// sum to 100. When bootstrap is custom (say 2% of pool) and ladder
+// takes 50% of pool, wide gets 48%, so slices sum to 48 (not 100).
+// Each slice gets totalPct / count, with rounding remainder absorbed
+// into the last slice so the sum is exact.
+//
 // Stays within the backend's 0.01 tolerance and keeps every share > 0,
 // which normalizeDistribution() requires.
 //
-// For count <= 1, returns a single 100% slice — same shape as the
-// addPool default, so callers can use this unconditionally without
-// special-casing.
-function buildEqualSplitDistribution(count) {
+// For count <= 1, returns a single slice at the full totalPct — same
+// shape as the addPool default, so callers can use this unconditionally
+// without special-casing.
+function buildEqualSplitDistribution(count, totalPct = 100) {
+  if (!Number.isFinite(totalPct) || totalPct < 0) totalPct = 100;
   if (!count || count <= 1) {
-    return [{ sharePercent: 100, recipient: null, useExternalRecipient: false }];
+    return [{ sharePercent: totalPct, recipient: null, useExternalRecipient: false }];
   }
-  const each = Math.floor(10000 / count) / 100;
+  const each = Math.floor((totalPct * 10000 / count)) / 10000;
   const slices = [];
   let assigned = 0;
   for (let i = 0; i < count - 1; i++) {
     slices.push({ sharePercent: each, recipient: null, useExternalRecipient: false });
     assigned += each;
   }
-  // Last slice picks up any rounding remainder so total is exactly 100.
+  // Last slice picks up any rounding remainder so total is exactly totalPct.
   slices.push({
-    sharePercent: Number((100 - assigned).toFixed(2)),
+    sharePercent: Number((totalPct - assigned).toFixed(4)),
     recipient: null,
     useExternalRecipient: false,
   });
@@ -708,6 +761,40 @@ bind('cancelConfirmDismissBtn', 'click', () => {
   document.getElementById('cancelConfirmModal').classList.remove('is-active');
 });
 
+// Show the step-6 cancelled panel and decide whether to offer the
+// "Start over with the same wallet" affordance. We only offer start-
+// over when nothing was created on-chain — i.e., the cancel happened
+// before step 4 (token creation). For step-4+ cancels, the token (and
+// possibly pools) exist on-chain; starting over would silently create
+// a SECOND set, leaving the first one stranded. Better UX is to
+// require the user to consciously launch a new instance for that case.
+//
+// `cancelStep` is the step the user was on when they hit cancel (not
+// the post-cancel step, which is always 6). `panelBodyText` is the
+// "what happened" message — varies by cancel mode (empty vs refunded).
+function showCancelledPanel(cancelStep, panelBodyText) {
+  document.getElementById('step6NormalBody').classList.add('hidden');
+  document.getElementById('step6CancelledPanel').classList.remove('hidden');
+
+  const bodyEl = document.getElementById('step6CancelledPanelBody');
+  if (bodyEl) bodyEl.textContent = panelBodyText;
+
+  // Only safe to start over if no on-chain ops have run yet. Steps 1-3
+  // are pre-mint; step 4+ creates the token / pools.
+  const canStartOver = cancelStep <= 3;
+  const startOverWrap = document.getElementById('step6StartOverWrap');
+  const closeHint = document.getElementById('step6CancelledCloseHint');
+  if (canStartOver) {
+    startOverWrap.classList.remove('hidden');
+    // Hide the "close and reopen" hint — that's the fallback advice
+    // for when start-over isn't available.
+    closeHint.classList.add('hidden');
+  } else {
+    startOverWrap.classList.add('hidden');
+    closeHint.classList.remove('hidden');
+  }
+}
+
 bind('cancelConfirmProceedBtn', 'click', async () => {
   // ---------- End-launch path ----------
   // Wallet is empty — nothing to sweep, nothing to refund. Just stop
@@ -736,9 +823,13 @@ bind('cancelConfirmProceedBtn', 'click', async () => {
     // them for a destination address even though there's nothing in
     // the wallet to transfer — confusing and dead-ends them because
     // we also hide the Transfer Assets button (no submit affordance).
-    // The cancellation panel makes the terminal state explicit.
-    document.getElementById('step6NormalBody').classList.add('hidden');
-    document.getElementById('step6CancelledPanel').classList.remove('hidden');
+    // showCancelledPanel also decides whether to offer "Start over"
+    // based on whether on-chain ops have run.
+    showCancelledPanel(
+      currentStep,
+      'The ephemeral wallet was empty, so there was nothing to refund. ' +
+      'Nothing was spent on-chain, and no token or pools were created.',
+    );
 
     // Mark Step 6's summary too, so the collapsed/peek view of the
     // terminal step also makes the cancellation context obvious
@@ -826,18 +917,26 @@ bind('cancelConfirmProceedBtn', 'click', async () => {
         log(`Cancel complete. Swept: ${swept || 'nothing'}`, 'success');
         setStepSummary(currentStep, `cancelled — funds returned`);
       }
-      // Disable all step interactions — flow is over
+
+      // Show the cancelled panel with the swept summary, and offer
+      // start-over when no on-chain ops have run (cancel happened
+      // before step 4). showCancelledPanel hides the normal transfer
+      // body so the user doesn't see a stale form prompting for a
+      // destination they've already used.
+      const partialNote = hasPartialFailure
+        ? ' Some sub-steps failed — see the activity log for details and use the pending-wallets panel to recover anything stranded.'
+        : '';
+      const sweptText = swept ? `Swept ${swept} back to ${dest}.` : 'Wallet was already empty.';
+      showCancelledPanel(
+        currentStep,
+        `${sweptText}${partialNote}`,
+      );
+      setStepSummary(6, 'launch cancelled');
       activateStep(6);
-      // Hide the normal transfer button — clicking it now would try to
-      // sweep an already-emptied wallet and produce a confusing
-      // "transferred 0" success message. Cancel is terminal.
-      document.getElementById('transferAssetsBtn').classList.add('hidden');
-      // Show the same result block that the normal transfer would
-      document.getElementById('transferResult').classList.remove('hidden');
-      document.getElementById('tokensTransferred').textContent = data.tokensTransferred ?? '—';
-      document.getElementById('solTransferred').textContent = data.solTransferred ?? '—';
-      document.getElementById('nftsTransferred').textContent =
-        data.nftSweep?.transferred?.length ?? '0';
+
+      // Refresh pending-wallets panel — server retains a recovery
+      // entry in case of partial-failure or delayed deposits.
+      loadPendingWallets();
     } catch (e) {
       log(`Cancel failed: ${e.message}`, 'danger');
     }
@@ -935,10 +1034,11 @@ function renderRpcConfig(config) {
   document.getElementById('rpcCurrentDisplay').textContent = display;
 
   // Toggle the public-RPC warning. Anything matching the well-known
-  // public mainnet hosts is a launch hazard; paid RPCs (custom URLs
-  // the user has added) are fine. We match on hostname rather than
-  // exact URL so query-string variants and minor formatting
-  // differences all get caught.
+  // public mainnet hosts is a launch hazard; dedicated RPCs (custom
+  // URLs the user has added — Helius, QuickNode, etc., free tier or
+  // otherwise) are fine. We match on hostname rather than exact URL
+  // so query-string variants and minor formatting differences all
+  // get caught.
   togglePublicRpcWarning(config.active);
 
   const list = document.getElementById('rpcSavedList');
@@ -1433,6 +1533,39 @@ function addPool(initial = {}) {
     distribution: initial.distribution || [
       { sharePercent: 100, recipient: null, useExternalRecipient: false },
     ],
+    // Per-pool bootstrap configuration.
+    //   { mode: 'minimal' } — 1-whole-token reserve, narrow tick range
+    //   { mode: 'custom', solValue: N, supplyPercent: M } — user-funded
+    //
+    // Under "user thinks in SOL" semantics, solValue is the canonical
+    // input — the absolute SOL value of starting liquidity the user
+    // wants on this pool. supplyPercent is DERIVED from solValue,
+    // pool.supplyPercent, the target market cap, and the SOL/USD price.
+    // It's recomputed any time those inputs change (the user types SOL,
+    // the target mcap input is edited, the SOL price resolves), and
+    // the wide slices auto-rebalance to absorb the delta so positions
+    // total stays at 100%.
+    //
+    // supplyPercent is stored alongside solValue (rather than recomputed
+    // every read) so the positions-total indicator and the wire-format
+    // conversion don't have to redo the derivation logic on every paint.
+    // Whenever solValue or any input it depends on changes, we call
+    // recomputePoolBootstrapAndRebalance() to refresh supplyPercent and
+    // rebalance slices in one shot.
+    bootstrapConfig: initial.bootstrapConfig || { mode: 'minimal' },
+    // Per-pool ladder configuration.
+    //   { mode: 'off' } — no ladder positions
+    //   { mode: 'manual', bands: [...] } — explicit list of bands
+    // Each band: { supplyPercent, lowerMultiplier, upperMultiplier }
+    // where multipliers are relative to launch price (e.g., 1.5–2.5 =
+    // a band spanning 1.5× to 2.5× of launch price). The simple-UI
+    // ladder toggle populates manual-mode bands using the log-spaced
+    // preset; customize mode lets the user edit, add, or remove
+    // individual bands. The wire format the backend receives is
+    // always 'off' or 'manual' from the trebuchet frontend; the
+    // backend's older 'simple' mode is preserved for direct API
+    // users (scripts) but unused here.
+    ladderConfig: initial.ladderConfig || { mode: 'off', bands: [] },
     // UI-only: whether this pool's body is expanded in the editor. Set
     // by initialIsExpanded() at construction; the user can flip it via
     // the header click or via auto-expansion when the pool needs
@@ -1450,39 +1583,56 @@ function removePool(idx) {
   updateContinueToFundingState();
 }
 
-// Add a slice to a pool's distribution.
-//
-// `firstSplit` is true when called from the "Split into multiple recipients"
-// link on the collapsed editor — i.e. the user is starting to split for
-// the first time. In that case we auto-split the existing 100% slice into
-// 50/50 as a friendly default for the common "two-way split" use case.
-//
-// Otherwise (the "Add slice" button inside the already-expanded editor)
-// we default the new slice to whatever's left of 100%, clamped to 0. So
-// if the user has already filled the pool, the new slice arrives at 0%
-// and they must manually rebalance — same rule we apply to new pools'
-// supplyPercent. The validation reasons box surfaces the 0% slice so they
-// don't forget.
-//
-// Sets `_sliceEditorOpen` so subsequent renders keep the editor expanded.
-function addSlice(poolIdx, firstSplit = false) {
+// Add a slice to a pool's distribution. Splits the last existing slice
+// in half so the total wide allocation doesn't change — the user is
+// subdividing for ownership splitting, not reallocating supply. The
+// new slice arrives with no recipient set; user can wire one up via
+// "Send to a different wallet" checkbox in the row.
+function addSlice(poolIdx) {
   const p = pools[poolIdx];
-  if (firstSplit && p.distribution.length === 1 && p.distribution[0].sharePercent === 100) {
-    p.distribution[0].sharePercent = 50;
-    p.distribution.push({ sharePercent: 50, recipient: null, useExternalRecipient: false });
+  // Adding a slice always splits the LAST existing slice in half.
+  // This keeps the positions total invariant — the wide bucket's
+  // size doesn't change, we just subdivide it further for ownership
+  // splitting.
+  //
+  // If there are no existing slices (edge case — distribution was
+  // emptied), seed with what's left of the wide bucket after bs +
+  // bands. Should never happen in practice since addPool seeds one
+  // slice, but we guard so a corrupt state can still recover.
+  if (p.distribution.length === 0) {
+    const bsPct = (p.bootstrapConfig?.mode === 'custom')
+      ? Number(p.bootstrapConfig.supplyPercent) || 0 : 0;
+    const bandsPct = (p.ladderConfig?.mode === 'manual' && Array.isArray(p.ladderConfig.bands))
+      ? p.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0) : 0;
+    const widePct = Math.max(0, 100 - bsPct - bandsPct);
+    p.distribution.push({ sharePercent: widePct, recipient: null, useExternalRecipient: false });
   } else {
-    const used = p.distribution.reduce((s, x) => s + x.sharePercent, 0);
-    const remaining = Math.max(0, 100 - used);
-    p.distribution.push({ sharePercent: remaining, recipient: null, useExternalRecipient: false });
+    const last = p.distribution[p.distribution.length - 1];
+    const lastShare = Number(last.sharePercent) || 0;
+    const half = Number((lastShare / 2).toFixed(4));
+    last.sharePercent = half;
+    p.distribution.push({ sharePercent: half, recipient: null, useExternalRecipient: false });
   }
-  p._sliceEditorOpen = true;
   renderPools();
 }
 
 function removeSlice(poolIdx, sliceIdx) {
   const p = pools[poolIdx];
   if (p.distribution.length <= 1) return;
+  // Absorb the removed slice's share into the last remaining slice so
+  // the positions total stays at whatever it was. Without this, removing
+  // a slice would silently shrink the wide bucket and the user would
+  // see a confusing "now total is 75%" warning that they didn't trigger
+  // intentionally. The remaining slice grows to take back the freed
+  // share.
+  const removedShare = Number(p.distribution[sliceIdx].sharePercent) || 0;
   p.distribution.splice(sliceIdx, 1);
+  if (p.distribution.length > 0) {
+    const last = p.distribution[p.distribution.length - 1];
+    last.sharePercent = Number(
+      ((Number(last.sharePercent) || 0) + removedShare).toFixed(4),
+    );
+  }
   renderPools();
 }
 
@@ -1504,30 +1654,60 @@ function rebuildPoolsFromSimple() {
   // before calling this.
   pools.length = 0;
 
+  // Helper: compute the wide-bucket total for a pool given its bs + ladder
+  // configs. With unified semantics, bs + sum(ladder) + sum(wide slices)
+  // = 100% of pool. So wide total = 100 - bs - sum(bands). Slices then
+  // split this wide total equally.
+  function widePctForPool(bsCfg, ladderCfg) {
+    const bsPct = bsCfg && bsCfg.mode === 'custom' ? Number(bsCfg.supplyPercent) : 0;
+    const ladderTotal = ladderCfg && Array.isArray(ladderCfg.bands)
+      ? ladderCfg.bands.reduce((s, b) => s + Number(b.supplyPercent || 0), 0)
+      : 0;
+    return Math.max(0, 100 - bsPct - ladderTotal);
+  }
+
   if (simpleConfig.flywheelEnabled) {
     const fw = FLYWHEELS[simpleConfig.flywheelKey];
     if (fw && fw.available && fw.mint) {
-      // Clamp the slider value defensively. Should always be 10–30 by
-      // the input control's bounds, but a corrupt state or a future
-      // session-restore path could feed it something out of range.
       const flywheelPct = Math.max(
         FLYWHEEL_MIN_PERCENT,
         Math.min(FLYWHEEL_MAX_PERCENT, Number(simpleConfig.flywheelPercent) || DEFAULT_FLYWHEEL_PERCENT),
       );
       const solPercent = 100 - flywheelPct;
-      // Split-the-LP applies only to the SOL pool in simple mode. The
-      // flywheel pool always launches as a single position — users who
-      // want to split the flywheel side need customize mode for that.
-      // Rationale: the SOL pool is the main trading venue where most
-      // fee accumulation happens, so multiple Fee Key NFTs there is the
-      // useful case. The flywheel pool's role is mechanical (siphon
-      // accumulation into the reserve), so a single position is fine.
+
+      // Compute bootstrap and ladder for each pool. Bootstrap is derived
+      // per-pool (since the pool's supplyPercent matters for converting
+      // dollar value to % of pool); ladder is the same shape on both.
+      const solBs = deriveBootstrapConfigFromSimple(solPercent, 2);
+      const solLadder = deriveLadderConfigFromSimple();
+      const fwBs = deriveBootstrapConfigFromSimple(flywheelPct, 2);
+      const fwLadder = deriveLadderConfigFromSimple();
+
+      // Distribution slices share the wide bucket. Split-the-LP applies
+      // only to the SOL pool in simple mode; flywheel pool always gets
+      // one slice. Each slice's sharePercent is "% of pool" (new unified
+      // semantics).
+      const solSplitCount = simpleConfig.splitEnabled ? simpleConfig.splitCount : 1;
       const solDistribution = buildEqualSplitDistribution(
-        simpleConfig.splitEnabled ? simpleConfig.splitCount : 1,
+        solSplitCount, widePctForPool(solBs, solLadder),
       );
-      const flywheelDistribution = buildEqualSplitDistribution(1);
-      addPool({ quoteToken: 'SOL', supplyPercent: solPercent, distribution: solDistribution });
-      addPool({ quoteToken: fw.mint, supplyPercent: flywheelPct, distribution: flywheelDistribution });
+      const fwDistribution = buildEqualSplitDistribution(
+        1, widePctForPool(fwBs, fwLadder),
+      );
+      addPool({
+        quoteToken: 'SOL',
+        supplyPercent: solPercent,
+        distribution: solDistribution,
+        bootstrapConfig: solBs,
+        ladderConfig: solLadder,
+      });
+      addPool({
+        quoteToken: fw.mint,
+        supplyPercent: flywheelPct,
+        distribution: fwDistribution,
+        bootstrapConfig: fwBs,
+        ladderConfig: fwLadder,
+      });
       return;
     }
     // Selected flywheel is not available (e.g. user picked it before
@@ -1538,10 +1718,167 @@ function rebuildPoolsFromSimple() {
   // Default / flywheel-disabled / unavailable-flywheel case. Only one
   // pool (SOL), so splitting that pool is the only kind of split that
   // makes sense here.
+  const bsCfg = deriveBootstrapConfigFromSimple(100, 1);
+  const ladderCfg = deriveLadderConfigFromSimple();
   const distribution = buildEqualSplitDistribution(
     simpleConfig.splitEnabled ? simpleConfig.splitCount : 1,
+    widePctForPool(bsCfg, ladderCfg),
   );
-  addPool({ quoteToken: 'SOL', supplyPercent: 100, distribution });
+  addPool({
+    quoteToken: 'SOL',
+    supplyPercent: 100,
+    distribution,
+    bootstrapConfig: bsCfg,
+    ladderConfig: ladderCfg,
+  });
+}
+
+// Translate the simple-UI bootstrap toggle into a per-pool bootstrapConfig.
+//
+// The canonical user-intent value is the SOL value of starting liquidity
+// (simpleConfig.bootstrapSolValue) split evenly across pools. We return
+// both the solValue (canonical) and the derived supplyPercent (% of
+// this pool), so the customize-mode UI can display either and the
+// wire-format conversion can use supplyPercent without recomputing.
+//
+// supplyPercent uses the live SOL price when available (read from the
+// SOL pool's resolvedPriceUsd), falling back to $200 when no pool has
+// resolved yet — same fallback the funding estimator uses. The post-
+// resolution refresh in resolvePoolQuote re-runs this and updates each
+// pool's supplyPercent + rebalances slices when the live price arrives.
+//
+// If any input is missing or invalid (no resolved SOL price yet, no
+// target mcap set, custom mode but zero SOL value), we return minimal
+// mode. Pre-flight will reject if a custom-mode pool ends up with a
+// bad supplyPercent, but returning minimal here is the friendlier
+// behavior because the user can still launch and then switch to
+// customize to fix it.
+function deriveBootstrapConfigFromSimple(poolSupplyPercent, poolCount) {
+  if (simpleConfig.mode !== 'default') return { mode: 'minimal' };
+  if (simpleConfig.bootstrapMode !== 'custom') return { mode: 'minimal' };
+  const totalSol = Number(simpleConfig.bootstrapSolValue);
+  if (!Number.isFinite(totalSol) || totalSol <= 0) return { mode: 'minimal' };
+  if (!Number.isFinite(poolCount) || poolCount <= 0) return { mode: 'minimal' };
+  if (!Number.isFinite(poolSupplyPercent) || poolSupplyPercent <= 0) return { mode: 'minimal' };
+
+  // Each pool gets an equal share of the total bootstrap SOL.
+  const perPoolSol = totalSol / poolCount;
+  // Derive supplyPercent for initial display. The on-input handlers
+  // and the targetMarketCap/resolvePoolQuote hooks all recompute this
+  // via computeBootstrapSupplyPercent() which uses the same logic.
+  const supplyPercent = computeBootstrapSupplyPercent(perPoolSol, poolSupplyPercent);
+  if (supplyPercent == null) return { mode: 'minimal' };
+  return { mode: 'custom', solValue: perPoolSol, supplyPercent };
+}
+
+// Compute the supplyPercent (% of pool) for a bootstrap given:
+//   solValue        — absolute SOL of starting liquidity for THIS pool
+//   poolSupplyPct   — pool's allocation as % of total token supply
+//
+// Reads targetMarketCap from the DOM and the SOL price from the SOL
+// pool's resolvedPriceUsd (falls back to $200 if unresolved). Returns
+// null if any input is missing/invalid; callers treat null as "leave
+// the supplyPercent alone."
+function computeBootstrapSupplyPercent(solValue, poolSupplyPct) {
+  const sol = Number(solValue);
+  if (!Number.isFinite(sol) || sol <= 0) return null;
+  if (!Number.isFinite(poolSupplyPct) || poolSupplyPct <= 0) return null;
+  const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+  if (!Number.isFinite(targetMc) || targetMc <= 0) return null;
+  const solPool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+  const solUsd = solPool && Number(solPool.resolvedPriceUsd) > 0
+    ? Number(solPool.resolvedPriceUsd) : 200;
+  const bsUsd = sol * solUsd;
+  const poolUsd = targetMc * poolSupplyPct / 100;
+  if (poolUsd <= 0) return null;
+  const pct = (bsUsd / poolUsd) * 100;
+  if (!Number.isFinite(pct) || pct <= 0) return null;
+  return pct;
+}
+
+// Refresh one pool's bootstrap supplyPercent from its stored solValue,
+// then absorb the delta into the wide slices so positions total stays
+// at 100%. Called from any path that can change the derived supplyPercent
+// without changing user intent: targetMarketCap input, SOL price
+// resolution, and the SOL input in customize mode itself.
+//
+// No-op when bootstrap is in minimal mode (no solValue to recompute)
+// or when the recompute fails (missing mcap/price). In both cases the
+// supplyPercent stays at whatever it was, so the total may drift —
+// the warning indicator surfaces that to the user.
+function recomputePoolBootstrapAndRebalance(pool) {
+  if (!pool || !pool.bootstrapConfig || pool.bootstrapConfig.mode !== 'custom') return;
+  const oldPct = Number(pool.bootstrapConfig.supplyPercent) || 0;
+  const newPct = computeBootstrapSupplyPercent(
+    pool.bootstrapConfig.solValue,
+    Number(pool.supplyPercent),
+  );
+  if (newPct == null) return;
+  pool.bootstrapConfig.supplyPercent = newPct;
+  rebalanceWideSlicesByDelta(pool, newPct - oldPct);
+}
+
+// Translate the simple-UI ladder toggle into a per-pool ladderConfig.
+//
+// When the toggle is off (or the user is in customize mode but
+// rebuildPoolsFromSimple is somehow called), return { mode: 'off' }.
+// When on, generate the log-spaced default bands the simple UI would
+// have produced — same math as the original simple-mode auto-generated
+// bands. From this point, the user can edit individual bands in
+// customize mode and the per-pool ladderConfig becomes the source of
+// truth.
+//
+// Each band has supplyPercent (equal share of the global ladder %),
+// lowerMultiplier, upperMultiplier. Multipliers are computed from
+// the log-spacing math: ln(ceiling) / (2N - 1) per "unit", N bands +
+// (N-1) gaps. Band i covers [ratio^(2i), ratio^(2i+1)].
+function deriveLadderConfigFromSimple() {
+  if (simpleConfig.mode !== 'default') return { mode: 'off', bands: [] };
+  if (!simpleConfig.ladderEnabled) return { mode: 'off', bands: [] };
+  const supplyPercent = Math.max(
+    LADDER_MIN_PERCENT,
+    Math.min(LADDER_MAX_PERCENT, Number(simpleConfig.ladderPercent) || LADDER_DEFAULT_PERCENT),
+  );
+  const bandCount = Math.max(
+    LADDER_MIN_BANDS,
+    Math.min(LADDER_MAX_BANDS, Number(simpleConfig.ladderBandCount) || LADDER_DEFAULT_BANDS),
+  );
+  return {
+    mode: 'manual',
+    bands: generateLogSpacedBands({
+      supplyPercent,
+      bandCount,
+      ceilingMultiplier: LADDER_CEILING_MULTIPLIER,
+    }),
+  };
+}
+
+// Generate N log-spaced ladder bands covering [1×, ceiling×] with equal
+// gap widths between bands. Each band is given an equal share of the
+// total ladder supply. This is the math the backend's 'simple' mode
+// used to do server-side; we do it client-side now so the bands are
+// editable as manual-mode bands.
+//
+// Math: total log span = ln(ceiling), per-unit log = total/(2N-1)
+// (N bands + N-1 gaps). Band i (0-indexed) covers
+// [e^(2i × perUnit), e^((2i+1) × perUnit)].
+function generateLogSpacedBands({ supplyPercent, bandCount, ceilingMultiplier }) {
+  const perBandPct = supplyPercent / bandCount;
+  const totalLog = Math.log(ceilingMultiplier);
+  const perUnitLog = totalLog / (2 * bandCount - 1);
+  const bands = [];
+  for (let i = 0; i < bandCount; i++) {
+    const lowerMul = Math.exp(2 * i * perUnitLog);
+    const upperMul = Math.exp((2 * i + 1) * perUnitLog);
+    bands.push({
+      // toFixed → Number to bound trailing precision (the slider step
+      // is 0.01, so 4 decimals is plenty for our needs).
+      supplyPercent: Number(perBandPct.toFixed(4)),
+      lowerMultiplier: Number(lowerMul.toFixed(4)),
+      upperMultiplier: Number(upperMul.toFixed(4)),
+    });
+  }
+  return bands;
 }
 
 // Paint the simple-config UI into #simpleConfigBody. Called whenever
@@ -1600,6 +1937,27 @@ function renderSimpleConfig() {
     ? 'A flywheel routes a portion of trade fees into a reserve token like XLRT, building accumulation pressure on it. Recommended for most launches.'
     : 'Your token will launch in a single SOL pool with all supply allocated. No flywheel mechanic — simple and standard.';
 
+  // Bootstrap-mode state. Clamp the SOL value defensively to prevent
+  // negative or absurd values from a corrupted state from rendering
+  // weirdly. The funding estimator does its own validation server-side;
+  // this is just for display.
+  const bsCustomChecked = simpleConfig.bootstrapMode === 'custom' ? 'checked' : '';
+  const bsInputDisabled = simpleConfig.bootstrapMode === 'custom' ? '' : 'disabled';
+  const bsSolValue = Math.max(0, Number(simpleConfig.bootstrapSolValue) || 0);
+
+  // Ladder state. Disabled sliders when toggle is off — keeps the visible
+  // values but conveys "this isn't doing anything" to the user.
+  const ladderChecked = simpleConfig.ladderEnabled ? 'checked' : '';
+  const ladderSlidersDisabled = simpleConfig.ladderEnabled ? '' : 'disabled';
+  const ladderPercent = Math.max(
+    LADDER_MIN_PERCENT,
+    Math.min(LADDER_MAX_PERCENT, Number(simpleConfig.ladderPercent) || LADDER_DEFAULT_PERCENT),
+  );
+  const ladderBandCount = Math.max(
+    LADDER_MIN_BANDS,
+    Math.min(LADDER_MAX_BANDS, Number(simpleConfig.ladderBandCount) || LADDER_DEFAULT_BANDS),
+  );
+
   body.innerHTML = `
     <div class="simple-config-row">
       <label class="simple-config-toggle">
@@ -1634,6 +1992,39 @@ function renderSimpleConfig() {
       </div>
     </div>
     <p class="simple-config-help-text">Splits the SOL pool into multiple positions, each minting its own transferable Fee Key NFT (when Lock liquidity is enabled below) — useful if you want to give away or sell partial fee streams. To split the flywheel pool too, use Customize.</p>
+    <div class="simple-config-row">
+      <label class="simple-config-toggle">
+        <input type="checkbox" id="simpleBootstrapCustomToggle" ${bsCustomChecked}>
+        <strong>Add starting liquidity</strong>
+      </label>
+      <div class="simple-config-slider">
+        <input class="input is-small" type="number" min="0" step="0.1"
+               id="simpleBootstrapSolInput"
+               style="width: 7rem;"
+               value="${bsSolValue}" ${bsInputDisabled}>
+        <span class="simple-config-slider-value" id="simpleBootstrapSolUnit">SOL total</span>
+      </div>
+    </div>
+    <p class="simple-config-help-text">By default the bootstrap is a tiny ~$1 position that just makes the pool tradable. Enable this to deposit real starting liquidity across all your pools — the SOL you commit gets split evenly across every pool (SOL pool plus any flywheel pools), and each pool's bootstrap uses a full-range position so the support shows up at every price level. Token-side liquidity carves out of each pool's allocation; you don't need extra tokens.</p>
+    <div class="simple-config-row">
+      <label class="simple-config-toggle">
+        <input type="checkbox" id="simpleLadderToggle" ${ladderChecked}>
+        <strong>Ladder positions</strong>
+      </label>
+      <div class="simple-config-slider" ${ladderSlidersDisabled}>
+        <input type="range" id="simpleLadderPercentSlider"
+               min="${LADDER_MIN_PERCENT}" max="${LADDER_MAX_PERCENT}" step="5"
+               value="${ladderPercent}" ${ladderSlidersDisabled}>
+        <span class="simple-config-slider-value" id="simpleLadderPercentValue">${ladderPercent}% supply</span>
+      </div>
+      <div class="simple-config-slider" ${ladderSlidersDisabled}>
+        <input type="range" id="simpleLadderBandsSlider"
+               min="${LADDER_MIN_BANDS}" max="${LADDER_MAX_BANDS}" step="1"
+               value="${ladderBandCount}" ${ladderSlidersDisabled}>
+        <span class="simple-config-slider-value" id="simpleLadderBandsValue">${ladderBandCount} bands</span>
+      </div>
+    </div>
+    <p class="simple-config-help-text">Splits a portion of each pool's supply across discrete log-spaced price bands going up to 1000× launch (with gaps between bands for breakouts). Each band acts as resistance on the way up and support on the way back down. Smooths supply distribution so 90% isn't gobbled up by the time you hit 10× — leaves room for higher-mcap accumulation. The rest of the pool stays in a wide position covering all prices.</p>
     <div class="simple-config-customize-row">
       <button type="button" class="button is-link is-light" id="simpleCustomizeBtn">
         <span class="icon"><i class="fas fa-sliders-h"></i></span>
@@ -1653,6 +2044,13 @@ function renderSimpleConfig() {
   const splitToggle = body.querySelector('#simpleSplitToggle');
   const splitSlider = body.querySelector('#simpleSplitSlider');
   const splitReadout = body.querySelector('#simpleSplitSliderValue');
+  const bsCustomToggle = body.querySelector('#simpleBootstrapCustomToggle');
+  const bsSolInput = body.querySelector('#simpleBootstrapSolInput');
+  const ladderToggle = body.querySelector('#simpleLadderToggle');
+  const ladderPctSlider = body.querySelector('#simpleLadderPercentSlider');
+  const ladderPctReadout = body.querySelector('#simpleLadderPercentValue');
+  const ladderBandsSlider = body.querySelector('#simpleLadderBandsSlider');
+  const ladderBandsReadout = body.querySelector('#simpleLadderBandsValue');
   const customizeBtn = body.querySelector('#simpleCustomizeBtn');
 
   // Learn-more link — opens the static flywheel explainer modal. The link
@@ -1718,6 +2116,60 @@ function renderSimpleConfig() {
   });
   splitSlider.addEventListener('change', (e) => {
     simpleConfig.splitCount = Number(e.target.value);
+    rebuildPoolsFromSimple();
+  });
+
+  // Bootstrap mode toggle: switch between minimal and custom. State
+  // persists across toggle off/on cycles (the SOL value is kept), so a
+  // user who accidentally untoggles doesn't lose their entered amount.
+  // Re-renders so the SOL input flips between enabled and disabled, and
+  // re-runs rebuildPoolsFromSimple so per-pool bootstrapConfig stays in
+  // sync (this is what makes the simple→customize transition show the
+  // bootstrap state correctly).
+  bsCustomToggle.addEventListener('change', (e) => {
+    simpleConfig.bootstrapMode = e.target.checked ? 'custom' : 'minimal';
+    rebuildPoolsFromSimple();
+    renderSimpleConfig();
+  });
+
+  // SOL value input. We update on `input` (every keystroke) rather than
+  // on `change` so the value is fresh when the user clicks Continue.
+  // The estimator will be called against the latest value at submit
+  // time — no live re-estimate per keystroke (those are expensive and
+  // bursty typing would drown the server). We also re-derive the
+  // per-pool bootstrapConfig so a customize-mode switch later sees the
+  // current value.
+  bsSolInput.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    simpleConfig.bootstrapSolValue = Number.isFinite(v) && v >= 0 ? v : 0;
+    rebuildPoolsFromSimple();
+  });
+
+  // Ladder toggle: enable/disable the ladder feature. State persists
+  // (percent + band count are kept), and the sliders flip between
+  // enabled/disabled via re-render. rebuildPoolsFromSimple regenerates
+  // each pool's ladderConfig so the bands are populated/cleared.
+  ladderToggle.addEventListener('change', (e) => {
+    simpleConfig.ladderEnabled = e.target.checked;
+    rebuildPoolsFromSimple();
+    renderSimpleConfig();
+  });
+
+  // Ladder slider handlers update state on each tick and refresh just
+  // the readout text — no full re-render needed for the simple UI
+  // (rest of it is invariant under these changes). We do rebuild pools
+  // so each pool's ladderConfig gets fresh bands sized for the new
+  // value, in case the user switches to customize.
+  ladderPctSlider.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    simpleConfig.ladderPercent = Number.isFinite(v) ? v : LADDER_DEFAULT_PERCENT;
+    ladderPctReadout.textContent = `${simpleConfig.ladderPercent}% supply`;
+    rebuildPoolsFromSimple();
+  });
+  ladderBandsSlider.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    simpleConfig.ladderBandCount = Number.isInteger(v) ? v : LADDER_DEFAULT_BANDS;
+    ladderBandsReadout.textContent = `${simpleConfig.ladderBandCount} bands`;
     rebuildPoolsFromSimple();
   });
 
@@ -2098,7 +2550,9 @@ function updatePoolAffordance(node, pool) {
 //                       must enter one in overrides
 //   'no-allocation'   — supplyPercent is 0; the pool would create with
 //                       no liquidity allocation, almost always wrong
-//   'slice-mismatch'  — distribution slices don't sum to 100%
+//   'slice-mismatch'  — legacy name; replaced by 'positions-mismatch'
+//   'positions-mismatch' — bootstrap + slices + ladder bands don't sum
+//                          to 100% of pool
 //
 // This intentionally doesn't account for "the user has opened the
 // override section but not filled in all values" — that's a finer-
@@ -2113,9 +2567,48 @@ function poolNeedsAttention(pool) {
       pool.quoteUsdOverride == null) {
     return 'price-missing';
   }
-  const sliceTotal = pool.distribution.reduce((s, x) => s + x.sharePercent, 0);
-  if (Math.abs(sliceTotal - 100) > 0.01) return 'slice-mismatch';
+  // Positions total check: under unified semantics, the sum of
+  // bootstrap (if custom) + slice sharePercents + ladder band
+  // supplyPercents must equal 100% of pool. If not, the pool is
+  // misconfigured and we can't safely send it to the backend.
+  if (Math.abs(computePoolPositionsTotal(pool) - 100) > 0.01) return 'positions-mismatch';
   return null;
+}
+
+// Compute the sum of all position percentages in a pool: bootstrap
+// (if custom), all wide slices, and all ladder bands. Each is "% of
+// pool" under unified semantics. The total should be 100%.
+function computePoolPositionsTotal(pool) {
+  const bsPct = (pool.bootstrapConfig && pool.bootstrapConfig.mode === 'custom')
+    ? Number(pool.bootstrapConfig.supplyPercent) || 0
+    : 0;
+  const slicePct = Array.isArray(pool.distribution)
+    ? pool.distribution.reduce((s, x) => s + (Number(x.sharePercent) || 0), 0)
+    : 0;
+  const bandPct = (pool.ladderConfig && pool.ladderConfig.mode === 'manual' && Array.isArray(pool.ladderConfig.bands))
+    ? pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
+    : 0;
+  return bsPct + slicePct + bandPct;
+}
+
+// Absorb a delta into the wide-slices bucket to keep positions total
+// at 100% after a structural toggle (bs on/off, ladder on/off). When
+// delta > 0, slices need to shrink to make room. When delta < 0,
+// slices need to grow to absorb. The adjustment lands on the LAST
+// slice — simplest and most predictable for the user (they can see
+// at a glance what changed). If absorbing fully would push the last
+// slice below 0, it clamps at 0 and the user gets a positions-total
+// warning to manually rebalance.
+//
+// Edge case: pool has no slices at all (distribution empty). Then we
+// can't rebalance through slices; total just drifts and the warning
+// fires. Should never happen in practice since addPool seeds one
+// slice, but we guard anyway.
+function rebalanceWideSlicesByDelta(pool, delta) {
+  if (!Array.isArray(pool.distribution) || pool.distribution.length === 0) return;
+  const lastIdx = pool.distribution.length - 1;
+  const newVal = Number(pool.distribution[lastIdx].sharePercent || 0) - delta;
+  pool.distribution[lastIdx].sharePercent = Math.max(0, Number(newVal.toFixed(4)));
 }
 
 // Update one pool's title in place.
@@ -2576,8 +3069,8 @@ function buildPoolNode(pool, idx) {
             <option value="SOL">SOL</option>
           </optgroup>
           <optgroup label="Flywheels">
-            <option value="J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj">XLRT (Reserve flywheel — recommended)</option>
-            <option value="HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r">Meme flywheel</option>
+            <option value="HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r">$seige (Meme flywheel — recommended)</option>
+            <option value="J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj">XLRT (Reserve flywheel)</option>
           </optgroup>
           <optgroup label="Majors">
             <option value="3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh">wBTC (Wormhole)</option>
@@ -2717,8 +3210,17 @@ function buildPoolNode(pool, idx) {
 
   row1.querySelector('[data-field="supplyPercent"]').addEventListener('input', (e) => {
     pool.supplyPercent = Number(e.target.value);
+    // Pool's allocation as % of total supply is one of the inputs to
+    // the bootstrap's derived supplyPercent (bs_pct = bs_usd / pool_usd
+    // × 100, and pool_usd = targetMc × pool.supplyPercent / 100). If we
+    // don't recompute on a pool-size change, positions total drifts and
+    // the bootstrap row's hint shows stale numbers.
+    recomputePoolBootstrapAndRebalance(pool);
+    refreshBootstrapHint(idx);
+    refreshWideSliceInputs(idx);
     updateAllocationSummary();
     updatePoolTitle(idx);
+    updatePoolPositionsTotal(idx);
     updateContinueToFundingState();
   });
 
@@ -2817,122 +3319,567 @@ function buildPoolNode(pool, idx) {
     updateContinueToFundingState();
   });
 
-  // Distribution section.
+  // Distribution section. Under the unified-positions model, slices
+  // are first-class wide LP positions sharing the pool's allocation
+  // alongside bootstrap and ladder bands. We always show the slice
+  // row(s) — even when there's just one — so the user can see how
+  // much of the pool is going to the main LP. Hiding this behind a
+  // collapsed "Split fee distribution" button was confusing because
+  // the user had no way to see the main LP's % allocation without
+  // first expanding.
   //
-  // Default-collapsed for the common case (single 100% slice → all locked
-  // liquidity flows to the launch wallet) so the editor doesn't take up
-  // space on every pool. Expanded automatically when the pool already has
-  // more than one slice (so we don't hide configured work) or when the
-  // user has previously opened the editor (`_sliceEditorOpen`). The flag
-  // is UI-only and lives on the pool object — buildAllocationsForApi()
-  // picks specific fields, so underscored fields don't reach the server.
+  // The single-slice case is the common one and that single row
+  // serves as "the main LP position." If the user wants to split fee
+  // ownership across multiple wallets, they click "Add slice" and
+  // the existing slice splits in half. Multiple slices = multiple
+  // positions at the same wide range, each with its own Fee Key NFT.
   const distSection = document.createElement('div');
   distSection.className = 'distribution-section';
   body.appendChild(distSection);
 
-  const sliceEditorExpanded =
-    pool._sliceEditorOpen === true || pool.distribution.length > 1;
+  // Header. Text is gentler in the single-slice case (where "slice"
+  // doesn't really describe anything — it's just the main LP) vs the
+  // multi-slice case (where the split-into-pieces framing is accurate).
+  const isSingleSlice = pool.distribution.length <= 1;
+  const expandedHeader = document.createElement('div');
+  expandedHeader.className = 'distribution-expanded-header';
+  expandedHeader.innerHTML = isSingleSlice
+    ? `<label class="label is-small mb-0">Main LP position <span class="has-text-grey has-text-weight-normal is-size-7">— wide position above launch; "Add slice" splits fee ownership across recipients</span></label>`
+    : `<label class="label is-small mb-0">Main LP positions <span class="has-text-grey has-text-weight-normal is-size-7">— each is a wide position above launch with its own Fee Key</span></label>`;
+  distSection.appendChild(expandedHeader);
 
-  if (!sliceEditorExpanded) {
-    // Collapsed: single button in the action row that triggers the
-    // first-split. We don't show the "Locked liquidity fees → launch
-    // wallet" text any more — it was clutter that explained the default
-    // most users never change. Anyone who needs that detail can hover
-    // the button or open the editor.
-    const splitBtn = document.createElement('button');
-    splitBtn.type = 'button';
-    splitBtn.className = 'button is-small is-light';
-    splitBtn.dataset.action = 'expand-slices';
-    splitBtn.title = 'Split locked liquidity fees across multiple recipients';
-    splitBtn.textContent = 'Split fee distribution';
-    splitBtn.addEventListener('click', () => {
-      // First-time split: addSlice with firstSplit=true gives the friendly
-      // 50/50 default. Subsequent "Add slice" clicks (inside the expanded
-      // editor) use the literal "remaining of 100%" rule.
-      addSlice(idx, /* firstSplit = */ true);
-    });
-    actionRow.appendChild(splitBtn);
-    // distSection stays empty in this case — it's still in the DOM as a
-    // stable mount point so updateCollapseLinkState() and the slice
-    // helpers can find it via the same selectors regardless of state.
-  } else {
-    // Expanded: header + indented slice rows + add-slice button + warning.
-    const expandedHeader = document.createElement('div');
-    expandedHeader.className = 'distribution-expanded-header';
-    expandedHeader.innerHTML = `
-      <label class="label is-small mb-0">Locked liquidity split <span class="has-text-grey has-text-weight-normal is-size-7">— must total 100%</span></label>
-      <button type="button" class="button is-small is-light" data-action="collapse-slices">Collapse</button>
-    `;
-    distSection.appendChild(expandedHeader);
+  const sliceContainer = document.createElement('div');
+  sliceContainer.className = 'distribution-slices';
+  distSection.appendChild(sliceContainer);
 
-    const collapseLink = expandedHeader.querySelector('[data-action="collapse-slices"]');
-    // Always attach the click handler — but check the canCollapse condition
-    // at click time, not at render time. Otherwise an in-place update of
-    // slice shares (which doesn't go through renderPools, to preserve
-    // focus on the input being typed in) would leave the click behavior
-    // stuck on the value computed at the last full render. The visual
-    // disabled-state is driven separately by updateCollapseLinkState(),
-    // also called on every slice-share input event. Tolerance matches
-    // updateSliceWarning's to handle floating-point drift.
-    collapseLink.addEventListener('click', () => {
-      const canCollapseNow =
-        pool.distribution.length === 1 &&
-        Math.abs(pool.distribution[0].sharePercent - 100) <= 0.01;
-      if (!canCollapseNow) return;
-      pool._sliceEditorOpen = false;
-      renderPools();
-    });
-    // Initial visual state.
-    updateCollapseLinkState(idx);
+  pool.distribution.forEach((slice, sliceIdx) => {
+    sliceContainer.appendChild(buildSliceNode(pool, idx, slice, sliceIdx));
+  });
 
-    const sliceContainer = document.createElement('div');
-    sliceContainer.className = 'distribution-slices';
-    distSection.appendChild(sliceContainer);
+  const addSliceBtn = document.createElement('button');
+  addSliceBtn.className = 'button is-light is-small mt-1';
+  addSliceBtn.innerHTML = '<span class="icon"><i class="fas fa-plus"></i></span><span>Add slice</span>';
+  addSliceBtn.addEventListener('click', () => addSlice(idx));
+  distSection.appendChild(addSliceBtn);
 
-    pool.distribution.forEach((slice, sliceIdx) => {
-      sliceContainer.appendChild(buildSliceNode(pool, idx, slice, sliceIdx));
-    });
+  // Bootstrap section: lets the user opt this pool in to custom-mode
+  // bootstrap (a meaningful starting-liquidity position at launch).
+  // Rendered as a slice-style row matching the rest of the position UI.
+  body.appendChild(buildBootstrapNode(pool, idx));
 
-    const addSliceBtn = document.createElement('button');
-    addSliceBtn.className = 'button is-light is-small mt-1';
-    addSliceBtn.innerHTML = '<span class="icon"><i class="fas fa-plus"></i></span><span>Add slice</span>';
-    addSliceBtn.addEventListener('click', () => addSlice(idx));
-    distSection.appendChild(addSliceBtn);
+  // Ladder section: lets the user view, add, edit, or remove individual
+  // ladder bands. Each band has supplyPercent (of pool), lowerMultiplier,
+  // and upperMultiplier (relative to launch price). Bands are independent
+  // — they can be overlapping or have gaps, and the order doesn't matter
+  // to the backend math.
+  body.appendChild(buildLadderNode(pool, idx));
 
-    const sliceTotal = pool.distribution.reduce((s, x) => s + x.sharePercent, 0);
-    // Always render the slice warning paragraph, even when slices add up
-    // correctly. We keep it in the DOM with a stable data-attribute selector
-    // so updateSliceWarning() can find and update it in place rather than
-    // having to rebuild the whole pool tree on every keystroke. When
-    // slices are correct the element stays hidden via .hidden class.
-    const warn = document.createElement('p');
-    warn.className = 'help is-danger mt-1';
-    warn.dataset.sliceWarning = '';
-    warn.textContent = `Slice shares total ${sliceTotal.toFixed(2)}% — must be 100%.`;
-    if (Math.abs(sliceTotal - 100) <= 0.01) {
-      warn.classList.add('hidden');
-    }
-    distSection.appendChild(warn);
-  }
+  // Positions total indicator. Under unified semantics, bootstrap
+  // (if custom) + sum(slice sharePercents) + sum(band supplyPercents)
+  // must equal 100% of the pool's allocation. Rendered as a paragraph
+  // at the bottom of the pool body with a stable data-attribute so
+  // updatePoolPositionsTotal() can find and update it in place.
+  const positionsTotal = document.createElement('p');
+  positionsTotal.className = 'has-text-weight-semibold mt-3';
+  positionsTotal.dataset.positionsTotal = '';
+  body.appendChild(positionsTotal);
+
+  // Paint the initial state.
+  refreshPoolPositionsTotalNode(positionsTotal, pool);
 
   return node;
+}
+
+// Refresh a positions-total <p> in place with the latest sum and a
+// pass/fail visual. Extracted out so both the initial render (above)
+// and the in-place update from input handlers (updatePoolPositionsTotal
+// below) share the same formatting logic.
+function refreshPoolPositionsTotalNode(el, pool) {
+  const total = computePoolPositionsTotal(pool);
+  const ok = Math.abs(total - 100) <= 0.01;
+  el.textContent = `Positions total: ${total.toFixed(2)}% of pool` + (ok ? ' ✓' : ' — must be 100%');
+  el.classList.toggle('has-text-success', ok);
+  el.classList.toggle('has-text-danger', !ok);
+}
+
+// In-place update of the positions-total indicator for one pool.
+// Called from every input that changes a position's supply share:
+// bootstrap supply input + SOL input, slice-share input, band supply
+// input, plus add/remove operations on bands and slices.
+//
+// We rely on the pool's DOM node being the corresponding index'th
+// child of poolList (renderPools paints them in order), and look up
+// the indicator inside it via the stable data-attribute selector.
+function updatePoolPositionsTotal(poolIdx) {
+  const pool = pools[poolIdx];
+  if (!pool) return;
+  const poolNode = poolList.children[poolIdx];
+  if (!poolNode) return;
+  const el = poolNode.querySelector('[data-positions-total]');
+  if (!el) return;
+  refreshPoolPositionsTotalNode(el, pool);
+  // The positions-total state also drives the pool's "needs attention"
+  // affordance, so refresh that. updatePoolTitle paints the title
+  // + affordance together.
+  updatePoolTitle(poolIdx);
+  updateContinueToFundingState();
+}
+
+// Update one pool's bootstrap-hint text in place. Reads the live
+// targetMarketCap and the pool's current bs supplyPercent + pool size
+// to render "≈ X% of pool · $Y of token supply". Safe to call when
+// bootstrap is in minimal mode (clears the hint) or when target mcap
+// is missing (clears the hint). Used by every input handler that can
+// change inputs to the derivation (the bs SOL input, the pool's
+// supplyPercent input) so we keep the hint accurate without a full
+// renderPools() that would lose focus.
+function refreshBootstrapHint(poolIdx) {
+  const pool = pools[poolIdx];
+  if (!pool) return;
+  const node = poolList.children[poolIdx];
+  if (!node) return;
+  const hint = node.querySelector('[data-bs-hint]');
+  if (!hint) return;
+  const isCustom = pool.bootstrapConfig?.mode === 'custom';
+  if (!isCustom) { hint.textContent = ''; return; }
+  const pct = Number(pool.bootstrapConfig.supplyPercent) || 0;
+  const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+  if (!Number.isFinite(targetMc) || targetMc <= 0 || pct <= 0) {
+    hint.textContent = '';
+    return;
+  }
+  const poolUsd = targetMc * (Number(pool.supplyPercent) / 100);
+  const bsUsd = (pct / 100) * poolUsd;
+  hint.textContent = `≈ ${pct.toFixed(3)}% of pool · $${formatUsdRoughly(bsUsd)} of token supply`;
+}
+
+// Refresh wide slice input values in place after a rebalance, without
+// touching whichever input the user is currently typing in. Used by
+// any handler that calls rebalanceWideSlicesByDelta without doing a
+// full renderPools() (typically because the user is mid-keystroke in
+// an input we'd destroy on re-render).
+function refreshWideSliceInputs(poolIdx) {
+  const pool = pools[poolIdx];
+  if (!pool) return;
+  const node = poolList.children[poolIdx];
+  if (!node) return;
+  const inputs = node.querySelectorAll('.distribution-slices .slice-share');
+  inputs.forEach((inp, i) => {
+    if (pool.distribution[i] && document.activeElement !== inp) {
+      inp.value = pool.distribution[i].sharePercent;
+    }
+  });
+}
+
+function buildBootstrapNode(pool, poolIdx) {
+  // Bootstrap is one of three position types (alongside wide slices
+  // and ladder bands). Two states:
+  //   minimal — 1-whole-token reserve, no user funds, no slot in 100%
+  //   custom  — user-funded position, sized by an absolute SOL value
+  //
+  // The user thinks in terms of "how much starting liquidity do I want
+  // to put down", not "what % of supply." So this row has a single SOL
+  // input as the canonical control; the supplyPercent (% of pool) is
+  // derived live and shown in the hint. Whenever solValue changes, or
+  // target mcap changes, or SOL price resolves, supplyPercent is
+  // recomputed and the wide slices auto-rebalance so positions total
+  // stays at 100%.
+  //
+  // Storage: pool.bootstrapConfig = {
+  //   mode: 'minimal' | 'custom',
+  //   solValue: number   (custom only; user's input)
+  //   supplyPercent: number   (custom only; derived from solValue)
+  // }
+  // The wire format conversion in buildAllocationsForApi uses
+  // supplyPercent directly — solValue stays on the UI side.
+  const node = document.createElement('div');
+  node.className = 'pool-bootstrap-section';
+
+  const cfg = pool.bootstrapConfig || { mode: 'minimal' };
+  const isCustom = cfg.mode === 'custom';
+  const solValue = Number(cfg.solValue) || 0;
+
+  node.innerHTML = `
+    <label class="label is-small mb-1 mt-3">
+      <input type="checkbox" data-bs-toggle ${isCustom ? 'checked' : ''}>
+      Bootstrap support liquidity
+    </label>
+    <p class="is-size-7 has-text-grey mb-1">
+      Single full-range position centered on launch price.
+      Off: a tiny ~$1 reserve that just makes the pool tradable.
+      On: a meaningful starting-liquidity position. Token-side carves from this pool's allocation;
+      quote-side is funded during the next step.
+    </p>
+    <div class="slice-row bootstrap-row" ${isCustom ? '' : 'style="opacity:0.5;pointer-events:none;"'}>
+      <span class="slice-label">Bootstrap</span>
+      <input class="input is-small" type="number" min="0" step="0.001"
+             data-bs-sol-value value="${solValue}" ${isCustom ? '' : 'disabled'}
+             style="width: 8rem;">
+      <span style="line-height:30px;">SOL of starting liquidity</span>
+      <span class="is-size-7 has-text-grey-dark" data-bs-hint style="margin-left:0.5rem;line-height:30px;flex:1;"></span>
+    </div>
+  `;
+
+  const toggle = node.querySelector('[data-bs-toggle]');
+  const solInput = node.querySelector('[data-bs-sol-value]');
+
+  // Render the initial hint via the shared helper. Subsequent refreshes
+  // also go through the helper so the rendering stays consistent.
+  refreshBootstrapHint(poolIdx);
+
+  // Toggle: flip between minimal and custom.
+  //   custom default: 0.5 SOL of starting liquidity (matches simple-UI
+  //   default). When flipping back to minimal, preserve solValue so
+  //   re-toggling restores it without losing user input.
+  // After flipping, the bs supplyPercent (derived) changes by the
+  // full bs amount; rebalance wide slices accordingly so positions
+  // total stays at 100%.
+  toggle.addEventListener('change', (e) => {
+    const oldPct = (pool.bootstrapConfig && pool.bootstrapConfig.mode === 'custom')
+      ? Number(pool.bootstrapConfig.supplyPercent) || 0
+      : 0;
+    if (e.target.checked) {
+      // Restore prior solValue if any; default to 0.5 SOL.
+      const restoredSol = Number(pool.bootstrapConfig?.solValue) > 0
+        ? Number(pool.bootstrapConfig.solValue) : 0.5;
+      const newPct = computeBootstrapSupplyPercent(restoredSol, Number(pool.supplyPercent)) || 0;
+      pool.bootstrapConfig = { mode: 'custom', solValue: restoredSol, supplyPercent: newPct };
+    } else {
+      // Preserve solValue on the object so re-toggle restores it. Wire
+      // format ignores solValue/supplyPercent in minimal mode.
+      pool.bootstrapConfig = {
+        mode: 'minimal',
+        solValue: Number(pool.bootstrapConfig?.solValue) || 0,
+        supplyPercent: 0,
+      };
+    }
+    const newPct = (pool.bootstrapConfig.mode === 'custom')
+      ? Number(pool.bootstrapConfig.supplyPercent) || 0 : 0;
+    rebalanceWideSlicesByDelta(pool, newPct - oldPct);
+    renderPools();
+  });
+
+  // SOL input: canonical value. Compute new supplyPercent and rebalance
+  // slices so positions total stays at 100%. We update only the hint
+  // text and the positions-total indicator in place — full re-render
+  // would lose focus on the input the user is typing in.
+  solInput.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (!Number.isFinite(v) || v < 0) return;
+    const oldPct = Number(pool.bootstrapConfig?.supplyPercent) || 0;
+    const newPct = computeBootstrapSupplyPercent(v, Number(pool.supplyPercent)) || 0;
+    pool.bootstrapConfig = { mode: 'custom', solValue: v, supplyPercent: newPct };
+    rebalanceWideSlicesByDelta(pool, newPct - oldPct);
+    refreshBootstrapHint(poolIdx);
+    refreshWideSliceInputs(poolIdx);
+    updatePoolPositionsTotal(poolIdx);
+  });
+
+  return node;
+}
+
+function buildLadderNode(pool, poolIdx) {
+  // Ladder section. Shows the current bands (if any) and lets the user
+  // toggle ladder on/off, add bands, edit individual bands, remove bands,
+  // or load a 5-band log-spaced preset.
+  const node = document.createElement('div');
+  node.className = 'pool-ladder-section box has-background-light p-3 mt-3 mb-0';
+
+  const cfg = pool.ladderConfig || { mode: 'off', bands: [] };
+  const enabled = cfg.mode === 'manual';
+  const checked = enabled ? 'checked' : '';
+
+  node.innerHTML = `
+    <label class="label is-small mb-1">
+      <input type="checkbox" data-ladder-toggle ${checked}>
+      Ladder positions
+    </label>
+    <p class="is-size-7 has-text-grey mb-2">
+      Discrete single-sided positions at specific price ranges above launch.
+      Each band carves out a slice of this pool's allocated supply and provides resistance
+      going up / support coming back down. Bands can overlap or have gaps — both are valid.
+    </p>
+    <div class="ladder-bands-container" ${enabled ? '' : 'style="display:none;"'}>
+      <div class="ladder-bands-list" data-ladder-bands></div>
+      <div class="ladder-bands-actions" style="margin-top: 0.5rem;">
+        <button type="button" class="button is-small is-light" data-ladder-add>
+          <span class="icon"><i class="fas fa-plus"></i></span><span>Add band</span>
+        </button>
+        <button type="button" class="button is-small is-light" data-ladder-preset>
+          <span class="icon"><i class="fas fa-magic"></i></span><span>Generate 5-band preset to 1000×</span>
+        </button>
+      </div>
+      <p class="help is-danger mt-1 hidden" data-ladder-warning></p>
+    </div>
+  `;
+
+  const toggle = node.querySelector('[data-ladder-toggle]');
+  const container = node.querySelector('.ladder-bands-container');
+  const bandsList = node.querySelector('[data-ladder-bands]');
+  const addBtn = node.querySelector('[data-ladder-add]');
+  const presetBtn = node.querySelector('[data-ladder-preset]');
+  const warning = node.querySelector('[data-ladder-warning]');
+
+  // Render the current band rows. Called from the toggle, the add/remove
+  // band handlers, and the preset handler. Editing an individual band
+  // updates state in place via the row's own event handlers without
+  // re-rendering — same pattern as slice rows.
+  function renderBands() {
+    bandsList.innerHTML = '';
+    const bands = Array.isArray(pool.ladderConfig?.bands) ? pool.ladderConfig.bands : [];
+    bands.forEach((band, bandIdx) => {
+      bandsList.appendChild(buildBandRow(pool, poolIdx, band, bandIdx, renderBands, updateWarning));
+    });
+    updateWarning();
+  }
+
+  // Validate the band list and surface a warning paragraph when the
+  // total supplyPercent exceeds 100% or any band has bad geometry.
+  // Backend pre-flight will catch the same conditions, but inline
+  // feedback during editing is much friendlier.
+  function updateWarning() {
+    const bands = Array.isArray(pool.ladderConfig?.bands) ? pool.ladderConfig.bands : [];
+    let msg = '';
+    const totalPct = bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0);
+    if (totalPct > 100) {
+      msg = `Band supply totals ${totalPct.toFixed(2)}% — must be ≤ 100%.`;
+    } else {
+      for (let i = 0; i < bands.length; i++) {
+        const b = bands[i];
+        const lo = Number(b.lowerMultiplier);
+        const hi = Number(b.upperMultiplier);
+        if (!(lo >= 1)) {
+          msg = `Band ${i + 1}: lower multiplier must be ≥ 1× launch price.`;
+          break;
+        }
+        if (!(hi > lo)) {
+          msg = `Band ${i + 1}: upper multiplier must be greater than lower.`;
+          break;
+        }
+        if (!(b.supplyPercent > 0)) {
+          msg = `Band ${i + 1}: supply % must be greater than 0.`;
+          break;
+        }
+      }
+    }
+    if (msg) {
+      warning.textContent = msg;
+      warning.classList.remove('hidden');
+    } else {
+      warning.classList.add('hidden');
+    }
+  }
+
+  toggle.addEventListener('change', (e) => {
+    // Compute the ladder total before and after the toggle so we can
+    // absorb the delta into the wide slices and keep positions total
+    // at 100%. Same rationale as the bootstrap toggle.
+    const oldLadderTotal = (pool.ladderConfig && pool.ladderConfig.mode === 'manual' && Array.isArray(pool.ladderConfig.bands))
+      ? pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
+      : 0;
+    if (e.target.checked) {
+      // Turning ladder on with no existing bands → seed with the preset.
+      // If the user had bands from a previous toggle-on, preserve them.
+      const existing = Array.isArray(pool.ladderConfig?.bands)
+        ? pool.ladderConfig.bands
+        : [];
+      pool.ladderConfig = {
+        mode: 'manual',
+        bands: existing.length > 0 ? existing : generateLogSpacedBands({
+          supplyPercent: LADDER_DEFAULT_PERCENT,
+          bandCount: LADDER_DEFAULT_BANDS,
+          ceilingMultiplier: LADDER_CEILING_MULTIPLIER,
+        }),
+      };
+      container.style.display = '';
+    } else {
+      // Off: keep the bands on the object for restoration on re-toggle.
+      pool.ladderConfig = {
+        mode: 'off',
+        bands: Array.isArray(pool.ladderConfig?.bands) ? pool.ladderConfig.bands : [],
+      };
+      container.style.display = 'none';
+    }
+    const newLadderTotal = (pool.ladderConfig.mode === 'manual' && Array.isArray(pool.ladderConfig.bands))
+      ? pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
+      : 0;
+    rebalanceWideSlicesByDelta(pool, newLadderTotal - oldLadderTotal);
+    // Full re-render: the wide slice values changed, the band list
+    // toggled visibility, the positions-total needs refresh, and the
+    // pool affordance may have flipped between attention/normal.
+    renderPools();
+  });
+
+  addBtn.addEventListener('click', () => {
+    if (!Array.isArray(pool.ladderConfig?.bands)) {
+      pool.ladderConfig = { mode: 'manual', bands: [] };
+    }
+    // New band gets sensible defaults: 5% supply, 1.5× to 2× range.
+    // User can edit immediately. The 5% is taken from the wide bucket
+    // via rebalance so positions total stays at 100% — without this,
+    // adding a band would silently overshoot 100% and the user would
+    // see a confusing warning they didn't trigger intentionally.
+    const newBand = { supplyPercent: 5, lowerMultiplier: 1.5, upperMultiplier: 2.0 };
+    pool.ladderConfig.bands.push(newBand);
+    rebalanceWideSlicesByDelta(pool, newBand.supplyPercent);
+    renderPools();
+  });
+
+  presetBtn.addEventListener('click', () => {
+    // Replace current bands with the 5-band log-spaced preset. This is
+    // a destructive action but the user explicitly asked for it; a
+    // confirmation prompt would be overkill since they can just edit
+    // bands afterward if they liked the prior state.
+    //
+    // Compute the band-total delta and rebalance wide slices so the
+    // pool's positions total stays at 100%. The preset is always
+    // LADDER_DEFAULT_PERCENT (50%) so most likely the wide bucket
+    // shrinks to absorb the increase — unless the user had a heavier
+    // ladder configured manually, in which case wide grows.
+    const oldTotal = (pool.ladderConfig?.mode === 'manual' && Array.isArray(pool.ladderConfig.bands))
+      ? pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
+      : 0;
+    pool.ladderConfig = {
+      mode: 'manual',
+      bands: generateLogSpacedBands({
+        supplyPercent: LADDER_DEFAULT_PERCENT,
+        bandCount: LADDER_DEFAULT_BANDS,
+        ceilingMultiplier: LADDER_CEILING_MULTIPLIER,
+      }),
+    };
+    const newTotal = pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0);
+    rebalanceWideSlicesByDelta(pool, newTotal - oldTotal);
+    renderPools();
+  });
+
+  // Initial paint.
+  renderBands();
+
+  return node;
+}
+
+// Build a single band-row editor. Each band has three numeric inputs
+// (supplyPercent of pool, lowerMultiplier, upperMultiplier) plus a
+// remove button. The mcap hint below shows the dollar-value range
+// based on the current target market cap input.
+//
+// Uses the same slice-row CSS class as wide slices and the bootstrap
+// row so all positions in the pool look visually consistent.
+function buildBandRow(pool, poolIdx, band, bandIdx, rerenderBands, updateWarning) {
+  const row = document.createElement('div');
+  row.className = 'slice-row band-row';
+
+  row.innerHTML = `
+    <span class="slice-label">Band ${bandIdx + 1}</span>
+    <input class="input is-small slice-share" type="number" min="0" max="100" step="0.01"
+           data-field="supplyPercent" value="${Number(band.supplyPercent)}">
+    <span style="line-height:30px;">% of pool</span>
+    <span class="is-size-7 has-text-grey" style="line-height:30px;">Range:</span>
+    <input class="input is-small" type="number" min="1" step="0.01"
+           data-field="lowerMultiplier" value="${Number(band.lowerMultiplier)}" style="width: 5rem;">
+    <span class="is-size-7" style="line-height:30px;">× to</span>
+    <input class="input is-small" type="number" min="1" step="0.01"
+           data-field="upperMultiplier" value="${Number(band.upperMultiplier)}" style="width: 5rem;">
+    <span class="is-size-7" style="line-height:30px;">× launch</span>
+    <span class="is-size-7 has-text-grey-dark" data-mcap-hint style="line-height:30px;margin-left:0.4rem;flex:1;"></span>
+    <button class="button is-danger is-small is-light" data-action="remove-band" title="Remove band">
+      <span class="icon is-small"><i class="fas fa-times"></i></span>
+    </button>
+  `;
+
+  const hint = row.querySelector('[data-mcap-hint]');
+
+  // Refresh the mcap hint based on current targetMarketCap input. Called
+  // on initial render and whenever the lower/upper multipliers change.
+  function updateMcapHint() {
+    const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+    const lo = Number(band.lowerMultiplier);
+    const hi = Number(band.upperMultiplier);
+    if (Number.isFinite(targetMc) && targetMc > 0 && lo > 0 && hi > 0) {
+      hint.textContent = `≈ $${formatUsdRoughly(lo * targetMc)} – $${formatUsdRoughly(hi * targetMc)} mcap`;
+    } else {
+      hint.textContent = '';
+    }
+  }
+
+  // Wire the three numeric inputs. Each updates the band object in
+  // place and re-runs the cross-band validation that lights up the
+  // warning paragraph below the row list. Also re-runs the pool-level
+  // positions-total recompute, since changing a band's % of pool
+  // changes what's left for the wide bucket.
+  row.querySelector('[data-field="supplyPercent"]').addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (Number.isFinite(v) && v >= 0) {
+      band.supplyPercent = v;
+      updateWarning();
+      updatePoolPositionsTotal(poolIdx);
+    }
+  });
+  row.querySelector('[data-field="lowerMultiplier"]').addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (Number.isFinite(v) && v >= 1) {
+      band.lowerMultiplier = v;
+      updateMcapHint();
+      updateWarning();
+    }
+  });
+  row.querySelector('[data-field="upperMultiplier"]').addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (Number.isFinite(v) && v >= 1) {
+      band.upperMultiplier = v;
+      updateMcapHint();
+      updateWarning();
+    }
+  });
+
+  row.querySelector('[data-action="remove-band"]').addEventListener('click', () => {
+    // Removing a band frees up its share back to the wide bucket so
+    // positions total stays at 100%. Same pattern as remove-slice and
+    // the bs/ladder toggles.
+    const removedShare = Number(pool.ladderConfig.bands[bandIdx].supplyPercent) || 0;
+    pool.ladderConfig.bands.splice(bandIdx, 1);
+    rebalanceWideSlicesByDelta(pool, -removedShare);
+    renderPools();
+  });
+
+  // Initial mcap hint.
+  updateMcapHint();
+
+  return row;
+}
+
+// Format a USD number for compact display: $1.2k, $35k, $1.2M, etc.
+// Used by the ladder + bootstrap dollar hints next to multiplier-based
+// inputs, so user can see the absolute mcap each input maps to.
+function formatUsdRoughly(value) {
+  if (!Number.isFinite(value) || value <= 0) return '0';
+  if (value < 1000) return value.toFixed(0);
+  if (value < 1_000_000) return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}k`;
+  if (value < 1_000_000_000) return `${(value / 1_000_000).toFixed(value < 10_000_000 ? 1 : 0)}M`;
+  return `${(value / 1_000_000_000).toFixed(1)}B`;
 }
 
 function buildSliceNode(pool, poolIdx, slice, sliceIdx) {
   const node = document.createElement('div');
   node.className = 'slice-row';
+  // Hide the remove button when this is the only slice — removeSlice
+  // short-circuits in that case anyway, and a non-functional X button
+  // is more confusing than just not showing it.
+  const isOnlySlice = pool.distribution.length === 1;
+  // Label is "Slice N/M" only when there's more than one; for a single
+  // slice the "Main LP position" header above already provides context
+  // and "Slice 1/1" reads oddly.
+  const labelText = isOnlySlice ? 'Slice' : `Slice ${sliceIdx + 1}/${pool.distribution.length}`;
   node.innerHTML = `
-    <span class="slice-label">Slice ${sliceIdx + 1}/${pool.distribution.length}</span>
+    <span class="slice-label">${labelText}</span>
     <input class="input is-small slice-share" type="number" min="0" max="100" step="0.01" value="${slice.sharePercent}">
-    <span style="line-height:30px;">%</span>
+    <span style="line-height:30px;">% of pool</span>
     <label class="checkbox is-small" style="line-height:30px;">
       <input type="checkbox" data-field="useExternal" ${slice.useExternalRecipient ? 'checked' : ''}>
       &nbsp;Send to a different wallet
     </label>
     <input class="input is-small ${slice.useExternalRecipient ? '' : 'hidden'}" type="text" data-field="recipient" placeholder="Recipient address" value="${slice.recipient || ''}" style="flex: 1; min-width: 200px;">
-    <button class="button is-danger is-small is-light" data-action="remove-slice">
-      <span class="icon is-small"><i class="fas fa-times"></i></span>
-    </button>
+    ${isOnlySlice ? '' : `<button class="button is-danger is-small is-light" data-action="remove-slice"><span class="icon is-small"><i class="fas fa-times"></i></span></button>`}
   `;
 
   const shareInput = node.querySelector('.slice-share');
@@ -2941,15 +3888,13 @@ function buildSliceNode(pool, poolIdx, slice, sliceIdx) {
     // Targeted update only — we used to call renderPools() here, which
     // destroyed and recreated *every* input element in *every* pool on
     // every keystroke. The browser would lose focus on the input you were
-    // typing in, the cursor would reset, and typing felt broken. The
-    // visible state that actually depends on slice share is the slice-total
-    // warning, the Collapse-link enabled state, the pool header affordance
-    // (slice mismatch counts as "needs attention"), and the continue
-    // button. Update each directly.
-    updateSliceWarning(poolIdx);
-    updateCollapseLinkState(poolIdx);
-    updatePoolTitle(poolIdx); // also refreshes affordance
-    updateContinueToFundingState();
+    // typing in, the cursor would reset, and typing felt broken.
+    //
+    // Under unified semantics, slice sharePercent is "% of pool" and
+    // the constraint is at the pool level (bs + slices + bands = 100%).
+    // updatePoolPositionsTotal refreshes the pool-level indicator, the
+    // title affordance, and the continue button state in one shot.
+    updatePoolPositionsTotal(poolIdx);
   });
 
   const useExt = node.querySelector('[data-field="useExternal"]');
@@ -2971,9 +3916,14 @@ function buildSliceNode(pool, poolIdx, slice, sliceIdx) {
     updateContinueToFundingState();
   });
 
-  node.querySelector('[data-action="remove-slice"]').addEventListener('click', () => {
-    removeSlice(poolIdx, sliceIdx);
-  });
+  // Remove button only rendered when there's more than one slice;
+  // guard the lookup so single-slice rows don't throw.
+  const removeBtn = node.querySelector('[data-action="remove-slice"]');
+  if (removeBtn) {
+    removeBtn.addEventListener('click', () => {
+      removeSlice(poolIdx, sliceIdx);
+    });
+  }
 
   return node;
 }
@@ -3022,6 +3972,28 @@ async function resolvePoolQuote(idx) {
       // Mark resolution as succeeded so the retry hint goes away.
       pool.resolvedFailed = false;
       pool.resolvedFailedError = null;
+
+      // Post-resolution refresh of derived values that depend on the
+      // live SOL price. Bootstrap supplyPercent is derived from
+      // solValue × solUsd / poolUsd, so a SOL price update changes
+      // the % each pool's bootstrap takes — without this refresh,
+      // the positions total would drift away from 100% (the classic
+      // "99.94% on initial load with default settings" bug). The
+      // rebalance helper absorbs the delta into the wide slices.
+      //
+      // Runs in both simple AND customize mode because in both, the
+      // user's intent is the SOL value they typed; the % is derived.
+      // The only path we skip is when bootstrap is in minimal mode
+      // (no solValue to recompute) — handled inside the helper.
+      for (const p of pools) {
+        recomputePoolBootstrapAndRebalance(p);
+      }
+      // Full pool re-render to surface the refreshed values in the
+      // bootstrap row hint (%, $ amount). Use renderPools() rather
+      // than the per-pool helper because the rebalance may have
+      // touched any pool's slice values too.
+      renderPools();
+
       // Targeted update only — we used to call renderPools() here, which
       // would destroy whatever input the user was typing in if the lookup
       // completed mid-keystroke (typically 100–500ms after they changed
@@ -3052,57 +4024,6 @@ function updateAllocationSummary() {
   const note = document.getElementById('allocationSummary');
   note.classList.toggle('is-danger', total > 100);
   note.classList.toggle('is-info', total <= 100);
-}
-
-// Update one pool's slice-total warning in place.
-//
-// Used instead of full renderPools() when only the slice shares of a
-// single pool changed. Finds the pool's DOM node by index (poolList's
-// children are in the same order as the pools array, since renderPools
-// appends them in order), then finds the warning paragraph by its
-// data-slice-warning attribute and updates text + visibility.
-function updateSliceWarning(poolIdx) {
-  const pool = pools[poolIdx];
-  if (!pool) return;
-  const node = poolList.children[poolIdx];
-  if (!node) return;
-  const warn = node.querySelector('[data-slice-warning]');
-  if (!warn) return;
-  const total = pool.distribution.reduce((s, x) => s + x.sharePercent, 0);
-  warn.textContent = `Slice shares total ${total.toFixed(2)}% — must be 100%.`;
-  warn.classList.toggle('hidden', Math.abs(total - 100) <= 0.01);
-}
-
-// Update one pool's Collapse-link enabled state in place.
-//
-// The Collapse button in the expanded slice editor is disabled whenever
-// collapsing would silently throw away a non-trivial split (more than
-// one slice, or a single slice whose share isn't a full 100%). The
-// "trivial enough to collapse" condition can change as the user types
-// a new share value into a slice input — and the slice-share input
-// handler uses the targeted in-place update path (to avoid losing
-// focus on the input the user is typing in), so the Collapse button
-// would otherwise stay stuck in whatever state was set at the most
-// recent renderPools(). This helper re-evaluates the condition and
-// flips the disabled attribute accordingly. Tolerance matches the
-// slice-total warning's tolerance to handle floating-point drift.
-function updateCollapseLinkState(poolIdx) {
-  const pool = pools[poolIdx];
-  if (!pool) return;
-  const node = poolList.children[poolIdx];
-  if (!node) return;
-  const btn = node.querySelector('[data-action="collapse-slices"]');
-  if (!btn) return; // Editor is collapsed; no button to update.
-  const canCollapse =
-    pool.distribution.length === 1 &&
-    Math.abs(pool.distribution[0].sharePercent - 100) <= 0.01;
-  if (canCollapse) {
-    btn.disabled = false;
-    btn.removeAttribute('title');
-  } else {
-    btn.disabled = true;
-    btn.title = 'Reduce to a single 100% slice to collapse';
-  }
 }
 
 // Update one pool's resolved-quote-info display in place.
@@ -3181,17 +4102,23 @@ function updateContinueToFundingState() {
           `compatible (Token-2022 extensions: ${exts})`,
       );
     }
-    const sliceTotal = p.distribution.reduce((s, x) => s + x.sharePercent, 0);
-    if (Math.abs(sliceTotal - 100) > 0.01) {
-      reasons.push(`Pool ${i + 1}: slice shares total ${sliceTotal}%, must be 100%`);
+    // Pool-level positions total. Under the unified model, bootstrap
+    // (if custom) + sum(slice sharePercents) + sum(band supplyPercents)
+    // must equal 100% of pool. Failing this means the user has either
+    // over- or under-allocated and the launch can't proceed.
+    const positionsTotal = computePoolPositionsTotal(p);
+    if (Math.abs(positionsTotal - 100) > 0.01) {
+      reasons.push(
+        `Pool ${i + 1}: positions total ${positionsTotal.toFixed(2)}% — ` +
+          `bootstrap + slices + ladder must sum to 100%`,
+      );
     }
+    // Per-slice checks. We no longer flag a 0% slice as an error because
+    // buildAllocationsForApi filters those out automatically (they
+    // contribute nothing to the pool's allocation). A slice with an
+    // external recipient configured but no address is still a real
+    // mistake — flag it.
     for (const [si, slice] of p.distribution.entries()) {
-      // Server's normalizeDistribution() rejects sharePercent <= 0. Catch
-      // it here so the user sees an inline reason rather than a confusing
-      // server error after they've already tried to continue.
-      if (slice.sharePercent <= 0) {
-        reasons.push(`Pool ${i + 1} slice ${si + 1}: share must be > 0%`);
-      }
       if (slice.useExternalRecipient && !slice.recipient) {
         reasons.push(`Pool ${i + 1} slice ${si + 1}: recipient address required`);
       }
@@ -3238,6 +4165,31 @@ function updateContinueToFundingState() {
 
 ['tokenName', 'tokenSymbol', 'tokenSupply', 'targetMarketCap'].forEach((id) => {
   bind(id, 'input', updateContinueToFundingState);
+});
+
+// targetMarketCap also drives the bootstrap supplyPercent math (the
+// derived % depends on the pool's USD allocation, which is target mcap
+// × pool's supplyPercent). When the user changes it on step 2, recompute
+// each pool's bootstrap supplyPercent from its solValue, and rebalance
+// the wide slices to absorb the delta so positions total stays at 100%.
+//
+// Runs in both simple AND customize mode — customize-mode users still
+// have solValue as canonical, and a mcap change updates the derived %
+// just like for simple-mode users. The recompute helper is a no-op when
+// bootstrap is in minimal mode (no solValue to recompute).
+bind('targetMarketCap', 'input', () => {
+  let anyChange = false;
+  for (const p of pools) {
+    if (p.bootstrapConfig && p.bootstrapConfig.mode === 'custom') {
+      recomputePoolBootstrapAndRebalance(p);
+      anyChange = true;
+    }
+  }
+  if (anyChange) {
+    // The bootstrap dollar hint, the band mcap hints, and the positions-
+    // total indicator all depend on mcap; re-render to refresh them.
+    renderPools();
+  }
 });
 
 // Live token-preview card. The same five fields that drive the
@@ -3374,6 +4326,44 @@ function poolsMatchSimpleDefaults() {
     if (p.quoteSymbolOverride) return false;
     if (p.quoteDecimalsOverride != null) return false;
     if (p.quoteUsdOverride != null) return false;
+
+    // Bootstrap and ladder customizations: compare each pool's current
+    // config against what deriveBootstrapConfigFromSimple and
+    // deriveLadderConfigFromSimple would produce from the current
+    // simpleConfig. Any drift means the user changed something in
+    // customize mode and would lose it if we silently rebuilt.
+    //
+    // Both helpers are pure functions of simpleConfig + pool count, so
+    // calling them here is safe — no side effects, no state mutation.
+    const expectedBs = deriveBootstrapConfigFromSimple(Number(p.supplyPercent), pools.length);
+    const actualBs = p.bootstrapConfig || { mode: 'minimal' };
+    if (actualBs.mode !== expectedBs.mode) return false;
+    if (actualBs.mode === 'custom') {
+      // Compare solValue (canonical user intent) rather than supplyPercent
+      // (which is derived from solValue + live SOL price + mcap). A
+      // supplyPercent mismatch can happen when the user hasn't touched
+      // anything but the SOL price refreshed — we don't want that to
+      // count as a customization.
+      if (Math.abs(Number(actualBs.solValue) - Number(expectedBs.solValue)) > 0.0001) {
+        return false;
+      }
+    }
+
+    const expectedLd = deriveLadderConfigFromSimple();
+    const actualLd = p.ladderConfig || { mode: 'off', bands: [] };
+    if (actualLd.mode !== expectedLd.mode) return false;
+    if (actualLd.mode === 'manual') {
+      const actualBands = Array.isArray(actualLd.bands) ? actualLd.bands : [];
+      const expectedBands = Array.isArray(expectedLd.bands) ? expectedLd.bands : [];
+      if (actualBands.length !== expectedBands.length) return false;
+      for (let bi = 0; bi < actualBands.length; bi++) {
+        const ab = actualBands[bi];
+        const eb = expectedBands[bi];
+        if (Math.abs(Number(ab.supplyPercent) - Number(eb.supplyPercent)) > 0.01) return false;
+        if (Math.abs(Number(ab.lowerMultiplier) - Number(eb.lowerMultiplier)) > 0.001) return false;
+        if (Math.abs(Number(ab.upperMultiplier) - Number(eb.upperMultiplier)) > 0.001) return false;
+      }
+    }
   }
   return true;
 }
@@ -3382,10 +4372,14 @@ bind('continueToFundingBtn', 'click', async () => {
   await withRunState(async () => {
     try {
       const allocations = buildAllocationsForApi();
+      const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
       const resp = await fetch('/api/estimate-lp-funding', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ allocations }),
+        // targetMarketCapUsd is only used by the estimator when a custom-
+        // mode bootstrap is present, but we send it unconditionally so the
+        // server has it available regardless. All-minimal launches ignore it.
+        body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc }),
       });
       const data = await resp.json();
       if (!data.success) throw new Error(data.error);
@@ -3424,25 +4418,1616 @@ bind('continueToFundingBtn', 'click', async () => {
   });
 });
 
+// Back-to-configuration button on step 3 (Funding). The user has seen the
+// SOL requirement and wants to adjust pool config / target mcap / etc.
+// before committing funds. We just stop polling and reactivate step 2 —
+// all token form values and pool state are still in memory, so the user
+// picks up exactly where they left off. When they click Continue to
+// Funding again, the estimate is recomputed (with their changes) and
+// step 3 re-enters fresh.
+//
+// Funding deposits that may have already arrived in the wallet are NOT
+// touched here — they're refundable through Cancel & Refund if the user
+// decides to abandon the launch entirely. For a normal "re-estimate after
+// edit" flow, leaving them in place is fine; they count toward the new
+// estimate when the user comes back to step 3.
+bind('backToConfigBtn', 'click', () => {
+  // Don't allow navigation while an operation is running (e.g., an
+  // auto-swap is mid-flight). The cancel button has the same guard via
+  // updateCancelButtonState; mirror that here so the user can't yank
+  // the rug out from under a running operation. Reuses the activity log
+  // for user-facing feedback rather than a modal — operations are
+  // typically short and the user will get a chance again soon.
+  if (isRunningOperation) {
+    log('Wait for the running operation to finish before editing the configuration.', 'warning');
+    return;
+  }
+  if (balancePollHandle) {
+    clearInterval(balancePollHandle);
+    balancePollHandle = null;
+  }
+  // Clear step 3's summary so it doesn't read "ready" or similar when the
+  // user collapses it to look at step 2.
+  setStepSummary(3, '');
+  // Also clear step 2's summary — the user is about to re-edit, and the
+  // old "TOKEN, N pools" line would be misleading mid-edit. activateStep
+  // will reset visual states; the summary needs an explicit clear.
+  setStepSummary(2, '');
+  log('Returned to configuration. Edit and click Continue to Funding when ready.', 'info');
+  activateStep(2);
+});
+
+// Reset all token/pool state to defaults so the user can start a fresh
+// launch. The wallet (tempWallet) is intentionally preserved — that's the
+// whole point of "start over with the same wallet." Everything else gets
+// wiped: form values, pool config, simpleConfig, created-token info,
+// funding state, step summaries, the cancelled-panel itself, and all the
+// downstream-step DOM panels that may carry stale display data.
+//
+// Called by the Start Over affordance on the step-6 cancelled panel.
+// Safe to call from a clean cancelled state (wallet empty / refunded);
+// not intended for use mid-launch.
+//
+// Mirrors the per-launch state reset that happens in the generate-wallet
+// handler — we want "Start Over with same wallet" to leave the UI in
+// the same state as "Generate Wallet" minus the wallet itself.
+function resetForNewLaunch() {
+  // 1. Defensive: stop any background polling that might still be alive.
+  //    The cancel paths normally clear this before showing the cancelled
+  //    panel, but a future code path could land here without going
+  //    through cancel; better to be idempotent.
+  if (balancePollHandle) {
+    clearInterval(balancePollHandle);
+    balancePollHandle = null;
+  }
+
+  // 2. Wipe in-memory launch state.
+  createdTokenInfo = null;
+  lpResult = null;
+  fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
+  fundingWallet = null;
+  lastSolBalance = 0;
+  consecutivePollFailures = 0;
+  fundingDetectionExhausted = false;
+  // Auto-swap interlock — defensive reset. Cancel completion runs under
+  // withRunState which would have failed if an auto-swap was mid-flight,
+  // so reaching here with this flag set shouldn't be possible. Resetting
+  // unconditionally keeps the state machine clean if a future code path
+  // arrives here through a different route.
+  isAcquireFlowRunning = false;
+
+  // 3. Reset simpleConfig to its initial defaults so the simple-UI shows
+  //    the "fresh launch" state. Mirror of the let-initializer at file top.
+  simpleConfig = {
+    mode: 'default',
+    flywheelEnabled: true,
+    flywheelKey: 'meme',
+    flywheelPercent: DEFAULT_FLYWHEEL_PERCENT,
+    splitEnabled: false,
+    splitCount: 1,
+    bootstrapMode: 'minimal',
+    bootstrapSolValue: 1,
+    ladderEnabled: false,
+    ladderPercent: LADDER_DEFAULT_PERCENT,
+    ladderBandCount: LADDER_DEFAULT_BANDS,
+  };
+
+  // 4. Clear token form inputs. These hold what the user typed last time;
+  //    leaving them prefilled would imply "we'll use this again" when in
+  //    fact the user explicitly chose to start over.
+  const formIds = ['tokenName', 'tokenSymbol', 'targetMarketCap', 'tokenDescription'];
+  for (const id of formIds) {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  }
+  // tokenSupply has a numeric default that the user may have changed;
+  // restoring its placeholder default rather than blank keeps the form
+  // usable without an explicit "type a supply" prompt.
+  const supplyEl = document.getElementById('tokenSupply');
+  if (supplyEl) supplyEl.value = '1000000000';
+  // Logo: clear both the file input and any preview thumbnail.
+  const logoEl = document.getElementById('tokenLogo');
+  if (logoEl) logoEl.value = '';
+  if (_tokenPreviewLogoObjectUrl) {
+    URL.revokeObjectURL(_tokenPreviewLogoObjectUrl);
+    _tokenPreviewLogoObjectUrl = null;
+  }
+  const logoThumb = document.getElementById('tokenLogoThumb');
+  if (logoThumb) logoThumb.classList.add('hidden');
+
+  // 5. Wipe pools and rebuild from the (now reset) simpleConfig defaults.
+  //    rebuildPoolsFromSimple wipes pools.length=0 and re-adds the default
+  //    SOL+flywheel pool split.
+  pools.length = 0;
+  rebuildPoolsFromSimple();
+  // applySimpleConfigMode flips the visible config panel (simple vs
+  // customize) based on simpleConfig.mode and re-runs the appropriate
+  // renderer. We need this in case the user was in customize mode before
+  // — without it the customize panel would still be visible while
+  // simpleConfig says we're in default mode.
+  applySimpleConfigMode();
+
+  // 6. Reset step-2-through-6 DOM panels that may carry display state from
+  //    the previous attempt. Mirror what the generate-wallet handler does
+  //    so Start Over leaves the UI in the same shape as Generate Wallet.
+  document.getElementById('tokenCreatedInfo')?.classList.add('hidden');
+  document.getElementById('createTokenBtn')?.classList.remove('hidden');
+  document.getElementById('createLpBtn')?.classList.remove('hidden');
+  document.getElementById('transferAssetsBtn')?.classList.remove('hidden');
+  document.getElementById('lpDoneInfo')?.classList.add('hidden');
+  document.getElementById('lpFailInfo')?.classList.add('hidden');
+  document.getElementById('lpProgress')?.classList.add('hidden');
+  const lpTree = document.getElementById('lpProgressTree');
+  if (lpTree) lpTree.innerHTML = '';
+  document.getElementById('transferResult')?.classList.add('hidden');
+  document.getElementById('fundingWalletInfo')?.classList.add('hidden');
+  const destWalletEl = document.getElementById('destinationWallet');
+  if (destWalletEl) destWalletEl.value = '';
+  // Step 6 cancelled panel: restore normal body, hide cancelled.
+  document.getElementById('step6NormalBody')?.classList.remove('hidden');
+  document.getElementById('step6CancelledPanel')?.classList.add('hidden');
+
+  // 7. Clear step summaries for steps 2-6. Step 1 stays — its summary
+  //    shows the wallet abbreviation, which is still accurate.
+  for (let i = 2; i <= 6; i++) setStepSummary(i, '');
+
+  // 8. Re-render the live token preview card (now empty since form is
+  //    cleared) and recompute the continue-button enabled state.
+  renderTokenPreview();
+  updateContinueToFundingState();
+  updateCancelButtonState();
+
+  // 9. Hand control back to step 2 and log a clear separator so the
+  //    activity log makes the boundary obvious.
+  log('— Started over. Configure your token and pools, then continue. —', 'info');
+  activateStep(2);
+}
+
+bind('startOverBtn', 'click', resetForNewLaunch);
+
+// ===========================================================================
+// Tokenomics Preview Modal
+// ===========================================================================
+//
+// Opened from "Visualize tokenomics" on step 2. Renders a donut chart of the
+// planned token-supply distribution across pools + positions, plus a textual
+// breakdown. Reads live pool state (so it reflects whatever the user has
+// currently configured, including unsaved customize-mode edits) — no
+// snapshot/copy of state is taken; close-and-reopen always shows current.
+
+// Color palette for pool-level grouping. Each pool gets a base hue, and
+// position types within that pool are shaded variants (bootstrap = darker,
+// slices = base, ladder bands = progressively lighter). Wraps around if
+// there are >5 pools (unusual but possible).
+const POOL_COLOR_BASES = [
+  { name: 'blue',   h: 217, s: 75 },
+  { name: 'orange', h: 25,  s: 80 },
+  { name: 'green',  h: 145, s: 60 },
+  { name: 'purple', h: 280, s: 60 },
+  { name: 'teal',   h: 175, s: 60 },
+];
+
+// Position-type shades within a pool's hue. Returns an HSL string.
+// `kind` is 'bootstrap', 'slice', or 'band'. `variant` is the per-kind
+// index (e.g., band 0, band 1, ...) used to vary band brightness so the
+// arcs are distinguishable from each other.
+function poolPositionColor(poolIdx, kind, variant) {
+  const base = POOL_COLOR_BASES[poolIdx % POOL_COLOR_BASES.length];
+  let l; // lightness
+  if (kind === 'bootstrap') {
+    // Dark variant — bootstrap is the conceptual "anchor" of the pool.
+    l = 32;
+  } else if (kind === 'slice') {
+    // Mid variant — the wide main LP.
+    l = 50;
+  } else {
+    // band — progressively lighter for each subsequent band so adjacent
+    // arcs read as distinct. Cap at 75 lightness so the colors don't
+    // become unreadably pale.
+    l = Math.min(75, 58 + (variant || 0) * 4);
+  }
+  return `hsl(${base.h}, ${base.s}%, ${l}%)`;
+}
+
+// Build the flat list of arcs from the live pool state. Each arc has:
+//   poolIdx, kind ('bootstrap' | 'slice' | 'band'), variant, label,
+//   share (fraction of total token supply, 0..1), color
+//
+// Iteration order matters: arcs in the same pool stay adjacent in the
+// donut, with bootstrap first, slices next, bands last. That ordering
+// makes the chart read left-to-right within each pool: anchor →
+// distribution → ladder.
+function buildTokenomicsArcs() {
+  const arcs = [];
+  pools.forEach((pool, poolIdx) => {
+    const poolFraction = Number(pool.supplyPercent) / 100; // 0..1 of total
+    // Bootstrap (% of pool → % of total)
+    const bsCfg = pool.bootstrapConfig;
+    if (bsCfg && bsCfg.mode === 'custom') {
+      const bsPctOfPool = Number(bsCfg.supplyPercent) || 0;
+      if (bsPctOfPool > 0) {
+        arcs.push({
+          poolIdx,
+          kind: 'bootstrap',
+          variant: 0,
+          label: 'Bootstrap',
+          share: (bsPctOfPool / 100) * poolFraction,
+          color: poolPositionColor(poolIdx, 'bootstrap', 0),
+        });
+      }
+    }
+    // Wide slices (% of pool → % of total)
+    (pool.distribution || []).forEach((s, i) => {
+      const slicePctOfPool = Number(s.sharePercent) || 0;
+      if (slicePctOfPool > 0) {
+        arcs.push({
+          poolIdx,
+          kind: 'slice',
+          variant: i,
+          label: pool.distribution.length === 1
+            ? 'Main LP'
+            : `Slice ${i + 1}/${pool.distribution.length}`,
+          share: (slicePctOfPool / 100) * poolFraction,
+          color: poolPositionColor(poolIdx, 'slice', i),
+        });
+      }
+    });
+    // Ladder bands (% of pool → % of total)
+    const ladder = pool.ladderConfig;
+    if (ladder && ladder.mode === 'manual' && Array.isArray(ladder.bands)) {
+      ladder.bands.forEach((b, i) => {
+        const bandPctOfPool = Number(b.supplyPercent) || 0;
+        if (bandPctOfPool > 0) {
+          arcs.push({
+            poolIdx,
+            kind: 'band',
+            variant: i,
+            label: `Band ${i + 1} (${Number(b.lowerMultiplier).toFixed(2)}×–${Number(b.upperMultiplier).toFixed(2)}×)`,
+            share: (bandPctOfPool / 100) * poolFraction,
+            color: poolPositionColor(poolIdx, 'band', i),
+          });
+        }
+      });
+    }
+  });
+  return arcs;
+}
+
+// Compute the SVG path string for a donut-segment arc spanning [startA, endA]
+// radians, with the given outer and inner radii, centered at (cx, cy).
+// Handles the angle-wrap and large-arc flag correctly for any arc <2π.
+function donutArcPath(cx, cy, rOuter, rInner, startA, endA) {
+  // Avoid 0-width arcs producing degenerate paths.
+  if (Math.abs(endA - startA) < 1e-6) return '';
+  // Use the "large arc" flag when the arc spans more than half a circle.
+  const large = (endA - startA) > Math.PI ? 1 : 0;
+  // Cartesian conversion. SVG y axis is flipped — but our trig is
+  // standard (anti-clockwise from +x), so we negate the sin term to
+  // make the chart read clockwise as users expect.
+  const x1 = cx + rOuter * Math.cos(startA);
+  const y1 = cy + rOuter * Math.sin(startA);
+  const x2 = cx + rOuter * Math.cos(endA);
+  const y2 = cy + rOuter * Math.sin(endA);
+  const x3 = cx + rInner * Math.cos(endA);
+  const y3 = cy + rInner * Math.sin(endA);
+  const x4 = cx + rInner * Math.cos(startA);
+  const y4 = cy + rInner * Math.sin(startA);
+  return [
+    `M ${x1} ${y1}`,
+    `A ${rOuter} ${rOuter} 0 ${large} 1 ${x2} ${y2}`,
+    `L ${x3} ${y3}`,
+    `A ${rInner} ${rInner} 0 ${large} 0 ${x4} ${y4}`,
+    'Z',
+  ].join(' ');
+}
+
+// Render the donut chart as SVG markup. Arcs share a starting angle of
+// -π/2 (12 o'clock) and go clockwise. Returns an SVG string ready to
+// drop into innerHTML.
+function renderTokenomicsDonutSvg(arcs, { size = 360, logoDataUrl = null } = {}) {
+  const cx = size / 2;
+  const cy = size / 2;
+  const rOuter = size * 0.45;
+  const rInner = size * 0.28;
+
+  // Total share covered. Should be ~1 if positions sum to 100% per pool
+  // and pool supplyPercents sum to 100% of total supply. Defensive
+  // normalization avoids gaps/overshoot if the math drifts.
+  const total = arcs.reduce((s, a) => s + a.share, 0);
+  if (total <= 0) {
+    return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">
+      <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="middle"
+            fill="#888" font-size="13">No positions configured</text>
+    </svg>`;
+  }
+
+  let startA = -Math.PI / 2;
+  let segments = '';
+  for (const arc of arcs) {
+    const sweep = (arc.share / total) * (2 * Math.PI);
+    const endA = startA + sweep;
+    const path = donutArcPath(cx, cy, rOuter, rInner, startA, endA);
+    // title element gives hover tooltips in the browser (Electron's
+    // Chromium supports them natively).
+    const titleText = `${arc.label}: ${(arc.share * 100).toFixed(2)}% of total supply`;
+    segments += `<path d="${path}" fill="${arc.color}" stroke="white" stroke-width="1">
+      <title>${escapeHtml(titleText)}</title>
+    </path>`;
+    startA = endA;
+  }
+
+  // Center fill: if a logo data URL is available, embed it as a circular
+  // image filling the donut hole. Otherwise fall back to the pool-count
+  // summary text. This makes the chart strongly identity-anchored when a
+  // logo exists — the chart reads as "the supply breakdown of THIS
+  // specific token" rather than as a generic distribution diagram.
+  //
+  // Implementation: we draw a white circle behind the image as a clean
+  // backdrop, clip the image to a circle via SVG <clipPath>, and inset
+  // the image slightly from the inner radius so there's a small ring of
+  // white between the logo edge and the innermost arc — that ring keeps
+  // the logo from visually merging into the arcs at the boundary.
+  let centerContent;
+  if (logoDataUrl) {
+    // Inset by 6% of inner radius to leave a clean ring of backdrop.
+    // Cap the inset at a sensible minimum so very small charts don't
+    // produce zero-pixel inset.
+    const inset = Math.max(2, rInner * 0.06);
+    const logoR = rInner - inset;
+    const logoX = cx - logoR;
+    const logoY = cy - logoR;
+    const logoSize = logoR * 2;
+    // clipPath ID is suffixed with the chart size so multiple charts on
+    // one page (the modal AND the report-preview, if ever rendered side
+    // by side) don't share a clip definition.
+    const clipId = `donut-logo-clip-${size}`;
+    centerContent = `
+      <defs>
+        <clipPath id="${clipId}">
+          <circle cx="${cx}" cy="${cy}" r="${logoR}"/>
+        </clipPath>
+      </defs>
+      <circle cx="${cx}" cy="${cy}" r="${rInner}" fill="white"/>
+      <image href="${escapeAttr(logoDataUrl)}" x="${logoX}" y="${logoY}"
+             width="${logoSize}" height="${logoSize}"
+             preserveAspectRatio="xMidYMid slice"
+             clip-path="url(#${clipId})"/>`;
+  } else {
+    const poolCount = pools.length;
+    const positionCount = arcs.length;
+    const centerLine1 = `${poolCount} pool${poolCount === 1 ? '' : 's'}`;
+    const centerLine2 = `${positionCount} position${positionCount === 1 ? '' : 's'}`;
+    centerContent = `
+      <circle cx="${cx}" cy="${cy}" r="${rInner}" fill="white"/>
+      <text x="${cx}" y="${cy - 8}" text-anchor="middle" dominant-baseline="middle"
+            fill="#333" font-size="15" font-weight="600">${centerLine1}</text>
+      <text x="${cx}" y="${cy + 12}" text-anchor="middle" dominant-baseline="middle"
+            fill="#666" font-size="12">${centerLine2}</text>`;
+  }
+
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" style="display:block;margin:0 auto;">
+    ${segments}
+    ${centerContent}
+  </svg>`;
+}
+
+// Render the textual breakdown panel next to the chart. Groups arcs by
+// pool and lists each position with its supplyPercent and (for bands)
+// the multiplier range. Uses small colored swatches that match the
+// chart's arc colors so the user can correlate visual ↔ text.
+function renderTokenomicsBreakdownHtml(arcs) {
+  const name = document.getElementById('tokenName')?.value.trim() || '(unnamed)';
+  const symbol = document.getElementById('tokenSymbol')?.value.trim() || '?';
+  const supply = parseNumberInput(document.getElementById('tokenSupply'));
+  const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+  const supplyStr = Number.isFinite(supply) && supply > 0
+    ? supply.toLocaleString() : '—';
+  const mcStr = Number.isFinite(targetMc) && targetMc > 0
+    ? `$${targetMc.toLocaleString()}` : '—';
+
+  let html = `
+    <p class="is-size-6 mb-2"><strong>${escapeHtml(name)}</strong> · ${escapeHtml(symbol)}</p>
+    <p class="is-size-7 has-text-grey mb-3">
+      Supply: ${supplyStr} &nbsp;·&nbsp; Target market cap: ${mcStr}
+    </p>
+  `;
+
+  pools.forEach((pool, poolIdx) => {
+    const poolArcs = arcs.filter((a) => a.poolIdx === poolIdx);
+    if (poolArcs.length === 0) return; // pool has no real positions
+    const poolPct = Number(pool.supplyPercent).toFixed(2);
+    const sym = pool.resolvedSymbol || pool.quoteSymbolOverride
+      || (pool.quoteToken === 'SOL' ? 'SOL' : pool.quoteToken?.slice(0, 6) + '…');
+    const sliceCount = (pool.distribution || []).filter((s) => Number(s.sharePercent) > 0).length;
+    const bandCount = (pool.ladderConfig?.mode === 'manual'
+      ? (pool.ladderConfig.bands || []).filter((b) => Number(b.supplyPercent) > 0).length
+      : 0);
+    const bsActive = pool.bootstrapConfig?.mode === 'custom'
+      && Number(pool.bootstrapConfig.supplyPercent) > 0;
+    const bsSol = bsActive ? Number(pool.bootstrapConfig.solValue) : 0;
+
+    // Per-pool summary line.
+    html += `
+      <div class="mb-3">
+        <p class="is-size-7 mb-1">
+          <strong>${escapeHtml(sym)} pool</strong> &nbsp;·&nbsp; ${poolPct}% of supply
+          &nbsp;·&nbsp;
+          ${bsActive ? `${bsSol} SOL bootstrap, ` : 'no bootstrap, '}${sliceCount} LP slice${sliceCount === 1 ? '' : 's'}${bandCount > 0 ? `, ${bandCount} ladder band${bandCount === 1 ? '' : 's'}` : ''}
+        </p>
+        <div style="margin-left:1rem;">
+    `;
+    poolArcs.forEach((arc) => {
+      html += `
+        <div class="is-size-7" style="display:flex;align-items:center;gap:0.4rem;margin:0.15rem 0;">
+          <span style="display:inline-block;width:10px;height:10px;background:${arc.color};border-radius:2px;flex-shrink:0;"></span>
+          <span style="flex:1;">${escapeHtml(arc.label)}</span>
+          <span class="has-text-grey">${(arc.share * 100).toFixed(2)}% of supply</span>
+        </div>
+      `;
+    });
+    html += '</div></div>';
+  });
+
+  // Totals footer.
+  const totalShare = arcs.reduce((s, a) => s + a.share, 0);
+  const totalPct = (totalShare * 100).toFixed(2);
+  const allocated = totalPct === '100.00';
+  html += `
+    <p class="is-size-7 mt-3 ${allocated ? 'has-text-success' : 'has-text-warning'}">
+      <strong>${allocated ? '✓' : '⚠'}</strong>
+      &nbsp;${totalPct}% of supply allocated across all positions${allocated ? '' : ' — should be 100%'}
+    </p>
+  `;
+  return html;
+}
+
+// Open the tokenomics modal. Called from the "Visualize tokenomics" button
+// on step 2. Rebuilds the body content from live state on every open so
+// the user always sees their current configuration.
+//
+// If the user has selected a token logo, we embed it in the donut's
+// center as a strong identity anchor. The logo is read async via
+// FileReader; to keep the modal opening feel instant we render the
+// "text fallback" chart first, then swap in the logo-centered version
+// as soon as the file is ready. On a fast disk this swap is invisible
+// (the modal animates open during the read); on a slow disk the user
+// sees the count-text chart briefly before it morphs.
+function showTokenomicsModal() {
+  const modal = document.getElementById('tokenomicsModal');
+  if (!modal) return;
+
+  // Wire close handlers on first open. Can't do this at module load via
+  // bind() because the modal markup lives later in the HTML body and
+  // app.js runs synchronously before the DOM finishes parsing — bind()
+  // would silently fail (the "Element not found" console.warn case).
+  // The dataset flag guards against duplicate listeners on repeat opens.
+  // Same pattern showTokenInfoModal() uses for the same reason.
+  if (!modal.dataset.closeHandlersWired) {
+    const close = () => modal.classList.remove('is-active');
+    const closeBtn = document.getElementById('tokenomicsModalCloseBtn');
+    if (closeBtn) closeBtn.addEventListener('click', close);
+    const bg = document.getElementById('tokenomicsModalBackground');
+    if (bg) bg.addEventListener('click', close);
+    // Escape key closes too, but only when this modal is the one open.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && modal.classList.contains('is-active')) close();
+    });
+    modal.dataset.closeHandlersWired = 'true';
+  }
+
+  const arcs = buildTokenomicsArcs();
+  const breakdownHtml = renderTokenomicsBreakdownHtml(arcs);
+  const body = document.getElementById('tokenomicsModalBody');
+
+  // First paint: render the count-text chart and show the modal so it
+  // opens instantly. The chart goes into a slot div we can re-render in
+  // place once the logo loads.
+  const initialSvg = renderTokenomicsDonutSvg(arcs);
+  body.innerHTML = `
+    <div class="columns is-vcentered">
+      <div class="column is-narrow" id="tokenomicsChartSlot">${initialSvg}</div>
+      <div class="column">${breakdownHtml}</div>
+    </div>
+  `;
+  modal.classList.add('is-active');
+
+  // Second paint (async): if a logo is selected, swap the chart for a
+  // logo-centered version. Fire-and-forget — failures fall back to the
+  // initial chart already on screen. We also re-check the modal is still
+  // open so a quick close-then-reopen doesn't overwrite the second open's
+  // chart with stale data from the first.
+  readLogoAsDataUrl().then((logoDataUrl) => {
+    if (!logoDataUrl) return;
+    if (!modal.classList.contains('is-active')) return;
+    const slot = document.getElementById('tokenomicsChartSlot');
+    if (!slot) return;
+    slot.innerHTML = renderTokenomicsDonutSvg(arcs, { logoDataUrl });
+  }).catch(() => { /* ignore — fallback chart is already visible */ });
+}
+
+bind('visualizeTokenomicsBtn', 'click', showTokenomicsModal);
+
+// ===========================================================================
+// Launch Report Download
+// ===========================================================================
+//
+// Generates a markdown report covering the just-completed launch:
+// addresses for the token mint, pools, and every position; lock-status
+// transactions; transfer txs for any Fee Keys sent to external recipients;
+// and a tokenomics summary mirroring the visualization modal's content.
+//
+// Triggered from step 5 (after all pools created) or step 6 (after
+// transfer). Both bindings call the same generator; the report content
+// doesn't change between those two stages because all on-chain ops
+// commit by step 5 — step 6 just sweeps the ephemeral wallet.
+
+// Build an explorer URL for an address or transaction signature. Solscan
+// is the de facto standard; users can change cluster via the UI if they
+// need devnet/testnet view. Leaving cluster off defaults to mainnet,
+// which matches what Trebuchet always launches on.
+function solscanAddrUrl(addr) {
+  return `https://solscan.io/account/${encodeURIComponent(addr)}`;
+}
+function solscanTxUrl(sig) {
+  return `https://solscan.io/tx/${encodeURIComponent(sig)}`;
+}
+
+// Format an ISO timestamp as a human-readable local date+time string.
+// Used for the report header so the user has a record of when this
+// launch happened.
+function formatReportTimestamp(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+// Generate the HTML report — a self-contained .html document the team
+// can open offline, share, or print to PDF. Includes:
+//   - Token name/symbol/mint/decimals/supply/target mcap
+//   - Embedded SVG donut chart (same chart the preview modal shows)
+//   - Per-pool sections with bootstrap/main/ladder positions
+//   - Per-row copy buttons for every address and TX signature
+//   - Solscan links for everything
+//   - Lock-status summary roll-up at the top
+//
+// Reads from createdTokenInfo, lpResult, pools (user's UI config — used
+// for fee tiers, supply percentages, and ladder band ranges), tempWallet,
+// and the token form fields. Defensive on every field: a partial-failure
+// resume path may produce results where individual positions don't have
+// a `txIds.lock` or `transferredTo`. Missing fields render as "—".
+
+// Escape a value for safe inclusion in an HTML attribute. Used for the
+// data attributes that drive the copy buttons. Same set as escapeHtml
+// but called out separately so the intent reads clearly at call sites.
+function escapeAttr(s) {
+  return escapeHtml(String(s));
+}
+
+// Render one "address row": label, monospace value, copy button, optional
+// explorer link. Used throughout the report for any address or tx sig.
+// `kind` is 'addr' or 'tx' — only affects the explorer URL builder.
+function renderAddressRow(label, value, kind = 'addr') {
+  if (!value) {
+    return `<div class="addr-row">
+      <span class="addr-label">${escapeHtml(label)}</span>
+      <span class="addr-value addr-missing">—</span>
+    </div>`;
+  }
+  const url = kind === 'tx' ? solscanTxUrl(value) : solscanAddrUrl(value);
+  return `<div class="addr-row">
+    <span class="addr-label">${escapeHtml(label)}</span>
+    <code class="addr-value">${escapeHtml(value)}</code>
+    <button class="copy-btn" data-copy="${escapeAttr(value)}" title="Copy to clipboard">Copy</button>
+    <a class="explorer-link" href="${escapeAttr(url)}" target="_blank" rel="noopener" title="Open on Solscan">↗</a>
+  </div>`;
+}
+
+// Render a fact-line: "Label: value" with no copy button. For non-address
+// fields like fee tier, decimals, range multipliers.
+function renderFactRow(label, value) {
+  return `<div class="fact-row">
+    <span class="fact-label">${escapeHtml(label)}</span>
+    <span class="fact-value">${escapeHtml(String(value))}</span>
+  </div>`;
+}
+
+// Render a lock badge — green pill for locked, gray pill for not.
+function renderLockBadge(locked) {
+  return locked
+    ? `<span class="badge badge-locked">🔒 Locked</span>`
+    : `<span class="badge badge-unlocked">Not locked</span>`;
+}
+
+// Compute the lock-status roll-up across every position in every pool.
+// Returns { total, locked, transferred, totalRecipient, allLocked }.
+function computeLockSummary(results) {
+  let total = 0, locked = 0, transferred = 0, totalRecipient = 0;
+  for (const r of results) {
+    const mains = Array.isArray(r.mainPositions) ? r.mainPositions : [];
+    const ladder = Array.isArray(r.ladderPositions) ? r.ladderPositions : [];
+    const all = [...mains, ...ladder, ...(r.bootstrap ? [r.bootstrap] : [])];
+    for (const p of all) {
+      total++;
+      if (p.locked) locked++;
+    }
+    for (const p of mains) {
+      if (p.recipient) {
+        totalRecipient++;
+        if (p.transferredTo) transferred++;
+      }
+    }
+  }
+  return { total, locked, transferred, totalRecipient, allLocked: total > 0 && locked === total };
+}
+
+// Build the entire HTML report as a string. Self-contained — inlines
+// CSS and JS, includes the SVG chart directly, and embeds the token
+// logo as a base64 data URL so the file works offline and survives
+// email forwarding without breaking image refs.
+//
+// Visual theme matches the makesometokens.com marketing site:
+// parchment background (#efe5cd theme color), Trebuchet MS body font
+// (deliberately on-brand — the typeface is literally named after a
+// trebuchet), engineering-manuscript flourishes (FIG. NN callouts,
+// bracketed enumerators, "STEP NN · LABEL" headers, blueprint-style
+// border treatments).
+//
+// Optional `logoDataUrl` parameter: if provided, embedded as the report's
+// hero image. The downloadLaunchReport caller reads the user's selected
+// logo file and converts it to a data URL before calling this.
+function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
+  const now = new Date();
+  const tokenInfo = createdTokenInfo || {};
+  const results = (lpResult && Array.isArray(lpResult.results)) ? lpResult.results : [];
+  const tokenName = document.getElementById('tokenName')?.value.trim() || tokenInfo.name || '(unnamed)';
+  const tokenSymbol = document.getElementById('tokenSymbol')?.value.trim() || tokenInfo.symbol || '?';
+  const tokenDescription = document.getElementById('tokenDescription')?.value.trim() || '';
+  const supply = parseNumberInput(document.getElementById('tokenSupply'));
+  const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+  const summary = computeLockSummary(results);
+
+  // Reuse the same chart and breakdown the preview modal uses, so the
+  // report's tokenomics view matches what the user saw at launch time.
+  // Slightly smaller in the report so the chart and breakdown fit
+  // side-by-side comfortably at the parchment-page width. If the user
+  // provided a logo we pass it through so the chart center shows the
+  // logo — same treatment as the hero block at the top of the report.
+  const arcs = buildTokenomicsArcs();
+  const chartSvg = renderTokenomicsDonutSvg(arcs, { size: 300, logoDataUrl });
+
+  // ---- Per-pool sections ----
+  let poolSections = '';
+  results.forEach((r, idx) => {
+    const userPool = pools[r.allocationIndex ?? idx] || pools[idx] || {};
+    const sym = r.quoteSymbol || userPool.resolvedSymbol || '?';
+    const supplyPct = Number(userPool.supplyPercent ?? 0).toFixed(2);
+    const feeTierIdx = userPool.ammConfigIndex;
+    const feeTier = feeTiers.find((t) => t.index === feeTierIdx);
+    const feeTierLabel = feeTier
+      ? `${(feeTier.tradeFeeRate / 10000).toFixed(2)}% / spacing ${feeTier.tickSpacing}`
+      : (feeTierIdx != null ? `index ${feeTierIdx}` : '—');
+
+    // Pool's own colour from the chart palette — used for the section
+    // accent so the report visually ties pools to their arcs.
+    const poolHue = POOL_COLOR_BASES[idx % POOL_COLOR_BASES.length].h;
+    const poolSat = POOL_COLOR_BASES[idx % POOL_COLOR_BASES.length].s;
+
+    let positionsHtml = '';
+
+    // Bootstrap position (if present)
+    if (r.bootstrap) {
+      positionsHtml += `
+        <div class="position-card">
+          <div class="position-header">
+            <span class="position-kind">Bootstrap position</span>
+            ${renderLockBadge(r.bootstrap.locked)}
+          </div>
+          ${renderAddressRow('Position NFT', r.bootstrap.nftMint)}
+          ${renderAddressRow('Open TX', r.bootstrap.txIds?.open, 'tx')}
+          ${renderAddressRow('Lock TX', r.bootstrap.txIds?.lock, 'tx')}
+        </div>`;
+    }
+
+    // Main LP positions / slices
+    const mains = Array.isArray(r.mainPositions) ? r.mainPositions : [];
+    mains.forEach((pos, si) => {
+      const sliceLabel = mains.length === 1
+        ? 'Main LP position'
+        : `Main LP slice ${si + 1}/${mains.length}`;
+      const shareText = pos.sharePercent != null
+        ? `${Number(pos.sharePercent).toFixed(2)}% of wide bucket`
+        : null;
+
+      let recipientBlock = '';
+      if (pos.recipient) {
+        recipientBlock = `
+          ${renderAddressRow('Fee Key recipient', pos.recipient)}
+          <div class="fact-row">
+            <span class="fact-label">Transferred to recipient</span>
+            <span class="fact-value">${pos.transferredTo ? 'Yes' : 'No (Fee Key NFT stayed with launch wallet)'}</span>
+          </div>
+          ${pos.txIds?.transfer ? renderAddressRow('Fee Key transfer TX', pos.txIds.transfer, 'tx') : ''}`;
+      }
+
+      positionsHtml += `
+        <div class="position-card">
+          <div class="position-header">
+            <span class="position-kind">${escapeHtml(sliceLabel)}</span>
+            ${renderLockBadge(pos.locked)}
+          </div>
+          ${shareText ? renderFactRow('Share', shareText) : ''}
+          ${renderAddressRow('Position NFT', pos.nftMint)}
+          ${renderAddressRow('Open TX', pos.txIds?.open, 'tx')}
+          ${renderAddressRow('Lock TX', pos.txIds?.lock, 'tx')}
+          ${recipientBlock}
+        </div>`;
+    });
+
+    // Ladder bands
+    const ladder = Array.isArray(r.ladderPositions) ? r.ladderPositions : [];
+    ladder.forEach((pos, bi) => {
+      const userBand = userPool.ladderConfig?.bands?.[bi];
+      const rangeLabel = userBand
+        ? `${Number(userBand.lowerMultiplier).toFixed(2)}× – ${Number(userBand.upperMultiplier).toFixed(2)}× launch price`
+        : `tick ${pos.tickLower} → ${pos.tickUpper}`;
+      const supplyText = userBand
+        ? `${Number(userBand.supplyPercent).toFixed(2)}% of pool`
+        : null;
+
+      positionsHtml += `
+        <div class="position-card">
+          <div class="position-header">
+            <span class="position-kind">Ladder band ${bi + 1}/${ladder.length}</span>
+            ${renderLockBadge(pos.locked)}
+          </div>
+          ${renderFactRow('Range', rangeLabel)}
+          ${supplyText ? renderFactRow('Token-supply share', supplyText) : ''}
+          ${renderAddressRow('Position NFT', pos.nftMint)}
+          ${renderAddressRow('Open TX', pos.txIds?.open, 'tx')}
+          ${renderAddressRow('Lock TX', pos.txIds?.lock, 'tx')}
+        </div>`;
+    });
+
+    const poolEnum = String(idx + 1).padStart(2, '0');
+    poolSections += `
+      <section class="pool-section">
+        <div class="pool-section-header">
+          <div class="enum-badge">POOL · ${poolEnum}</div>
+          <h2 class="pool-title">
+            <span class="pool-swatch" style="background: hsl(${poolHue}, ${poolSat}%, 45%);"></span>
+            ${escapeHtml(sym)} pool
+          </h2>
+          <div class="pool-meta">${supplyPct}% of token supply &nbsp;·&nbsp; Fee tier ${escapeHtml(feeTierLabel)}</div>
+        </div>
+        <div class="pool-addresses">
+          ${renderAddressRow('Pool ID', r.poolId)}
+          ${userPool.quoteToken && userPool.quoteToken !== 'SOL' ? renderAddressRow('Quote token mint', userPool.quoteToken) : ''}
+          ${renderAddressRow('Create-pool TX', r.txIds?.createPool, 'tx')}
+        </div>
+        <div class="positions-grid">${positionsHtml}</div>
+      </section>`;
+  });
+
+  // ---- Status banner (top of report) ----
+  // Status banner. Two information dimensions: position locks (everything
+  // locked? partial?) and Fee Key transfers (any external recipients
+  // configured? did they all receive their NFTs?). The lock dimension is
+  // always shown; the transfer dimension only when relevant.
+  let statusBanner;
+  if (results.length === 0) {
+    statusBanner = `<div class="banner banner-warn">
+      <strong>No pool results captured.</strong>
+      This may indicate the launch did not reach the create-pool phase.
+    </div>`;
+  } else if (summary.allLocked) {
+    // Lock all good. Surface transfer status only when external recipients
+    // existed AND some failed — otherwise that line would be either "0/0"
+    // (uninformative) or "all delivered" (already implicit in the green
+    // banner). Failed transfers are the case the user genuinely needs to
+    // know about, because the Fee Key NFTs sweep to the destination wallet
+    // on transfer and the user has to forward them manually.
+    const transferIssue = summary.totalRecipient > 0
+      && summary.transferred < summary.totalRecipient;
+    statusBanner = `<div class="banner banner-${transferIssue ? 'warn' : 'ok'}">
+      <strong>All ${summary.total} positions locked.</strong>
+      The liquidity is permanently committed via Burn &amp; Earn. Fees accrue to the Fee Key NFT holders.
+      ${transferIssue ? `<br><strong>${summary.transferred} / ${summary.totalRecipient} Fee Key NFTs reached their external recipients</strong> — the remaining ones swept back to the launch wallet and were transferred to the destination wallet on step 6. Forward them manually to complete delivery.` : ''}
+    </div>`;
+  } else {
+    statusBanner = `<div class="banner banner-warn">
+      <strong>${summary.locked} / ${summary.total} positions locked.</strong>
+      Any unlocked position is still controlled by the ephemeral launch wallet. If you ran the transfer step, those NFTs were swept to your destination wallet — you can re-lock them via Raydium's Burn &amp; Earn UI.
+      ${summary.totalRecipient > 0 && summary.transferred < summary.totalRecipient ? `<br><strong>${summary.transferred} / ${summary.totalRecipient} Fee Key NFTs reached their external recipients.</strong>` : ''}
+    </div>`;
+  }
+
+  // ---- Tokenomics breakdown (textual, matches the chart) ----
+  let breakdownHtml = '';
+  pools.forEach((pool, poolIdx) => {
+    const poolArcs = arcs.filter((a) => a.poolIdx === poolIdx);
+    if (poolArcs.length === 0) return;
+    const sym = pool.resolvedSymbol || (pool.quoteToken === 'SOL' ? 'SOL' : pool.quoteToken?.slice(0, 6) + '…');
+    breakdownHtml += `<div class="breakdown-pool"><div class="breakdown-pool-name">${escapeHtml(sym)} pool — ${Number(pool.supplyPercent).toFixed(2)}%</div>`;
+    poolArcs.forEach((arc) => {
+      breakdownHtml += `<div class="breakdown-arc">
+        <span class="breakdown-swatch" style="background:${arc.color};"></span>
+        <span class="breakdown-arc-label">${escapeHtml(arc.label)}</span>
+        <span class="breakdown-arc-share">${(arc.share * 100).toFixed(2)}%</span>
+      </div>`;
+    });
+    breakdownHtml += '</div>';
+  });
+
+  // ---- Logo hero block ----
+  // Embedded as a data URL so the report is fully portable. The user
+  // didn't have to provide one — we render a placeholder block with
+  // the token symbol instead so the layout reads consistently.
+  const logoBlock = logoDataUrl
+    ? `<img class="hero-logo" src="${escapeHtml(logoDataUrl)}" alt="${escapeHtml(tokenName)} logo">`
+    : `<div class="hero-logo hero-logo-placeholder">${escapeHtml((tokenSymbol || '?').slice(0, 3).toUpperCase())}</div>`;
+
+  // ---- Final HTML document ----
+  // Inline CSS so the file works offline and survives email forwarding.
+  // Inline JS for the clipboard behavior. The aesthetic mirrors the
+  // makesometokens.com marketing site — parchment background, ink
+  // typography, engineering-manuscript flourishes.
+  const safeName = escapeHtml(tokenName);
+  const safeSymbol = escapeHtml(tokenSymbol);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>${safeName} (${safeSymbol}) — Launch Dossier</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#efe5cd">
+  <style>
+    /* ============================================================
+       Theme — matches makesometokens.com
+       Parchment background, ink typography, engineering-manuscript
+       flourishes. Trebuchet MS body font (literally on-brand —
+       the typeface is named after a trebuchet).
+       ============================================================ */
+    :root {
+      --parchment: #efe5cd;
+      --parchment-deep: #e6dab9;
+      --parchment-edge: #d6c8a3;
+      --ink: #1a1a1a;
+      --ink-soft: #3d3a32;
+      --ink-muted: #6b6657;
+      --rule: #1a1a1a;
+      --rule-soft: #b8ad8a;
+      --accent: #8a3a1a;        /* sienna red — matches the manuscript ink-stamp feel */
+      --ok: #2d5016;
+      --ok-bg: #d9e6c8;
+      --ok-edge: #8aa466;
+      --warn: #7a3a0a;
+      --warn-bg: #eed9b0;
+      --warn-edge: #c89860;
+      --mono: "Courier New", Courier, ui-monospace, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: "Trebuchet MS", "Lucida Sans Unicode", "Lucida Grande", Tahoma, sans-serif;
+      background: var(--parchment);
+      color: var(--ink);
+      line-height: 1.55;
+      font-size: 14.5px;
+      /* Subtle paper texture — radial gradient gives a hint of vignette
+         without requiring an external image. */
+      background-image:
+        radial-gradient(ellipse at center, transparent 0%, transparent 70%, rgba(110, 90, 50, 0.08) 100%),
+        repeating-linear-gradient(0deg, transparent 0 28px, rgba(110, 90, 50, 0.012) 28px 29px);
+      background-attachment: fixed;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 36px 32px 80px;
+    }
+    a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+    a:hover { text-decoration-thickness: 2px; }
+    code { font-family: var(--mono); font-size: 0.92em; }
+
+    /* ---------- Top masthead ---------- */
+    .masthead {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding-bottom: 12px;
+      margin-bottom: 8px;
+      border-bottom: 2px solid var(--rule);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+    .masthead-left { display: flex; align-items: center; gap: 18px; }
+    .masthead-brand { font-weight: 700; letter-spacing: 0.35em; color: var(--ink); }
+    .masthead-right { text-align: right; }
+
+    /* ---------- Document title block ---------- */
+    .title-block {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 32px;
+      align-items: center;
+      margin: 32px 0 24px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--rule-soft);
+    }
+    @media (max-width: 600px) {
+      .title-block { grid-template-columns: 1fr; text-align: center; }
+    }
+    .hero-logo {
+      width: 120px;
+      height: 120px;
+      object-fit: contain;
+      border-radius: 50%;
+      background: var(--parchment-deep);
+      border: 2px solid var(--rule);
+      box-shadow: 0 2px 0 var(--rule-soft);
+    }
+    .hero-logo-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--mono);
+      font-size: 34px;
+      font-weight: 700;
+      color: var(--ink-soft);
+      letter-spacing: 0.1em;
+    }
+    .doc-fig {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ink-muted);
+      margin: 0 0 8px;
+    }
+    .doc-title {
+      margin: 0;
+      font-size: 44px;
+      font-weight: 700;
+      line-height: 1.05;
+      letter-spacing: -0.01em;
+    }
+    .doc-title .doc-symbol {
+      color: var(--ink-muted);
+      font-weight: 500;
+      font-size: 0.6em;
+      letter-spacing: 0.02em;
+      margin-left: 0.4em;
+    }
+    .doc-subtitle {
+      margin: 10px 0 0;
+      color: var(--ink-soft);
+      font-size: 15px;
+      font-style: italic;
+      max-width: 60ch;
+    }
+
+    /* ---------- Section enumeration / headers ---------- */
+    .enum-badge {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ink-muted);
+      padding: 3px 10px;
+      border: 1px solid var(--rule-soft);
+      background: var(--parchment-deep);
+      margin-bottom: 12px;
+    }
+    .section-rule {
+      margin: 36px 0 24px;
+      border: 0;
+      border-top: 2px solid var(--rule);
+      position: relative;
+    }
+    .section-rule::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      left: 0;
+      right: 0;
+      border-top: 1px solid var(--rule);
+    }
+    h2.section-title {
+      margin: 0 0 18px;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.005em;
+    }
+    h3.subsection {
+      margin: 18px 0 8px;
+      font-family: var(--mono);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--ink-muted);
+      font-weight: 600;
+    }
+
+    /* ---------- Banner ---------- */
+    .banner {
+      padding: 12px 16px;
+      margin: 20px 0 28px;
+      font-size: 13.5px;
+      border: 1px solid;
+      background: var(--parchment-deep);
+      position: relative;
+    }
+    .banner::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 4px;
+    }
+    .banner strong { display: inline-block; margin-right: 6px; }
+    .banner-ok { border-color: var(--ok-edge); color: var(--ok); background: var(--ok-bg); }
+    .banner-ok::before { background: var(--ok); }
+    .banner-warn { border-color: var(--warn-edge); color: var(--warn); background: var(--warn-bg); }
+    .banner-warn::before { background: var(--warn); }
+
+    /* ---------- Token summary stat-grid ---------- */
+    .token-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 0;
+      border: 1px solid var(--rule);
+      background: var(--parchment-deep);
+    }
+    .token-stat {
+      padding: 14px 18px;
+      border-right: 1px solid var(--rule-soft);
+    }
+    .token-stat:last-child { border-right: none; }
+    .token-stat-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--ink-muted);
+      margin-bottom: 6px;
+    }
+    .token-stat-value {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    /* ---------- Tokenomics block ---------- */
+    .tokenomics {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 36px;
+      align-items: start;
+      margin-top: 16px;
+    }
+    @media (max-width: 720px) {
+      .tokenomics { grid-template-columns: 1fr; }
+    }
+    .tokenomics svg { display: block; margin: 0 auto; }
+    .chart-caption {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      text-align: center;
+      color: var(--ink-muted);
+      margin-top: 4px;
+    }
+    .breakdown-pool { margin-bottom: 18px; }
+    .breakdown-pool:last-child { margin-bottom: 0; }
+    .breakdown-pool-name {
+      font-weight: 700;
+      font-size: 13px;
+      margin-bottom: 8px;
+      padding-bottom: 4px;
+      border-bottom: 1px dashed var(--rule-soft);
+      font-family: var(--mono);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+    .breakdown-arc {
+      display: grid;
+      grid-template-columns: 14px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      font-size: 13px;
+      padding: 3px 0;
+    }
+    .breakdown-swatch {
+      width: 12px; height: 12px; border-radius: 2px;
+      border: 1px solid rgba(0,0,0,0.15);
+    }
+    .breakdown-arc-share {
+      color: var(--ink-soft);
+      font-variant-numeric: tabular-nums;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    /* ---------- Pool section ---------- */
+    .pool-section {
+      margin: 28px 0;
+      padding-top: 6px;
+      border-top: 2px solid var(--rule);
+    }
+    .pool-section-header {
+      margin-bottom: 18px;
+    }
+    .pool-title {
+      margin: 0 0 4px;
+      font-size: 24px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .pool-swatch {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border-radius: 2px;
+      border: 1px solid var(--rule);
+    }
+    .pool-meta {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-muted);
+    }
+    .pool-addresses {
+      margin-bottom: 20px;
+      padding: 14px 16px;
+      background: var(--parchment-deep);
+      border: 1px solid var(--rule-soft);
+    }
+
+    /* ---------- Position cards ---------- */
+    .positions-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+      gap: 14px;
+    }
+    .position-card {
+      background: var(--parchment-deep);
+      border: 1px solid var(--rule-soft);
+      padding: 14px 16px;
+      position: relative;
+    }
+    /* Top-left corner notch — engineering-drawing accent */
+    .position-card::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0;
+      width: 8px; height: 8px;
+      border-top: 2px solid var(--rule);
+      border-left: 2px solid var(--rule);
+    }
+    .position-card::after {
+      content: "";
+      position: absolute;
+      bottom: 0; right: 0;
+      width: 8px; height: 8px;
+      border-bottom: 2px solid var(--rule);
+      border-right: 2px solid var(--rule);
+    }
+    .position-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px dashed var(--rule-soft);
+    }
+    .position-kind {
+      font-weight: 700;
+      font-size: 13.5px;
+      letter-spacing: 0.01em;
+    }
+
+    /* ---------- Address rows ---------- */
+    .addr-row {
+      display: grid;
+      grid-template-columns: 140px 1fr auto auto;
+      gap: 8px;
+      align-items: center;
+      padding: 5px 0;
+      font-size: 12.5px;
+    }
+    .addr-label {
+      font-family: var(--mono);
+      color: var(--ink-muted);
+      font-size: 10.5px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .addr-value {
+      font-family: var(--mono);
+      font-size: 11.5px;
+      background: var(--parchment);
+      padding: 4px 8px;
+      border: 1px solid var(--rule-soft);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .addr-missing {
+      background: transparent;
+      border: none;
+      color: var(--ink-muted);
+      font-style: italic;
+      padding-left: 0;
+    }
+    .copy-btn {
+      font: inherit;
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 4px 10px;
+      background: var(--parchment);
+      border: 1px solid var(--rule);
+      cursor: pointer;
+      color: var(--ink);
+      transition: all 120ms ease;
+    }
+    .copy-btn:hover {
+      background: var(--ink);
+      color: var(--parchment);
+    }
+    .copy-btn.copied {
+      background: var(--ok);
+      border-color: var(--ok);
+      color: var(--parchment);
+    }
+    .explorer-link {
+      color: var(--ink-soft);
+      font-size: 14px;
+      text-decoration: none;
+      padding: 2px 6px;
+      border: 1px solid var(--rule-soft);
+      background: var(--parchment);
+      font-family: var(--mono);
+    }
+    .explorer-link:hover {
+      background: var(--ink);
+      color: var(--parchment);
+      border-color: var(--ink);
+      text-decoration: none;
+    }
+
+    /* ---------- Fact rows ---------- */
+    .fact-row {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 8px;
+      padding: 4px 0;
+      font-size: 12.5px;
+    }
+    .fact-label {
+      font-family: var(--mono);
+      color: var(--ink-muted);
+      font-size: 10.5px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .fact-value { color: var(--ink); }
+
+    /* ---------- Badges ---------- */
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      font-weight: 700;
+      border: 1px solid;
+    }
+    .badge-locked {
+      background: var(--ok-bg);
+      color: var(--ok);
+      border-color: var(--ok-edge);
+    }
+    .badge-unlocked {
+      background: var(--warn-bg);
+      color: var(--warn);
+      border-color: var(--warn-edge);
+    }
+
+    /* ---------- Footer ---------- */
+    .doc-footer {
+      margin-top: 48px;
+      padding-top: 24px;
+      border-top: 2px solid var(--rule);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      color: var(--ink-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .doc-footer a {
+      color: var(--ink);
+      text-decoration: none;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .doc-footer a:hover { color: var(--accent); }
+
+    /* ---------- Toast (copied confirmation) ---------- */
+    .toast {
+      position: fixed;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: var(--ink);
+      color: var(--parchment);
+      padding: 10px 22px;
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      border: 2px solid var(--ink);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 180ms ease, transform 180ms ease;
+      z-index: 1000;
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* ---------- Print ---------- */
+    @media print {
+      body {
+        background: white;
+        background-image: none;
+        font-size: 11px;
+      }
+      .wrap { padding: 0; max-width: none; }
+      .copy-btn { display: none; }
+      .positions-grid { grid-template-columns: 1fr; }
+      a { color: inherit; text-decoration: none; }
+      .pool-section { page-break-inside: avoid; }
+      .position-card { page-break-inside: avoid; }
+      .doc-footer { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <!--
+    Masthead — manuscript-style figure callout at the top of the page.
+    Mirrors the makesometokens.com header strip pattern ("FIG. 1 · Solana
+    Token Launcher · v1.0") so a team that's seen the marketing site
+    immediately recognizes the document as part of the same family.
+  -->
+  <div class="masthead">
+    <div class="masthead-left">
+      <span class="masthead-brand">T R E B U C H E T</span>
+      <span>FIG. 01 · Launch Dossier</span>
+    </div>
+    <div class="masthead-right">
+      ${formatReportTimestamp(now)}
+    </div>
+  </div>
+
+  <header class="title-block">
+    ${logoBlock}
+    <div>
+      <p class="doc-fig">Token launch report · permanent record</p>
+      <h1 class="doc-title">${safeName} <span class="doc-symbol">· ${safeSymbol}</span></h1>
+      ${tokenDescription ? `<p class="doc-subtitle">${escapeHtml(tokenDescription)}</p>` : ''}
+    </div>
+  </header>
+
+  ${statusBanner}
+
+  <hr class="section-rule">
+  <div class="enum-badge">[ 01 ] &nbsp; Token</div>
+  <h2 class="section-title">Token specification</h2>
+
+  <div class="token-summary-grid">
+    <div class="token-stat">
+      <div class="token-stat-label">Total supply</div>
+      <div class="token-stat-value">${Number.isFinite(supply) && supply > 0 ? supply.toLocaleString() : '—'}</div>
+    </div>
+    <div class="token-stat">
+      <div class="token-stat-label">Decimals</div>
+      <div class="token-stat-value">${Number.isFinite(tokenInfo.decimals) ? tokenInfo.decimals : '—'}</div>
+    </div>
+    <div class="token-stat">
+      <div class="token-stat-label">Launch market cap</div>
+      <div class="token-stat-value">${Number.isFinite(targetMc) && targetMc > 0 ? '$' + targetMc.toLocaleString() : '—'}</div>
+    </div>
+    <div class="token-stat">
+      <div class="token-stat-label">Pools</div>
+      <div class="token-stat-value">${results.length}</div>
+    </div>
+  </div>
+
+  <h3 class="subsection">Mint &amp; launch wallet</h3>
+  ${renderAddressRow('Token mint', tokenInfo.mint)}
+  ${tempWallet?.publicKey ? renderAddressRow('Launch wallet', tempWallet.publicKey) : ''}
+
+  <hr class="section-rule">
+  <div class="enum-badge">[ 02 ] &nbsp; Tokenomics</div>
+  <h2 class="section-title">Supply distribution</h2>
+
+  <div class="tokenomics">
+    <div>
+      ${chartSvg}
+      <div class="chart-caption">FIG. 02 · Token supply across pools &amp; positions</div>
+    </div>
+    <div>${breakdownHtml || '<p style="color:var(--ink-muted);">No positions configured.</p>'}</div>
+  </div>
+
+  <hr class="section-rule">
+  <div class="enum-badge">[ 03 ] &nbsp; Pools &amp; Positions</div>
+  <h2 class="section-title">Liquidity pool breakdown</h2>
+
+  ${poolSections}
+
+  <footer class="doc-footer">
+    <div>
+      <div>Trebuchet — launch Solana tokens, no middleman.</div>
+      <div style="margin-top: 4px; text-transform: none; letter-spacing: 0.04em; font-size: 10px;">
+        Solscan links use mainnet-beta. Tap any address or transaction signature to copy.
+      </div>
+    </div>
+    <div>
+      <a href="https://makesometokens.com/" target="_blank" rel="noopener">makesometokens.com</a>
+    </div>
+  </footer>
+
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite">Copied</div>
+
+<script>
+  // Copy-button behavior. Single delegated listener on the body — simpler
+  // than attaching one per button and survives any future re-renders
+  // (though this is a static report, so re-renders don't happen).
+  document.body.addEventListener('click', (e) => {
+    const btn = e.target.closest('.copy-btn');
+    if (!btn) return;
+    const value = btn.dataset.copy;
+    if (!value) return;
+
+    const showCopied = () => {
+      btn.classList.add('copied');
+      const original = btn.textContent;
+      btn.textContent = 'Copied';
+      const toast = document.getElementById('toast');
+      toast.classList.add('show');
+      setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.textContent = original;
+        toast.classList.remove('show');
+      }, 1400);
+    };
+
+    // Modern Clipboard API first; fall back to execCommand for older
+    // browsers and odd security contexts (some local-file openings
+    // disable the modern API).
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(value).then(showCopied).catch(() => {
+        legacyCopy(value, showCopied);
+      });
+    } else {
+      legacyCopy(value, showCopied);
+    }
+  });
+
+  function legacyCopy(value, onSuccess) {
+    const ta = document.createElement('textarea');
+    ta.value = value;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      onSuccess();
+    } catch (e) {
+      console.error('Copy failed:', e);
+    }
+    document.body.removeChild(ta);
+  }
+</script>
+</body>
+</html>`;
+}
+
+// Read the user-selected token logo file as a data URL (base64-encoded
+// with the correct MIME prefix). Used to embed the logo directly into
+// the downloadable HTML report so the report is self-contained — the
+// team can open it offline or forward it without breaking image refs.
+// Returns null if no logo is selected or the read fails; the report
+// gracefully falls back to a text-only header in that case.
+async function readLogoAsDataUrl() {
+  const logoEl = document.getElementById('tokenLogo');
+  const file = logoEl?.files?.[0];
+  if (!file) return null;
+  return await new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+    reader.onerror = () => {
+      // Don't surface this as an error log — the rest of the report is
+      // perfectly usable without the logo. Quietly fall back.
+      console.warn('Failed to read logo file for report embedding', reader.error);
+      resolve(null);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Trigger a download of the HTML report. Filename includes the token
+// symbol (sanitized) and a date stamp so multiple reports from the
+// same machine don't collide. Reads the logo file first so we can
+// embed it; falls back to text-only header on failure.
+async function downloadLaunchReport() {
+  if (!createdTokenInfo && (!lpResult || !lpResult.results || lpResult.results.length === 0)) {
+    log('No launch results available yet — try again after pools are created.', 'warning');
+    return;
+  }
+  try {
+    const logoDataUrl = await readLogoAsDataUrl();
+    const html = buildLaunchReportHtml({ logoDataUrl });
+    const symbol = (document.getElementById('tokenSymbol')?.value.trim() || createdTokenInfo?.symbol || 'token')
+      .replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 24) || 'token';
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const datePart = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+    const filename = `trebuchet-launch-${symbol}-${datePart}.html`;
+
+    // Use a Blob + anchor click for the download. Works in Electron's
+    // Chromium without main-process file-system plumbing.
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 100);
+    log(`Launch report saved: ${filename}`, 'success');
+  } catch (err) {
+    // Catch-all: a thrown error from any step in the report-build/download
+    // pipeline shouldn't leave the user with no feedback. Surface via the
+    // activity log and console; the launch itself is unaffected since this
+    // is post-launch reporting.
+    console.error('Launch report generation failed:', err);
+    log(`Failed to generate launch report: ${err.message || err}`, 'danger');
+  }
+}
+
+bind('downloadReportBtnStep5', 'click', downloadLaunchReport);
+bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
+
 function buildAllocationsForApi() {
   return pools.map((p) => {
-    const distribution = p.distribution.map((s) => ({
-      sharePercent: s.sharePercent,
-      recipient: s.useExternalRecipient ? s.recipient : null,
-    }));
     // Pass the price the UI already resolved through to the server as
     // quoteUsdOverride, unless the user explicitly typed an override
     // (which always wins). This means the launch flow doesn't re-fetch
     // a price the UI just looked up — fewer external API calls, and the
     // price the user saw in the UI is the price the launch math uses.
-    // Server's lpService treats any non-null quoteUsdOverride as the
-    // source of truth, so this is a clean override path.
-    //
-    // Same pattern for symbol and decimals: prefer the explicit override
-    // (user-typed in customize), else the resolved value from the
-    // token-info lookup or flywheel preset. Without this fallback,
-    // backend-side fundingrequirement rows show a 6-char mint slice
-    // instead of the actual ticker (e.g. "7AL5rf" instead of "Stable").
     const effectiveUsdOverride =
       p.quoteUsdOverride != null
         ? p.quoteUsdOverride
@@ -3455,6 +6040,69 @@ function buildAllocationsForApi() {
       p.quoteDecimalsOverride != null
         ? p.quoteDecimalsOverride
         : (p.resolvedDecimals != null ? Number(p.resolvedDecimals) : null);
+
+    // Unified "% of pool" semantics in the UI: bootstrap.supplyPercent,
+    // ladder band.supplyPercent, and slice.sharePercent all express
+    // each position's fraction of THIS pool's allocation. They sum to
+    // 100% (validated). Backend wire format uses different denominators
+    // (bootstrap = % of total; ladder band = % of main; slice = % of
+    // wide), so we convert here.
+    const uiBsPct = (p.bootstrapConfig && p.bootstrapConfig.mode === 'custom')
+      ? Number(p.bootstrapConfig.supplyPercent) || 0
+      : 0;
+    const ldCfg = p.ladderConfig || { mode: 'off', bands: [] };
+    const uiBandPcts = (ldCfg.mode === 'manual' && Array.isArray(ldCfg.bands))
+      ? ldCfg.bands.map((b) => Number(b.supplyPercent) || 0)
+      : [];
+
+    // Wire bootstrap.supplyPercent is % of TOTAL token supply. With
+    // pool at X% of total and bs at Y% of pool, bs of total = X × Y / 100.
+    const bootstrap = uiBsPct > 0
+      ? { mode: 'custom', supplyPercent: uiBsPct * Number(p.supplyPercent) / 100 }
+      : { mode: 'minimal' };
+
+    // Wire ladder band.supplyPercent is % of MAIN (pool − bootstrap).
+    // Main fraction of pool = (1 − bs/100). So wire_band_pct = ui /
+    // (1 − bs/100). Clamp the divisor to avoid divide-by-zero when bs
+    // is 100% (edge case: user gave the entire pool to bootstrap).
+    let ladder;
+    if (uiBandPcts.length > 0) {
+      const mainFraction = Math.max(0.0001, 1 - uiBsPct / 100);
+      ladder = {
+        mode: 'manual',
+        bands: ldCfg.bands.map((b) => ({
+          supplyPercent: Number(b.supplyPercent) / mainFraction,
+          lowerMultiplier: Number(b.lowerMultiplier),
+          upperMultiplier: Number(b.upperMultiplier),
+        })),
+      };
+    } else {
+      ladder = { mode: 'off' };
+    }
+
+    // Wire distribution[].sharePercent is share of WIDE (slices among
+    // themselves sum to 100). UI slice sharePercent is % of pool;
+    // normalize within the slices array.
+    //
+    // Filter out 0% slices first — they contribute nothing to the wide
+    // bucket, would normalize to 0 on the wire, and the backend's
+    // normalizeDistribution() rejects sharePercent <= 0. Dropping them
+    // is a no-op since they don't represent any liquidity allocation.
+    // If filtering leaves the array empty (everything is in bs + bands,
+    // wide is 0), we send a single placeholder 100% slice; the backend's
+    // wide loop is skipped when wideBaseRaw = 0, so the value is unused.
+    const nonZeroSlices = p.distribution.filter((s) => (Number(s.sharePercent) || 0) > 0);
+    const totalSliceUi = nonZeroSlices.reduce((s, x) => s + (Number(x.sharePercent) || 0), 0);
+    let distribution;
+    if (totalSliceUi > 0) {
+      distribution = nonZeroSlices.map((s) => ({
+        sharePercent: (Number(s.sharePercent) || 0) / totalSliceUi * 100,
+        recipient: s.useExternalRecipient ? s.recipient : null,
+      }));
+    } else {
+      distribution = [{ sharePercent: 100, recipient: null }];
+    }
+
     return {
       quoteToken: p.quoteToken,
       supplyPercent: p.supplyPercent,
@@ -3463,6 +6111,8 @@ function buildAllocationsForApi() {
       quoteDecimalsOverride: effectiveDecimalsOverride,
       quoteSymbolOverride: effectiveSymbolOverride,
       distribution,
+      bootstrap,
+      ladder,
     };
   });
 }
@@ -4717,8 +7367,7 @@ bind('createLpBtn', 'click', async () => {
 
       log(`Starting pool creation for ${pools.length} pool(s)...`);
       addProgressIntro();
-      pools.forEach((p, i) => addProgressPool(i, p, lockPositions));
-      addBootstrapGroup(pools, lockPositions);
+      buildPhaseProgressTree(pools, lockPositions);
 
       const resp = await fetch('/api/create-lp', {
         method: 'POST',
@@ -4765,9 +7414,16 @@ bind('createLpBtn', 'click', async () => {
         document.getElementById('createLpBtn').classList.add('hidden');
       } else {
         // Phase-aware partial-failure rendering. The orchestrator returns
-        // failedPhase = 'pre_flight', 'main_positions', or 'bootstrap' so
-        // we can mark the right rows as failed without misrepresenting
-        // what completed.
+        // failedPhase = 'pre_flight', 'main_positions', 'bootstrap', 'locks',
+        // or 'transfers' so we can mark the right rows as failed without
+        // misrepresenting what completed.
+        //
+        // Under the deferred-lock model:
+        //   - 'main_positions': pool may have been created, slice opens failed
+        //   - 'bootstrap': mains opened in every pool, some bootstraps failed
+        //   - 'locks': all opens succeeded across all pools, some locks failed
+        //   - 'transfers': all opens + locks succeeded, some Fee Key transfers
+        //     failed (non-blocking — leftover NFTs sweep back to user)
         lpResult = { results: data.partialResults || [] };
         const failedPhase = data.failedPhase || 'main_positions';
 
@@ -4796,7 +7452,7 @@ bind('createLpBtn', 'click', async () => {
           // and mark every failed pool's bootstrap as failed.
           (data.partialResults || []).forEach((r) => {
             markPoolDone(r.allocationIndex, r);
-            if (r.bootstrap) markBootstrapDoneForPool(r.allocationIndex);
+            if (r.bootstrap) markBootstrapDoneForPool(r.allocationIndex, r.bootstrap);
           });
           // bootstrapFailures is an array of { allocationIndex, quoteSymbol, error }
           // for each bootstrap that failed. Falls back to failedAllocationIndex
@@ -4809,6 +7465,19 @@ bind('createLpBtn', 'click', async () => {
           for (const f of failures) {
             markBootstrapFailedForPool(f.allocationIndex, f.error);
           }
+        } else if (failedPhase === 'locks' || failedPhase === 'transfers') {
+          // All pools, mains, and bootstraps are open on-chain. The failure
+          // is in the post-open lock or transfer phase. Mark every pool's
+          // main and bootstrap rows as done (they did open successfully),
+          // but leave the per-position lock/transfer markers in their
+          // current state — the partialResults entries carry per-position
+          // `locked` and `transferredTo` flags that the progress tree could
+          // be enhanced to read from later. For now the user sees a clear
+          // recovery message via lpFailInfo below.
+          (data.partialResults || []).forEach((r) => {
+            markPoolDone(r.allocationIndex, r);
+            if (r.bootstrap) markBootstrapDoneForPool(r.allocationIndex, r.bootstrap);
+          });
         }
 
         log(`Pool creation failed (phase: ${failedPhase}): ${data.error}`, 'danger');
@@ -4871,14 +7540,28 @@ bind('createLpBtn', 'click', async () => {
             'Or sweep wallet to destination';
         } else {
           // Mid-launch failure — at least one pool was created and the
-          // on-chain state can't be rolled back. Distinguish bootstrap-
-          // phase failures (recoverable in place via Retry bootstraps)
-          // from main-positions failures (not recoverable; must sweep
-          // and start over).
-          document.getElementById('lpFailHeading').textContent =
-            failedPhase === 'bootstrap'
-              ? 'Some pools couldn\'t be bootstrapped.'
-              : 'Pool creation failed partway through.';
+          // on-chain state can't be rolled back. Distinguish by phase:
+          //   - 'bootstrap':  pools created, missing bootstraps. Recoverable
+          //                   in place via Retry bootstraps.
+          //   - 'locks':      all opens done across every pool, some locks
+          //                   failed. Resume retries just the unlocked.
+          //   - 'transfers':  all locks done, some Fee Key transfers failed.
+          //                   Non-blocking — leftover NFTs sweep back to user.
+          //   - 'main_positions' (default fallback): a slice open failed.
+          //                   Not recoverable in place; must sweep and start
+          //                   over (mid-Phase-1 partial recovery is a wider
+          //                   refactor not done yet).
+          let heading;
+          if (failedPhase === 'bootstrap') {
+            heading = 'Some pools couldn\'t be bootstrapped.';
+          } else if (failedPhase === 'locks') {
+            heading = 'Some positions couldn\'t be locked.';
+          } else if (failedPhase === 'transfers') {
+            heading = 'Some Fee Key transfers couldn\'t be delivered.';
+          } else {
+            heading = 'Pool creation failed partway through.';
+          }
+          document.getElementById('lpFailHeading').textContent = heading;
           document.getElementById('lpFailSucceededCount').innerHTML =
             `<strong>${successCount} of ${totalCount}</strong> pool${successCount === 1 ? '' : 's'} ` +
             `created successfully before the failure on <strong>${escapeHtml(failedSymbol)}</strong>. ` +
@@ -4894,6 +7577,33 @@ bind('createLpBtn', 'click', async () => {
               `to try again (most bootstrap failures are transient RPC issues). If retrying ` +
               `keeps failing, sweep the wallet to your destination and manually add bootstrap ` +
               `liquidity in the Raydium UI later.`;
+          } else if (failedPhase === 'locks') {
+            // Lock-phase failures: every pool's main and bootstrap positions
+            // are open on-chain (and the bootstraps make the pools tradable).
+            // The positions just haven't been locked yet, which means the
+            // ephemeral wallet can still close them — assets are recoverable
+            // either by completing the locks or by sweeping the wallet back
+            // (which would also close the open positions).
+            document.getElementById('lpFailReassurance').innerHTML =
+              `<strong>Every pool is open and tradable.</strong> The missing step is the lock — ` +
+              `until locks finish, the LP'd tokens are still recoverable by the launch wallet. ` +
+              `Click <strong>Resume launch</strong> to try the remaining locks again (most lock ` +
+              `failures are transient RPC issues). If locks keep failing and you'd rather walk ` +
+              `away, sweep the wallet to your destination — the open positions get closed and ` +
+              `their LP tokens come back with the sweep.`;
+          } else if (failedPhase === 'transfers') {
+            // Transfer-phase failures are non-blocking conceptually: every
+            // pool is locked successfully, only the courtesy of delivering
+            // Fee Key NFTs to recipient addresses didn't complete. The
+            // un-transferred NFTs are in the launch wallet and will sweep
+            // to the user's destination wallet.
+            document.getElementById('lpFailReassurance').innerHTML =
+              `<strong>The launch itself succeeded.</strong> Every pool is created, tradable, and ` +
+              `locked. The only thing that didn't finish was the delivery of Fee Key NFTs to ` +
+              `recipient addresses you specified. Those NFTs are in your launch wallet and will ` +
+              `come along with the final sweep to your destination wallet, so nothing is lost. ` +
+              `You can manually send them to the intended recipients afterward, or click ` +
+              `<strong>Resume launch</strong> to try the deliveries again.`;
           } else {
             // Main-positions failure: at least one pool was created but
             // its main positions couldn't be opened (or the next pool
@@ -4908,22 +7618,33 @@ bind('createLpBtn', 'click', async () => {
               `back to your destination as a last resort; the pools that succeeded above are ` +
               `permanent on-chain.`;
           }
+          // Continue/sweep button label. For 'bootstrap' and 'locks',
+          // the user has unfinished work that retry can fix in place,
+          // so the sweep alternative reads as a secondary "give up"
+          // option ("Or sweep to destination instead"). For 'transfers'
+          // and the default main_positions case, the alternative IS
+          // the primary recovery path (sweep collects everything),
+          // so it reads as "Skip to Transfer Assets".
           document.getElementById('continueToTransferAfterFailBtnLabel').textContent =
-            failedPhase === 'bootstrap'
+            (failedPhase === 'bootstrap' || failedPhase === 'locks')
               ? 'Or sweep to destination instead'
               : 'Skip to Transfer Assets';
         }
 
         // Resume button visibility: meaningful for any post-pre-flight
-        // failure (main_positions OR bootstrap). The button calls a
-        // unified /api/resume-launch endpoint that skips already-completed
-        // allocations and retries the rest. Pre-flight failures don't
-        // need the button (the regular Create Pools button handles those).
+        // failure (main_positions, bootstrap, locks, transfers). The
+        // button calls a unified /api/resume-launch endpoint that
+        // inspects per-position state in priorResults and skips any
+        // operation already done. Pre-flight failures don't need the
+        // button — the user fixes the config and re-clicks Create Pools.
         const retryBtn = document.getElementById('retryBootstrapsBtn');
         const retryLabel = retryBtn.querySelector('span:last-child');
-        if (failedPhase === 'bootstrap' || failedPhase === 'main_positions') {
+        if (failedPhase !== 'pre_flight') {
           retryBtn.classList.remove('hidden');
-          // Phase-specific label so the user knows what's being retried.
+          // Phase-specific label. Bootstrap gets its own verb ("Retry
+          // bootstraps") because that's the established muscle memory
+          // for that case; everything else uses the generic "Resume launch"
+          // since the resume endpoint will figure out what to do.
           if (retryLabel) {
             retryLabel.textContent = failedPhase === 'bootstrap'
               ? 'Retry bootstraps'
@@ -4961,62 +7682,132 @@ bind('createLpBtn', 'click', async () => {
   });
 });
 
-function addProgressPool(idx, pool, lockPositions) {
+// Build the entire progress tree as four phase blocks, matching the
+// orchestrator's execution order:
+//
+//   Phase 1 — Create pools and open main positions
+//   Phase 2 — Open bootstrap positions
+//   Phase 3 — Lock positions (only when lockPositions=true)
+//   Phase 4 — Transfer Fee Keys to recipients (only when at least one
+//             slice has an external recipient AND lockPositions=true,
+//             since Fee Keys only exist for locked positions)
+//
+// Within each phase, rows are listed pool-by-pool (Pool 1 things, then
+// Pool 2 things, etc.). This is the structure that matches what the
+// orchestrator actually does and produces a coherent narrative when the
+// user reads top-to-bottom after a launch completes.
+//
+// Rows are uniquely identified by data-pool-idx + data-stage attributes
+// rather than per-pool container IDs, so marker functions can query each
+// row independently regardless of which phase block it lives in.
+function buildPhaseProgressTree(pools, lockPositions) {
   const tree = document.getElementById('lpProgressTree');
-  const el = document.createElement('div');
-  el.className = 'progress-pool';
-  el.id = `pp-${idx}`;
-  const sliceCount = pool.distribution.length;
 
-  // The lock step only runs if the user opted into locking. Skip the row
-  // when lockPositions=false — otherwise the progress UI would show "Lock
-  // slice X" rows that never tick over to ✓ (because the orchestrator
-  // skips the lockPosition call entirely), and on success it'd misleadingly
-  // mark them green via the "all done" sweep even though nothing was locked.
-  let stepsHtml = `<div class="progress-step pending" data-stage="pool"><span class="icon">◯</span>Create pool</div>`;
-  for (let s = 0; s < sliceCount; s++) {
-    stepsHtml += `<div class="progress-step pending" data-stage="slice-${s}"><span class="icon">◯</span>Open slice ${s + 1} of ${sliceCount}</div>`;
-    if (lockPositions) {
-      stepsHtml += `<div class="progress-step pending" data-stage="lock-${s}"><span class="icon">◯</span>Lock slice ${s + 1}</div>`;
-    }
-    if (pool.distribution[s].useExternalRecipient && pool.distribution[s].recipient) {
-      stepsHtml += `<div class="progress-step pending" data-stage="xfer-${s}"><span class="icon">◯</span>Transfer slice ${s + 1} to recipient</div>`;
-    }
-  }
+  // Ladder context — same for every pool in the simple-UI flow (ladder
+  // is currently a global toggle, not per-pool). Read from simpleConfig
+  // rather than threading it through from the caller; the tree is built
+  // at click time when the config is current. In customize mode the
+  // ladder is always off (no per-pool ladder UI yet).
+  const ladderEnabled =
+    simpleConfig.mode === 'default' && simpleConfig.ladderEnabled;
+  const ladderBandCount = ladderEnabled
+    ? Number(simpleConfig.ladderBandCount) || LADDER_DEFAULT_BANDS
+    : 0;
 
-  el.innerHTML = `
-    <p class="has-text-weight-bold">Pool ${idx + 1} (${pool.resolvedSymbol || pool.quoteToken})</p>
-    ${stepsHtml}
-  `;
-  tree.appendChild(el);
-}
-
-// Add a separate "Bootstrap pools" section at the bottom of the progress
-// tree. Each pool's bootstrap row goes here rather than under its main
-// positions, because bootstrapping runs as a single phase AFTER every
-// pool's main positions are in place — see the orchestrator in lpService.js
-// for why.
-function addBootstrapGroup(pools, lockPositions) {
-  const tree = document.getElementById('lpProgressTree');
-  const group = document.createElement('div');
-  group.className = 'progress-pool';
-  group.id = 'pp-bootstrap';
-  let stepsHtml = '';
+  // --- Phase 1: pool creates + main opens + ladder opens
+  const phase1 = document.createElement('div');
+  phase1.className = 'progress-pool';
+  phase1.id = 'pp-phase1';
+  let phase1Rows = '';
   pools.forEach((p, i) => {
     const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-    stepsHtml += `<div class="progress-step pending" data-bs-pool="${i}" data-stage="bs-open"><span class="icon">◯</span>${label} — open bootstrap</div>`;
-    // Lock row only when locking is enabled — same reasoning as the
-    // main-positions lock row above.
-    if (lockPositions) {
-      stepsHtml += `<div class="progress-step pending" data-bs-pool="${i}" data-stage="bs-lock"><span class="icon">◯</span>${label} — lock bootstrap</div>`;
+    const sliceCount = p.distribution.length;
+    phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="pool"><span class="icon">◯</span>${label} — Create pool</div>`;
+    for (let s = 0; s < sliceCount; s++) {
+      phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="slice-${s}"><span class="icon">◯</span>${label} — Open slice ${s + 1} of ${sliceCount}</div>`;
+    }
+    // Ladder bands per pool, ordered low-to-high (band 1 = closest to launch)
+    for (let b = 0; b < ladderBandCount; b++) {
+      phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="ladder-${b}"><span class="icon">◯</span>${label} — Open ladder band ${b + 1} of ${ladderBandCount}</div>`;
     }
   });
-  group.innerHTML = `
-    <p class="has-text-weight-bold mt-3">Bootstrap pools (final phase)</p>
-    <p class="is-size-7 has-text-grey mb-1">Runs after every pool's main positions are in place. Each pool becomes tradable as its bootstrap lands.</p>
-    ${stepsHtml}
+  phase1.innerHTML = `
+    <p class="has-text-weight-bold">Phase 1 — Open main positions</p>
+    <p class="is-size-7 has-text-grey mb-1">Pools are created and main positions opened (single-sided in your token). Positions are recoverable by the launch wallet until Phase 3 locks them.</p>
+    ${phase1Rows}
   `;
-  tree.appendChild(group);
+  tree.appendChild(phase1);
+
+  // --- Phase 2: bootstrap opens
+  const phase2 = document.createElement('div');
+  phase2.className = 'progress-pool';
+  phase2.id = 'pp-phase2';
+  let phase2Rows = '';
+  pools.forEach((p, i) => {
+    const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
+    phase2Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="bs-open"><span class="icon">◯</span>${label} — Open bootstrap</div>`;
+  });
+  phase2.innerHTML = `
+    <p class="has-text-weight-bold mt-3">Phase 2 — Open bootstrap positions</p>
+    <p class="is-size-7 has-text-grey mb-1">Each pool becomes tradable as its bootstrap lands. Runs after every pool's main positions are in place so all pools cross the tradability line together.</p>
+    ${phase2Rows}
+  `;
+  tree.appendChild(phase2);
+
+  // --- Phase 3: locks (mains, then ladder bands, then bootstrap — per pool)
+  // Skipped entirely when lockPositions=false — there will be no locked
+  // positions and so no Phase 3 work; rendering the rows would mislead
+  // the user into thinking Phase 3 runs when the orchestrator actually
+  // bypasses it.
+  if (lockPositions) {
+    const phase3 = document.createElement('div');
+    phase3.className = 'progress-pool';
+    phase3.id = 'pp-phase3';
+    let phase3Rows = '';
+    pools.forEach((p, i) => {
+      const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
+      const sliceCount = p.distribution.length;
+      for (let s = 0; s < sliceCount; s++) {
+        phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="lock-${s}"><span class="icon">◯</span>${label} — Lock slice ${s + 1}</div>`;
+      }
+      for (let b = 0; b < ladderBandCount; b++) {
+        phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="ladder-lock-${b}"><span class="icon">◯</span>${label} — Lock ladder band ${b + 1}</div>`;
+      }
+      phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="bs-lock"><span class="icon">◯</span>${label} — Lock bootstrap</div>`;
+    });
+    phase3.innerHTML = `
+      <p class="has-text-weight-bold mt-3">Phase 3 — Lock positions</p>
+      <p class="is-size-7 has-text-grey mb-1">Locks burn the position NFTs and mint Fee Key NFTs. After this, the LP'd tokens are committed for life and only fees can be claimed. Failures are retryable in place.</p>
+      ${phase3Rows}
+    `;
+    tree.appendChild(phase3);
+
+    // --- Phase 4: transfers — only render if at least one slice has a recipient
+    const anyRecipient = pools.some((p) =>
+      p.distribution.some((d) => d.useExternalRecipient && d.recipient),
+    );
+    if (anyRecipient) {
+      const phase4 = document.createElement('div');
+      phase4.className = 'progress-pool';
+      phase4.id = 'pp-phase4';
+      let phase4Rows = '';
+      pools.forEach((p, i) => {
+        const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
+        const sliceCount = p.distribution.length;
+        for (let s = 0; s < sliceCount; s++) {
+          if (p.distribution[s].useExternalRecipient && p.distribution[s].recipient) {
+            phase4Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="xfer-${s}"><span class="icon">◯</span>${label} — Transfer slice ${s + 1} Fee Key to recipient</div>`;
+          }
+        }
+      });
+      phase4.innerHTML = `
+        <p class="has-text-weight-bold mt-3">Phase 4 — Transfer Fee Keys to recipients</p>
+        <p class="is-size-7 has-text-grey mb-1">Sends the Fee Key NFTs for slices with external recipients to those recipient addresses. Transfer failures are non-blocking — any undelivered Fee Keys sweep back to your destination wallet at the end.</p>
+        ${phase4Rows}
+      `;
+      tree.appendChild(phase4);
+    }
+  }
 }
 
 // One-time note added to the progress tree at the start of LP creation, to
@@ -5035,66 +7826,168 @@ function addProgressIntro() {
   tree.appendChild(note);
 }
 
+// Mark progress rows for a pool based on what actually completed.
+//
+// Under the phase-organized tree, each pool's rows are distributed
+// across the four phase blocks (pp-phase1..pp-phase4). We find each
+// row by its data-pool-idx + data-stage attribute combination, and
+// inspect the corresponding piece of state on poolResult to decide
+// whether to mark the row done.
+//
+// Per-position state we look at:
+//   - poolResult.poolId               → "Create pool" row
+//   - mainPositions[i].nftMint        → "Open slice i" row
+//   - mainPositions[i].locked         → "Lock slice i" row
+//   - mainPositions[i].transferredTo  → "Transfer slice i to recipient" row
+//
+// Bootstrap rows for this pool live in pp-phase2 (bs-open) and
+// pp-phase3 (bs-lock); markBootstrapDoneForPool handles those.
+//
+// For full-success results (every state field populated), every row
+// for the pool ends up green — matching what the user expects.
+// For partial-failure results, rows whose underlying operation didn't
+// finish stay in their pending/failed state. The user sees an honest
+// picture of what's done vs. what isn't.
 function markPoolDone(idx, poolResult) {
-  const el = document.getElementById(`pp-${idx}`);
-  if (!el) return;
-  el.querySelectorAll('.progress-step').forEach((s) => {
-    s.classList.remove('pending', 'running');
-    s.classList.add('done');
-    s.querySelector('.icon').textContent = '✓';
-  });
+  // Pool creation row.
+  if (poolResult && poolResult.poolId) {
+    const poolRow = document.querySelector(
+      `#lpProgressTree [data-pool-idx="${idx}"][data-stage="pool"]`,
+    );
+    if (poolRow) markRowDone(poolRow);
+  }
+
+  // Per-slice rows.
+  const mp = Array.isArray(poolResult && poolResult.mainPositions)
+    ? poolResult.mainPositions
+    : [];
+  for (let i = 0; i < mp.length; i++) {
+    const pos = mp[i];
+    if (pos && pos.nftMint) {
+      const openRow = document.querySelector(
+        `#lpProgressTree [data-pool-idx="${idx}"][data-stage="slice-${i}"]`,
+      );
+      if (openRow) markRowDone(openRow);
+    }
+    if (pos && pos.locked) {
+      const lockRow = document.querySelector(
+        `#lpProgressTree [data-pool-idx="${idx}"][data-stage="lock-${i}"]`,
+      );
+      if (lockRow) markRowDone(lockRow);
+    }
+    if (pos && pos.transferredTo) {
+      const xferRow = document.querySelector(
+        `#lpProgressTree [data-pool-idx="${idx}"][data-stage="xfer-${i}"]`,
+      );
+      if (xferRow) markRowDone(xferRow);
+    }
+  }
+
+  // Per-ladder-band rows. Ladder bands have open and lock rows; no
+  // transfer rows because ladder Fee Keys always sweep with the launch
+  // wallet, never to external recipients.
+  const lp = Array.isArray(poolResult && poolResult.ladderPositions)
+    ? poolResult.ladderPositions
+    : [];
+  for (let b = 0; b < lp.length; b++) {
+    const pos = lp[b];
+    if (pos && pos.nftMint) {
+      const openRow = document.querySelector(
+        `#lpProgressTree [data-pool-idx="${idx}"][data-stage="ladder-${b}"]`,
+      );
+      if (openRow) markRowDone(openRow);
+    }
+    if (pos && pos.locked) {
+      const lockRow = document.querySelector(
+        `#lpProgressTree [data-pool-idx="${idx}"][data-stage="ladder-lock-${b}"]`,
+      );
+      if (lockRow) markRowDone(lockRow);
+    }
+  }
+}
+
+// Helper: flip a single row from pending/running to done.
+function markRowDone(row) {
+  row.classList.remove('pending', 'running');
+  row.classList.add('done');
+  const icon = row.querySelector('.icon');
+  if (icon) icon.textContent = '✓';
 }
 
 function markPoolFailed(idx, err) {
-  const el = document.getElementById(`pp-${idx}`);
-  if (!el) return;
-  const pending = el.querySelector('.progress-step.pending');
+  // Find the first pending row for this pool. Under the phase-organized
+  // tree, that's the first row anywhere in lpProgressTree with the
+  // matching data-pool-idx that hasn't transitioned to done yet. The
+  // first such row is by definition the operation that failed (the
+  // orchestrator's sequential execution means failures stop progress
+  // at that point).
+  const pending = document.querySelector(
+    `#lpProgressTree [data-pool-idx="${idx}"].pending`,
+  );
   if (pending) {
     pending.classList.remove('pending');
     pending.classList.add('failed');
-    pending.querySelector('.icon').textContent = '✗';
+    const icon = pending.querySelector('.icon');
+    if (icon) icon.textContent = '✗';
     pending.title = err;
   }
 }
 
 // Mark all bootstrap rows as done. Called after the orchestrator returns
-// success — phase 2 is sequential and we don't have per-pool bootstrap
-// streaming, so all rows transition together.
+// full success — phase 2 (bs-open) and phase 3 (bs-lock) are both
+// completed by definition, so every bootstrap row transitions to ✓.
+//
+// Under the phase-organized tree, bootstrap rows live in pp-phase2 (for
+// bs-open) and pp-phase3 (for bs-lock). We select by stage attribute so
+// the lookup is independent of which phase block hosts the rows.
 function markAllBootstrapsDone() {
-  const group = document.getElementById('pp-bootstrap');
-  if (!group) return;
-  group.querySelectorAll('.progress-step').forEach((s) => {
-    s.classList.remove('pending', 'running');
-    s.classList.add('done');
-    s.querySelector('.icon').textContent = '✓';
+  document.querySelectorAll(
+    '#lpProgressTree [data-stage="bs-open"], #lpProgressTree [data-stage="bs-lock"]',
+  ).forEach((row) => markRowDone(row));
+}
+
+// Mark a specific pool's bootstrap rows based on actual state. Each pool
+// has up to TWO bootstrap rows (bs-open in phase 2, bs-lock in phase 3);
+// under the deferred-lock model, the open happens in Phase 2 and the lock
+// in Phase 3, so a pool's bootstrap can be open-but-not-locked between
+// those phases.
+//
+// Callers may pass a bootstrap result object via the second arg; if
+// omitted, we default to "everything done" (the historical behavior used
+// from the success path). Partial-failure callers should pass the actual
+// bootstrap result to get accurate per-row marking.
+function markBootstrapDoneForPool(allocationIndex, bootstrapResult) {
+  const rows = document.querySelectorAll(
+    `#lpProgressTree [data-pool-idx="${allocationIndex}"][data-stage^="bs-"]`,
+  );
+  rows.forEach((row) => {
+    const stage = row.dataset.stage;
+    if (!bootstrapResult) {
+      markRowDone(row);
+      return;
+    }
+    if (stage === 'bs-open' && bootstrapResult.nftMint) {
+      markRowDone(row);
+    } else if (stage === 'bs-lock' && bootstrapResult.locked) {
+      markRowDone(row);
+    }
   });
 }
 
-// Mark a specific pool's bootstrap rows as done (used on partial-failure
-// when only some pools' bootstraps succeeded before a later one failed).
-function markBootstrapDoneForPool(allocationIndex) {
-  const group = document.getElementById('pp-bootstrap');
-  if (!group) return;
-  group.querySelectorAll(`[data-bs-pool="${allocationIndex}"]`).forEach((s) => {
-    s.classList.remove('pending', 'running');
-    s.classList.add('done');
-    s.querySelector('.icon').textContent = '✓';
-  });
-}
-
-// Mark a specific pool's bootstrap rows as failed. Each pool has TWO
-// progress rows (bs-open and bs-lock) — we mark every pending one as
-// failed because the bootstrap is atomic from the user's perspective.
-// If we only marked the first match, the bs-lock row would stay pending
-// forever, looking like work was still in progress.
+// Mark a specific pool's bootstrap rows as failed. Each pool has up to
+// TWO bootstrap rows; we mark every pending one as failed because the
+// bootstrap step is atomic from the user's perspective. If we only
+// marked the first match, the bs-lock row would stay pending even
+// though the work is unreachable until the open succeeds.
 function markBootstrapFailedForPool(allocationIndex, err) {
-  const group = document.getElementById('pp-bootstrap');
-  if (!group) return;
-  const pendingRows = group.querySelectorAll(`[data-bs-pool="${allocationIndex}"].pending`);
-  pendingRows.forEach((row) => {
+  const rows = document.querySelectorAll(
+    `#lpProgressTree [data-pool-idx="${allocationIndex}"][data-stage^="bs-"].pending`,
+  );
+  rows.forEach((row) => {
     row.classList.remove('pending');
     row.classList.add('failed');
-    row.querySelector('.icon').textContent = '✗';
+    const icon = row.querySelector('.icon');
+    if (icon) icon.textContent = '✗';
     row.title = err;
   });
 }
@@ -5118,8 +8011,12 @@ function buildLpDoneSummary(results) {
     const sym = escapeHtml(r.quoteSymbol || '');
     const idShort = escapeHtml(r.poolId?.slice(0, 8) || '');
     const slices = Array.isArray(r.mainPositions) ? r.mainPositions : [];
+    const ladder = Array.isArray(r.ladderPositions) ? r.ladderPositions : [];
     s += `<strong>${sym}</strong> pool: ${idShort}…, `;
     s += `${slices.length} main slice${slices.length === 1 ? '' : 's'}`;
+    if (ladder.length > 0) {
+      s += `, ${ladder.length} ladder band${ladder.length === 1 ? '' : 's'}`;
+    }
     const ext = slices.filter((p) => p.transferredTo).length;
     if (ext > 0) s += ` (${ext} sent to external wallets)`;
     s += '<br>';
@@ -5206,7 +8103,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
         lpResult = data;
         data.results.forEach((r) => {
           markPoolDone(r.allocationIndex, r);
-          markBootstrapDoneForPool(r.allocationIndex);
+          markBootstrapDoneForPool(r.allocationIndex, r.bootstrap);
         });
         log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
         document.getElementById('lpDoneInfo').classList.remove('hidden');
@@ -5231,7 +8128,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
       // on what's populated), and mark the still-failing ones.
       (data.partialResults || []).forEach((r) => {
         markPoolDone(r.allocationIndex, r);
-        if (r.bootstrap) markBootstrapDoneForPool(r.allocationIndex);
+        if (r.bootstrap) markBootstrapDoneForPool(r.allocationIndex, r.bootstrap);
       });
       if (newPhase === 'bootstrap') {
         const failures = data.bootstrapFailures
@@ -5241,17 +8138,33 @@ bind('retryBootstrapsBtn', 'click', async () => {
         for (const f of failures) {
           markBootstrapFailedForPool(f.allocationIndex, f.error);
         }
+      } else if (newPhase === 'locks' || newPhase === 'transfers') {
+        // Lock/transfer phase failures don't map to a single failing
+        // allocation row — the failures are per-position and don't
+        // belong on the pool-level progress markers. We've already
+        // marked pools and bootstraps as done above; the per-position
+        // detail lives in data.lockFailures / data.transferFailures
+        // and gets surfaced via the lpFailInfo banner below.
       } else if (data.failedAllocationIndex != null) {
         markPoolFailed(data.failedAllocationIndex, data.error);
       }
 
       // Re-show the fail banner with updated counts so the user can
-      // either retry again or give up via sweep.
+      // either retry again or give up via sweep. Heading + reassurance
+      // copy mirrors the initial-failure branches so the UX stays
+      // consistent whether the user is on attempt 1 or attempt N.
       document.getElementById('lpFailInfo').classList.remove('hidden');
-      document.getElementById('lpFailHeading').textContent =
-        newPhase === 'bootstrap'
-          ? 'Bootstraps still failing.'
-          : 'Pool creation still failing.';
+      let resumeHeading;
+      if (newPhase === 'bootstrap') {
+        resumeHeading = 'Bootstraps still failing.';
+      } else if (newPhase === 'locks') {
+        resumeHeading = 'Some position locks still failing.';
+      } else if (newPhase === 'transfers') {
+        resumeHeading = 'Some Fee Key transfers still failing.';
+      } else {
+        resumeHeading = 'Pool creation still failing.';
+      }
+      document.getElementById('lpFailHeading').textContent = resumeHeading;
       document.getElementById('lpFailSummary').textContent = data.error;
       const successCount = (data.partialResults || []).length;
       const totalCount = allocations.length;
@@ -5262,19 +8175,17 @@ bind('retryBootstrapsBtn', 'click', async () => {
       // Resume button stays visible for another attempt. Update its
       // label too — a retry can shift phases (e.g. main-positions
       // failure resolves but uncovers a bootstrap-only failure), and
-      // the button label should reflect that. Without this update,
-      // the user would see "Resume launch" even when the work
-      // remaining is just bootstrap retries.
+      // the button label should reflect that. For locks/transfers we
+      // keep the generic "Resume launch" label since those don't have
+      // a dedicated retry verb.
       const retryLabel = btn.querySelector('span:last-child');
       if (retryLabel) {
         retryLabel.textContent = newPhase === 'bootstrap'
           ? 'Retry bootstraps'
           : 'Resume launch';
       }
-      // Same phase-shift concern for the reassurance copy and the
-      // sweep-button label in the fail banner. The initial failure
-      // handler in createLp sets these based on the original phase;
-      // on a retry the phase can change, and the copy needs to follow.
+      // Phase-specific reassurance copy (mirrors the initial-failure
+      // path's branches so retry messaging stays consistent).
       if (newPhase === 'bootstrap') {
         document.getElementById('lpFailReassurance').innerHTML =
           `<strong>Main positions are in place for every pool.</strong> Only the bootstrap ` +
@@ -5285,6 +8196,25 @@ bind('retryBootstrapsBtn', 'click', async () => {
           `liquidity in the Raydium UI later.`;
         document.getElementById('continueToTransferAfterFailBtnLabel').textContent =
           'Or sweep to destination instead';
+      } else if (newPhase === 'locks') {
+        document.getElementById('lpFailReassurance').innerHTML =
+          `<strong>Every pool is open and tradable.</strong> The missing step is the lock — ` +
+          `until locks finish, the LP'd tokens are still recoverable by the launch wallet. ` +
+          `Click <strong>Resume launch</strong> to try the remaining locks again. If locks ` +
+          `keep failing and you'd rather walk away, sweep the wallet to your destination — ` +
+          `the open positions get closed and their LP tokens come back with the sweep.`;
+        document.getElementById('continueToTransferAfterFailBtnLabel').textContent =
+          'Or sweep to destination instead';
+      } else if (newPhase === 'transfers') {
+        document.getElementById('lpFailReassurance').innerHTML =
+          `<strong>The launch itself succeeded.</strong> Every pool is created, tradable, and ` +
+          `locked. The only thing that didn't finish was the delivery of Fee Key NFTs to ` +
+          `recipient addresses. Those NFTs are in your launch wallet and will sweep to your ` +
+          `destination wallet, so nothing is lost. You can manually send them to the intended ` +
+          `recipients afterward, or click <strong>Resume launch</strong> to try the deliveries ` +
+          `again.`;
+        document.getElementById('continueToTransferAfterFailBtnLabel').textContent =
+          'Skip to Transfer Assets';
       } else {
         document.getElementById('lpFailReassurance').innerHTML =
           `<strong>Your assets are safe</strong> — they're still in the ephemeral wallet ` +

@@ -13,7 +13,7 @@ charging launch fees, or holding your liquidity hostage.
 
 ---
 
-## ⚠ Before you start: get a paid RPC endpoint
+## ⚠ Before you start: get a dedicated RPC endpoint
 
 **Do not attempt to launch a token using the public Solana RPC.** The
 free `api.mainnet-beta.solana.com` endpoint is shared by the entire
@@ -27,14 +27,15 @@ five minutes to set up a real RPC before doing anything else.
 
 **Recommended:** [Helius](https://www.helius.dev/) — sign up, create an
 API key on the dashboard, and you'll get a URL like
-`https://mainnet.helius-rpc.com/?api-key=YOUR_KEY`. Helius has a free
-tier that's enough to test with, and paid tiers that are reliable
-under the load that a real launch generates.
+`https://mainnet.helius-rpc.com/?api-key=YOUR_KEY`. The free tier is
+plenty for individual launches; you don't need a paid plan.
 
-**Alternatives:** Triton, QuickNode, Alchemy. Any reputable paid
-Solana RPC will work. Avoid free aggregator endpoints — they fail
-in the same ways as the public RPC, just with extra middleware in the
-way to obscure the cause.
+**Alternatives:** Triton, QuickNode, Alchemy. Any reputable Solana
+RPC provider will work, and all of them have free tiers that handle
+what Trebuchet needs. Avoid free *aggregator* endpoints (the ones
+that bundle multiple public RPCs behind a single URL) — they fail
+in the same ways as the public RPC, just with extra middleware in
+the way to obscure the cause.
 
 Add your endpoint inside the app: click the **RPC** bar at the top
 of the page, paste your URL into "Add a New RPC", give it a name,
@@ -47,7 +48,8 @@ will be remembered between sessions.
 
 Before launching, have these ready:
 
-- **A paid RPC endpoint** (see above — non-negotiable).
+- **A dedicated RPC endpoint** (see above — non-negotiable; free tier
+  from any reliable provider is plenty).
 - **A funding wallet** with enough SOL to cover the launch costs.
   The app calculates the exact amount required during Step 3 and
   shows an itemised breakdown. Roughly: 0.1–0.3 SOL for fees plus
@@ -121,15 +123,27 @@ arbitrage flow that a pure SOL launch wouldn't have. You can disable
 the flywheel entirely, switch between Reserve and Meme, or adjust the
 percentage (5–30%) in the Step 2 panel.
 
+The Meme flywheel is the default, even for non-meme launches. Its
+pair set deliberately includes the Reserve flywheel as one of its
+quote tokens, which means a Meme-launched token gets cascading
+exposure to the Reserve network too — picking Meme covers both
+networks at once. Reserve only sees its own network. Switch to
+Reserve manually if your project's posture is closer to "utility /
+brand / long-term hold" than "memetic / momentum"; the explainer
+modal in the app walks through when each makes sense.
+
 - **Reserve flywheel** — paired with an ETH-backed token, a
   BTC-backed token, and a stable-backed flywheel token. Acts as a
   store of value and a hedge against SOL. Lower downside risk, less
   volume. Use this for serious projects, utility tokens, or anything
   with a long-term posture.
-- **Meme flywheel** — paired with popular meme tokens that have
-  retained active communities and attention. Higher chance of
-  generating meaningful volume, more downside exposure if those paired
-  memes decline. Use this for meme launches.
+- **Meme flywheel** (default) — paired with popular meme tokens
+  that have retained active communities and attention, *plus* the
+  Reserve flywheel itself. Higher chance of generating meaningful
+  volume, more downside exposure if those paired memes decline.
+  Use this for meme launches, or for any launch where the
+  cross-network exposure is more valuable than the lower-variance
+  Reserve-only positioning.
 
 The "Learn more" link next to the flywheel toggle in the app expands
 on the mechanics and risk tradeoffs.
@@ -197,20 +211,51 @@ genuinely just a paranoia option, not a normal step.
 - **Target launch market cap (USD)** — sets the initial price. If you
   pick $100,000 with a 1B supply, each token is worth $0.0001. All
   pools start at the same USD-equivalent price.
-- **Use a flywheel** (default on, 10% Reserve) — adds a second pool
+- **Use a flywheel** (default on, 10% Meme) — adds a second pool
   paired with the chosen flywheel quote token for arbitrage volume
-  exposure. See *Flywheels* above. Untoggle for a pure SOL launch.
-- **Split the LP** (default off) — splits the SOL pool into multiple
-  positions, each minting its own Fee Key NFT. Useful for partial
-  fee-stream giveaways or sales (see *Splitting liquidity* above).
-- **Customize pools manually** — for anything more elaborate than the
-  defaults: multiple non-SOL pools, custom quote tokens, per-pool
-  splits, external Fee Key recipients. The simple panel covers
-  ~90% of launches; the Customize view is there when you need it.
+  exposure. The Meme flywheel ($seige) is the default because its
+  pair set includes the Reserve flywheel itself, so meme-launched
+  tokens plug into both networks at once. Switch to Reserve (XLRT)
+  for serious / utility tokens. See *Flywheels* above. Untoggle for
+  a pure SOL launch.
+- **Split the LP** (default off) — splits each pool's main LP into
+  multiple positions, each minting its own Fee Key NFT. Useful for
+  partial fee-stream giveaways or sales (see *Splitting liquidity*
+  above). To also split the flywheel pool, use Customize.
+- **Add starting liquidity** (default off) — by default each pool
+  opens with a tiny ~$1 reserve position that just makes the pool
+  tradable. Enable this to deposit real starting liquidity across
+  all pools. You specify the total SOL to commit; the app splits it
+  evenly across every pool (SOL pool plus any flywheel pool), and
+  each pool's bootstrap uses a full-range position so the support
+  shows up at every price level. Token-side liquidity carves out of
+  each pool's allocation; you don't need extra tokens.
+- **Ladder positions** (default off) — splits a portion of each
+  pool's supply across discrete log-spaced price bands going up to
+  a 1000× launch-price ceiling, with gaps between bands for
+  breakouts. Each band acts as resistance on the way up and support
+  on the way back down. Smooths supply distribution so 90% isn't
+  gobbled up by the time you hit 10×. Slider sets the percentage of
+  pool supply that goes into the ladder (20–80%); a second slider
+  picks the number of bands (3–10). The remainder of the pool's
+  supply stays in a wide main position covering all prices.
+- **Customize pools manually** — for anything more elaborate than
+  the defaults: multiple non-SOL pools, custom quote tokens, per-pool
+  splits, external Fee Key recipients, custom ladder bands at
+  hand-picked ranges. The simple panel covers ~90% of launches; the
+  Customize view is there when you need it.
 - **Lock liquidity (Burn & Earn)** — leave this on. It permanently
   locks the LP position and gives you a transferable NFT (the "Fee
-  Key") that collects trading fees forever. Without it, your liquidity
-  isn't really locked and traders will rightly distrust the launch.
+  Key") that collects trading fees forever. Without it, your
+  liquidity isn't really locked and traders will rightly distrust
+  the launch.
+
+Before continuing you can click **Visualize tokenomics** to see a
+donut chart of your configured distribution — supply broken down by
+pool and by position type (bootstrap, main LP slices, ladder bands).
+Helps catch "I configured 5% of pool to bootstrap but really meant
+50%" before you start funding. Token logo appears in the chart center
+if you uploaded one.
 
 Click **Continue to Funding**.
 
@@ -234,6 +279,14 @@ creation rent, position NFT mint fees, Metaplex metadata fees, network
 fees, plus your actual liquidity deposit. You're not being charged a
 launch fee; this is what Solana and Raydium and Metaplex cost.
 
+**Sticker shock?** Click **Edit configuration** at the top of the
+funding panel to go back to Step 2 with all your settings intact —
+adjust the bootstrap amount, ladder percentage, or pool count, then
+return to Step 3 for an updated estimate. Funds already in the
+wallet stay put and count toward the new estimate. This is the right
+escape hatch for "I should have set X differently"; Cancel & Refund
+is the heavier "abandon everything" option.
+
 ### Step 4 — Create the token
 
 Click **Create Token**. The app:
@@ -246,26 +299,43 @@ After this step the token exists permanently on Solana, and nobody
 (including you) can mint more of it, freeze accounts, or change its
 metadata. This is intentional — it's what makes the launch credible.
 
-### Step 5 — Create pools and lock liquidity
+### Step 5 — Create pools and positions
 
-Click **Create Pools**. The app creates each Raydium CLMM pool you
-configured, opens the main single-sided positions (locked with Burn
-& Earn if enabled), then runs a "bootstrap" pass that opens a tiny
-straddle position in each pool to make it tradable at the intended
-price.
+Click **Create Pools**. The app runs the launch in phases so every
+pool ends up at the intended price and gets locked together:
 
-The bootstrap phase runs after every pool's main positions are in
-place, so no pool becomes tradable until they all are — this prevents
-swap activity on an earlier pool from moving prices relative to the
-later pools while they're still being built.
+1. **Main positions** — for every pool: open the wide main LP and
+   any ladder band positions you configured. Pool is created but not
+   yet tradable (the bootstrap position hasn't landed).
+2. **Bootstrap** — once every pool has its main positions in place,
+   open each pool's bootstrap straddle. This is what makes the pool
+   tradable at the launch price. Running bootstraps as a separate
+   phase means no pool can become tradable while others are still
+   being built, which prevents swap activity on an early pool from
+   moving prices relative to the others.
+3. **Lock** — Burn & Earn locks every main and ladder position
+   (plus the bootstrap), burning each position NFT and minting a
+   transferable Fee Key NFT in its place.
+4. **Transfer Fee Keys** — for any slices configured with an
+   external recipient, the Fee Key NFT transfers to that address.
+   Slices without a recipient stay with the launch wallet and
+   sweep on Step 6.
+
+When everything succeeds you'll see a green banner and two buttons:
+**Continue to Final Transfer** and **Download launch report**. The
+report is a self-contained HTML document with all your token's
+addresses, pool IDs, position NFTs, lock-transaction proofs, and a
+tokenomics chart — copy-button-ready for listings, investor updates,
+and the team's reference sheet. You can also download it again from
+Step 6 after the transfer.
 
 If something fails partway through, the app surfaces what completed
 and offers an in-place **Resume launch** button. The resume path
-skips the already-completed pools (those are immutable on-chain
-anyway) and retries just the failed work. Most transient failures
-(RPC blips, slippage drift) clear up on retry. You can also fall
-back to **Skip to Transfer Assets** to sweep the wallet and start
-over with a fresh token; the pools that did succeed stay on-chain.
+skips the already-completed work (immutable on-chain anyway) and
+retries just what's missing. Most transient failures (RPC blips,
+slippage drift) clear up on retry. You can also fall back to **Skip
+to Transfer Assets** to sweep the wallet and start over with a fresh
+token; the pools that did succeed stay on-chain.
 
 ### Step 6 — Sweep assets to your destination wallet
 
@@ -279,8 +349,40 @@ Click **Confirm and Transfer**. The app sweeps:
 - Any unallocated tokens that didn't go into pools
 - Remaining SOL above what's needed for the final transaction fees
 
+After the sweep completes you'll see a green confirmation with a
+**Download launch report** button. Same content as the report from
+Step 5 — grab one now if you didn't earlier.
+
 Done. The temporary wallet is now empty and your destination wallet
 holds everything that matters.
+
+### The launch report
+
+After all pools land in Step 5, and again after the sweep in Step 6,
+the app offers a **Download launch report** button. The output is a
+single self-contained HTML file (~50 KB) you can open offline, share
+by email, or print to PDF for investor decks.
+
+The report includes:
+
+- Token mint address, decimals, supply, target market cap
+- Logo (embedded as a base64 data URL — survives email forwarding)
+- A tokenomics donut chart, same one the preview modal shows
+- Per-pool sections: pool ID, fee tier, supply allocation
+- Per-position records: bootstrap, main LP slice(s), every ladder
+  band — each with NFT mint, lock status, open TX, lock TX, and
+  Fee Key transfer TX where applicable
+- A summary banner: how many positions locked, how many Fee Keys
+  reached their external recipients, with explicit warnings if
+  anything didn't complete
+
+Every address and transaction signature has a one-click Copy button
+and a Solscan link icon. The visual theme matches the
+[makesometokens.com](https://makesometokens.com/) marketing site —
+parchment background, engineering-manuscript styling, Trebuchet MS
+typography. It's the reference sheet your team needs for listings,
+launch announcements, or explaining the cap-table mechanics to
+investors.
 
 ### Cancel & Refund — when (not) to use it
 
@@ -302,6 +404,15 @@ If the wallet is still empty when you click Cancel, the dialog shifts
 to "End Launch" mode — it just locks the UI without doing a sweep,
 since there's nothing to refund.
 
+After a cancel that happens before any on-chain work (Steps 1–3),
+the terminal panel offers **Start over with the same wallet**. The
+wallet stays available, but the token form, pool configuration, and
+created-token state all reset to defaults — you can start a fresh
+launch without generating a new wallet. The button is hidden after
+cancels that happen post-mint (Step 4+), because starting over at
+that point would silently create a second token while the first one
+is still on-chain.
+
 ---
 
 ## What Trebuchet doesn't do
@@ -318,13 +429,24 @@ If you wanted any of those, you launched on the wrong tool.
 
 ## Recommendations
 
-- **Use a paid RPC.** Said it twice already, saying it a third time.
+- **Use a dedicated RPC.** Said it twice already, saying it a third
+  time. The free tier from Helius / QuickNode / Triton / Alchemy is
+  plenty — you don't need a paid plan. You just need an endpoint
+  that isn't the public mainnet RPC or an aggregator.
+- **Preview your tokenomics** before funding. Click **Visualize
+  tokenomics** at the bottom of Step 2 — the donut chart makes
+  miscalibrated bootstrap / ladder / pool-split percentages obvious
+  before you've committed any SOL.
 - **Test on devnet first** if you change anything substantive about
   the launch parameters or you're learning the flow. Mistakes on
   mainnet cost real money.
 - **Verify the destination wallet** in Step 6 character by character
   before confirming. Solana addresses look similar enough that swapped
   characters are easy to miss; Solana transactions are final.
+- **Save the launch report** before sweeping. It's the canonical
+  reference for every address and transaction your team or investors
+  will need. The Step 6 button gives you a second chance if you
+  skipped it at Step 5.
 - **Don't burn or transfer your Fee Key NFTs** unless you mean to
   permanently give up the income from your locked liquidity. Treat
   them like a property deed.
@@ -335,7 +457,7 @@ If you wanted any of those, you launched on the wrong tool.
 
 **"Transactions keep failing in Step 5."**
 Almost always an RPC problem. Double-check that the active RPC at the
-top of the page is your paid endpoint and not the public mainnet
+top of the page is your dedicated endpoint and not the public mainnet
 fallback.
 
 **"Pool creation succeeded for one pool but failed for another."**
@@ -403,16 +525,23 @@ Source files of interest:
 - `server.js` — Express API
 - `tokenService.js` — wallet generation, SPL mint via Metaplex Umi
 - `lpService.js` — Raydium CLMM pool + position creation, Burn & Earn,
-  bootstrap phase, resume-launch orchestration, Token-2022
-  compatibility check
+  bootstrap phase, ladder-band positions, deferred-lock orchestration
+  (phases: open mains → open bootstraps → lock all → transfer Fee Keys),
+  resume-launch path, Token-2022 compatibility check
 - `swapService.js` — SOL → quote-token auto-swap via Raydium Trade API
 - `walletHelpers.js` — multi-token balance + NFT enumeration/sweep
 - `tokenInfoService.js` — quote-token resolution (symbol, decimals,
-  price, on-chain metadata)
+  price via three-tier fallback: GeckoTerminal → Jupiter V3 →
+  DexScreener; cached for 60 s / 24 h)
 - `rpcConfig.js` — persistent RPC endpoint settings
 - `pendingWallets.js` + `secretStore.js` — encrypted recovery cache
-- `public/` — single-page frontend (Bulma + vanilla JS)
-- `main.js` — Electron entry point
+- `public/app.js` — the entire frontend (~9000 lines, vanilla JS).
+  Houses the step orchestration, pool/position editing UI, the
+  tokenomics visualization, and the HTML launch-report generator
+- `public/index.html` — single-page frontend (Bulma + the styles
+  needed for the parchment-themed launch report)
+- `main.js` — Electron entry point, menu definition, BrowserWindow
+  lifecycle
 
 Running on devnet: change `cluster: 'mainnet'` to `'devnet'` in
 `lpService.js`, swap to `DEVNET_PROGRAM_ID.CLMM_PROGRAM_ID`, hit a

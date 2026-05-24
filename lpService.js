@@ -86,24 +86,34 @@ const MAX_TICK = 443636;
 //   index 3 = 1.00% fee, tickSpacing 120  (exotic / new tokens)  <-- default
 const DEFAULT_AMM_CONFIG_INDEX = 3;
 
-// Bootstrap geometry: how many tickSpacings on each side of currentTick the
-// bootstrap range spans. Width must be wide enough to stay in-range against
-// minute-scale price drift between phases. Phase 1 (main positions) and
-// phase 2 (bootstraps) can be separated by tens of seconds across all the
-// pools; a SOL pool's tick in particular drifts on its own clock since it
-// reflects external SOL/USD reality.
+// Bootstrap geometry for MINIMAL mode: target a fixed percentage width
+// around current price, consistent across fee tiers. The old form (a
+// fixed number of tickSpacings — 10 each side) gave wildly different
+// widths depending on which AMM config the pool used: ≈±12.7% on a 1%
+// pool but only ≈±1% on a 0.05% pool, because tickSpacing varies by
+// tier. The percentage form normalizes the drift tolerance — the same
+// minimal bootstrap absorbs the same percentage price movement no
+// matter which tier the user picks.
 //
-// Old value (1*tickSpacing each side) gave ~2.4% total width on a 1% pool.
-// That's well within real-world drift on a 30-60 second multi-pool launch,
-// and a single drift event past tickUpper or below tickLower made the
-// deposit math go single-sided in a way the SDK wasn't expecting and the
-// transaction failed.
+// 30% total width (≈±15% each side) is the chosen default:
+//   - Wide enough to absorb inter-phase tick drift that motivated the
+//     earlier widening from 1*tickSpacing to 10*tickSpacing
+//   - Narrow enough that the liquidity still looks concentrated near
+//     launch price rather than spread across the curve (custom-mode
+//     bootstrap is the right tool when the user actually wants depth
+//     at every price level)
+//   - Predictable: minimal bootstrap on a 0.05% stable pool now has
+//     the same drift tolerance as one on a 1% memecoin pool, instead
+//     of being 12x narrower
 //
-// New value (10*tickSpacing each side) gives ~24% total width. Still
-// concentrated enough to be useful liquidity, wide enough that any drift
-// short of catastrophic stays in-range.
-const BOOTSTRAP_TICKS_BELOW = 10;
-const BOOTSTRAP_TICKS_ABOVE = 10;
+// Implementation note on "±15%": we interpret this multiplicatively
+// (tick-symmetric), so the upper bound is currentPrice × 1.15 and the
+// lower bound is currentPrice / 1.15 ≈ currentPrice × 0.870. In linear
+// terms that's +15% / -13%. The asymmetry is a CLMM property, not a
+// choice — multiplicative symmetry is how tick ranges naturally work,
+// and a price-symmetric range would require asymmetric tickLower/Upper
+// which doesn't materially improve drift tolerance.
+const MINIMAL_BOOTSTRAP_WIDTH_PCT = 30;
 
 // Bootstrap funding: 1 whole token of each side. Just enough to make the
 // pool tradable; intentionally negligible value.
@@ -625,20 +635,204 @@ function computeMainTicks({ currentTick, tickSpacing, launchedIsMintA }) {
 }
 
 /**
- * Compute the bootstrap position's tick range. Symmetric — small band
- * straddling currentTick. Holds both tokens when current price is in range.
+ * Compute the bootstrap position's tick range based on mode.
+ *
+ * 'minimal' — fixed percentage-width band straddling currentTick.
+ *   Holds both tokens when current price is in range; goes single-sided
+ *   if drift pushes price past either edge. The width is set by
+ *   MINIMAL_BOOTSTRAP_WIDTH_PCT (30% total ≈ ±15% each side), then
+ *   snapped UP to the next tickSpacing multiple so the actual range
+ *   is at least as wide as requested. Round-up matters: rounding down
+ *   could pinch the range below the drift tolerance we deliberately
+ *   sized for.
+ *
+ * 'custom'  — full range, MIN_TICK..MAX_TICK aligned to tickSpacing.
+ *   Used when the user has opted in to providing meaningful starting
+ *   liquidity ("support" or "depth"). Spreads liquidity across the entire
+ *   price curve so the position never goes single-sided regardless of how
+ *   far the price moves. Less concentrated than minimal, but the trade-off
+ *   makes sense for a user-funded support position: drift tolerance is
+ *   absolute, and the deposited capital backs the pool at every price
+ *   level rather than just near launch.
  */
-function computeBootstrapTicks({ currentTick, tickSpacing }) {
+function computeBootstrapTicks({ currentTick, tickSpacing, mode }) {
+  if (mode === 'custom') {
+    return {
+      tickLower: ceilToSpacing(MIN_TICK, tickSpacing),
+      tickUpper: floorToSpacing(MAX_TICK, tickSpacing),
+    };
+  }
+  // Minimal mode: convert percentage width to tick offset.
+  //
+  // CLMM tick ↔ price relation: price = 1.0001^tick.
+  // For a multiplicative half-width factor F (e.g. 1.15 for ±15%):
+  //   ticksEachSide_ideal = ln(F) / ln(1.0001)
+  // Round up to the nearest tickSpacing multiple so we don't accidentally
+  // narrow below the configured drift tolerance — landing slightly wider
+  // than 30% is safer than slightly narrower.
+  const halfWidthFactor = 1 + MINIMAL_BOOTSTRAP_WIDTH_PCT / 200; // 30/2/100 = 0.15
+  const idealTicks = Math.log(halfWidthFactor) / Math.log(1.0001);
+  const ticksEachSide = Math.ceil(idealTicks / tickSpacing) * tickSpacing;
   const center = floorToSpacing(currentTick, tickSpacing);
   return {
-    tickLower: center - BOOTSTRAP_TICKS_BELOW * tickSpacing,
-    tickUpper: center + BOOTSTRAP_TICKS_ABOVE * tickSpacing,
+    tickLower: center - ticksEachSide,
+    tickUpper: center + ticksEachSide,
   };
 }
 
-// ---------------------------------------------------------------------------
-// Distribution normalization
-// ---------------------------------------------------------------------------
+/**
+ * Compute the tick ranges for a ladder of N single-sided positions starting
+ * just above currentTick, log-equally spaced up to ceilingMultiplier × launch
+ * price, with equal-width gaps between bands.
+ *
+ * The structure of the returned array is N bands ordered low-to-high. Each
+ * band has tickLower/tickUpper snapped to tickSpacing — ceilToSpacing for the
+ * lower bound (next valid tick at or above) and floorToSpacing for the upper
+ * (next valid tick at or below), giving a slightly-narrower-than-ideal but
+ * always-valid band.
+ *
+ * Math:
+ *   total_log_span = ln(ceilingMultiplier)
+ *   per_unit_log   = total_log_span / (2N - 1)   // N bands + (N-1) gaps
+ *
+ *   band i (0-indexed):
+ *     ideal_log_lower = i × 2 × per_unit_log   // i bands + i gaps below
+ *     ideal_log_upper = ideal_log_lower + per_unit_log
+ *     bandLowerTick   = launchTick + (ideal_log_lower / ln(1.0001))
+ *     bandUpperTick   = launchTick + (ideal_log_upper / ln(1.0001))
+ *
+ * launchTick is currentTick + 1*tickSpacing — same convention as
+ * computeMainTicks for the wide single-sided position, so a band's lower
+ * is always at or above the wide's lower. Positions overlap in price space
+ * but the SDK doesn't care; liquidity from multiple positions just adds.
+ *
+ * If a band's tickUpper would exceed MAX_TICK (extreme launchTick + ceiling),
+ * we clamp it to floorToSpacing(MAX_TICK, tickSpacing). The last band's
+ * tickUpper effectively caps the ladder regardless of the configured ceiling.
+ *
+ * Note on direction: when launched sorted to mintB (less common), the main
+ * positions go BELOW current tick instead of above. The ladder mirrors
+ * this — the orchestrator inverts the offsets so each band sits at the
+ * right side of current tick for the mintB case.
+ */
+function computeLadderTicks({
+  currentTick,
+  tickSpacing,
+  bandCount,
+  ceilingMultiplier,
+  launchedIsMintA,
+}) {
+  // Launch tick: one tickSpacing above (mintA) or below (mintB) current.
+  // Matches computeMainTicks's asymmetric placement for single-sided
+  // positions in the launched token.
+  const totalLogSpan = Math.log(ceilingMultiplier);
+  const perUnitLog = totalLogSpan / (2 * bandCount - 1);
+  const logBase = Math.log(1.0001);
+  const perUnitTicks = perUnitLog / logBase;
+
+  const minAlignedLower = ceilToSpacing(MIN_TICK, tickSpacing);
+  const maxAlignedUpper = floorToSpacing(MAX_TICK, tickSpacing);
+
+  const bands = [];
+  for (let i = 0; i < bandCount; i++) {
+    const idealLowerOffset = 2 * i * perUnitTicks;
+    const idealUpperOffset = (2 * i + 1) * perUnitTicks;
+
+    let tickLower;
+    let tickUpper;
+    if (launchedIsMintA) {
+      // Launched is mintA: price rises as token consumed; ladder extends
+      // ABOVE current tick. Lower bound is the band's "near" edge.
+      const launchTick = currentTick + tickSpacing;
+      tickLower = Math.min(
+        ceilToSpacing(launchTick + idealLowerOffset, tickSpacing),
+        maxAlignedUpper - tickSpacing,
+      );
+      tickUpper = Math.min(
+        floorToSpacing(launchTick + idealUpperOffset, tickSpacing),
+        maxAlignedUpper,
+      );
+    } else {
+      // Launched is mintB: price falls (in mintA-quoted terms) as token
+      // consumed; ladder extends BELOW current tick. Lower bound is the
+      // band's "far" edge, upper bound is near current. Same single-
+      // sided property in the launched token.
+      const launchTick = currentTick - tickSpacing;
+      tickUpper = Math.max(
+        floorToSpacing(launchTick - idealLowerOffset, tickSpacing),
+        minAlignedLower + tickSpacing,
+      );
+      tickLower = Math.max(
+        ceilToSpacing(launchTick - idealUpperOffset, tickSpacing),
+        minAlignedLower,
+      );
+    }
+    // Defensive: if rounding squeezed the band to nothing, expand it
+    // by one tickSpacing. Happens only at extreme MIN/MAX_TICK edges.
+    const finalUpper = tickUpper > tickLower ? tickUpper : tickLower + tickSpacing;
+    bands.push({ tickLower, tickUpper: finalUpper });
+  }
+  return bands;
+}
+
+/**
+ * Compute tick ranges for an explicit list of bands (manual ladder mode).
+ *
+ * Each input band has lowerMultiplier and upperMultiplier relative to
+ * launch price. We convert those to tick offsets via log_1.0001 and
+ * snap to tickSpacing. Same launchTick convention as the simple-mode
+ * computeLadderTicks (one tickSpacing above/below currentTick).
+ *
+ * Unlike simple mode where each band has the same supplyPercent (the
+ * total / N), manual bands have individual supplyPercent values that
+ * the caller passes through separately. This function only handles
+ * the tick math.
+ */
+function computeLadderTicksManual({
+  currentTick,
+  tickSpacing,
+  bands,
+  launchedIsMintA,
+}) {
+  const logBase = Math.log(1.0001);
+  const minAlignedLower = ceilToSpacing(MIN_TICK, tickSpacing);
+  const maxAlignedUpper = floorToSpacing(MAX_TICK, tickSpacing);
+  const result = [];
+  for (const b of bands) {
+    const lowerLogOffset = Math.log(Number(b.lowerMultiplier)) / logBase;
+    const upperLogOffset = Math.log(Number(b.upperMultiplier)) / logBase;
+    let tickLower;
+    let tickUpper;
+    if (launchedIsMintA) {
+      const launchTick = currentTick + tickSpacing;
+      tickLower = Math.min(
+        ceilToSpacing(launchTick + lowerLogOffset, tickSpacing),
+        maxAlignedUpper - tickSpacing,
+      );
+      tickUpper = Math.min(
+        floorToSpacing(launchTick + upperLogOffset, tickSpacing),
+        maxAlignedUpper,
+      );
+    } else {
+      // Mirror direction: price goes DOWN for the launched token in
+      // mintA-quoted terms, so bands extend BELOW currentTick. The
+      // multiplier still represents "price moves N× away from launch"
+      // — we just convert the direction.
+      const launchTick = currentTick - tickSpacing;
+      tickUpper = Math.max(
+        floorToSpacing(launchTick - lowerLogOffset, tickSpacing),
+        minAlignedLower + tickSpacing,
+      );
+      tickLower = Math.max(
+        ceilToSpacing(launchTick - upperLogOffset, tickSpacing),
+        minAlignedLower,
+      );
+    }
+    const finalUpper = tickUpper > tickLower ? tickUpper : tickLower + tickSpacing;
+    result.push({ tickLower, tickUpper: finalUpper });
+  }
+  return result;
+}
 
 /**
  * Validate and normalize the distribution array for an allocation.
@@ -768,9 +962,45 @@ async function createSinglePool({
   launchedToken,
   quoteToken,
   initialPrice,
-  totalMainBaseRaw,
+  // mainBaseRaw is the raw token amount available for the main positions
+  // ONLY. The caller (orchestrator) has already subtracted out whatever
+  // supply is destined for the bootstrap, so this function doesn't need
+  // wideBaseRaw is the raw token amount available for the wide main
+  // positions (sliced by the distribution array). The caller has
+  // already subtracted out the bootstrap AND the ladder allocations,
+  // so this function doesn't need to know about either carve-out
+  // when computing slice sizes.
+  //
+  // For a no-ladder launch this equals (allocation.supplyPercent −
+  // bootstrap.supplyPercent) × totalSupply. For a launch with the
+  // ladder enabled, it equals that minus (ladder.supplyPercent% × main).
+  // (Renamed from mainBaseRaw to disambiguate from the broader "main"
+  // concept that now includes both wide and ladder positions.)
+  wideBaseRaw,
+  // bootstrapBaseRaw is the raw token amount the bootstrap will consume.
+  // Threaded through to the deferred Phase 2 step via _bootstrapContext.
+  bootstrapBaseRaw,
+  // bootstrapMode is 'minimal' or 'custom'; controls the tick range in
+  // Phase 2 (minimal = narrow band, custom = full range).
+  bootstrapMode,
   distribution,
-  lockPositions,
+  // Ladder parameters.
+  //   ladderMode: 'off' | 'simple' | 'manual'
+  //   ladderBands: per-band data. Each entry has baseRaw (the BN raw
+  //                token amount for this band). Simple-mode entries
+  //                have only baseRaw and the function computes ticks
+  //                via log-spacing math from ladderCeiling. Manual-mode
+  //                entries also carry lowerMultiplier and upperMultiplier
+  //                which the function uses to compute ticks directly.
+  //   ladderCeiling: ceiling multiplier (simple mode only; ignored for
+  //                  manual since the tick range is per-band).
+  ladderMode,
+  ladderBands,
+  ladderCeiling,
+  // NOTE: this function no longer takes lockPositions. Locking and
+  // Fee Key transfers are deferred to dedicated phases in the
+  // orchestrator (lockAllPositions, transferFeeKeys). The orchestrator
+  // makes the lock-or-skip decision after every position is open.
   onProgress,
 }) {
   const progress = (event) => onProgress && onProgress(event);
@@ -860,34 +1090,70 @@ async function createSinglePool({
 
   // -----------------------------------------------------------------------
   // 4. Open + lock + (optionally) transfer one position per slice
+  //
+  // The bootstrap and any ladder reserves have already been carved out
+  // by the caller — wideBaseRaw is what's available for slicing into
+  // the WIDE main positions (the existing single big-range positions
+  // sized by the distribution array), and bootstrapBaseRaw is reserved
+  // separately for Phase 2. Ladder bands are handled in the ladder
+  // loop below this one and don't touch wideBaseRaw.
+  //
+  // We still need a small per-slice slack buffer for SDK rounding. The
+  // CLMM contract uses mulDivCeil on the user-pays side, so the actual
+  // transferred amount can be 1-2 raw units more than the input baseAmount.
+  // With a 100% supply allocation across multiple slices, the wallet would
+  // otherwise hold exactly the input amount with zero margin — any slice
+  // after the first would fail with InsufficientFunds. Reserving 1 whole
+  // token per slice is overkill mathematically (real rounding is sub-
+  // microtoken) but costs nothing meaningful (a few tokens out of 1B is
+  // dust) and bulletproofs us against future SDK rounding changes. The
+  // reserved tokens stay in the wallet and get swept to destination at
+  // the end.
+  //
+  // Edge case: if wideBaseRaw is zero or rounds to less than the slice
+  // slack, the user has allocated the entire pool to the bootstrap and
+  // (optionally) the ladder — a valid choice. Skip the slice loop;
+  // mainPositions stays empty and the pool relies on bootstrap + ladder
+  // for liquidity.
   // -----------------------------------------------------------------------
   const mainPositions = [];
 
-  // Reserve 1 whole token for the bootstrap, deduct from total before slicing.
-  // Also reserve 1 whole token of slack PER SLICE on top of that. The CLMM
-  // contract uses mulDivCeil on the user-pays side, so the actual transferred
-  // amount can be 1-2 raw units more than the input baseAmount. With a 100%
-  // supply allocation across multiple slices, the wallet would otherwise hold
-  // exactly the input amount with zero margin — any slice after the first
-  // would fail with InsufficientFunds. Reserving 1 whole token per slice is
-  // overkill mathematically (the actual rounding is sub-microtoken), but it
-  // costs nothing meaningful (out of 1B supply, a few tokens is dust) and
-  // bulletproofs us against any future SDK rounding changes. The reserved
-  // tokens stay in the wallet and get swept to destination at the end.
   const oneTokenRaw = new BN(10).pow(new BN(launchedToken.decimals));
-  const bootstrapBaseRaw = new BN(BOOTSTRAP_BASE_TOKENS_WHOLE).mul(oneTokenRaw);
   const sliceSlackRaw = oneTokenRaw.mul(new BN(distribution.length));
-  const slicableRaw = totalMainBaseRaw.sub(bootstrapBaseRaw).sub(sliceSlackRaw);
-  console.log(
-    `  reserved: ${distribution.length} token(s) per-slice slack + 1 token bootstrap; ` +
-      `slicableRaw=${slicableRaw.toString()}`,
-  );
+  const slicableRaw = wideBaseRaw.sub(sliceSlackRaw);
+
+  // Use BN's lte(0) check rather than negative-aware math — if the caller
+  // sent wideBaseRaw smaller than sliceSlackRaw, the subtraction would
+  // produce a negative BN that would mistakenly look like a tiny positive
+  // sliceRaw after the per-slice mul/div. Guarding here keeps the loop
+  // honest.
+  const hasMainSupply = slicableRaw.gt(new BN(0));
+
+  if (!hasMainSupply) {
+    console.log(
+      `  no wide main positions to open: wideBaseRaw=${wideBaseRaw.toString()} ` +
+        `≤ sliceSlackRaw=${sliceSlackRaw.toString()}. ` +
+        `Bootstrap + any ladder bands will provide all liquidity for this pool.`,
+    );
+  } else {
+    console.log(
+      `  reserved: ${distribution.length} token(s) per-slice slack; ` +
+        `slicableRaw=${slicableRaw.toString()}, ` +
+        `bootstrapBaseRaw=${bootstrapBaseRaw.toString()} ` +
+        `(${bootstrapMode || 'minimal'} mode)` +
+        (ladderMode === 'simple'
+          ? `, ladder=${ladderBandCount} bands × ${ladderPerBandRaw.toString()} each`
+          : ''),
+    );
+  }
 
   // Diagnostic: log actual on-chain wallet balances so we can see what the
   // wallet has vs what we're about to deposit
   await logWalletBalances(connection, ownerKeypair.publicKey, launchedToken.address, 'before slicing');
 
-  for (let i = 0; i < distribution.length; i++) {
+  // Loop body is unchanged; the guard above is what skips it entirely for
+  // bootstrap-only pools.
+  for (let i = 0; hasMainSupply && i < distribution.length; i++) {
     const slice = distribution[i];
 
     // Compute this slice's raw token amount.
@@ -943,59 +1209,147 @@ async function createSinglePool({
     // Diagnostic: balance after open
     await logWalletBalances(connection, ownerKeypair.publicKey, launchedToken.address, `after slice ${i + 1} open`);
 
-    // Lock this position via Burn & Earn.
-    // The SDK's lockPosition uses a SEPARATE program (CLMM_LOCK_PROGRAM_ID) —
-    // don't pass programId here (it would override the right default with the
-    // CLMM program ID, which doesn't have the lock instructions). The function
-    // only needs ownerPosition.nftMint; poolInfo/poolKeys are not parameters.
-    let lockTxId = null;
-    if (lockPositions) {
-      const lockRes = await raydium.clmm.lockPosition({
-        ownerPosition: { nftMint: new PublicKey(nftMint) },
-        txVersion: TxVersion.V0,
-      });
-      const lockTx = await lockRes.execute({ sendAndConfirm: true });
-      lockTxId = lockTx.txId;
-      console.log(`    locked: tx=${lockTxId}`);
-      progress({ stage: 'main_lock_done', sliceIndex: i, txId: lockTxId });
-    }
-
-    // Transfer Fee Key NFT to external recipient if specified.
-    // After locking, the Fee Key NFT lives in the same ATA the position NFT
-    // was originally minted to (locker mints the Fee Key to that owner).
-    let transferTxId = null;
-    let transferredTo = null;
-    if (slice.recipient && lockPositions) {
-      console.log(`    transferring Fee Key to ${slice.recipient}...`);
-      transferTxId = await transferNftToRecipient({
-        connection,
-        ownerKeypair,
-        nftMint,
-        recipient: slice.recipient,
-      });
-      transferredTo = slice.recipient;
-      console.log(`    transferred: tx=${transferTxId}`);
-      progress({
-        stage: 'main_transfer_done',
-        sliceIndex: i,
-        recipient: slice.recipient,
-        txId: transferTxId,
-      });
-    }
-
+    // Locking and Fee Key transfer are deferred to dedicated phases later
+    // in the orchestrator. We capture the open result here and move on to
+    // the next slice. This is the "open all, lock all at end" reordering:
+    // it means a Phase 1 failure leaves positions that the ephemeral
+    // wallet can still close (recoverable), rather than scattered
+    // permanently-locked positions across pools that succeeded plus
+    // pending opens that didn't. See createPoolsAndPositions for the
+    // phase orchestration; lockAllPositions and transferFeeKeys are
+    // the post-open phases.
     mainPositions.push({
       sliceIndex: i,
       sharePercent: slice.sharePercent,
       nftMint,
-      locked: lockPositions,
+      // Phase 3 will flip this to true (or push to lockFailures if it
+      // can't). When lockPositions is false (test/manual launches),
+      // Phase 3 is skipped and these stay false; downstream consumers
+      // already handle the locked: false case.
+      locked: false,
       recipient: slice.recipient || null,
-      transferredTo,
+      // Phase 4 will populate this when the slice has a recipient AND
+      // its lock succeeded in Phase 3.
+      transferredTo: null,
       txIds: {
         open: openTx.txId,
-        lock: lockTxId,
-        transfer: transferTxId,
+        lock: null,
+        transfer: null,
       },
     });
+  }
+
+  // -----------------------------------------------------------------------
+  // Ladder bands.
+  //
+  // For each band, open a single-sided position at the band's tick range
+  // with ladderPerBandRaw launched tokens. Each band is its own NFT and
+  // gets locked in Phase 3, just like wide main positions and the
+  // bootstrap. Ladder positions never have recipients (Fee Keys stay
+  // with the launch wallet and sweep to the user's destination).
+  //
+  // Ladder bands open INSIDE the createSinglePool function rather than
+  // in a separate orchestrator phase because the band tick math is
+  // pool-local (depends on the tickSpacing the pool's AmmConfig
+  // determined) and the price is fresh (the pool was just created).
+  // Splitting would add coordination overhead with no benefit.
+  // -----------------------------------------------------------------------
+  const ladderPositions = [];
+  if (
+    (ladderMode === 'simple' || ladderMode === 'manual') &&
+    Array.isArray(ladderBands) &&
+    ladderBands.length > 0
+  ) {
+    // Compute tick ranges for each band. For simple mode we use the
+    // log-spaced helper (band count = ladderBands.length, all bands
+    // equal-supply); for manual mode we use the multipliers carried in
+    // each band entry.
+    let bandTicks;
+    if (ladderMode === 'simple') {
+      bandTicks = computeLadderTicks({
+        currentTick,
+        tickSpacing,
+        bandCount: ladderBands.length,
+        ceilingMultiplier: ladderCeiling,
+        launchedIsMintA,
+      });
+    } else {
+      bandTicks = computeLadderTicksManual({
+        currentTick,
+        tickSpacing,
+        bands: ladderBands.map((b) => ({
+          lowerMultiplier: b.lowerMultiplier,
+          upperMultiplier: b.upperMultiplier,
+        })),
+        launchedIsMintA,
+      });
+    }
+
+    const ceilingLabel = ladderMode === 'simple'
+      ? `ceiling ${ladderCeiling}×`
+      : 'manual band ranges';
+    console.log(`  opening ${ladderBands.length} ladder bands (${ceilingLabel}):`);
+
+    for (let bi = 0; bi < ladderBands.length; bi++) {
+      const { tickLower, tickUpper } = bandTicks[bi];
+      const bandBaseRaw = ladderBands[bi].baseRaw;
+      if (!bandBaseRaw || bandBaseRaw.lte(new BN(0))) {
+        // Defensive: a band with 0 supply is pointless; the SDK would
+        // also reject it. Pre-flight should catch this for manual mode,
+        // and simple mode never produces it (perBandRaw > 0 if
+        // ladderTotalBaseRaw > 0). Skip rather than throw, so the rest
+        // of the ladder can still open.
+        console.log(`    band ${bi + 1}/${ladderBands.length}: skipped (0 supply)`);
+        continue;
+      }
+      console.log(
+        `    band ${bi + 1}/${ladderBands.length} ticks=[${tickLower}, ${tickUpper}], ` +
+          `base=${bandBaseRaw.toString()}`,
+      );
+      progress({ stage: 'ladder_open_start', bandIndex: bi });
+
+      const ladderRes = await raydium.clmm.openPositionFromBase({
+        poolInfo,
+        poolKeys,
+        tickLower,
+        tickUpper,
+        base: launchedIsMintA ? 'MintA' : 'MintB',
+        baseAmount: bandBaseRaw,
+        // Single-sided in the launched token: the band starts above
+        // current tick (or below, for mintB), so the position holds 0
+        // of the other side at deposit time. otherAmountMax = 0 is
+        // exact and the SDK won't fund a non-existent ATA.
+        otherAmountMax: new BN(0),
+        ownerInfo: { useSOLBalance: false },
+        txVersion: TxVersion.V0,
+        computeBudgetConfig: { units: 600_000, microLamports: 50_000 },
+      });
+      const ladderTx = await ladderRes.execute({ sendAndConfirm: true });
+      const ladderNftMint = ladderRes.extInfo?.nftMint?.toBase58();
+      console.log(`    opened: nft=${ladderNftMint}, tx=${ladderTx.txId}`);
+      progress({
+        stage: 'ladder_open_done',
+        bandIndex: bi,
+        nftMint: ladderNftMint,
+        txId: ladderTx.txId,
+      });
+
+      ladderPositions.push({
+        bandIndex: bi,
+        tickLower,
+        tickUpper,
+        nftMint: ladderNftMint,
+        // Phase 3 will flip this to true. Ladder positions never have
+        // recipients — Fee Keys always sweep back with the launch
+        // wallet. No transferredTo field; nothing in Phase 4 looks at
+        // ladder positions.
+        locked: false,
+        txIds: {
+          open: ladderTx.txId,
+          lock: null,
+        },
+      });
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -1023,6 +1377,7 @@ async function createSinglePool({
     poolId,
     launchedSide: launchedIsMintA ? 'mintA' : 'mintB',
     mainPositions,
+    ladderPositions,
     txIds: { createPool: createTx.txId },
     // Context the deferred bootstrap step needs. Not part of the user-facing
     // result shape — caller strips this before returning.
@@ -1037,6 +1392,10 @@ async function createSinglePool({
       tickSpacing,
       launchedIsMintA,
       bootstrapBaseRaw,
+      // Mode determines the tick range Phase 2 uses (narrow vs full-range)
+      // and influences the otherAmountMax slippage cap sizing. Threaded
+      // through unchanged from the orchestrator.
+      bootstrapMode: bootstrapMode || 'minimal',
       initialPrice,
       quoteToken,
     },
@@ -1062,7 +1421,8 @@ async function createSinglePool({
 async function openBootstrapPosition({
   raydium,
   ctx,
-  lockPositions,
+  // NOTE: lockPositions no longer accepted; locking happens in the
+  // dedicated Phase 3 (lockAllPositions). See createSinglePool's note.
   onProgress,
 }) {
   const progress = (event) => onProgress && onProgress(event);
@@ -1074,6 +1434,7 @@ async function openBootstrapPosition({
     tickSpacing,
     launchedIsMintA,
     bootstrapBaseRaw,
+    bootstrapMode,
     initialPrice,
     quoteToken,
   } = ctx;
@@ -1096,8 +1457,18 @@ async function openBootstrapPosition({
     );
   }
 
-  const bsTicks = computeBootstrapTicks({ currentTick, tickSpacing });
-  console.log(`  bootstrap range: [${bsTicks.tickLower}, ${bsTicks.tickUpper}]`);
+  // Tick range depends on mode. Minimal keeps the historical narrow band
+  // around currentTick; custom uses the full MIN_TICK..MAX_TICK range so
+  // the user-funded support liquidity backs the pool at every price level.
+  const bsTicks = computeBootstrapTicks({
+    currentTick,
+    tickSpacing,
+    mode: bootstrapMode,
+  });
+  console.log(
+    `  bootstrap range [${bsTicks.tickLower}, ${bsTicks.tickUpper}] ` +
+      `(mode=${bootstrapMode})`,
+  );
   progress({ stage: 'bootstrap_open_start' });
 
   // Compute otherAmountMax for the bootstrap.
@@ -1121,52 +1492,60 @@ async function openBootstrapPosition({
   //     because the actual transfer is bounded by the math, not by
   //     this number.
   //
-  // The actual amount needed on the other side is approximately the
-  // launched-token deposit's USD value converted to quote tokens, since
-  // the bootstrap straddles the current tick. We compute that from
-  // initialPrice (= quote per launched) and apply a 200x safety
-  // multiplier to absorb edge-of-range scenarios after tick drift.
+  // For a position straddling the current tick (which all bootstraps
+  // do, including the full-range custom variant), the quote-side need
+  // is approximately equal in USD value to the launched-side. In raw
+  // token terms that's `bootstrapBaseTokens × initialPrice` expressed
+  // in the quote's decimals — exactly what equivOtherRaw computes.
   //
-  // The previous formula also capped at 0.01 of one whole quote token
-  // (raw = 10^(decimals-2)) as an absolute safety brake. That made
-  // sense as a SOL guardrail — 0.01 SOL ≈ $2, comfortably under any
-  // reasonably-funded wallet — but it was WRONG for cheap quote tokens.
-  // For a quote token where 1 launched ≈ 0.1 quote (memecoin quote at
-  // similar USD scale to the launched token), the 200x multiplier wants
-  // 20 quote whole, but the cap allowed only 0.01 quote whole. The
-  // bootstrap deposit math then exceeds otherAmountMax and the
-  // transaction reverts with PriceSlippageCheck. Several users hit
-  // this on memecoin-quote launches.
+  // Old formula used a 200x multiplier as a "burst protection against
+  // drift," then capped at 0.01 SOL absolute when quote was SOL. Both
+  // pieces were defensive against a 1-whole-token bootstrap with a tiny
+  // expected need. When the bootstrap is sized by the user in custom
+  // mode (potentially many whole tokens), the 0.01 SOL cap clamps too
+  // aggressively and a 200x multiplier produces absurd numbers that
+  // serve no purpose. Replacing both with a flat 2x of the actual
+  // expected need gives reasonable slippage tolerance at every scale
+  // without scaling silliness in either direction.
   //
-  // Fix: only apply the absolute cap when the quote is SOL (where the
-  // wSOL pre-fund concern is real). For all other quotes, trust the
-  // 200x multiplier — the SDK won't actually take more than necessary.
-  const equivOtherRaw = initialPrice.mul(new Decimal(10).pow(quoteToken.decimals));
-  const isQuoteSol = quoteToken.address === WSOL_MINT;
-  let bsOtherMaxDecimal;
-  if (isQuoteSol) {
-    // SOL: keep the 0.01-SOL absolute cap to prevent wSOL pre-fund
-    // exceeding wallet balance. The funding estimator budgets enough
-    // SOL for this; the cap just prevents the otherAmountMax from
-    // ballooning if initialPrice math somehow produces a huge value.
-    bsOtherMaxDecimal = Decimal.min(
-      equivOtherRaw.mul(200),
-      new Decimal(10).pow(quoteToken.decimals - 2),
-    );
-  } else {
-    // Non-SOL: no absolute cap. The SDK doesn't pre-fund the quote ATA,
-    // so the wallet's actual balance is the only physical limit on
-    // spend. A generous otherAmountMax protects against PriceSlippageCheck
-    // failures during pool-price drift without changing the on-chain
-    // outcome (actual spend = math result, not this number).
-    bsOtherMaxDecimal = equivOtherRaw.mul(200);
-  }
+  // Note: for non-SOL quotes, an over-generous otherAmountMax was harmless
+  // (SDK doesn't pre-fund; actual transfer bounded by math). For SOL with
+  // useSOLBalance:true it could starve the wallet of lamports, so the
+  // tightness change actually frees up SOL budget for the bootstrap's
+  // own quote-side requirement.
+  // Compute the expected quote-side requirement, then size otherAmountMax
+  // at 2x of it. equivOtherRaw = (bootstrap whole-token amount) × initialPrice
+  // × 10^quoteDecimals, where initialPrice is quote-per-launched-whole. This
+  // is approximately what the SDK will actually transfer on the quote side
+  // for any range straddling the current tick — narrow OR full.
+  //
+  // launchedDecimals is recovered from poolInfo since we don't carry it
+  // explicitly in the bootstrap context: it's whatever the launched mint's
+  // decimals are, which lives on the SDK's pool info.
+  const launchedDecimals = launchedIsMintA
+    ? poolInfo.mintA.decimals
+    : poolInfo.mintB.decimals;
+  const bootstrapWhole = new Decimal(bootstrapBaseRaw.toString())
+    .div(new Decimal(10).pow(launchedDecimals));
+  const equivOtherRaw = bootstrapWhole
+    .mul(initialPrice)
+    .mul(new Decimal(10).pow(quoteToken.decimals));
+
+  // 2x of the expected need gives roughly 50% slippage tolerance — enough
+  // to absorb tick drift between phases and intra-block price movement,
+  // without over-sizing.
+  const bsOtherMaxDecimal = equivOtherRaw.mul(2);
+
   // Floor at 1000 raw — handles extreme micro-price launches where the
-  // computed value rounds to 0.
+  // computed value rounds to 0 (e.g. 1 token bootstrap at a $0.00000001
+  // launch price against a high-decimal quote).
   const bsOtherMax = BN.max(new BN(bsOtherMaxDecimal.toFixed(0)), new BN(1000));
+  const isQuoteSol = quoteToken.address === WSOL_MINT;
   console.log(
     `  bootstrap otherAmountMax: ${bsOtherMax.toString()} raw quote ` +
-      `(actual need ~${equivOtherRaw.toFixed(0)} raw, isQuoteSol=${isQuoteSol})`,
+      `(actual need ~${equivOtherRaw.toFixed(0)} raw, ` +
+      `bootstrapWhole=${bootstrapWhole.toFixed(6)}, ` +
+      `isQuoteSol=${isQuoteSol})`,
   );
 
   const bsRes = await raydium.clmm.openPositionFromBase({
@@ -1188,24 +1567,311 @@ async function openBootstrapPosition({
 
   // Lock the bootstrap. Bootstrap is never split or transferred to recipients
   // — the Fee Key just stays with the ephemeral wallet for the final sweep.
-  // Same lockPosition shape as the main positions — no poolInfo/poolKeys/programId.
-  let bsLockTxId = null;
-  if (lockPositions) {
-    const lockRes = await raydium.clmm.lockPosition({
-      ownerPosition: { nftMint: new PublicKey(bsNftMint) },
-      txVersion: TxVersion.V0,
-    });
-    const lockTx = await lockRes.execute({ sendAndConfirm: true });
-    bsLockTxId = lockTx.txId;
-    console.log(`  bootstrap locked: tx=${bsLockTxId}`);
-    progress({ stage: 'bootstrap_lock_done', txId: bsLockTxId });
-  }
-
+  //
+  // Bootstrap locking is now deferred to a dedicated phase (lockAllPositions),
+  // matching the deferred-lock model for main positions. We return the open
+  // result with locked: false; Phase 3 will mutate this entry in place.
+  // Until Phase 3 runs, the bootstrap is openable+closable by the ephemeral
+  // wallet — the same recoverable state main positions sit in between
+  // Phase 1 and Phase 3.
   return {
     nftMint: bsNftMint,
-    locked: lockPositions,
-    txIds: { open: bsTx.txId, lock: bsLockTxId },
+    locked: false,
+    txIds: { open: bsTx.txId, lock: null },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Lock every position across every pool.
+//
+// Runs after every position (main + bootstrap) is open across every pool.
+// This is the irreversibility line: each successful lock burns the position
+// NFT and mints a Fee Key NFT, committing the LP'd tokens for life.
+//
+// Fail-soft: failures collect into a `lockFailures` array and don't stop
+// other locks from being attempted. Locks are independent transactions
+// against the lock program — one failing doesn't affect another's chances.
+//
+// Iteration order is per-allocation (all of pool 1 first, then all of
+// pool 2, etc.) so a partial-failure leaves whole pools either locked or
+// not-locked rather than a scattered pattern across pools. Within a pool,
+// main positions lock before the bootstrap; the bootstrap is the smallest
+// and most reliable lock target, so locking mains first surfaces the more
+// likely failure cases earlier.
+//
+// Mutates the results in place: each `mainPositions[i].locked` and
+// `mainPositions[i].txIds.lock` get set, same for the bootstrap.
+// ---------------------------------------------------------------------------
+async function lockAllPositions({ raydium, results, onProgress }) {
+  const progress = (event) => onProgress && onProgress(event);
+  const lockFailures = [];
+
+  console.log('\n=== Phase 3: Locking positions ===');
+  progress({ stage: 'phase3_start' });
+
+  for (let allocIdx = 0; allocIdx < results.length; allocIdx++) {
+    const r = results[allocIdx];
+    const symbol = r.quoteSymbol || '(?)';
+
+    // 3a. Lock each main position in order.
+    for (let i = 0; i < (r.mainPositions || []).length; i++) {
+      const pos = r.mainPositions[i];
+      if (pos.locked) {
+        // Resume: already locked in a prior attempt; skip.
+        console.log(`[${symbol}] main slice ${i + 1}: already locked (skip)`);
+        continue;
+      }
+      if (!pos.nftMint) {
+        // Defensive: should not happen if Phase 1 completed cleanly,
+        // but if a result entry somehow lacks an nftMint, skip rather
+        // than crash. The fail-soft collector picks this up as a
+        // failure with a clear message.
+        console.log(`[${symbol}] main slice ${i + 1}: no nftMint — skip`);
+        lockFailures.push({
+          allocationIndex: allocIdx,
+          positionType: 'main',
+          sliceIndex: i,
+          nftMint: null,
+          error: 'no nftMint on result entry',
+        });
+        continue;
+      }
+      console.log(`[${symbol}] locking main slice ${i + 1}/${r.mainPositions.length}: nft=${pos.nftMint}`);
+      try {
+        const lockRes = await raydium.clmm.lockPosition({
+          ownerPosition: { nftMint: new PublicKey(pos.nftMint) },
+          txVersion: TxVersion.V0,
+        });
+        const lockTx = await lockRes.execute({ sendAndConfirm: true });
+        pos.locked = true;
+        pos.txIds.lock = lockTx.txId;
+        console.log(`  locked: tx=${lockTx.txId}`);
+        progress({
+          stage: 'main_lock_done',
+          allocationIndex: allocIdx,
+          sliceIndex: i,
+          txId: lockTx.txId,
+        });
+      } catch (e) {
+        console.error(`  lock FAILED: ${e.message}`);
+        lockFailures.push({
+          allocationIndex: allocIdx,
+          positionType: 'main',
+          sliceIndex: i,
+          nftMint: pos.nftMint,
+          error: e.message,
+        });
+        progress({
+          stage: 'main_lock_failed',
+          allocationIndex: allocIdx,
+          sliceIndex: i,
+          error: e.message,
+        });
+      }
+    }
+
+    // 3b. Lock each ladder band in order. Ladder bands are independent
+    //     of main slices and bootstrap; they just need locking.
+    for (let bi = 0; bi < (r.ladderPositions || []).length; bi++) {
+      const lp = r.ladderPositions[bi];
+      if (lp.locked) {
+        console.log(`[${symbol}] ladder band ${bi + 1}: already locked (skip)`);
+        continue;
+      }
+      if (!lp.nftMint) {
+        console.log(`[${symbol}] ladder band ${bi + 1}: no nftMint — skip`);
+        lockFailures.push({
+          allocationIndex: allocIdx,
+          positionType: 'ladder',
+          sliceIndex: bi,
+          nftMint: null,
+          error: 'no nftMint on ladder result entry',
+        });
+        continue;
+      }
+      console.log(`[${symbol}] locking ladder band ${bi + 1}/${r.ladderPositions.length}: nft=${lp.nftMint}`);
+      try {
+        const lockRes = await raydium.clmm.lockPosition({
+          ownerPosition: { nftMint: new PublicKey(lp.nftMint) },
+          txVersion: TxVersion.V0,
+        });
+        const lockTx = await lockRes.execute({ sendAndConfirm: true });
+        lp.locked = true;
+        lp.txIds.lock = lockTx.txId;
+        console.log(`  locked: tx=${lockTx.txId}`);
+        progress({
+          stage: 'ladder_lock_done',
+          allocationIndex: allocIdx,
+          bandIndex: bi,
+          txId: lockTx.txId,
+        });
+      } catch (e) {
+        console.error(`  lock FAILED: ${e.message}`);
+        lockFailures.push({
+          allocationIndex: allocIdx,
+          positionType: 'ladder',
+          sliceIndex: bi,
+          nftMint: lp.nftMint,
+          error: e.message,
+        });
+        progress({
+          stage: 'ladder_lock_failed',
+          allocationIndex: allocIdx,
+          bandIndex: bi,
+          error: e.message,
+        });
+      }
+    }
+
+    // 3c. Lock the bootstrap for this pool.
+    const bs = r.bootstrap;
+    if (bs && bs.nftMint && !bs.locked) {
+      console.log(`[${symbol}] locking bootstrap: nft=${bs.nftMint}`);
+      try {
+        const lockRes = await raydium.clmm.lockPosition({
+          ownerPosition: { nftMint: new PublicKey(bs.nftMint) },
+          txVersion: TxVersion.V0,
+        });
+        const lockTx = await lockRes.execute({ sendAndConfirm: true });
+        bs.locked = true;
+        bs.txIds.lock = lockTx.txId;
+        console.log(`  bootstrap locked: tx=${lockTx.txId}`);
+        progress({
+          stage: 'bootstrap_lock_done',
+          allocationIndex: allocIdx,
+          txId: lockTx.txId,
+        });
+      } catch (e) {
+        console.error(`  bootstrap lock FAILED: ${e.message}`);
+        lockFailures.push({
+          allocationIndex: allocIdx,
+          positionType: 'bootstrap',
+          sliceIndex: null,
+          nftMint: bs.nftMint,
+          error: e.message,
+        });
+        progress({
+          stage: 'bootstrap_lock_failed',
+          allocationIndex: allocIdx,
+          error: e.message,
+        });
+      }
+    } else if (bs && bs.locked) {
+      console.log(`[${symbol}] bootstrap: already locked (skip)`);
+    } else if (!bs || !bs.nftMint) {
+      // No bootstrap to lock — Phase 2 must have failed for this pool.
+      // The bootstrap failure was already reported via bootstrapFailures;
+      // nothing to add here.
+      console.log(`[${symbol}] bootstrap: no nftMint to lock (Phase 2 failure expected)`);
+    }
+  }
+
+  console.log(`=== Phase 3 done: ${lockFailures.length} failure(s) ===\n`);
+  progress({ stage: 'phase3_done', failureCount: lockFailures.length });
+  return { lockFailures };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: Transfer Fee Key NFTs to external recipients.
+//
+// Runs after Phase 3. Only LOCKED positions have Fee Key NFTs to transfer —
+// the Fee Key is what the locker mints when it burns the position NFT, so
+// an unlocked position has no Fee Key.
+//
+// Fail-soft like Phase 3. Failures collect into `transferFailures` and
+// don't block other transfers. A transfer failure leaves the Fee Key NFT
+// in the ephemeral wallet, where the final sweep step will pick it up
+// and deliver it to the user's destination wallet — so a failed transfer
+// at this phase isn't catastrophic, the user just ends up with the Fee
+// Key in their primary wallet instead of the slice's recipient address.
+//
+// Mutates results in place: each transferring slice's `transferredTo`
+// and `txIds.transfer` get populated.
+// ---------------------------------------------------------------------------
+async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
+  const progress = (event) => onProgress && onProgress(event);
+  const connection = raydium.connection;
+  const transferFailures = [];
+
+  // Skip Phase 4 entirely if nothing has a recipient — cheap fast-path.
+  const hasAnyRecipient = results.some((r) =>
+    (r.mainPositions || []).some((p) => p.recipient && !p.transferredTo),
+  );
+  if (!hasAnyRecipient) {
+    console.log('=== Phase 4: no Fee Key transfers needed (skip) ===\n');
+    progress({ stage: 'phase4_skipped' });
+    return { transferFailures };
+  }
+
+  console.log('\n=== Phase 4: Transferring Fee Key NFTs ===');
+  progress({ stage: 'phase4_start' });
+
+  for (let allocIdx = 0; allocIdx < results.length; allocIdx++) {
+    const r = results[allocIdx];
+    const symbol = r.quoteSymbol || '(?)';
+
+    for (let i = 0; i < (r.mainPositions || []).length; i++) {
+      const pos = r.mainPositions[i];
+      if (!pos.recipient) continue;
+      if (pos.transferredTo === pos.recipient) {
+        // Resume: already transferred to this recipient; skip.
+        console.log(`[${symbol}] main slice ${i + 1}: already transferred (skip)`);
+        continue;
+      }
+      if (!pos.locked) {
+        // No Fee Key to transfer — the position never locked. Push a
+        // failure entry so the user knows the recipient didn't get
+        // their NFT, and skip.
+        console.log(`[${symbol}] main slice ${i + 1}: not locked, no Fee Key to transfer`);
+        transferFailures.push({
+          allocationIndex: allocIdx,
+          sliceIndex: i,
+          nftMint: pos.nftMint,
+          recipient: pos.recipient,
+          error: 'position not locked — no Fee Key NFT exists',
+        });
+        continue;
+      }
+      console.log(`[${symbol}] transferring Fee Key (slice ${i + 1}) to ${pos.recipient}...`);
+      try {
+        const txId = await transferNftToRecipient({
+          connection,
+          ownerKeypair,
+          nftMint: pos.nftMint,
+          recipient: pos.recipient,
+        });
+        pos.transferredTo = pos.recipient;
+        pos.txIds.transfer = txId;
+        console.log(`  transferred: tx=${txId}`);
+        progress({
+          stage: 'main_transfer_done',
+          allocationIndex: allocIdx,
+          sliceIndex: i,
+          recipient: pos.recipient,
+          txId,
+        });
+      } catch (e) {
+        console.error(`  transfer FAILED: ${e.message}`);
+        transferFailures.push({
+          allocationIndex: allocIdx,
+          sliceIndex: i,
+          nftMint: pos.nftMint,
+          recipient: pos.recipient,
+          error: e.message,
+        });
+        progress({
+          stage: 'main_transfer_failed',
+          allocationIndex: allocIdx,
+          sliceIndex: i,
+          error: e.message,
+        });
+      }
+    }
+  }
+
+  console.log(`=== Phase 4 done: ${transferFailures.length} failure(s) ===\n`);
+  progress({ stage: 'phase4_done', failureCount: transferFailures.length });
+  return { transferFailures };
 }
 
 // ---------------------------------------------------------------------------
@@ -1312,6 +1978,238 @@ export async function createPoolsAndPositions({
   }
 
   // -----------------------------------------------------------------------
+  // 3.5. Validate per-allocation bootstrap configuration.
+  //
+  // Each allocation may carry an optional `bootstrap` block:
+  //   bootstrap: { mode: 'minimal' | 'custom', supplyPercent?: number }
+  //
+  // When `bootstrap` is absent or `mode === 'minimal'`, the orchestrator
+  // uses the historical defaults — a 1-whole-token reserve and the narrow
+  // tickSpacing-based range around currentTick. When `mode === 'custom'`,
+  // the user has opted into adding meaningful support liquidity: the
+  // bootstrap launched-side carves out of the pool's main supplyPercent
+  // (so the pool's total commitment doesn't grow), and the bootstrap range
+  // becomes full-range so the support is visible across the entire price
+  // curve.
+  //
+  // Constraint: 0 ≤ bootstrap.supplyPercent ≤ allocation.supplyPercent.
+  // The lower bound rejects negative or zero custom-mode configs (zero is
+  // indistinguishable from minimal — the caller should send mode='minimal'
+  // explicitly rather than custom-with-zero). The upper bound prevents an
+  // allocation from owing more supply to bootstrap than the pool actually
+  // has; equality is allowed and produces a bootstrap-only pool with no
+  // main positions (a constant-product-style starting liquidity profile).
+  // -----------------------------------------------------------------------
+  for (let i = 0; i < allocations.length; i++) {
+    const a = allocations[i];
+    const bs = a.bootstrap;
+    if (!bs) continue; // absent → treated as minimal, no further checks
+    if (bs.mode !== 'minimal' && bs.mode !== 'custom') {
+      const err = new Error(
+        `Allocation ${i + 1}: bootstrap.mode must be 'minimal' or 'custom' ` +
+          `(got '${bs.mode}')`,
+      );
+      err.failedPhase = 'pre_flight';
+      err.failedAllocationIndex = i;
+      err.failedAllocation = a;
+      err.partialResults = priorResults;
+      throw err;
+    }
+    if (bs.mode !== 'custom') continue; // minimal — supplyPercent ignored
+    const bsPct = Number(bs.supplyPercent);
+    if (!Number.isFinite(bsPct) || bsPct <= 0) {
+      const err = new Error(
+        `Allocation ${i + 1}: custom-mode bootstrap requires a positive ` +
+          `supplyPercent (got ${bs.supplyPercent})`,
+      );
+      err.failedPhase = 'pre_flight';
+      err.failedAllocationIndex = i;
+      err.failedAllocation = a;
+      err.partialResults = priorResults;
+      throw err;
+    }
+    if (bsPct > Number(a.supplyPercent)) {
+      const err = new Error(
+        `Allocation ${i + 1}: bootstrap supplyPercent (${bsPct}%) exceeds ` +
+          `pool's main supplyPercent (${a.supplyPercent}%). The bootstrap ` +
+          `carves out of the pool's allocation — either reduce the bootstrap ` +
+          `support or increase this pool's allocation.`,
+      );
+      err.failedPhase = 'pre_flight';
+      err.failedAllocationIndex = i;
+      err.failedAllocation = a;
+      err.partialResults = priorResults;
+      throw err;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // 3.6. Validate per-allocation ladder configuration.
+  //
+  // The ladder block carves the pool's main allocation (everything not
+  // reserved by the bootstrap) into a stack of single-sided positions at
+  // discrete, log-spaced price bands above launch price, with gaps in
+  // between. Each band acts as both resistance going up (limit sells in
+  // the launched token) and support coming back down (the band's quote
+  // tokens accumulated during the upward move). The remainder of main
+  // supply not consumed by the ladder stays in a single wide position
+  // covering the full [P_launch, MAX_TICK] range — current behaviour
+  // for the entire main allocation, just downsized.
+  //
+  // Shape:
+  //   ladder: {
+  //     mode: 'off' | 'simple',
+  //     supplyPercent: 50,        // % of pool's MAIN supply that goes
+  //                               // to the ladder (i.e., what's left
+  //                               // after bootstrap carve-out)
+  //     bandCount: 5,             // number of bands
+  //     ceilingMultiplier: 1000,  // top of highest band, as multiple
+  //                               // of launch price
+  //   }
+  //
+  // When ladder is absent or mode === 'off', current behaviour: all of
+  // main goes to the single wide position.
+  // -----------------------------------------------------------------------
+  for (let i = 0; i < allocations.length; i++) {
+    const a = allocations[i];
+    const ld = a.ladder;
+    if (!ld) continue;
+    if (ld.mode !== 'off' && ld.mode !== 'simple' && ld.mode !== 'manual') {
+      const err = new Error(
+        `Allocation ${i + 1}: ladder.mode must be 'off', 'simple', or 'manual' ` +
+          `(got '${ld.mode}')`,
+      );
+      err.failedPhase = 'pre_flight';
+      err.failedAllocationIndex = i;
+      err.failedAllocation = a;
+      err.partialResults = priorResults;
+      throw err;
+    }
+    if (ld.mode === 'off') continue;
+
+    if (ld.mode === 'simple') {
+      const ldPct = Number(ld.supplyPercent);
+      if (!Number.isFinite(ldPct) || ldPct <= 0 || ldPct > 100) {
+        const err = new Error(
+          `Allocation ${i + 1}: ladder.supplyPercent must be in (0, 100] ` +
+            `(got ${ld.supplyPercent})`,
+        );
+        err.failedPhase = 'pre_flight';
+        err.failedAllocationIndex = i;
+        err.failedAllocation = a;
+        err.partialResults = priorResults;
+        throw err;
+      }
+      const bandCount = Number(ld.bandCount);
+      if (!Number.isInteger(bandCount) || bandCount < 2 || bandCount > 20) {
+        const err = new Error(
+          `Allocation ${i + 1}: ladder.bandCount must be an integer in [2, 20] ` +
+            `(got ${ld.bandCount})`,
+        );
+        err.failedPhase = 'pre_flight';
+        err.failedAllocationIndex = i;
+        err.failedAllocation = a;
+        err.partialResults = priorResults;
+        throw err;
+      }
+      const ceiling = Number(ld.ceilingMultiplier);
+      if (!Number.isFinite(ceiling) || ceiling <= 1) {
+        const err = new Error(
+          `Allocation ${i + 1}: ladder.ceilingMultiplier must be > 1 ` +
+            `(got ${ld.ceilingMultiplier})`,
+        );
+        err.failedPhase = 'pre_flight';
+        err.failedAllocationIndex = i;
+        err.failedAllocation = a;
+        err.partialResults = priorResults;
+        throw err;
+      }
+    } else if (ld.mode === 'manual') {
+      // Manual mode: explicit list of bands, each with its own
+      // supplyPercent and lower/upper multipliers relative to launch.
+      // Bands can overlap or have gaps — that's intentional. The only
+      // requirement is each band is internally valid and the total
+      // supplyPercent across bands doesn't exceed 100%.
+      if (!Array.isArray(ld.bands) || ld.bands.length === 0) {
+        const err = new Error(
+          `Allocation ${i + 1}: ladder.bands must be a non-empty array ` +
+            `when ladder.mode is 'manual'`,
+        );
+        err.failedPhase = 'pre_flight';
+        err.failedAllocationIndex = i;
+        err.failedAllocation = a;
+        err.partialResults = priorResults;
+        throw err;
+      }
+      if (ld.bands.length > 20) {
+        const err = new Error(
+          `Allocation ${i + 1}: ladder.bands has ${ld.bands.length} entries; ` +
+            `maximum is 20`,
+        );
+        err.failedPhase = 'pre_flight';
+        err.failedAllocationIndex = i;
+        err.failedAllocation = a;
+        err.partialResults = priorResults;
+        throw err;
+      }
+      let total = 0;
+      for (let b = 0; b < ld.bands.length; b++) {
+        const band = ld.bands[b];
+        const sp = Number(band.supplyPercent);
+        const lo = Number(band.lowerMultiplier);
+        const hi = Number(band.upperMultiplier);
+        if (!Number.isFinite(sp) || sp <= 0 || sp > 100) {
+          const err = new Error(
+            `Allocation ${i + 1}, band ${b + 1}: supplyPercent must be in ` +
+              `(0, 100] (got ${band.supplyPercent})`,
+          );
+          err.failedPhase = 'pre_flight';
+          err.failedAllocationIndex = i;
+          err.failedAllocation = a;
+          err.partialResults = priorResults;
+          throw err;
+        }
+        if (!Number.isFinite(lo) || lo < 1) {
+          const err = new Error(
+            `Allocation ${i + 1}, band ${b + 1}: lowerMultiplier must be ` +
+              `>= 1 (got ${band.lowerMultiplier})`,
+          );
+          err.failedPhase = 'pre_flight';
+          err.failedAllocationIndex = i;
+          err.failedAllocation = a;
+          err.partialResults = priorResults;
+          throw err;
+        }
+        if (!Number.isFinite(hi) || hi <= lo) {
+          const err = new Error(
+            `Allocation ${i + 1}, band ${b + 1}: upperMultiplier (${band.upperMultiplier}) ` +
+              `must be greater than lowerMultiplier (${band.lowerMultiplier})`,
+          );
+          err.failedPhase = 'pre_flight';
+          err.failedAllocationIndex = i;
+          err.failedAllocation = a;
+          err.partialResults = priorResults;
+          throw err;
+        }
+        total += sp;
+      }
+      if (total > 100.001) {
+        // tiny FP slack: 100% exactly is allowed; floating-point summing
+        // of 5 × 20.0 entries can drift to 100.00000001 or similar.
+        const err = new Error(
+          `Allocation ${i + 1}: ladder bands sum to ${total.toFixed(2)}% — ` +
+            `must be ≤ 100%`,
+        );
+        err.failedPhase = 'pre_flight';
+        err.failedAllocationIndex = i;
+        err.failedAllocation = a;
+        err.partialResults = priorResults;
+        throw err;
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // 4. Fetch CLMM AmmConfigs once (used per-pool)
   // -----------------------------------------------------------------------
   const allConfigs = await raydium.api.getClmmConfigs();
@@ -1415,6 +2313,25 @@ export async function createPoolsAndPositions({
           ? new Decimal(poolInfo.price)
           : new Decimal(1).div(poolInfo.price);
 
+        // Mirror the bootstrap mode + size from the allocation we're resuming
+        // against, not from the prior result. The allocation is what the user
+        // is launching with right now; the prior result only carries main-
+        // position info, not bootstrap config. If the user changed bootstrap
+        // mode between attempts, the active resume uses the new mode.
+        const bootstrapCfg = alloc.bootstrap || { mode: 'minimal' };
+        const bootstrapMode = bootstrapCfg.mode === 'custom' ? 'custom' : 'minimal';
+        const resumeBootstrapBaseRaw = bootstrapMode === 'custom'
+          ? new BN(
+              new Decimal(tokenTotalSupply)
+                .mul(bootstrapCfg.supplyPercent)
+                .div(100)
+                .mul(new Decimal(10).pow(tokenDecimals))
+                .toFixed(0),
+            )
+          : new BN(BOOTSTRAP_BASE_TOKENS_WHOLE).mul(
+              new BN(10).pow(new BN(launchedToken.decimals)),
+            );
+
         bootstrapQueue.push({
           allocationIndex: allocIdx,
           quoteSymbol: quoteToken.symbol,
@@ -1425,9 +2342,8 @@ export async function createPoolsAndPositions({
             currentTickAtCreation: currentTick,
             tickSpacing,
             launchedIsMintA,
-            bootstrapBaseRaw: new BN(BOOTSTRAP_BASE_TOKENS_WHOLE).mul(
-              new BN(10).pow(new BN(launchedToken.decimals)),
-            ),
+            bootstrapBaseRaw: resumeBootstrapBaseRaw,
+            bootstrapMode,
             initialPrice,
             quoteToken,
           },
@@ -1437,6 +2353,13 @@ export async function createPoolsAndPositions({
           // with bootstrap populated.)
           existingBootstrap: prior.bootstrap || null,
         });
+        // Pushing the prior result verbatim carries per-position state
+        // (locked, transferredTo, txIds) into the current results array.
+        // Phase 3 (locks) and Phase 4 (transfers) inspect each position's
+        // state and skip those already done — so a resume that picked up
+        // after a partial Phase 3 only attempts the still-unlocked
+        // positions, and similarly Phase 4 only attempts the un-transferred
+        // recipients. No special resume code needed for those phases.
         results.push(prior);
         continue;
       } catch (err) {
@@ -1479,9 +2402,20 @@ export async function createPoolsAndPositions({
       // 6c. Validate distribution (defaults to single 100% slice)
       const distribution = normalizeDistribution(alloc.distribution);
 
+      // 6c.5. Resolve bootstrap config. Defaults to minimal when the field
+      //       is absent or explicitly set to mode='minimal'. The pre-flight
+      //       check above has already validated supplyPercent bounds for
+      //       custom-mode entries.
+      const bootstrapCfg = alloc.bootstrap || { mode: 'minimal' };
+      const bootstrapMode = bootstrapCfg.mode === 'custom' ? 'custom' : 'minimal';
+
       console.log(
         `\n[${quoteToken.symbol}] quote USD = $${quoteUsd.toString()}, ` +
-          `allocation = ${alloc.supplyPercent}%, slices = ${distribution.length}`,
+          `allocation = ${alloc.supplyPercent}%, slices = ${distribution.length}, ` +
+          `bootstrap = ${bootstrapMode}` +
+          (bootstrapMode === 'custom'
+            ? ` (${bootstrapCfg.supplyPercent}% of supply, full-range)`
+            : ' (1 token, narrow range)'),
       );
 
       // 6d. Compute initial pool price = launched-in-terms-of-quote
@@ -1490,16 +2424,131 @@ export async function createPoolsAndPositions({
         `  initialPrice (${quoteToken.symbol} per launched) = ${initialPrice.toString()}`,
       );
 
-      // 6e. Compute total raw amount allocated to this pool
-      const allocatedSupply = new Decimal(tokenTotalSupply)
-        .mul(alloc.supplyPercent)
-        .div(100);
-      const totalMainBaseRaw = new BN(
-        allocatedSupply.mul(new Decimal(10).pow(tokenDecimals)).toFixed(0),
+      // 6e. Compute the launched-token raw amounts: one for main positions,
+      //     one reserved for the bootstrap. Both come out of the pool's
+      //     allocation.supplyPercent (Option B "carve out" semantics):
+      //
+      //     - minimal mode: bootstrap = 1 whole token (current default);
+      //       main gets the rest of the pool's allocation
+      //     - custom mode:  bootstrap = bootstrap.supplyPercent of total supply;
+      //       main gets (alloc.supplyPercent − bootstrap.supplyPercent)
+      //
+      //     For minimal mode, the 1-whole-token reserve carves out of the
+      //     pool's allocation, same as the current behavior (the slicing
+      //     loop in createSinglePool used to do this internally; we just
+      //     hoisted it up). For custom mode, the bootstrap can be any
+      //     fraction of the pool up to and including the entire pool —
+      //     pre-flight already validated bootstrap.supplyPercent ≤
+      //     alloc.supplyPercent.
+      const oneTokenRaw = new BN(10).pow(new BN(tokenDecimals));
+      const allocatedSupplyRaw = new BN(
+        new Decimal(tokenTotalSupply)
+          .mul(alloc.supplyPercent)
+          .div(100)
+          .mul(new Decimal(10).pow(tokenDecimals))
+          .toFixed(0),
       );
+
+      let bootstrapBaseRaw;
+      let mainBaseRaw;
+      if (bootstrapMode === 'custom') {
+        bootstrapBaseRaw = new BN(
+          new Decimal(tokenTotalSupply)
+            .mul(bootstrapCfg.supplyPercent)
+            .div(100)
+            .mul(new Decimal(10).pow(tokenDecimals))
+            .toFixed(0),
+        );
+        mainBaseRaw = allocatedSupplyRaw.sub(bootstrapBaseRaw);
+      } else {
+        // Minimal mode — match the historical 1-whole-token reserve.
+        bootstrapBaseRaw = new BN(BOOTSTRAP_BASE_TOKENS_WHOLE).mul(oneTokenRaw);
+        mainBaseRaw = allocatedSupplyRaw.sub(bootstrapBaseRaw);
+      }
+
+      // Split main supply between wide (covers full [launch, MAX_TICK])
+      // and ladder bands (discrete bands within that range with gaps).
+      // The wide always exists with the leftover supply; the ladder
+      // exists only when ladder.mode is 'simple' or 'manual'.
+      //
+      // For 'simple' mode: ladder.supplyPercent is the total ladder share
+      // of THIS pool's main allocation; equally split across bandCount
+      // bands. Backwards-compatible with the original simple-mode wire
+      // shape that ships from older clients.
+      //
+      // For 'manual' mode: each band carries its own supplyPercent and
+      // its own price-multiplier range. This is what the customize-mode
+      // UI produces, and is the canonical wire format from the trebuchet
+      // frontend now.
+      //
+      // For 'off' (or no ladder field): wide gets the full mainBaseRaw,
+      // no ladder positions opened — current behaviour for launches with
+      // ladder disabled.
+      const ladderCfg = alloc.ladder || { mode: 'off' };
+      const ladderMode = ladderCfg.mode === 'simple' || ladderCfg.mode === 'manual'
+        ? ladderCfg.mode
+        : 'off';
+      let ladderTotalBaseRaw = new BN(0);
+      let wideBaseRaw = mainBaseRaw;
+      // ladderBands is the per-band data the orchestrator passes to
+      // createSinglePool. Each entry has the raw token amount for that
+      // band, plus the tick range. For simple mode we compute uniform
+      // bands here; for manual mode we use the band config directly
+      // and compute per-band raw amounts from per-band supplyPercent.
+      // createSinglePool consumes this uniformly regardless of how the
+      // band list was constructed.
+      let ladderBands = []; // [{ baseRaw, tickLower, tickUpper }] computed in createSinglePool
+
+      if (ladderMode === 'simple') {
+        const bandCount = Number(ladderCfg.bandCount);
+        // ladderTotalBaseRaw = mainBaseRaw × ladder.supplyPercent / 100
+        // Computed with BN arithmetic to avoid Number-precision loss
+        // on large supplies.
+        ladderTotalBaseRaw = mainBaseRaw
+          .mul(new BN(Math.round(Number(ladderCfg.supplyPercent) * 100)))
+          .div(new BN(10000));
+        // Each band gets an equal slice. Any rounding remainder stays
+        // in the wide position — a few tokens out of millions, dust.
+        const perBandRaw = ladderTotalBaseRaw.div(new BN(bandCount));
+        // Wide gets whatever's left after the ladder takes its share.
+        // Using mul/div above rather than just multiplying by perBand
+        // means rounding error accumulates in wide (not in any band),
+        // keeping the bands exactly equal.
+        wideBaseRaw = mainBaseRaw.sub(perBandRaw.mul(new BN(bandCount)));
+        ladderBands = [];
+        for (let bi = 0; bi < bandCount; bi++) {
+          ladderBands.push({ baseRaw: perBandRaw });
+        }
+      } else if (ladderMode === 'manual') {
+        // Each band's raw share = mainBaseRaw × band.supplyPercent / 100.
+        // Same BN-arithmetic pattern as simple mode. We accumulate the
+        // total separately so we can compute wide as the remainder.
+        ladderBands = [];
+        let totalLadderRaw = new BN(0);
+        for (const b of ladderCfg.bands) {
+          const bandRaw = mainBaseRaw
+            .mul(new BN(Math.round(Number(b.supplyPercent) * 100)))
+            .div(new BN(10000));
+          ladderBands.push({
+            baseRaw: bandRaw,
+            // Pass multipliers through so createSinglePool can compute
+            // ticks from them via computeLadderTicksManual.
+            lowerMultiplier: Number(b.lowerMultiplier),
+            upperMultiplier: Number(b.upperMultiplier),
+          });
+          totalLadderRaw = totalLadderRaw.add(bandRaw);
+        }
+        ladderTotalBaseRaw = totalLadderRaw;
+        wideBaseRaw = mainBaseRaw.sub(totalLadderRaw);
+      }
+
       console.log(
-        `  total raw allocated: ${totalMainBaseRaw.toString()} ` +
-          `(${allocatedSupply.toString()} tokens whole)`,
+        `  raw split: total=${allocatedSupplyRaw.toString()}, ` +
+          `wide=${wideBaseRaw.toString()}, ` +
+          `bootstrap=${bootstrapBaseRaw.toString()}` +
+          (ladderMode !== 'off'
+            ? `, ladder=${ladderTotalBaseRaw.toString()} (${ladderBands.length} bands, ${ladderMode})`
+            : ''),
       );
 
       // 6f. Pick the AmmConfig
@@ -1515,10 +2564,12 @@ export async function createPoolsAndPositions({
         description: '',
       };
 
-      // 6g. Phase 1: create the pool and open + lock all main positions.
-      //     Bootstrap is deliberately skipped here — see the long comment in
-      //     createSinglePool for why. We gather the per-pool context in
-      //     `bootstrapQueue` so phase 2 can open all bootstraps at the end.
+      // 6g. Phase 1: create the pool, open the wide main position(s)
+      //     according to distribution, and open the ladder bands if
+      //     any. Bootstrap is deliberately skipped here — see the
+      //     long comment in createSinglePool for why. We gather the
+      //     per-pool context in `bootstrapQueue` so phase 2 can open
+      //     all bootstraps at the end.
       const poolResult = await createSinglePool({
         raydium,
         ownerKeypair,
@@ -1526,9 +2577,25 @@ export async function createPoolsAndPositions({
         launchedToken,
         quoteToken,
         initialPrice,
-        totalMainBaseRaw,
+        // wideBaseRaw is what the existing distribution-sliced main
+        // positions get. It's the original mainBaseRaw minus whatever
+        // the ladder took.
+        wideBaseRaw,
+        bootstrapBaseRaw,
+        bootstrapMode,
         distribution,
-        lockPositions,
+        // Ladder config:
+        //   ladderMode: 'off' | 'simple' | 'manual'
+        //   ladderBands: per-band [{baseRaw, lowerMultiplier?, upperMultiplier?}]
+        //                — empty when off; simple-mode entries have only
+        //                baseRaw, manual-mode entries also carry the
+        //                multipliers. createSinglePool decides which
+        //                tick-math function to call based on what's present.
+        //   ladderCeiling: ceiling multiplier for simple mode (unused
+        //                  for manual). Passed for backward-compat.
+        ladderMode,
+        ladderBands,
+        ladderCeiling: ladderMode === 'simple' ? Number(ladderCfg.ceilingMultiplier) : 0,
         onProgress: (event) =>
           onProgress && onProgress({ allocationIndex: allocIdx, ...event }),
       });
@@ -1615,7 +2682,6 @@ export async function createPoolsAndPositions({
       const bootstrap = await openBootstrapPosition({
         raydium,
         ctx,
-        lockPositions,
         onProgress: (event) =>
           onProgress && onProgress({ allocationIndex: allocIdx, ...event }),
       });
@@ -1665,6 +2731,12 @@ export async function createPoolsAndPositions({
     // present a partial-success result instead of an all-or-nothing.
     // Main positions are intact for every pool; only the bootstrap leg
     // is missing for the listed allocations.
+    //
+    // We deliberately do NOT proceed to Phase 3 (locks) when bootstrap
+    // failures are present. The user needs to resolve the bootstrap
+    // failures first (retry or manually open), and only then should we
+    // lock everything. Locking the partial state now would leave the
+    // user with locked main positions in pools that aren't tradable.
     const summary = bootstrapFailures
       .map((f) => `${f.quoteSymbol} (${f.error})`)
       .join('; ');
@@ -1679,7 +2751,93 @@ export async function createPoolsAndPositions({
     throw err;
   }
 
-  console.log(`\n=== All ${results.length} pool(s) created and bootstrapped successfully ===`);
+  // -------------------------------------------------------------------------
+  // 8. Phase 3: Lock every position across every pool.
+  //
+  // This is the irreversibility line. Every preceding phase produced state
+  // that the ephemeral wallet can still walk back from (close positions,
+  // sweep tokens). Locking burns the position NFT and mints a Fee Key NFT,
+  // committing the LP'd tokens for life.
+  //
+  // We only reach here if Phase 1 and Phase 2 both succeeded — so every
+  // pool has its main positions AND its bootstrap open. Locking everything
+  // at once means a partial Phase 3 failure leaves some pools fully locked
+  // and others not; the caller can retry locks via the resume flow.
+  //
+  // When lockPositions is false (test/manual launches), Phase 3 and Phase 4
+  // are skipped — results retain locked: false on every position.
+  // -------------------------------------------------------------------------
+  let lockFailures = [];
+  let transferFailures = [];
+
+  if (lockPositions) {
+    const lockResult = await lockAllPositions({
+      raydium,
+      results,
+      onProgress,
+    });
+    lockFailures = lockResult.lockFailures;
+
+    if (lockFailures.length > 0) {
+      // Don't proceed to Phase 4. Fee Key transfers depend on locks
+      // having succeeded — there's nothing to transfer for an unlocked
+      // position. The user needs to resolve the lock failures (retry)
+      // before transfers can run.
+      const summary = lockFailures
+        .map((f) => `${f.positionType}${f.sliceIndex != null ? ` slice ${f.sliceIndex + 1}` : ''} (${f.error})`)
+        .join('; ');
+      const err = new Error(
+        `${lockFailures.length} position(s) failed to lock: ${summary}. ` +
+          `Pools are open and tradable; retry to complete the locks.`,
+      );
+      err.partialResults = results;
+      err.lockFailures = lockFailures;
+      err.failedPhase = 'locks';
+      throw err;
+    }
+
+    // -----------------------------------------------------------------------
+    // 9. Phase 4: Transfer Fee Key NFTs to external recipients.
+    //
+    // Fee Key NFTs only exist for locked positions, so this phase strictly
+    // follows Phase 3. Each transfer is an independent NFT-move tx; failures
+    // are fail-soft. The final wallet sweep at the end of the launch flow
+    // will pick up any Fee Keys still in the ephemeral wallet (whether
+    // because the slice had no recipient, or because the transfer here
+    // failed) and deliver them to the user's destination wallet.
+    // -----------------------------------------------------------------------
+    const transferResult = await transferFeeKeys({
+      raydium,
+      ownerKeypair,
+      results,
+      onProgress,
+    });
+    transferFailures = transferResult.transferFailures;
+
+    if (transferFailures.length > 0) {
+      // Transfer failures are non-blocking conceptually — the Fee Key
+      // NFTs end up in the user's destination wallet via sweep instead
+      // of in the recipient's wallet. But we still surface this clearly
+      // so the user knows which recipients didn't get their NFTs and
+      // can manually re-send them if they want.
+      const summary = transferFailures
+        .map((f) => `slice ${(f.sliceIndex ?? 0) + 1} → ${f.recipient} (${f.error})`)
+        .join('; ');
+      const err = new Error(
+        `${transferFailures.length} Fee Key transfer(s) failed: ${summary}. ` +
+          `Pools are fully created and locked; un-transferred Fee Keys remain ` +
+          `in the launch wallet and will be swept to your destination wallet.`,
+      );
+      err.partialResults = results;
+      err.transferFailures = transferFailures;
+      err.failedPhase = 'transfers';
+      throw err;
+    }
+  } else {
+    console.log('\n=== Phase 3 + 4 skipped (lockPositions = false) ===');
+  }
+
+  console.log(`\n=== All ${results.length} pool(s) created, bootstrapped, locked, and transferred successfully ===`);
   return { results };
 }
 
@@ -1733,6 +2891,27 @@ const BS_FALLBACK_WHOLE = 0.01;
 // to the destination wallet at the end of the launch.
 const AUTOSWAP_SIZING_MULTIPLIER = 2;
 
+// For CUSTOM-MODE bootstraps, the acquire target and SOL-spend
+// multipliers are dialed way back from the minimal-mode constants
+// above. Why: the minimal-mode 2× target × 2× spend = 4× of actual
+// need was sensible when "actual need" was $1 (a 50% slippage event
+// on a $1 swap is realistic on thin pools, and over-budgeting by $3
+// of SOL is trivial). For user-funded bootstraps measured in the
+// hundreds or thousands of dollars, that same compound 4× becomes
+// hundreds or thousands of dollars of over-budget — which the user
+// has to hold in the launch wallet for the duration of the launch
+// even though the bulk sweeps back at the end. That's a poor UX
+// (asks the user to fund 4× what they're committing to LP).
+//
+// At larger swap sizes, real Raydium slippage on a healthy pair is
+// fractions of a percent, not double-digit percents. 15% acquire
+// oversize + 10% SOL spend overhead = ~27% combined buffer, which
+// is generous for any swap in the $100+ range. For pathological
+// thin-liquidity pairs the swap would fail anyway and fall through
+// to the manual-prefund branch.
+const AUTOSWAP_CUSTOM_TARGET_MULTIPLIER = 1.15;  // 15% oversize on acquire
+const AUTOSWAP_CUSTOM_SIZING_MULTIPLIER = 1.10;  // 10% extra SOL on top
+
 // USD price assumed per SOL when the live price oracle isn't available
 // (offline, API down, etc.). Used only as a fallback for sizing the SOL
 // equivalent of an auto-swap line; safety buffer absorbs any inaccuracy.
@@ -1772,7 +2951,17 @@ const FALLBACK_SOL_USD = 200;
  *     }, ... ]
  *   }
  */
-export async function estimateRequiredFunding({ allocations }) {
+export async function estimateRequiredFunding({
+  allocations,
+  // Required when any allocation has bootstrap.mode === 'custom'. The
+  // estimator uses it to compute that allocation's bootstrap quote-side
+  // USD value (= bootstrap.supplyPercent × targetMarketCapUsd / 100).
+  // When omitted, custom-mode allocations fall back to the minimal-mode
+  // budget — which is wrong if the user actually opted in to custom, but
+  // safe (under-budgets so the launch flow surfaces an error rather than
+  // proceeding with a half-funded bootstrap).
+  targetMarketCapUsd,
+}) {
   const solBreakdown = [];
   const quoteBreakdown = [];
   const byQuote = {};
@@ -1837,20 +3026,87 @@ export async function estimateRequiredFunding({ allocations }) {
       }
     }
 
-    // Bootstrap position (always one per pool)
+    // Bootstrap position (always one per pool — NFT mint + lock)
     addSol(
       `${poolLabel}: bootstrap position (NFT mint + lock)`,
       COST_POSITION_SOL + COST_LOCK_SOL,
     );
 
+    // Ladder bands. Each band is its own position (NFT mint + lock,
+    // no Fee Key transfer since ladder positions don't take recipients).
+    // The launched-side supply for ladder bands comes out of the same
+    // pool allocation as the wide main; it doesn't need any additional
+    // funding from the user. Just the per-position SOL rent and lock fees.
+    //
+    // Both simple and manual modes contribute the same per-band cost.
+    // Simple-mode count comes from ladderCfg.bandCount; manual-mode
+    // count comes from the bands array length. Off contributes zero.
+    const ladderCfg = a.ladder || { mode: 'off' };
+    let ladderBandCount = 0;
+    if (ladderCfg.mode === 'simple') {
+      ladderBandCount = Number(ladderCfg.bandCount) || 0;
+    } else if (ladderCfg.mode === 'manual') {
+      ladderBandCount = Array.isArray(ladderCfg.bands) ? ladderCfg.bands.length : 0;
+    }
+    for (let b = 0; b < ladderBandCount; b++) {
+      addSol(
+        `${poolLabel}: ladder band ${b + 1}/${ladderBandCount} (NFT mint + lock)`,
+        COST_POSITION_SOL + COST_LOCK_SOL,
+      );
+    }
+
+    // Determine the bootstrap mode and USD budget for the quote-side.
+    //
+    // Minimal mode: budget is the historical $1 (manual prefund) / $2
+    //   (auto-swap acquire target). These are constants; the per-allocation
+    //   need is dust regardless of pool size.
+    //
+    // Custom mode: budget is bootstrap.supplyPercent × targetMarketCapUsd / 100,
+    //   the launched-side USD value the user is committing as starting
+    //   liquidity. The quote-side need is ≈ equal in USD (1:1 ratio at
+    //   current tick), so this same USD value gets converted to SOL,
+    //   quote tokens, or auto-swap target depending on the pool.
+    //
+    // targetMarketCapUsd may be missing if the caller forgot to supply it
+    // when a custom-mode allocation exists. We fall back to the minimal
+    // budget so the user sees an undersized estimate rather than a server
+    // error — but the launch itself will fail at deposit time with a
+    // clearer SDK error, which is the better surface for "you didn't
+    // fund enough".
+    const bsCfg = a.bootstrap || { mode: 'minimal' };
+    const bsIsCustom = bsCfg.mode === 'custom';
+    let bsActualUsd; // the actual USD value the bootstrap quote-side needs
+    if (bsIsCustom && Number(targetMarketCapUsd) > 0 && Number(bsCfg.supplyPercent) > 0) {
+      bsActualUsd = (Number(bsCfg.supplyPercent) * Number(targetMarketCapUsd)) / 100;
+    } else {
+      // Minimal mode (or custom mode with missing inputs — defensive fallback)
+      bsActualUsd = BS_BOOTSTRAP_USD; // $1
+    }
+
     // Bootstrap quote-side requirement: three branches.
-    //   (1) SOL pool       → auto-wrapped from SOL balance, dust budget.
+    //   (1) SOL pool       → SOL deposited directly (auto-wrapped at deposit).
     //   (2) Trade API can route SOL→quoteMint (typical case)
     //                      → roll cost into SOL bucket; we'll swap during funding.
     //   (3) No route from Trade API
     //                      → fall back to manual pre-fund.
+    //
+    // In minimal mode the USD value is dust ($1); in custom mode it's the
+    // user's chosen support amount. The branch logic is identical otherwise.
     if (isSol) {
-      addSol(`${poolLabel}: bootstrap quote-side (SOL, dust)`, COST_BS_QUOTE_SOL);
+      // (1) SOL pool — quote-side is just SOL.
+      // For minimal mode we keep the historical dust constant (0.001 SOL,
+      // which comfortably covers the 1-whole-token bootstrap's actual need).
+      // For custom mode, we deposit the actual USD value worth of SOL.
+      let solCost;
+      let label;
+      if (bsIsCustom) {
+        solCost = bsActualUsd / Number(solUsd.toString());
+        label = `${poolLabel}: bootstrap support (~$${bsActualUsd.toFixed(2)} as SOL)`;
+      } else {
+        solCost = COST_BS_QUOTE_SOL;
+        label = `${poolLabel}: bootstrap quote-side (SOL, dust)`;
+      }
+      addSol(label, solCost);
     } else {
       // Try Raydium Trade API for route discovery. The probe quote also
       // gives us the effective price (USD per whole quote token), which
@@ -1888,12 +3144,32 @@ export async function estimateRequiredFunding({ allocations }) {
         }
       }
 
-      // Pick a target USD value based on which branch we'll take. Auto-swap
-      // gets the larger value ($2) so partial fills still cover the
-      // bootstrap need. Manual prefund stays at $1 since the user can
-      // send exactly what's needed without slippage concerns.
+      // Pick the acquire/prefund target USD. For minimal mode:
+      //   auto-swap target = $2 (oversize the $1 actual need by 2x so a
+      //                          partial fill still meets the need)
+      //   manual prefund   = $1 (user can send the exact amount; no slippage)
+      // For custom mode:
+      //   auto-swap target = bsActualUsd × 1.15 (15% partial-fill buffer)
+      //   manual prefund   = bsActualUsd × 1.0  (user can send exact)
+      //
+      // Custom-mode multipliers are dialed back from the minimal-mode
+      // constants because the compound minimal-mode buffer (2× target ×
+      // 2× SOL spend = 4× over need) was sized for $1 dust where $3
+      // over-budget is irrelevant. For a user-funded $2000 bootstrap,
+      // the same compound 4× becomes $8000 of SOL spend budgeted for
+      // a swap that should land within a few percent of $2000 — that
+      // asks the user to fund 4× what they're committing to LP, with
+      // the bulk sweeping back at the end. See the multiplier-constant
+      // comments above for the reasoning behind the chosen values.
       const isAutoSwap = !!(route && route.available);
-      const targetUsd = isAutoSwap ? AUTOSWAP_TARGET_USD : BS_BOOTSTRAP_USD;
+      let targetUsd;
+      if (bsIsCustom) {
+        targetUsd = isAutoSwap
+          ? bsActualUsd * AUTOSWAP_CUSTOM_TARGET_MULTIPLIER
+          : bsActualUsd;
+      } else {
+        targetUsd = isAutoSwap ? AUTOSWAP_TARGET_USD : BS_BOOTSTRAP_USD;
+      }
 
       // Compute the target raw amount: targetUsd worth of quote token if
       // we know the price, else fixed fallback. ceil() ensures we don't
@@ -1911,17 +3187,23 @@ export async function estimateRequiredFunding({ allocations }) {
 
       if (isAutoSwap) {
         // (2) Auto-swap branch.
-        // SOL spend scales with the target: ~$2 of token × 2x multiplier
-        // = ~$4 of SOL per swap. Constant regardless of quote-token price,
-        // since both target and spend are USD-denominated.
+        // SOL spend scales with the acquire target × the sizing multiplier.
+        // Minimal mode: $2 target × 2 = $4 spent for $2 acquired.
+        // Custom mode: bsActualUsd × 1.15 target × 1.10 = ~27% over actual
+        // need (compound 1.265× of bsActualUsd) spent for ~15% over need
+        // acquired. Most of the buffer absorbs swap slippage; the small
+        // acquire-side buffer absorbs partial fills.
+        const spendMultiplier = bsIsCustom
+          ? AUTOSWAP_CUSTOM_SIZING_MULTIPLIER
+          : AUTOSWAP_SIZING_MULTIPLIER;
         const estSolSpend = new Decimal(targetUsd)
-          .mul(AUTOSWAP_SIZING_MULTIPLIER)
+          .mul(spendMultiplier)
           .div(solUsd)
           .toNumber();
-        addSol(
-          `${poolLabel}: bootstrap quote-side (auto-swap → ~$${targetUsd} ${quoteSymbol})`,
-          estSolSpend,
-        );
+        const label = bsIsCustom
+          ? `${poolLabel}: bootstrap support (auto-swap → ~$${bsActualUsd.toFixed(2)} ${quoteSymbol})`
+          : `${poolLabel}: bootstrap quote-side (auto-swap → ~$${targetUsd} ${quoteSymbol})`;
+        addSol(label, estSolSpend);
         // Compute the actual bootstrap need (vs the ambitious acquire
         // target) so the frontend can mark a row "met" once we have
         // ENOUGH for the bootstrap, even if the swap underperformed
@@ -1930,7 +3212,7 @@ export async function estimateRequiredFunding({ allocations }) {
         // leave the row blocked even though the launch would succeed.
         let minWhole;
         if (quoteUsd && quoteUsd.gt(0)) {
-          minWhole = new Decimal(BS_BOOTSTRAP_USD).div(quoteUsd).toNumber();
+          minWhole = new Decimal(bsActualUsd).div(quoteUsd).toNumber();
         } else {
           minWhole = BS_FALLBACK_WHOLE;
         }
@@ -1958,12 +3240,28 @@ export async function estimateRequiredFunding({ allocations }) {
           poolId: 'trade-api',
           poolKind: 'route',
           estSolSpend,
+          // sizingMultiplier and bootstrapMode propagate the estimator's
+          // mode-aware budget choices down to the actual swap execution.
+          // The swap function (swapService.js) has its own slippage
+          // oversize math and a hard MAX_SPEND cap that was sized for
+          // dust targets. Without these fields, a custom-mode bootstrap
+          // would get budgeted correctly by the estimator but then have
+          // its actual swap silently floored to ~0.05 SOL by the cap,
+          // delivering almost no quote tokens and failing the bootstrap.
+          // server.js threads these through to swapSolForQuote.
+          sizingMultiplier: bsIsCustom
+            ? AUTOSWAP_CUSTOM_SIZING_MULTIPLIER
+            : AUTOSWAP_SIZING_MULTIPLIER,
+          bootstrapMode: bsIsCustom ? 'custom' : 'minimal',
         });
       } else {
         // (3) Manual pre-fund branch.
         byQuote[quoteAddr] = (byQuote[quoteAddr] || 0) + rawAmt;
+        const label = bsIsCustom
+          ? `${poolLabel}: bootstrap support (~$${bsActualUsd.toFixed(2)})`
+          : `${poolLabel}: bootstrap quote-side`;
         quoteBreakdown.push({
-          label: `${poolLabel}: bootstrap quote-side`,
+          label,
           symbol: quoteSymbol,
           // Display-friendly: trim long decimals while keeping enough
           // precision to be unambiguous (e.g. 33333.3 not 33333.333334).

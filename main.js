@@ -87,6 +87,7 @@ function attachContextMenu(webContents) {
 // External URLs that the menu links to.
 // ---------------------------------------------------------------------------
 const URLS = {
+  website:         'https://makesometokens.com/',
   raydiumClmm:     'https://docs.raydium.io/raydium/for-liquidity-providers/pool-types/clmm-concentrated',
   raydiumBurnEarn: 'https://docs.raydium.io/raydium/for-liquidity-providers/burn-and-earn',
   helius:          'https://www.helius.dev/',
@@ -285,6 +286,10 @@ function setAppMenu() {
   // The Help submenu is identical across platforms. Defining it once
   // keeps Windows/Linux and macOS in sync.
   const helpSubmenu = [
+    {
+      label: 'Official website',
+      click: () => shell.openExternal(URLS.website),
+    },
     {
       label: 'View README',
       click: () => openReadmeWindow(),

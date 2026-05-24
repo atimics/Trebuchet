@@ -517,6 +517,17 @@ export async function swapSolForQuote({
   solUsd,
   quoteDecimals,
   sizingMultiplier = 2,
+  // maxSpendLamports caps how much SOL a single swap attempt is allowed
+  // to send. Defaults to 0.05 SOL — sized for minimal-mode dust targets
+  // ($1 actual need × 4 compound multiplier = ~$4 of SOL spend with
+  // ~$10 of headroom). For custom-mode bootstraps where the user has
+  // intentionally committed large sums of SOL, that cap must scale
+  // with the target. Caller (server.js) should pass an estimator-derived
+  // value here based on autoSwapPlan.estSolSpend so the actual swap can
+  // execute at the budgeted scale. Without this override, a $2000
+  // custom bootstrap silently floors to ~$10 of acquired quote token,
+  // breaking the bootstrap deposit downstream.
+  maxSpendLamports,
 }) {
   const ownerPk = ownerKeypair.publicKey;
   const mintPk = new PublicKey(quoteMint);
@@ -579,12 +590,19 @@ export async function swapSolForQuote({
   const lamports = new BN(solNeeded.mul(LAMPORTS_PER_SOL).toFixed(0));
 
   // Floor at 50,000 lamports so we don't send a swap so tiny that the
-  // Trade API returns no route. Cap at 0.05 SOL hard limit so a wildly
-  // mispriced quote can never drain the wallet — that's still ~$10 of
-  // SOL which is plenty for any realistic bootstrap quote-side budget.
+  // Trade API returns no route. Cap at the caller-provided maxSpendLamports
+  // (or 0.05 SOL when not specified — historical default sized for dust
+  // targets). The cap exists to prevent a mispriced oracle / corrupt
+  // estimator from draining the wallet — so for custom-mode bootstraps
+  // we ask the caller to derive the cap from the estimator's own SOL
+  // budget plus a small buffer, scaling naturally with what the user
+  // committed.
   const MIN_SPEND = new BN(50_000);
-  const MAX_SPEND = new BN(0.05 * LAMPORTS_PER_SOL);
-  const spendLamports = BN.max(BN.min(lamports, MAX_SPEND), MIN_SPEND);
+  const DEFAULT_MAX_SPEND = new BN(0.05 * LAMPORTS_PER_SOL);
+  const effectiveMaxSpend = maxSpendLamports != null
+    ? new BN(String(maxSpendLamports))
+    : DEFAULT_MAX_SPEND;
+  const spendLamports = BN.max(BN.min(lamports, effectiveMaxSpend), MIN_SPEND);
 
   // 5. Pre-flight: wallet must have spend + tx-fee headroom. Fail fast
   //    if not, so we surface the actionable error to the user instead

@@ -650,13 +650,21 @@ app.post('/api/quote-token-info', async (req, res) => {
 
 // Estimate funding required for the configured pool/distribution setup.
 // Returns SOL + per-quote token amounts the wallet needs.
+//
+// targetMarketCapUsd is optional. It's only required when at least one
+// allocation has bootstrap.mode === 'custom', so that the estimator can
+// size the bootstrap quote-side USD value (= bootstrap.supplyPercent ×
+// targetMarketCapUsd / 100). All-minimal launches don't need it.
 app.post('/api/estimate-lp-funding', async (req, res) => {
   try {
-    const { allocations } = req.body;
+    const { allocations, targetMarketCapUsd } = req.body;
     if (!Array.isArray(allocations) || allocations.length === 0) {
       throw new Error('allocations must be a non-empty array');
     }
-    const estimate = await estimateRequiredFunding({ allocations });
+    const estimate = await estimateRequiredFunding({
+      allocations,
+      targetMarketCapUsd,
+    });
     res.json({ success: true, estimate });
   } catch (error) {
     console.error('Error estimating LP funding:', error);
@@ -799,6 +807,13 @@ async function runAcquireJob(job, { ownerKeypair, autoSwapPlan }) {
         minRaw, // actual bootstrap need; targetRaw is the oversize ambition
         quoteUsd,
         solUsd,
+        // sizingMultiplier and estSolSpend let the swap honor the
+        // estimator's mode-aware budget. Without these the swap function
+        // uses its default 2× sizing and 0.05 SOL hard cap, both of which
+        // were sized for dust targets — custom-mode bootstraps get
+        // silently floored to ~$10 of acquired quote token.
+        sizingMultiplier,
+        estSolSpend,
       } = item;
 
       console.log(
@@ -808,6 +823,17 @@ async function runAcquireJob(job, { ownerKeypair, autoSwapPlan }) {
       const t0 = Date.now();
 
       try {
+        // Derive the per-swap SOL cap from the estimator's budget. We
+        // give the swap function ~20% headroom over what the estimator
+        // budgeted, so the actual swap can complete even if there's
+        // minor on-chain drift between estimate and execution time.
+        // Default to the legacy 0.05 SOL cap when estSolSpend isn't
+        // present (very old plan items from before the estimator added
+        // this field).
+        const maxSpendLamports = estSolSpend != null
+          ? new BN(Math.ceil(Number(estSolSpend) * 1.2 * 1e9))
+          : undefined;
+
         const r = await swapSolForQuote({
           ownerKeypair,
           quoteMint,
@@ -821,6 +847,14 @@ async function runAcquireJob(job, { ownerKeypair, autoSwapPlan }) {
           quoteUsd: new Decimal(quoteUsd),
           solUsd: new Decimal(solUsd),
           quoteDecimals: Number(quoteDecimals),
+          // Custom-mode plans send a smaller sizingMultiplier (1.10) to
+          // keep the swap-side oversize proportional to the size of the
+          // ask. Falls back to undefined (= swapSolForQuote's default 2)
+          // when older plans don't include it.
+          sizingMultiplier: sizingMultiplier != null
+            ? Number(sizingMultiplier)
+            : undefined,
+          maxSpendLamports,
         });
         const result = {
           allocationIndex,
@@ -999,10 +1033,17 @@ app.post('/api/create-lp', async (req, res) => {
       partialResults: error.partialResults || [],
       failedAllocationIndex: error.failedAllocationIndex,
       failedAllocation: error.failedAllocation,
-      // 'pre_flight', 'main_positions', or 'bootstrap' — tells the frontend
-      // which phase failed so it can render the progress tree correctly
-      // and decide whether retrying is safe (pre_flight) or whether the
-      // user must sweep the wallet and start over (main_positions/bootstrap).
+      // 'pre_flight', 'main_positions', 'bootstrap', 'locks', or 'transfers' —
+      // tells the frontend which phase failed so it can render the progress
+      // tree correctly and decide retry semantics:
+      //   - pre_flight: nothing on-chain happened, fix config and retry
+      //   - main_positions: pool may have been created, current behaviour
+      //     is to require a sweep; mid-Phase-1 partial recovery is a
+      //     larger refactor for later
+      //   - bootstrap: main positions intact, retry bootstraps only
+      //   - locks: positions all open, retry the lock phase only
+      //   - transfers: positions locked, un-transferred Fee Keys will
+      //     sweep to user's destination (transfer failure is non-blocking)
       failedPhase: error.failedPhase,
       // When phase 2 reports multiple failed bootstraps, the orchestrator
       // attaches the full list here. Phase 1 only ever has one failure
@@ -1011,6 +1052,12 @@ app.post('/api/create-lp', async (req, res) => {
       // several. Frontend uses this to mark every failed pool's bootstrap
       // row, not just one.
       bootstrapFailures: error.bootstrapFailures || null,
+      // Phase 3 and Phase 4 failure arrays. Same shape as
+      // bootstrapFailures: each entry pinpoints which allocation/slice
+      // failed and why. The frontend uses these to render per-position
+      // failure markers and offer targeted retry.
+      lockFailures: error.lockFailures || null,
+      transferFailures: error.transferFailures || null,
     });
   }
 });
@@ -1076,6 +1123,8 @@ app.post('/api/resume-launch', async (req, res) => {
       failedAllocation: error.failedAllocation,
       failedPhase: error.failedPhase,
       bootstrapFailures: error.bootstrapFailures || null,
+      lockFailures: error.lockFailures || null,
+      transferFailures: error.transferFailures || null,
     });
   }
 });
@@ -1333,6 +1382,6 @@ app.listen(PORT, '127.0.0.1', () => {
   console.log(`Server running on http://127.0.0.1:${PORT}`);
   console.log(`Active RPC: ${active ? active.name : '(unnamed)'} — ${cfg.active}`);
   console.log(`Saved RPCs: ${cfg.saved.length} (manage in the UI)`);
-  console.log('\nIMPORTANT: For pool creation, use a paid RPC (Helius, Triton, QuickNode).');
+  console.log('\nIMPORTANT: For pool creation, use a dedicated RPC (Helius, Triton, QuickNode — free tier is plenty).');
   console.log('Free public RPC endpoints will rate-limit you out of CLMM creation.\n');
 });
