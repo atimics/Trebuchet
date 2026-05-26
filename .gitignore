@@ -2,3 +2,9 @@
 rpcConfig.json
 files.zip
 /dist
+/out
+/release
+*.blockmap
+builder-debug.yml
+builder-effective-config.yaml
+latest.yml
