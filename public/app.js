@@ -163,6 +163,52 @@ const LADDER_MIN_BANDS = 3;
 const LADDER_MAX_BANDS = 10;
 const LADDER_CEILING_MULTIPLIER = 1000;
 
+// Hard upper bound on the whole-token total supply the user can enter.
+//
+// The on-chain ceiling at 9 decimals is actually ~18.4 billion — that's
+// floor((2^64 - 1) / 10^9), the largest whole-token value whose raw u64
+// representation fits in the SPL mint. We cap at 10 billion instead,
+// well below that hard limit, for two reasons:
+//
+//   1. Operator policy. Launches with absurd supplies (1 trillion+) tend
+//      to be users who haven't thought about per-token price implications
+//      and will end up with a launch that fails downstream regardless —
+//      either at the mint (over the u64 ceiling) or at the LP-creation
+//      math, where extreme supplies push tick spacing and pool prices
+//      into floating-point precision danger zones.
+//   2. A round limit that's clearly below the hard ceiling makes the
+//      error message actionable. "Max is 10,000,000,000" is something
+//      a user can act on; "Max is 18,446,744,073" is a number that begs
+//      questions about where it came from.
+//
+// If the decimals constant in tokenService.js ever changes from 9,
+// the on-chain ceiling shifts accordingly but this policy cap stays
+// where it is (it's user-experience policy, not a chain limit).
+const MAX_TOKEN_SUPPLY = 10_000_000_000;
+
+// Logo upload constraints.
+//
+// MAX_LOGO_BYTES mirrors the server-side multer cap (server.js: 100KB)
+// so the client rejects oversized files immediately rather than the
+// user clicking Create Token, waiting through the upload, and getting
+// an opaque error. Keeping these two numbers in sync is a manual
+// concern — if the server cap ever moves, this one needs to move too.
+//
+// MAX_LOGO_DIMENSION caps the resolution. The chain doesn't care, but:
+//   - Token logo displays in wallets/explorers downsize aggressively;
+//     anything over 1024 is wasted bytes that bloat the Arweave upload.
+//   - A 4096×4096 PNG that compresses well can sneak under the byte
+//     cap and still be a bad upload — pure size isn't sufficient.
+//   - 1024 matches what Solscan, Jupiter, and Phantom recommend.
+//
+// MIN_LOGO_DIMENSION rejects accidentally-tiny pickups (favicons, etc.)
+// that would look terrible on the launched token's listings. 64 is
+// small enough to allow simple pixel-art logos while catching the
+// common "I picked the wrong file" case.
+const MAX_LOGO_BYTES = 100 * 1024;
+const MAX_LOGO_DIMENSION = 1024;
+const MIN_LOGO_DIMENSION = 64;
+
 // State for the simple-config UI. `mode` is the master switch:
 //   'default'   — show the simple toggle+dropdown UI; pool list hidden
 //                 (rebuilt automatically on every config change)
@@ -298,6 +344,33 @@ const STEP_TITLES = {
 // ===========================================================================
 const activityLog = document.getElementById('activityLog');
 
+// Maximum number of entries to keep in the activity log. The server-log
+// streamer polls every 2s and appends any new server-side entries — over
+// a long-running session (hours, especially with active RPC chatter
+// during pool creation or auto-swap retries), the log can accumulate
+// thousands of <div> nodes. Each entry stays in the DOM, participates in
+// layout, and slows down scrolling, append, and the rest of the page as
+// it grows. Symptoms include progressively laggy UI that "feels like a
+// freeze" but is really just death-by-DOM-size.
+//
+// 1500 chosen as a balance: a typical clean launch generates 30-80
+// entries, a launch with retries 100-200, and a long session with lots
+// of server chatter might approach 1000 — so 1500 gives comfortable
+// headroom while still capping the absolute worst case.
+//
+// trimActivityLog() drops oldest entries when over cap, called from
+// both log() and appendServerLogEntry() after each append. Trim cost is
+// O(1) per call in steady state (one removal at most once cap is hit).
+const MAX_LOG_ENTRIES = 1500;
+function trimActivityLog() {
+  // Use childElementCount rather than .length on a stale childNodes
+  // collection — children can include text nodes from whitespace and
+  // we only want to count actual entry divs.
+  while (activityLog.childElementCount > MAX_LOG_ENTRIES) {
+    activityLog.removeChild(activityLog.firstElementChild);
+  }
+}
+
 function log(message, type = 'info') {
   // Accept 'error' as a backwards-compatible alias for 'danger' — the CSS
   // class is .danger (Bulma convention), but a lot of older / muscle-
@@ -323,6 +396,7 @@ function log(message, type = 'info') {
   entry.className = `log-entry ${type}`;
   entry.innerHTML = `<span class="timestamp">[${ts}]</span><span>${safe}</span>`;
   activityLog.appendChild(entry);
+  trimActivityLog();
   activityLog.scrollTop = activityLog.scrollHeight;
 }
 
@@ -378,6 +452,7 @@ function appendServerLogEntry(entry) {
     `<span class="timestamp">[${ts}]</span>` +
     `<span><span class="has-text-grey">[server]</span> ${safe}</span>`;
   activityLog.appendChild(el);
+  trimActivityLog();
   activityLog.scrollTop = activityLog.scrollHeight;
 }
 
@@ -543,11 +618,83 @@ function setStepState(num, state, summaryText) {
   if (!card) return;
   card.classList.remove('is-pending', 'is-active', 'is-completed');
   card.classList.add(`is-${state}`);
+  // is-peeking is a sub-state of is-active managed only by the peek-mode
+  // logic in bindStepHeaders. Any other caller of setStepState is making
+  // a workflow-level state change (activateStep moving the user forward,
+  // a cancel flow finalising on step 6, resetForNewLaunch handing control
+  // back to step 2, etc.) and those callers should not inherit a stale
+  // peek class from whatever the previous interaction left behind.
+  //
+  // Without this clear, the class survives every code path except the
+  // bindStepHeaders collapse logic — so e.g. peek step 2 from step 3,
+  // hit Cancel & Refund, then Start Over: activateStep(2) makes step 2
+  // the active step but is-peeking is still set, and the CSS
+  // pointer-events:none rule on .step-card.is-peeking input/button/etc.
+  // locks every field. The user can't edit pool config, can't click
+  // Continue to Funding, and the step header click bails out early
+  // because step 2 is also the current step. No way out except a full
+  // reload.
+  //
+  // The peek-open branch in bindStepHeaders adds is-peeking AFTER calling
+  // setStepState, so it still ends up with the right combination
+  // (is-active + is-peeking). The two explicit remove calls in the
+  // collapse branches become redundant but are kept for clarity.
+  card.classList.remove('is-peeking');
+  // Also tear down the peek banner DOM element if one was injected.
+  // Same rationale as the class clear above — any state change means
+  // the banner doesn't belong to this card anymore. injectPeekBanner
+  // adds it back when peek starts again.
+  card.querySelectorAll('.peek-banner').forEach((el) => el.remove());
 
   const summaryEl = document.getElementById(`step${num}-summary`);
   if (summaryEl && summaryText !== undefined) {
     summaryEl.textContent = summaryText ? `  —  ${summaryText}` : '';
   }
+}
+
+// Build and insert the peek banner at the top of a step body. Called
+// when entering peek mode. The banner explains the read-only state
+// and — more importantly — contains an explicit "Done reviewing" button
+// so the user has a discoverable way back out. Without it, the only
+// way to exit peek was to click the same step header again, which is
+// not obviously interactive once the body is already expanded.
+//
+// The banner element is plain DOM (not a CSS ::before pseudo) so it
+// can contain a real clickable button. setStepState removes the banner
+// alongside clearing the is-peeking class, so any state transition
+// cleans it up automatically — no separate teardown required from the
+// callers in bindStepHeaders.
+function injectPeekBanner(card, stepNum) {
+  const body = card.querySelector('.step-body');
+  if (!body) return;
+  // Defensive: drop any existing banner before adding a new one so we
+  // can't accidentally end up with duplicates if this is somehow
+  // called twice without an intervening teardown.
+  body.querySelectorAll('.peek-banner').forEach((el) => el.remove());
+
+  const banner = document.createElement('div');
+  banner.className = 'peek-banner';
+
+  const text = document.createElement('span');
+  text.className = 'peek-banner-text';
+  text.textContent = 'Reviewing completed step — fields are read-only.';
+  banner.appendChild(text);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'peek-banner-close';
+  closeBtn.textContent = 'Done reviewing';
+  // Collapse the peek. setStepState handles all the cleanup —
+  // removes is-peeking, removes this banner element, sets the
+  // is-completed class — so we don't need to do anything else here.
+  closeBtn.addEventListener('click', () => {
+    setStepState(stepNum, 'completed');
+  });
+  banner.appendChild(closeBtn);
+
+  // Insert at the very top of the body so it's the first thing the
+  // user sees inside the expanded step.
+  body.insertBefore(banner, body.firstChild);
 }
 
 // Activate a specific step. Marks all earlier steps as completed (preserving
@@ -582,6 +729,16 @@ function activateStep(num) {
       block: 'start',
     });
   }, 50);
+
+  // Sync the cost preview with the new step. Transitioning INTO step 2
+  // schedules a fresh preview compute (after the 500ms debounce);
+  // transitioning OUT of it hides the preview since the user is past
+  // the config stage. requestCostPreviewUpdate handles both directions
+  // based on the now-updated currentStep value, so a single call here
+  // covers transitions in either direction.
+  if (typeof requestCostPreviewUpdate === 'function') {
+    requestCostPreviewUpdate();
+  }
 }
 
 // Set a step's completion summary (one-line text shown next to the title
@@ -638,6 +795,10 @@ function bindStepHeaders() {
       // invalidate downstream state by editing a completed step.
       setStepState(i, 'active');
       card.classList.add('is-peeking');
+      // Inject the read-only banner with the Done button. Has to run
+      // after setStepState because setStepState tears down any prior
+      // banner as part of its general state-change cleanup.
+      injectPeekBanner(card, i);
     });
   }
 }
@@ -1531,10 +1692,110 @@ function buildMnemonicGrid(mnemonic) {
 // STEP 2: Token + Pool config
 // ===========================================================================
 
-bind('tokenLogo', 'change', (e) => {
+// Validate a picked logo file against the size and dimension limits.
+// Returns a Promise<string|null>: null on success, an error message on
+// failure. Loads the file as an image to read its natural dimensions —
+// we can't trust the file metadata or filename extension for this; the
+// only reliable read is "actually decode the image and ask."
+//
+// The Image decode is wrapped in a same-document objectURL that we
+// revoke immediately after, regardless of outcome, so this validation
+// path doesn't leak object URLs even on rapid file changes.
+async function validateLogoFile(file) {
+  if (file.size > MAX_LOGO_BYTES) {
+    const kb = (file.size / 1024).toFixed(1);
+    const maxKb = (MAX_LOGO_BYTES / 1024).toFixed(0);
+    return `Logo is ${kb}KB; max is ${maxKb}KB. ` +
+      `Compress the image or pick a smaller file.`;
+  }
+  // accept attribute on the input already restricts the picker to
+  // image/png and image/jpeg, but the browser's filter isn't a hard
+  // gate (drag-and-drop, devtools, OS file dialogs that ignore filters
+  // on some platforms). Re-check the MIME explicitly so we surface a
+  // useful message instead of letting the image decode fail opaquely.
+  if (file.type !== 'image/png' && file.type !== 'image/jpeg') {
+    return 'Logo must be a PNG or JPG image.';
+  }
+
+  // Image-decode dimension check. We have to actually load the file as
+  // an image — there's no synchronous way to get pixel dimensions from
+  // a File object. createObjectURL + new Image() is the standard idiom.
+  const url = URL.createObjectURL(file);
+  try {
+    const dims = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+      img.onerror = () => reject(new Error('Could not decode image — file may be corrupt'));
+      img.src = url;
+    });
+    if (dims.w > MAX_LOGO_DIMENSION || dims.h > MAX_LOGO_DIMENSION) {
+      return `Logo is ${dims.w}×${dims.h}px; max is ` +
+        `${MAX_LOGO_DIMENSION}×${MAX_LOGO_DIMENSION}px. Resize the image and try again.`;
+    }
+    if (dims.w < MIN_LOGO_DIMENSION || dims.h < MIN_LOGO_DIMENSION) {
+      return `Logo is ${dims.w}×${dims.h}px; minimum is ` +
+        `${MIN_LOGO_DIMENSION}×${MIN_LOGO_DIMENSION}px. Pick a larger image.`;
+    }
+    return null;
+  } catch (e) {
+    return e.message || 'Could not read the image.';
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+// Show or clear the inline logo error message under the file picker.
+// Passing null hides the element; passing a string reveals it with the
+// message. Encapsulates the .hidden toggle so the call sites read
+// clearly as "set the error" vs "clear the error."
+function setLogoError(message) {
+  const el = document.getElementById('tokenLogoError');
+  if (!el) return;
+  if (message) {
+    el.textContent = message;
+    el.classList.remove('hidden');
+  } else {
+    el.textContent = '';
+    el.classList.add('hidden');
+  }
+}
+
+bind('tokenLogo', 'change', async (e) => {
   const f = e.target.files[0];
-  document.getElementById('logoFileName').textContent =
-    f ? f.name : 'No file selected';
+  const filenameEl = document.getElementById('logoFileName');
+  // No file selected (user cancelled out of the picker, or cleared the
+  // selection). Reset displayed state and any prior error.
+  if (!f) {
+    filenameEl.textContent = 'No file selected';
+    setLogoError(null);
+    return;
+  }
+  // Show the picked filename immediately so the UI feels responsive
+  // even while we're decoding the image to check dimensions. We'll
+  // overwrite this with "No file selected" if validation fails.
+  filenameEl.textContent = f.name;
+  setLogoError(null);
+
+  const err = await validateLogoFile(f);
+  if (err) {
+    // Reject the file: clear the input so subsequent code paths
+    // (renderTokenPreview, the create-token submit) see no logo at
+    // all, rather than seeing a logo that's about to be rejected by
+    // the server. Setting .value = '' is the cross-browser way to
+    // programmatically clear a file input.
+    e.target.value = '';
+    filenameEl.textContent = 'No file selected';
+    setLogoError(err);
+    // Trigger a preview re-render so the thumbnail and live preview
+    // card both drop back to their no-logo state.
+    if (typeof renderTokenPreview === 'function') renderTokenPreview();
+    return;
+  }
+  // Valid file — leave the filename as set above. The separate
+  // change-handler binding (see bind('tokenLogo', 'change', renderTokenPreview)
+  // below in this file) handles updating the preview thumbnail and
+  // live card. We don't trigger it directly from here; the browser
+  // fires `change` once and both listeners receive it.
 });
 
 const poolList = document.getElementById('poolList');
@@ -4196,7 +4457,14 @@ function updateContinueToFundingState() {
   const mc = parseNumberInput(document.getElementById('targetMarketCap'));
   if (!name) reasons.push('Token name required');
   if (!symbol) reasons.push('Token symbol required');
-  if (!supply || supply <= 0) reasons.push('Token supply must be > 0');
+  if (!supply || supply <= 0) {
+    reasons.push('Token supply must be > 0');
+  } else if (supply > MAX_TOKEN_SUPPLY) {
+    // Sanity cap below the on-chain u64 ceiling — see MAX_TOKEN_SUPPLY
+    // definition for rationale. Surface the actual cap in the message so
+    // the user can adjust without guessing what an acceptable value is.
+    reasons.push(`Token supply must not exceed ${MAX_TOKEN_SUPPLY.toLocaleString()}`);
+  }
   if (!mc || mc <= 0) reasons.push('Target market cap must be > 0');
 
   btn.disabled = reasons.length > 0;
@@ -4226,6 +4494,148 @@ function updateContinueToFundingState() {
         '</ul>' + hint;
     }
   }
+
+  // Rolling cost preview. Piggybacking on this function's existing role as
+  // the central "config changed, recheck" chokepoint means we automatically
+  // pick up every config-mutation site without having to thread cost-update
+  // calls through 17 separate handlers. The debounce inside
+  // requestCostPreviewUpdate() handles per-keystroke firing.
+  requestCostPreviewUpdate();
+}
+
+// ---------------------------------------------------------------------------
+// Step 2 cost preview
+// ---------------------------------------------------------------------------
+//
+// Shows an approximate SOL cost in step 2 so users see the price impact of
+// their pool/config choices BEFORE they commit to step 3 funding. Addresses
+// the "sticker shock at the funding stage" complaint: users who configured
+// without any cost feedback would land at step 3 surprised by how much SOL
+// they needed to send.
+//
+// Approach: call the same /api/estimate-lp-funding endpoint that step 3
+// uses, but only display the total SOL (not the full breakdown — that's
+// reserved for step 3 to avoid duplicating UI). Debounced 500ms so rapid
+// keystrokes don't hammer the endpoint, with a sequence number so an
+// in-flight stale response can't overwrite a newer one.
+//
+// Hidden on steps other than 2 — step 3+ already shows the real estimate,
+// and showing the preview would just add confusion.
+
+let _costPreviewDebounceHandle = null;
+let _costPreviewRequestSeq = 0;
+
+function setCostPreviewState(state, value) {
+  const card = document.getElementById('costPreview');
+  if (!card) return;
+  const valueEl = document.getElementById('costPreviewValue');
+  const labelEl = document.getElementById('costPreviewLabel');
+  const hintEl = document.getElementById('costPreviewHint');
+  if (!valueEl || !labelEl || !hintEl) return;
+
+  if (state === 'hidden') {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+  if (state === 'loading') {
+    labelEl.textContent = 'Estimating cost: ';
+    valueEl.textContent = '…';
+    hintEl.textContent = '(computing)';
+    return;
+  }
+  if (state === 'ready') {
+    labelEl.textContent = 'Estimated cost: ';
+    // 3 decimals matches the breakdown in step 3. Use ≈ rather than = so
+    // the user reads it as "approximate" — the actual number can shift
+    // slightly between this preview and step 3's estimate because the
+    // server may pick up fresher SOL/quote-token prices in the interim.
+    valueEl.textContent = `≈ ${Number(value).toFixed(3)} SOL`;
+    hintEl.textContent = '(approximate; full breakdown shows on next step)';
+    return;
+  }
+  if (state === 'error') {
+    labelEl.textContent = '';
+    valueEl.textContent = "Couldn't compute preview";
+    hintEl.textContent = '(full estimate will run when you click Continue)';
+    return;
+  }
+}
+
+// Decide whether the preview should run at all. We only want it on step 2
+// (config stage), and only when pools are configured to a state the
+// estimator can actually handle. Trying to estimate an incomplete config
+// would either fail server-side (noisy) or return a misleading number
+// (worse — gives the user a wrong sense of cost).
+function shouldShowCostPreview() {
+  if (typeof currentStep === 'number' && currentStep !== 2) return false;
+  if (!Array.isArray(pools) || pools.length === 0) return false;
+  // Allocations should sum to ~100% — under-allocated pools would
+  // estimate a cost for missing liquidity, over-allocated would
+  // double-count. A small tolerance handles floating-point fuzz from
+  // slider math.
+  const total = pools.reduce((s, p) => s + (Number(p.supplyPercent) || 0), 0);
+  if (Math.abs(total - 100) > 0.5) return false;
+  // Bail if any pool's quote isn't resolved yet. The estimator's
+  // bootstrap-cost math needs the quote token's USD price, and an
+  // unresolved quote produces a worst-case estimate that scares users
+  // unnecessarily.
+  for (const p of pools) {
+    if (p.resolvedPriceUsd == null && p.quoteUsdOverride == null) {
+      const sym = (p.quoteToken || '').toUpperCase();
+      const isSol = sym === 'SOL';
+      if (!isSol) return false;
+    }
+  }
+  return true;
+}
+
+async function runCostPreview() {
+  if (!shouldShowCostPreview()) {
+    setCostPreviewState('hidden');
+    return;
+  }
+  const seq = ++_costPreviewRequestSeq;
+  setCostPreviewState('loading');
+  try {
+    const allocations = buildAllocationsForApi();
+    const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+    const resp = await fetch('/api/estimate-lp-funding', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc }),
+    });
+    // If a newer request started while this one was in flight, drop
+    // our result. Without this guard, an out-of-order response could
+    // overwrite a fresher one and the user sees the wrong number.
+    if (seq !== _costPreviewRequestSeq) return;
+    const data = await resp.json();
+    if (!data.success || !data.estimate) {
+      setCostPreviewState('error');
+      return;
+    }
+    setCostPreviewState('ready', data.estimate.totalSol);
+  } catch (e) {
+    if (seq !== _costPreviewRequestSeq) return;
+    // Don't surface the error message — the user will see a real one
+    // when they click Continue. This preview is best-effort.
+    setCostPreviewState('error');
+  }
+}
+
+function requestCostPreviewUpdate() {
+  // Hidden on non-step-2 contexts. Cancel any pending fetch and stop
+  // here so a freshly-arrived step-2 view sees a clean state.
+  if (!shouldShowCostPreview()) {
+    if (_costPreviewDebounceHandle) {
+      clearTimeout(_costPreviewDebounceHandle);
+      _costPreviewDebounceHandle = null;
+    }
+    setCostPreviewState('hidden');
+    return;
+  }
+  if (_costPreviewDebounceHandle) clearTimeout(_costPreviewDebounceHandle);
+  _costPreviewDebounceHandle = setTimeout(runCostPreview, 500);
 }
 
 ['tokenName', 'tokenSymbol', 'tokenSupply', 'targetMarketCap'].forEach((id) => {
@@ -4577,20 +4987,43 @@ function resetForNewLaunch() {
     ladderBandCount: LADDER_DEFAULT_BANDS,
   };
 
-  // 4. Clear token form inputs. These hold what the user typed last time;
-  //    leaving them prefilled would imply "we'll use this again" when in
-  //    fact the user explicitly chose to start over.
-  const formIds = ['tokenName', 'tokenSymbol', 'targetMarketCap', 'tokenDescription'];
+  // 4. Reset token form inputs back to their HTML defaults. These hold
+  //    whatever the user typed last time; leaving them prefilled with
+  //    that data would imply "we'll use this again" when in fact the
+  //    user explicitly chose to start over.
+  //
+  //    We read each input's `defaultValue` rather than hardcoding the
+  //    values here. defaultValue is the string from the HTML `value="..."`
+  //    attribute — empty for inputs that don't declare one (tokenName,
+  //    tokenSymbol, tokenDescription), and the displayed default for the
+  //    two that do (tokenSupply = "1,000,000,000", targetMarketCap =
+  //    "100,000"). This keeps the reset behaviour in sync with the HTML
+  //    automatically: if those defaults are ever changed in index.html,
+  //    the reset still does the right thing without needing to update
+  //    this list.
+  //
+  //    Prior version blindly cleared targetMarketCap to '' alongside the
+  //    text fields, which produced an empty market-cap field after Start
+  //    Over even though a fresh app open shows "100,000" — the bug Moose
+  //    flagged. The supply fix is a related tidy-up: prior code set it
+  //    to '1000000000' (no commas), which display-mismatches the HTML
+  //    default of '1,000,000,000'; the numeric value is identical after
+  //    parseNumberInput strips commas, but visually they differ.
+  const formIds = [
+    'tokenName',
+    'tokenSymbol',
+    'tokenSupply',
+    'targetMarketCap',
+    'tokenDescription',
+  ];
   for (const id of formIds) {
     const el = document.getElementById(id);
-    if (el) el.value = '';
+    if (el) el.value = el.defaultValue;
   }
-  // tokenSupply has a numeric default that the user may have changed;
-  // restoring its placeholder default rather than blank keeps the form
-  // usable without an explicit "type a supply" prompt.
-  const supplyEl = document.getElementById('tokenSupply');
-  if (supplyEl) supplyEl.value = '1000000000';
   // Logo: clear both the file input and any preview thumbnail.
+  // File inputs always have an empty defaultValue, so we set value=''
+  // explicitly to make the intent obvious at the call site rather than
+  // relying on the defaultValue happening to be empty.
   const logoEl = document.getElementById('tokenLogo');
   if (logoEl) logoEl.value = '';
   if (_tokenPreviewLogoObjectUrl) {
@@ -4599,6 +5032,10 @@ function resetForNewLaunch() {
   }
   const logoThumb = document.getElementById('tokenLogoThumb');
   if (logoThumb) logoThumb.classList.add('hidden');
+  // Clear any stale logo validation error from a previous launch. The
+  // setLogoError helper handles the hidden-class toggle so the help
+  // text doesn't reserve vertical space when there's no message.
+  setLogoError(null);
 
   // 5. Wipe pools and rebuild from the (now reset) simpleConfig defaults.
   //    rebuildPoolsFromSimple wipes pools.length=0 and re-adds the default
@@ -8820,6 +9257,61 @@ function setupDisclaimer() {
   }
 }
 setupDisclaimer();
+
+// ---------------------------------------------------------------------------
+// Universal modal close affordances
+// ---------------------------------------------------------------------------
+//
+// Three modals in the app were originally wired only to their explicit
+// footer buttons (Cancel / Keep Going / Got It / etc.) and lacked the
+// click-outside-and-Esc-to-dismiss behaviour users expect from modal
+// dialogs.  This block backfills both for them:
+//
+//   - cancelConfirmModal     (Cancel & Refund prompt from the sticky bar)
+//   - transferConfirmModal   (final confirm before sweeping assets)
+//   - flywheelInfoModal      (informational; already had background click,
+//                             but no Esc handler)
+//
+// Click-outside is wired per-modal via each one's .modal-background
+// element.  Esc is handled with a single delegated keydown listener on
+// document — when Esc fires, we close whichever of the three modals is
+// currently active.  A single listener avoids the listener-accumulation
+// failure mode that bit us elsewhere, and avoids the subtle bug where
+// every per-modal Esc listener would also fire even when its own modal
+// isn't the topmost one.
+//
+// Note on stacking with confirmDialog(): confirmDialog adds its own
+// ephemeral Esc handler when shown and removes it on dismiss.  In a
+// stacked scenario (confirmDialog opened on top of one of these
+// modals), pressing Esc would fire BOTH handlers, closing both modals.
+// In practice the flows in this app never open confirmDialog while
+// one of these three modals is showing (cancel/transfer modals close
+// themselves before any subsequent confirm prompt; flywheel is purely
+// informational and isn't a launching pad for other dialogs), so this
+// is a theoretical issue, not a practical one.  Documenting it here so
+// if a future flow tries to stack them, the developer knows the gotcha.
+const EXTRA_CLOSE_MODAL_IDS = [
+  'cancelConfirmModal',
+  'transferConfirmModal',
+  'flywheelInfoModal',
+];
+for (const modalId of EXTRA_CLOSE_MODAL_IDS) {
+  const modal = document.getElementById(modalId);
+  if (!modal) continue;
+  const bg = modal.querySelector('.modal-background');
+  if (bg) {
+    bg.addEventListener('click', () => modal.classList.remove('is-active'));
+  }
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  for (const modalId of EXTRA_CLOSE_MODAL_IDS) {
+    const modal = document.getElementById(modalId);
+    if (modal && modal.classList.contains('is-active')) {
+      modal.classList.remove('is-active');
+    }
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Splash screen dismissal
