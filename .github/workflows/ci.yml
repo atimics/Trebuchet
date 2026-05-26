@@ -39,6 +39,9 @@ jobs:
     name: Build ${{ matrix.name }}
     needs: test
     runs-on: ${{ matrix.os }}
+    env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
     strategy:
       fail-fast: false
       matrix:
@@ -48,17 +51,13 @@ jobs:
             smoke_command: npm run build:mac -- --arm64 --dir --publish=never
             release_command: npm run build:mac -- --arm64 --publish=never
             artifact: trebuchet-macos-arm64
-            paths: |
-              dist/*.dmg
-              dist/*.zip
+            paths: dist/*.dmg
           - name: macOS x64
             os: macos-15-intel
             smoke_command: npm run build:mac -- --x64 --dir --publish=never
             release_command: npm run build:mac -- --x64 --publish=never
             artifact: trebuchet-macos-x64
-            paths: |
-              dist/*.dmg
-              dist/*.zip
+            paths: dist/*.dmg
           - name: Windows
             os: windows-latest
             smoke_command: npm run build:win -- --dir --publish=never
@@ -66,15 +65,13 @@ jobs:
             artifact: trebuchet-windows
             paths: |
               dist/*.exe
-              dist/*.yml
+              dist/latest*.yml
           - name: Linux
             os: ubuntu-latest
             smoke_command: npm run build:linux -- --dir --publish=never
             release_command: npm run build:linux -- --publish=never
             artifact: trebuchet-linux
-            paths: |
-              dist/*.AppImage
-              dist/*.deb
+            paths: dist/*.AppImage
 
     steps:
       - name: Checkout
@@ -85,6 +82,16 @@ jobs:
         with:
           node-version: 22.12.0
           cache: npm
+
+      - name: Restore Electron caches
+        uses: actions/cache@v5
+        with:
+          path: |
+            ${{ env.ELECTRON_CACHE }}
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+          key: electron-cache-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-cache-${{ runner.os }}-
 
       - name: Install Linux packaging dependencies
         if: runner.os == 'Linux'

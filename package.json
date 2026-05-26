@@ -99,24 +99,19 @@
 
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": ["dmg", "zip"]
+      "target": ["dmg"]
     },
 
     "win": {
       "icon": "build/icon.ico",
-      "target": ["nsis", "portable"]
+      "target": ["nsis"]
     },
 
     "nsis": {
       "preCompressedFileExtensions": []
     },
-
-    "portable": {
-      "artifactName": "${productName} ${version} Portable.${ext}"
-    },
-
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": ["AppImage"],
       "category": "Development"
     }
   }
