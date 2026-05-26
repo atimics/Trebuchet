@@ -35,6 +35,54 @@ function bind(id, event, handler) {
 }
 
 // ===========================================================================
+// Local API session header
+// ===========================================================================
+//
+// The backend requires an x-trebuchet-session header on every /api request
+// except /api/session. Same-origin code can read that token; cross-origin
+// pages cannot read it because the server does not opt into CORS.
+const originalFetch = window.fetch.bind(window);
+let apiSessionTokenPromise = null;
+
+function isLocalApiRequest(input) {
+  const raw = typeof input === 'string' ? input : input?.url;
+  if (!raw) return false;
+  const url = new URL(raw, window.location.href);
+  return (
+    url.origin === window.location.origin &&
+    url.pathname.startsWith('/api/') &&
+    url.pathname !== '/api/session'
+  );
+}
+
+async function getApiSessionToken() {
+  if (!apiSessionTokenPromise) {
+    apiSessionTokenPromise = originalFetch('/api/session', {
+      credentials: 'same-origin',
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(`API session failed: HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (!data?.token) throw new Error('API session response missing token');
+        return data.token;
+      });
+  }
+  return apiSessionTokenPromise;
+}
+
+window.fetch = async (input, init = {}) => {
+  if (!isLocalApiRequest(input)) return originalFetch(input, init);
+
+  const headers = new Headers(
+    init.headers || (input instanceof Request ? input.headers : undefined),
+  );
+  headers.set('x-trebuchet-session', await getApiSessionToken());
+  return originalFetch(input, { ...init, headers });
+};
+
+// ===========================================================================
 // Global state
 // ===========================================================================
 
@@ -1358,6 +1406,11 @@ function parseNumberInput(input) {
   const raw = String(input.value).replace(/,/g, '');
   if (raw === '' || raw === '-' || raw === '.') return NaN;
   return Number(raw);
+}
+
+function getIntegerInputString(input) {
+  if (!input) return '';
+  return String(input.value).replace(/,/g, '').trim();
 }
 
 // Show a warning banner whenever the active RPC is one of the well-known
@@ -2759,14 +2812,12 @@ function updatePoolLogo(node, pool) {
   const initial = sym.charAt(0).toUpperCase() || '?';
   if (pool.resolvedImageUrl) {
     const safeUrl = escapeHtml(pool.resolvedImageUrl);
-    // onerror falls back to the initial-circle if the image is dead.
-    // We do this by swapping innerHTML in the handler — keeps the
-    // outer span's class consistent regardless of which path renders.
     el.innerHTML =
-      `<img src="${safeUrl}" alt="" loading="lazy" ` +
-      `onerror="this.parentNode.innerHTML='${escapeHtml(initial)}'">`;
+      `<img src="${safeUrl}" alt="" loading="lazy" data-action="pool-logo-fail">`;
+    el.dataset.fallbackInitial = initial;
     el.classList.remove('pool-row-logo-fallback');
   } else {
+    delete el.dataset.fallbackInitial;
     el.textContent = initial;
     el.classList.add('pool-row-logo-fallback');
   }
@@ -3005,7 +3056,7 @@ function renderResolvedInfoHtml(pool) {
   // Logo (36px circle, left column). Falls back to an initial-letter
   // circle when the image fails to load. Implemented with a structural
   // sibling fallback (the initial-letter is always in the DOM, hidden
-  // behind the img) rather than an inline onerror= handler with
+  // behind the img) rather than an inline image-error handler with
   // interpolated content. The old approach worked but mixed HTML/JS
   // contexts in a way that's hard to audit for injection — better to
   // build it with regular HTML and CSS.
@@ -3132,8 +3183,7 @@ function showTokenInfoModal(pool) {
     : '<span class="has-text-grey">unavailable</span>';
 
   const logoHtml = pool.resolvedImageUrl
-    ? `<img src="${escapeHtml(pool.resolvedImageUrl)}" alt="" class="token-info-logo" ` +
-      `onerror="this.style.display='none'">`
+    ? `<img src="${escapeHtml(pool.resolvedImageUrl)}" alt="" class="token-info-logo" data-action="token-info-logo-fail">`
     : '';
 
   const safeMint = escapeHtml(mint);
@@ -3181,6 +3231,12 @@ function showTokenInfoModal(pool) {
       <a class="button is-light" href="${escapeHtml(dexscreenerUrl)}" target="_blank" rel="noopener noreferrer">DexScreener</a>
     </div>
   `;
+
+  body.querySelectorAll('[data-action="token-info-logo-fail"]').forEach((img) => {
+    img.addEventListener('error', () => {
+      img.remove();
+    }, { once: true });
+  });
 
   // Wire up the copy-mint button. Clipboard write is async but we don't
   // need to await — just fire and forget, log on success.
@@ -3262,9 +3318,18 @@ function buildPoolNode(pool, idx) {
   node.addEventListener('error', (e) => {
     const img = e.target;
     if (!img || img.tagName !== 'IMG') return;
-    if (img.dataset.action !== 'logo-fail') return;
-    const wrapper = img.closest('.resolved-logo-with-image');
-    if (wrapper) wrapper.classList.add('resolved-logo-img-failed');
+    if (img.dataset.action === 'logo-fail') {
+      const wrapper = img.closest('.resolved-logo-with-image');
+      if (wrapper) wrapper.classList.add('resolved-logo-img-failed');
+      return;
+    }
+    if (img.dataset.action === 'pool-logo-fail') {
+      const wrapper = img.closest('[data-field="poolLogo"]');
+      if (!wrapper) return;
+      wrapper.textContent = wrapper.dataset.fallbackInitial || '?';
+      delete wrapper.dataset.fallbackInitial;
+      wrapper.classList.add('pool-row-logo-fallback');
+    }
   }, true);
 
   const header = document.createElement('div');
@@ -3536,7 +3601,7 @@ function buildPoolNode(pool, idx) {
     <div class="columns is-mobile is-multiline">
       <div class="column">
         <label class="label is-small">Symbol override</label>
-        <input class="input is-small" type="text" data-field="symOverride" value="${pool.quoteSymbolOverride || ''}">
+        <input class="input is-small" type="text" data-field="symOverride" value="${escapeAttr(pool.quoteSymbolOverride || '')}">
       </div>
       <div class="column">
         <label class="label is-small">Decimals override</label>
@@ -6580,39 +6645,30 @@ function findPoolByMint(mint) {
  * to a neutral placeholder when no image is available so the row
  * layout stays consistent.
  *
- * For broken URLs (e.g. dead Imgur links — common for less-popular
- * tokens whose metadata lists URLs that no longer resolve), the img's
- * onerror swaps it out for the placeholder via a tiny global handler.
- *
- * NOTE: do not use `this.outerHTML = ...` here. That pattern fires
- * onerror repeatedly in some browsers (the replacement node can
- * trigger the load pipeline again, and on re-failure `this` may have
- * already been detached, producing "Cannot read properties of null
- * (reading 'classList')" spam in the console). The handler below
- * removes the image directly and inserts a sibling placeholder, which
- * is a one-shot operation the browser won't repeat.
+ * Broken URLs are handled by attachRowLogoFallbacks(), which swaps
+ * failed images for placeholders without inline event handlers.
  */
 function rowLogoHtml(pool) {
   if (pool && pool.resolvedImageUrl) {
-    return `<img src="${escapeHtml(pool.resolvedImageUrl)}" alt="" class="row-logo" ` +
-      `onerror="window.__rowLogoFallback&&window.__rowLogoFallback(this)">`;
+    return `<img src="${escapeHtml(pool.resolvedImageUrl)}" alt="" class="row-logo" data-action="row-logo-fail">`;
   }
   return '<span class="row-logo-placeholder"></span>';
 }
 
-// Global helper for the inline onerror handler above. Module-scope
-// rather than inlined because inline `this.outerHTML = ...` patterns
-// can re-fire repeatedly and reference detached nodes. This swaps the
-// broken <img> for a placeholder once, with defensive null checks.
-window.__rowLogoFallback = function (img) {
+function replaceRowLogoWithPlaceholder(img) {
   if (!img || !img.parentNode) return;
-  // Detach the onerror first so any subsequent fire (browser quirk) is
-  // a no-op rather than another exception.
-  img.onerror = null;
   const placeholder = document.createElement('span');
   placeholder.className = 'row-logo-placeholder';
   img.parentNode.replaceChild(placeholder, img);
-};
+}
+
+function attachRowLogoFallbacks(root) {
+  root.querySelectorAll('[data-action="row-logo-fail"]').forEach((img) => {
+    img.addEventListener('error', () => {
+      replaceRowLogoWithPlaceholder(img);
+    }, { once: true });
+  });
+}
 
 function renderFundingRequirements() {
   document.getElementById('step3WalletAddr').textContent = tempWallet.publicKey;
@@ -6743,6 +6799,7 @@ function renderFundingRequirements() {
     acquireWrap.style.display = autoPlan.length > 0 ? '' : 'none';
   }
 
+  attachRowLogoFallbacks(document.getElementById('step3') || document);
   renderFundingBreakdown();
 }
 
@@ -7634,6 +7691,7 @@ function convertAutoSwapRowToManual(quoteMint, quoteSymbol) {
     <span><span data-field="actual">0</span> / <span data-field="needed">${displayTarget}</span></span>
   `;
   document.getElementById('balanceRows').appendChild(newRow);
+  attachRowLogoFallbacks(newRow);
 
   // Update fundingRequirement state to match the new layout. Also
   // credit this row's budgeted SOL back: it was reserved for the
@@ -7685,11 +7743,11 @@ bind('createTokenBtn', 'click', async () => {
       formData.append('name', document.getElementById('tokenName').value.trim());
       formData.append('symbol', document.getElementById('tokenSymbol').value.trim());
       formData.append('description', document.getElementById('tokenDescription').value.trim());
-      // Strip thousand-separator commas before sending — the server expects
-      // a plain integer string. parseNumberInput returns a Number; we
-      // serialize it back to a string for FormData.
-      const totalSupplyNum = parseNumberInput(document.getElementById('tokenSupply'));
-      formData.append('totalSupply', String(totalSupplyNum));
+      // Strip thousand-separator commas before sending. Keep this as a
+      // string so large but valid SPL supplies do not lose integer precision
+      // in JavaScript before the server converts to BigInt.
+      const totalSupplyRaw = getIntegerInputString(document.getElementById('tokenSupply'));
+      formData.append('totalSupply', totalSupplyRaw);
       // Quote mints from every configured pool. The server uses these to
       // search for a launched-token keypair that sorts smaller than all
       // of them, so the launched token is mintA in every pool. Filter out
@@ -7710,9 +7768,9 @@ bind('createTokenBtn', 'click', async () => {
       createdTokenInfo = {
         mint: data.tokenMint,
         decimals: data.decimals || 9,
-        totalSupply: totalSupplyNum,
-        name: document.getElementById('tokenName').value.trim(),
-        symbol: document.getElementById('tokenSymbol').value.trim(),
+        totalSupply: totalSupplyRaw,
+        name: data.name || document.getElementById('tokenName').value.trim(),
+        symbol: data.symbol || document.getElementById('tokenSymbol').value.trim(),
       };
 
       document.getElementById('tokenMintAddress').textContent = data.tokenMint;
