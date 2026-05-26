@@ -11,6 +11,13 @@ Fee Key NFTs that will earn fees forever. It runs on your own machine
 against your own RPC, with no middleman taking a cut of your supply,
 charging launch fees, or holding your liquidity hostage.
 
+## Release authenticity
+
+Tagged GitHub releases are built from a clean checkout in GitHub Actions.
+Each release includes `SHA256SUMS.txt`, and the release notes state which
+desktop artifacts were signed, notarized, unsigned, or published as
+unsigned test artifacts. See [docs/releasing.md](docs/releasing.md).
+
 ---
 
 ## ⚠ Before you start: get a dedicated RPC endpoint
