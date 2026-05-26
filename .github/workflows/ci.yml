@@ -89,9 +89,9 @@ jobs:
           path: |
             ${{ env.ELECTRON_CACHE }}
             ${{ env.ELECTRON_BUILDER_CACHE }}
-          key: electron-cache-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: electron-cache-${{ runner.os }}-${{ matrix.artifact }}-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            electron-cache-${{ runner.os }}-
+            electron-cache-${{ runner.os }}-${{ matrix.artifact }}-
 
       - name: Install Linux packaging dependencies
         if: runner.os == 'Linux'
