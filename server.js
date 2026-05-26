@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 import {
@@ -41,10 +42,19 @@ import {
 } from './rpcConfig.js';
 
 import * as pendingWallets from './pendingWallets.js';
-import { Keypair } from '@solana/web3.js';
+import {
+  Keypair,
+  PublicKey,
+} from '@solana/web3.js';
 import bs58 from 'bs58';
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
+import {
+  normalizeTokenDescription,
+  normalizeTokenName,
+  normalizeTokenSymbol,
+  normalizeWholeTokenSupply,
+} from './validators.js';
 
 // Configuration constants are defined below in the "Configuration" section
 // (just after __dirname is computed). Internal env vars (PORT,
@@ -168,6 +178,7 @@ const AUTOSWAP_CONCURRENCY = 1;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const API_SESSION_TOKEN = crypto.randomBytes(32).toString('base64url');
 
 // Boot-time log: confirms which config values the server is actually
 // using on this launch. Streams to the in-app activity log via the
@@ -181,6 +192,13 @@ const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   limits: { fileSize: 100 * 1024 }, // 100KB Arweave free-tier limit
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype === 'image/png' || file.mimetype === 'image/jpeg') {
+      cb(null, true);
+      return;
+    }
+    cb(new Error('Logo must be a PNG or JPG image'));
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -246,6 +264,28 @@ app.use((req, res, next) => {
 // `app.use(cors())` set Access-Control-Allow-Origin: * — appropriate only
 // for genuinely public APIs, and it would weaken the Host-header defense
 // above by giving cross-origin preflights a free pass.
+// Same-origin API session token. Host-header checks block DNS rebinding, and
+// this header blocks browser form posts or other tokenless local requests from
+// mutating the launcher API. The frontend gets the token through /api/session;
+// cross-origin pages can make that request, but cannot read the response
+// without CORS, so they cannot attach the required header.
+app.get('/api/session', (_req, res) => {
+  res
+    .set('Cache-Control', 'no-store')
+    .json({ success: true, token: API_SESSION_TOKEN });
+});
+
+app.use('/api', (req, res, next) => {
+  if (req.path === '/session') return next();
+  const token = req.get('x-trebuchet-session');
+  if (token !== API_SESSION_TOKEN) {
+    return res
+      .status(403)
+      .json({ success: false, error: 'invalid API session' });
+  }
+  next();
+});
+
 app.use(express.json({ limit: '5mb' }));
 
 // Resolve the public/ directory's path on disk. Two cases:
@@ -480,7 +520,16 @@ app.post('/api/rpc-config/test', async (req, res) => {
 // Token creation
 // ---------------------------------------------------------------------------
 
-app.post('/api/create-token', upload.single('logo'), async (req, res) => {
+function uploadLogo(req, res, next) {
+  upload.single('logo')(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ success: false, error: err.message });
+    }
+    next();
+  });
+}
+
+app.post('/api/create-token', uploadLogo, async (req, res) => {
   try {
     const {
       tempWalletSecretKey,
@@ -490,7 +539,15 @@ app.post('/api/create-token', upload.single('logo'), async (req, res) => {
       totalSupply,
       quoteMints: quoteMintsRaw,
     } = req.body;
-    console.log('Creating token:', { name, symbol, totalSupply });
+    const normalizedName = normalizeTokenName(name);
+    const normalizedSymbol = normalizeTokenSymbol(symbol);
+    const normalizedDescription = normalizeTokenDescription(description);
+    const normalizedTotalSupply = normalizeWholeTokenSupply(totalSupply, 9);
+    console.log('Creating token:', {
+      name: normalizedName,
+      symbol: normalizedSymbol,
+      totalSupply: normalizedTotalSupply,
+    });
 
     // Quote mints come over as a JSON-encoded string in the FormData. Parse
     // and validate — invalid input falls back to an empty array, which
@@ -500,10 +557,12 @@ app.post('/api/create-token', upload.single('logo'), async (req, res) => {
     try {
       const parsed = quoteMintsRaw ? JSON.parse(quoteMintsRaw) : [];
       if (Array.isArray(parsed)) {
-        quoteMints = parsed.filter((m) => typeof m === 'string' && m.length > 0);
+        quoteMints = parsed
+          .filter((m) => typeof m === 'string' && m.length > 0)
+          .map((m) => new PublicKey(m).toBase58());
       }
     } catch {
-      console.warn('quoteMints failed to parse — proceeding with no sort constraint');
+      throw new Error('quoteMints must be a JSON array of valid mint addresses');
     }
 
     let logoBase64 = null;
@@ -513,10 +572,10 @@ app.post('/api/create-token', upload.single('logo'), async (req, res) => {
 
     const result = await createTokenWithMetaplex({
       tempWalletSecretKey: JSON.parse(tempWalletSecretKey),
-      name,
-      symbol,
-      description,
-      totalSupply: parseInt(totalSupply),
+      name: normalizedName,
+      symbol: normalizedSymbol,
+      description: normalizedDescription,
+      totalSupply: normalizedTotalSupply,
       logoBase64,
       quoteMints,
     });

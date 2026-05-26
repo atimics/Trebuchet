@@ -356,7 +356,7 @@ export async function createTokenWithMetaplex({
     
     // Mint the total supply
     console.log('Minting total supply...');
-    const totalTokens = BigInt(totalSupply) * BigInt(Math.pow(10, 9));
+    const totalTokens = BigInt(totalSupply) * (10n ** 9n);
     
     const mintSig = await mintTo(
       connection,
@@ -407,6 +407,7 @@ export async function createTokenWithMetaplex({
     console.log('Renouncing metadata update authority and making immutable...');
     
     let metadataUpdateSuccess = false;
+    let metadataImmutableSuccess = false;
     
     try {
       // Create the System Program public key in Umi format
@@ -443,6 +444,7 @@ export async function createTokenWithMetaplex({
           isMutable: some(false),
         }).sendAndConfirm(umi);
         console.log('Metadata made immutable');
+        metadataImmutableSuccess = true;
       } catch (immutableError) {
         // This is expected to fail, but the important part (revoking authority) is done
         console.log('Could not make metadata immutable (expected after authority revocation)');
@@ -484,6 +486,7 @@ export async function createTokenWithMetaplex({
         
         console.log('Update authority revoked and metadata made immutable!');
         metadataUpdateSuccess = true;
+        metadataImmutableSuccess = true;
         
       } catch (altError) {
         console.error('Alternative approach also failed:', altError.message);
@@ -569,11 +572,12 @@ export async function createTokenWithMetaplex({
       tokenMint: mint.toString(),
       metadataUri,
       totalSupply: totalSupply,
-      isSafe: true, // Indicate that authorities have been renounced
+      isSafe: metadataUpdateSuccess,
+      mintAndFreezeAuthoritiesSafe: true,
       mintAuthorityRenounced: true,
       freezeAuthorityDisabled: true,
       metadataUpdateAuthorityRevoked: metadataUpdateSuccess,
-      metadataImmutable: metadataUpdateSuccess,
+      metadataImmutable: metadataImmutableSuccess,
       warning: metadataUpdateSuccess ? null : 'Metadata update authority could not be revoked. Please verify token safety on Solscan.'
     };
   } catch (error) {
