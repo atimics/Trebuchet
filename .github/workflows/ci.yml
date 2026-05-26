@@ -48,28 +48,28 @@ jobs:
         include:
           - name: macOS arm64
             os: macos-15
-            smoke_command: npm run build:mac -- --arm64 --dir --publish=never
-            release_command: npm run build:mac -- --arm64 --publish=never
+            smoke_command: npm exec electron-builder -- --mac --arm64 --dir --publish=never
+            release_command: npm exec electron-builder -- --mac --arm64 --publish=never
             artifact: trebuchet-macos-arm64
             paths: dist/*.dmg
           - name: macOS x64
             os: macos-15-intel
-            smoke_command: npm run build:mac -- --x64 --dir --publish=never
-            release_command: npm run build:mac -- --x64 --publish=never
+            smoke_command: npm exec electron-builder -- --mac --x64 --dir --publish=never
+            release_command: npm exec electron-builder -- --mac --x64 --publish=never
             artifact: trebuchet-macos-x64
             paths: dist/*.dmg
           - name: Windows
             os: windows-latest
-            smoke_command: npm run build:win -- --dir --publish=never
-            release_command: npm run build:win -- --publish=never
+            smoke_command: npm exec electron-builder -- --win --dir --publish=never
+            release_command: npm exec electron-builder -- --win --publish=never
             artifact: trebuchet-windows
             paths: |
               dist/*.exe
               dist/latest*.yml
           - name: Linux
             os: ubuntu-latest
-            smoke_command: npm run build:linux -- --dir --publish=never
-            release_command: npm run build:linux -- --publish=never
+            smoke_command: npm exec electron-builder -- --linux --dir --publish=never
+            release_command: npm exec electron-builder -- --linux --publish=never
             artifact: trebuchet-linux
             paths: dist/*.AppImage
 
