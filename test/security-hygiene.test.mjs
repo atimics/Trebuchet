@@ -15,8 +15,12 @@ test('public frontend has no inline JavaScript event handlers', () => {
 
 test('frontend assets are local and guarded by CSP', () => {
   const html = read('public/index.html');
+  const server = read('server.js');
 
   assert.match(html, /Content-Security-Policy/);
+  assert.match(server, /Content-Security-Policy/);
+  assert.match(server, /frame-ancestors 'none'/);
+  assert.match(server, /X-Frame-Options/);
   assert.match(html, /vendor\/bulma\/bulma\.min\.css/);
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
   assert.doesNotMatch(html, /cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com/);

@@ -51,6 +51,7 @@ import BN from 'bn.js';
 import Decimal from 'decimal.js';
 import {
   normalizeTokenDescription,
+  normalizeLogoImageMime,
   normalizeTokenName,
   normalizeTokenSymbol,
   normalizeWholeTokenSupply,
@@ -179,6 +180,19 @@ const AUTOSWAP_CONCURRENCY = 1;
 const app = express();
 const PORT = process.env.PORT || 3000;
 const API_SESSION_TOKEN = crypto.randomBytes(32).toString('base64url');
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  "media-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
 
 // Boot-time log: confirms which config values the server is actually
 // using on this launch. Streams to the in-app activity log via the
@@ -255,6 +269,13 @@ app.use((req, res, next) => {
       .status(403)
       .json({ success: false, error: 'invalid Host header' });
   }
+  next();
+});
+
+app.use((_req, res, next) => {
+  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   next();
 });
 
@@ -525,6 +546,13 @@ function uploadLogo(req, res, next) {
     if (err) {
       return res.status(400).json({ success: false, error: err.message });
     }
+    if (req.file) {
+      try {
+        req.file.detectedMime = normalizeLogoImageMime(req.file.buffer);
+      } catch (logoError) {
+        return res.status(400).json({ success: false, error: logoError.message });
+      }
+    }
     next();
   });
 }
@@ -550,9 +578,7 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
     });
 
     // Quote mints come over as a JSON-encoded string in the FormData. Parse
-    // and validate — invalid input falls back to an empty array, which
-    // means "no constraint" (the keypair search becomes a no-op and we
-    // get a random keypair, the previous behaviour).
+    // and validate them before they influence the mintA keypair search.
     let quoteMints = [];
     try {
       const parsed = quoteMintsRaw ? JSON.parse(quoteMintsRaw) : [];
@@ -567,7 +593,8 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
 
     let logoBase64 = null;
     if (req.file) {
-      logoBase64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+      const logoMime = req.file.detectedMime;
+      logoBase64 = `data:${logoMime};base64,${req.file.buffer.toString('base64')}`;
     }
 
     const result = await createTokenWithMetaplex({
@@ -580,7 +607,13 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       quoteMints,
     });
 
-    res.json({ success: true, ...result });
+    res.json({
+      success: true,
+      name: normalizedName,
+      symbol: normalizedSymbol,
+      totalSupply: normalizedTotalSupply,
+      ...result,
+    });
   } catch (error) {
     console.error('Error creating token:', error);
     res.status(500).json({ success: false, error: error.message });

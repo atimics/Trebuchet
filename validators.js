@@ -16,7 +16,7 @@ export function normalizeTokenName(value) {
 }
 
 export function normalizeTokenSymbol(value) {
-  const symbol = String(value ?? '').trim().toUpperCase();
+  const symbol = String(value ?? '').trim();
   if (!symbol) throw new Error('Token symbol is required');
   if (byteLength(symbol) > 10) {
     throw new Error('Token symbol must be 10 UTF-8 bytes or fewer');
@@ -50,4 +50,36 @@ export function normalizeWholeTokenSupply(value, decimals = TOKEN_DECIMALS) {
   }
 
   return raw;
+}
+
+export function detectLogoImageMime(buffer) {
+  if (!Buffer.isBuffer(buffer)) return null;
+
+  const isPng =
+    buffer.length >= 24 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a &&
+    buffer.toString('ascii', 12, 16) === 'IHDR';
+  if (isPng) return 'image/png';
+
+  const isJpeg =
+    buffer.length >= 4 &&
+    buffer[0] === 0xff &&
+    buffer[1] === 0xd8 &&
+    buffer[2] === 0xff;
+  if (isJpeg) return 'image/jpeg';
+
+  return null;
+}
+
+export function normalizeLogoImageMime(buffer) {
+  const mime = detectLogoImageMime(buffer);
+  if (!mime) throw new Error('Logo must be a PNG or JPG image');
+  return mime;
 }

@@ -7332,8 +7332,8 @@ bind('createTokenBtn', 'click', async () => {
         mint: data.tokenMint,
         decimals: data.decimals || 9,
         totalSupply: totalSupplyRaw,
-        name: document.getElementById('tokenName').value.trim(),
-        symbol: document.getElementById('tokenSymbol').value.trim(),
+        name: data.name || document.getElementById('tokenName').value.trim(),
+        symbol: data.symbol || document.getElementById('tokenSymbol').value.trim(),
       };
 
       document.getElementById('tokenMintAddress').textContent = data.tokenMint;
