@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import { buildReleaseNotes, resolveReleaseBuild } from '../scripts/release-lib.mjs';
 
@@ -26,6 +26,13 @@ test('release docs explain trust states and verification', () => {
   assert.match(docs, /WIN_CSC_LINK/);
   assert.match(docs, /APPLE_API_KEY/);
   assert.match(docs, /SHA256SUMS\.txt/);
+});
+
+test('mac build uses a native icns app icon', () => {
+  const pkg = JSON.parse(read('package.json'));
+
+  assert.equal(pkg.build.mac.icon, 'build/icon.icns');
+  assert.equal(existsSync(new URL('../build/icon.icns', import.meta.url)), true);
 });
 
 test('release build planner enforces complete signing credentials', () => {
