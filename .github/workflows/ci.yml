@@ -43,10 +43,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS
+          - name: macOS arm64
             os: macos-latest
-            command: npm run build:mac -- --publish=never
-            artifact: trebuchet-macos
+            command: npm run build:mac -- --arm64 --publish=never
+            artifact: trebuchet-macos-arm64
+            paths: |
+              dist/*.dmg
+              dist/*.zip
+          - name: macOS x64
+            os: macos-13
+            command: npm run build:mac -- --x64 --publish=never
+            artifact: trebuchet-macos-x64
             paths: |
               dist/*.dmg
               dist/*.zip
