@@ -440,13 +440,19 @@ function createWindow() {
   // Chromium to rebuild its compositor surface and recompute hit-test
   // regions. A 1-pixel resize triggers the same rebuild, programmatically.
   //
-  // This handler covers the initial-launch case. The follow-on case —
-  // native dialogs (confirm/alert/file pickers) recurring the bug after
-  // dismissal — used to be handled by an elaborate renderer-side
-  // detection scheme. That's been removed because the app no longer
-  // uses native dialogs: window.confirm() calls have all been replaced
-  // with HTML modals (see confirmDialog() in public/app.js). HTML modals
-  // never leave Chromium's compositor, so they don't trigger the bug.
+  // This handler covers the initial-launch case. Most of the follow-on
+  // cases — recurrence of the bug after a native dialog dismisses —
+  // have been eliminated by replacing window.confirm() calls with HTML
+  // modals (see confirmDialog() in public/app.js). HTML modals never
+  // leave Chromium's compositor, so they don't trigger the bug.
+  //
+  // The one native dialog that still exists in the app is the
+  // "launch in progress" close confirmation in the will-prevent-unload
+  // handler further down — which has to be native because that event
+  // requires a synchronous decision and we can't await an HTML modal
+  // in the renderer from main-process code without significantly more
+  // plumbing. That handler applies the same setSize-by-1 reset itself
+  // when the user chooses Stay.
   //
   // SmartScreen on first-run-of-unsigned-binary still triggers the bug,
   // but that's covered here too: did-finish-load fires after the page
@@ -516,9 +522,35 @@ function createWindow() {
       // value and proceed with the unload — counterintuitive naming, but
       // see the Electron docs for `will-prevent-unload`.
       event.preventDefault();
+      return;
     }
-    // Otherwise (choice === 0, "Stay") we do nothing. The default
-    // behavior keeps the window open.
+
+    // User chose "Stay". The window stays open via default behavior
+    // (no preventDefault call needed). BUT: the native dialog we just
+    // showed has triggered the Chromium compositor hit-testing bug on
+    // Windows — the same bug we work around in did-finish-load above,
+    // and the same one that drove the window.confirm() → HTML modal
+    // migration in public/app.js. After a native dialog dismisses,
+    // text inputs in the renderer become un-clickable: single-clicks
+    // don't focus them, even though double-click can still select text.
+    // The user has to alt-tab away and back to fix it. From their
+    // perspective the UI has frozen.
+    //
+    // The fix is the same setSize-by-1 trick used in did-finish-load:
+    // resizing the window forces Chromium to rebuild its compositor
+    // surface and recompute hit-test regions. We then explicitly
+    // restore focus to the window and webContents, since the dialog
+    // stole both. Windows-only — macOS and Linux don't exhibit the
+    // bug. We could probably do the resize unconditionally, but
+    // there's no upside to flickering the window on platforms that
+    // don't need it.
+    if (process.platform === 'win32') {
+      const [w, h] = win.getSize();
+      win.setSize(w + 1, h + 1);
+      win.setSize(w, h);
+    }
+    win.focus();
+    win.webContents.focus();
   });
 
   win.loadURL(`http://127.0.0.1:${serverPort}/`);
