@@ -23,14 +23,14 @@ test('release workflow is tag-driven and publishes checksums', () => {
   assert.match(workflow, /mirror -R --only-newer --verbose=2 website/);
 });
 
-test('ci push builds are package-only smoke checks', () => {
+test('ci only runs package smoke builds before release', () => {
   const workflow = read('.github/workflows/ci.yml');
 
+  assert.match(workflow, /on:\s*\n\s+pull_request:\s*\n\s+workflow_dispatch:/);
+  assert.doesNotMatch(workflow, /\n\s+push:/);
   assert.match(workflow, /Build package smoke/);
-  assert.match(workflow, /github\.event_name == 'pull_request' \|\| github\.event_name == 'push'/);
-  assert.match(workflow, /Build release package/);
-  assert.match(workflow, /if: github\.event_name == 'workflow_dispatch'/);
-  assert.match(workflow, /Upload build artifact/);
+  assert.doesNotMatch(workflow, /Build release package/);
+  assert.doesNotMatch(workflow, /Upload build artifact/);
 });
 
 test('main merges automatically create patch, minor, or major release tags', () => {

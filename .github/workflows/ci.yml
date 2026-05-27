@@ -2,7 +2,6 @@ name: CI
 
 on:
   pull_request:
-  push:
   workflow_dispatch:
 
 permissions:
@@ -49,29 +48,19 @@ jobs:
           - name: macOS arm64
             os: macos-15
             smoke_command: npm exec electron-builder -- --mac --arm64 --dir --publish=never
-            release_command: npm exec electron-builder -- --mac --arm64 --publish=never
             artifact: trebuchet-macos-arm64
-            paths: dist/*.dmg
           - name: macOS x64
             os: macos-15-intel
             smoke_command: npm exec electron-builder -- --mac --x64 --dir --publish=never
-            release_command: npm exec electron-builder -- --mac --x64 --publish=never
             artifact: trebuchet-macos-x64
-            paths: dist/*.dmg
           - name: Windows
             os: windows-latest
             smoke_command: npm exec electron-builder -- --win --dir --publish=never
-            release_command: npm exec electron-builder -- --win --publish=never
             artifact: trebuchet-windows
-            paths: |
-              dist/*.exe
-              dist/latest*.yml
           - name: Linux
             os: ubuntu-latest
             smoke_command: npm exec electron-builder -- --linux --dir --publish=never
-            release_command: npm exec electron-builder -- --linux --publish=never
             artifact: trebuchet-linux
-            paths: dist/*.AppImage
 
     steps:
       - name: Checkout
@@ -103,17 +92,4 @@ jobs:
         run: npm ci
 
       - name: Build package smoke
-        if: github.event_name == 'pull_request' || github.event_name == 'push'
         run: ${{ matrix.smoke_command }}
-
-      - name: Build release package
-        if: github.event_name == 'workflow_dispatch'
-        run: ${{ matrix.release_command }}
-
-      - name: Upload build artifact
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.paths }}
-          if-no-files-found: error
