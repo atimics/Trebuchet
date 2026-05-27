@@ -136,7 +136,8 @@
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
-      "target": ["dmg"]
+      "target": ["dmg"],
+      "artifactName": "Trebuchet-${version}-${arch}.${ext}"
     },
 
     "win": {
