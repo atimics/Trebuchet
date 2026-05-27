@@ -189,7 +189,7 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     env:
-      FTP_HOST: ${{ vars.FTP_HOST != '' && vars.FTP_HOST || 'makesometokens.com' }}
+      FTP_HOST: ${{ vars.FTP_HOST != '' && vars.FTP_HOST || 'p1401.use1.mysecurecloudhost.com' }}
       FTP_PROTOCOL: ${{ vars.FTP_PROTOCOL != '' && vars.FTP_PROTOCOL || 'ftp' }}
       FTP_REMOTE_DIR: ${{ vars.FTP_REMOTE_DIR != '' && vars.FTP_REMOTE_DIR || '.' }}
       FTP_LOGIN: ${{ secrets.FTP_LOGIN }}
