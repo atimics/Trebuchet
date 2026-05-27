@@ -220,11 +220,16 @@ jobs:
           fi
 
           # The six artifact filenames we hard-code into the website.
+          # Hyphens (not spaces) are used in the Windows names because
+          # electron-builder silently rewrites spaces to dots in NSIS
+          # and portable artifact names for URL-safety. Keeping hyphens
+          # in the package.json templates avoids that surprise rewrite
+          # and matches the macOS/Linux naming pattern.
           expected=(
             "Trebuchet-${version}-arm64.dmg"
             "Trebuchet-${version}-x64.dmg"
-            "Trebuchet Setup ${version}.exe"
-            "Trebuchet ${version} Portable.exe"
+            "Trebuchet-${version}-Setup.exe"
+            "Trebuchet-${version}-Portable.exe"
             "Trebuchet-${version}-x86_64.AppImage"
             "trebuchet-desktop_${version}_amd64.deb"
           )

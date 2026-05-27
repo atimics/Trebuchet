@@ -146,11 +146,11 @@
     },
 
     "nsis": {
-      "artifactName": "${productName} Setup ${version}.${ext}",
+      "artifactName": "${productName}-${version}-Setup.${ext}",
       "preCompressedFileExtensions": []
     },
     "portable": {
-      "artifactName": "${productName} ${version} Portable.${ext}"
+      "artifactName": "${productName}-${version}-Portable.${ext}"
     },
     "linux": {
       "target": ["AppImage"],
