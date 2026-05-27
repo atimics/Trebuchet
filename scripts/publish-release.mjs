@@ -7,6 +7,7 @@ import {
   collectReleaseBundle,
   isPrerelease,
   releaseTitle,
+  staleReleaseAssetNames,
   writeChecksumFile,
 } from './release-lib.mjs';
 
@@ -63,6 +64,12 @@ const releaseExists = spawnSync(ghCommand, ['release', 'view', tagName], {
 
 if (releaseExists) {
   run(['release', 'upload', tagName, ...releaseAssets, '--clobber']);
+
+  const releaseView = run(['release', 'view', tagName, '--json', 'assets'], { stdio: 'pipe' });
+  const existingAssets = JSON.parse(releaseView.stdout).assets || [];
+  for (const assetName of staleReleaseAssetNames(existingAssets, releaseAssets)) {
+    run(['release', 'delete-asset', tagName, assetName, '--yes']);
+  }
 
   const editArgs = ['release', 'edit', tagName, '--title', title, '--notes-file', notesFile, '--draft=false'];
   editArgs.push(prerelease ? '--prerelease' : '--prerelease=false');

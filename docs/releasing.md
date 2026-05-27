@@ -1,17 +1,25 @@
 # Releasing Trebuchet
 
-Tagged releases are built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) from a clean checkout using `npm ci`.
-After the desktop artifacts are published to GitHub Releases, the same workflow uploads the static [`website/`](../website) directory to the production site.
+Merges to `main` are versioned by [`.github/workflows/auto-release.yml`](../.github/workflows/auto-release.yml), which computes and pushes the next `v*` tag.
+Tagged releases are then built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) from a clean checkout using `npm ci`.
+After the desktop artifacts are published to GitHub Releases, the same workflow publishes the npm package to GitHub Packages and uploads the static [`website/`](../website) directory to the production site.
 
 ## Trigger
 
-Push a Git tag that starts with `v`, for example `v1.2.3`.
+Merge a pull request to `main`.
+
+By default, the automation increments the patch version. Add a `minor` label to the pull request to increment the minor version, or a `major` label to increment the major version. `major` wins if both labels are present.
+
+Pull requests run tests and Windows, Linux, and macOS arm64 package smoke builds only. The smoke builds run in parallel with tests and use `electron-builder --dir` instead of producing installer artifacts. Merges to `main` do not run the CI package matrix again; the auto-release workflow creates the tag and starts the full release build.
+
+The tag-driven workflow can still be run manually by pushing a Git tag that starts with `v`, for example `v1.2.3`.
 
 The workflow builds:
 
 - macOS arm64 DMG
 - macOS x64 DMG
 - Windows NSIS installer
+- Windows portable EXE
 - Linux AppImage
 - Linux deb
 
@@ -22,8 +30,8 @@ The workflow builds:
   - `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, or
   - `APPLE_KEYCHAIN`, `APPLE_KEYCHAIN_PROFILE`.
 - If the macOS credentials are absent, the workflow still builds macOS **unsigned test artifacts** and marks the release accordingly.
-- Windows artifacts are **signed** only when `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` are configured.
-- If the Windows credentials are absent, the workflow still builds Windows **unsigned test artifacts** and marks the release accordingly.
+- Windows installer and portable EXE artifacts are **signed** only when `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` are configured.
+- If the Windows credentials are absent, the workflow still builds Windows installer and portable EXE **unsigned test artifacts** and marks the release accordingly.
 - Linux AppImage and deb artifacts are built as **unsigned** packages.
 
 If any desktop artifact is published as an unsigned test artifact, the workflow marks the GitHub Release as a prerelease.
@@ -40,9 +48,13 @@ shasum -a 256 -c SHA256SUMS.txt
 
 The release notes also state which platform artifacts were signed, notarized, unsigned, or unsigned test artifacts.
 
+## GitHub Packages
+
+Each tagged release publishes `@anoversizedmoosewithsocks/trebuchet-desktop` to GitHub Packages with the same version as the Git tag. If the package version already exists during a rerun, the package publish step exits successfully because npm package versions are immutable.
+
 ## Repeatability
 
-The workflow updates an existing release for the same tag by re-uploading assets with `--clobber`, then rewriting the release notes. That keeps reruns on the same `v*` tag usable after a failed or partial run.
+The workflow updates an existing release for the same tag by re-uploading current assets, deleting stale assets, and rewriting the release notes. That keeps reruns on the same `v*` tag usable after a failed or partial run.
 
 ## Website publishing
 
@@ -55,8 +67,10 @@ Required secrets:
 
 Optional repository variables:
 
-- `FTP_HOST` (defaults to `makesometokens.com`)
+- `FTP_HOST` (defaults to `p1401.use1.mysecurecloudhost.com`, the provider hostname whose TLS certificate covers the FTP endpoint)
 - `FTP_PROTOCOL` (defaults to `ftp`)
 - `FTP_REMOTE_DIR` (defaults to `.`)
+
+Use the hosting provider's FTP hostname for `FTP_HOST`, not the public marketing domain. `makesometokens.com` serves the site, but its FTP TLS certificate is not issued for that name, so `lftp` rejects it during certificate verification.
 
 The deploy step uploads only newer files and does not delete remote files by default.

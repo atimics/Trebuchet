@@ -19,10 +19,10 @@ const TARGETS = {
   },
   windows: {
     label: 'Windows',
-    builderArgs: ['--win', 'nsis', '--publish=never'],
+    builderArgs: ['--win', 'nsis', 'portable', '--publish=never'],
     expectedFiles: [
-      { description: 'an NSIS installer', matches: (name) => name.endsWith('.exe') },
-      { description: 'Windows update metadata', matches: (name) => /^latest.*\.yml$/i.test(name) },
+      { description: 'an NSIS installer', matches: (name) => /\.exe$/i.test(name) && /\bSetup\b/i.test(name) },
+      { description: 'a portable Windows executable', matches: (name) => /\.exe$/i.test(name) && /\bPortable\b/i.test(name) },
     ],
   },
   linux: {
@@ -133,7 +133,6 @@ export function resolveReleaseBuild(target, env = process.env) {
       plan.builderArgs.push('-c.forceCodeSigning=true');
     } else {
       plan.trust = 'unsigned test artifact';
-      plan.builderArgs.push('-c.win.signExecutable=false');
     }
 
     return plan;
@@ -141,6 +140,14 @@ export function resolveReleaseBuild(target, env = process.env) {
 
   plan.trust = 'unsigned';
   return plan;
+}
+
+export function electronBuilderInvocation(builderArgs, platform = process.platform) {
+  return {
+    command: platform === 'win32' ? 'npm.cmd' : 'npm',
+    args: ['exec', 'electron-builder', '--', ...builderArgs],
+    shell: platform === 'win32',
+  };
 }
 
 export async function collectFiles(rootDir) {
@@ -214,6 +221,15 @@ export async function writeChecksumFile(outputFile, assets) {
   const body = `${lines.join('\n')}\n`;
   await writeFile(outputFile, body);
   return outputFile;
+}
+
+export function staleReleaseAssetNames(existingAssets, releaseAssets) {
+  const wantedNames = new Set(releaseAssets.map((asset) => path.basename(asset)));
+
+  return existingAssets
+    .map((asset) => (typeof asset === 'string' ? asset : asset?.name))
+    .filter((name) => typeof name === 'string' && name !== '' && !wantedNames.has(name))
+    .sort();
 }
 
 export function buildReleaseNotes(tagName, metadata) {

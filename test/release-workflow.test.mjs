@@ -2,7 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 
-import { buildReleaseNotes, resolveReleaseBuild } from '../scripts/release-lib.mjs';
+import { nextRelease, releaseTypeFromLabels } from '../scripts/auto-version.mjs';
+import {
+  buildReleaseNotes,
+  electronBuilderInvocation,
+  resolveReleaseBuild,
+  staleReleaseAssetNames,
+} from '../scripts/release-lib.mjs';
 
 const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
 
@@ -19,14 +25,77 @@ test('release workflow is tag-driven and publishes checksums', () => {
   assert.match(workflow, /name:\s+Publish Website/);
   assert.match(workflow, /FTP_LOGIN/);
   assert.match(workflow, /FTP_PASSWORD/);
+  assert.match(workflow, /p1401\.use1\.mysecurecloudhost\.com/);
   assert.match(workflow, /mirror -R --only-newer --verbose=2 website/);
+});
+
+test('ci only runs package smoke builds before release', () => {
+  const workflow = read('.github/workflows/ci.yml');
+
+  assert.match(workflow, /on:\s*\n\s+pull_request:\s*\n\s+workflow_dispatch:/);
+  assert.doesNotMatch(workflow, /\n\s+push:/);
+  assert.doesNotMatch(workflow, /needs:\s+test/);
+  assert.doesNotMatch(workflow, /macos-15-intel/);
+  assert.doesNotMatch(workflow, /Install Linux packaging dependencies/);
+  assert.match(workflow, /Build package smoke/);
+  assert.doesNotMatch(workflow, /Build release package/);
+  assert.doesNotMatch(workflow, /Upload build artifact/);
+});
+
+test('main merges automatically create patch, minor, or major release tags', () => {
+  const workflow = read('.github/workflows/auto-release.yml');
+
+  assert.match(workflow, /branches:\s*\n\s*-\s+main/);
+  assert.match(workflow, /actions:\s+write/);
+  assert.match(workflow, /pull-requests:\s+read/);
+  assert.match(workflow, /node scripts\/auto-version\.mjs/);
+  assert.match(workflow, /git tag -a "\$\{\{ steps\.next\.outputs\.tag \}\}"/);
+  assert.match(workflow, /gh workflow run release\.yml --ref "\$\{\{ steps\.next\.outputs\.tag \}\}"/);
+
+  assert.equal(releaseTypeFromLabels([]), 'patch');
+  assert.equal(releaseTypeFromLabels(['minor']), 'minor');
+  assert.equal(releaseTypeFromLabels(['minor', 'major']), 'major');
+  assert.deepEqual(nextRelease('1.0.0', [], []), {
+    releaseType: 'patch',
+    version: '1.0.1',
+    tag: 'v1.0.1',
+  });
+  assert.equal(nextRelease('1.2.3', ['v1.3.9'], ['minor']).version, '1.4.0');
+  assert.equal(nextRelease('1.2.3', ['v1.3.9'], ['major']).version, '2.0.0');
+});
+
+test('release workflow publishes the GitHub package for each tag', () => {
+  const workflow = read('.github/workflows/release.yml');
+  const pkg = JSON.parse(read('package.json'));
+
+  assert.equal(pkg.name, '@anoversizedmoosewithsocks/trebuchet-desktop');
+  assert.equal(pkg.publishConfig.registry, 'https://npm.pkg.github.com');
+  assert.equal(pkg.repository.url, 'git+https://github.com/AnOversizedMooseWithSocks/Trebuchet.git');
+  assert.equal(pkg.build.productName, 'Trebuchet');
+  assert.equal(pkg.build.executableName, 'Trebuchet');
+  assert.equal(pkg.build.publish, null);
+  assert.equal(pkg.build.nsis.artifactName, '${productName} Setup ${version}.${ext}');
+  assert.equal(pkg.build.linux.executableName, 'Trebuchet');
+  assert.equal(pkg.build.linux.artifactName, 'Trebuchet-${version}-${arch}.${ext}');
+  assert.equal(pkg.build.deb.packageName, 'trebuchet-desktop');
+  assert.equal(pkg.build.deb.artifactName, 'trebuchet-desktop_${version}_${arch}.${ext}');
+  assert.match(workflow, /packages:\s+write/);
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /npm version "\$\{GITHUB_REF_NAME#v\}" --no-git-tag-version/);
+  assert.match(workflow, /name:\s+Publish GitHub Package/);
+  assert.match(workflow, /registry-url:\s+https:\/\/npm\.pkg\.github\.com/);
+  assert.match(workflow, /npm publish/);
 });
 
 test('release docs explain trust states and verification', () => {
   const docs = read('docs/releasing.md');
 
+  assert.match(docs, /Merges to `main`/);
+  assert.match(docs, /`minor` label/);
+  assert.match(docs, /`major` label/);
   assert.match(docs, /signed and notarized/i);
   assert.match(docs, /unsigned test artifact/i);
+  assert.match(docs, /GitHub Packages/);
   assert.match(docs, /WIN_CSC_LINK/);
   assert.match(docs, /APPLE_API_KEY/);
   assert.match(docs, /SHA256SUMS\.txt/);
@@ -37,6 +106,19 @@ test('mac build uses a native icns app icon', () => {
 
   assert.equal(pkg.build.mac.icon, 'build/icon.icns');
   assert.equal(existsSync(new URL('../build/icon.icns', import.meta.url)), true);
+});
+
+test('windows release builds installer and portable executable', () => {
+  const pkg = JSON.parse(read('package.json'));
+  const plan = resolveReleaseBuild('windows', {});
+
+  assert.deepEqual(pkg.build.win.target, ['nsis', 'portable']);
+  assert.equal(pkg.build.portable.artifactName, '${productName} ${version} Portable.${ext}');
+  assert.deepEqual(plan.builderArgs.slice(0, 3), ['--win', 'nsis', 'portable']);
+  assert.equal(plan.builderArgs.some((arg) => arg.includes('signExecutable')), false);
+  assert.equal(plan.builderArgs.some((arg) => arg.includes('signAndEditExecutable')), false);
+  assert.equal(plan.expectedFiles.some((expected) => expected.matches('Trebuchet Setup 1.2.3.exe')), true);
+  assert.equal(plan.expectedFiles.some((expected) => expected.matches('Trebuchet 1.2.3 Portable.exe')), true);
 });
 
 test('release build planner enforces complete signing credentials', () => {
@@ -61,6 +143,13 @@ test('release build planner enforces complete signing credentials', () => {
     resolveReleaseBuild('windows', {
       WIN_CSC_LINK: 'base64-pfx',
       WIN_CSC_KEY_PASSWORD: 'secret',
+    }).builderArgs.includes('-c.forceCodeSigning=true'),
+    true,
+  );
+  assert.equal(
+    resolveReleaseBuild('windows', {
+      WIN_CSC_LINK: 'base64-pfx',
+      WIN_CSC_KEY_PASSWORD: 'secret',
     }).trust,
     'signed',
   );
@@ -70,6 +159,19 @@ test('release build planner enforces complete signing credentials', () => {
   );
 
   assert.equal(resolveReleaseBuild('linux', {}).trust, 'unsigned');
+});
+
+test('release builder invokes npm through a shell on Windows', () => {
+  assert.deepEqual(electronBuilderInvocation(['--win'], 'linux'), {
+    command: 'npm',
+    args: ['exec', 'electron-builder', '--', '--win'],
+    shell: false,
+  });
+  assert.deepEqual(electronBuilderInvocation(['--win'], 'win32'), {
+    command: 'npm.cmd',
+    args: ['exec', 'electron-builder', '--', '--win'],
+    shell: true,
+  });
 });
 
 test('release notes call out prerelease trust gaps and checksum verification', () => {
@@ -93,6 +195,24 @@ test('release notes call out prerelease trust gaps and checksum verification', (
   assert.match(notes, /signed/);
   assert.match(notes, /SHA256SUMS\.txt/);
   assert.match(notes, /shasum -a 256 -c SHA256SUMS\.txt/);
+});
+
+test('publish reruns remove release assets that are no longer produced', () => {
+  const staleAssets = staleReleaseAssetNames(
+    [
+      { name: 'Trebuchet Setup 1.2.3.exe' },
+      { name: 'Trebuchet 1.2.3 Portable.exe' },
+      { name: 'Trebuchet-1.2.3.zip' },
+      { name: 'SHA256SUMS.txt' },
+    ],
+    [
+      '/tmp/release-assets/windows/Trebuchet Setup 1.2.3.exe',
+      '/tmp/release-assets/windows/Trebuchet 1.2.3 Portable.exe',
+      '/tmp/release-assets/SHA256SUMS.txt',
+    ],
+  );
+
+  assert.deepEqual(staleAssets, ['Trebuchet-1.2.3.zip']);
 });
 
 test('website download CTA points to GitHub Releases instead of committed build artifacts', () => {
