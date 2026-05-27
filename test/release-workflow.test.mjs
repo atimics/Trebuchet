@@ -33,6 +33,9 @@ test('ci only runs package smoke builds before release', () => {
 
   assert.match(workflow, /on:\s*\n\s+pull_request:\s*\n\s+workflow_dispatch:/);
   assert.doesNotMatch(workflow, /\n\s+push:/);
+  assert.doesNotMatch(workflow, /needs:\s+test/);
+  assert.doesNotMatch(workflow, /macos-15-intel/);
+  assert.doesNotMatch(workflow, /Install Linux packaging dependencies/);
   assert.match(workflow, /Build package smoke/);
   assert.doesNotMatch(workflow, /Build release package/);
   assert.doesNotMatch(workflow, /Upload build artifact/);

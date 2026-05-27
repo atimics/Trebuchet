@@ -10,7 +10,7 @@ Merge a pull request to `main`.
 
 By default, the automation increments the patch version. Add a `minor` label to the pull request to increment the minor version, or a `major` label to increment the major version. `major` wins if both labels are present.
 
-Pull requests run tests and package smoke builds only. Merges to `main` do not run the CI package matrix again; the auto-release workflow creates the tag and starts the full release build.
+Pull requests run tests and Windows, Linux, and macOS arm64 package smoke builds only. The smoke builds run in parallel with tests and use `electron-builder --dir` instead of producing installer artifacts. Merges to `main` do not run the CI package matrix again; the auto-release workflow creates the tag and starts the full release build.
 
 The tag-driven workflow can still be run manually by pushing a Git tag that starts with `v`, for example `v1.2.3`.
 
