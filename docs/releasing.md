@@ -67,8 +67,10 @@ Required secrets:
 
 Optional repository variables:
 
-- `FTP_HOST` (defaults to `makesometokens.com`)
+- `FTP_HOST` (defaults to `p1401.use1.mysecurecloudhost.com`, the provider hostname whose TLS certificate covers the FTP endpoint)
 - `FTP_PROTOCOL` (defaults to `ftp`)
 - `FTP_REMOTE_DIR` (defaults to `.`)
+
+Use the hosting provider's FTP hostname for `FTP_HOST`, not the public marketing domain. `makesometokens.com` serves the site, but its FTP TLS certificate is not issued for that name, so `lftp` rejects it during certificate verification.
 
 The deploy step uploads only newer files and does not delete remote files by default.

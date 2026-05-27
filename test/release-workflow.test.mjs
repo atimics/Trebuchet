@@ -25,6 +25,7 @@ test('release workflow is tag-driven and publishes checksums', () => {
   assert.match(workflow, /name:\s+Publish Website/);
   assert.match(workflow, /FTP_LOGIN/);
   assert.match(workflow, /FTP_PASSWORD/);
+  assert.match(workflow, /p1401\.use1\.mysecurecloudhost\.com/);
   assert.match(workflow, /mirror -R --only-newer --verbose=2 website/);
 });
 
