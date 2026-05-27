@@ -108,7 +108,9 @@ jobs:
 
       - name: Build release package
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
-        run: ${{ matrix.release_command }}
+  	env:
+    		GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  	run: ${{ matrix.release_command }}
 
       - name: Upload build artifact
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
