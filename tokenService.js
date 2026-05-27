@@ -228,8 +228,18 @@ export async function createTokenWithMetaplex({
   totalSupply,
   logoBase64,
   quoteMints,
+  onProgress,
 }) {
   try {
+    const progress = (event) => {
+      if (!onProgress) return;
+      try {
+        onProgress(event);
+      } catch (e) {
+        console.warn('Token progress callback failed:', e.message);
+      }
+    };
+
     console.log('Starting token creation...');
     
     // Convert secret key array back to Keypair
@@ -270,10 +280,12 @@ export async function createTokenWithMetaplex({
         const [uploadedImageUri] = await umi.uploader.upload([logoFile]);
         imageUri = uploadedImageUri;
         console.log('Logo uploaded:', imageUri);
+        progress({ stage: 'logo_uploaded', imageUri });
       } catch (uploadError) {
         console.error('Error uploading logo:', uploadError);
         // Continue without logo if upload fails
         imageUri = 'https://arweave.net/placeholder-token-image';
+        progress({ stage: 'logo_upload_failed', error: uploadError.message });
       }
     } else {
       imageUri = 'https://arweave.net/placeholder-token-image';
@@ -291,6 +303,7 @@ export async function createTokenWithMetaplex({
     
     const metadataUri = await umi.uploader.uploadJson(metadata);
     console.log('Metadata uploaded:', metadataUri);
+    progress({ stage: 'metadata_uploaded', metadataUri, imageUri });
     
     // Search for a keypair whose pubkey sorts smaller than every quote
     // mint, so the launched token becomes mintA in every pool. Returns
@@ -315,6 +328,7 @@ export async function createTokenWithMetaplex({
       TOKEN_PROGRAM_ID
     );
     console.log('Mint created:', mint.toString());
+    progress({ stage: 'mint_created', tokenMint: mint.toString() });
     
     // Now create the metadata account for the existing mint
     console.log('Creating metadata account...');
@@ -335,6 +349,7 @@ export async function createTokenWithMetaplex({
     }).sendAndConfirm(umi);
     
     console.log('Metadata account created successfully');
+    progress({ stage: 'metadata_account_created', tokenMint: mint.toString(), metadataUri });
     
     // Small delay to ensure metadata account is fully propagated
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -371,6 +386,7 @@ export async function createTokenWithMetaplex({
     );
     
     console.log('Mint transaction signature:', mintSig);
+    progress({ stage: 'supply_minted', tokenMint: mint.toString(), txId: mintSig });
     
     // Wait for confirmation
     await connection.confirmTransaction(mintSig, 'finalized');
@@ -394,6 +410,11 @@ export async function createTokenWithMetaplex({
         TOKEN_PROGRAM_ID
       );
       console.log('Mint authority renounced:', renounceMintAuthSig);
+      progress({
+        stage: 'mint_authority_revoked',
+        tokenMint: mint.toString(),
+        txId: renounceMintAuthSig,
+      });
       await connection.confirmTransaction(renounceMintAuthSig, 'finalized');
     } catch (error) {
       console.error('Error renouncing mint authority:', error);
@@ -430,6 +451,7 @@ export async function createTokenWithMetaplex({
       
       console.log('Update authority successfully revoked (set to System Program)!');
       metadataUpdateSuccess = true;
+      progress({ stage: 'metadata_update_authority_revoked', tokenMint: mint.toString() });
       
       // Wait a moment to ensure the transaction is fully processed
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -445,6 +467,7 @@ export async function createTokenWithMetaplex({
         }).sendAndConfirm(umi);
         console.log('Metadata made immutable');
         metadataImmutableSuccess = true;
+        progress({ stage: 'metadata_made_immutable', tokenMint: mint.toString() });
       } catch (immutableError) {
         // This is expected to fail, but the important part (revoking authority) is done
         console.log('Could not make metadata immutable (expected after authority revocation)');
@@ -487,6 +510,11 @@ export async function createTokenWithMetaplex({
         console.log('Update authority revoked and metadata made immutable!');
         metadataUpdateSuccess = true;
         metadataImmutableSuccess = true;
+        progress({
+          stage: 'metadata_update_authority_revoked',
+          tokenMint: mint.toString(),
+          immutable: true,
+        });
         
       } catch (altError) {
         console.error('Alternative approach also failed:', altError.message);
@@ -513,6 +541,7 @@ export async function createTokenWithMetaplex({
           console.log('Successfully revoked update authority in final attempt!');
           console.log('Transaction signature:', updateAuthResult.signature);
           metadataUpdateSuccess = true;
+          progress({ stage: 'metadata_update_authority_revoked', tokenMint: mint.toString() });
           
         } catch (finalError) {
           console.error('Final attempt failed:', finalError.message);
@@ -541,6 +570,14 @@ export async function createTokenWithMetaplex({
       console.warn('The token is still functional but metadata may remain updatable.');
       console.warn('You can verify the token\'s safety status on Solscan.');
     }
+    progress({
+      stage: 'token_safety_verified',
+      tokenMint: mint.toString(),
+      mintAuthorityRenounced: true,
+      freezeAuthorityDisabled: true,
+      metadataUpdateAuthorityRevoked: metadataUpdateSuccess,
+      metadataImmutable: metadataImmutableSuccess,
+    });
     
     // Verify the balance
     let retries = 3;

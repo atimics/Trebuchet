@@ -1319,6 +1319,28 @@
             </div>
 
             <!-- ============================================================ -->
+            <!-- Launch-stage recovery journal.                               -->
+            <!--                                                               -->
+            <!-- Non-secret record of previous launches that reached a wallet, -->
+            <!-- token, pool, or transfer stage but did not complete cleanly.  -->
+            <!-- The pending-wallet panel below is still the source of secret  -->
+            <!-- recovery material.                                            -->
+            <!-- ============================================================ -->
+            <div class="notification is-warning is-light hidden mb-4" id="launchJournalsPanel">
+                <h5 class="title is-6 mb-2">
+                    <span class="icon"><i class="fas fa-history"></i></span>
+                    Incomplete launch journals from previous sessions
+                </h5>
+                <p class="is-size-7 mb-3">
+                    These entries show what Trebuchet recorded before a previous
+                    launch stopped. They do not contain private keys. Use the
+                    matching recoverable wallet entry below to recover or sweep
+                    assets, then dismiss the journal when you've handled it.
+                </p>
+                <div id="launchJournalsList"></div>
+            </div>
+
+            <!-- ============================================================ -->
             <!-- Pending wallet recovery panel.                                -->
             <!--                                                               -->
             <!-- Shown when the server reports pending wallets — typically     -->
