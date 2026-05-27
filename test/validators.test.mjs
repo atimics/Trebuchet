@@ -22,6 +22,13 @@ test('rejects token metadata fields that exceed on-chain limits', () => {
   assert.throws(() => normalizeTokenDescription('x'.repeat(1001)), /1000 UTF-8 bytes/);
 });
 
+test('enforces metadata limits by UTF-8 byte length, not character count', () => {
+  assert.equal(normalizeTokenName('é'.repeat(16)), 'é'.repeat(16));
+  assert.throws(() => normalizeTokenName('é'.repeat(17)), /32 UTF-8 bytes/);
+  assert.equal(normalizeTokenSymbol('é'.repeat(5)), 'é'.repeat(5));
+  assert.throws(() => normalizeTokenSymbol('é'.repeat(6)), /10 UTF-8 bytes/);
+});
+
 test('keeps token supply as an integer string and strips commas', () => {
   assert.equal(normalizeWholeTokenSupply('1,000,000,000'), '1000000000');
 });
@@ -30,6 +37,14 @@ test('rejects invalid and u64-overflowing token supplies', () => {
   assert.throws(() => normalizeWholeTokenSupply('0'), /positive whole number/);
   assert.throws(() => normalizeWholeTokenSupply('1.5'), /positive whole number/);
   assert.throws(() => normalizeWholeTokenSupply('18446744074'), /too large/);
+});
+
+test('normalizes maximum SPL supply at alternate decimal precision', () => {
+  assert.equal(normalizeWholeTokenSupply('18446744073709551615', 0), '18446744073709551615');
+  assert.throws(
+    () => normalizeWholeTokenSupply('18446744073709551616', 0),
+    /too large/,
+  );
 });
 
 test('sniffs uploaded logo image bytes instead of trusting MIME labels', () => {
@@ -45,4 +60,11 @@ test('sniffs uploaded logo image bytes instead of trusting MIME labels', () => {
   assert.equal(detectLogoImageMime(jpeg), 'image/jpeg');
   assert.equal(detectLogoImageMime(html), null);
   assert.throws(() => normalizeLogoImageMime(html), /PNG or JPG/);
+});
+
+test('rejects non-buffer and truncated logo image inputs', () => {
+  assert.equal(detectLogoImageMime(null), null);
+  assert.equal(detectLogoImageMime('not bytes'), null);
+  assert.equal(detectLogoImageMime(Buffer.from([0x89, 0x50, 0x4e, 0x47])), null);
+  assert.equal(detectLogoImageMime(Buffer.from([0xff, 0xd8])), null);
 });

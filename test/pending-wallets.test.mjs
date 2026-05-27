@@ -1,0 +1,134 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import * as secretStore from '../secretStore.js';
+
+let importCounter = 0;
+
+function makeTempConfigDir(t) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'trebuchet-pending-wallets-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+async function importFreshPendingWallets(configDir) {
+  process.env.TREBUCHET_CONFIG_DIR = configDir;
+  return import(new URL(`../pendingWallets.js?case=${++importCounter}`, import.meta.url));
+}
+
+function pendingWalletFile(configDir) {
+  return path.join(configDir, 'pendingWallets.json');
+}
+
+async function withMutedConsole(fn) {
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  console.log = () => {};
+  console.warn = () => {};
+  try {
+    return await fn();
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+}
+
+function fakeSafeStorage() {
+  return {
+    isEncryptionAvailable: () => true,
+    encryptString: (plaintext) => Buffer.from(`wrapped:${plaintext}`, 'utf8'),
+    decryptString: (buffer) => {
+      const text = buffer.toString('utf8');
+      if (!text.startsWith('wrapped:')) throw new Error('bad ciphertext');
+      return text.slice('wrapped:'.length);
+    },
+  };
+}
+
+test('adds pending wallets idempotently and removes them', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    secretStore.setSafeStorage(null);
+    const pendingWallets = await importFreshPendingWallets(configDir);
+
+    pendingWallets.add('Wallet1111111111111111111111111111111111', [1, 2, 3], 'alpha beta');
+    pendingWallets.add('Wallet1111111111111111111111111111111111', [9, 9, 9], 'changed');
+
+    const list = pendingWallets.list();
+    assert.deepEqual(list, [
+      {
+        publicKey: 'Wallet1111111111111111111111111111111111',
+        createdAt: list[0].createdAt,
+        secretKey: [1, 2, 3],
+        mnemonic: 'alpha beta',
+      },
+    ]);
+
+    const disk = JSON.parse(readFileSync(pendingWalletFile(configDir), 'utf8'));
+    assert.equal(disk.length, 1);
+    assert.equal(disk[0].secretKey, undefined);
+    assert.equal(disk[0].mnemonic, undefined);
+    assert.equal(disk[0].secretKeyEnc, 'plain:[1,2,3]');
+    assert.equal(disk[0].mnemonicEnc, 'plain:alpha beta');
+
+    pendingWallets.remove('Wallet1111111111111111111111111111111111');
+    assert.deepEqual(pendingWallets.list(), []);
+  });
+});
+
+test('migrates legacy plaintext entries when encryption is available', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    secretStore.setSafeStorage(fakeSafeStorage());
+    writeFileSync(
+      pendingWalletFile(configDir),
+      JSON.stringify([
+        {
+          publicKey: 'Legacy111111111111111111111111111111111',
+          createdAt: '2026-01-02T03:04:05.000Z',
+          secretKey: [4, 5, 6],
+          mnemonic: 'old seed words',
+        },
+      ]) + '\n',
+    );
+
+    const pendingWallets = await importFreshPendingWallets(configDir);
+
+    assert.deepEqual(pendingWallets.list(), [
+      {
+        publicKey: 'Legacy111111111111111111111111111111111',
+        createdAt: '2026-01-02T03:04:05.000Z',
+        secretKey: [4, 5, 6],
+        mnemonic: 'old seed words',
+      },
+    ]);
+
+    const disk = JSON.parse(readFileSync(pendingWalletFile(configDir), 'utf8'));
+    assert.equal(disk[0].secretKey, undefined);
+    assert.equal(disk[0].mnemonic, undefined);
+    assert.match(disk[0].secretKeyEnc, /^enc:/);
+    assert.match(disk[0].mnemonicEnc, /^enc:/);
+  });
+});
+
+test('treats malformed pending-wallet files as empty and non-fatal', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    secretStore.setSafeStorage(null);
+    writeFileSync(pendingWalletFile(configDir), '{not json');
+
+    const pendingWallets = await importFreshPendingWallets(configDir);
+
+    assert.deepEqual(pendingWallets.list(), []);
+    assert.equal(existsSync(pendingWalletFile(configDir)), true);
+  });
+});

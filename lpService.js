@@ -60,6 +60,12 @@ import {
 } from '@solana/spl-token';
 import { transferTokenWithProgram } from './walletHelpers.js';
 import { discoverRaydiumRoute } from './swapService.js';
+import {
+  computeBootstrapTicks,
+  computeLadderTicks,
+  computeLadderTicksManual,
+  computeMainTicks,
+} from './lpMath.js';
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
 import { getRpcUrl } from './rpcConfig.js';
@@ -72,11 +78,6 @@ import { getRpcUrl } from './rpcConfig.js';
 // file plus runtime UI selection). We read it fresh inside initSdk() so that
 // changing the active RPC mid-session takes effect on the next launch.
 
-// Raydium CLMM tick boundaries (from raydium-clmm/libraries/tick_math.rs).
-// Tick range: -443636 to +443636. We snap to multiples of tickSpacing.
-const MIN_TICK = -443636;
-const MAX_TICK = 443636;
-
 // Default Raydium AmmConfig index. Index 3 = 1% fee, tickSpacing 120 — the
 // "exotic" tier. Matches the pattern used in past manual launches. Other
 // tiers are available at runtime via raydium.api.getClmmConfigs():
@@ -85,35 +86,6 @@ const MAX_TICK = 443636;
 //   index 2 = 0.01% fee, tickSpacing 1    (stables)
 //   index 3 = 1.00% fee, tickSpacing 120  (exotic / new tokens)  <-- default
 const DEFAULT_AMM_CONFIG_INDEX = 3;
-
-// Bootstrap geometry for MINIMAL mode: target a fixed percentage width
-// around current price, consistent across fee tiers. The old form (a
-// fixed number of tickSpacings — 10 each side) gave wildly different
-// widths depending on which AMM config the pool used: ≈±12.7% on a 1%
-// pool but only ≈±1% on a 0.05% pool, because tickSpacing varies by
-// tier. The percentage form normalizes the drift tolerance — the same
-// minimal bootstrap absorbs the same percentage price movement no
-// matter which tier the user picks.
-//
-// 30% total width (≈±15% each side) is the chosen default:
-//   - Wide enough to absorb inter-phase tick drift that motivated the
-//     earlier widening from 1*tickSpacing to 10*tickSpacing
-//   - Narrow enough that the liquidity still looks concentrated near
-//     launch price rather than spread across the curve (custom-mode
-//     bootstrap is the right tool when the user actually wants depth
-//     at every price level)
-//   - Predictable: minimal bootstrap on a 0.05% stable pool now has
-//     the same drift tolerance as one on a 1% memecoin pool, instead
-//     of being 12x narrower
-//
-// Implementation note on "±15%": we interpret this multiplicatively
-// (tick-symmetric), so the upper bound is currentPrice × 1.15 and the
-// lower bound is currentPrice / 1.15 ≈ currentPrice × 0.870. In linear
-// terms that's +15% / -13%. The asymmetry is a CLMM property, not a
-// choice — multiplicative symmetry is how tick ranges naturally work,
-// and a price-symmetric range would require asymmetric tickLower/Upper
-// which doesn't materially improve drift tolerance.
-const MINIMAL_BOOTSTRAP_WIDTH_PCT = 30;
 
 // Bootstrap funding: 1 whole token of each side. Just enough to make the
 // pool tradable; intentionally negligible value.
@@ -589,249 +561,6 @@ async function resolveQuoteToken(connection, spec, overrides = {}) {
     isToken2022: compat.isToken2022,
     extensions: compat.extensions,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Tick math
-// ---------------------------------------------------------------------------
-
-function floorToSpacing(tick, tickSpacing) {
-  return Math.floor(tick / tickSpacing) * tickSpacing;
-}
-
-function ceilToSpacing(tick, tickSpacing) {
-  return Math.ceil(tick / tickSpacing) * tickSpacing;
-}
-
-/**
- * Compute the main position's tick range, asymmetric based on which side the
- * launched token sorted to. The goal is always: position starts at 100%
- * launched-token, holds it through the range.
- *
- * When launched=mintA: range goes ABOVE current tick (currentTick<tickLower
- *   means 100% mintA = 100% launched). Conversion happens as price RISES
- *   into range (= launched appreciating in quote terms).
- *
- * When launched=mintB: range goes BELOW current tick (currentTick>tickUpper
- *   means 100% mintB = 100% launched). Conversion happens as price DROPS
- *   into range (= absorbing buy demand on dips). The deposit math is
- *   identical but the economic mechanic differs.
- */
-function computeMainTicks({ currentTick, tickSpacing, launchedIsMintA }) {
-  const maxAligned = floorToSpacing(MAX_TICK, tickSpacing);
-  const minAligned = ceilToSpacing(MIN_TICK, tickSpacing);
-
-  if (launchedIsMintA) {
-    return {
-      tickLower: ceilToSpacing(currentTick + 1, tickSpacing),
-      tickUpper: maxAligned,
-    };
-  } else {
-    return {
-      tickLower: minAligned,
-      tickUpper: floorToSpacing(currentTick - 1, tickSpacing),
-    };
-  }
-}
-
-/**
- * Compute the bootstrap position's tick range based on mode.
- *
- * 'minimal' — fixed percentage-width band straddling currentTick.
- *   Holds both tokens when current price is in range; goes single-sided
- *   if drift pushes price past either edge. The width is set by
- *   MINIMAL_BOOTSTRAP_WIDTH_PCT (30% total ≈ ±15% each side), then
- *   snapped UP to the next tickSpacing multiple so the actual range
- *   is at least as wide as requested. Round-up matters: rounding down
- *   could pinch the range below the drift tolerance we deliberately
- *   sized for.
- *
- * 'custom'  — full range, MIN_TICK..MAX_TICK aligned to tickSpacing.
- *   Used when the user has opted in to providing meaningful starting
- *   liquidity ("support" or "depth"). Spreads liquidity across the entire
- *   price curve so the position never goes single-sided regardless of how
- *   far the price moves. Less concentrated than minimal, but the trade-off
- *   makes sense for a user-funded support position: drift tolerance is
- *   absolute, and the deposited capital backs the pool at every price
- *   level rather than just near launch.
- */
-function computeBootstrapTicks({ currentTick, tickSpacing, mode }) {
-  if (mode === 'custom') {
-    return {
-      tickLower: ceilToSpacing(MIN_TICK, tickSpacing),
-      tickUpper: floorToSpacing(MAX_TICK, tickSpacing),
-    };
-  }
-  // Minimal mode: convert percentage width to tick offset.
-  //
-  // CLMM tick ↔ price relation: price = 1.0001^tick.
-  // For a multiplicative half-width factor F (e.g. 1.15 for ±15%):
-  //   ticksEachSide_ideal = ln(F) / ln(1.0001)
-  // Round up to the nearest tickSpacing multiple so we don't accidentally
-  // narrow below the configured drift tolerance — landing slightly wider
-  // than 30% is safer than slightly narrower.
-  const halfWidthFactor = 1 + MINIMAL_BOOTSTRAP_WIDTH_PCT / 200; // 30/2/100 = 0.15
-  const idealTicks = Math.log(halfWidthFactor) / Math.log(1.0001);
-  const ticksEachSide = Math.ceil(idealTicks / tickSpacing) * tickSpacing;
-  const center = floorToSpacing(currentTick, tickSpacing);
-  return {
-    tickLower: center - ticksEachSide,
-    tickUpper: center + ticksEachSide,
-  };
-}
-
-/**
- * Compute the tick ranges for a ladder of N single-sided positions starting
- * just above currentTick, log-equally spaced up to ceilingMultiplier × launch
- * price, with equal-width gaps between bands.
- *
- * The structure of the returned array is N bands ordered low-to-high. Each
- * band has tickLower/tickUpper snapped to tickSpacing — ceilToSpacing for the
- * lower bound (next valid tick at or above) and floorToSpacing for the upper
- * (next valid tick at or below), giving a slightly-narrower-than-ideal but
- * always-valid band.
- *
- * Math:
- *   total_log_span = ln(ceilingMultiplier)
- *   per_unit_log   = total_log_span / (2N - 1)   // N bands + (N-1) gaps
- *
- *   band i (0-indexed):
- *     ideal_log_lower = i × 2 × per_unit_log   // i bands + i gaps below
- *     ideal_log_upper = ideal_log_lower + per_unit_log
- *     bandLowerTick   = launchTick + (ideal_log_lower / ln(1.0001))
- *     bandUpperTick   = launchTick + (ideal_log_upper / ln(1.0001))
- *
- * launchTick is currentTick + 1*tickSpacing — same convention as
- * computeMainTicks for the wide single-sided position, so a band's lower
- * is always at or above the wide's lower. Positions overlap in price space
- * but the SDK doesn't care; liquidity from multiple positions just adds.
- *
- * If a band's tickUpper would exceed MAX_TICK (extreme launchTick + ceiling),
- * we clamp it to floorToSpacing(MAX_TICK, tickSpacing). The last band's
- * tickUpper effectively caps the ladder regardless of the configured ceiling.
- *
- * Note on direction: when launched sorted to mintB (less common), the main
- * positions go BELOW current tick instead of above. The ladder mirrors
- * this — the orchestrator inverts the offsets so each band sits at the
- * right side of current tick for the mintB case.
- */
-function computeLadderTicks({
-  currentTick,
-  tickSpacing,
-  bandCount,
-  ceilingMultiplier,
-  launchedIsMintA,
-}) {
-  // Launch tick: one tickSpacing above (mintA) or below (mintB) current.
-  // Matches computeMainTicks's asymmetric placement for single-sided
-  // positions in the launched token.
-  const totalLogSpan = Math.log(ceilingMultiplier);
-  const perUnitLog = totalLogSpan / (2 * bandCount - 1);
-  const logBase = Math.log(1.0001);
-  const perUnitTicks = perUnitLog / logBase;
-
-  const minAlignedLower = ceilToSpacing(MIN_TICK, tickSpacing);
-  const maxAlignedUpper = floorToSpacing(MAX_TICK, tickSpacing);
-
-  const bands = [];
-  for (let i = 0; i < bandCount; i++) {
-    const idealLowerOffset = 2 * i * perUnitTicks;
-    const idealUpperOffset = (2 * i + 1) * perUnitTicks;
-
-    let tickLower;
-    let tickUpper;
-    if (launchedIsMintA) {
-      // Launched is mintA: price rises as token consumed; ladder extends
-      // ABOVE current tick. Lower bound is the band's "near" edge.
-      const launchTick = currentTick + tickSpacing;
-      tickLower = Math.min(
-        ceilToSpacing(launchTick + idealLowerOffset, tickSpacing),
-        maxAlignedUpper - tickSpacing,
-      );
-      tickUpper = Math.min(
-        floorToSpacing(launchTick + idealUpperOffset, tickSpacing),
-        maxAlignedUpper,
-      );
-    } else {
-      // Launched is mintB: price falls (in mintA-quoted terms) as token
-      // consumed; ladder extends BELOW current tick. Lower bound is the
-      // band's "far" edge, upper bound is near current. Same single-
-      // sided property in the launched token.
-      const launchTick = currentTick - tickSpacing;
-      tickUpper = Math.max(
-        floorToSpacing(launchTick - idealLowerOffset, tickSpacing),
-        minAlignedLower + tickSpacing,
-      );
-      tickLower = Math.max(
-        ceilToSpacing(launchTick - idealUpperOffset, tickSpacing),
-        minAlignedLower,
-      );
-    }
-    // Defensive: if rounding squeezed the band to nothing, expand it
-    // by one tickSpacing. Happens only at extreme MIN/MAX_TICK edges.
-    const finalUpper = tickUpper > tickLower ? tickUpper : tickLower + tickSpacing;
-    bands.push({ tickLower, tickUpper: finalUpper });
-  }
-  return bands;
-}
-
-/**
- * Compute tick ranges for an explicit list of bands (manual ladder mode).
- *
- * Each input band has lowerMultiplier and upperMultiplier relative to
- * launch price. We convert those to tick offsets via log_1.0001 and
- * snap to tickSpacing. Same launchTick convention as the simple-mode
- * computeLadderTicks (one tickSpacing above/below currentTick).
- *
- * Unlike simple mode where each band has the same supplyPercent (the
- * total / N), manual bands have individual supplyPercent values that
- * the caller passes through separately. This function only handles
- * the tick math.
- */
-function computeLadderTicksManual({
-  currentTick,
-  tickSpacing,
-  bands,
-  launchedIsMintA,
-}) {
-  const logBase = Math.log(1.0001);
-  const minAlignedLower = ceilToSpacing(MIN_TICK, tickSpacing);
-  const maxAlignedUpper = floorToSpacing(MAX_TICK, tickSpacing);
-  const result = [];
-  for (const b of bands) {
-    const lowerLogOffset = Math.log(Number(b.lowerMultiplier)) / logBase;
-    const upperLogOffset = Math.log(Number(b.upperMultiplier)) / logBase;
-    let tickLower;
-    let tickUpper;
-    if (launchedIsMintA) {
-      const launchTick = currentTick + tickSpacing;
-      tickLower = Math.min(
-        ceilToSpacing(launchTick + lowerLogOffset, tickSpacing),
-        maxAlignedUpper - tickSpacing,
-      );
-      tickUpper = Math.min(
-        floorToSpacing(launchTick + upperLogOffset, tickSpacing),
-        maxAlignedUpper,
-      );
-    } else {
-      // Mirror direction: price goes DOWN for the launched token in
-      // mintA-quoted terms, so bands extend BELOW currentTick. The
-      // multiplier still represents "price moves N× away from launch"
-      // — we just convert the direction.
-      const launchTick = currentTick - tickSpacing;
-      tickUpper = Math.max(
-        floorToSpacing(launchTick - lowerLogOffset, tickSpacing),
-        minAlignedLower + tickSpacing,
-      );
-      tickLower = Math.max(
-        ceilToSpacing(launchTick - upperLogOffset, tickSpacing),
-        minAlignedLower,
-      );
-    }
-    const finalUpper = tickUpper > tickLower ? tickUpper : tickLower + tickSpacing;
-    result.push({ tickLower, tickUpper: finalUpper });
-  }
-  return result;
 }
 
 /**
