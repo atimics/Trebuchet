@@ -1,11 +1,16 @@
 # Releasing Trebuchet
 
-Tagged releases are built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) from a clean checkout using `npm ci`.
-After the desktop artifacts are published to GitHub Releases, the same workflow uploads the static [`website/`](../website) directory to the production site.
+Merges to `main` are versioned by [`.github/workflows/auto-release.yml`](../.github/workflows/auto-release.yml), which computes and pushes the next `v*` tag.
+Tagged releases are then built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) from a clean checkout using `npm ci`.
+After the desktop artifacts are published to GitHub Releases, the same workflow publishes the npm package to GitHub Packages and uploads the static [`website/`](../website) directory to the production site.
 
 ## Trigger
 
-Push a Git tag that starts with `v`, for example `v1.2.3`.
+Merge a pull request to `main`.
+
+By default, the automation increments the patch version. Add a `minor` label to the pull request to increment the minor version, or a `major` label to increment the major version. `major` wins if both labels are present.
+
+The tag-driven workflow can still be run manually by pushing a Git tag that starts with `v`, for example `v1.2.3`.
 
 The workflow builds:
 
@@ -41,9 +46,13 @@ shasum -a 256 -c SHA256SUMS.txt
 
 The release notes also state which platform artifacts were signed, notarized, unsigned, or unsigned test artifacts.
 
+## GitHub Packages
+
+Each tagged release publishes `@anoversizedmoosewithsocks/trebuchet-desktop` to GitHub Packages with the same version as the Git tag. If the package version already exists during a rerun, the package publish step exits successfully because npm package versions are immutable.
+
 ## Repeatability
 
-The workflow updates an existing release for the same tag by re-uploading assets with `--clobber`, then rewriting the release notes. That keeps reruns on the same `v*` tag usable after a failed or partial run.
+The workflow updates an existing release for the same tag by re-uploading current assets, deleting stale assets, and rewriting the release notes. That keeps reruns on the same `v*` tag usable after a failed or partial run.
 
 ## Website publishing
 

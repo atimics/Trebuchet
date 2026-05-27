@@ -16,7 +16,8 @@ charging launch fees, or holding your liquidity hostage.
 Tagged GitHub releases are built from a clean checkout in GitHub Actions.
 Each release includes `SHA256SUMS.txt`, and the release notes state which
 desktop artifacts were signed, notarized, unsigned, or published as
-unsigned test artifacts. See [docs/releasing.md](docs/releasing.md).
+unsigned test artifacts. Merges to `main` automatically create the next
+release and publish the GitHub Package. See [docs/releasing.md](docs/releasing.md).
 
 ---
 

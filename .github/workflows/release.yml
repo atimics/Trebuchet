@@ -4,9 +4,11 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -77,6 +79,15 @@ jobs:
           node-version: 22.12.0
           cache: npm
 
+      - name: Apply release version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" != v* ]]; then
+            echo "Release workflow must run from a v* tag."
+            exit 1
+          fi
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+
       - name: Restore Electron caches
         uses: actions/cache@v5
         with:
@@ -130,6 +141,48 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TREBUCHET_RELEASE_ASSET_DIR: release-assets
         run: node scripts/publish-release.mjs
+
+  package:
+    name: Publish GitHub Package
+    needs: publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          registry-url: https://npm.pkg.github.com
+          scope: '@anoversizedmoosewithsocks'
+
+      - name: Apply release version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" != v* ]]; then
+            echo "Release workflow must run from a v* tag."
+            exit 1
+          fi
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Publish npm package
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          package_name="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).name")"
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+
+          if npm view "${package_name}@${package_version}" --registry=https://npm.pkg.github.com >/dev/null 2>&1; then
+            echo "${package_name}@${package_version} is already published."
+            exit 0
+          fi
+
+          npm publish
 
   website:
     name: Publish Website
