@@ -1,0 +1,3379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trebuchet — Launch Solana tokens. No middleman.</title>
+<meta name="description" content="A barebones Solana token launcher. No frills, no extractive nonsense. Mints SPL tokens, deploys locked liquidity on Raydium CLMM, hands you Fee Key NFTs that earn forever.">
+
+<!-- ================================================================
+     SOCIAL PREVIEW CARDS — Open Graph + Twitter Card metadata so
+     pasting the URL into Telegram, X, Discord, Slack, iMessage,
+     LinkedIn, Facebook, etc. renders a proper preview with image,
+     title, and description instead of a bare link.
+
+     Image: /og-image.png at 1200×630 (the standard size every
+     platform crops sanely from). Must be served at an absolute
+     https URL — relative paths break previews on most platforms.
+     ================================================================ -->
+
+<!-- Canonical URL helps search engines and some link unfurlers -->
+<link rel="canonical" href="https://makesometokens.com/">
+
+<!-- Theme colour — used by some chat clients for accent tinting -->
+<meta name="theme-color" content="#efe5cd">
+
+<!-- Open Graph — used by Facebook, Telegram, Discord, Slack,
+     iMessage, LinkedIn, and most non-Twitter platforms. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Trebuchet">
+<meta property="og:title" content="Trebuchet — Launch Solana tokens. No middleman.">
+<meta property="og:description" content="A barebones Solana token launcher. No frills, no extractive nonsense. Mints SPL tokens, deploys locked liquidity on Raydium CLMM, hands you Fee Key NFTs that earn forever.">
+<meta property="og:url" content="https://makesometokens.com/">
+<meta property="og:image" content="https://makesometokens.com/og-image.png">
+<meta property="og:image:secure_url" content="https://makesometokens.com/og-image.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Trebuchet — a schematic diagram of a medieval trebuchet firing a Solana token. Engineering-manuscript styling, parchment background.">
+
+<!-- Twitter Card — used by X. summary_large_image gives the
+     full-width image preview rather than the small thumbnail. -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@makesometokens">
+<meta name="twitter:creator" content="@makesometokens">
+<meta name="twitter:title" content="Trebuchet — Launch Solana tokens. No middleman.">
+<meta name="twitter:description" content="A barebones Solana token launcher. No frills, no extractive nonsense. Mints SPL tokens, deploys locked liquidity on Raydium CLMM, hands you Fee Key NFTs that earn forever.">
+<meta name="twitter:image" content="https://makesometokens.com/og-image.png">
+<meta name="twitter:image:alt" content="Trebuchet — a schematic diagram of a medieval trebuchet firing a Solana token.">
+
+<!--
+    TREBUCHET LANDING PAGE — makesometokens.com
+    -----------------------------------------------------------------
+    Single-file static page. No build step, no framework. Drop it on
+    any static host (Cloudflare Pages, Netlify, GitHub Pages, S3) and
+    point makesometokens.com at it.
+
+    Sections, top to bottom:
+        1. Header / nav strip
+        2. Hero with animated trebuchet SVG (the centerpiece)
+        3. Epigraph — the siege-weapon quote from the README
+        4. "What it does" — four schematic cards
+        5. "What it doesn't do" — the negative list
+        6. "How a launch works" — six-step diagram
+        7. Flywheels — Reserve + Meme
+        8. Download / source CTA
+        9. Footer
+
+    Aesthetic: aged-paper background + sepia ink + rubric red accent,
+    engineering-schematic styling. IM Fell display, EB Garamond body,
+    JetBrains Mono for technical labels.
+-->
+
+<!-- Fonts: old-printing-press display, refined body serif, technical mono -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=IM+Fell+DW+Pica:ital@0;1&family=IM+Fell+DW+Pica+SC&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<style>
+    /* ===============================================================
+       DESIGN TOKENS
+       =============================================================== */
+    :root {
+        /* Parchment palette — warm, aged, ink-on-paper */
+        --paper:           #efe5cd;    /* base parchment */
+        --paper-deep:      #e4d6b3;    /* slightly darker fold */
+        --paper-shadow:    #d9c79a;    /* deeper crease for contrast */
+        --ink:             #1c1610;    /* near-black warm */
+        --ink-soft:        #4a3b27;    /* secondary text, like faded ink */
+        --ink-fade:        #7a6a4f;    /* tertiary, captions */
+        --rubric:          #9a2424;    /* manuscript red — accent, links */
+        --rubric-dark:     #6e1818;    /* hover state */
+        --gold:            #b88a2a;    /* sparingly, for highlights */
+        --rule:            rgba(28, 22, 16, 0.15);    /* hairline rules */
+        --rule-faint:      rgba(28, 22, 16, 0.07);    /* schematic gridlines */
+
+        /* Typography */
+        --font-display:    'IM Fell DW Pica', 'EB Garamond', Georgia, serif;
+        --font-display-sc: 'IM Fell DW Pica SC', 'IM Fell DW Pica', serif;
+        --font-body:       'EB Garamond', Georgia, 'Times New Roman', serif;
+        --font-mono:       'JetBrains Mono', 'IBM Plex Mono', Menlo, monospace;
+    }
+
+    /* ===============================================================
+       BASE
+       =============================================================== */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+        background: var(--paper);
+        color: var(--ink);
+        font-family: var(--font-body);
+        font-size: 19px;
+        line-height: 1.55;
+        overflow-x: hidden;
+        position: relative;
+        min-height: 100vh;
+    }
+
+    /* Parchment grain — a faint procedural texture overlay using
+       layered radial gradients. Adds depth without an image asset. */
+    body::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 1;
+        opacity: 0.5;
+        background:
+            radial-gradient(circle at 12% 18%, rgba(112, 80, 40, 0.06) 0, transparent 25%),
+            radial-gradient(circle at 78% 32%, rgba(112, 80, 40, 0.05) 0, transparent 30%),
+            radial-gradient(circle at 35% 78%, rgba(112, 80, 40, 0.07) 0, transparent 28%),
+            radial-gradient(circle at 92% 88%, rgba(112, 80, 40, 0.05) 0, transparent 25%);
+    }
+
+    /* A barely-visible blueprint grid — schematic feel without shouting */
+    body::after {
+        content: '';
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 1;
+        background-image:
+            linear-gradient(var(--rule-faint) 1px, transparent 1px),
+            linear-gradient(90deg, var(--rule-faint) 1px, transparent 1px);
+        background-size: 48px 48px;
+        opacity: 0.6;
+        mask-image: linear-gradient(to bottom, rgba(0,0,0,0.6), rgba(0,0,0,1));
+    }
+
+    /* All content goes above the texture layers */
+    main, header, footer { position: relative; z-index: 2; }
+
+    a { color: var(--rubric); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: var(--rubric-dark); text-decoration: underline; text-underline-offset: 3px; }
+
+    /* ===============================================================
+       LAYOUT HELPERS
+       =============================================================== */
+    .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 0 32px;
+    }
+
+    /* Schematic hairline rules — used to separate sections */
+    .rule {
+        border: 0;
+        border-top: 1px solid var(--rule);
+        margin: 0;
+    }
+    .rule-double {
+        border: 0;
+        border-top: 1px solid var(--rule);
+        border-bottom: 1px solid var(--rule);
+        height: 4px;
+        margin: 0;
+    }
+
+    /* ===============================================================
+       HEADER
+       =============================================================== */
+    header {
+        padding: 28px 0 0;
+        border-bottom: 1px solid var(--rule);
+    }
+    .header-inner {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding-bottom: 20px;
+        /* Allow brand + nav to drop onto separate rows when the viewport
+           is too narrow to hold both side-by-side. row-gap kicks in only
+           once flex-wrap actually wraps. */
+        flex-wrap: wrap;
+        row-gap: 14px;
+    }
+    .brand {
+        font-family: var(--font-display-sc);
+        font-size: 22px;
+        letter-spacing: 0.1em;
+        color: var(--ink);
+        /* Keep the whole "T R E B U C H E T ◆ makesometokens.com" line
+           on a single line; if it can't fit alongside the nav, the
+           header-inner wrap rule above drops the nav below it. */
+        white-space: nowrap;
+    }
+    .brand-dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        background: var(--rubric);
+        margin: 0 6px 2px;
+        vertical-align: middle;
+        transform: rotate(45deg);
+    }
+    nav ul {
+        list-style: none;
+        display: flex;
+        flex-wrap: wrap;
+        column-gap: 32px;
+        row-gap: 10px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+    /* Each link stays on one line — never break "WHAT IT DOES" into a
+       stack of words. If the row doesn't fit, the ul wraps the items. */
+    nav a {
+        color: var(--ink-soft);
+        white-space: nowrap;
+    }
+    nav a:hover { color: var(--rubric); text-decoration: none; }
+
+    /* ===============================================================
+       HERO
+       =============================================================== */
+    .hero {
+        padding: 60px 0 40px;
+        position: relative;
+    }
+    .hero-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 40px;
+        align-items: center;
+        min-height: 540px;
+    }
+
+    /* Hero copy column.
+       container-type: inline-size lets the wordmark below scale via cqw
+       units — sizing the font against THIS column's actual width rather
+       than the viewport. Prevents wrap-around at intermediate widths
+       where the column is narrower than the viewport-scaled font wants. */
+    .hero-text {
+        position: relative;
+        z-index: 5;
+        container-type: inline-size;
+    }
+
+    /* The schematic callout tag above the wordmark — "FIG. 1" feel */
+    .hero-tag {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--ink-fade);
+        margin-bottom: 18px;
+        display: inline-block;
+        padding-bottom: 4px;
+        border-bottom: 1px solid var(--rule);
+    }
+    .hero-tag .rubric { color: var(--rubric); }
+
+    /* The big wordmark "TREBUCHET" — staggered fade-up on load.
+       font-size scales to 13% of the column width (cqw), capped at 96px,
+       with a 48px floor for very narrow screens. Combined with nowrap,
+       this means the text always fits on one line at any viewport. */
+    .wordmark {
+        font-family: var(--font-display-sc);
+        font-size: clamp(48px, 13cqw, 96px);
+        white-space: nowrap;
+        line-height: 0.95;
+        letter-spacing: 0.02em;
+        color: var(--ink);
+        margin-bottom: 14px;
+        font-weight: 400;
+    }
+    .wordmark span {
+        display: inline-block;
+        opacity: 0;
+        transform: translateY(20px);
+        animation: letterReveal 0.7s forwards;
+    }
+    @keyframes letterReveal {
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Tagline beneath the wordmark */
+    .tagline {
+        font-family: var(--font-display);
+        font-size: clamp(20px, 2.2vw, 26px);
+        font-style: italic;
+        color: var(--ink-soft);
+        margin-bottom: 12px;
+        max-width: 520px;
+        opacity: 0;
+        animation: fadeIn 1s 0.8s forwards;
+    }
+    .tagline em {
+        font-style: normal;
+        color: var(--rubric);
+        font-weight: 500;
+    }
+
+    /* Domain mark — the joke about why the domain is easier to spell */
+    .domain-mark {
+        font-family: var(--font-mono);
+        font-size: 14px;
+        color: var(--ink-fade);
+        margin: 18px 0 32px;
+        opacity: 0;
+        animation: fadeIn 1s 1.1s forwards;
+    }
+    .domain-mark .arrow { color: var(--rubric); margin: 0 6px; }
+
+    @keyframes fadeIn { to { opacity: 1; } }
+
+    /* CTA row in hero */
+    .hero-cta {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        opacity: 0;
+        animation: fadeIn 1s 1.3s forwards;
+    }
+
+    /* Buttons — schematic-style with hairline borders and mono labels */
+    .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 24px;
+        background: var(--paper);
+        color: var(--ink);
+        border: 1.5px solid var(--ink);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        font-weight: 500;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: all 0.2s;
+        position: relative;
+        text-decoration: none;
+    }
+    .btn:hover {
+        background: var(--ink);
+        color: var(--paper);
+        text-decoration: none;
+        transform: translate(-2px, -2px);
+        box-shadow: 4px 4px 0 var(--rubric);
+    }
+    .btn-primary {
+        background: var(--ink);
+        color: var(--paper);
+    }
+    .btn-primary:hover {
+        background: var(--rubric);
+        border-color: var(--rubric);
+        color: var(--paper);
+    }
+    .btn .ic {
+        width: 14px;
+        height: 14px;
+        display: inline-block;
+    }
+
+    /* Hero illustration column — contains the SVG trebuchet */
+    .hero-art {
+        position: relative;
+        height: 540px;
+    }
+
+    /* The trebuchet SVG takes the full column; the projectile flies
+       across the WHOLE hero, not just this column, so we let the SVG
+       overflow visibly. */
+    .trebuchet-svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+    }
+
+    /* Caption beneath the trebuchet, like a figure caption */
+    .fig-caption {
+        position: absolute;
+        bottom: -8px;
+        right: 0;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink-fade);
+        opacity: 0;
+        animation: fadeIn 1s 1.6s forwards;
+    }
+    .fig-caption .num { color: var(--rubric); }
+
+    /* ===============================================================
+       TREBUCHET ANIMATION
+       The trebuchet is mostly static. The "arm" group rotates around
+       the axle, and the projectile is a separate element animated to
+       arc across the screen. Total cycle: 7 seconds (fire + reset).
+       =============================================================== */
+
+    /* The "resting" token inside the sling rotates with the arm
+       during the swing, but vanishes at release — that's when the
+       separate flying-projectile takes over. */
+    .rest-token, .rest-token-text {
+        animation: restTokenFade 7s infinite;
+    }
+    @keyframes restTokenFade {
+        0%, 44%   { opacity: 1; }
+        45%, 100% { opacity: 0; }
+    }
+    .firing .rest-token, .firing .rest-token-text {
+        animation: restTokenFade 7s 1 both;
+    }
+
+    /* The rotating arm group. Pivots around the axle at (270, 230).
+       Real trebuchet kinematics, firing to the right:
+         - Long arm (sling) is on the LEFT of pivot
+         - Counterweight is on the RIGHT of pivot
+         - Cocked: arm tilted CCW (-45°) — long arm DOWN-LEFT (projectile
+           on the ground at the left), counterweight UP-RIGHT (raised)
+         - Fire: arm rotates CLOCKWISE through 90°
+         - Release: arm at +45° — long arm UP-LEFT. Tangent velocity of
+           clockwise rotation at this position points UP-RIGHT, so the
+           projectile launches up-and-to-the-right. */
+    .arm {
+        transform-origin: 270px 230px;
+        transform: rotate(-45deg);    /* cocked: long arm down-left */
+        animation: armSwing 7s infinite;
+    }
+    @keyframes armSwing {
+        0%   { transform: rotate(-45deg); }    /* cocked, long arm down-left */
+        20%  { transform: rotate(-45deg); }    /* hold cocked */
+        28%  { transform: rotate(-55deg); }    /* tiny wind-up further CCW */
+        45%  { transform: rotate(45deg); }     /* hard CW whip to release */
+        55%  { transform: rotate(60deg); }     /* slight over-swing past release */
+        65%  { transform: rotate(45deg); }     /* settle at follow-through */
+        80%  { transform: rotate(45deg); }     /* hold follow-through */
+        100% { transform: rotate(-45deg); }    /* slow CCW return to cocked */
+    }
+
+    /* The sling-tip path that "trails" during release for a motion blur look */
+    .sling-trail {
+        opacity: 0;
+        animation: trailFlash 7s infinite;
+    }
+    @keyframes trailFlash {
+        0%, 38% { opacity: 0; }
+        42%     { opacity: 0.6; }
+        50%     { opacity: 0; }
+        100%    { opacity: 0; }
+    }
+
+    /* The projectile (the token coin) — separate element, follows a
+       ballistic arc from the trebuchet's release point off the right
+       side of the screen. Two transforms compose: outer = horizontal
+       motion + scale; inner = vertical (gravity) curve + rotation. */
+    .projectile-wrap {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 40px;
+        height: 40px;
+        animation: projX 7s infinite;
+        z-index: 3;
+    }
+    .projectile {
+        width: 100%;
+        height: 100%;
+        animation: projY 7s infinite;
+    }
+    /* Horizontal motion: the projectile launches from the SLING tip
+       (the pouch at the end of the sling, hanging off the long arm).
+       At release angle +45°, sling tip is at SVG (76, 142), which
+       maps to container pixels ~(75, 145). Flies rightward off-screen. */
+    @keyframes projX {
+        0%, 44%  { transform: translate(75px, 145px); opacity: 0; }
+        45%      { transform: translate(75px, 145px); opacity: 1; }    /* release */
+        78%      { transform: translate(1500px, 145px); opacity: 1; }
+        80%      { transform: translate(1500px, 145px); opacity: 0; }
+        100%     { transform: translate(75px, 145px); opacity: 0; }
+    }
+    /* Vertical motion: parabolic arc with gravity-like ease. Projectile
+       tumbles end-over-end as it flies. Released at apex of swing, so
+       initial velocity vector points up-and-right at ~45°. */
+    @keyframes projY {
+        0%, 44%  { transform: translateY(0) rotate(0deg); }
+        45%      { transform: translateY(0) rotate(0deg); }
+        55%      { transform: translateY(-110px) rotate(420deg); }
+        65%      { transform: translateY(-150px) rotate(720deg); }
+        78%      { transform: translateY(280px) rotate(1200deg); }
+        100%     { transform: translateY(0) rotate(0deg); }
+    }
+
+    /* The dotted trajectory arc — draws itself as the projectile flies,
+       fades away when it's gone. Done with stroke-dashoffset. */
+    .trajectory {
+        stroke-dasharray: 6 6;
+        stroke-dashoffset: 1200;
+        animation: drawTrajectory 7s infinite;
+    }
+    @keyframes drawTrajectory {
+        0%, 44%  { stroke-dashoffset: 1200; opacity: 0; }
+        45%      { stroke-dashoffset: 1200; opacity: 0; }
+        50%      { stroke-dashoffset: 1200; opacity: 0.7; }
+        80%      { stroke-dashoffset: 0; opacity: 0.7; }
+        90%      { stroke-dashoffset: 0; opacity: 0; }
+        100%     { stroke-dashoffset: 1200; opacity: 0; }
+    }
+
+    /* When the user clicks "Fire Again", we restart all animations.
+       Done by toggling a class with the same definitions but a new
+       animation-name (using -ms suffix). */
+    .firing .arm           { animation: armSwing 7s 1 both; }
+    .firing .sling-trail   { animation: trailFlash 7s 1 both; }
+    .firing .projectile-wrap { animation: projX 7s 1 both; }
+    .firing .projectile    { animation: projY 7s 1 both; }
+    .firing .trajectory    { animation: drawTrajectory 7s 1 both; }
+
+    /* ===============================================================
+       EPIGRAPH — the medieval pullquote
+       =============================================================== */
+    .epigraph {
+        padding: 80px 0;
+        text-align: center;
+        position: relative;
+    }
+    .epigraph blockquote {
+        font-family: var(--font-display);
+        font-style: italic;
+        font-size: clamp(22px, 2.6vw, 32px);
+        line-height: 1.4;
+        max-width: 760px;
+        margin: 0 auto;
+        color: var(--ink);
+        position: relative;
+        padding: 0 40px;
+    }
+    /* Decorative quote marks in rubric red */
+    .epigraph blockquote::before,
+    .epigraph blockquote::after {
+        font-family: var(--font-display);
+        color: var(--rubric);
+        font-size: 1.8em;
+        line-height: 1;
+        font-style: normal;
+        position: absolute;
+        opacity: 0.5;
+    }
+    .epigraph blockquote::before {
+        content: '\201C';
+        top: -10px;
+        left: 0;
+    }
+    .epigraph blockquote::after {
+        content: '\201D';
+        bottom: -30px;
+        right: 0;
+    }
+    .epigraph cite {
+        display: block;
+        margin-top: 28px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        color: var(--ink-fade);
+        font-style: normal;
+    }
+    .epigraph cite::before { content: '— '; }
+
+    /* ===============================================================
+       SECTION HEADERS — consistent treatment across all sections
+       =============================================================== */
+    section { padding: 80px 0; position: relative; }
+
+    .section-header {
+        margin-bottom: 60px;
+        display: flex;
+        align-items: baseline;
+        gap: 24px;
+        border-bottom: 1px solid var(--rule);
+        padding-bottom: 18px;
+    }
+    .section-title {
+        font-family: var(--font-display-sc);
+        font-size: clamp(32px, 4vw, 48px);
+        font-weight: 400;
+        line-height: 1;
+        color: var(--ink);
+        letter-spacing: 0.01em;
+    }
+    .section-aside {
+        margin-left: auto;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        color: var(--ink-fade);
+    }
+
+    /* ===============================================================
+       "WHAT IT DOES" — four schematic cards
+       =============================================================== */
+    .does-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 28px;
+    }
+    .does-card {
+        border: 1px solid var(--ink-soft);
+        padding: 28px 24px;
+        background: rgba(244, 234, 210, 0.4);
+        position: relative;
+        transition: all 0.3s;
+    }
+    /* Schematic corner brackets — like engineering drawing crops */
+    .does-card::before, .does-card::after {
+        content: '';
+        position: absolute;
+        width: 10px;
+        height: 10px;
+        border: 2px solid var(--rubric);
+    }
+    .does-card::before { top: -2px; left: -2px; border-right: 0; border-bottom: 0; }
+    .does-card::after  { bottom: -2px; right: -2px; border-left: 0; border-top: 0; }
+    .does-card:hover {
+        background: var(--paper);
+        transform: translateY(-3px);
+        box-shadow: 0 8px 0 -4px var(--ink);
+    }
+    .does-card .num {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.15em;
+        color: var(--rubric);
+        margin-bottom: 16px;
+        display: block;
+    }
+    .does-card .icon {
+        width: 56px;
+        height: 56px;
+        margin-bottom: 18px;
+        color: var(--ink);
+    }
+    .does-card h3 {
+        font-family: var(--font-display-sc);
+        font-weight: 400;
+        font-size: 22px;
+        line-height: 1.15;
+        margin-bottom: 12px;
+        color: var(--ink);
+    }
+    .does-card p {
+        font-size: 16px;
+        line-height: 1.5;
+        color: var(--ink-soft);
+    }
+
+    /* ===============================================================
+       "WHAT IT DOESN'T DO" — strikethrough list, brutal
+       =============================================================== */
+    .doesnt {
+        background: var(--paper-deep);
+        margin: 40px -32px;
+        padding: 80px 32px;
+        position: relative;
+    }
+    .doesnt-inner {
+        max-width: 900px;
+        margin: 0 auto;
+    }
+    .doesnt h2 {
+        font-family: var(--font-display-sc);
+        font-size: clamp(32px, 4vw, 52px);
+        font-weight: 400;
+        margin-bottom: 8px;
+        color: var(--ink);
+    }
+    .doesnt h2 .strike { text-decoration: line-through; text-decoration-color: var(--rubric); text-decoration-thickness: 3px; }
+    .doesnt-sub {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        color: var(--rubric);
+        margin-bottom: 50px;
+    }
+    .doesnt-list {
+        list-style: none;
+    }
+    .doesnt-list li {
+        font-family: var(--font-display);
+        font-size: clamp(22px, 3vw, 30px);
+        line-height: 1.2;
+        padding: 18px 0;
+        border-top: 1px solid var(--rule);
+        color: var(--ink);
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        transition: padding 0.3s;
+    }
+    .doesnt-list li:last-child { border-bottom: 1px solid var(--rule); }
+    .doesnt-list li:hover { padding-left: 12px; color: var(--rubric); }
+    .doesnt-list .x {
+        font-family: var(--font-mono);
+        font-size: 16px;
+        color: var(--rubric);
+        font-weight: 700;
+        opacity: 0.6;
+    }
+    .doesnt-footer {
+        margin-top: 50px;
+        font-family: var(--font-display);
+        font-style: italic;
+        font-size: 19px;
+        color: var(--ink-soft);
+        text-align: right;
+    }
+
+    /* ===============================================================
+       COMPARISON CHART — Trebuchet vs other launchpads.
+       Engineering-ledger styling: hairline rules, mono headers,
+       grouped rows with rubric category labels, subtle tinted column
+       for Trebuchet to anchor "this is us" without trumpeting it.
+       =============================================================== */
+    #compare {
+        padding: 90px 0 80px;
+        position: relative;
+    }
+    .compare-lead {
+        max-width: 760px;
+        font-size: 17px;
+        line-height: 1.6;
+        color: var(--ink-soft);
+        margin-bottom: 36px;
+    }
+    .compare-lead em {
+        font-style: italic;
+        color: var(--rubric);
+        font-weight: 500;
+    }
+    .compare-lead strong {
+        color: var(--ink);
+        font-weight: 600;
+    }
+
+    /* With two columns and table-layout: fixed, the table never overflows,
+       so no overflow control is needed. Default visible lets the corner
+       brackets (positioned at -2px offsets) render outside the wrap. */
+    .compare-table-wrap {
+        border: 1px solid var(--rule);
+        position: relative;
+        background: rgba(244, 234, 210, 0.35);
+        margin-bottom: 20px;
+    }
+    /* Corner brackets, matching the does-card style */
+    .compare-table-wrap::before, .compare-table-wrap::after {
+        content: '';
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        border: 2px solid var(--rubric);
+        z-index: 1;
+        pointer-events: none;
+    }
+    .compare-table-wrap::before { top: -2px; left: -2px; border-right: 0; border-bottom: 0; }
+    .compare-table-wrap::after  { bottom: -2px; right: -2px; border-left: 0; border-top: 0; }
+
+    .compare-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+        line-height: 1.5;
+        /* Use fixed layout so the feature/data column widths stay
+           predictable on every screen — otherwise long cell text
+           expands columns asymmetrically. */
+        table-layout: fixed;
+    }
+
+    /* Header row: small mono caps with a heavy underline */
+    .compare-table thead th {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--ink-fade);
+        font-weight: 700;
+        padding: 22px 18px 14px;
+        text-align: left;
+        border-bottom: 1.5px solid var(--ink);
+        vertical-align: bottom;
+        white-space: nowrap;
+    }
+    /* Trebuchet header column: rubric, with rubric underline.
+       This is the one visual anchor that says "this is us". */
+    .compare-table thead th.col-trebuchet {
+        color: var(--rubric);
+        border-bottom-color: var(--rubric);
+        border-bottom-width: 2px;
+    }
+    /* Body cells: regular prose, dashed hairline between rows */
+    .compare-table tbody td {
+        padding: 14px 18px;
+        border-bottom: 1px dashed var(--rule);
+        color: var(--ink-soft);
+        vertical-align: top;
+    }
+    /* The first column (the feature name) is darker and slightly heavier.
+       At 34% it leaves the two data columns ~33% each — even split that
+       keeps Trebuchet and Others visually symmetric. */
+    .compare-table tbody td.feature {
+        color: var(--ink);
+        font-weight: 500;
+        font-size: 14px;
+        width: 34%;
+    }
+    /* The Trebuchet column gets a faint parchment-deep tint so the eye
+       knows where to look without it feeling like marketing. */
+    .compare-table tbody td.col-trebuchet {
+        background: rgba(154, 36, 36, 0.045);
+        color: var(--ink);
+    }
+
+    /* Section divider rows — uppercase mono label spanning the table,
+       with a thin rubric rule above to mark a new category. */
+    .compare-table tr.row-group td {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--rubric);
+        font-weight: 700;
+        padding: 22px 18px 10px;
+        background: transparent;
+        border-bottom: 1px solid var(--rubric);
+    }
+    /* The first row-group doesn't need top padding the same way */
+    .compare-table tr.row-group:first-of-type td {
+        padding-top: 16px;
+    }
+
+    /* Subtle marker spans within cells — for "Yes / No" style answers
+       that should still feel like prose, not like checkbox marks. */
+    .compare-yes  { color: var(--ink);      font-weight: 500; }
+    .compare-no   { color: var(--ink-fade); }
+    .compare-note { color: var(--ink-fade); font-size: 12px; display: block; margin-top: 2px; font-style: italic; }
+
+    /* Closing caption beneath the table */
+    .compare-caption {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--ink-fade);
+        font-style: italic;
+        letter-spacing: 0.04em;
+        line-height: 1.6;
+        max-width: 760px;
+    }
+    .compare-caption strong {
+        font-style: normal;
+        color: var(--ink-soft);
+        font-weight: 600;
+    }
+
+    /* ===============================================================
+       SIX-STEP PROCESS — schematic flow diagram
+       =============================================================== */
+    .steps {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 0;
+        border: 1px solid var(--rule);
+    }
+    .step {
+        padding: 36px 32px;
+        border: 1px solid var(--rule);
+        margin: -1px;
+        position: relative;
+        background: rgba(244, 234, 210, 0.3);
+    }
+    .step-num {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        color: var(--rubric);
+        margin-bottom: 8px;
+        display: block;
+    }
+    .step-title {
+        font-family: var(--font-display-sc);
+        font-size: 24px;
+        margin-bottom: 14px;
+        font-weight: 400;
+        line-height: 1.1;
+    }
+    .step p {
+        font-size: 16.5px;
+        color: var(--ink-soft);
+        line-height: 1.55;
+    }
+    /* Decorative arrow line between steps — drawn with a pseudo-element */
+    .step::after {
+        content: '';
+        position: absolute;
+        right: -12px;
+        top: 50%;
+        width: 24px;
+        height: 1px;
+        background: var(--ink-fade);
+        opacity: 0.3;
+    }
+    .step:nth-child(even)::after { display: none; }
+
+    /* ===============================================================
+       FLYWHEELS
+       =============================================================== */
+    .flywheels-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 40px;
+    }
+    .flywheel {
+        border: 1.5px solid var(--ink);
+        padding: 40px;
+        background: var(--paper);
+        position: relative;
+        transition: all 0.3s;
+    }
+    .flywheel:hover { transform: translate(-3px, -3px); box-shadow: 6px 6px 0 var(--rubric); }
+    .flywheel-head {
+        display: flex;
+        align-items: center;
+        gap: 24px;
+        margin-bottom: 24px;
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--rule);
+    }
+    .flywheel-icon {
+        width: 72px;
+        height: 72px;
+        flex-shrink: 0;
+        animation: gearSpin 16s linear infinite;
+    }
+    @keyframes gearSpin { to { transform: rotate(360deg); } }
+    .flywheel-meta .label {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        color: var(--rubric);
+        text-transform: uppercase;
+    }
+    .flywheel-meta h3 {
+        font-family: var(--font-display-sc);
+        font-size: 30px;
+        font-weight: 400;
+        line-height: 1;
+        margin-top: 6px;
+    }
+    .flywheel p {
+        font-size: 17px;
+        color: var(--ink-soft);
+        margin-bottom: 14px;
+    }
+    .flywheel p:last-child { margin-bottom: 0; }
+    .flywheel .verdict {
+        margin-top: 20px;
+        padding-top: 20px;
+        border-top: 1px dashed var(--rule);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        color: var(--ink);
+    }
+    .flywheel .verdict .tag {
+        color: var(--rubric);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        font-size: 11px;
+    }
+
+    /* ===============================================================
+       DOWNLOAD / CTA SECTION
+       =============================================================== */
+    .download {
+        background: var(--ink);
+        color: var(--paper);
+        margin: 0 -32px;
+        padding: 100px 32px;
+        position: relative;
+        overflow: hidden;
+    }
+    /* Light blueprint grid against the dark background */
+    .download::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background-image:
+            linear-gradient(rgba(239, 229, 205, 0.04) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(239, 229, 205, 0.04) 1px, transparent 1px);
+        background-size: 40px 40px;
+        pointer-events: none;
+    }
+    .download-inner {
+        max-width: 1200px;
+        margin: 0 auto;
+        position: relative;
+        text-align: center;
+    }
+    .download .eyebrow {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--gold);
+        margin-bottom: 24px;
+    }
+    .download h2 {
+        font-family: var(--font-display-sc);
+        font-size: clamp(42px, 6vw, 80px);
+        line-height: 1;
+        font-weight: 400;
+        margin-bottom: 24px;
+    }
+    .download p {
+        font-family: var(--font-display);
+        font-style: italic;
+        font-size: 22px;
+        max-width: 620px;
+        margin: 0 auto 48px;
+        color: rgba(239, 229, 205, 0.75);
+    }
+    .download-buttons {
+        display: flex;
+        justify-content: center;
+        gap: 20px;
+        flex-wrap: wrap;
+    }
+    .btn-dark {
+        background: var(--paper);
+        color: var(--ink);
+        border-color: var(--paper);
+    }
+    .btn-dark:hover {
+        background: var(--rubric);
+        color: var(--paper);
+        border-color: var(--rubric);
+        box-shadow: 4px 4px 0 var(--gold);
+    }
+    .btn-dark-ghost {
+        background: transparent;
+        color: var(--paper);
+        border-color: var(--paper);
+    }
+    .btn-dark-ghost:hover {
+        background: var(--paper);
+        color: var(--ink);
+        box-shadow: 4px 4px 0 var(--gold);
+    }
+    .download-note {
+        margin-top: 36px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.1em;
+        color: rgba(239, 229, 205, 0.5);
+        font-style: normal;
+    }
+    .download-note a { color: var(--gold); }
+
+    /* ===============================================================
+       FOOTER
+       =============================================================== */
+    footer {
+        padding: 40px 0 50px;
+        border-top: 1px solid var(--rule);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--ink-fade);
+        letter-spacing: 0.05em;
+    }
+    .footer-inner {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 20px;
+    }
+    footer .joke {
+        font-family: var(--font-display);
+        font-style: italic;
+        font-size: 15px;
+        color: var(--ink-soft);
+        letter-spacing: normal;
+    }
+
+    /* ===============================================================
+       FLYWHEEL EXPLAINER — mechanism description + two concrete diagrams
+       =============================================================== */
+    .flywheel-explainer {
+        margin-bottom: 50px;
+        display: flex;
+        flex-direction: column;
+        gap: 36px;
+        padding: 36px;
+        border: 1px solid var(--rule);
+        background: rgba(244, 234, 210, 0.4);
+        position: relative;
+    }
+    /* Corner brackets, like the does-card style */
+    .flywheel-explainer::before, .flywheel-explainer::after {
+        content: '';
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        border: 2px solid var(--rubric);
+    }
+    .flywheel-explainer::before { top: -2px; left: -2px; border-right: 0; border-bottom: 0; }
+    .flywheel-explainer::after  { bottom: -2px; right: -2px; border-left: 0; border-top: 0; }
+    .flywheel-explainer-text h3 {
+        font-family: var(--font-display-sc);
+        font-size: 24px;
+        font-weight: 400;
+        margin-bottom: 18px;
+        line-height: 1.1;
+    }
+    .flywheel-explainer-text p {
+        font-size: 16.5px;
+        line-height: 1.55;
+        color: var(--ink-soft);
+        margin-bottom: 12px;
+    }
+    .flywheel-explainer-text p:last-child { margin-bottom: 0; }
+    .flywheel-explainer-text em {
+        font-style: italic;
+        color: var(--rubric);
+        font-weight: 500;
+    }
+
+    /* Two concrete flywheel diagrams shown side by side below the prose.
+       Reserve (4 satellites) on the left, Meme (10 satellites) on the
+       right — meme is larger because it has more pairs to display. */
+    .flywheel-diagrams-row {
+        display: grid;
+        grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+        gap: 36px;
+        align-items: start;
+        padding-top: 28px;
+        border-top: 1px dashed var(--rule);
+    }
+    /* Variant used by the cycle/dip block where both panels are equal width */
+    .flywheel-diagrams-row.is-equal {
+        grid-template-columns: 1fr 1fr;
+    }
+    .flywheel-mini {
+        text-align: center;
+    }
+    .flywheel-mini h4 {
+        font-family: var(--font-display-sc);
+        font-size: 22px;
+        font-weight: 400;
+        line-height: 1;
+        margin-bottom: 4px;
+        color: var(--ink);
+    }
+    .flywheel-mini .mini-symbol {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--rubric);
+        letter-spacing: 0.1em;
+        font-weight: 500;
+    }
+    .flywheel-mini .mini-sub {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--ink-fade);
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        margin-top: 6px;
+        margin-bottom: 18px;
+    }
+    .flywheel-mini svg {
+        width: 100%;
+        height: auto;
+        animation: hubPulse 5s ease-in-out infinite;
+    }
+    .flywheel-mini .mini-footnote {
+        margin-top: 10px;
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--ink-fade);
+        font-style: italic;
+        letter-spacing: 0.04em;
+    }
+    .flywheel-mini .mini-footnote .star { color: var(--rubric); }
+
+    @keyframes hubPulse {
+        0%, 100% { opacity: 0.92; }
+        50%      { opacity: 1; }
+    }
+
+    /* ===============================================================
+       ROUTING EXPLAINER — how aggregators amplify the flywheel effect.
+       Same engineering-schematic block style as the mechanism explainer,
+       with a 3-step horizontal flow at the bottom.
+       =============================================================== */
+    .routing-explainer {
+        margin-bottom: 50px;
+        display: flex;
+        flex-direction: column;
+        gap: 32px;
+        padding: 36px;
+        border: 1px solid var(--rule);
+        background: rgba(244, 234, 210, 0.4);
+        position: relative;
+    }
+    .routing-explainer::before, .routing-explainer::after {
+        content: '';
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        border: 2px solid var(--rubric);
+    }
+    .routing-explainer::before { top: -2px; left: -2px; border-right: 0; border-bottom: 0; }
+    .routing-explainer::after  { bottom: -2px; right: -2px; border-left: 0; border-top: 0; }
+
+    .routing-text h3 {
+        font-family: var(--font-display-sc);
+        font-size: 24px;
+        font-weight: 400;
+        margin-bottom: 18px;
+        line-height: 1.1;
+    }
+    .routing-text p {
+        font-size: 16.5px;
+        line-height: 1.55;
+        color: var(--ink-soft);
+        margin-bottom: 12px;
+    }
+    .routing-text p:last-child { margin-bottom: 0; }
+    .routing-text em {
+        font-style: italic;
+        color: var(--rubric);
+        font-weight: 500;
+    }
+
+    /* The 3-panel horizontal flow: AGGREGATE → EXECUTE → RIPPLE.
+       Uses a 5-column grid with arrows between panels. */
+    .routing-flow {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr auto 1fr;
+        align-items: stretch;
+        gap: 14px;
+        padding-top: 26px;
+        border-top: 1px dashed var(--rule);
+    }
+    .routing-step {
+        text-align: center;
+        padding: 16px 12px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    .routing-step-num {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--rubric);
+        letter-spacing: 0.2em;
+        margin-bottom: 4px;
+    }
+    .routing-step-title {
+        font-family: var(--font-display-sc);
+        font-size: 18px;
+        font-weight: 400;
+        line-height: 1.1;
+        margin-bottom: 14px;
+        color: var(--ink);
+    }
+    .routing-step svg {
+        width: 100%;
+        max-width: 200px;
+        height: auto;
+        margin-bottom: 12px;
+    }
+    .routing-step p {
+        font-size: 13px;
+        color: var(--ink-soft);
+        line-height: 1.45;
+        margin: 0;
+    }
+    .routing-arrow {
+        font-family: var(--font-mono);
+        font-size: 26px;
+        color: var(--rubric);
+        align-self: center;
+        line-height: 1;
+        user-select: none;
+    }
+    @media (max-width: 880px) {
+        .routing-flow {
+            grid-template-columns: 1fr;
+        }
+        .routing-arrow {
+            transform: rotate(90deg);
+            justify-self: center;
+        }
+    }
+
+    /* ===============================================================
+       CYCLE EXPLAINER — the multi-hop / feedback story. After the
+       first ripple, paired tokens have their own pools, demand keeps
+       propagating, and arbitrage absorbs dips in either direction.
+       Same engineering-block styling as the other explainers, with a
+       two-panel layout (rising tide + dip absorption) at the bottom.
+       =============================================================== */
+    .cycle-explainer {
+        margin-bottom: 50px;
+        display: flex;
+        flex-direction: column;
+        gap: 32px;
+        padding: 36px;
+        border: 1px solid var(--rule);
+        background: rgba(244, 234, 210, 0.4);
+        position: relative;
+    }
+    .cycle-explainer::before, .cycle-explainer::after {
+        content: '';
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        border: 2px solid var(--rubric);
+    }
+    .cycle-explainer::before { top: -2px; left: -2px; border-right: 0; border-bottom: 0; }
+    .cycle-explainer::after  { bottom: -2px; right: -2px; border-left: 0; border-top: 0; }
+
+    .cycle-text h3 {
+        font-family: var(--font-display-sc);
+        font-size: 24px;
+        font-weight: 400;
+        margin-bottom: 18px;
+        line-height: 1.1;
+    }
+    .cycle-text p {
+        font-size: 16.5px;
+        line-height: 1.55;
+        color: var(--ink-soft);
+        margin-bottom: 12px;
+    }
+    .cycle-text p:last-child { margin-bottom: 0; }
+    .cycle-text em {
+        font-style: italic;
+        color: var(--rubric);
+        font-weight: 500;
+    }
+
+    /* Two-panel diagram row: rising tide vs dip absorption */
+    .cycle-panels {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 36px;
+        padding-top: 28px;
+        border-top: 1px dashed var(--rule);
+    }
+    .cycle-panel {
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    .cycle-panel-num {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--rubric);
+        letter-spacing: 0.2em;
+        margin-bottom: 4px;
+    }
+    .cycle-panel-title {
+        font-family: var(--font-display-sc);
+        font-size: 20px;
+        font-weight: 400;
+        line-height: 1.1;
+        margin-bottom: 16px;
+        color: var(--ink);
+    }
+    .cycle-panel svg {
+        width: 100%;
+        max-width: 280px;
+        height: auto;
+        margin-bottom: 14px;
+    }
+    .cycle-panel p {
+        font-size: 13.5px;
+        color: var(--ink-soft);
+        line-height: 1.5;
+        margin: 0;
+        max-width: 280px;
+    }
+
+    @media (max-width: 880px) {
+        .cycle-panels {
+            grid-template-columns: 1fr;
+            gap: 32px;
+        }
+    }
+
+    /* ===============================================================
+       LP FEES section — explains that fees go to user, not Trebuchet.
+       Uses a comparison schematic showing "other launchpads" vs us.
+       =============================================================== */
+    #fees {
+        padding: 84px 0 60px;
+        position: relative;
+    }
+    .fees-lead {
+        max-width: 760px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--ink-soft);
+        margin-bottom: 36px;
+    }
+    .fees-lead em {
+        font-style: italic;
+        color: var(--rubric);
+        font-weight: 500;
+    }
+    /* Two-column layout: comparison schematic on the left,
+       prose explainer on the right. */
+    .fees-body {
+        display: grid;
+        grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+        gap: 48px;
+        align-items: start;
+        margin-bottom: 36px;
+    }
+    .fees-comparison-wrap h4 {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        color: var(--ink-fade);
+        text-transform: uppercase;
+        margin-bottom: 14px;
+    }
+    .fees-comparison {
+        width: 100%;
+        height: auto;
+    }
+    .fees-prose h4 {
+        font-family: var(--font-display-sc);
+        font-size: 20px;
+        font-weight: 400;
+        margin-bottom: 10px;
+        line-height: 1.1;
+    }
+    .fees-prose p {
+        font-size: 15.5px;
+        line-height: 1.55;
+        color: var(--ink-soft);
+        margin-bottom: 14px;
+    }
+    .fees-prose p:last-child { margin-bottom: 0; }
+    .fees-prose strong {
+        color: var(--ink);
+        font-weight: 600;
+    }
+    /* Claim-info panel below the comparison */
+    .fees-claim {
+        padding: 22px 26px;
+        border: 1px dashed var(--rubric);
+        background: rgba(244, 234, 210, 0.5);
+        position: relative;
+    }
+    .fees-claim-label {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        letter-spacing: 0.2em;
+        color: var(--rubric);
+        text-transform: uppercase;
+        margin-bottom: 6px;
+        display: block;
+    }
+    .fees-claim h4 {
+        font-family: var(--font-display-sc);
+        font-size: 20px;
+        font-weight: 400;
+        margin-bottom: 8px;
+    }
+    .fees-claim p {
+        font-size: 15px;
+        line-height: 1.55;
+        color: var(--ink-soft);
+        margin: 0;
+    }
+    .fees-claim p + p { margin-top: 10px; }
+    .fees-claim a {
+        color: var(--rubric);
+        text-decoration: underline;
+        text-decoration-thickness: 1px;
+        text-underline-offset: 2px;
+    }
+
+    /* ===============================================================
+       FLYWHEEL CARD ADDITIONS — pairs, mint address, copy button
+       =============================================================== */
+    .flywheel-pairs {
+        font-size: 16px;
+        color: var(--ink-soft);
+        margin-top: 18px;
+        padding-top: 18px;
+        border-top: 1px dashed var(--rule);
+        line-height: 1.5;
+    }
+    .flywheel-pairs .label,
+    .flywheel-mint .label {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--rubric);
+        display: block;
+        margin-bottom: 6px;
+    }
+    .flywheel-mint {
+        margin-top: 18px;
+        padding-top: 18px;
+        border-top: 1px dashed var(--rule);
+    }
+    .flywheel-mint-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .flywheel-mint-addr {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        word-break: break-all;
+        color: var(--ink);
+        flex: 1;
+        line-height: 1.35;
+    }
+    .copy-btn {
+        background: transparent;
+        border: 1px solid var(--ink-soft);
+        color: var(--ink-soft);
+        font-family: var(--font-mono);
+        font-size: 10px;
+        padding: 5px 9px;
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        transition: all 0.2s;
+        flex-shrink: 0;
+    }
+    .copy-btn:hover {
+        background: var(--ink);
+        color: var(--paper);
+        border-color: var(--ink);
+    }
+    .copy-btn.copied {
+        background: var(--rubric);
+        border-color: var(--rubric);
+        color: var(--paper);
+    }
+    /* The token symbol next to the flywheel name, e.g. "Reserve · XLRT" */
+    .flywheel-symbol {
+        font-family: var(--font-mono);
+        font-size: 14px;
+        color: var(--rubric);
+        letter-spacing: 0.1em;
+        font-weight: 500;
+    }
+
+    /* ===============================================================
+       RPC NOTICE — warning callout before the download CTA
+       =============================================================== */
+    .rpc-notice {
+        padding: 30px 0 60px;
+    }
+    .rpc-card {
+        border: 1.5px solid var(--ink);
+        background: var(--paper-deep);
+        padding: 44px 40px 36px;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 36px;
+        align-items: center;
+        position: relative;
+    }
+    /* Hazard stripe across the top — the "important notice" signal */
+    .rpc-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 6px;
+        background: repeating-linear-gradient(
+            -45deg,
+            var(--ink) 0,
+            var(--ink) 10px,
+            var(--gold) 10px,
+            var(--gold) 20px
+        );
+    }
+    .rpc-icon {
+        width: 64px;
+        height: 64px;
+        color: var(--rubric);
+        flex-shrink: 0;
+    }
+    .rpc-text { max-width: 640px; }
+    .rpc-label {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--rubric);
+        display: block;
+        margin-bottom: 6px;
+    }
+    .rpc-text h3 {
+        font-family: var(--font-display-sc);
+        font-size: clamp(26px, 3vw, 34px);
+        font-weight: 400;
+        line-height: 1.05;
+        margin-bottom: 14px;
+        color: var(--ink);
+    }
+    .rpc-text p {
+        font-size: 16.5px;
+        line-height: 1.55;
+        margin-bottom: 10px;
+        color: var(--ink-soft);
+    }
+    .rpc-text p:last-child { margin-bottom: 0; }
+    .rpc-text strong { color: var(--rubric); font-weight: 600; }
+    .rpc-cta { flex-shrink: 0; }
+
+    /* ===============================================================
+       ARCHITECTURE — "Why it's an app" section
+       =============================================================== */
+
+    /* The big italic "There is no server." lead at the top */
+    .architecture-lead {
+        font-family: var(--font-display);
+        font-style: italic;
+        font-size: clamp(34px, 4.8vw, 56px);
+        line-height: 1.05;
+        color: var(--ink);
+        text-align: center;
+        margin-bottom: 60px;
+    }
+    /* Em-dash flourishes on either side of the lead, like a manuscript */
+    .architecture-lead::before, .architecture-lead::after {
+        content: '—';
+        color: var(--rubric);
+        margin: 0 22px;
+        font-style: normal;
+        font-weight: 400;
+    }
+
+    /* Two-column layout: prose on the left, schematic diagram on the right */
+    .architecture-grid {
+        display: grid;
+        grid-template-columns: 1fr 320px;
+        gap: 60px;
+        align-items: center;
+        margin-bottom: 60px;
+    }
+    .architecture-prose p {
+        font-size: 17.5px;
+        line-height: 1.6;
+        color: var(--ink);
+        margin-bottom: 18px;
+    }
+    .architecture-prose p:last-child { margin-bottom: 0; }
+    .architecture-prose strong {
+        color: var(--rubric);
+        font-weight: 600;
+        font-style: normal;
+    }
+
+    /* The architecture diagram SVG */
+    .architecture-diagram {
+        width: 100%;
+        max-width: 320px;
+        height: auto;
+        display: block;
+    }
+
+    /* Five dependency "pillars" along the bottom of the section.
+       Each names a piece of public infrastructure Trebuchet relies on.
+       auto-fit lets them flow into rows naturally on narrower screens
+       without an explicit responsive override. */
+    .dependency-pillars {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 18px;
+    }
+    .pillar {
+        border: 1px solid var(--ink-soft);
+        padding: 24px 20px 22px;
+        background: rgba(244, 234, 210, 0.45);
+        text-align: center;
+        transition: all 0.3s;
+        position: relative;
+    }
+    .pillar:hover {
+        background: var(--paper);
+        transform: translateY(-3px);
+        box-shadow: 0 6px 0 -3px var(--rubric);
+    }
+    /* Number tag at the top — small mono dot indicator */
+    .pillar::before {
+        content: '';
+        position: absolute;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 6px;
+        height: 6px;
+        background: var(--rubric);
+        border-radius: 50%;
+        opacity: 0.6;
+    }
+    .pillar h4 {
+        font-family: var(--font-display-sc);
+        font-size: 22px;
+        font-weight: 400;
+        line-height: 1;
+        margin: 14px 0 10px;
+        letter-spacing: 0.02em;
+    }
+    .pillar p {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        color: var(--ink-fade);
+        line-height: 1.45;
+        margin: 0;
+    }
+
+    /* Closing line — italic affirmation of the architectural ethos */
+    .architecture-closing {
+        margin-top: 56px;
+        padding-top: 28px;
+        border-top: 1px solid var(--rule);
+        font-family: var(--font-display);
+        font-style: italic;
+        font-size: clamp(20px, 2.4vw, 26px);
+        text-align: center;
+        color: var(--ink-soft);
+        line-height: 1.45;
+    }
+    .architecture-closing strong {
+        font-style: normal;
+        color: var(--rubric);
+        font-weight: 500;
+    }
+
+    /* ===============================================================
+       RESPONSIVE
+       =============================================================== */
+    @media (max-width: 980px) {
+        .hero-grid { grid-template-columns: 1fr; min-height: auto; }
+        .hero-art { height: 380px; order: -1; }
+        .does-grid { grid-template-columns: 1fr 1fr; }
+        .flywheels-grid { grid-template-columns: 1fr; }
+        .flywheel-diagrams-row { grid-template-columns: 1fr; gap: 36px; }
+        .rpc-card { grid-template-columns: 1fr; text-align: left; }
+        .rpc-icon { width: 48px; height: 48px; }
+        .architecture-grid { grid-template-columns: 1fr; gap: 36px; }
+        .architecture-diagram { margin: 0 auto; }
+        .fees-body { grid-template-columns: 1fr; gap: 32px; }
+    }
+    @media (max-width: 640px) {
+        .container { padding: 0 20px; }
+        nav ul { gap: 18px; font-size: 10px; }
+        .does-grid { grid-template-columns: 1fr; }
+        .steps { grid-template-columns: 1fr; }
+        .step::after { display: none; }
+        .header-inner { flex-direction: column; align-items: flex-start; gap: 14px; }
+        .doesnt, .download { margin-left: -20px; margin-right: -20px; padding-left: 20px; padding-right: 20px; }
+
+        /* Comparison table: compress for narrow viewports — smaller
+           padding/font, tighter feature column to give cell text more
+           breathing room. */
+        .compare-table { font-size: 13px; }
+        .compare-table tbody td { padding: 12px 10px; }
+        .compare-table thead th { padding: 16px 10px 12px; font-size: 10px; }
+        .compare-table tbody td.feature { width: 38%; font-size: 13px; }
+        .compare-table tr.row-group td { padding: 16px 10px 8px; font-size: 9px; }
+        .compare-note { font-size: 11px; }
+    }
+
+    /* Respect reduced-motion users */
+    @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+        }
+        .projectile-wrap { display: none; }
+    }
+</style>
+</head>
+<body>
+
+<!-- ===============================================================
+     HEADER
+     =============================================================== -->
+<header>
+    <div class="container header-inner">
+        <div class="brand">
+            T R E B U C H E T<span class="brand-dot"></span>
+            <span style="font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.1em; color: var(--ink-fade);">makesometokens.com</span>
+        </div>
+        <nav>
+            <ul>
+                <li><a href="#what">What it does</a></li>
+                <li><a href="#compare">Compare</a></li>
+                <li><a href="#architecture">Why an app</a></li>
+                <li><a href="#flow">How it works</a></li>
+                <li><a href="#flywheels">Flywheels</a></li>
+                <li><a href="#fees">Fees</a></li>
+                <li><a href="#download">Download</a></li>
+                <li><a href="https://github.com/AnOversizedMooseWithSocks/trebuchet" target="_blank" rel="noopener">GitHub</a></li>
+                <li><a href="https://x.com/makesometokens" target="_blank" rel="noopener">X</a></li>
+            </ul>
+        </nav>
+    </div>
+</header>
+
+<main>
+
+<!-- ===============================================================
+     HERO — wordmark + animated trebuchet firing a token coin
+     =============================================================== -->
+<section class="hero">
+    <div class="container hero-grid">
+        <div class="hero-text">
+            <span class="hero-tag"><span class="rubric">FIG. 1</span> &nbsp;·&nbsp; Solana Token Launcher &nbsp;·&nbsp; v1.0</span>
+
+            <!-- Wordmark with per-letter staggered reveal animation.
+                 Each letter gets its own delay via inline style. -->
+            <h1 class="wordmark">
+                <span style="animation-delay: 0.05s">T</span><span style="animation-delay: 0.12s">R</span><span style="animation-delay: 0.19s">E</span><span style="animation-delay: 0.26s">B</span><span style="animation-delay: 0.33s">U</span><span style="animation-delay: 0.40s">C</span><span style="animation-delay: 0.47s">H</span><span style="animation-delay: 0.54s">E</span><span style="animation-delay: 0.61s">T</span>
+            </h1>
+
+            <p class="tagline">Launch Solana tokens. <em>No middleman.</em></p>
+
+            <p class="domain-mark">trebuchet<span class="arrow">→</span>makesometokens.com <span style="opacity:0.5">&nbsp;//&nbsp; easier to spell</span></p>
+
+            <div class="hero-cta">
+                <a href="#download" class="btn btn-primary">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3v14m0 0l-5-5m5 5l5-5M5 21h14"/></svg>
+                    Download for Windows
+                </a>
+                <a href="https://github.com/AnOversizedMooseWithSocks/trebuchet" target="_blank" rel="noopener" class="btn">
+                    <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+                    View source
+                </a>
+            </div>
+        </div>
+
+        <div class="hero-art">
+
+            <!-- THE TREBUCHET
+                 viewBox is wide so the projectile can fly across without
+                 being clipped. Stroke-only style throughout — schematic.
+                 The .arm group is the rotating part; it pivots around
+                 the axle at (270, 230) defined by transform-origin in CSS. -->
+            <svg class="trebuchet-svg" viewBox="0 0 600 540" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" stroke="currentColor" stroke-width="2"
+                 style="color: var(--ink); stroke-linecap: round; stroke-linejoin: round;">
+
+                <!-- Faint baseline / ground -->
+                <line x1="40" y1="430" x2="560" y2="430"
+                      stroke-dasharray="4 6" stroke="currentColor" opacity="0.3"/>
+
+                <!-- Ground hatch marks for texture -->
+                <g stroke="currentColor" opacity="0.25" stroke-width="1">
+                    <line x1="80"  y1="430" x2="70"  y2="445"/>
+                    <line x1="130" y1="430" x2="120" y2="445"/>
+                    <line x1="180" y1="430" x2="170" y2="445"/>
+                    <line x1="230" y1="430" x2="220" y2="445"/>
+                    <line x1="280" y1="430" x2="270" y2="445"/>
+                    <line x1="330" y1="430" x2="320" y2="445"/>
+                    <line x1="380" y1="430" x2="370" y2="445"/>
+                    <line x1="430" y1="430" x2="420" y2="445"/>
+                    <line x1="480" y1="430" x2="470" y2="445"/>
+                    <line x1="530" y1="430" x2="520" y2="445"/>
+                </g>
+
+                <!-- The A-frame base of the trebuchet. Two triangular
+                     side-frames + cross-bracing. The axle sits at the top. -->
+
+                <!-- Left A-frame leg -->
+                <line x1="180" y1="430" x2="270" y2="230"/>
+                <!-- Right A-frame leg -->
+                <line x1="360" y1="430" x2="270" y2="230"/>
+                <!-- Wider rear strut for depth (perspective hint) -->
+                <line x1="200" y1="430" x2="290" y2="230" opacity="0.45"/>
+                <line x1="340" y1="430" x2="290" y2="230" opacity="0.45"/>
+                <!-- Cross-brace -->
+                <line x1="220" y1="340" x2="320" y2="340"/>
+                <line x1="240" y1="290" x2="300" y2="290"/>
+
+                <!-- Base sleepers (horizontal beams at ground level) -->
+                <line x1="160" y1="430" x2="380" y2="430" stroke-width="3"/>
+                <line x1="155" y1="425" x2="155" y2="435"/>
+                <line x1="385" y1="425" x2="385" y2="435"/>
+
+                <!-- The axle (pivot point) where the arm rotates -->
+                <circle cx="270" cy="230" r="6" fill="var(--paper)" stroke="currentColor" stroke-width="2"/>
+                <circle cx="270" cy="230" r="2" fill="currentColor"/>
+
+                <!-- THE ARM — rotates around (270, 230). Contains:
+                       - main arm beam extending LEFT from pivot to the sling
+                         end, and RIGHT from pivot to the counterweight end
+                       - the counterweight box on the right (short) end
+                       - the sling rope and pouch on the left (long) end
+
+                     Real trebuchet kinematics: long arm pulled DOWN-LEFT
+                     in cocked position (projectile on the ground at the
+                     left), counterweight raised UP-RIGHT. On fire, the
+                     counterweight falls; the whole arm rotates clockwise.
+                     The long arm sweeps from down-left through the top
+                     and ends up-left at release — where the tangent
+                     velocity of clockwise rotation points UP-RIGHT,
+                     launching the projectile to the right. -->
+                <g class="arm">
+
+                    <!-- The main arm beam. In unrotated state, lies
+                         horizontal with pivot at x=270. LONG end on the
+                         LEFT (x=70), SHORT end on the RIGHT (x=330). -->
+                    <line x1="70" y1="230" x2="330" y2="230" stroke-width="4"/>
+
+                    <!-- Arm reinforcement bands (visual interest) -->
+                    <line x1="130" y1="222" x2="130" y2="238" stroke-width="2.5"/>
+                    <line x1="210" y1="222" x2="210" y2="238" stroke-width="2.5"/>
+                    <line x1="290" y1="222" x2="290" y2="238" stroke-width="2.5"/>
+
+                    <!-- COUNTERWEIGHT — hangs from the SHORT end (x=330)
+                         on the right. It's the heavy mass whose falling
+                         drives the throw. -->
+                    <line x1="330" y1="230" x2="330" y2="260"/>
+                    <rect x="310" y="260" width="40" height="36" fill="var(--paper-deep)" stroke="currentColor" stroke-width="2"/>
+                    <!-- Diagonal straps on the weight box -->
+                    <line x1="310" y1="260" x2="350" y2="296" opacity="0.4"/>
+                    <line x1="350" y1="260" x2="310" y2="296" opacity="0.4"/>
+
+                    <!-- SLING — hangs from the LONG end (x=70) on the
+                         left. Two ropes converge into a small pouch
+                         that holds the projectile-at-rest. -->
+                    <line x1="70" y1="230" x2="60" y2="296" opacity="0.7"/>
+                    <line x1="70" y1="230" x2="80" y2="296" opacity="0.7"/>
+                    <!-- Pouch at the bottom of the sling -->
+                    <ellipse cx="70" cy="305" rx="14" ry="6" fill="var(--paper-deep)" stroke="currentColor" stroke-width="1.5"/>
+
+                    <!-- The projectile at rest inside the sling. Visible
+                         while cocked and during the early swing; fades
+                         out at the moment of release (45% of cycle),
+                         after which the separate flying projectile
+                         element takes over. -->
+                    <circle cx="70" cy="304" r="9" fill="var(--paper)" stroke="currentColor" stroke-width="2"
+                            class="rest-token"/>
+                    <text x="70" y="308" text-anchor="middle" fill="currentColor" stroke="none"
+                          font-family="JetBrains Mono" font-size="9" font-weight="700"
+                          class="rest-token-text">$</text>
+                </g>
+
+                <!-- A small "sling trail" — appears briefly at release
+                     to suggest a motion-blur whip of the sling rope.
+                     Now in the UPPER-LEFT area where the sling whips
+                     past at release (arm at +45° rotation = up-left). -->
+                <path class="sling-trail" d="M 80 200 Q 110 120 170 70 T 240 40"
+                      stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 4" opacity="0.5"/>
+
+                <!-- TRAJECTORY ARC — the dotted parabolic path the
+                     flying projectile traces. Starts at the SLING
+                     pouch tip at release (~76, 142 in SVG coords)
+                     and arcs up and off-screen to the right. -->
+                <path class="trajectory" d="M 76 142 Q 700 -180 1500 400"
+                      stroke="var(--rubric)" stroke-width="1.5" opacity="0"/>
+
+                <!-- A FEW SCHEMATIC ANNOTATIONS — like an engineering
+                     manual, calling out parts. -->
+
+                <!-- Angle marker at the pivot (showing arm angle) -->
+                <path d="M 240 230 A 30 30 0 0 1 270 200"
+                      stroke="var(--rubric)" stroke-width="1" opacity="0.5"/>
+                <text x="234" y="220" fill="var(--rubric)" stroke="none" opacity="0.6"
+                      font-family="JetBrains Mono" font-size="10">θ</text>
+
+                <!-- Dimension callout for the base -->
+                <g opacity="0.4" stroke="currentColor" stroke-width="1">
+                    <line x1="180" y1="470" x2="380" y2="470"/>
+                    <line x1="180" y1="466" x2="180" y2="474"/>
+                    <line x1="380" y1="466" x2="380" y2="474"/>
+                </g>
+                <text x="280" y="488" text-anchor="middle" fill="var(--ink-fade)" stroke="none"
+                      font-family="JetBrains Mono" font-size="10" opacity="0.7">BASE&nbsp;W</text>
+
+                <!-- Callout label pointing at the counterweight.
+                     Now on the RIGHT side since counterweight moved. -->
+                <g opacity="0.5">
+                    <line x1="352" y1="278" x2="392" y2="278" stroke="currentColor" stroke-width="1"/>
+                    <text x="400" y="282" fill="var(--ink-fade)" stroke="none"
+                          font-family="JetBrains Mono" font-size="10">CW · 90kg</text>
+                </g>
+
+            </svg>
+
+            <!-- THE FLYING PROJECTILE — separate element, animated to
+                 fly across the screen after the trebuchet "releases".
+                 Positioned absolutely over the hero-art column. -->
+            <div class="projectile-wrap" aria-hidden="true">
+                <svg class="projectile" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+                    <!-- The coin/token — a circle with $ in the middle,
+                         drawn in the same schematic style. -->
+                    <circle cx="20" cy="20" r="17" fill="var(--paper)" stroke="var(--ink)" stroke-width="2"/>
+                    <circle cx="20" cy="20" r="13" fill="none" stroke="var(--rubric)" stroke-width="1" opacity="0.7"/>
+                    <text x="20" y="26" text-anchor="middle" fill="var(--ink)"
+                          font-family="JetBrains Mono" font-size="16" font-weight="700">$</text>
+                </svg>
+            </div>
+
+            <div class="fig-caption">
+                <span class="num">FIG. 1.0</span> · The launching mechanism
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===============================================================
+     EPIGRAPH — the medieval pullquote from the README
+     =============================================================== -->
+<section class="epigraph">
+    <hr class="rule">
+    <blockquote>
+        The trebuchet is the superior siege weapon.<br>
+        It can launch a 90&nbsp;kg projectile over 300&nbsp;meters.
+    </blockquote>
+    <cite>Common knowledge, since 1304</cite>
+    <hr class="rule" style="margin-top: 80px">
+</section>
+
+<!-- ===============================================================
+     WHAT IT DOES — four schematic cards
+     =============================================================== -->
+<section id="what">
+    <div class="container">
+        <div class="section-header">
+            <h2 class="section-title">What it does</h2>
+            <span class="section-aside">Four steps to a tradeable token</span>
+        </div>
+
+        <div class="does-grid">
+            <!-- Card 1: Mint -->
+            <div class="does-card">
+                <span class="num">[ 01 ]</span>
+                <svg class="icon" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="32" cy="32" r="22"/>
+                    <circle cx="32" cy="32" r="15" stroke-dasharray="2 3" opacity="0.5"/>
+                    <text x="32" y="38" text-anchor="middle" font-family="JetBrains Mono" font-size="14" font-weight="700" fill="currentColor" stroke="none">$</text>
+                </svg>
+                <h3>Mints your SPL token</h3>
+                <p>Token-2022 standard, full Metaplex metadata, mint &amp; freeze authorities renounced. Permanent and credible.</p>
+            </div>
+
+            <!-- Card 2: Deploy liquidity -->
+            <div class="does-card">
+                <span class="num">[ 02 ]</span>
+                <svg class="icon" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M8 40 Q 20 24, 32 40 T 56 40"/>
+                    <path d="M8 48 Q 20 32, 32 48 T 56 48" opacity="0.5"/>
+                    <line x1="8" y1="56" x2="56" y2="56"/>
+                </svg>
+                <h3>Deploys liquidity on Raydium CLMM</h3>
+                <p>Single-sided, concentrated. Multiple pools, multiple quote tokens, any split you choose.</p>
+            </div>
+
+            <!-- Card 3: Lock -->
+            <div class="does-card">
+                <span class="num">[ 03 ]</span>
+                <svg class="icon" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="14" y="28" width="36" height="26" rx="2"/>
+                    <path d="M22 28 V 18 a 10 10 0 0 1 20 0 V 28"/>
+                    <circle cx="32" cy="40" r="3" fill="currentColor"/>
+                    <line x1="32" y1="43" x2="32" y2="48"/>
+                </svg>
+                <h3>Locks the position with Burn &amp; Earn</h3>
+                <p>Liquidity is locked permanently on-chain. Nobody — including you — can pull it. That's the point.</p>
+            </div>
+
+            <!-- Card 4: Fee Keys -->
+            <div class="does-card">
+                <span class="num">[ 04 ]</span>
+                <svg class="icon" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="22" cy="32" r="10"/>
+                    <circle cx="22" cy="32" r="3" fill="currentColor"/>
+                    <line x1="32" y1="32" x2="56" y2="32"/>
+                    <line x1="48" y1="32" x2="48" y2="40"/>
+                    <line x1="56" y1="32" x2="56" y2="40"/>
+                </svg>
+                <h3>Hands you the Fee Key NFTs</h3>
+                <p>One NFT per pool. Holding it accrues trading fees forever — claim them anytime from Raydium's portfolio page. Transferable. Yours to keep, gift, or distribute.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===============================================================
+     WHAT IT DOESN'T DO — the negative list, brutal
+     =============================================================== -->
+<section class="doesnt">
+    <div class="container doesnt-inner">
+        <h2>What it <span class="strike">doesn't</span> do</h2>
+        <p class="doesnt-sub">A short list of things other launchers will happily do to you</p>
+
+        <ul class="doesnt-list">
+            <li><span class="x">×</span> Take a cut of your supply</li>
+            <li><span class="x">×</span> Charge a launch fee</li>
+            <li><span class="x">×</span> Hold your liquidity hostage</li>
+            <li><span class="x">×</span> Promote your token, list it anywhere, or do any marketing</li>
+            <li><span class="x">×</span> Anything you didn't tell it to do</li>
+        </ul>
+
+        <p class="doesnt-footer">If you wanted any of those, you launched on the wrong tool.</p>
+    </div>
+</section>
+
+
+<!-- ===============================================================
+     COMPARISON — Trebuchet vs typical launchpads, generalized.
+     Deliberately doesn't name competitors: comparison stays on
+     principles (control, extraction, openness) rather than facts
+     that drift every time a launchpad updates its fee model.
+     =============================================================== -->
+<section id="compare">
+    <div class="container">
+        <div class="section-header">
+            <h2 class="section-title">How it compares</h2>
+            <span class="section-aside">Trebuchet vs other Solana launchpads</span>
+        </div>
+
+        <!-- Honest framing: name what Trebuchet ISN'T good at first,
+             then name what it IS good at. No marketing spin. -->
+        <p class="compare-lead">
+            Trebuchet trades convenience for control. There's no mobile app,
+            no web UI, no trending feed, no community brand around your launch.
+            We can't subsidize fees or pump your token to a built-in audience,
+            <em>because we don't extract the fees that would fund that</em>.
+            What you get instead: <strong>no platform cut on your trading
+            fees, free choice of quote token, supply, market cap, and pool
+            fee tier, and 100% of LP fees flowing to you.</strong>
+        </p>
+
+        <div class="compare-table-wrap">
+            <table class="compare-table">
+                <thead>
+                    <tr>
+                        <th></th>
+                        <th class="col-trebuchet">Trebuchet</th>
+                        <th>Others</th>
+                    </tr>
+                </thead>
+                <tbody>
+
+                    <!-- ===================== COST ===================== -->
+                    <tr class="row-group">
+                        <td colspan="3">Cost</td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Trading fee on your token</td>
+                        <td class="col-trebuchet"><span class="compare-yes">Pool tier you pick</span><span class="compare-note">any Raydium CLMM tier, from low to high</span></td>
+                        <td>Fixed by the platform<span class="compare-note">usually 1 – 2% per trade</span></td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Your share of that fee</td>
+                        <td class="col-trebuchet"><span class="compare-yes">100%</span><span class="compare-note">via Fee Key NFTs, claimed on Raydium</span></td>
+                        <td>A slice, if any<span class="compare-note">platform takes the rest, sometimes all of it</span></td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Platform skim on top</td>
+                        <td class="col-trebuchet"><span class="compare-yes">None</span><span class="compare-note">Trebuchet sees none of your fee revenue</span></td>
+                        <td>Yes<span class="compare-note">sometimes rebranded as "creator rewards"</span></td>
+                    </tr>
+
+                    <!-- ===================== CONTROL ===================== -->
+                    <tr class="row-group">
+                        <td colspan="3">Control over your launch</td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Quote token choice</td>
+                        <td class="col-trebuchet"><span class="compare-yes">Any SPL token</span><span class="compare-note">SOL, USDC, $xlrt, $seige, or any custom</span></td>
+                        <td>Usually SOL only</td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Starting supply</td>
+                        <td class="col-trebuchet"><span class="compare-yes">You choose</span></td>
+                        <td>Fixed by the platform</td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Starting market cap</td>
+                        <td class="col-trebuchet"><span class="compare-yes">You choose</span></td>
+                        <td>Set by a bonding curve</td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Pool fee tier</td>
+                        <td class="col-trebuchet"><span class="compare-yes">You pick</span><span class="compare-note">all Raydium CLMM tiers available</span></td>
+                        <td>Fixed</td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Multiple pools / split LP</td>
+                        <td class="col-trebuchet"><span class="compare-yes">Yes</span><span class="compare-note">any number, shareable via Fee Key NFTs</span></td>
+                        <td><span class="compare-no">Rarely</span></td>
+                    </tr>
+
+                    <!-- ===================== ACCESS ===================== -->
+                    <tr class="row-group">
+                        <td colspan="3">Access &amp; reach</td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Runs on</td>
+                        <td class="col-trebuchet">Desktop app<span class="compare-note">Windows portable EXE</span></td>
+                        <td>Web, any device</td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Native mobile</td>
+                        <td class="col-trebuchet"><span class="compare-no">No</span></td>
+                        <td><span class="compare-yes">Yes</span></td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Built-in discovery</td>
+                        <td class="col-trebuchet"><span class="compare-no">No</span><span class="compare-note">you bring your own audience</span></td>
+                        <td><span class="compare-yes">Yes</span><span class="compare-note">trending feeds, leaderboards, social hooks</span></td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Platform-branded launch</td>
+                        <td class="col-trebuchet"><span class="compare-no">No</span><span class="compare-note">your token, no platform identity attached</span></td>
+                        <td><span class="compare-yes">Yes</span><span class="compare-note">your token carries the launchpad's identity</span></td>
+                    </tr>
+
+                    <!-- ===================== TRUST ===================== -->
+                    <tr class="row-group">
+                        <td colspan="3">Trust &amp; code</td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Open source</td>
+                        <td class="col-trebuchet"><span class="compare-yes">MIT</span><span class="compare-note">fork it, audit it, run your own</span></td>
+                        <td><span class="compare-no">Usually closed</span></td>
+                    </tr>
+
+                    <tr>
+                        <td class="feature">Custom contracts in your flow</td>
+                        <td class="col-trebuchet"><span class="compare-yes">None</span><span class="compare-note">only Raydium CLMM + Metaplex public infra</span></td>
+                        <td><span class="compare-no">Yes</span><span class="compare-note">platform contracts you have to trust</span></td>
+                    </tr>
+
+                </tbody>
+            </table>
+        </div>
+
+        <p class="compare-caption">
+            <strong>Verify the platform you choose.</strong> Launchpad fee
+            structures and feature sets change often. The point isn't that
+            any one option is universally better — it's that the trade-offs
+            are usually invisible from a platform's own landing page, and a
+            maker should know what they're signing up for before they launch.
+        </p>
+    </div>
+</section>
+
+
+<!-- ===============================================================
+     WHY IT'S AN APP — architectural philosophy section.
+     The pitch: no server, no company, no kill switch. The launchpad
+     lives on YOUR machine, talks directly to public infrastructure.
+     =============================================================== -->
+<section id="architecture">
+    <div class="container">
+        <div class="section-header">
+            <h2 class="section-title">Why it's an app</h2>
+            <span class="section-aside">An architecture that can't be shut down</span>
+        </div>
+
+        <!-- The big italic lead — the thesis of the section -->
+        <p class="architecture-lead">There is no server.</p>
+
+        <div class="architecture-grid">
+            <div class="architecture-prose">
+                <p>A typical token launchpad is a website. That means a company
+                behind it: servers to host, staff to monitor, a security team,
+                a status page, Terms of Service, a kill switch in someone else's
+                hand. The launch happens on <em>their</em> infrastructure — which
+                is exactly why they can take a cut, throttle you, change the
+                rules, or go down at the worst possible moment.</p>
+
+                <p>Trebuchet doesn't have any of that. It's a desktop app. It runs
+                on your machine, signs with your wallet, and talks directly to
+                Solana through an RPC you choose. There's no website to log into,
+                no account to verify, no backend that can be DDOS'd, breached,
+                leaked, or subpoenaed. <strong>Your computer is the security
+                boundary</strong> — the same trust model as every other piece of
+                software you already let touch your wallet.</p>
+
+                <p>The only things Trebuchet leans on are the public infrastructure
+                of the launch itself, plus an RPC provider you pick yourself. If
+                any of these stopped existing, nobody on Solana would be launching
+                tokens — and Trebuchet wouldn't be the bottleneck.</p>
+            </div>
+
+            <!-- Architecture schematic: YOUR MACHINE (with Trebuchet inside)
+                 at the top, then the RPC PROVIDER as the gateway layer in
+                 the middle, then the four public-infrastructure pieces at
+                 the bottom. The RPC sits between you and the chain — it's
+                 the network connection you choose. -->
+            <svg class="architecture-diagram" viewBox="0 0 280 310"
+                 fill="none" stroke="var(--ink)" stroke-width="1.5"
+                 stroke-linecap="round" stroke-linejoin="round">
+
+                <!-- YOUR MACHINE box — dashed rubric border = trust boundary -->
+                <rect x="40" y="10" width="200" height="68"
+                      stroke-dasharray="4 4" stroke="var(--rubric)" stroke-width="1.5" fill="transparent"/>
+                <text x="140" y="28" text-anchor="middle" stroke="none" fill="var(--rubric)"
+                      font-family="JetBrains Mono" font-size="9" font-weight="700"
+                      letter-spacing="0.18em">YOUR MACHINE</text>
+
+                <!-- Trebuchet box inside YOUR MACHINE -->
+                <rect x="80" y="42" width="120" height="28"
+                      fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                <text x="140" y="61" text-anchor="middle" stroke="none" fill="var(--ink)"
+                      font-family="JetBrains Mono" font-size="11" font-weight="700"
+                      letter-spacing="0.12em">TREBUCHET</text>
+
+                <!-- Arrow 1: Trebuchet → RPC -->
+                <line x1="140" y1="88" x2="140" y2="116" stroke-width="1.5"/>
+                <polygon points="140,122 134,112 146,112" fill="var(--ink)" stroke="none"/>
+
+                <!-- RPC PROVIDER box — rubric border signals "you choose this".
+                     This is the network gateway between you and the chain. -->
+                <rect x="80" y="128" width="120" height="44"
+                      fill="var(--paper)" stroke="var(--rubric)" stroke-width="2"/>
+                <text x="140" y="150" text-anchor="middle" stroke="none" fill="var(--rubric)"
+                      font-family="JetBrains Mono" font-size="10" font-weight="700"
+                      letter-spacing="0.14em">RPC PROVIDER</text>
+                <text x="140" y="163" text-anchor="middle" stroke="none" fill="var(--rubric)"
+                      font-family="JetBrains Mono" font-size="8" letter-spacing="0.08em"
+                      font-style="italic">(you pick)</text>
+
+                <!-- Arrow 2: RPC → public infrastructure -->
+                <line x1="140" y1="178" x2="140" y2="206" stroke-width="1.5"/>
+                <polygon points="140,212 134,202 146,202" fill="var(--ink)" stroke="none"/>
+
+                <!-- Public infrastructure row — FOUR boxes side by side.
+                     Each box width 56, gap 8, total 4*56 + 3*8 = 248,
+                     centered with offset (280-248)/2 = 16. -->
+
+                <rect x="16"  y="218" width="56" height="44" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                <text x="44"  y="245" text-anchor="middle" stroke="none" fill="var(--ink)"
+                      font-family="JetBrains Mono" font-size="9" font-weight="600">SOLANA</text>
+
+                <rect x="80"  y="218" width="56" height="44" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                <text x="108" y="241" text-anchor="middle" stroke="none" fill="var(--ink)"
+                      font-family="JetBrains Mono" font-size="9" font-weight="600">META-</text>
+                <text x="108" y="252" text-anchor="middle" stroke="none" fill="var(--ink)"
+                      font-family="JetBrains Mono" font-size="9" font-weight="600">PLEX</text>
+
+                <rect x="144" y="218" width="56" height="44" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                <text x="172" y="245" text-anchor="middle" stroke="none" fill="var(--ink)"
+                      font-family="JetBrains Mono" font-size="8.5" font-weight="600">ARWEAVE</text>
+
+                <rect x="208" y="218" width="56" height="44" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                <text x="236" y="245" text-anchor="middle" stroke="none" fill="var(--ink)"
+                      font-family="JetBrains Mono" font-size="8.5" font-weight="600">RAYDIUM</text>
+
+                <!-- Caption beneath -->
+                <text x="140" y="282" text-anchor="middle" stroke="none" fill="var(--ink-fade)"
+                      font-family="JetBrains Mono" font-size="8" letter-spacing="0.18em">PUBLIC INFRASTRUCTURE</text>
+                <text x="140" y="296" text-anchor="middle" stroke="none" fill="var(--ink-fade)"
+                      font-family="JetBrains Mono" font-size="8" letter-spacing="0.18em" font-style="italic">(no middleman between)</text>
+            </svg>
+        </div>
+
+        <!-- The five pillars: each dependency named, what role it plays -->
+        <div class="dependency-pillars">
+            <div class="pillar">
+                <h4>Solana</h4>
+                <p>The chain. Settles every transaction.</p>
+            </div>
+            <div class="pillar">
+                <h4>Metaplex</h4>
+                <p>SPL token metadata. NFT standard for Fee Keys.</p>
+            </div>
+            <div class="pillar">
+                <h4>Arweave</h4>
+                <p>Decentralized storage. Hosts token logos and metadata.</p>
+            </div>
+            <div class="pillar">
+                <h4>Raydium</h4>
+                <p>CLMM pools. Burn &amp; Earn lock. Fee distribution.</p>
+            </div>
+            <div class="pillar">
+                <h4>RPC Provider</h4>
+                <p>Network gateway to Solana. Free tier from any reliable provider is plenty.</p>
+            </div>
+        </div>
+
+        <p class="architecture-closing">
+            A <strong>decentralized launchpad</strong> with no third party between
+            you and the chain. Full control, zero overhead,
+            <br>no outages anyone else caused.
+        </p>
+    </div>
+</section>
+
+<!-- ===============================================================
+     HOW IT WORKS — six-step flow
+     =============================================================== -->
+<section id="flow">
+    <div class="container">
+        <div class="section-header">
+            <h2 class="section-title">How a launch works</h2>
+            <span class="section-aside">Six steps, walked one at a time</span>
+        </div>
+
+        <div class="steps">
+            <div class="step">
+                <span class="step-num">STEP 01 · WALLET</span>
+                <h3 class="step-title">Generate a temporary wallet</h3>
+                <p>A fresh keypair, used only for this launch. Saved encrypted in your OS keychain so a crash mid-launch is recoverable.</p>
+            </div>
+            <div class="step">
+                <span class="step-num">STEP 02 · CONFIGURE</span>
+                <h3 class="step-title">Configure token &amp; pools</h3>
+                <p>Name, symbol, supply, decimals, logo, description. Then one or more pools — paired with SOL or any SPL token, any split.</p>
+            </div>
+            <div class="step">
+                <span class="step-num">STEP 03 · FUND</span>
+                <h3 class="step-title">Fund the temporary wallet</h3>
+                <p>The app calculates the exact SOL required and shows an itemised breakdown. Send it, the app detects the deposit, you continue.</p>
+            </div>
+            <div class="step">
+                <span class="step-num">STEP 04 · MINT</span>
+                <h3 class="step-title">Mint the token</h3>
+                <p>SPL mint with Metaplex metadata. Mint, freeze, and metadata-update authorities renounced. The token now exists permanently.</p>
+            </div>
+            <div class="step">
+                <span class="step-num">STEP 05 · POOLS</span>
+                <h3 class="step-title">Create pools and lock liquidity</h3>
+                <p>Every pool's main positions, then a bootstrap pass that opens each pool at the intended price. Burn &amp; Earn locks everything.</p>
+            </div>
+            <div class="step">
+                <span class="step-num">STEP 06 · SWEEP</span>
+                <h3 class="step-title">Sweep to your destination wallet</h3>
+                <p>Fee Key NFTs, leftover tokens, leftover SOL — all moved to a wallet you own. The temporary wallet is now empty. Done.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===============================================================
+     FLYWHEELS — Reserve + Meme
+     =============================================================== -->
+<section id="flywheels">
+    <div class="container">
+        <div class="section-header">
+            <h2 class="section-title">The flywheels</h2>
+            <span class="section-aside">Pre-configured quote tokens that pull in arbitrage volume</span>
+        </div>
+
+        <!-- ===========================================================
+             MECHANISM EXPLAINER — prose on top, then two concrete
+             flywheel diagrams showing the actual paired tokens for
+             each of the two flywheels Trebuchet offers.
+             =========================================================== -->
+        <div class="flywheel-explainer">
+            <div class="flywheel-explainer-text">
+                <h3>How the mechanism works</h3>
+                <p>A flywheel is a quote token chosen deliberately because it already
+                sits in liquidity pools with multiple other interesting tokens.
+                Trebuchet ships with two pre-configured flywheels — <strong>Reserve</strong>
+                (store-of-value pairs) and <strong>Meme</strong> (high-attention meme pairs,
+                including the Reserve flywheel itself, so meme launches plug into
+                both networks at once).</p>
+                <p>When someone buys your token through the flywheel pool, they
+                spend flywheel to do it. <em>Flywheel supply gets pulled out
+                of circulation.</em> To restock, traders have to go to the
+                flywheel's <em>other</em> pools — and those trades pull supply
+                out of whatever asset is on the opposite side of each pool.</p>
+                <p>The whole network sucks itself in. Volume on your launch
+                creates ripple buy pressure across every token paired with the
+                flywheel, not just the one in your pool.</p>
+            </div>
+
+            <!-- Two concrete flywheel diagrams. Reserve's hub at the center
+                 with its 4 paired tokens around it. Meme's hub with 10 paired
+                 tokens, including $xlrt (the Reserve flywheel) highlighted
+                 in rubric — meme launches indirectly benefit from Reserve's
+                 network because they're paired with it. -->
+            <div class="flywheel-diagrams-row">
+
+                <!-- ================== RESERVE FLYWHEEL DIAGRAM ================== -->
+                <div class="flywheel-mini">
+                    <h4>Reserve <span class="mini-symbol">· $xlrt</span></h4>
+                    <p class="mini-sub">Paired with 4 quote tokens</p>
+
+                    <svg viewBox="0 0 260 230" fill="none"
+                         stroke="var(--ink)" stroke-width="1.5" stroke-linecap="round">
+
+                        <!-- Outer ripple rings — decorative network reach -->
+                        <circle cx="130" cy="115" r="100" stroke-dasharray="2 4" opacity="0.16"/>
+                        <circle cx="130" cy="115" r="76"  stroke-dasharray="2 4" opacity="0.26"/>
+
+                        <!-- Spoke lines (drawn under nodes) -->
+                        <line x1="130" y1="83"  x2="130" y2="47"/>     <!-- top -->
+                        <line x1="162" y1="115" x2="198" y2="115"/>    <!-- right -->
+                        <line x1="130" y1="147" x2="130" y2="183"/>    <!-- bottom -->
+                        <line x1="98"  y1="115" x2="62"  y2="115"/>    <!-- left -->
+
+                        <!-- Arrowheads pointing INTO the hub (supply flows in) -->
+                        <polygon points="130,83 124,73 136,73"   fill="var(--ink)" stroke="none"/>
+                        <polygon points="162,115 172,109 172,121" fill="var(--ink)" stroke="none"/>
+                        <polygon points="130,147 124,157 136,157" fill="var(--ink)" stroke="none"/>
+                        <polygon points="98,115 88,109 88,121"   fill="var(--ink)" stroke="none"/>
+
+                        <!-- Central hub: Reserve / $xlrt -->
+                        <circle cx="130" cy="115" r="32" fill="var(--paper)" stroke="var(--rubric)" stroke-width="2"/>
+                        <text x="130" y="111" text-anchor="middle" stroke="none" fill="var(--rubric)"
+                              font-family="JetBrains Mono" font-size="9" font-weight="700"
+                              letter-spacing="0.05em">RESERVE</text>
+                        <text x="130" y="123" text-anchor="middle" stroke="none" fill="var(--rubric)"
+                              font-family="JetBrains Mono" font-size="9" font-weight="700">$xlrt</text>
+
+                        <!-- Satellite: $satfi (top) -->
+                        <circle cx="130" cy="25" r="22" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="130" y="29" text-anchor="middle" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="500">$satfi</text>
+
+                        <!-- Satellite: $gweil (right) -->
+                        <circle cx="220" cy="115" r="22" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="220" y="119" text-anchor="middle" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="500">$gweil</text>
+
+                        <!-- Satellite: $dgu (bottom) -->
+                        <circle cx="130" cy="205" r="22" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="130" y="209" text-anchor="middle" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="500">$dgu</text>
+
+                        <!-- Satellite: SOL (left) -->
+                        <circle cx="40" cy="115" r="22" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="40" y="119" text-anchor="middle" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="11" font-weight="600">SOL</text>
+
+                    </svg>
+                </div>
+
+                <!-- ================== MEME FLYWHEEL DIAGRAM ================== -->
+                <div class="flywheel-mini">
+                    <h4>Meme <span class="mini-symbol">· $seige</span></h4>
+                    <p class="mini-sub">Paired with 10 quote tokens</p>
+
+                    <svg viewBox="0 0 380 380" fill="none"
+                         stroke="var(--ink)" stroke-width="1.5" stroke-linecap="round">
+
+                        <!-- Outer ripple rings — wider network reach -->
+                        <circle cx="190" cy="190" r="156" stroke-dasharray="2 4" opacity="0.15"/>
+                        <circle cx="190" cy="190" r="128" stroke-dasharray="2 4" opacity="0.22"/>
+
+                        <!-- Spoke lines from hub edge to each satellite edge.
+                             Computed for hub radius 38, satellite radius 8,
+                             satellite distance 118 from hub center. -->
+                        <line x1="190" y1="152" x2="190" y2="80"/>          <!-- i=0 top -->
+                        <line x1="212" y1="159" x2="255" y2="101"/>         <!-- i=1 -->
+                        <line x1="226" y1="178" x2="295" y2="156"/>         <!-- i=2 -->
+                        <line x1="226" y1="202" x2="295" y2="224"/>         <!-- i=3 -->
+                        <line x1="212" y1="221" x2="255" y2="279"/>         <!-- i=4 -->
+                        <line x1="190" y1="228" x2="190" y2="300"/>         <!-- i=5 bottom -->
+                        <line x1="168" y1="221" x2="125" y2="279"/>         <!-- i=6 -->
+                        <line x1="154" y1="202" x2="85"  y2="224"/>         <!-- i=7 -->
+                        <line x1="154" y1="178" x2="85"  y2="156"/>         <!-- i=8 -->
+                        <line x1="168" y1="159" x2="125" y2="101"/>         <!-- i=9 -->
+
+                        <!-- Central hub: Meme flywheel — MEME on top line,
+                             $seige ticker below, matching Reserve's pattern. -->
+                        <circle cx="190" cy="190" r="38" fill="var(--paper)" stroke="var(--rubric)" stroke-width="2"/>
+                        <text x="190" y="187" text-anchor="middle" stroke="none" fill="var(--rubric)"
+                              font-family="JetBrains Mono" font-size="12" font-weight="700"
+                              letter-spacing="0.06em">MEME</text>
+                        <text x="190" y="201" text-anchor="middle" stroke="none" fill="var(--rubric)"
+                              font-family="JetBrains Mono" font-size="11" font-weight="700">$seige</text>
+
+                        <!-- 10 satellite nodes at 36° intervals (clockwise from top).
+                             Small circles act as markers; labels sit OUTSIDE in the
+                             radial direction so long names like $horsemeat fit. -->
+
+                        <!-- i=0 (top): SOL -->
+                        <circle cx="190" cy="72" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="190" y="58" text-anchor="middle" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="11" font-weight="600">SOL</text>
+
+                        <!-- i=1 (upper-right): $Bitcoin -->
+                        <circle cx="259" cy="95" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="268" y="84" text-anchor="start" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="500">$Bitcoin</text>
+
+                        <!-- i=2 (right): $spx -->
+                        <circle cx="302" cy="154" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="317" y="149" text-anchor="start" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="500">$spx</text>
+
+                        <!-- i=3 (lower-right): $ponke -->
+                        <circle cx="302" cy="226" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="317" y="231" text-anchor="start" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="500">$ponke</text>
+
+                        <!-- i=4 (lower-right2): $giga -->
+                        <circle cx="259" cy="286" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="268" y="301" text-anchor="start" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="500">$giga</text>
+
+                        <!-- i=5 (bottom): $pop -->
+                        <circle cx="190" cy="308" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="190" y="333" text-anchor="middle" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="500">$pop</text>
+
+                        <!-- i=6 (lower-left): $fartcoin -->
+                        <circle cx="121" cy="286" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="112" y="301" text-anchor="end" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="500">$fartcoin</text>
+
+                        <!-- i=7 (left-lower): $chud -->
+                        <circle cx="78" cy="226" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="63" y="231" text-anchor="end" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="500">$chud</text>
+
+                        <!-- i=8 (left): $horsemeat -->
+                        <circle cx="78" cy="154" r="8" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="63" y="149" text-anchor="end" stroke="none" fill="var(--ink)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="500">$horsemeat</text>
+
+                        <!-- i=9 (upper-left): $xlrt — SPECIAL: this IS the Reserve
+                             flywheel. Rubric border on the marker, rubric text on
+                             the label, small asterisk to point at the footnote. -->
+                        <circle cx="121" cy="95" r="9" fill="var(--paper)" stroke="var(--rubric)" stroke-width="2"/>
+                        <text x="112" y="84" text-anchor="end" stroke="none" fill="var(--rubric)"
+                              font-family="JetBrains Mono" font-size="10" font-weight="700">$xlrt *</text>
+
+                    </svg>
+
+                    <p class="mini-footnote">
+                        <span class="star">*</span> $xlrt = the Reserve flywheel.
+                        Meme launches plug into Reserve's network too.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===========================================================
+             ROUTING EXPLAINER — how aggregators (Jupiter etc.) amplify
+             the flywheel effect. Without aggregators, traders would have
+             to pick a pool manually; with them, the flywheel pool wins
+             whenever it offers the best price, which kicks off arbitrage
+             across the rest of the flywheel's pools.
+             =========================================================== -->
+        <div class="routing-explainer">
+            <div class="routing-text">
+                <h3>Why this works in practice</h3>
+                <p>Every modern Solana wallet, DEX UI, and aggregator (Jupiter being
+                the well-known one) does the same thing: when someone buys your token,
+                the platform scans every pool that holds it and routes the trade
+                through whichever one offers the best price. The trader sees one
+                number; the aggregator picked the path.</p>
+                <p>If the flywheel pool offers a competitive price, that's where the
+                trade goes. It pulls flywheel supply out of that pool and shifts its
+                price relative to the flywheel's <em>other</em> pools. That gap is an
+                arbitrage opportunity — bots live to close those. They trade flywheel
+                against everything else paired with it until the prices line up, which
+                means demand ripples through every pool in the network.</p>
+            </div>
+
+            <!-- Three-step horizontal flow: aggregator picks → trade lands →
+                 arbitrage propagates. On narrow screens this stacks vertically. -->
+            <div class="routing-flow">
+
+                <!-- =================== STEP 1: AGGREGATE =================== -->
+                <div class="routing-step">
+                    <span class="routing-step-num">STEP 01</span>
+                    <h5 class="routing-step-title">Aggregate</h5>
+                    <svg viewBox="0 0 200 140" fill="none" stroke="var(--ink)">
+                        <!-- Eyebrow label -->
+                        <text x="100" y="14" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="9" letter-spacing="0.2em" fill="var(--ink-fade)" stroke="none">POOL OPTIONS</text>
+
+                        <!-- Row 1: SOL pair — middling price -->
+                        <text x="14" y="44" font-family="JetBrains Mono" font-size="10"
+                              fill="var(--ink-soft)" stroke="none">SOL</text>
+                        <rect x="48" y="36" width="138" height="14" stroke="var(--rule)"
+                              stroke-dasharray="2 3" stroke-width="1" fill="none"/>
+                        <rect x="48" y="36" width="48" height="14" fill="var(--ink-soft)"
+                              opacity="0.32" stroke="none"/>
+
+                        <!-- Row 2: USDC pair — slightly better -->
+                        <text x="14" y="72" font-family="JetBrains Mono" font-size="10"
+                              fill="var(--ink-soft)" stroke="none">USDC</text>
+                        <rect x="48" y="64" width="138" height="14" stroke="var(--rule)"
+                              stroke-dasharray="2 3" stroke-width="1" fill="none"/>
+                        <rect x="48" y="64" width="72" height="14" fill="var(--ink-soft)"
+                              opacity="0.4" stroke="none"/>
+
+                        <!-- Row 3: FLY pair — best price, rubric highlight -->
+                        <text x="14" y="100" font-family="JetBrains Mono" font-size="10"
+                              font-weight="700" fill="var(--rubric)" stroke="none">FLY ★</text>
+                        <rect x="48" y="92" width="138" height="14" stroke="var(--rubric)"
+                              stroke-width="1.5" fill="none"/>
+                        <rect x="48" y="92" width="124" height="14" fill="var(--rubric)"
+                              opacity="0.45" stroke="none"/>
+
+                        <!-- Caption -->
+                        <text x="100" y="128" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="9" font-style="italic" fill="var(--ink-fade)" stroke="none">cheapest route wins</text>
+                    </svg>
+                    <p>Aggregator scans every pool that holds your token and ranks by price.</p>
+                </div>
+
+                <div class="routing-arrow">→</div>
+
+                <!-- =================== STEP 2: EXECUTE =================== -->
+                <div class="routing-step">
+                    <span class="routing-step-num">STEP 02</span>
+                    <h5 class="routing-step-title">Execute</h5>
+                    <svg viewBox="0 0 200 140" fill="none" stroke="var(--ink)">
+                        <!-- Eyebrow label -->
+                        <text x="100" y="14" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="9" letter-spacing="0.2em" fill="var(--ink-fade)" stroke="none">TRADE ENTERS</text>
+
+                        <!-- Incoming trade arrow from the left -->
+                        <line x1="14" y1="70" x2="60" y2="70" stroke-width="1.5"/>
+                        <polygon points="60,70 52,66 52,74" fill="var(--ink)" stroke="none"/>
+
+                        <!-- The flywheel pool — highlighted in rubric -->
+                        <rect x="64" y="42" width="100" height="56" fill="var(--paper)"
+                              stroke="var(--rubric)" stroke-width="2"/>
+                        <text x="114" y="63" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="10" font-weight="700" fill="var(--rubric)"
+                              stroke="none" letter-spacing="0.06em">FLY POOL</text>
+                        <line x1="74" y1="72" x2="154" y2="72" stroke="var(--rubric)"
+                              stroke-width="0.5" opacity="0.5"/>
+                        <text x="114" y="88" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="9" fill="var(--rubric)" stroke="none">price moves ↑</text>
+
+                        <!-- Caption -->
+                        <text x="100" y="128" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="9" font-style="italic" fill="var(--ink-fade)" stroke="none">supply pulled, price shifts</text>
+                    </svg>
+                    <p>The flywheel pool fills the trade. Its price moves; other flywheel pools don't.</p>
+                </div>
+
+                <div class="routing-arrow">→</div>
+
+                <!-- =================== STEP 3: RIPPLE =================== -->
+                <div class="routing-step">
+                    <span class="routing-step-num">STEP 03</span>
+                    <h5 class="routing-step-title">Ripple</h5>
+                    <svg viewBox="0 0 200 140" fill="none" stroke="var(--ink)">
+                        <!-- Eyebrow label -->
+                        <text x="100" y="14" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="9" letter-spacing="0.2em" fill="var(--ink-fade)" stroke="none">ARBITRAGE</text>
+
+                        <!-- Decorative ripple rings — suggests outward propagation -->
+                        <circle cx="100" cy="74" r="48" stroke-dasharray="2 4" opacity="0.18" stroke-width="1" fill="none"/>
+                        <circle cx="100" cy="74" r="36" stroke-dasharray="2 4" opacity="0.28" stroke-width="1" fill="none"/>
+
+                        <!-- Spokes from FLY hub to 6 satellite pools.
+                             Hub center (100, 74) radius 14, satellites at distance
+                             38 radius 7, spaced 60° apart. Lines stop at the edges
+                             so they don't crash into the circles. -->
+                        <line x1="100" y1="60" x2="100" y2="43" stroke-width="1.5"/>
+                        <line x1="112" y1="67" x2="127" y2="58" stroke-width="1.5"/>
+                        <line x1="112" y1="81" x2="127" y2="90" stroke-width="1.5"/>
+                        <line x1="100" y1="88" x2="100" y2="105" stroke-width="1.5"/>
+                        <line x1="88"  y1="81" x2="73"  y2="90" stroke-width="1.5"/>
+                        <line x1="88"  y1="67" x2="73"  y2="58" stroke-width="1.5"/>
+
+                        <!-- Central FLY hub -->
+                        <circle cx="100" cy="74" r="14" fill="var(--paper)" stroke="var(--rubric)" stroke-width="2"/>
+                        <text x="100" y="78" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="9" font-weight="700" fill="var(--rubric)" stroke="none">FLY</text>
+
+                        <!-- 6 satellite pools = flywheel's other pairs -->
+                        <circle cx="100" cy="36"  r="7" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <circle cx="133" cy="55"  r="7" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <circle cx="133" cy="93"  r="7" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <circle cx="100" cy="112" r="7" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <circle cx="67"  cy="93"  r="7" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <circle cx="67"  cy="55"  r="7" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+
+                        <!-- Caption -->
+                        <text x="100" y="132" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="9" font-style="italic" fill="var(--ink-fade)" stroke="none">demand propagates outward</text>
+                    </svg>
+                    <p>Bots close the price gap by trading flywheel across every other pool it lives in.</p>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- ===========================================================
+             CYCLE EXPLAINER — what happens AFTER the first ripple.
+             The propagation is bidirectional and self-reinforcing:
+             any token rising pulls supply through the flywheel from
+             every other token; any token dipping gets met with buy
+             pressure from the network. Multi-hop, too: each pair has
+             its own pools, so the wave keeps moving outward.
+             =========================================================== -->
+        <div class="cycle-explainer">
+            <div class="cycle-text">
+                <h3>The cycle compounds</h3>
+                <p>The first ripple isn't where this stops. Every round of
+                arbitrage leaves each flywheel-paired token with fresh buy
+                pressure of its own — and those tokens have their own pools,
+                paired with SOL or stables or whatever else is liquid. The
+                aggregator picks the best route in <em>those</em> pools too,
+                and the demand keeps propagating outward. A rising tide lifts
+                every boat in the network.</p>
+                <p>And the machinery runs both directions. If one paired
+                token slips on external sell pressure, it becomes the cheap
+                side of an arbitrage gap. Bots buy it up, paying with flywheel
+                pulled from the other pools where flywheel is still abundant.
+                <em>The dip meets buy pressure from the network before it has
+                a chance to fully unwind.</em></p>
+            </div>
+
+            <!-- Two side-by-side panels: the up case and the down case. -->
+            <div class="cycle-panels">
+
+                <!-- ================== PANEL 1: RISING TIDE ================== -->
+                <div class="cycle-panel">
+                    <span class="cycle-panel-num">CASE 01 · UP</span>
+                    <h5 class="cycle-panel-title">Rising tide</h5>
+
+                    <svg viewBox="0 0 260 260" fill="none"
+                         stroke="var(--ink)" stroke-width="1.5">
+
+                        <!-- Decorative ripple rings — extended-network hint -->
+                        <circle cx="130" cy="130" r="118" stroke-dasharray="2 4" opacity="0.13"/>
+                        <circle cx="130" cy="130" r="100" stroke-dasharray="2 4" opacity="0.2"/>
+
+                        <!-- Spokes from FW hub (r=26, center 130,130) to inner satellites
+                             (r=22, distance 80). Bidirectional arrows on each spoke. -->
+
+                        <!-- N spoke -->
+                        <line x1="130" y1="104" x2="130" y2="72"/>
+                        <polygon points="130,104 125,94 135,94" fill="var(--ink)" stroke="none"/>
+                        <polygon points="130,72 125,82 135,82"   fill="var(--ink)" stroke="none"/>
+
+                        <!-- E spoke -->
+                        <line x1="156" y1="130" x2="188" y2="130"/>
+                        <polygon points="156,130 166,125 166,135" fill="var(--ink)" stroke="none"/>
+                        <polygon points="188,130 178,125 178,135" fill="var(--ink)" stroke="none"/>
+
+                        <!-- S spoke -->
+                        <line x1="130" y1="156" x2="130" y2="188"/>
+                        <polygon points="130,156 125,166 135,166" fill="var(--ink)" stroke="none"/>
+                        <polygon points="130,188 125,178 135,178" fill="var(--ink)" stroke="none"/>
+
+                        <!-- W spoke -->
+                        <line x1="104" y1="130" x2="72"  y2="130"/>
+                        <polygon points="104,130 94,125 94,135" fill="var(--ink)" stroke="none"/>
+                        <polygon points="72,130 82,125 82,135"  fill="var(--ink)" stroke="none"/>
+
+                        <!-- Central FW hub — rising -->
+                        <circle cx="130" cy="130" r="26" fill="var(--paper)" stroke="var(--rubric)" stroke-width="2"/>
+                        <text x="130" y="130" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="11" font-weight="700" fill="var(--rubric)" stroke="none">FW</text>
+                        <text x="130" y="144" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="11" font-weight="700" fill="var(--rubric)" stroke="none">↑</text>
+
+                        <!-- N satellite — $A, rising -->
+                        <circle cx="130" cy="50" r="22" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="130" y="50" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="10" font-weight="500" fill="var(--ink)" stroke="none">$A</text>
+                        <text x="130" y="63" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="11" font-weight="700" fill="var(--rubric)" stroke="none">↑</text>
+
+                        <!-- E satellite — $B, rising -->
+                        <circle cx="210" cy="130" r="22" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="210" y="130" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="10" font-weight="500" fill="var(--ink)" stroke="none">$B</text>
+                        <text x="210" y="143" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="11" font-weight="700" fill="var(--rubric)" stroke="none">↑</text>
+
+                        <!-- S satellite — $C, rising -->
+                        <circle cx="130" cy="210" r="22" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="130" y="210" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="10" font-weight="500" fill="var(--ink)" stroke="none">$C</text>
+                        <text x="130" y="223" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="11" font-weight="700" fill="var(--rubric)" stroke="none">↑</text>
+
+                        <!-- W satellite — SOL, rising. Concrete label since user wanted
+                             to show that the cascade reaches SOL. -->
+                        <circle cx="50" cy="130" r="22" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="50" y="130" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="10" font-weight="600" fill="var(--ink)" stroke="none">SOL</text>
+                        <text x="50" y="143" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="11" font-weight="700" fill="var(--rubric)" stroke="none">↑</text>
+
+                        <!-- Caption beneath -->
+                        <text x="130" y="250" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="9" font-style="italic" fill="var(--ink-fade)" stroke="none">demand flows either way · all rise together</text>
+                    </svg>
+
+                    <p>Any token rising pulls supply through the flywheel from
+                    every other token. The favor keeps getting returned.</p>
+                </div>
+
+                <!-- ================== PANEL 2: DIP ABSORPTION ================== -->
+                <div class="cycle-panel">
+                    <span class="cycle-panel-num">CASE 02 · DOWN</span>
+                    <h5 class="cycle-panel-title">Dip absorption</h5>
+
+                    <svg viewBox="0 0 260 260" fill="none"
+                         stroke="var(--ink)" stroke-width="1.5">
+
+                        <!-- Decorative ripple rings -->
+                        <circle cx="130" cy="130" r="118" stroke-dasharray="2 4" opacity="0.13"/>
+                        <circle cx="130" cy="130" r="100" stroke-dasharray="2 4" opacity="0.2"/>
+
+                        <!-- N, E, W spokes: thin lines with small inward arrows at hub end,
+                             showing that FW is being collected FROM these pools (drained
+                             slightly because arbitrage routes it to the dipping pair). -->
+
+                        <!-- N spoke -->
+                        <line x1="130" y1="104" x2="130" y2="72"/>
+                        <polygon points="130,104 125,94 135,94" fill="var(--ink-soft)" stroke="none"/>
+
+                        <!-- E spoke -->
+                        <line x1="156" y1="130" x2="188" y2="130"/>
+                        <polygon points="156,130 166,125 166,135" fill="var(--ink-soft)" stroke="none"/>
+
+                        <!-- W spoke -->
+                        <line x1="104" y1="130" x2="72" y2="130"/>
+                        <polygon points="104,130 94,125 94,135" fill="var(--ink-soft)" stroke="none"/>
+
+                        <!-- S spoke: BOLD rubric, arrow at satellite end pointing INTO $C.
+                             This is the buy pressure converging on the dipping pair. -->
+                        <line x1="130" y1="156" x2="130" y2="188" stroke="var(--rubric)" stroke-width="2.5"/>
+                        <polygon points="130,188 124,176 136,176" fill="var(--rubric)" stroke="none"/>
+
+                        <!-- Central FW hub -->
+                        <circle cx="130" cy="130" r="26" fill="var(--paper)" stroke="var(--rubric)" stroke-width="2"/>
+                        <text x="130" y="134" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="11" font-weight="700" fill="var(--rubric)" stroke="none">FW</text>
+
+                        <!-- N, E, W satellites — unaffected -->
+                        <circle cx="130" cy="50" r="22" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="130" y="54" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="10" font-weight="500" fill="var(--ink-soft)" stroke="none">$A</text>
+
+                        <circle cx="210" cy="130" r="22" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="210" y="134" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="10" font-weight="500" fill="var(--ink-soft)" stroke="none">$B</text>
+
+                        <circle cx="50" cy="130" r="22" fill="var(--paper)" stroke="var(--ink)" stroke-width="1.5"/>
+                        <text x="50" y="134" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="10" font-weight="600" fill="var(--ink-soft)" stroke="none">SOL</text>
+
+                        <!-- S satellite — $C, DIPPING. Dashed rubric border + ↓ indicator -->
+                        <circle cx="130" cy="210" r="22" fill="var(--paper)"
+                                stroke="var(--rubric)" stroke-width="2" stroke-dasharray="3 2"/>
+                        <text x="130" y="210" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="10" font-weight="700" fill="var(--rubric)" stroke="none">$C</text>
+                        <text x="130" y="223" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="11" font-weight="700" fill="var(--rubric)" stroke="none">↓</text>
+
+                        <!-- Caption beneath -->
+                        <text x="130" y="250" text-anchor="middle" font-family="JetBrains Mono"
+                              font-size="9" font-style="italic" fill="var(--ink-fade)" stroke="none">buy pressure converges · dip gets eaten</text>
+                    </svg>
+
+                    <p>A token dipping becomes the cheap side of an arbitrage
+                    gap. The network buys it up before the slip can compound.</p>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Two flywheel cards. Each now shows the mint address, symbol
+             where applicable, and what it's paired with. -->
+        <div class="flywheels-grid">
+
+            <!-- ============================ RESERVE FLYWHEEL ============================ -->
+            <article class="flywheel">
+                <div class="flywheel-head">
+                    <!-- A simple animated gear icon, rotates slowly -->
+                    <svg class="flywheel-icon" viewBox="0 0 80 80" fill="none" stroke="var(--ink)" stroke-width="2">
+                        <circle cx="40" cy="40" r="14"/>
+                        <circle cx="40" cy="40" r="6" fill="var(--ink)"/>
+                        <g stroke-width="2.5">
+                            <rect x="36" y="6"  width="8" height="10"/>
+                            <rect x="36" y="64" width="8" height="10"/>
+                            <rect x="6"  y="36" width="10" height="8"/>
+                            <rect x="64" y="36" width="10" height="8"/>
+                            <rect x="14" y="14" width="10" height="8" transform="rotate(45 19 18)"/>
+                            <rect x="56" y="14" width="10" height="8" transform="rotate(-45 61 18)"/>
+                            <rect x="14" y="58" width="10" height="8" transform="rotate(-45 19 62)"/>
+                            <rect x="56" y="58" width="10" height="8" transform="rotate(45 61 62)"/>
+                        </g>
+                    </svg>
+                    <div class="flywheel-meta">
+                        <span class="label">Flywheel · 01</span>
+                        <h3>Reserve <span class="flywheel-symbol">· XLRT</span></h3>
+                    </div>
+                </div>
+
+                <p>A store-of-value flywheel. Lower downside, lower volume — use
+                for serious projects, utility tokens, or anything with a long-term
+                posture where you'd rather not be tied to meme momentum.</p>
+
+                <div class="flywheel-pairs">
+                    <span class="label">Paired with</span>
+                    An ETH-backed token, a BTC-backed token, and a stable-backed
+                    flywheel token. Acts as a hedge against SOL.
+                </div>
+
+                <div class="flywheel-mint">
+                    <span class="label">Mint address</span>
+                    <div class="flywheel-mint-row">
+                        <code class="flywheel-mint-addr">J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj</code>
+                        <button class="copy-btn" type="button"
+                                data-copy="J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj">Copy</button>
+                    </div>
+                </div>
+
+                <div class="verdict">
+                    <span class="tag">Posture</span> &nbsp;Serious / long-term
+                </div>
+            </article>
+
+            <!-- ============================ MEME FLYWHEEL ============================ -->
+            <article class="flywheel">
+                <div class="flywheel-head">
+                    <svg class="flywheel-icon" viewBox="0 0 80 80" fill="none" stroke="var(--rubric)" stroke-width="2">
+                        <circle cx="40" cy="40" r="14"/>
+                        <circle cx="40" cy="40" r="6" fill="var(--rubric)"/>
+                        <g stroke-width="2.5">
+                            <rect x="36" y="6"  width="8" height="10"/>
+                            <rect x="36" y="64" width="8" height="10"/>
+                            <rect x="6"  y="36" width="10" height="8"/>
+                            <rect x="64" y="36" width="10" height="8"/>
+                            <rect x="14" y="14" width="10" height="8" transform="rotate(45 19 18)"/>
+                            <rect x="56" y="14" width="10" height="8" transform="rotate(-45 61 18)"/>
+                            <rect x="14" y="58" width="10" height="8" transform="rotate(-45 19 62)"/>
+                            <rect x="56" y="58" width="10" height="8" transform="rotate(45 61 62)"/>
+                        </g>
+                    </svg>
+                    <div class="flywheel-meta">
+                        <span class="label">Flywheel · 02</span>
+                        <h3>Meme <span class="flywheel-symbol">· $seige</span></h3>
+                    </div>
+                </div>
+
+                <p>A momentum flywheel. Higher chance of meaningful volume, higher
+                downside exposure if the paired memes decline. Use for meme launches
+                where attention and beta matter more than stability.</p>
+
+                <div class="flywheel-pairs">
+                    <span class="label">Paired with</span>
+                    Popular meme tokens that have retained active communities
+                    and trading attention.
+                </div>
+
+                <div class="flywheel-mint">
+                    <span class="label">Mint address</span>
+                    <div class="flywheel-mint-row">
+                        <code class="flywheel-mint-addr">HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r</code>
+                        <button class="copy-btn" type="button"
+                                data-copy="HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r">Copy</button>
+                    </div>
+                </div>
+
+                <div class="verdict">
+                    <span class="tag">Posture</span> &nbsp;Higher beta / momentum
+                </div>
+            </article>
+        </div>
+    </div>
+</section>
+
+<!-- ===============================================================
+     LP FEES — straight talk about pool fees, no marketing renames.
+     Trebuchet hands you 100% of LP fees via the Fee Key NFT and lets
+     you pick your fee tier. Other launchpads skim and call it
+     "creator rewards" — this section makes that explicit.
+     =============================================================== -->
+<section id="fees">
+    <div class="container">
+        <div class="section-header">
+            <h2 class="section-title">About the fees</h2>
+            <span class="section-aside">Revenue that doesn't require dumping on your buyers</span>
+        </div>
+
+        <p class="fees-lead">
+            Popular launchpads market your share of pool fees as
+            <em>"creator rewards"</em>, <em>"creator royalties"</em>, or some
+            other invented term. The reframe makes it sound like a special
+            kindness. It isn't — it's just LP fees with a slice taken off
+            the top before the rest gets passed along.
+        </p>
+
+        <div class="fees-body">
+
+            <!-- Visual comparison: their split vs ours -->
+            <div class="fees-comparison-wrap">
+                <h4>The split</h4>
+                <svg class="fees-comparison" viewBox="0 0 360 180" fill="none">
+
+                    <!-- ===== Other launchpads ===== -->
+                    <text x="20" y="16" font-family="JetBrains Mono" font-size="10"
+                          letter-spacing="0.18em" font-weight="700"
+                          fill="var(--ink-fade)" stroke="none">OTHER LAUNCHPADS</text>
+
+                    <!-- Full bar outline -->
+                    <rect x="20" y="28" width="320" height="34"
+                          stroke="var(--ink)" stroke-width="1.5" fill="var(--paper)"/>
+
+                    <!-- Skim segment (left ~25%) — rubric fill marks extraction -->
+                    <rect x="20" y="28" width="80" height="34"
+                          fill="var(--rubric)" opacity="0.9" stroke="none"/>
+                    <line x1="100" y1="28" x2="100" y2="62"
+                          stroke="var(--ink)" stroke-width="1.5"/>
+
+                    <!-- Segment labels -->
+                    <text x="60" y="50" text-anchor="middle" font-family="JetBrains Mono"
+                          font-size="9" font-weight="700" letter-spacing="0.05em"
+                          fill="var(--paper)" stroke="none">SKIM</text>
+                    <text x="220" y="46" text-anchor="middle" font-family="JetBrains Mono"
+                          font-size="11" fill="var(--ink)" stroke="none">your share</text>
+                    <text x="220" y="58" text-anchor="middle" font-family="JetBrains Mono"
+                          font-size="8" font-style="italic"
+                          fill="var(--ink-fade)" stroke="none">("creator rewards")</text>
+
+                    <!-- ===== Trebuchet ===== -->
+                    <text x="20" y="106" font-family="JetBrains Mono" font-size="10"
+                          letter-spacing="0.18em" font-weight="700"
+                          fill="var(--rubric)" stroke="none">TREBUCHET</text>
+
+                    <!-- Single-segment bar — no skim, paper fill with rubric border -->
+                    <rect x="20" y="118" width="320" height="34"
+                          stroke="var(--rubric)" stroke-width="2" fill="var(--paper)"/>
+                    <text x="180" y="139" text-anchor="middle" font-family="JetBrains Mono"
+                          font-size="11" font-weight="700" letter-spacing="0.05em"
+                          fill="var(--rubric)" stroke="none">100% YOURS · NO CUT</text>
+
+                    <!-- Closing caption -->
+                    <text x="180" y="172" text-anchor="middle" font-family="JetBrains Mono"
+                          font-size="9" font-style="italic"
+                          fill="var(--ink-fade)" stroke="none">every pool, every fee tier you chose</text>
+
+                </svg>
+            </div>
+
+            <!-- Right column: prose explanation -->
+            <div class="fees-prose">
+                <h4>What's actually happening</h4>
+                <p>Every swap in a Raydium CLMM pool charges a small fee, set
+                by the pool's fee tier. The fee accrues to whoever holds the
+                LP position — and through Burn &amp; Earn, that's your Fee
+                Key NFT. You're the LP. You happen to be the only one.</p>
+
+                <p>The launchpads that rebrand this as "creator rewards" are
+                doing two things you might not notice: <strong>they take a
+                cut before forwarding the rest</strong>, and they usually
+                <strong>pick the fee tier for you</strong> — often the lowest
+                available, so the LP earns less per trade.</p>
+
+                <p>Trebuchet does neither. You picked the fee tier when you
+                set up the launch. Burn &amp; Earn locks the LP and sends the
+                Fee Key NFT to your wallet. Every accrued fee, on every pool,
+                is yours to claim — full amount, no fine print.</p>
+            </div>
+
+        </div>
+
+        <!-- Practical: how to actually claim the accrued fees -->
+        <div class="fees-claim">
+            <span class="fees-claim-label">How to claim</span>
+            <h4>Use Raydium's portfolio page.</h4>
+            <p>Connect the wallet holding your Fee Key NFTs at
+            <a href="https://raydium.io/portfolio/" target="_blank" rel="noopener">raydium.io/portfolio</a>.
+            Your locked positions show up under <em>Standard</em>. Hit
+            <em>Harvest</em> on each to pull the accrued fees into your
+            wallet. It's the same UI any LP uses — Trebuchet isn't in the
+            path at all.</p>
+
+            <p>If your token is interesting and gets volume, those fees compound.
+            That's revenue that doesn't require selling the supply you held back —
+            which is the kind of revenue that doesn't put pressure on the people
+            who bought in.</p>
+        </div>
+
+    </div>
+</section>
+
+
+<!-- ===============================================================
+     RPC NOTICE — important pre-launch requirement, can't be skipped
+     =============================================================== -->
+<section class="rpc-notice">
+    <div class="container">
+        <div class="rpc-card">
+
+            <!-- Warning iconography — schematic triangle with exclamation,
+                 matching the rest of the engineering-drawing style. -->
+            <svg class="rpc-icon" viewBox="0 0 64 64" fill="none"
+                 stroke="currentColor" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round">
+                <path d="M32 8 L60 56 L4 56 Z"/>
+                <line x1="32" y1="26" x2="32" y2="42"/>
+                <circle cx="32" cy="49" r="1.5" fill="currentColor"/>
+            </svg>
+
+            <div class="rpc-text">
+                <span class="rpc-label">Before you launch · Non-negotiable</span>
+                <h3>Don't use the public Solana RPC.</h3>
+                <p>The free public RPC is shared by the entire ecosystem and
+                aggressively rate-limited. Pool creation requires a sustained
+                burst of dozens of requests; on the public endpoint you'll be
+                throttled mid-flow, transactions will fail, and you can lose
+                SOL on partial failures that need manual recovery.
+                <strong>This is the single most common cause of failed
+                launches.</strong></p>
+                <p>Grab a free endpoint from any reliable provider — Helius,
+                Triton, QuickNode, Alchemy, or another of your choosing. Their
+                <strong>free tiers are plenty for what Trebuchet needs</strong>;
+                a paid plan isn't required. The one thing to avoid is free
+                aggregator endpoints, which fail the same way as the public RPC.</p>
+            </div>
+
+        </div>
+    </div>
+</section>
+
+<!-- ===============================================================
+     DOWNLOAD CTA
+     =============================================================== -->
+<section id="download" class="download">
+    <div class="download-inner">
+        <p class="eyebrow">Free · Open Source · MIT License · v1.0</p>
+        <h2>Make some tokens.</h2>
+        <p>Trebuchet is a desktop app. It runs on your machine, signs with your wallet, and answers to nobody but you.</p>
+
+        <div class="download-buttons">
+            <!-- Note: GitHub serves the raw file via /raw/, not /blob/.
+                 The /blob/ URL renders the GitHub viewer page. -->
+            <a href="https://github.com/AnOversizedMooseWithSocks/trebuchet/raw/main/dist/Trebuchet%201.0.0%20Portable.exe"
+               class="btn btn-dark">
+                <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3v14m0 0l-5-5m5 5l5-5M5 21h14"/></svg>
+                Download Windows · Portable EXE
+            </a>
+            <a href="https://github.com/AnOversizedMooseWithSocks/trebuchet" target="_blank" rel="noopener"
+               class="btn btn-dark-ghost">
+                <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+                Build from source
+            </a>
+            <!-- X (formerly Twitter) — official logo as a single path glyph -->
+            <a href="https://x.com/makesometokens" target="_blank" rel="noopener"
+               class="btn btn-dark-ghost">
+                <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                Follow @makesometokens
+            </a>
+        </div>
+
+        <p class="download-note">
+            macOS &amp; Linux: clone the repo and run <code style="background: rgba(255,255,255,0.08); padding: 2px 6px; font-size: 11px;">npm install &amp;&amp; npm start</code>.
+            Source files, build instructions, and a longer README are in the repo.
+        </p>
+    </div>
+</section>
+
+</main>
+
+<!-- ===============================================================
+     FOOTER
+     =============================================================== -->
+<footer>
+    <div class="container footer-inner">
+        <div>
+            <span class="joke">trebuchet · but with a domain that's easier to spell</span>
+        </div>
+        <div>
+            MIT &nbsp;·&nbsp; v1.0.0 &nbsp;·&nbsp;
+            <a href="https://github.com/AnOversizedMooseWithSocks/trebuchet" target="_blank" rel="noopener">github.com/AnOversizedMooseWithSocks/trebuchet</a>
+            &nbsp;·&nbsp;
+            <a href="https://x.com/makesometokens" target="_blank" rel="noopener">@makesometokens</a>
+        </div>
+    </div>
+</footer>
+
+<!-- ===============================================================
+     SCRIPTS — small, vanilla. Just the copy-to-clipboard handler.
+     =============================================================== -->
+<script>
+    /*
+       Copy-to-clipboard for the flywheel mint addresses
+       -------------------------------------------------
+       Each .copy-btn has a data-copy attribute holding the address.
+       Clicking it writes to clipboard via the modern async API and
+       briefly toggles a .copied class for visual confirmation.
+       Falls back gracefully if the API isn't available (rare).
+    */
+    (function () {
+        const buttons = document.querySelectorAll('.copy-btn');
+        if (!buttons.length) return;
+
+        buttons.forEach(btn => {
+            btn.addEventListener('click', async function () {
+                const text = this.getAttribute('data-copy');
+                if (!text) return;
+
+                try {
+                    await navigator.clipboard.writeText(text);
+                } catch (err) {
+                    // Fallback: select an offscreen textarea and exec copy.
+                    // Old, but works in older browsers and non-secure contexts.
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.position = 'fixed';
+                    ta.style.left = '-9999px';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    try { document.execCommand('copy'); } catch (_) { /* nothing more we can do */ }
+                    document.body.removeChild(ta);
+                }
+
+                // Visual confirmation — swap label briefly, then restore
+                const original = this.textContent;
+                this.classList.add('copied');
+                this.textContent = 'Copied';
+                setTimeout(() => {
+                    this.classList.remove('copied');
+                    this.textContent = original;
+                }, 1500);
+            });
+        });
+    })();
+</script>
+
+</body>
+</html>
