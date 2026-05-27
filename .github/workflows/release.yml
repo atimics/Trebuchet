@@ -130,3 +130,38 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TREBUCHET_RELEASE_ASSET_DIR: release-assets
         run: node scripts/publish-release.mjs
+
+  website:
+    name: Publish Website
+    needs: publish
+    runs-on: ubuntu-latest
+    env:
+      FTP_HOST: ${{ vars.FTP_HOST != '' && vars.FTP_HOST || 'makesometokens.com' }}
+      FTP_PROTOCOL: ${{ vars.FTP_PROTOCOL != '' && vars.FTP_PROTOCOL || 'ftp' }}
+      FTP_REMOTE_DIR: ${{ vars.FTP_REMOTE_DIR != '' && vars.FTP_REMOTE_DIR || '.' }}
+      FTP_LOGIN: ${{ secrets.FTP_LOGIN }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install FTP client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Publish website
+        run: |
+          if [ -z "$FTP_LOGIN" ] || [ -z "$FTP_PASSWORD" ]; then
+            echo "FTP_LOGIN and FTP_PASSWORD must be configured."
+            exit 1
+          fi
+
+          lftp -u "$FTP_LOGIN","$FTP_PASSWORD" "${FTP_PROTOCOL}://${FTP_HOST}" <<EOF
+          set cmd:fail-exit true
+          set net:max-retries 2
+          set net:reconnect-interval-base 5
+          mirror -R --only-newer --verbose=2 website "${FTP_REMOTE_DIR}"
+          bye
+          EOF

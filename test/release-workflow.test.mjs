@@ -16,6 +16,10 @@ test('release workflow is tag-driven and publishes checksums', () => {
   assert.match(workflow, /actions\/download-artifact@v5/);
   assert.match(workflow, /npm ci/);
   assert.match(publishScript, /SHA256SUMS\.txt/);
+  assert.match(workflow, /name:\s+Publish Website/);
+  assert.match(workflow, /FTP_LOGIN/);
+  assert.match(workflow, /FTP_PASSWORD/);
+  assert.match(workflow, /mirror -R --only-newer --verbose=2 website/);
 });
 
 test('release docs explain trust states and verification', () => {
@@ -89,4 +93,12 @@ test('release notes call out prerelease trust gaps and checksum verification', (
   assert.match(notes, /signed/);
   assert.match(notes, /SHA256SUMS\.txt/);
   assert.match(notes, /shasum -a 256 -c SHA256SUMS\.txt/);
+});
+
+test('website download CTA points to GitHub Releases instead of committed build artifacts', () => {
+  const site = read('website/index.html');
+
+  assert.match(site, /https:\/\/github\.com\/AnOversizedMooseWithSocks\/Trebuchet\/releases\/latest/);
+  assert.doesNotMatch(site, /\/raw\/main\/dist\//);
+  assert.match(site, /Download latest release/);
 });

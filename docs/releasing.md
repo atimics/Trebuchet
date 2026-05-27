@@ -1,6 +1,7 @@
 # Releasing Trebuchet
 
 Tagged releases are built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) from a clean checkout using `npm ci`.
+After the desktop artifacts are published to GitHub Releases, the same workflow uploads the static [`website/`](../website) directory to the production site.
 
 ## Trigger
 
@@ -42,3 +43,20 @@ The release notes also state which platform artifacts were signed, notarized, un
 ## Repeatability
 
 The workflow updates an existing release for the same tag by re-uploading assets with `--clobber`, then rewriting the release notes. That keeps reruns on the same `v*` tag usable after a failed or partial run.
+
+## Website publishing
+
+The release workflow publishes [`website/`](../website) over FTP after the GitHub Release is created.
+
+Required secrets:
+
+- `FTP_LOGIN`
+- `FTP_PASSWORD`
+
+Optional repository variables:
+
+- `FTP_HOST` (defaults to `makesometokens.com`)
+- `FTP_PROTOCOL` (defaults to `ftp`)
+- `FTP_REMOTE_DIR` (defaults to `.`)
+
+The deploy step uploads only newer files and does not delete remote files by default.
