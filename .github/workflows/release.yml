@@ -199,10 +199,88 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # Before doing anything else, confirm that every download link the
+      # website is about to advertise actually exists on the just-published
+      # GitHub release. This catches the case where electron-builder's
+      # naming drifts (e.g. an electron-builder upgrade changes a default,
+      # or someone edits an artifactName in package.json) — without this
+      # gate, the build and publish steps would pass and we'd ship a
+      # website full of 404s.
+      #
+      # The expected[] list MUST stay in sync with the href="..." URLs in
+      # website/index.html. If you change one, change the other.
+      - name: Verify release assets exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ -z "$version" ]; then
+            echo "Could not derive version from GITHUB_REF_NAME=${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+          # The six artifact filenames we hard-code into the website.
+          expected=(
+            "Trebuchet-${version}-arm64.dmg"
+            "Trebuchet-${version}-x64.dmg"
+            "Trebuchet Setup ${version}.exe"
+            "Trebuchet ${version} Portable.exe"
+            "Trebuchet-${version}-x86_64.AppImage"
+            "trebuchet-desktop_${version}_amd64.deb"
+          )
+
+          # gh release view returns one asset name per line.
+          assets="$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name')"
+
+          missing=0
+          for f in "${expected[@]}"; do
+            # grep -Fxq: fixed-string, whole-line, quiet. Handles spaces
+            # in the Windows filenames cleanly without shell quoting issues.
+            if ! printf '%s\n' "$assets" | grep -Fxq "$f"; then
+              echo "Missing release asset: $f"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            echo
+            echo "Refusing to publish the website — one or more download links would 404."
+            echo "Assets actually present on the release:"
+            printf '%s\n' "$assets" | sed 's/^/  /'
+            exit 1
+          fi
+          echo "All expected artifacts present in release ${GITHUB_REF_NAME}."
+
       - name: Install FTP client
         run: |
           sudo apt-get update
           sudo apt-get install -y lftp
+
+      # Replace every occurrence of the __TREBUCHET_VERSION__ placeholder
+      # in the website HTML with the actual release version (e.g. 1.0.1).
+      # The placeholder is used in:
+      #   - download URLs (artifact filenames + release tag path)
+      #   - the footer "v..." line
+      #   - the GitHub release link in the verification note
+      # This runs before lftp so the deployed file has real version
+      # numbers baked in. The placeholder string is chosen to be
+      # unique enough that there's no risk of a stray sed hit.
+      - name: Stamp version into website
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ -z "$version" ]; then
+            echo "Could not derive version from GITHUB_REF_NAME=${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          sed -i "s/__TREBUCHET_VERSION__/${version}/g" website/index.html
+          # Sanity check: confirm the placeholder is fully gone, so a
+          # botched substitution can't ship broken download links.
+          if grep -q "__TREBUCHET_VERSION__" website/index.html; then
+            echo "Version placeholder still present after substitution."
+            grep -n "__TREBUCHET_VERSION__" website/index.html
+            exit 1
+          fi
+          echo "Stamped version ${version} into website/index.html"
 
       - name: Publish website
         run: |

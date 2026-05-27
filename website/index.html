@@ -1085,6 +1085,125 @@
     .download-note a { color: var(--gold); }
 
     /* ===============================================================
+       PER-OS DOWNLOAD GRID — three cards (Windows / macOS / Linux)
+       inside the download CTA. JS at the bottom of the file tags
+       whichever card matches the visitor's OS with .primary-os, which
+       brightens its border and shows a small "FOR YOUR SYSTEM" eyebrow.
+       Every card stays visible and clickable — we never hide the
+       others, since people often download installers for a different
+       machine than the one they're browsing on.
+       =============================================================== */
+    .download-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 20px;
+        max-width: 900px;
+        margin: 0 auto 36px;
+        text-align: left;
+        /* Cards have different amounts of content (macOS shows two
+           arch buttons + a hint, Windows/Linux show one button + a
+           text link). Stretched-height cards would leave awkward
+           empty space at the bottom of the shorter ones; aligning
+           to start lets each card be its natural height and keeps
+           the top edges flush. */
+        align-items: start;
+    }
+    /* Single column on narrow viewports */
+    @media (max-width: 720px) {
+        .download-grid { grid-template-columns: 1fr; max-width: 380px; }
+    }
+
+    .os-card {
+        position: relative;
+        padding: 28px 24px 24px;
+        border: 1.5px solid rgba(239, 229, 205, 0.18);
+        background: rgba(239, 229, 205, 0.03);
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 16px;
+        transition: border-color 0.2s, background 0.2s;
+    }
+    /* The detected OS — slightly brighter border + faint background
+       wash. Doesn't shout, just nudges the eye. */
+    .os-card.primary-os {
+        border-color: var(--gold);
+        background: rgba(184, 138, 42, 0.06);
+    }
+    /* "FOR YOUR SYSTEM" eyebrow — present in every card so they all
+       reserve the same top-of-card space (otherwise the highlighted
+       card's content would sit lower than the others). Hidden by
+       default via visibility: hidden, revealed for the primary OS
+       card with visibility: visible. */
+    .os-card .os-card-tag {
+        display: block;
+        visibility: hidden;
+        font-family: var(--font-mono);
+        font-size: 10px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--gold);
+        line-height: 1.4;
+        min-height: 14px;
+    }
+    .os-card.primary-os .os-card-tag { visibility: visible; }
+
+    .os-card-head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+    .os-icon {
+        width: 24px;
+        height: 24px;
+        color: var(--paper);
+        flex-shrink: 0;
+    }
+    .os-card h3 {
+        font-family: var(--font-display-sc);
+        font-size: 28px;
+        font-weight: 400;
+        line-height: 1;
+        color: var(--paper);
+    }
+    /* Primary download button inside the card — full width within
+       the card. Reuses the .btn-dark style for visual consistency. */
+    .os-card .os-primary {
+        width: 100%;
+        justify-content: center;
+    }
+    /* Secondary link below the primary button — quiet, monospace,
+       no border, just text with an arrow. */
+    .os-card .os-secondary {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.05em;
+        color: rgba(239, 229, 205, 0.6);
+        text-decoration: none;
+        transition: color 0.15s;
+    }
+    .os-card .os-secondary:hover { color: var(--gold); }
+
+    /* Helper text used in the macOS card (where both arch buttons
+       are equally primary and there's no "secondary download" link).
+       Sits in the same visual slot as .os-secondary in other cards
+       so all three columns stay roughly the same height. */
+    .os-card .os-hint {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        line-height: 1.6;
+        letter-spacing: 0.05em;
+        color: rgba(239, 229, 205, 0.55);
+        font-style: normal;
+        margin: 0;
+    }
+
+    /* Secondary actions row (Build from source, Follow on X) lives
+       below the OS grid. Slightly smaller visual weight than before
+       since the per-OS buttons are the headline now. */
+    .download-secondary { margin-top: 8px; }
+
+    /* ===============================================================
        FOOTER
        =============================================================== */
     footer {
@@ -1867,9 +1986,9 @@
             <p class="domain-mark">trebuchet<span class="arrow">→</span>makesometokens.com <span style="opacity:0.5">&nbsp;//&nbsp; easier to spell</span></p>
 
             <div class="hero-cta">
-                <a href="#download" class="btn btn-primary">
+                <a href="#download" class="btn btn-primary" id="hero-download">
                     <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3v14m0 0l-5-5m5 5l5-5M5 21h14"/></svg>
-                    Download for Windows
+                    Download for <span class="hero-download-os">Windows</span>
                 </a>
                 <a href="https://github.com/AnOversizedMooseWithSocks/trebuchet" target="_blank" rel="noopener" class="btn">
                     <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
@@ -3272,25 +3391,111 @@
 
 <!-- ===============================================================
      DOWNLOAD CTA
+     -----------------------------------------------------------------
+     Three OS cards in a row (Windows / macOS / Linux). Each card
+     has a primary download (.dmg / .exe / .AppImage) plus a small
+     secondary text link to a sibling artifact (portable .exe,
+     Intel Mac .dmg, .deb package). The card matching the visitor's
+     OS gets a .primary-os class added by JS — see the OS-detect
+     script at the bottom of the file.
+
+     Download URLs point at GitHub release assets for the current
+     tag. The version placeholder in these URLs gets sed-replaced
+     with the actual version (e.g. "1.0.1") by the "Stamp version
+     into website" step in release.yml right before the FTP push.
      =============================================================== -->
 <section id="download" class="download">
     <div class="download-inner">
-        <p class="eyebrow">Free · Open Source · MIT License · Tagged Releases</p>
+        <p class="eyebrow">v__TREBUCHET_VERSION__ · Free · Open Source · MIT License</p>
         <h2>Make some tokens.</h2>
         <p>Trebuchet is a desktop app. It runs on your machine, signs with your wallet, and answers to nobody but you.</p>
 
-        <div class="download-buttons">
-            <a href="https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases/latest"
-               class="btn btn-dark">
-                <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3v14m0 0l-5-5m5 5l5-5M5 21h14"/></svg>
-                Download latest release
-            </a>
+        <div class="download-grid">
+
+            <!-- ===== Windows ===== -->
+            <div class="os-card" data-os="windows">
+                <span class="os-card-tag">For your system</span>
+                <div class="os-card-head">
+                    <svg class="os-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-13.051-1.851"/></svg>
+                    <h3>Windows</h3>
+                </div>
+                <a href="https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases/download/v__TREBUCHET_VERSION__/Trebuchet%20Setup%20__TREBUCHET_VERSION__.exe"
+                   class="btn btn-dark os-primary">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3v14m0 0l-5-5m5 5l5-5M5 21h14"/></svg>
+                    Installer (.exe)
+                </a>
+                <a href="https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases/download/v__TREBUCHET_VERSION__/Trebuchet%20__TREBUCHET_VERSION__%20Portable.exe"
+                   class="os-secondary">
+                    or grab the portable build →
+                </a>
+            </div>
+
+            <!-- ===== macOS =====
+                 Both architectures get equal-weight buttons. Unlike
+                 Windows installer-vs-portable (where either works and
+                 it's a preference) or Linux AppImage-vs-deb (where
+                 AppImage is the safer universal default), picking the
+                 wrong Mac arch produces a binary that won't run. We
+                 can't reliably distinguish Apple Silicon from Intel
+                 via UA sniffing (Safari hides architecture entirely),
+                 so we surface both equally and add a small hint so
+                 less-technical users can self-identify their Mac. -->
+            <div class="os-card" data-os="macos">
+                <span class="os-card-tag">For your system</span>
+                <div class="os-card-head">
+                    <svg class="os-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
+                    <h3>macOS</h3>
+                </div>
+                <a href="https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases/download/v__TREBUCHET_VERSION__/Trebuchet-__TREBUCHET_VERSION__-arm64.dmg"
+                   class="btn btn-dark os-primary">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3v14m0 0l-5-5m5 5l5-5M5 21h14"/></svg>
+                    Apple Silicon (.dmg)
+                </a>
+                <a href="https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases/download/v__TREBUCHET_VERSION__/Trebuchet-__TREBUCHET_VERSION__-x64.dmg"
+                   class="btn btn-dark os-primary">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3v14m0 0l-5-5m5 5l5-5M5 21h14"/></svg>
+                    Intel (.dmg)
+                </a>
+                <p class="os-hint">
+                    Apple Silicon: M1, M2, M3, M4 chips.<br>
+                    Intel: Macs sold before late 2020.
+                </p>
+            </div>
+
+            <!-- ===== Linux =====
+                 AppImage is the universal default (works on most
+                 distros without a package manager). .deb is the
+                 secondary link for Debian/Ubuntu users who prefer
+                 a proper system package. -->
+            <div class="os-card" data-os="linux">
+                <span class="os-card-tag">For your system</span>
+                <div class="os-card-head">
+                    <svg class="os-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139z"/></svg>
+                    <h3>Linux</h3>
+                </div>
+                <a href="https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases/download/v__TREBUCHET_VERSION__/Trebuchet-__TREBUCHET_VERSION__-x86_64.AppImage"
+                   class="btn btn-dark os-primary">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3v14m0 0l-5-5m5 5l5-5M5 21h14"/></svg>
+                    AppImage
+                </a>
+                <a href="https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases/download/v__TREBUCHET_VERSION__/trebuchet-desktop___TREBUCHET_VERSION___amd64.deb"
+                   class="os-secondary">
+                    or grab the .deb (Debian/Ubuntu) →
+                </a>
+            </div>
+
+        </div>
+
+        <!-- Secondary actions — source code, social, and an escape
+             hatch back to the full GitHub release page (where the
+             SHA256SUMS.txt file lives for users who want to verify
+             the download). -->
+        <div class="download-buttons download-secondary">
             <a href="https://github.com/AnOversizedMooseWithSocks/Trebuchet" target="_blank" rel="noopener"
                class="btn btn-dark-ghost">
                 <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
                 Build from source
             </a>
-            <!-- X (formerly Twitter) — official logo as a single path glyph -->
             <a href="https://x.com/makesometokens" target="_blank" rel="noopener"
                class="btn btn-dark-ghost">
                 <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
@@ -3299,8 +3504,9 @@
         </div>
 
         <p class="download-note">
-            Windows, macOS, and Linux builds are attached to each tagged GitHub release.
-            Source files, build instructions, and the longer README are in the repo.
+            All builds attached to the
+            <a href="https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases/tag/v__TREBUCHET_VERSION__" target="_blank" rel="noopener">v__TREBUCHET_VERSION__ release on GitHub</a>,
+            with SHA-256 checksums and source archives for verification.
         </p>
     </div>
 </section>
@@ -3316,7 +3522,7 @@
             <span class="joke">trebuchet · but with a domain that's easier to spell</span>
         </div>
         <div>
-            MIT &nbsp;·&nbsp; v1.0.0 &nbsp;·&nbsp;
+            MIT &nbsp;·&nbsp; v__TREBUCHET_VERSION__ &nbsp;·&nbsp;
             <a href="https://github.com/AnOversizedMooseWithSocks/trebuchet" target="_blank" rel="noopener">github.com/AnOversizedMooseWithSocks/trebuchet</a>
             &nbsp;·&nbsp;
             <a href="https://x.com/makesometokens" target="_blank" rel="noopener">@makesometokens</a>
@@ -3370,6 +3576,84 @@
                 }, 1500);
             });
         });
+    })();
+
+    /*
+       OS detection — highlight the right download card
+       --------------------------------------------------
+       Looks at navigator.userAgentData first (modern Chromium browsers
+       have a structured platform string here) and falls back to
+       navigator.platform + userAgent sniffing for everything else.
+
+       When a match is found:
+         - The corresponding .os-card gets a .primary-os class added,
+           which the CSS uses to brighten the border and reveal the
+           small "For your system" eyebrow at the top of the card.
+         - The hero "Download for Windows" button's OS label is
+           swapped to match (Windows / macOS / Linux).
+
+       Nothing is ever hidden — all three OS cards stay visible and
+       clickable regardless. People legitimately download installers
+       for machines other than the one they're browsing on, so the
+       detection is just a nudge, not a gate.
+    */
+    (function () {
+        // Mobile/tablet UA check — Trebuchet only runs on desktop OSes,
+        // so for phone/tablet visitors we don't try to highlight a card.
+        // Without this guard, Android UA's "Linux" substring would tag
+        // the Linux card, and iOS UA's "Mac OS X" would tag the macOS
+        // card — both misleading.
+        function isMobile() {
+            const ua = navigator.userAgent || '';
+            if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) return true;
+            // Modern Chromium also exposes a structured mobile flag.
+            const uaData = navigator.userAgentData;
+            if (uaData && uaData.mobile === true) return true;
+            return false;
+        }
+
+        function detectOS() {
+            // Modern Chromium browsers expose a structured platform
+            // string that doesn't require UA parsing.
+            const uaData = navigator.userAgentData;
+            if (uaData && typeof uaData.platform === 'string') {
+                const p = uaData.platform.toLowerCase();
+                if (p.indexOf('win')   !== -1) return 'windows';
+                if (p.indexOf('mac')   !== -1) return 'macos';
+                if (p.indexOf('linux') !== -1) return 'linux';
+            }
+            // Fallback: navigator.platform first (more stable than
+            // userAgent, which various browsers spoof), then UA string
+            // as last resort.
+            const platform = (navigator.platform || '').toLowerCase();
+            const ua       = (navigator.userAgent || '').toLowerCase();
+            if (platform.indexOf('win')   !== -1 || ua.indexOf('windows') !== -1) return 'windows';
+            if (platform.indexOf('mac')   !== -1 || ua.indexOf('mac os')  !== -1) return 'macos';
+            if (platform.indexOf('linux') !== -1 || ua.indexOf('linux')   !== -1) return 'linux';
+            return null;
+        }
+
+        if (isMobile()) return;  // Don't mis-tag mobile visitors
+
+        const os = detectOS();
+        if (!os) return;  // Unknown OS — leave the default (Windows-as-primary) in place
+
+        // Mark the matching OS card. There's only one per data-os
+        // value, but we use querySelectorAll + forEach so the code
+        // is harmless if that ever changes.
+        document.querySelectorAll('.os-card[data-os="' + os + '"]').forEach(function (el) {
+            el.classList.add('primary-os');
+        });
+
+        // Update the hero CTA label to match. The span has a default
+        // text of "Windows" so this only changes anything for Mac/Linux
+        // visitors (which is the right behaviour — most visitors are
+        // on Windows and don't need a label change).
+        const heroLabel = document.querySelector('#hero-download .hero-download-os');
+        if (heroLabel) {
+            const labels = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
+            heroLabel.textContent = labels[os];
+        }
     })();
 </script>
 
