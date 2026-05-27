@@ -32,3 +32,15 @@ test('release artifacts stay out of git and lockfile is trackable', () => {
   assert.match(ignore, /^\/dist$/m);
   assert.doesNotMatch(ignore, /^package-lock\.json$/m);
 });
+
+test('dependency risk controls document audit residuals and PR checklist', () => {
+  const security = read('SECURITY.md');
+  const pkg = JSON.parse(read('package.json'));
+  const template = read('.github/pull_request_template.md');
+
+  assert.equal(pkg.overrides.tmp, '^0.2.6');
+  assert.match(security, /SDK compatibility matrix/);
+  assert.match(security, /npm audit --audit-level=high/);
+  assert.match(security, /@metaplex-foundation\/umi-uploader-irys/);
+  assert.match(template, /Dependency Risk/);
+});

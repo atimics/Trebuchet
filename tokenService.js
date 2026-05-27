@@ -18,29 +18,25 @@ import {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID
 } from '@solana/spl-token';
-import { createUmi } from '@metaplex-foundation/umi-bundle-defaults';
 import { 
   createV1,
-  mplTokenMetadata,
   TokenStandard,
-  findMetadataPda,
   updateV1
 } from '@metaplex-foundation/mpl-token-metadata';
 import { 
-  generateSigner, 
-  keypairIdentity,
   percentAmount,
   publicKey as umiPublicKey,
-  createGenericFile,
   none,
   some
 } from '@metaplex-foundation/umi';
-import { irysUploader } from '@metaplex-foundation/umi-uploader-irys';
-import { fromWeb3JsKeypair, toWeb3JsPublicKey } from '@metaplex-foundation/umi-web3js-adapters';
 import QRCode from 'qrcode';
 import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
 import { getRpcUrl } from './rpcConfig.js';
+import {
+  createTokenMetadataUmi,
+  uploadTokenMetadata,
+} from './metadataUploadService.js';
 
 // The RPC URL is sourced from rpcConfig.js, which seeds itself with a
 // public-mainnet default on first run and persists user-selected RPCs to
@@ -245,65 +241,19 @@ export async function createTokenWithMetaplex({
     // Convert secret key array back to Keypair
     const tempWallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
     
-    // Initialize Umi with the temporary wallet
-    const umi = createUmi(getRpcUrl())
-      .use(mplTokenMetadata())
-      .use(irysUploader({
-        address: 'https://node1.irys.xyz',
-        timeout: 60000,
-      }));
-    
-    // Convert Solana keypair to Umi keypair
-    const umiKeypair = umi.eddsa.createKeypairFromSecretKey(tempWallet.secretKey);
-    umi.use(keypairIdentity(umiKeypair));
+    const umi = createTokenMetadataUmi(tempWallet);
     
     console.log('Uploading logo to Arweave...');
-    
-    let imageUri = null;
-    
-    // Upload logo to Arweave if provided
-    if (logoBase64) {
-      try {
-        // Convert base64 to buffer
-        const base64Data = logoBase64.split(',')[1]; // Remove data:image/png;base64, prefix
-        const buffer = Buffer.from(base64Data, 'base64');
-        
-        // Determine mime type
-        const mimeType = logoBase64.split(';')[0].split(':')[1];
-        
-        // Create a generic file for Umi
-        const logoFile = createGenericFile(buffer, 'logo', {
-          tags: [{ name: 'Content-Type', value: mimeType }]
-        });
-        
-        // Upload logo to Arweave
-        const [uploadedImageUri] = await umi.uploader.upload([logoFile]);
-        imageUri = uploadedImageUri;
-        console.log('Logo uploaded:', imageUri);
-        progress({ stage: 'logo_uploaded', imageUri });
-      } catch (uploadError) {
-        console.error('Error uploading logo:', uploadError);
-        // Continue without logo if upload fails
-        imageUri = 'https://arweave.net/placeholder-token-image';
-        progress({ stage: 'logo_upload_failed', error: uploadError.message });
-      }
-    } else {
-      imageUri = 'https://arweave.net/placeholder-token-image';
-    }
-    
     console.log('Uploading metadata to Arweave...');
-    
-    // Create and upload metadata
-    const metadata = {
+
+    const { metadataUri, imageUri } = await uploadTokenMetadata({
+      umi,
+      logoBase64,
       name,
       symbol,
       description,
-      image: imageUri
-    };
-    
-    const metadataUri = await umi.uploader.uploadJson(metadata);
-    console.log('Metadata uploaded:', metadataUri);
-    progress({ stage: 'metadata_uploaded', metadataUri, imageUri });
+      onProgress: progress,
+    });
     
     // Search for a keypair whose pubkey sorts smaller than every quote
     // mint, so the launched token becomes mintA in every pool. Returns

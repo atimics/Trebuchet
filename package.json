@@ -42,6 +42,7 @@
     "main.js",
     "server.js",
     "tokenService.js",
+    "metadataUploadService.js",
     "tokenInfoService.js",
     "tokenMetadataLayout.js",
     "lpService.js",
@@ -92,6 +93,7 @@
     "bn.js": "^5.2.3",
     "form-data": "^4.0.5",
     "tar": "^7.5.15",
+    "tmp": "^0.2.6",
     "uuid": "^11.1.1",
     "ws": "^8.21.0"
   },
@@ -111,6 +113,7 @@
       "main.js",
       "server.js",
       "tokenService.js",
+      "metadataUploadService.js",
       "tokenInfoService.js",
       "tokenMetadataLayout.js",
       "lpService.js",
