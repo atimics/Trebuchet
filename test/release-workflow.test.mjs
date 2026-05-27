@@ -218,7 +218,8 @@ test('publish reruns remove release assets that are no longer produced', () => {
 test('website download CTA points to GitHub Releases instead of committed build artifacts', () => {
   const site = read('website/index.html');
 
-  assert.match(site, /https:\/\/github\.com\/AnOversizedMooseWithSocks\/Trebuchet\/releases\/latest/);
+  assert.match(site, /https:\/\/github\.com\/AnOversizedMooseWithSocks\/Trebuchet\/releases\/download\/v__TREBUCHET_VERSION__\//);
+  assert.match(site, /https:\/\/github\.com\/AnOversizedMooseWithSocks\/Trebuchet\/releases\/tag\/v__TREBUCHET_VERSION__/);
   assert.doesNotMatch(site, /\/raw\/main\/dist\//);
-  assert.match(site, /Download latest release/);
+  assert.match(site, /SHA-256 checksums/);
 });
