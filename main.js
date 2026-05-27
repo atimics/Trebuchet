@@ -244,6 +244,7 @@ ${body}
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
+        sandbox: true,
       },
     });
 
@@ -415,6 +416,7 @@ function createWindow() {
       // as it does in the standalone web build).
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       // Don't throttle the renderer while the window is hidden during
       // startup. Default is true, which slows down timers and can leave
       // the renderer's input/focus subsystem in an inconsistent state
@@ -478,6 +480,18 @@ function createWindow() {
   });
 
   attachContextMenu(win.webContents);
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (event, url) => {
+    const appOrigin = `http://127.0.0.1:${serverPort}`;
+    if (!url.startsWith(`${appOrigin}/`)) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
 
   // When the user hits the window's X (or Cmd/Ctrl+W, or quits via the
   // app menu), Chromium fires the renderer's beforeunload event. The
