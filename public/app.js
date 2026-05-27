@@ -8896,8 +8896,14 @@ async function loadLaunchJournals() {
   if (!panel || !list) return;
 
   try {
-    const resp = await fetch('/api/launch-journals').then((r) => r.json());
+    const [resp, walletResp] = await Promise.all([
+      fetch('/api/launch-journals').then((r) => r.json()),
+      fetch('/api/pending-wallets').then((r) => r.json()).catch(() => ({ wallets: [] })),
+    ]);
     let journals = (resp && resp.journals) || [];
+    const walletsByPublicKey = new Map(
+      ((walletResp && walletResp.wallets) || []).map((wallet) => [wallet.publicKey, wallet]),
+    );
 
     if (launchJournalStartupIds === null) {
       launchJournalStartupIds = new Set(journals.map((j) => j.id));
@@ -8913,7 +8919,7 @@ async function loadLaunchJournals() {
 
     list.innerHTML = '';
     for (const journal of journals) {
-      list.appendChild(buildLaunchJournalRow(journal));
+      list.appendChild(buildLaunchJournalRow(journal, walletsByPublicKey.get(journal.walletPublicKey)));
     }
     panel.classList.remove('hidden');
   } catch (e) {
@@ -8945,7 +8951,9 @@ function launchJournalStageLabel(journal) {
     token_create_failed: 'Token creation failed',
     lp_create_started: 'Pool creation started',
     lp_resume_started: 'Launch resume started',
+    lp_recovered_for_transfer: 'Launch recovered for transfer',
     pool_create_done: 'Pool created',
+    phase1_pool_done: 'Pool positions recorded',
     main_open_done: 'Main LP position opened',
     ladder_open_done: 'Ladder position opened',
     bootstrap_open_done: 'Bootstrap opened',
@@ -8975,6 +8983,10 @@ function launchJournalStageLabel(journal) {
 }
 
 function launchJournalRecoveryText(journal) {
+  const unsafeEvents = unsafeCreatedPoolEvents(journal);
+  if (unsafeEvents.length > 0) {
+    return 'A pool was created before Trebuchet recorded completed LP positions for it. Automatic resume is blocked to avoid duplicate pool work; use the launch wallet recovery entry below to sweep or handle the pool manually.';
+  }
   if (journal.transfer?.walletEmpty === false || journal.stage === 'transfer_partial') {
     return 'Final sweep did not prove the launch wallet empty. Check the matching recoverable wallet below and sweep or import it manually.';
   }
@@ -9040,7 +9052,142 @@ function launchJournalTxRows(journal) {
   return `<div class="mt-2"><strong>Recorded txs:</strong> ${shown}${more}</div>`;
 }
 
-function buildLaunchJournalRow(journal) {
+function journalPriorResults(journal) {
+  const lp = journal.lp || {};
+  const source = Array.isArray(lp.results) && lp.results.length > 0
+    ? lp.results
+    : (Array.isArray(lp.partialResults) ? lp.partialResults : []);
+  return source.filter((result) => result && result.poolId);
+}
+
+function journalHasCompletedLp(journal) {
+  const lp = journal.lp || {};
+  return (
+    ['lp_created', 'transfer_started', 'transfer_partial', 'transfer_failed'].includes(journal.stage) &&
+    Array.isArray(lp.results) &&
+    lp.results.length > 0 &&
+    !lp.failedPhase
+  );
+}
+
+function unsafeCreatedPoolEvents(journal) {
+  const completedAllocations = new Set(journalPriorResults(journal).map((r) => r.allocationIndex));
+  return (journal.events || []).filter(
+    (event) =>
+      event.stage === 'pool_create_done' &&
+      !completedAllocations.has(event.allocationIndex),
+  );
+}
+
+function canResumeLaunchJournal(journal, wallet) {
+  return !!(
+    journal.token?.mint &&
+    journal.poolPlan?.tokenTotalSupply &&
+    journal.poolPlan?.targetMarketCapUsd &&
+    Array.isArray(journal.poolPlan?.allocations) &&
+    wallet &&
+    Array.isArray(wallet.secretKey) &&
+    unsafeCreatedPoolEvents(journal).length === 0
+  );
+}
+
+function prepareRecoveredSessionFromJournal(journal, wallet) {
+  tempWallet = {
+    publicKey: wallet.publicKey,
+    secretKey: wallet.secretKey,
+    secretKeyB58: wallet.secretKeyB58,
+    mnemonic: wallet.mnemonic,
+  };
+  fundingWallet = null;
+  fundingDetectionExhausted = false;
+  createdTokenInfo = {
+    mint: journal.token.mint,
+    decimals: journal.token.decimals || journal.poolPlan?.tokenDecimals || 9,
+    totalSupply: journal.token.totalSupply || journal.poolPlan?.tokenTotalSupply,
+    name: journal.token.name || '',
+    symbol: journal.token.symbol || 'TOKEN',
+  };
+  lpResult = { results: journalPriorResults(journal) };
+
+  document.body.classList.add('has-log');
+  document.getElementById('walletInfo')?.classList.remove('hidden');
+  const walletAddress = document.getElementById('walletAddress');
+  if (walletAddress) walletAddress.value = wallet.publicKey;
+  document.getElementById('privateKeyContainer')?.classList.add('hidden');
+  document.getElementById('tokenCreatedInfo')?.classList.remove('hidden');
+  const mintEl = document.getElementById('tokenMintAddress');
+  if (mintEl) mintEl.textContent = journal.token.mint;
+  const solscanLink = document.getElementById('tokenSolscanLink');
+  if (solscanLink) solscanLink.href = `https://solscan.io/token/${journal.token.mint}`;
+
+  document.getElementById('createTokenBtn')?.classList.add('hidden');
+  document.getElementById('createLpBtn')?.classList.add('hidden');
+  document.getElementById('transferAssetsBtn')?.classList.remove('hidden');
+  document.getElementById('transferResult')?.classList.add('hidden');
+  const dest = document.getElementById('destinationWallet');
+  if (dest) dest.value = '';
+
+  setStepSummary(1, `${wallet.publicKey.slice(0, 8)}...${wallet.publicKey.slice(-6)}`);
+  setStepSummary(4, `${createdTokenInfo.symbol} - ${createdTokenInfo.mint.slice(0, 8)}...`);
+  const count = lpResult.results.length;
+  setStepSummary(5, count > 0 ? `${count} pool${count === 1 ? '' : 's'} recorded` : 'ready to resume');
+}
+
+async function resumeLaunchJournal(journal, wallet, btn) {
+  const completedLp = journalHasCompletedLp(journal);
+  const actionLabel = completedLp ? 'Continue transfer' : 'Resume launch';
+  const ok = await confirmDialog({
+    title: `${actionLabel}?`,
+    body:
+      `<p>${completedLp ? 'Recover the recorded launch session' : 'Resume the recorded launch'} for <strong>${escapeHtml(journal.token?.symbol || 'this token')}</strong>?</p>` +
+      `<p>Trebuchet will use the matching recoverable wallet entry ${completedLp ? 'and take you to the final transfer step.' : 'and retry only work that the journal does not show as complete. Review the activity log after it finishes.'}</p>`,
+    confirmLabel: actionLabel,
+  });
+  if (!ok) return;
+
+  await withRunState(async () => {
+    setLoading(btn, true);
+    try {
+      prepareRecoveredSessionFromJournal(journal, wallet);
+      log(`${completedLp ? 'Recovering' : 'Resuming'} launch journal for ${createdTokenInfo.symbol}...`, 'warning');
+
+      const resp = await fetch('/api/launch-journals/resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: journal.id }),
+      });
+      const data = await resp.json();
+      if (!data.success) {
+        if (Array.isArray(data.partialResults) && data.partialResults.length > 0) {
+          lpResult = { results: data.partialResults };
+          setStepSummary(5, `partial - sweep available`);
+          activateStep(6);
+        }
+        throw new Error(data.error || `Resume failed with HTTP ${resp.status}`);
+      }
+
+      lpResult = data;
+      const count = (data.results || []).length;
+      setStepSummary(5, `${count} pool${count === 1 ? '' : 's'} completed`);
+      log(`${completedLp ? 'Recovery' : 'Resume'} complete: ${count} pool${count === 1 ? '' : 's'} ready for final transfer`, 'success');
+      activateStep(6);
+      try {
+        await detectFundingWallet();
+      } catch {
+        // Best-effort convenience only; destination remains manually editable.
+      }
+      prefillDestinationFromFunder();
+      await loadLaunchJournals();
+      await loadPendingWallets();
+    } catch (e) {
+      log(`Journal resume failed: ${e.message}`, 'danger');
+    } finally {
+      setLoading(btn, false);
+    }
+  });
+}
+
+function buildLaunchJournalRow(journal, wallet) {
   const wrap = document.createElement('div');
   wrap.className = 'box p-3 mb-2 is-size-7';
 
@@ -9051,6 +9198,11 @@ function buildLaunchJournalRow(journal) {
   const ageStr = formatAge(journal.updatedAt || journal.createdAt);
   const errorHtml = journal.error
     ? `<div class="notification is-danger is-light is-size-7 py-2 px-3 my-2">${escapeHtml(journal.error)}</div>`
+    : '';
+  const canResume = canResumeLaunchJournal(journal, wallet);
+  const resumeLabel = journalHasCompletedLp(journal) ? 'Continue transfer' : 'Resume launch';
+  const resumeHelp = !canResume && journal.token?.mint && journal.poolPlan?.allocations
+    ? `<div class="has-text-grey mt-2">Automatic resume is unavailable${wallet?.decryptionFailed ? ': wallet secret could not be decrypted' : unsafeCreatedPoolEvents(journal).length > 0 ? ': unsafe partial pool state recorded' : ': matching recoverable wallet is missing'}.</div>`
     : '';
 
   wrap.innerHTML = `
@@ -9067,7 +9219,16 @@ function buildLaunchJournalRow(journal) {
     </div>
     ${launchJournalPoolRows(journal)}
     ${launchJournalTxRows(journal)}
+    ${resumeHelp}
     <div class="field is-grouped is-grouped-multiline mt-3">
+      ${canResume ? `
+        <div class="control">
+          <button class="button is-small is-primary" data-action="resume">
+            <span class="icon is-small"><i class="fas fa-redo"></i></span>
+            <span>${resumeLabel}</span>
+          </button>
+        </div>
+      ` : ''}
       ${journal.token?.mint ? `
         <div class="control">
           <button class="button is-small" data-action="copy-token">
@@ -9105,6 +9266,9 @@ function buildLaunchJournalRow(journal) {
   });
   wrap.querySelector('[data-action="copy-wallet"]').addEventListener('click', async () => {
     await copyText(journal.walletPublicKey, 'Launch wallet public key');
+  });
+  wrap.querySelector('[data-action="resume"]')?.addEventListener('click', async (event) => {
+    await resumeLaunchJournal(journal, wallet, event.currentTarget);
   });
   wrap.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
     const ok = await confirmDialog({

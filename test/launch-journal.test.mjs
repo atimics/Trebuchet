@@ -45,6 +45,8 @@ test('starts a non-secret launch journal idempotently', async (t) => {
   const second = launchJournal.start({ walletPublicKey: 'Wallet1111111111111111111111111111111111' });
 
   assert.equal(second.id, first.id);
+  assert.equal(launchJournal.get(first.id).id, first.id);
+  assert.equal(launchJournal.activeForWallet(first.walletPublicKey).id, first.id);
   assert.equal(first.status, 'active');
   assert.equal(first.stage, 'wallet_generated');
 
@@ -100,6 +102,7 @@ test('updates token, pool, and transfer state while filtering secrets', async (t
   });
 
   assert.equal(launchJournal.list().length, 0);
+  assert.equal(launchJournal.activeForWallet(walletPublicKey), null);
   const completed = launchJournal.list({ includeCompleted: true });
   assert.equal(completed.length, 1);
   assert.equal(completed[0].token.mint, 'Mint222222222222222222222222222222222222');

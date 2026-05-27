@@ -157,6 +157,18 @@ export function start({ walletPublicKey }) {
   return clone(journal);
 }
 
+export function get(id) {
+  if (!id) return null;
+  const journal = load().find((entry) => entry.id === id);
+  return journal ? clone(journal) : null;
+}
+
+export function activeForWallet(walletPublicKey) {
+  if (!walletPublicKey) return null;
+  const journal = findActiveForWallet(load(), walletPublicKey);
+  return journal ? clone(journal) : null;
+}
+
 export function upsertForWallet(walletPublicKey, patch = {}, event = null) {
   if (!walletPublicKey) return null;
   const list = load();

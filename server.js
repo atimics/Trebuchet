@@ -610,6 +610,131 @@ function transferJournalSummary({
   };
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function journalResultList(journal) {
+  const lp = journal?.lp || {};
+  const source = Array.isArray(lp.partialResults) && lp.partialResults.length > 0
+    ? lp.partialResults
+    : (Array.isArray(lp.results) ? lp.results : []);
+  return cloneJson(source);
+}
+
+function upsertJournalResult(results, nextResult) {
+  const idx = results.findIndex((r) => r.allocationIndex === nextResult.allocationIndex);
+  if (idx >= 0) {
+    results[idx] = { ...results[idx], ...nextResult };
+  } else {
+    results.push(nextResult);
+  }
+  results.sort((a, b) => (a.allocationIndex ?? 0) - (b.allocationIndex ?? 0));
+}
+
+function resultForEvent(results, event) {
+  return results.find((r) => r.allocationIndex === event.allocationIndex);
+}
+
+function applyLpEventToResults(results, event) {
+  if (event.stage === 'phase1_pool_done' && event.result) {
+    upsertJournalResult(results, event.result);
+    return true;
+  }
+
+  const result = resultForEvent(results, event);
+  if (!result) return false;
+
+  if (event.stage === 'bootstrap_open_done') {
+    result.bootstrap = {
+      nftMint: event.nftMint || null,
+      locked: false,
+      txIds: { open: event.txId || null, lock: null },
+    };
+    return true;
+  }
+
+  if (event.stage === 'main_lock_done') {
+    const pos = result.mainPositions?.[event.sliceIndex];
+    if (!pos) return false;
+    pos.locked = true;
+    pos.txIds = { ...(pos.txIds || {}), lock: event.txId || null };
+    return true;
+  }
+
+  if (event.stage === 'ladder_lock_done') {
+    const pos = result.ladderPositions?.[event.bandIndex];
+    if (!pos) return false;
+    pos.locked = true;
+    pos.txIds = { ...(pos.txIds || {}), lock: event.txId || null };
+    return true;
+  }
+
+  if (event.stage === 'bootstrap_lock_done') {
+    if (!result.bootstrap) return false;
+    result.bootstrap.locked = true;
+    result.bootstrap.txIds = { ...(result.bootstrap.txIds || {}), lock: event.txId || null };
+    return true;
+  }
+
+  if (event.stage === 'main_transfer_done') {
+    const pos = result.mainPositions?.[event.sliceIndex];
+    if (!pos) return false;
+    pos.transferredTo = event.recipient || pos.recipient || null;
+    pos.txIds = { ...(pos.txIds || {}), transfer: event.txId || null };
+    return true;
+  }
+
+  return false;
+}
+
+function recordLpJournalProgress(walletPublicKey, event) {
+  if (!walletPublicKey || !event) return;
+
+  const journal = launchJournal.activeForWallet(walletPublicKey);
+  const partialResults = journalResultList(journal);
+  const patch = { stage: event.stage || 'lp_progress' };
+
+  if (applyLpEventToResults(partialResults, event)) {
+    patch.lp = { partialResults };
+  }
+
+  launchJournal.upsertForWallet(walletPublicKey, patch, event);
+}
+
+function priorResultsFromJournal(journal) {
+  const lp = journal?.lp || {};
+  const source = Array.isArray(lp.results) && lp.results.length > 0
+    ? lp.results
+    : (Array.isArray(lp.partialResults) ? lp.partialResults : []);
+  return cloneJson(source).filter((result) => result && result.poolId);
+}
+
+function hasCompletedLpResults(journal) {
+  const lp = journal?.lp || {};
+  const recoverableStages = new Set([
+    'lp_created',
+    'transfer_started',
+    'transfer_partial',
+    'transfer_failed',
+  ]);
+  return (
+    recoverableStages.has(journal?.stage) &&
+    Array.isArray(lp.results) &&
+    lp.results.length > 0 &&
+    !lp.failedPhase
+  );
+}
+
+function unsafeCreatedPoolEvents(journal, priorResults) {
+  const completedAllocations = new Set(priorResults.map((r) => r.allocationIndex));
+  return (journal.events || []).filter(
+    (event) =>
+      event.stage === 'pool_create_done' &&
+      !completedAllocations.has(event.allocationIndex),
+  );
+}
+
 app.post('/api/create-token', uploadLogo, async (req, res) => {
   let walletPublicKey = null;
   try {
@@ -1248,11 +1373,7 @@ app.post('/api/create-lp', async (req, res) => {
       allocations,
       lockPositions: lockPositions !== false,
       onProgress: (event) => {
-        launchJournal.upsertForWallet(
-          walletPublicKey,
-          { stage: event.stage || 'lp_progress' },
-          event,
-        );
+        recordLpJournalProgress(walletPublicKey, event);
       },
     });
 
@@ -1264,6 +1385,7 @@ app.post('/api/create-lp', async (req, res) => {
         error: null,
         lp: {
           results: result.results || [],
+          partialResults: null,
           failedPhase: null,
           failedAllocationIndex: null,
           bootstrapFailures: null,
@@ -1415,11 +1537,7 @@ app.post('/api/resume-launch', async (req, res) => {
       lockPositions: lockPositions !== false,
       priorResults,
       onProgress: (event) => {
-        launchJournal.upsertForWallet(
-          walletPublicKey,
-          { stage: event.stage || 'lp_progress' },
-          event,
-        );
+        recordLpJournalProgress(walletPublicKey, event);
       },
     });
 
@@ -1431,6 +1549,7 @@ app.post('/api/resume-launch', async (req, res) => {
         error: null,
         lp: {
           results: result.results || [],
+          partialResults: null,
           failedPhase: null,
           failedAllocationIndex: null,
           bootstrapFailures: null,
@@ -1676,6 +1795,191 @@ app.get('/api/launch-journals', (req, res) => {
   } catch (error) {
     console.error('Error listing launch journals:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/launch-journals/resume', async (req, res) => {
+  let walletPublicKey = null;
+  let priorResultsForFailure = [];
+  try {
+    const { id } = req.body;
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'id required' });
+    }
+
+    const journal = launchJournal.get(id);
+    if (!journal) {
+      return res.status(404).json({ success: false, error: 'launch journal not found' });
+    }
+    if (journal.status === 'completed' || journal.status === 'archived') {
+      return res.status(400).json({
+        success: false,
+        error: `cannot resume ${journal.status} launch journal`,
+      });
+    }
+
+    walletPublicKey = journal.walletPublicKey;
+    const wallet = pendingWallets.list().find((w) => w.publicKey === walletPublicKey);
+    if (!wallet || !Array.isArray(wallet.secretKey)) {
+      return res.status(409).json({
+        success: false,
+        error:
+          'matching recoverable wallet secret is unavailable. Import or sweep the launch wallet manually from the pending-wallet entry.',
+      });
+    }
+
+    const poolPlan = journal.poolPlan || {};
+    const token = journal.token || {};
+    const tokenMint = poolPlan.tokenMint || token.mint;
+    const tokenDecimals = poolPlan.tokenDecimals || token.decimals || 9;
+    const tokenTotalSupply = poolPlan.tokenTotalSupply || token.totalSupply;
+    const {
+      targetMarketCapUsd,
+      allocations,
+    } = poolPlan;
+    const lockPositions = poolPlan.lockPositions !== false;
+
+    if (!tokenMint || !tokenTotalSupply || !targetMarketCapUsd || !Array.isArray(allocations)) {
+      return res.status(400).json({
+        success: false,
+        error: 'launch journal is missing the token or pool plan needed to resume',
+      });
+    }
+
+    const priorResults = priorResultsFromJournal(journal);
+    priorResultsForFailure = priorResults;
+    if (hasCompletedLpResults(journal)) {
+      launchJournal.upsertForWallet(
+        walletPublicKey,
+        {
+          status: 'active',
+          stage: journal.stage,
+          error: null,
+          lp: { partialResults: null },
+        },
+        {
+          stage: 'lp_recovered_for_transfer',
+          poolCount: priorResults.length,
+          source: 'launch_journal',
+        },
+      );
+      return res.json({ success: true, recovered: true, results: priorResults });
+    }
+
+    const unsafeEvents = unsafeCreatedPoolEvents(journal, priorResults);
+    if (unsafeEvents.length > 0) {
+      const pools = unsafeEvents.map((event) => event.poolId).filter(Boolean).join(', ');
+      return res.status(409).json({
+        success: false,
+        error:
+          'This journal recorded a pool creation before it recorded completed LP positions. ' +
+          'Trebuchet cannot safely resume automatically without risking duplicate pool work. ' +
+          `Recover or sweep the launch wallet manually${pools ? `; recorded pool(s): ${pools}` : ''}.`,
+        unsafePoolEvents: unsafeEvents,
+      });
+    }
+
+    launchJournal.upsertForWallet(
+      walletPublicKey,
+      {
+        status: 'active',
+        stage: 'lp_resume_started',
+        error: null,
+        poolPlan: {
+          tokenMint,
+          tokenDecimals,
+          tokenTotalSupply,
+          targetMarketCapUsd,
+          allocations,
+          lockPositions,
+        },
+        lp: { priorResults },
+      },
+      {
+        stage: 'lp_resume_started',
+        tokenMint,
+        priorResultCount: priorResults.length,
+        allocationCount: allocations.length,
+        source: 'launch_journal',
+      },
+    );
+
+    const result = await createPoolsAndPositions({
+      tempWalletSecretKey: wallet.secretKey,
+      tokenMint,
+      tokenDecimals,
+      tokenTotalSupply,
+      targetMarketCapUsd,
+      allocations,
+      lockPositions,
+      priorResults,
+      onProgress: (event) => {
+        recordLpJournalProgress(walletPublicKey, event);
+      },
+    });
+
+    launchJournal.upsertForWallet(
+      walletPublicKey,
+      {
+        status: 'active',
+        stage: 'lp_created',
+        error: null,
+        lp: {
+          results: result.results || [],
+          partialResults: null,
+          failedPhase: null,
+          failedAllocationIndex: null,
+          bootstrapFailures: null,
+          lockFailures: null,
+          transferFailures: null,
+        },
+      },
+      { stage: 'lp_created', poolCount: result.results?.length || 0 },
+    );
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('Error resuming launch journal:', error);
+    const partialResults = Array.isArray(error.partialResults)
+      ? error.partialResults
+      : priorResultsForFailure;
+    if (walletPublicKey) {
+      launchJournal.upsertForWallet(
+        walletPublicKey,
+        {
+          status: 'failed',
+          stage: `lp_${error.failedPhase || 'resume'}_failed`,
+          error: error.message,
+          lp: {
+            partialResults,
+            failedAllocationIndex: error.failedAllocationIndex,
+            failedAllocation: error.failedAllocation,
+            failedPhase: error.failedPhase,
+            bootstrapFailures: error.bootstrapFailures || null,
+            lockFailures: error.lockFailures || null,
+            transferFailures: error.transferFailures || null,
+          },
+        },
+        {
+          stage: `lp_${error.failedPhase || 'resume'}_failed`,
+          error: error.message,
+          failedPhase: error.failedPhase,
+          partialResultCount: partialResults.length,
+          source: 'launch_journal',
+        },
+      );
+    }
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      partialResults,
+      failedAllocationIndex: error.failedAllocationIndex,
+      failedAllocation: error.failedAllocation,
+      failedPhase: error.failedPhase,
+      bootstrapFailures: error.bootstrapFailures || null,
+      lockFailures: error.lockFailures || null,
+      transferFailures: error.transferFailures || null,
+    });
   }
 });
 

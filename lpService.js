@@ -2338,7 +2338,7 @@ export async function createPoolsAndPositions({
         ctx: bsCtx,
       });
 
-      results.push({
+      const resultEntry = {
         allocationIndex: allocIdx,
         quoteSymbol: quoteToken.symbol,
         quoteAddress: quoteToken.address,
@@ -2347,6 +2347,12 @@ export async function createPoolsAndPositions({
         // Bootstrap fields populated in phase 2. Predeclared as null so the
         // result shape is consistent if a bootstrap fails partway through.
         bootstrap: null,
+      };
+      results.push(resultEntry);
+      onProgress && onProgress({
+        allocationIndex: allocIdx,
+        stage: 'phase1_pool_done',
+        result: resultEntry,
       });
     } catch (err) {
       // Attach partial results to the error so the caller knows what
