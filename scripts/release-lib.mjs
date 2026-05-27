@@ -133,7 +133,6 @@ export function resolveReleaseBuild(target, env = process.env) {
       plan.builderArgs.push('-c.forceCodeSigning=true');
     } else {
       plan.trust = 'unsigned test artifact';
-      plan.builderArgs.push('-c.win.signExecutable=false');
     }
 
     return plan;

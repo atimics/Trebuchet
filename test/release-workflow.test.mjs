@@ -114,6 +114,8 @@ test('windows release builds installer and portable executable', () => {
   assert.deepEqual(pkg.build.win.target, ['nsis', 'portable']);
   assert.equal(pkg.build.portable.artifactName, '${productName} ${version} Portable.${ext}');
   assert.deepEqual(plan.builderArgs.slice(0, 3), ['--win', 'nsis', 'portable']);
+  assert.equal(plan.builderArgs.some((arg) => arg.includes('signExecutable')), false);
+  assert.equal(plan.builderArgs.some((arg) => arg.includes('signAndEditExecutable')), false);
   assert.equal(plan.expectedFiles.some((expected) => expected.matches('Trebuchet Setup 1.2.3.exe')), true);
   assert.equal(plan.expectedFiles.some((expected) => expected.matches('Trebuchet 1.2.3 Portable.exe')), true);
 });
@@ -136,6 +138,13 @@ test('release build planner enforces complete signing credentials', () => {
   );
 
   assert.equal(resolveReleaseBuild('windows', {}).trust, 'unsigned test artifact');
+  assert.equal(
+    resolveReleaseBuild('windows', {
+      WIN_CSC_LINK: 'base64-pfx',
+      WIN_CSC_KEY_PASSWORD: 'secret',
+    }).builderArgs.includes('-c.forceCodeSigning=true'),
+    true,
+  );
   assert.equal(
     resolveReleaseBuild('windows', {
       WIN_CSC_LINK: 'base64-pfx',
