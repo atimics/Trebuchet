@@ -93,6 +93,8 @@
   "build": {
     "appId": "com.makesometokens.trebuchet",
     "productName": "Trebuchet",
+    "executableName": "Trebuchet",
+    "publish": null,
 
     "directories": {
       "buildResources": "build",

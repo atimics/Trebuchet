@@ -23,6 +23,16 @@ test('release workflow is tag-driven and publishes checksums', () => {
   assert.match(workflow, /mirror -R --only-newer --verbose=2 website/);
 });
 
+test('ci push builds are package-only smoke checks', () => {
+  const workflow = read('.github/workflows/ci.yml');
+
+  assert.match(workflow, /Build package smoke/);
+  assert.match(workflow, /github\.event_name == 'pull_request' \|\| github\.event_name == 'push'/);
+  assert.match(workflow, /Build release package/);
+  assert.match(workflow, /if: github\.event_name == 'workflow_dispatch'/);
+  assert.match(workflow, /Upload build artifact/);
+});
+
 test('main merges automatically create patch, minor, or major release tags', () => {
   const workflow = read('.github/workflows/auto-release.yml');
 
@@ -52,6 +62,9 @@ test('release workflow publishes the GitHub package for each tag', () => {
   assert.equal(pkg.name, '@anoversizedmoosewithsocks/trebuchet-desktop');
   assert.equal(pkg.publishConfig.registry, 'https://npm.pkg.github.com');
   assert.equal(pkg.repository.url, 'git+https://github.com/AnOversizedMooseWithSocks/Trebuchet.git');
+  assert.equal(pkg.build.productName, 'Trebuchet');
+  assert.equal(pkg.build.executableName, 'Trebuchet');
+  assert.equal(pkg.build.publish, null);
   assert.match(workflow, /packages:\s+write/);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /npm version "\$\{GITHUB_REF_NAME#v\}" --no-git-tag-version/);

@@ -23,7 +23,6 @@ const TARGETS = {
     expectedFiles: [
       { description: 'an NSIS installer', matches: (name) => /\.exe$/i.test(name) && /\bSetup\b/i.test(name) },
       { description: 'a portable Windows executable', matches: (name) => /\.exe$/i.test(name) && /\bPortable\b/i.test(name) },
-      { description: 'Windows update metadata', matches: (name) => /^latest.*\.yml$/i.test(name) },
     ],
   },
   linux: {
