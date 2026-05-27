@@ -524,7 +524,7 @@ standalone:
 npm install
 npm run web        # standalone web server on port 3000
 npm start          # Electron desktop app
-npm run build:win  # build a Windows installer
+npm run build:win  # build Windows installer and portable EXE
 ```
 
 Source files of interest:

@@ -12,6 +12,7 @@ The workflow builds:
 - macOS arm64 DMG
 - macOS x64 DMG
 - Windows NSIS installer
+- Windows portable EXE
 - Linux AppImage
 - Linux deb
 
@@ -22,8 +23,8 @@ The workflow builds:
   - `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, or
   - `APPLE_KEYCHAIN`, `APPLE_KEYCHAIN_PROFILE`.
 - If the macOS credentials are absent, the workflow still builds macOS **unsigned test artifacts** and marks the release accordingly.
-- Windows artifacts are **signed** only when `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` are configured.
-- If the Windows credentials are absent, the workflow still builds Windows **unsigned test artifacts** and marks the release accordingly.
+- Windows installer and portable EXE artifacts are **signed** only when `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` are configured.
+- If the Windows credentials are absent, the workflow still builds Windows installer and portable EXE **unsigned test artifacts** and marks the release accordingly.
 - Linux AppImage and deb artifacts are built as **unsigned** packages.
 
 If any desktop artifact is published as an unsigned test artifact, the workflow marks the GitHub Release as a prerelease.

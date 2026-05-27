@@ -105,11 +105,14 @@
 
     "win": {
       "icon": "build/icon.ico",
-      "target": ["nsis"]
+      "target": ["nsis", "portable"]
     },
 
     "nsis": {
       "preCompressedFileExtensions": []
+    },
+    "portable": {
+      "artifactName": "${productName} ${version} Portable.${ext}"
     },
     "linux": {
       "target": ["AppImage"],

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 
-import { buildReleaseNotes, resolveReleaseBuild } from '../scripts/release-lib.mjs';
+import { buildReleaseNotes, resolveReleaseBuild, staleReleaseAssetNames } from '../scripts/release-lib.mjs';
 
 const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
 
@@ -37,6 +37,17 @@ test('mac build uses a native icns app icon', () => {
 
   assert.equal(pkg.build.mac.icon, 'build/icon.icns');
   assert.equal(existsSync(new URL('../build/icon.icns', import.meta.url)), true);
+});
+
+test('windows release builds installer and portable executable', () => {
+  const pkg = JSON.parse(read('package.json'));
+  const plan = resolveReleaseBuild('windows', {});
+
+  assert.deepEqual(pkg.build.win.target, ['nsis', 'portable']);
+  assert.equal(pkg.build.portable.artifactName, '${productName} ${version} Portable.${ext}');
+  assert.deepEqual(plan.builderArgs.slice(0, 3), ['--win', 'nsis', 'portable']);
+  assert.equal(plan.expectedFiles.some((expected) => expected.matches('Trebuchet Setup 1.2.3.exe')), true);
+  assert.equal(plan.expectedFiles.some((expected) => expected.matches('Trebuchet 1.2.3 Portable.exe')), true);
 });
 
 test('release build planner enforces complete signing credentials', () => {
@@ -93,6 +104,24 @@ test('release notes call out prerelease trust gaps and checksum verification', (
   assert.match(notes, /signed/);
   assert.match(notes, /SHA256SUMS\.txt/);
   assert.match(notes, /shasum -a 256 -c SHA256SUMS\.txt/);
+});
+
+test('publish reruns remove release assets that are no longer produced', () => {
+  const staleAssets = staleReleaseAssetNames(
+    [
+      { name: 'Trebuchet Setup 1.2.3.exe' },
+      { name: 'Trebuchet 1.2.3 Portable.exe' },
+      { name: 'Trebuchet-1.2.3.zip' },
+      { name: 'SHA256SUMS.txt' },
+    ],
+    [
+      '/tmp/release-assets/windows/Trebuchet Setup 1.2.3.exe',
+      '/tmp/release-assets/windows/Trebuchet 1.2.3 Portable.exe',
+      '/tmp/release-assets/SHA256SUMS.txt',
+    ],
+  );
+
+  assert.deepEqual(staleAssets, ['Trebuchet-1.2.3.zip']);
 });
 
 test('website download CTA points to GitHub Releases instead of committed build artifacts', () => {

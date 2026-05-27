@@ -19,9 +19,10 @@ const TARGETS = {
   },
   windows: {
     label: 'Windows',
-    builderArgs: ['--win', 'nsis', '--publish=never'],
+    builderArgs: ['--win', 'nsis', 'portable', '--publish=never'],
     expectedFiles: [
-      { description: 'an NSIS installer', matches: (name) => name.endsWith('.exe') },
+      { description: 'an NSIS installer', matches: (name) => /\.exe$/i.test(name) && /\bSetup\b/i.test(name) },
+      { description: 'a portable Windows executable', matches: (name) => /\.exe$/i.test(name) && /\bPortable\b/i.test(name) },
       { description: 'Windows update metadata', matches: (name) => /^latest.*\.yml$/i.test(name) },
     ],
   },
@@ -214,6 +215,15 @@ export async function writeChecksumFile(outputFile, assets) {
   const body = `${lines.join('\n')}\n`;
   await writeFile(outputFile, body);
   return outputFile;
+}
+
+export function staleReleaseAssetNames(existingAssets, releaseAssets) {
+  const wantedNames = new Set(releaseAssets.map((asset) => path.basename(asset)));
+
+  return existingAssets
+    .map((asset) => (typeof asset === 'string' ? asset : asset?.name))
+    .filter((name) => typeof name === 'string' && name !== '' && !wantedNames.has(name))
+    .sort();
 }
 
 export function buildReleaseNotes(tagName, metadata) {
