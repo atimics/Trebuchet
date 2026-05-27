@@ -1,5 +1,5 @@
 {
-  "name": "trebuchet-desktop",
+  "name": "@anoversizedmoosewithsocks/trebuchet-desktop",
   "version": "1.0.0",
   "description": "Trebuchet token launcher, packaged as a desktop app.",
   "main": "main.js",
@@ -9,6 +9,13 @@
   "author": {
     "name": "AnOversizedMooseWithSocks",
     "email": "84553632+AnOversizedMooseWithSocks@users.noreply.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AnOversizedMooseWithSocks/Trebuchet.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   },
 
   "engines": {
@@ -27,6 +34,24 @@
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux"
   },
+
+  "files": [
+    "build/**/*",
+    "docs/**/*",
+    "main.js",
+    "server.js",
+    "tokenService.js",
+    "tokenInfoService.js",
+    "lpService.js",
+    "swapService.js",
+    "walletHelpers.js",
+    "rpcConfig.js",
+    "secretStore.js",
+    "pendingWallets.js",
+    "validators.js",
+    "metadata.json",
+    "public/**/*"
+  ],
 
   "dependencies": {
     "@metaplex-foundation/mpl-token-metadata": "^3.2.1",
@@ -68,6 +93,8 @@
   "build": {
     "appId": "com.makesometokens.trebuchet",
     "productName": "Trebuchet",
+    "executableName": "Trebuchet",
+    "publish": null,
 
     "directories": {
       "buildResources": "build",
@@ -105,11 +132,14 @@
 
     "win": {
       "icon": "build/icon.ico",
-      "target": ["nsis"]
+      "target": ["nsis", "portable"]
     },
 
     "nsis": {
       "preCompressedFileExtensions": []
+    },
+    "portable": {
+      "artifactName": "${productName} ${version} Portable.${ext}"
     },
     "linux": {
       "target": ["AppImage"],
