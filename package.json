@@ -6,10 +6,13 @@
   "type": "module",
   "packageManager": "npm@10.9.2",
   "license": "MIT",
-  "author": "",
+  "author": {
+    "name": "AnOversizedMooseWithSocks",
+    "email": "84553632+AnOversizedMooseWithSocks@users.noreply.github.com"
+  },
 
   "engines": {
-    "node": ">=20.17",
+    "node": ">=22.12.0",
     "npm": ">=10"
   },
 
@@ -95,25 +98,21 @@
     ],
 
     "mac": {
+      "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
-      "target": ["dmg", "zip"]
+      "target": ["dmg"]
     },
 
     "win": {
       "icon": "build/icon.ico",
-      "target": ["nsis", "portable"]
+      "target": ["nsis"]
     },
 
     "nsis": {
       "preCompressedFileExtensions": []
     },
-
-    "portable": {
-      "artifactName": "${productName} ${version} Portable.${ext}"
-    },
-
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": ["AppImage"],
       "category": "Development"
     }
   }
