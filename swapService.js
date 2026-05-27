@@ -77,6 +77,10 @@ import {
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
 import { getRpcUrl } from './rpcConfig.js';
+import {
+  classifySwapError,
+  computeSwapSpendLamports,
+} from './swapMath.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -264,85 +268,6 @@ async function readSolBalanceLamports(connection, ownerPk) {
     // insufficient and surface the error before consuming retry budget.
     return new BN(0);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Error classification
-// ---------------------------------------------------------------------------
-
-/**
- * Classify a thrown swap error into one of:
- *   'balance'   → wallet doesn't have enough SOL. Don't retry.
- *   'no_route'  → Trade API can't route this pair. Terminal.
- *   'transient' → HTTP/RPC/blockhash. Retry.
- *   'unknown'   → treat as transient, with tighter retry budget.
- *
- * String-matching against error messages is unfortunate but pragmatic:
- * neither Solana RPC errors nor the Raydium API's error responses expose
- * a clean error-code surface, so message text is what we have. Patterns
- * below err on "transient" when ambiguous — better to retry one extra
- * time than to abandon a recoverable swap.
- */
-function classifyError(err) {
-  const msg = String(err?.message || err || '').toLowerCase();
-
-  // Balance/funding shortfall — not retryable.
-  if (
-    msg.includes('insufficient lamports') ||
-    msg.includes('insufficient funds') ||
-    msg.includes('insufficient balance') ||
-    msg.includes('account does not have enough') ||
-    msg.includes('debit an account but found no record')
-  ) {
-    return 'balance';
-  }
-
-  // Trade API said it can't route this pair — no point retrying.
-  if (
-    msg.includes('no route') ||
-    msg.includes('cannot find route') ||
-    msg.includes('route not found') ||
-    msg.includes('no liquidity')
-  ) {
-    return 'no_route';
-  }
-
-  // Slippage / price drift — retryable on a wider rung.
-  if (
-    msg.includes('slippage') ||
-    msg.includes('exceeds maximum') ||
-    msg.includes('amount out below minimum') ||
-    msg.includes('min amount out') ||
-    msg.includes('priceslippageexceed')
-  ) {
-    return 'transient';
-  }
-
-  // Network / RPC / tx-landing issues.
-  if (
-    msg.includes('blockhash') ||
-    msg.includes('timeout') ||
-    msg.includes('timed out') ||
-    msg.includes('aborted') ||         // AbortController-fired timeout
-    msg.includes('network') ||
-    msg.includes('429') ||
-    msg.includes('rate limit') ||
-    msg.includes('too many requests') ||
-    msg.includes('connection') ||
-    msg.includes('econn') ||
-    msg.includes('socket') ||
-    msg.includes('fetch failed') ||
-    msg.includes('was not confirmed') ||
-    msg.includes('node behind') ||
-    msg.includes('http 5') ||           // 5xx server errors
-    msg.includes('http 502') ||
-    msg.includes('http 503') ||
-    msg.includes('http 504')
-  ) {
-    return 'transient';
-  }
-
-  return 'unknown';
 }
 
 // ---------------------------------------------------------------------------
@@ -581,41 +506,31 @@ export async function swapSolForQuote({
   //    missing_raw → missing_whole → USD value → SOL → lamports
   //    multiplied by safety factor. Caller provides quoteUsd/solUsd
   //    from the same getUsdPrice oracle the rest of the app uses.
-  const missingRaw = targetRaw.sub(initialQuoteRaw);
-  const missingWhole = new Decimal(missingRaw.toString()).div(
-    new Decimal(10).pow(quoteDecimals),
-  );
-  const missingUsd = missingWhole.mul(quoteUsd);
-  const solNeeded = missingUsd.div(solUsd).mul(sizingMultiplier);
-  const lamports = new BN(solNeeded.mul(LAMPORTS_PER_SOL).toFixed(0));
-
-  // Floor at 50,000 lamports so we don't send a swap so tiny that the
-  // Trade API returns no route. Cap at the caller-provided maxSpendLamports
-  // (or 0.05 SOL when not specified — historical default sized for dust
-  // targets). The cap exists to prevent a mispriced oracle / corrupt
-  // estimator from draining the wallet — so for custom-mode bootstraps
-  // we ask the caller to derive the cap from the estimator's own SOL
-  // budget plus a small buffer, scaling naturally with what the user
-  // committed.
-  const MIN_SPEND = new BN(50_000);
-  const DEFAULT_MAX_SPEND = new BN(0.05 * LAMPORTS_PER_SOL);
-  const effectiveMaxSpend = maxSpendLamports != null
-    ? new BN(String(maxSpendLamports))
-    : DEFAULT_MAX_SPEND;
-  const spendLamports = BN.max(BN.min(lamports, effectiveMaxSpend), MIN_SPEND);
+  const {
+    missingWhole,
+    spendLamports,
+    requiredLamports: required,
+    txFeeHeadroomLamports,
+  } = computeSwapSpendLamports({
+    targetRaw,
+    initialQuoteRaw,
+    quoteDecimals,
+    quoteUsd,
+    solUsd,
+    sizingMultiplier,
+    maxSpendLamports,
+  });
 
   // 5. Pre-flight: wallet must have spend + tx-fee headroom. Fail fast
   //    if not, so we surface the actionable error to the user instead
   //    of burning retry budget.
-  const TX_FEE_HEADROOM = new BN(0.005 * LAMPORTS_PER_SOL);
-  const required = spendLamports.add(TX_FEE_HEADROOM);
   const walletSol = await readSolBalanceLamports(connection, ownerPk);
   if (walletSol.lt(required)) {
     throw new Error(
       `INSUFFICIENT_SOL: wallet has ${(walletSol.toNumber() / LAMPORTS_PER_SOL).toFixed(6)} SOL, ` +
         `need ${(required.toNumber() / LAMPORTS_PER_SOL).toFixed(6)} SOL ` +
         `(${(spendLamports.toNumber() / LAMPORTS_PER_SOL).toFixed(6)} swap + ` +
-        `${(TX_FEE_HEADROOM.toNumber() / LAMPORTS_PER_SOL).toFixed(6)} tx headroom)`,
+        `${(txFeeHeadroomLamports.toNumber() / LAMPORTS_PER_SOL).toFixed(6)} tx headroom)`,
     );
   }
 
@@ -727,7 +642,7 @@ export async function swapSolForQuote({
         succeeded: true,
       };
     } catch (e) {
-      const kind = classifyError(e);
+      const kind = classifySwapError(e);
       const summary = `${kind}: ${e.message}`;
       attemptErrors.push(`attempt ${attemptsTried}: ${summary}`);
       console.warn(`    failed (${summary})`);

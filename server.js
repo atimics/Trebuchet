@@ -56,6 +56,7 @@ import {
   normalizeTokenSymbol,
   normalizeWholeTokenSupply,
 } from './validators.js';
+import { isWalletEffectivelyEmpty } from './walletRecovery.js';
 
 // Configuration constants are defined below in the "Configuration" section
 // (just after __dirname is computed). Internal env vars (PORT,
@@ -1417,21 +1418,6 @@ function walletPubkeyFromSecretArray(secretKeyArr) {
 // API boundaries where a human might end up looking at or copying it.
 function secretKeyToBase58(secretKeyArr) {
   return bs58.encode(Uint8Array.from(secretKeyArr));
-}
-
-// "Effectively empty" = SOL below a small threshold (so dust left over
-// for the final transaction fee doesn't keep the entry around forever)
-// AND every token account is zero. NFTs show up in `tokens` too, since
-// they're token accounts with decimals=0.
-function isWalletEffectivelyEmpty(balance) {
-  // 0.001 SOL — comfortably above network fee dust, well below anything
-  // worth recovering manually.
-  const SOL_DUST_THRESHOLD = 0.001;
-  if (balance.sol >= SOL_DUST_THRESHOLD) return false;
-  for (const t of Object.values(balance.tokens || {})) {
-    if (BigInt(t.amountRaw) > 0n) return false;
-  }
-  return true;
 }
 
 // ---------------------------------------------------------------------------

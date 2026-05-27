@@ -26,7 +26,7 @@ test('release workflow is tag-driven and publishes checksums', () => {
   assert.match(workflow, /FTP_LOGIN/);
   assert.match(workflow, /FTP_PASSWORD/);
   assert.match(workflow, /p1401\.use1\.mysecurecloudhost\.com/);
-  assert.match(workflow, /mirror -R --only-newer --verbose=2 website/);
+  assert.match(workflow, /mirror -R --only-newer --no-perms --verbose=2 website/);
 });
 
 test('ci only runs package smoke builds before release', () => {

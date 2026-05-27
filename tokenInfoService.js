@@ -38,6 +38,11 @@ import {
 } from '@solana/spl-token';
 import Decimal from 'decimal.js';
 import { getRpcUrl } from './rpcConfig.js';
+import {
+  parseMetaplexName,
+  parseMetaplexSymbol,
+  parseMetaplexUri,
+} from './tokenMetadataLayout.js';
 
 // Metaplex Token Metadata program ID. Hardcoded rather than imported
 // from @metaplex-foundation/mpl-token-metadata to keep this module's
@@ -237,72 +242,6 @@ async function readOnChainBasics(mintAddress) {
     uri,
     programId: programIdPk.toBase58(),
   };
-}
-
-// Pull just the symbol field out of a Metaplex Metadata account's raw
-// data. We do this by hand rather than pulling in mpl-token-metadata's
-// full deserializer, because all we want is a 32-byte fixed-length
-// string and the deserializer adds dependency weight we don't need.
-//
-// Layout (Metadata v1, the form Raydium and every modern launchpad uses):
-//   1   key (discriminator)
-//   32  updateAuthority pubkey
-//   32  mint pubkey
-//   4   name length (u32, little-endian)
-//   32  name bytes (null-padded to 32)
-//   4   symbol length
-//   10  symbol bytes (null-padded to 10)
-//   ...
-//
-// The string fields use a length-prefixed-but-fixed-size convention:
-// the prefix says how many bytes are "live", but the field is always
-// the full size. We trim trailing nulls + whitespace.
-function parseMetaplexSymbol(data) {
-  if (!data || data.length < 1 + 32 + 32 + 4 + 32 + 4 + 10) {
-    return null; // too short to be a valid Metadata v1 account
-  }
-  const SYMBOL_OFFSET = 1 + 32 + 32 + 4 + 32 + 4;
-  const SYMBOL_MAX_LEN = 10;
-  const raw = data.slice(SYMBOL_OFFSET, SYMBOL_OFFSET + SYMBOL_MAX_LEN);
-  const text = Buffer.from(raw).toString('utf8').replace(/\0+$/, '').trim();
-  return text || null;
-}
-
-// Same idea as parseMetaplexSymbol but for the name field — sits
-// immediately after the 4-byte name-length prefix, fixed 32-byte
-// allocation. Used as a fallback display name when no external
-// indexer (Gecko/DexScreener) has the token.
-function parseMetaplexName(data) {
-  if (!data || data.length < 1 + 32 + 32 + 4 + 32) {
-    return null;
-  }
-  const NAME_OFFSET = 1 + 32 + 32 + 4;
-  const NAME_MAX_LEN = 32;
-  const raw = data.slice(NAME_OFFSET, NAME_OFFSET + NAME_MAX_LEN);
-  const text = Buffer.from(raw).toString('utf8').replace(/\0+$/, '').trim();
-  return text || null;
-}
-
-// Same idea again, but for the uri field which sits immediately after
-// the symbol field. The uri points to an off-chain JSON document
-// (typically Arweave or IPFS) following the Metaplex schema:
-//   { name, symbol, description, image, ... }
-//
-// We use this as the primary logo source — the token creator declared
-// it canonical when minting, so it's more authoritative than what an
-// indexer (Gecko / DexScreener) might curate later.
-//
-// Layout offset: 1 + 32 + 32 + 4 + 32 + 4 + 10 + 4 = 119 bytes.
-// Fixed allocation: 200 bytes (Metaplex spec).
-function parseMetaplexUri(data) {
-  if (!data || data.length < 1 + 32 + 32 + 4 + 32 + 4 + 10 + 4 + 200) {
-    return null;
-  }
-  const URI_OFFSET = 1 + 32 + 32 + 4 + 32 + 4 + 10 + 4;
-  const URI_MAX_LEN = 200;
-  const raw = data.slice(URI_OFFSET, URI_OFFSET + URI_MAX_LEN);
-  const text = Buffer.from(raw).toString('utf8').replace(/\0+$/, '').trim();
-  return text || null;
 }
 
 // ---------------------------------------------------------------------------
