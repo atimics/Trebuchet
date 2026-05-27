@@ -143,6 +143,14 @@ export function resolveReleaseBuild(target, env = process.env) {
   return plan;
 }
 
+export function electronBuilderInvocation(builderArgs, platform = process.platform) {
+  return {
+    command: platform === 'win32' ? 'npm.cmd' : 'npm',
+    args: ['exec', 'electron-builder', '--', ...builderArgs],
+    shell: platform === 'win32',
+  };
+}
+
 export async function collectFiles(rootDir) {
   const found = [];
 

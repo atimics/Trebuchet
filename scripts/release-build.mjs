@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { collectFiles, resolveReleaseBuild } from './release-lib.mjs';
+import { collectFiles, electronBuilderInvocation, resolveReleaseBuild } from './release-lib.mjs';
 
 const target = process.env.TREBUCHET_RELEASE_TARGET;
 
@@ -17,15 +17,20 @@ const metadataDir = path.join(distDir, 'release-metadata');
 
 await rm(distDir, { force: true, recursive: true });
 
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const result = spawnSync(npmCommand, ['exec', 'electron-builder', '--', ...plan.builderArgs], {
+const invocation = electronBuilderInvocation(plan.builderArgs);
+const result = spawnSync(invocation.command, invocation.args, {
   cwd: projectRoot,
   env: process.env,
+  shell: invocation.shell,
   stdio: 'inherit',
 });
 
+if (result.error) {
+  throw result.error;
+}
+
 if (result.status !== 0) {
-  process.exit(result.status || 1);
+  process.exit(result.status ?? 1);
 }
 
 const builtFiles = await collectFiles(distDir);

@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 
 import { nextRelease, releaseTypeFromLabels } from '../scripts/auto-version.mjs';
-import { buildReleaseNotes, resolveReleaseBuild, staleReleaseAssetNames } from '../scripts/release-lib.mjs';
+import {
+  buildReleaseNotes,
+  electronBuilderInvocation,
+  resolveReleaseBuild,
+  staleReleaseAssetNames,
+} from '../scripts/release-lib.mjs';
 
 const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
 
@@ -65,6 +70,11 @@ test('release workflow publishes the GitHub package for each tag', () => {
   assert.equal(pkg.build.productName, 'Trebuchet');
   assert.equal(pkg.build.executableName, 'Trebuchet');
   assert.equal(pkg.build.publish, null);
+  assert.equal(pkg.build.nsis.artifactName, '${productName} Setup ${version}.${ext}');
+  assert.equal(pkg.build.linux.executableName, 'Trebuchet');
+  assert.equal(pkg.build.linux.artifactName, 'Trebuchet-${version}-${arch}.${ext}');
+  assert.equal(pkg.build.deb.packageName, 'trebuchet-desktop');
+  assert.equal(pkg.build.deb.artifactName, 'trebuchet-desktop_${version}_${arch}.${ext}');
   assert.match(workflow, /packages:\s+write/);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /npm version "\$\{GITHUB_REF_NAME#v\}" --no-git-tag-version/);
@@ -136,6 +146,19 @@ test('release build planner enforces complete signing credentials', () => {
   );
 
   assert.equal(resolveReleaseBuild('linux', {}).trust, 'unsigned');
+});
+
+test('release builder invokes npm through a shell on Windows', () => {
+  assert.deepEqual(electronBuilderInvocation(['--win'], 'linux'), {
+    command: 'npm',
+    args: ['exec', 'electron-builder', '--', '--win'],
+    shell: false,
+  });
+  assert.deepEqual(electronBuilderInvocation(['--win'], 'win32'), {
+    command: 'npm.cmd',
+    args: ['exec', 'electron-builder', '--', '--win'],
+    shell: true,
+  });
 });
 
 test('release notes call out prerelease trust gaps and checksum verification', () => {
