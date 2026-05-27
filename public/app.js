@@ -8869,6 +8869,7 @@ async function runTransfer() {
       // The server has already removed this wallet from the recovery
       // cache (provided the on-chain balance check confirmed it's empty).
       // Refresh the panel so it reflects the new state.
+      loadLaunchJournals();
       loadPendingWallets();
     } catch (e) {
       log(`Transfer failed: ${e.message}`, 'danger');
@@ -8876,6 +8877,259 @@ async function runTransfer() {
       setLoading(btn, false);
     }
   });
+}
+
+// ===========================================================================
+// Launch-journal recovery panel
+// ---------------------------------------------------------------------------
+// Launch journals are non-secret records of previous sessions: wallet public
+// key, token mint, pool IDs, tx IDs, failed phase, and transfer outcome.
+// They complement pending wallets, which hold the secret material needed for
+// manual recovery.
+// ===========================================================================
+
+let launchJournalStartupIds = null;
+
+async function loadLaunchJournals() {
+  const panel = document.getElementById('launchJournalsPanel');
+  const list = document.getElementById('launchJournalsList');
+  if (!panel || !list) return;
+
+  try {
+    const resp = await fetch('/api/launch-journals').then((r) => r.json());
+    let journals = (resp && resp.journals) || [];
+
+    if (launchJournalStartupIds === null) {
+      launchJournalStartupIds = new Set(journals.map((j) => j.id));
+    }
+
+    journals = journals.filter((j) => launchJournalStartupIds.has(j.id));
+
+    if (journals.length === 0) {
+      panel.classList.add('hidden');
+      list.innerHTML = '';
+      return;
+    }
+
+    list.innerHTML = '';
+    for (const journal of journals) {
+      list.appendChild(buildLaunchJournalRow(journal));
+    }
+    panel.classList.remove('hidden');
+  } catch (e) {
+    console.warn('Failed to load launch journals:', e);
+    panel.classList.add('hidden');
+  }
+}
+
+function shortAddress(value, prefix = 6, suffix = 6) {
+  if (!value || typeof value !== 'string') return 'unknown';
+  if (value.length <= prefix + suffix + 1) return value;
+  return `${value.slice(0, prefix)}...${value.slice(-suffix)}`;
+}
+
+function launchJournalStageLabel(journal) {
+  const stage = journal.stage || 'unknown';
+  const labels = {
+    wallet_generated: 'Wallet generated',
+    token_create_started: 'Token creation started',
+    logo_uploaded: 'Logo uploaded',
+    metadata_uploaded: 'Metadata uploaded',
+    mint_created: 'Mint created',
+    metadata_account_created: 'Metadata account created',
+    supply_minted: 'Supply minted',
+    mint_authority_revoked: 'Mint authority revoked',
+    metadata_update_authority_revoked: 'Metadata authority revoked',
+    token_safety_verified: 'Token safety verified',
+    token_created: 'Token created',
+    token_create_failed: 'Token creation failed',
+    lp_create_started: 'Pool creation started',
+    lp_resume_started: 'Launch resume started',
+    pool_create_done: 'Pool created',
+    main_open_done: 'Main LP position opened',
+    ladder_open_done: 'Ladder position opened',
+    bootstrap_open_done: 'Bootstrap opened',
+    main_lock_done: 'LP position locked',
+    main_lock_failed: 'LP position lock failed',
+    ladder_lock_done: 'Ladder position locked',
+    ladder_lock_failed: 'Ladder position lock failed',
+    bootstrap_lock_done: 'Bootstrap locked',
+    bootstrap_lock_failed: 'Bootstrap lock failed',
+    phase3_done: 'Lock phase completed',
+    main_transfer_done: 'Fee Key transferred',
+    main_transfer_failed: 'Fee Key transfer failed',
+    phase4_done: 'Fee Key transfer phase completed',
+    bootstrap_failed: 'Bootstrap failed',
+    lp_created: 'Pools completed',
+    lp_pre_flight_failed: 'Validation failed',
+    lp_main_positions_failed: 'Pool creation failed',
+    lp_bootstrap_failed: 'Bootstrap failed',
+    lp_locks_failed: 'Locking failed',
+    lp_transfers_failed: 'Fee Key transfer failed',
+    transfer_started: 'Final sweep started',
+    transfer_partial: 'Final sweep incomplete',
+    transfer_completed: 'Final sweep completed',
+    transfer_failed: 'Final sweep failed',
+  };
+  return labels[stage] || stage.replaceAll('_', ' ');
+}
+
+function launchJournalRecoveryText(journal) {
+  if (journal.transfer?.walletEmpty === false || journal.stage === 'transfer_partial') {
+    return 'Final sweep did not prove the launch wallet empty. Check the matching recoverable wallet below and sweep or import it manually.';
+  }
+  if (journal.lp?.failedPhase === 'bootstrap') {
+    return 'Pools and main positions were recorded, but one or more bootstrap positions are missing. Created pools are permanent; sweep the wallet or retry bootstraps from the recorded plan.';
+  }
+  if (journal.lp?.failedPhase === 'locks') {
+    return 'Pools and bootstraps were recorded, but one or more locks failed. Unlocked LP NFTs remain controlled by the launch wallet.';
+  }
+  if (journal.lp?.failedPhase === 'transfers') {
+    return 'The launch reached locked positions, but some Fee Key deliveries failed. Remaining Fee Key NFTs should still be in the launch wallet for sweep or manual transfer.';
+  }
+  if (journal.lp?.partialResults?.length > 0) {
+    return 'Some pool work landed on-chain before the launch stopped. Created pools are permanent; the launch wallet controls any unswept tokens and LP NFTs.';
+  }
+  if (journal.token?.mint) {
+    return 'The token mint was recorded. If the launch stopped before pools or transfer, the minted supply should still be controlled by the launch wallet.';
+  }
+  return 'A launch wallet was generated, but no token mint was recorded. If you funded this wallet, use the matching recovery entry below to recover the funds.';
+}
+
+function launchJournalPoolRows(journal) {
+  const lp = journal.lp || {};
+  const results = Array.isArray(lp.results) && lp.results.length > 0
+    ? lp.results
+    : (Array.isArray(lp.partialResults) ? lp.partialResults : []);
+  if (results.length === 0) return '';
+
+  const rows = results.slice(0, 6).map((r) => {
+    const positions = [
+      ...(Array.isArray(r.mainPositions) ? r.mainPositions : []),
+      ...(Array.isArray(r.ladderPositions) ? r.ladderPositions : []),
+      ...(r.bootstrap ? [r.bootstrap] : []),
+    ];
+    const locked = positions.filter((p) => p.locked).length;
+    const bootstrap = r.bootstrap?.nftMint ? 'bootstrap opened' : 'bootstrap missing';
+    return `<li><strong>${escapeHtml(r.quoteSymbol || 'pool')}</strong>: ` +
+      `${escapeHtml(shortAddress(r.poolId, 6, 6))}, ` +
+      `${positions.length} position${positions.length === 1 ? '' : 's'}, ` +
+      `${locked}/${positions.length} locked, ${bootstrap}</li>`;
+  }).join('');
+  const more = results.length > 6
+    ? `<li>${results.length - 6} more pool${results.length - 6 === 1 ? '' : 's'} recorded</li>`
+    : '';
+  return `<ul class="mt-2 mb-0">${rows}${more}</ul>`;
+}
+
+function launchJournalTxRows(journal) {
+  const events = Array.isArray(journal.events) ? journal.events : [];
+  const txs = [];
+  for (const event of events) {
+    if (typeof event.txId === 'string' && !txs.includes(event.txId)) {
+      txs.push(event.txId);
+    }
+  }
+  if (txs.length === 0) return '';
+  const shown = txs.slice(0, 5)
+    .map((tx) => `<span class="tag is-light is-family-monospace mr-1 mb-1">${escapeHtml(shortAddress(tx, 8, 6))}</span>`)
+    .join('');
+  const more = txs.length > 5
+    ? `<span class="tag is-light mr-1 mb-1">+${txs.length - 5} more</span>`
+    : '';
+  return `<div class="mt-2"><strong>Recorded txs:</strong> ${shown}${more}</div>`;
+}
+
+function buildLaunchJournalRow(journal) {
+  const wrap = document.createElement('div');
+  wrap.className = 'box p-3 mb-2 is-size-7';
+
+  const tokenLabel = journal.token?.symbol
+    ? `${journal.token.symbol} (${shortAddress(journal.token.mint || '', 6, 6)})`
+    : (journal.token?.mint ? shortAddress(journal.token.mint, 6, 6) : 'No token mint recorded');
+  const walletShort = shortAddress(journal.walletPublicKey, 6, 6);
+  const ageStr = formatAge(journal.updatedAt || journal.createdAt);
+  const errorHtml = journal.error
+    ? `<div class="notification is-danger is-light is-size-7 py-2 px-3 my-2">${escapeHtml(journal.error)}</div>`
+    : '';
+
+  wrap.innerHTML = `
+    <div class="mb-1">
+      <strong>${escapeHtml(tokenLabel)}</strong>
+      <span class="tag is-warning is-light ml-1">${escapeHtml(launchJournalStageLabel(journal))}</span>
+      <span class="has-text-grey ml-1">${escapeHtml(ageStr)}</span>
+    </div>
+    <div><strong>Launch wallet:</strong> <span class="is-family-monospace">${escapeHtml(walletShort)}</span></div>
+    ${journal.token?.mint ? `<div><strong>Token mint:</strong> <span class="is-family-monospace">${escapeHtml(shortAddress(journal.token.mint, 8, 8))}</span></div>` : ''}
+    ${errorHtml}
+    <div class="notification is-warning is-light is-size-7 py-2 px-3 my-2">
+      ${escapeHtml(launchJournalRecoveryText(journal))}
+    </div>
+    ${launchJournalPoolRows(journal)}
+    ${launchJournalTxRows(journal)}
+    <div class="field is-grouped is-grouped-multiline mt-3">
+      ${journal.token?.mint ? `
+        <div class="control">
+          <button class="button is-small" data-action="copy-token">
+            <span class="icon is-small"><i class="fas fa-copy"></i></span>
+            <span>Copy token mint</span>
+          </button>
+        </div>
+      ` : ''}
+      <div class="control">
+        <button class="button is-small" data-action="copy-wallet">
+          <span class="icon is-small"><i class="fas fa-copy"></i></span>
+          <span>Copy launch wallet</span>
+        </button>
+      </div>
+      <div class="control">
+        <button class="button is-small is-danger is-light" data-action="dismiss">
+          <span class="icon is-small"><i class="fas fa-trash"></i></span>
+          <span>Dismiss journal</span>
+        </button>
+      </div>
+    </div>
+  `;
+
+  const copyText = async (text, description) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      log(`${description} copied to clipboard`, 'info');
+    } catch (e) {
+      log(`Couldn't copy ${description}: ${e.message}`, 'warning');
+    }
+  };
+
+  wrap.querySelector('[data-action="copy-token"]')?.addEventListener('click', async () => {
+    await copyText(journal.token.mint, 'Token mint');
+  });
+  wrap.querySelector('[data-action="copy-wallet"]').addEventListener('click', async () => {
+    await copyText(journal.walletPublicKey, 'Launch wallet public key');
+  });
+  wrap.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
+    const ok = await confirmDialog({
+      title: 'Dismiss launch journal?',
+      body:
+        `<p>Dismiss the journal for <strong>${escapeHtml(tokenLabel)}</strong>?</p>` +
+        `<p>This hides the audit/recovery summary but does not move funds or delete any on-chain assets. ` +
+        `Only dismiss it after you have recovered, swept, or intentionally abandoned the launch wallet.</p>`,
+      confirmLabel: 'Dismiss journal',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await fetch('/api/launch-journals/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: journal.id }),
+      });
+      await loadLaunchJournals();
+    } catch (e) {
+      log(`Failed to dismiss launch journal: ${e.message}`, 'danger');
+    }
+  });
+
+  return wrap;
 }
 
 // ===========================================================================
@@ -9109,6 +9363,7 @@ function formatAge(isoString) {
 // ===========================================================================
 log('Trebuchet is ready. Click "Generate Wallet" to begin.');
 loadRpcConfig();
+loadLaunchJournals();
 loadPendingWallets();
 loadFeeTiers();
 bindStepHeaders();

@@ -42,6 +42,7 @@ import {
 } from './rpcConfig.js';
 
 import * as pendingWallets from './pendingWallets.js';
+import * as launchJournal from './launchJournal.js';
 import {
   Keypair,
   PublicKey,
@@ -436,6 +437,7 @@ app.post('/api/generate-wallet', async (req, res) => {
     // app crashes or is closed mid-launch. The entry is removed by
     // /api/transfer-assets once the wallet is verified on-chain empty.
     pendingWallets.add(walletInfo.publicKey, walletInfo.secretKey, walletInfo.mnemonic);
+    launchJournal.start({ walletPublicKey: walletInfo.publicKey });
 
     res.json({
       success: true,
@@ -558,7 +560,58 @@ function uploadLogo(req, res, next) {
   });
 }
 
+function recordTokenJournalProgress(walletPublicKey, event) {
+  if (!walletPublicKey || !event) return;
+  const token = {};
+  if (event.tokenMint) token.mint = event.tokenMint;
+  if (event.metadataUri) token.metadataUri = event.metadataUri;
+  if (event.imageUri) token.imageUri = event.imageUri;
+  if (typeof event.mintAuthorityRenounced === 'boolean') {
+    token.mintAuthorityRenounced = event.mintAuthorityRenounced;
+  }
+  if (typeof event.freezeAuthorityDisabled === 'boolean') {
+    token.freezeAuthorityDisabled = event.freezeAuthorityDisabled;
+  }
+  if (typeof event.metadataUpdateAuthorityRevoked === 'boolean') {
+    token.metadataUpdateAuthorityRevoked = event.metadataUpdateAuthorityRevoked;
+  }
+  if (typeof event.metadataImmutable === 'boolean') {
+    token.metadataImmutable = event.metadataImmutable;
+  }
+
+  launchJournal.upsertForWallet(
+    walletPublicKey,
+    {
+      stage: event.stage || 'token_progress',
+      token: Object.keys(token).length > 0 ? token : undefined,
+    },
+    event,
+  );
+}
+
+function transferJournalSummary({
+  destinationWallet,
+  tokensTransferred,
+  solTransferred,
+  nftSweep,
+  tokenSweep,
+  solSweepError,
+  walletEmpty,
+}) {
+  return {
+    destinationWallet,
+    tokensTransferred,
+    solTransferred,
+    nftsTransferred: nftSweep?.transferred?.length || 0,
+    tokenTransferErrors: tokenSweep?.errors || [],
+    nftTransferErrors: nftSweep?.errors || [],
+    solSweepError: solSweepError || null,
+    walletEmpty,
+  };
+}
+
 app.post('/api/create-token', uploadLogo, async (req, res) => {
+  let walletPublicKey = null;
   try {
     const {
       tempWalletSecretKey,
@@ -598,15 +651,61 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       logoBase64 = `data:${logoMime};base64,${req.file.buffer.toString('base64')}`;
     }
 
+    const tempWalletSecretKeyArr = JSON.parse(tempWalletSecretKey);
+    walletPublicKey = walletPubkeyFromSecretArray(tempWalletSecretKeyArr);
+    launchJournal.upsertForWallet(
+      walletPublicKey,
+      {
+        status: 'active',
+        stage: 'token_create_started',
+        token: {
+          name: normalizedName,
+          symbol: normalizedSymbol,
+          totalSupply: normalizedTotalSupply,
+          decimals: 9,
+        },
+      },
+      {
+        stage: 'token_create_started',
+        name: normalizedName,
+        symbol: normalizedSymbol,
+        totalSupply: normalizedTotalSupply,
+      },
+    );
+
     const result = await createTokenWithMetaplex({
-      tempWalletSecretKey: JSON.parse(tempWalletSecretKey),
+      tempWalletSecretKey: tempWalletSecretKeyArr,
       name: normalizedName,
       symbol: normalizedSymbol,
       description: normalizedDescription,
       totalSupply: normalizedTotalSupply,
       logoBase64,
       quoteMints,
+      onProgress: (event) => recordTokenJournalProgress(walletPublicKey, event),
     });
+
+    launchJournal.upsertForWallet(
+      walletPublicKey,
+      {
+        status: 'active',
+        stage: 'token_created',
+        error: null,
+        token: {
+          mint: result.tokenMint,
+          name: normalizedName,
+          symbol: normalizedSymbol,
+          totalSupply: normalizedTotalSupply,
+          decimals: 9,
+          metadataUri: result.metadataUri,
+          isSafe: result.isSafe,
+          mintAuthorityRenounced: result.mintAuthorityRenounced,
+          freezeAuthorityDisabled: result.freezeAuthorityDisabled,
+          metadataUpdateAuthorityRevoked: result.metadataUpdateAuthorityRevoked,
+          metadataImmutable: result.metadataImmutable,
+        },
+      },
+      { stage: 'token_created', tokenMint: result.tokenMint, metadataUri: result.metadataUri },
+    );
 
     res.json({
       success: true,
@@ -617,6 +716,17 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
     });
   } catch (error) {
     console.error('Error creating token:', error);
+    if (walletPublicKey) {
+      launchJournal.upsertForWallet(
+        walletPublicKey,
+        {
+          status: 'failed',
+          stage: 'token_create_failed',
+          error: error.message,
+        },
+        { stage: 'token_create_failed', error: error.message },
+      );
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1091,6 +1201,7 @@ app.delete('/api/acquire-quote-tokens/:jobId', (req, res) => {
 // Run the full LP creation flow: createPool + main positions + bootstrap +
 // lock + (optional) recipient transfers, for every allocation.
 app.post('/api/create-lp', async (req, res) => {
+  let walletPublicKey = null;
   try {
     const {
       tempWalletSecretKey,
@@ -1105,21 +1216,92 @@ app.post('/api/create-lp', async (req, res) => {
     console.log('Creating LP for token:', tokenMint);
     console.log('Allocations:', JSON.stringify(allocations, null, 2));
 
-    const result = await createPoolsAndPositions({
-      tempWalletSecretKey: typeof tempWalletSecretKey === 'string'
-        ? JSON.parse(tempWalletSecretKey)
-        : tempWalletSecretKey,
+    const secretKeyArr = typeof tempWalletSecretKey === 'string'
+      ? JSON.parse(tempWalletSecretKey)
+      : tempWalletSecretKey;
+    walletPublicKey = walletPubkeyFromSecretArray(secretKeyArr);
+    const poolPlan = {
       tokenMint,
       tokenDecimals: tokenDecimals || 9,
       tokenTotalSupply,
       targetMarketCapUsd,
       allocations,
       lockPositions: lockPositions !== false,
+    };
+    launchJournal.upsertForWallet(
+      walletPublicKey,
+      {
+        status: 'active',
+        stage: 'lp_create_started',
+        poolPlan,
+        error: null,
+      },
+      { stage: 'lp_create_started', tokenMint, allocationCount: allocations?.length || 0 },
+    );
+
+    const result = await createPoolsAndPositions({
+      tempWalletSecretKey: secretKeyArr,
+      tokenMint,
+      tokenDecimals: tokenDecimals || 9,
+      tokenTotalSupply,
+      targetMarketCapUsd,
+      allocations,
+      lockPositions: lockPositions !== false,
+      onProgress: (event) => {
+        launchJournal.upsertForWallet(
+          walletPublicKey,
+          { stage: event.stage || 'lp_progress' },
+          event,
+        );
+      },
     });
+
+    launchJournal.upsertForWallet(
+      walletPublicKey,
+      {
+        status: 'active',
+        stage: 'lp_created',
+        error: null,
+        lp: {
+          results: result.results || [],
+          failedPhase: null,
+          failedAllocationIndex: null,
+          bootstrapFailures: null,
+          lockFailures: null,
+          transferFailures: null,
+        },
+      },
+      { stage: 'lp_created', poolCount: result.results?.length || 0 },
+    );
 
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Error creating LP:', error);
+    if (walletPublicKey) {
+      launchJournal.upsertForWallet(
+        walletPublicKey,
+        {
+          status: 'failed',
+          stage: `lp_${error.failedPhase || 'unknown'}_failed`,
+          error: error.message,
+          lp: {
+            partialResults: error.partialResults || [],
+            failedAllocationIndex: error.failedAllocationIndex,
+            failedAllocation: error.failedAllocation,
+            failedPhase: error.failedPhase,
+            bootstrapFailures: error.bootstrapFailures || null,
+            lockFailures: error.lockFailures || null,
+            transferFailures: error.transferFailures || null,
+          },
+        },
+        {
+          stage: `lp_${error.failedPhase || 'unknown'}_failed`,
+          error: error.message,
+          failedPhase: error.failedPhase,
+          partialResultCount: error.partialResults?.length || 0,
+        },
+      );
+    }
     res.status(500).json({
       success: false,
       error: error.message,
@@ -1168,6 +1350,7 @@ app.post('/api/create-lp', async (req, res) => {
 // Stateless — server can be restarted between failure and resume without
 // affecting recovery, because everything we need lives on chain.
 app.post('/api/resume-launch', async (req, res) => {
+  let walletPublicKey = null;
   try {
     const {
       tempWalletSecretKey,
@@ -1192,10 +1375,38 @@ app.post('/api/resume-launch', async (req, res) => {
         `allocation(s) carried over from prior attempt`,
     );
 
+    const secretKeyArr = typeof tempWalletSecretKey === 'string'
+      ? JSON.parse(tempWalletSecretKey)
+      : tempWalletSecretKey;
+    walletPublicKey = walletPubkeyFromSecretArray(secretKeyArr);
+    launchJournal.upsertForWallet(
+      walletPublicKey,
+      {
+        status: 'active',
+        stage: 'lp_resume_started',
+        error: null,
+        poolPlan: {
+          tokenMint,
+          tokenDecimals: tokenDecimals || 9,
+          tokenTotalSupply,
+          targetMarketCapUsd,
+          allocations,
+          lockPositions: lockPositions !== false,
+        },
+        lp: {
+          priorResults,
+        },
+      },
+      {
+        stage: 'lp_resume_started',
+        tokenMint,
+        priorResultCount: priorResults.length,
+        allocationCount: allocations.length,
+      },
+    );
+
     const result = await createPoolsAndPositions({
-      tempWalletSecretKey: typeof tempWalletSecretKey === 'string'
-        ? JSON.parse(tempWalletSecretKey)
-        : tempWalletSecretKey,
+      tempWalletSecretKey: secretKeyArr,
       tokenMint,
       tokenDecimals: tokenDecimals || 9,
       tokenTotalSupply,
@@ -1203,11 +1414,61 @@ app.post('/api/resume-launch', async (req, res) => {
       allocations,
       lockPositions: lockPositions !== false,
       priorResults,
+      onProgress: (event) => {
+        launchJournal.upsertForWallet(
+          walletPublicKey,
+          { stage: event.stage || 'lp_progress' },
+          event,
+        );
+      },
     });
+
+    launchJournal.upsertForWallet(
+      walletPublicKey,
+      {
+        status: 'active',
+        stage: 'lp_created',
+        error: null,
+        lp: {
+          results: result.results || [],
+          failedPhase: null,
+          failedAllocationIndex: null,
+          bootstrapFailures: null,
+          lockFailures: null,
+          transferFailures: null,
+        },
+      },
+      { stage: 'lp_created', poolCount: result.results?.length || 0 },
+    );
 
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Error resuming launch:', error);
+    if (walletPublicKey) {
+      launchJournal.upsertForWallet(
+        walletPublicKey,
+        {
+          status: 'failed',
+          stage: `lp_${error.failedPhase || 'resume'}_failed`,
+          error: error.message,
+          lp: {
+            partialResults: error.partialResults || [],
+            failedAllocationIndex: error.failedAllocationIndex,
+            failedAllocation: error.failedAllocation,
+            failedPhase: error.failedPhase,
+            bootstrapFailures: error.bootstrapFailures || null,
+            lockFailures: error.lockFailures || null,
+            transferFailures: error.transferFailures || null,
+          },
+        },
+        {
+          stage: `lp_${error.failedPhase || 'resume'}_failed`,
+          error: error.message,
+          failedPhase: error.failedPhase,
+          partialResultCount: error.partialResults?.length || 0,
+        },
+      );
+    }
     res.status(500).json({
       success: false,
       error: error.message,
@@ -1246,6 +1507,7 @@ app.post('/api/resume-launch', async (req, res) => {
 // doesn't abort the others. Aggregate counts are reported in the
 // response so the frontend can summarize.
 app.post('/api/transfer-assets', async (req, res) => {
+  let walletPublicKey = null;
   try {
     const {
       tempWalletSecretKey,
@@ -1261,6 +1523,16 @@ app.post('/api/transfer-assets', async (req, res) => {
     const secretKeyArr = typeof tempWalletSecretKey === 'string'
       ? JSON.parse(tempWalletSecretKey)
       : tempWalletSecretKey;
+    walletPublicKey = walletPubkeyFromSecretArray(secretKeyArr);
+    launchJournal.upsertForWallet(
+      walletPublicKey,
+      {
+        status: 'active',
+        stage: 'transfer_started',
+        transfer: { destinationWallet },
+      },
+      { stage: 'transfer_started', destinationWallet },
+    );
 
     // 1. NFTs first. Fee Keys especially — these are the most valuable
     //    sweep items and we want them locked in before risking SOL.
@@ -1298,14 +1570,15 @@ app.post('/api/transfer-assets', async (req, res) => {
     //    recovery cache entry. Anything still there → leave the cached
     //    key in place so the user has another shot at recovery.
     //    A balance-check failure also keeps the entry (conservative).
+    let walletEmpty = false;
     try {
-      const tempPubkey = walletPubkeyFromSecretArray(secretKeyArr);
-      const remaining = await checkWalletBalanceMultiToken(tempPubkey);
+      const remaining = await checkWalletBalanceMultiToken(walletPublicKey);
       if (isWalletEffectivelyEmpty(remaining)) {
-        pendingWallets.remove(tempPubkey);
+        pendingWallets.remove(walletPublicKey);
+        walletEmpty = true;
       } else {
         console.warn(
-          `Wallet ${tempPubkey} not empty after sweep; keeping recovery entry. ` +
+          `Wallet ${walletPublicKey} not empty after sweep; keeping recovery entry. ` +
           `SOL=${remaining.sol}, tokens=${Object.keys(remaining.tokens).length}`,
         );
       }
@@ -1319,6 +1592,36 @@ app.post('/api/transfer-assets', async (req, res) => {
     // future UI iterations can show per-token results.
     const tokensTransferred = tokenSweep.transferred.length;
     const solTransferred = solSweep.solTransferred;
+    const hasPartialFailure =
+      !!solSweepError ||
+      (tokenSweep.errors || []).length > 0 ||
+      (nftSweep.errors || []).length > 0 ||
+      !walletEmpty;
+    launchJournal.upsertForWallet(
+      walletPublicKey,
+      {
+        status: hasPartialFailure ? 'failed' : 'completed',
+        stage: hasPartialFailure ? 'transfer_partial' : 'transfer_completed',
+        error: hasPartialFailure ? (solSweepError || 'wallet still has recoverable assets') : null,
+        transfer: transferJournalSummary({
+          destinationWallet,
+          tokensTransferred,
+          solTransferred,
+          nftSweep,
+          tokenSweep,
+          solSweepError,
+          walletEmpty,
+        }),
+      },
+      {
+        stage: hasPartialFailure ? 'transfer_partial' : 'transfer_completed',
+        destinationWallet,
+        tokensTransferred,
+        solTransferred,
+        nftsTransferred: nftSweep?.transferred?.length || 0,
+        walletEmpty,
+      },
+    );
     res.json({
       success: true,
       tokensTransferred,
@@ -1330,12 +1633,28 @@ app.post('/api/transfer-assets', async (req, res) => {
     });
   } catch (error) {
     console.error('Error transferring assets:', error);
+    if (walletPublicKey) {
+      launchJournal.upsertForWallet(
+        walletPublicKey,
+        {
+          status: 'failed',
+          stage: 'transfer_failed',
+          error: error.message,
+        },
+        { stage: 'transfer_failed', error: error.message },
+      );
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 // ---------------------------------------------------------------------------
 // Recovery cache for temporary wallets.
+//
+// /api/launch-journals returns non-secret per-launch journals. These are
+// separate from pending wallets: journals explain what happened on-chain,
+// while pending wallets provide the secret material needed for manual
+// recovery.
 //
 // /api/pending-wallets returns any wallet keys that were generated for a
 // launch but never confirmed-cleaned-up — typically because the app
@@ -1347,6 +1666,32 @@ app.post('/api/transfer-assets', async (req, res) => {
 // removes a cache entry without doing any on-chain verification — it's
 // the user's explicit acknowledgement that they don't need recovery.
 // ---------------------------------------------------------------------------
+
+app.get('/api/launch-journals', (req, res) => {
+  try {
+    const includeCompleted = req.query.includeCompleted === '1';
+    const includeArchived = req.query.includeArchived === '1';
+    const journals = launchJournal.list({ includeCompleted, includeArchived });
+    res.json({ success: true, journals });
+  } catch (error) {
+    console.error('Error listing launch journals:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/launch-journals/dismiss', (req, res) => {
+  try {
+    const { id } = req.body;
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'id required' });
+    }
+    const archived = launchJournal.archive(id);
+    res.json({ success: true, archived });
+  } catch (error) {
+    console.error('Error dismissing launch journal:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 app.get('/api/pending-wallets', (req, res) => {
   try {
