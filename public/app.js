@@ -722,7 +722,7 @@ window.__showUpdateResult = async function (info) {
       title: 'Update check failed',
       body:
         `<p>${escapeHtml(info.message || 'Unknown error.')}</p>` +
-        `<p class="is-size-7" style="color: #888; margin-top: 0.75rem;">` +
+        `<p class="is-size-7" style="color: var(--ink-soft); margin-top: 0.75rem;">` +
         `You can check manually at <a href="${escapeHtml(releasesUrl)}" target="_blank" rel="noopener">the releases page</a>.</p>` +
         checkboxHtml,
       confirmLabel: 'OK',
@@ -764,7 +764,7 @@ window.__showUpdateResult = async function (info) {
     }
     const notesHtml = notesForDisplay
       ? renderReleaseNotes(notesForDisplay)
-      : '<p style="color: #888; font-style: italic; margin: 0;">No release notes provided.</p>';
+      : '<p style="color: var(--ink-soft); font-style: italic; margin: 0;">No release notes provided.</p>';
 
     const wantDownload = await confirmDialog({
       title: 'Update available',
@@ -777,7 +777,7 @@ window.__showUpdateResult = async function (info) {
             ? `<p style="margin-top: 0.5rem; margin-bottom: 0;"><a href="${escapeHtml(info.releaseUrl)}" target="_blank" rel="noopener">See full release notes →</a></p>`
             : '') +
         `</div>` +
-        `<p class="is-size-7" style="color: #888;">` +
+        `<p class="is-size-7" style="color: var(--ink-soft);">` +
         `Clicking Download will open <code>${escapeHtml(info.downloadFilename)}</code> ` +
         `in your default browser.</p>` +
         checkboxHtml,
@@ -5329,12 +5329,16 @@ bind('startOverBtn', 'click', resetForNewLaunch);
 // position types within that pool are shaded variants (bootstrap = darker,
 // slices = base, ladder bands = progressively lighter). Wraps around if
 // there are >5 pools (unusual but possible).
+//
+// Hues are drawn from the app/website parchment palette rather than the
+// default chart blue/orange/etc., so the donut reads as part of the
+// manuscript theme: rubric red, gold, olive-green, warm sienna, ink-brown.
 const POOL_COLOR_BASES = [
-  { name: 'blue',   h: 217, s: 75 },
-  { name: 'orange', h: 25,  s: 80 },
-  { name: 'green',  h: 145, s: 60 },
-  { name: 'purple', h: 280, s: 60 },
-  { name: 'teal',   h: 175, s: 60 },
+  { name: 'rubric', h: 0,   s: 62 },   // manuscript red (primary)
+  { name: 'gold',   h: 38,  s: 58 },   // gold highlight
+  { name: 'olive',  h: 82,  s: 38 },   // olive-forest green
+  { name: 'sienna', h: 22,  s: 50 },   // warm sienna/brown
+  { name: 'umber',  h: 30,  s: 28 },   // muted ink-brown
 ];
 
 // Position-type shades within a pool's hue. Returns an HSL string.
