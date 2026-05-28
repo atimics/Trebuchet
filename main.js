@@ -24,10 +24,12 @@ import { marked } from 'marked';
 
 import * as secretStore from './secretStore.js';
 import * as userPrefs from './userPrefs.js';
+import * as updateCheckBridge from './updateCheckBridge.js';
 import {
   compareVersions,
   pickAssetForPlatform,
   parseReleaseTag,
+  pickLatestRelease,
 } from './updateCheck.js';
 
 // __dirname equivalent in ESM. Used to resolve sibling files like README.md.
@@ -121,8 +123,22 @@ const URLS = {
 // which evaluates code in the page's JS context. That reaches
 // window.__showUpdateResult, defined in public/app.js.
 // ---------------------------------------------------------------------------
+// The repo path here MUST match the canonical case on GitHub
+// (capital T in "Trebuchet"). GitHub's REST API returns 404 on a
+// case mismatch — unlike the browser-facing github.com URLs, which
+// follow a case-insensitive redirect. The repository.url field in
+// package.json is the source of truth for the canonical case; the
+// release-workflow test cross-checks that they agree.
+//
+// We fetch /releases (not /releases/latest) because /releases/latest
+// is documented as "the most recent non-prerelease, non-draft
+// release". Trebuchet's publish-release.mjs marks releases as
+// prerelease when any artifact is unsigned — true for every release
+// until code-signing certs are configured. So /releases/latest 404s
+// here. /releases returns everything (sorted newest-first), and we
+// pick the newest non-draft entry via pickLatestRelease.
 const UPDATE_API_URL =
-  'https://api.github.com/repos/AnOversizedMooseWithSocks/trebuchet/releases/latest';
+  'https://api.github.com/repos/AnOversizedMooseWithSocks/Trebuchet/releases?per_page=5';
 
 // Pure update-check helpers (compareVersions, pickAssetForPlatform,
 // parseReleaseTag) live in updateCheck.js so they can be unit-tested
@@ -196,14 +212,30 @@ async function checkForUpdates(win, options = {}) {
     // unchecked box and can toggle it back on.
     const prefs = userPrefs.get();
 
-    let release;
+    let releaseList;
     try {
-      release = await httpsGetJson(UPDATE_API_URL);
+      releaseList = await httpsGetJson(UPDATE_API_URL);
     } catch (err) {
       if (silent) return;
       return sendUpdateResult(win, {
         status: 'error',
         message: `Could not reach GitHub: ${err.message}`,
+        releasesUrl: `${URLS.github}/releases`,
+        checkOnStartup: prefs.checkForUpdatesOnStartup,
+      });
+    }
+
+    // The /releases endpoint returns an array sorted newest-first.
+    // Pick the first non-draft entry (prereleases are kept — see the
+    // comment on pickLatestRelease for why). A null here means the
+    // repo has no published releases at all, which is unusual but
+    // possible on a brand-new repo before the first release ships.
+    const release = pickLatestRelease(releaseList);
+    if (!release) {
+      if (silent) return;
+      return sendUpdateResult(win, {
+        status: 'error',
+        message: 'GitHub returned no published releases for this repo.',
         releasesUrl: `${URLS.github}/releases`,
         checkOnStartup: prefs.checkForUpdatesOnStartup,
       });
@@ -636,30 +668,25 @@ function createWindow() {
 
   win.once('ready-to-show', () => {
     win.show();
+  });
 
-    // Silent startup check for updates.
-    //
-    // Runs ~2 seconds after the window is visible so the user can
-    // orient themselves before a modal can appear. Skipped entirely
-    // if the user has opted out via the modal's checkbox.
-    //
-    // "Silent" means: only show a modal if there's actually an update
-    // available. If the user is on the latest version, or the check
-    // fails (offline, GitHub down, rate-limited, etc.), nothing
-    // happens — no toast, no log, no modal.
-    //
-    // The manual "Help → Check for Updates" menu item always works
-    // regardless of this setting; that's the user's way to manually
-    // verify, and also the way to re-enable auto-checks after
-    // opting out (the resulting modal's checkbox will reflect the
-    // current pref state).
-    if (userPrefs.get().checkForUpdatesOnStartup) {
-      setTimeout(() => {
-        // Window may have been closed during the delay.
-        if (win.isDestroyed()) return;
-        checkForUpdates(win, { silent: true });
-      }, 2000);
-    }
+  // Register the silent startup update-check handler.
+  //
+  // The renderer POSTs to /api/trigger-startup-update-check after
+  // its splash video AND first-run disclaimer have both been
+  // dismissed. The server forwards that signal here via the bridge.
+  // We can't just fire from ready-to-show with a timeout (the
+  // previous approach) because the resulting modal would land
+  // behind the splash or disclaimer, where the user never sees it.
+  //
+  // The pref check happens inside the handler so an opted-out user
+  // never reaches the network call. The fire-once guard inside
+  // updateCheckBridge means dev-mode page reloads can't cause
+  // duplicate checks.
+  updateCheckBridge.registerHandler(() => {
+    if (win.isDestroyed()) return;
+    if (!userPrefs.get().checkForUpdatesOnStartup) return;
+    checkForUpdates(win, { silent: true });
   });
 
   // Initial compositor reset (Windows-only).

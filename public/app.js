@@ -9807,6 +9807,59 @@ window.addEventListener('beforeunload', (e) => {
 });
 
 // ---------------------------------------------------------------------------
+// Startup gate for the silent update-check
+// ---------------------------------------------------------------------------
+//
+// The Electron main process runs the actual GitHub API call for the
+// auto-update check, but we want the "Update available" modal to land
+// ON TOP OF the main UI — not behind the splash video or the
+// first-run disclaimer. Both of those mask the renderer at startup.
+//
+// To coordinate, we keep a tiny gate state here. The splash and
+// disclaimer setups flip their gate to false when they're going to
+// display something blocking, and back to true when the user has
+// dismissed it. When both gates are true, we POST to a server
+// endpoint that signals main to run the check.
+//
+// Default-true semantics handle the "didn't need to show anything"
+// cases automatically:
+//   - splash element missing → splash gate stays true
+//   - disclaimer already agreed in a previous session → disclaimer
+//     gate stays true
+// In either case the gate never flips false, and the final
+// _evaluateStartupGates() call at the bottom of this file picks up
+// "both still true" and fires the trigger.
+
+const _startupGates = {
+  splash: true,
+  disclaimer: true,
+};
+let _startupTriggerFired = false;
+
+function _gateStartup(name) {
+  _startupGates[name] = false;
+}
+
+function _releaseStartupGate(name) {
+  _startupGates[name] = true;
+  _evaluateStartupGates();
+}
+
+function _evaluateStartupGates() {
+  if (_startupTriggerFired) return;
+  if (!_startupGates.splash || !_startupGates.disclaimer) return;
+  _startupTriggerFired = true;
+  // Fire-and-forget. The server endpoint is local so this should
+  // never fail in practice; if it somehow does, the user can still
+  // run a manual check via Help → Check for Updates, so we don't
+  // surface anything.
+  fetch('/api/trigger-startup-update-check', { method: 'POST' })
+    .catch((err) => {
+      console.warn('Startup update-check trigger failed:', err);
+    });
+}
+
+// ---------------------------------------------------------------------------
 // First-run disclaimer
 // ---------------------------------------------------------------------------
 //
@@ -9852,6 +9905,12 @@ function setupDisclaimer() {
     return; // modal stays inert; splash and main app proceed normally
   }
 
+  // First-run path: gate the silent update-check until the user has
+  // acknowledged the disclaimer. Without this, the auto-check modal
+  // would land behind this dialog. The agree handler below releases
+  // the gate.
+  _gateStartup('disclaimer');
+
   // First run (or storage cleared): show the modal.
   modal.classList.add('is-active');
 
@@ -9878,6 +9937,10 @@ function setupDisclaimer() {
         // disclaimer again on next launch. Annoying but not broken.
       }
       modal.classList.remove('is-active');
+      // Disclaimer is dismissed — release the startup gate. If the
+      // splash gate is also clear (returning user or splash already
+      // dismissed), this fires the silent update check.
+      _releaseStartupGate('disclaimer');
     });
   }
 
@@ -9986,6 +10049,11 @@ document.addEventListener('keydown', (e) => {
 function setupSplashScreen() {
   const splash = document.getElementById('splashScreen');
   if (!splash) return; // nothing to do (e.g. someone removed the markup)
+
+  // Gate the silent update-check until the splash is dismissed. The
+  // dismiss() function below releases the gate.
+  _gateStartup('splash');
+
   const video = document.getElementById('splashVideo');
   const skipBtn = document.getElementById('splashSkipBtn');
 
@@ -10010,6 +10078,10 @@ function setupSplashScreen() {
     setTimeout(() => {
       if (splash.parentNode) splash.parentNode.removeChild(splash);
     }, 500);
+    // Splash is dismissed — release the startup gate. If the
+    // disclaimer gate is also clear, this fires the silent update
+    // check.
+    _releaseStartupGate('splash');
   }
 
   // Conditions for starting playback. Both must be true:
@@ -10126,3 +10198,12 @@ function setupSplashScreen() {
   document.addEventListener('keydown', onKeydown);
 }
 setupSplashScreen();
+
+// Final gate evaluation. Both setupDisclaimer() and setupSplashScreen()
+// have run by this point. If either gated itself (showed a modal or
+// played the splash), the gate is currently false and this call is a
+// no-op — the trigger will fire later when the user dismisses
+// whichever is still blocking. If NEITHER gated (returning user +
+// splash element missing), both gates are still default-true and this
+// is the only place the trigger ever fires.
+_evaluateStartupGates();

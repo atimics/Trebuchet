@@ -107,3 +107,39 @@ export function parseReleaseTag(tag) {
   if (!/^\d+(\.\d+)*$/.test(stripped)) return null;
   return stripped;
 }
+
+/**
+ * Pick the newest installable release from a /releases response.
+ *
+ * Takes the array returned by GitHub's /repos/:owner/:repo/releases
+ * endpoint and returns the first release that isn't a draft, or null
+ * if none qualifies. Prereleases ARE included.
+ *
+ * Why we don't use /releases/latest:
+ *   GitHub's /releases/latest endpoint is documented as "the most
+ *   recent non-prerelease, non-draft release". Trebuchet's publish
+ *   script (scripts/publish-release.mjs) marks releases as
+ *   --prerelease whenever any artifact has trust = 'unsigned test
+ *   artifact', which is true for every release until code-signing
+ *   certs are set up (Apple Developer ID, Windows EV). So
+ *   /releases/latest returns 404 — there's no non-prerelease release
+ *   to return — and the update check silently fails.
+ *
+ *   Fetching /releases instead returns the full list (sorted newest-
+ *   first by default), and we apply our own filter that treats
+ *   prereleases as legitimate updates. Users who installed the
+ *   "prerelease" build are by definition fine with prerelease builds.
+ *
+ * Drafts are skipped defensively. In practice GitHub hides drafts
+ * from unauthenticated requests, so the input array shouldn't
+ * contain any — but we filter just in case authentication is ever
+ * added.
+ */
+export function pickLatestRelease(releases) {
+  if (!Array.isArray(releases)) return null;
+  for (const release of releases) {
+    if (release && release.draft !== true) return release;
+  }
+  return null;
+}
+

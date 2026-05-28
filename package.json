@@ -57,6 +57,7 @@
     "metadataUploadService.js",
     "userPrefs.js",
     "updateCheck.js",
+    "updateCheckBridge.js",
     "validators.js",
     "metadata.json",
     "public/**/*"
@@ -130,6 +131,7 @@
       "metadataUploadService.js",
       "userPrefs.js",
       "updateCheck.js",
+      "updateCheckBridge.js",
       "validators.js",
       "metadata.json",
       "README.md",

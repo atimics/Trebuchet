@@ -44,6 +44,7 @@ import {
 import * as pendingWallets from './pendingWallets.js';
 import * as launchJournal from './launchJournal.js';
 import * as userPrefs from './userPrefs.js';
+import * as updateCheckBridge from './updateCheckBridge.js';
 import {
   Keypair,
   PublicKey,
@@ -561,6 +562,21 @@ app.post('/api/user-prefs', (req, res) => {
   } catch (e) {
     res.status(400).json({ success: false, error: e.message });
   }
+});
+
+// Renderer POSTs here after its splash video and first-run disclaimer
+// have both been dismissed, signalling "now is a safe time to show
+// an update-available modal — the main UI is visible underneath".
+//
+// The bridge module forwards the signal to main.js, which runs the
+// silent update check. The bridge fires the handler at most once
+// per process, so repeated POSTs (e.g. dev-mode page reloads) are
+// harmless. In web mode (npm run web, no Electron) the bridge has
+// no handler registered and the endpoint just returns ran:false —
+// the renderer doesn't care about the response either way.
+app.post('/api/trigger-startup-update-check', (_req, res) => {
+  const result = updateCheckBridge.trigger();
+  res.json({ success: true, ...result });
 });
 
 // Lightweight RPC health check — sends a getVersion JSON-RPC call and
