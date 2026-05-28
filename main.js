@@ -17,11 +17,18 @@ import { app, BrowserWindow, Menu, shell, safeStorage, dialog } from 'electron';
 import { promises as fs } from 'node:fs';
 import net from 'node:net';
 import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
 
 import * as secretStore from './secretStore.js';
+import * as userPrefs from './userPrefs.js';
+import {
+  compareVersions,
+  pickAssetForPlatform,
+  parseReleaseTag,
+} from './updateCheck.js';
 
 // __dirname equivalent in ESM. Used to resolve sibling files like README.md.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -93,6 +100,194 @@ const URLS = {
   helius:          'https://www.helius.dev/',
   github:          'https://github.com/AnOversizedMooseWithSocks/trebuchet',
 };
+
+// ---------------------------------------------------------------------------
+// Update checking.
+//
+// The "Check for Updates" menu item fetches the latest release info
+// from GitHub, compares the tag against the version baked into this
+// build, and pushes a result to the renderer for display. The renderer
+// owns the modal UI (window.__showUpdateResult); we just hand it a
+// data object describing what to show.
+//
+// Why everything runs in main rather than the renderer:
+//   - app.getVersion() lives here, not in the renderer
+//   - process.platform / process.arch are available here for picking
+//     the right OS-specific asset
+//   - we avoid any CORS concerns with the GitHub API
+//   - the renderer remains fully sandboxed (no IPC, no preload)
+//
+// Communication is one-way: main → renderer via executeJavaScript,
+// which evaluates code in the page's JS context. That reaches
+// window.__showUpdateResult, defined in public/app.js.
+// ---------------------------------------------------------------------------
+const UPDATE_API_URL =
+  'https://api.github.com/repos/AnOversizedMooseWithSocks/trebuchet/releases/latest';
+
+// Pure update-check helpers (compareVersions, pickAssetForPlatform,
+// parseReleaseTag) live in updateCheck.js so they can be unit-tested
+// without pulling in Electron. main.js handles only the integration:
+// menu wiring, the HTTPS call, and the executeJavaScript handoff to
+// the renderer.
+
+// Promisified HTTPS GET that returns parsed JSON. Used only for the
+// GitHub API call — kept here rather than as a general utility so it
+// can hard-code the User-Agent and Accept headers GitHub expects.
+function httpsGetJson(url, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, {
+      headers: {
+        // GitHub's API rejects requests without a User-Agent.
+        'User-Agent': `Trebuchet/${app.getVersion()}`,
+        // Pin the API version we're targeting.
+        'Accept': 'application/vnd.github+json',
+      },
+    }, (res) => {
+      // Follow one level of redirect — GitHub occasionally 301s.
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        const next = res.headers.location;
+        res.resume(); // drain
+        if (next) return resolve(httpsGetJson(next, timeoutMs));
+        return reject(new Error('Got a redirect with no Location header'));
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`GitHub API returned status ${res.statusCode}`));
+      }
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { raw += chunk; });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(raw));
+        } catch (err) {
+          reject(new Error('GitHub API returned invalid JSON'));
+        }
+      });
+    });
+    // setTimeout fires once the socket has been idle for timeoutMs.
+    // Destroying the request triggers the 'error' handler below.
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('GitHub API request timed out'));
+    });
+    req.on('error', reject);
+  });
+}
+
+// Guard against re-entry. Without this, mashing the menu item would
+// fire multiple concurrent GitHub requests and multiple modals.
+let updateCheckInProgress = false;
+
+async function checkForUpdates(win, options = {}) {
+  // silent: only push a modal to the renderer for actionable results
+  //         (an actual update is available, or available-but-no-asset).
+  //         "Up to date" and "check failed" are skipped silently. Used
+  //         by the auto-check that runs on startup so the user only
+  //         sees a prompt when there's actually something to act on.
+  const { silent = false } = options;
+
+  if (updateCheckInProgress) return;
+  updateCheckInProgress = true;
+  try {
+    const current = app.getVersion();
+    // Read the current pref so we can echo it in every result we send
+    // to the renderer. The modal's checkbox uses it as its initial
+    // state; an opted-out user who manually triggers a check sees an
+    // unchecked box and can toggle it back on.
+    const prefs = userPrefs.get();
+
+    let release;
+    try {
+      release = await httpsGetJson(UPDATE_API_URL);
+    } catch (err) {
+      if (silent) return;
+      return sendUpdateResult(win, {
+        status: 'error',
+        message: `Could not reach GitHub: ${err.message}`,
+        releasesUrl: `${URLS.github}/releases`,
+        checkOnStartup: prefs.checkForUpdatesOnStartup,
+      });
+    }
+
+    // Tags look like "v1.0.9". parseReleaseTag strips the "v" and
+    // validates the shape — returns null for anything that doesn't
+    // look like our normal N.N.N pattern.
+    const tag = String(release.tag_name || '');
+    const latest = parseReleaseTag(tag);
+    if (!latest) {
+      if (silent) return;
+      return sendUpdateResult(win, {
+        status: 'error',
+        message: `Unrecognised release tag from GitHub: "${tag || '(empty)'}"`,
+        releasesUrl: `${URLS.github}/releases`,
+        checkOnStartup: prefs.checkForUpdatesOnStartup,
+      });
+    }
+
+    // compareVersions returns >=0 when current is at or ahead of latest.
+    // The "ahead" case happens with locally-built dev versions; treat
+    // them the same as "up to date" — no nag.
+    if (compareVersions(current, latest) >= 0) {
+      if (silent) return;
+      return sendUpdateResult(win, {
+        status: 'current',
+        current,
+        checkOnStartup: prefs.checkForUpdatesOnStartup,
+      });
+    }
+
+    // An update exists. Find the right asset for this OS/arch.
+    const asset = pickAssetForPlatform(release.assets || [], process.platform, process.arch);
+    if (!asset) {
+      // We're behind, but couldn't find a download for this platform.
+      // Unusual — would mean a partial release upload, or running on
+      // a platform we don't ship binaries for. Send the user to the
+      // release page so they can pick something manually. We DO push
+      // this in silent mode — it's actionable.
+      return sendUpdateResult(win, {
+        status: 'no-asset',
+        current,
+        latest,
+        releaseUrl: release.html_url,
+        checkOnStartup: prefs.checkForUpdatesOnStartup,
+      });
+    }
+
+    sendUpdateResult(win, {
+      status: 'available',
+      current,
+      latest,
+      downloadUrl: asset.browser_download_url,
+      downloadFilename: asset.name,
+      releaseUrl: release.html_url,
+      // The renderer truncates release notes for the modal; we just
+      // pass the raw markdown through. May be empty.
+      notes: release.body || '',
+      checkOnStartup: prefs.checkForUpdatesOnStartup,
+    });
+  } finally {
+    updateCheckInProgress = false;
+  }
+}
+
+// Push the result of a check into the renderer. Since this codebase
+// doesn't use IPC (the renderer is sandboxed and talks to Express via
+// fetch), we evaluate a call to window.__showUpdateResult — which is
+// defined in public/app.js — directly in the page context.
+function sendUpdateResult(win, info) {
+  if (!win || win.isDestroyed()) return;
+  // JSON-stringify is the safe way to embed an object into JS source.
+  // Backslashes, quotes, and HTML/JS-significant characters are all
+  // handled correctly without us hand-rolling an escaper.
+  const json = JSON.stringify(info);
+  win.webContents
+    .executeJavaScript(`window.__showUpdateResult(${json})`)
+    .catch(() => {
+      // Renderer may have reloaded, or app.js may not have parsed yet
+      // if this fires very early. Nothing useful we can do — better to
+      // silently no-op than to throw an unhandled rejection.
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Find a free local port. We avoid hardcoding 3000 because the user may
@@ -288,6 +483,18 @@ function setAppMenu() {
   // keeps Windows/Linux and macOS in sync.
   const helpSubmenu = [
     {
+      label: 'Check for Updates…',
+      click: () => {
+        // Prefer the focused window so the result modal opens in the
+        // window the user was looking at when they clicked. Fall back
+        // to the first window if (somehow) none is focused — better
+        // to show the modal somewhere than to silently no-op.
+        const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+        if (win) checkForUpdates(win);
+      },
+    },
+    { type: 'separator' },
+    {
       label: 'Official website',
       click: () => shell.openExternal(URLS.website),
     },
@@ -429,6 +636,30 @@ function createWindow() {
 
   win.once('ready-to-show', () => {
     win.show();
+
+    // Silent startup check for updates.
+    //
+    // Runs ~2 seconds after the window is visible so the user can
+    // orient themselves before a modal can appear. Skipped entirely
+    // if the user has opted out via the modal's checkbox.
+    //
+    // "Silent" means: only show a modal if there's actually an update
+    // available. If the user is on the latest version, or the check
+    // fails (offline, GitHub down, rate-limited, etc.), nothing
+    // happens — no toast, no log, no modal.
+    //
+    // The manual "Help → Check for Updates" menu item always works
+    // regardless of this setting; that's the user's way to manually
+    // verify, and also the way to re-enable auto-checks after
+    // opting out (the resulting modal's checkbox will reflect the
+    // current pref state).
+    if (userPrefs.get().checkForUpdatesOnStartup) {
+      setTimeout(() => {
+        // Window may have been closed during the delay.
+        if (win.isDestroyed()) return;
+        checkForUpdates(win, { silent: true });
+      }, 2000);
+    }
   });
 
   // Initial compositor reset (Windows-only).

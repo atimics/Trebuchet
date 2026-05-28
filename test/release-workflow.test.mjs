@@ -74,7 +74,7 @@ test('release workflow publishes the GitHub package for each tag', () => {
   assert.equal(pkg.build.productName, 'Trebuchet');
   assert.equal(pkg.build.executableName, 'Trebuchet');
   assert.equal(pkg.build.publish, null);
-  assert.equal(pkg.build.nsis.artifactName, '${productName} Setup ${version}.${ext}');
+  assert.equal(pkg.build.nsis.artifactName, '${productName}-${version}-Setup.${ext}');
   assert.equal(pkg.build.linux.executableName, 'Trebuchet');
   assert.equal(pkg.build.linux.artifactName, 'Trebuchet-${version}-${arch}.${ext}');
   assert.equal(pkg.build.deb.packageName, 'trebuchet-desktop');
@@ -113,12 +113,18 @@ test('windows release builds installer and portable executable', () => {
   const plan = resolveReleaseBuild('windows', {});
 
   assert.deepEqual(pkg.build.win.target, ['nsis', 'portable']);
-  assert.equal(pkg.build.portable.artifactName, '${productName} ${version} Portable.${ext}');
+  // Windows artifactNames use hyphens, not spaces. electron-builder
+  // silently rewrites spaces to dots in NSIS and portable artifact
+  // names (a URL-safety measure for Windows targets), so a template
+  // like "Trebuchet Setup ${version}.exe" actually produces
+  // "Trebuchet.Setup.1.2.3.exe" — which we then can't match against
+  // the website's download URLs. Hyphens pass through untouched.
+  assert.equal(pkg.build.portable.artifactName, '${productName}-${version}-Portable.${ext}');
   assert.deepEqual(plan.builderArgs.slice(0, 3), ['--win', 'nsis', 'portable']);
   assert.equal(plan.builderArgs.some((arg) => arg.includes('signExecutable')), false);
   assert.equal(plan.builderArgs.some((arg) => arg.includes('signAndEditExecutable')), false);
-  assert.equal(plan.expectedFiles.some((expected) => expected.matches('Trebuchet Setup 1.2.3.exe')), true);
-  assert.equal(plan.expectedFiles.some((expected) => expected.matches('Trebuchet 1.2.3 Portable.exe')), true);
+  assert.equal(plan.expectedFiles.some((expected) => expected.matches('Trebuchet-1.2.3-Setup.exe')), true);
+  assert.equal(plan.expectedFiles.some((expected) => expected.matches('Trebuchet-1.2.3-Portable.exe')), true);
 });
 
 test('release build planner enforces complete signing credentials', () => {
@@ -215,11 +221,73 @@ test('publish reruns remove release assets that are no longer produced', () => {
   assert.deepEqual(staleAssets, ['Trebuchet-1.2.3.zip']);
 });
 
-test('website download CTA points to GitHub Releases instead of committed build artifacts', () => {
+test('website download CTA uses per-OS direct links to tagged GitHub releases', () => {
   const site = read('website/index.html');
 
-  assert.match(site, /https:\/\/github\.com\/AnOversizedMooseWithSocks\/Trebuchet\/releases\/download\/v__TREBUCHET_VERSION__\//);
-  assert.match(site, /https:\/\/github\.com\/AnOversizedMooseWithSocks\/Trebuchet\/releases\/tag\/v__TREBUCHET_VERSION__/);
+  // Per-OS download cards must exist for the three platforms we ship
+  // binaries for. Each card has data-os set so the JS detection can
+  // tag the matching one with .primary-os.
+  assert.match(site, /data-os="windows"/);
+  assert.match(site, /data-os="macos"/);
+  assert.match(site, /data-os="linux"/);
+
+  // Download URLs point at the tagged release (not /releases/latest)
+  // for the version stamped at deploy time. The __TREBUCHET_VERSION__
+  // placeholder is substituted by the "Stamp version into website"
+  // step in release.yml right before the FTP push.
+  assert.match(site, /\/releases\/download\/v__TREBUCHET_VERSION__\//);
+
+  // Each of the six expected artifact filenames the website advertises
+  // must be referenced in a href. If any are missing/renamed without
+  // updating the CI verification step, this test catches it.
+  assert.match(site, /Trebuchet-__TREBUCHET_VERSION__-arm64\.dmg/);
+  assert.match(site, /Trebuchet-__TREBUCHET_VERSION__-x64\.dmg/);
+  assert.match(site, /Trebuchet-__TREBUCHET_VERSION__-Setup\.exe/);
+  assert.match(site, /Trebuchet-__TREBUCHET_VERSION__-Portable\.exe/);
+  assert.match(site, /Trebuchet-__TREBUCHET_VERSION__-x86_64\.AppImage/);
+  assert.match(site, /trebuchet-desktop___TREBUCHET_VERSION___amd64\.deb/);
+
+  // Negative checks — make sure we don't slip back into the old
+  // "redirect to /releases/latest" or "raw committed dist files"
+  // patterns. Either would break deep-linking and version pinning.
   assert.doesNotMatch(site, /\/raw\/main\/dist\//);
-  assert.match(site, /SHA-256 checksums/);
+  assert.doesNotMatch(site, /\/releases\/latest(?!\.\w)/);
+});
+
+test('release workflow stamps version into website and verifies assets before FTP push', () => {
+  const workflow = read('.github/workflows/release.yml');
+
+  // The "Stamp version into website" step must run before the FTP push
+  // so the deployed HTML has real versions instead of placeholders.
+  assert.match(workflow, /Stamp version into website/);
+  assert.match(workflow, /sed -i "s\/__TREBUCHET_VERSION__\//);
+
+  // The "Verify release assets exist" step gates the FTP push on the
+  // tagged release actually containing every download the website is
+  // about to advertise. Without this gate, naming drift in
+  // electron-builder output would ship a website full of 404s.
+  assert.match(workflow, /Verify release assets exist/);
+  assert.match(workflow, /gh release view/);
+
+  // The expected[] array in that step must list every filename the
+  // website hard-codes — both must stay in sync, so both are tested
+  // against the same list. If you change one, change both AND this
+  // test.
+  const expected = [
+    'Trebuchet-${version}-arm64.dmg',
+    'Trebuchet-${version}-x64.dmg',
+    'Trebuchet-${version}-Setup.exe',
+    'Trebuchet-${version}-Portable.exe',
+    'Trebuchet-${version}-x86_64.AppImage',
+    'trebuchet-desktop_${version}_amd64.deb',
+  ];
+  for (const filename of expected) {
+    // Each filename appears as a quoted entry in expected=( ... ).
+    // We grep for it literally — the ${version} placeholder is part
+    // of the shell var the workflow step expands, not a JS template.
+    assert.ok(
+      workflow.includes(`"${filename}"`),
+      `release.yml expected[] is missing "${filename}"`,
+    );
+  }
 });

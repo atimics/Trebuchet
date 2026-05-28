@@ -43,6 +43,7 @@ import {
 
 import * as pendingWallets from './pendingWallets.js';
 import * as launchJournal from './launchJournal.js';
+import * as userPrefs from './userPrefs.js';
 import {
   Keypair,
   PublicKey,
@@ -527,6 +528,36 @@ app.post('/api/rpc-config/remove', (req, res) => {
     removeSavedRpc(req.body.url);
     refreshTokenServiceConnection();
     res.json({ success: true, config: getRpcConfig() });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// User preferences.
+//
+// Small key/value store for user-toggleable settings. Currently only one
+// knob: checkForUpdatesOnStartup. The "don't check automatically" checkbox
+// on the update-check modal in public/app.js POSTs here to flip it.
+//
+// Backed by userPrefs.json in TREBUCHET_CONFIG_DIR — same persistence
+// pattern as rpcConfig.json. See userPrefs.js for the schema and defaults.
+// ---------------------------------------------------------------------------
+app.get('/api/user-prefs', (_req, res) => {
+  try {
+    res.json({ success: true, prefs: userPrefs.get() });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/user-prefs', (req, res) => {
+  try {
+    // userPrefs.set ignores unknown keys and type-mismatched values,
+    // so a malformed request body can't corrupt the file — it'll just
+    // silently drop the bad fields and persist whatever was valid.
+    const updated = userPrefs.set(req.body || {});
+    res.json({ success: true, prefs: updated });
   } catch (e) {
     res.status(400).json({ success: false, error: e.message });
   }

@@ -1,0 +1,109 @@
+// updateCheck.js
+//
+// Pure helpers used by main.js for the "Check for Updates" feature.
+// Lives here, separate from main.js, so it can be imported and tested
+// directly without pulling in Electron — main.js imports 'electron'
+// at the top, which means any test that imports main.js needs a full
+// Electron runtime. Splitting the testable parts out matches the
+// pattern used by rpcConfig.js, secretStore.js, etc.
+//
+// main.js wires these into the GitHub API call (httpsGetJson there)
+// and the menu handler. Anything that touches the network, the
+// BrowserWindow, app.getVersion(), or process.platform/arch stays
+// in main.js — those would be harder to test cleanly and aren't
+// where bugs are likely to hide.
+
+/**
+ * Compare two version strings like "1.0.9" and "1.1.0".
+ *
+ * Returns 1 if a is newer than b, -1 if older, 0 if equal. Missing
+ * components are treated as zero, so "1.0" equals "1.0.0".
+ *
+ * We don't need full semver pre-release/build-metadata handling —
+ * our release tags are always clean N.N.N. If that ever changes
+ * (e.g. we start tagging "1.0.0-rc1"), revisit this — the
+ * `parseInt(n, 10) || 0` line will swallow the "-rc1" suffix and
+ * incorrectly treat the rc as equal to the GA.
+ */
+export function compareVersions(a, b) {
+  const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const ai = pa[i] || 0;
+    const bi = pb[i] || 0;
+    if (ai > bi) return 1;
+    if (ai < bi) return -1;
+  }
+  return 0;
+}
+
+/**
+ * Pick the release asset that matches a given platform/arch combo.
+ *
+ * Takes the assets[] array from the GitHub releases API and returns
+ * the matching asset object (with .name and .browser_download_url),
+ * or undefined if no asset matches.
+ *
+ * The matching is by regex on the filename rather than constructing
+ * an exact name — that way the check stays robust if the version
+ * portion of the filename changes, or if electron-builder ever
+ * tweaks its default naming for one of our targets.
+ *
+ * Per-platform/arch rules:
+ *
+ *   win32  →  Portable .exe (matches the website's Windows default —
+ *             nothing to install, just double-click and run).
+ *
+ *   darwin →  arch matters! arm64 and x64 DMGs are different binaries.
+ *             Picking the wrong one gives the user a file that won't
+ *             run, with a confusing error. This is the one place we
+ *             absolutely cannot fall back to a default.
+ *
+ *   linux  →  AppImage. Universal-across-distros, doesn't require
+ *             root, doesn't touch the package manager. We also ship
+ *             a .deb, but the AppImage is the safe default for an
+ *             auto-recommendation.
+ *
+ *   anything else → undefined. The caller treats this as the
+ *                   "no-asset" status and routes the user to the
+ *                   GitHub release page to choose manually.
+ *
+ * Parameterising platform/arch (rather than reading process.platform
+ * inline) keeps this testable from any host — Linux CI can verify
+ * the macOS arm64 case without faking globals.
+ */
+export function pickAssetForPlatform(assets, platform, arch) {
+  if (!Array.isArray(assets)) return undefined;
+
+  if (platform === 'win32') {
+    return assets.find((a) => /Portable\.exe$/i.test(a.name));
+  }
+  if (platform === 'darwin') {
+    return arch === 'arm64'
+      ? assets.find((a) => /arm64\.dmg$/i.test(a.name))
+      : assets.find((a) => /x64\.dmg$/i.test(a.name));
+  }
+  if (platform === 'linux') {
+    return assets.find((a) => /\.AppImage$/i.test(a.name));
+  }
+  return undefined;
+}
+
+/**
+ * Normalise a GitHub release tag into a comparable version string.
+ *
+ * Tags look like "v1.0.9". Strip the leading "v" and return the
+ * version part. If the input doesn't match our expected N.N.N
+ * pattern (or N.N, or N), returns null — the caller treats null
+ * as a "bad response, show an error" signal.
+ *
+ * Extracted as its own helper so the test suite can exhaustively
+ * pin down the accept/reject boundary without going through the
+ * full update-check flow.
+ */
+export function parseReleaseTag(tag) {
+  const stripped = String(tag || '').replace(/^v/, '');
+  if (!/^\d+(\.\d+)*$/.test(stripped)) return null;
+  return stripped;
+}
