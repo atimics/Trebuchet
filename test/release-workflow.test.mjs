@@ -291,3 +291,49 @@ test('release workflow stamps version into website and verifies assets before FT
     );
   }
 });
+
+test('update-check API URL matches the canonical repo case from package.json', () => {
+  // GitHub's REST API is case-sensitive on the owner/repo path —
+  // unlike the browser-facing github.com URLs, which follow a
+  // case-insensitive redirect. A lowercase "trebuchet" in the API
+  // URL returns 404 on every check while the web pages still load.
+  // Symptom is silent: the user sees an "update check failed" modal
+  // with no obvious clue that the bug is a single character.
+  //
+  // package.json's repository.url is the canonical source of truth
+  // for the casing. This test extracts the owner/repo from there and
+  // asserts that the api.github.com URL hard-coded in main.js uses
+  // exactly the same case.
+  const pkg = JSON.parse(read('package.json'));
+  const main = read('main.js');
+
+  // repository.url looks like "git+https://github.com/Owner/Repo.git"
+  const repoMatch = /github\.com\/([^/]+)\/([^/.]+)/.exec(pkg.repository.url);
+  assert.ok(repoMatch, 'Could not parse owner/repo from package.json repository.url');
+  const [, owner, repo] = repoMatch;
+
+  // The api URL in main.js should reference the same owner/repo with
+  // identical case. Build the exact substring we expect and search for it.
+  const expectedApiPath = `api.github.com/repos/${owner}/${repo}/`;
+  assert.ok(
+    main.includes(expectedApiPath),
+    `main.js update-check URL must contain "${expectedApiPath}" exactly. ` +
+      `A case mismatch silently 404s the update check.`,
+  );
+
+  // Must hit the /releases LIST endpoint, not /releases/latest.
+  // /releases/latest excludes prereleases (publish-release.mjs marks
+  // every unsigned release as prerelease), so it 404s while there are
+  // perfectly good releases available. Hitting /releases and filtering
+  // client-side keeps prereleases visible to the update check.
+  assert.ok(
+    main.includes(`${expectedApiPath}releases?`),
+    `main.js update-check URL must hit /releases (the list endpoint), ` +
+      `not /releases/latest — see the comment on UPDATE_API_URL in main.js`,
+  );
+  assert.ok(
+    !main.includes(`${expectedApiPath}releases/latest`),
+    `main.js must NOT use /releases/latest — that endpoint excludes ` +
+      `prereleases and 404s while every release is unsigned`,
+  );
+});

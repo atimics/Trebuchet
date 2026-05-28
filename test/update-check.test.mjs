@@ -5,6 +5,7 @@ import {
   compareVersions,
   pickAssetForPlatform,
   parseReleaseTag,
+  pickLatestRelease,
 } from '../updateCheck.js';
 
 // Tests for the pure parts of the update-check feature. Anything
@@ -154,6 +155,107 @@ test('pickAssetForPlatform ignores checksum/metadata files', () => {
   assert.equal(pickAssetForPlatform(onlyMetadata, 'win32', 'x64'), undefined);
   assert.equal(pickAssetForPlatform(onlyMetadata, 'darwin', 'arm64'), undefined);
   assert.equal(pickAssetForPlatform(onlyMetadata, 'linux', 'x64'), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Release picking — works around the /releases/latest 404 trap
+// ---------------------------------------------------------------------------
+
+// Realistic shape for a /releases response item. Only the fields the
+// code actually reads matter; the API returns much more.
+function makeRelease(overrides = {}) {
+  return {
+    tag_name: 'v1.0.9',
+    name: 'Trebuchet v1.0.9',
+    html_url: 'https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases/tag/v1.0.9',
+    body: '- some notes',
+    draft: false,
+    prerelease: false,
+    created_at: '2026-05-27T00:00:00Z',
+    assets: [],
+    ...overrides,
+  };
+}
+
+test('pickLatestRelease returns the first entry of a newest-first list', () => {
+  // GitHub returns /releases sorted by created_at descending. The
+  // caller just wants the newest, so [0] is the answer.
+  const releases = [
+    makeRelease({ tag_name: 'v1.0.9' }),
+    makeRelease({ tag_name: 'v1.0.8' }),
+    makeRelease({ tag_name: 'v1.0.7' }),
+  ];
+  const got = pickLatestRelease(releases);
+  assert.equal(got.tag_name, 'v1.0.9');
+});
+
+test('pickLatestRelease keeps prereleases — this is the bug that broke /releases/latest', () => {
+  // This is THE test that pins down why we don't use /releases/latest.
+  // Trebuchet's publish-release.mjs marks releases as prerelease when
+  // any artifact is unsigned, which is every release until code-signing
+  // certs are configured. /releases/latest excludes prereleases and
+  // returns 404 when they're all prereleases. /releases (the list
+  // endpoint) includes them, and pickLatestRelease keeps them.
+  const releases = [
+    makeRelease({ tag_name: 'v1.0.9', prerelease: true }),
+    makeRelease({ tag_name: 'v1.0.8', prerelease: true }),
+  ];
+  const got = pickLatestRelease(releases);
+  assert.ok(got, 'pickLatestRelease must not filter out prereleases');
+  assert.equal(got.tag_name, 'v1.0.9');
+  assert.equal(got.prerelease, true);
+});
+
+test('pickLatestRelease skips drafts but keeps the next non-draft', () => {
+  // Drafts are hidden from unauthenticated requests in practice, but
+  // the function filters them defensively in case auth is ever added.
+  // The relative ordering is preserved — skip the draft, take the
+  // next non-draft.
+  const releases = [
+    makeRelease({ tag_name: 'v1.1.0', draft: true }),  // never publish this
+    makeRelease({ tag_name: 'v1.0.9', draft: false }),
+    makeRelease({ tag_name: 'v1.0.8', draft: false }),
+  ];
+  const got = pickLatestRelease(releases);
+  assert.equal(got.tag_name, 'v1.0.9');
+});
+
+test('pickLatestRelease returns null when no non-draft release exists', () => {
+  // Edge case: a fresh repo where every release is still a draft, or
+  // an authenticated future where we somehow see only drafts. The
+  // caller treats null as "no releases yet" and surfaces an error
+  // modal rather than crashing.
+  assert.equal(pickLatestRelease([]), null);
+  assert.equal(
+    pickLatestRelease([
+      makeRelease({ draft: true }),
+      makeRelease({ draft: true }),
+    ]),
+    null,
+  );
+});
+
+test('pickLatestRelease tolerates non-array inputs', () => {
+  // Defensive: if GitHub returns something unexpected — null, an
+  // error object, a string — we should return null rather than
+  // crashing with "TypeError: ... is not iterable". The caller
+  // distinguishes this case with the same "no releases" error modal.
+  assert.equal(pickLatestRelease(null), null);
+  assert.equal(pickLatestRelease(undefined), null);
+  assert.equal(pickLatestRelease('not an array'), null);
+  assert.equal(pickLatestRelease(42), null);
+  // Notably also a single release object, in case someone refactors
+  // back to /releases/latest by mistake (which returns an object, not
+  // an array) — better to return null than to treat the object as an
+  // iterable and process its properties.
+  assert.equal(pickLatestRelease(makeRelease()), null);
+});
+
+test('pickLatestRelease skips null/undefined elements in the array', () => {
+  // Belt-and-braces — a malformed response with a sparse array
+  // shouldn't crash. Skip nullish entries and take the next valid one.
+  const got = pickLatestRelease([null, undefined, makeRelease({ tag_name: 'v1.0.9' })]);
+  assert.equal(got.tag_name, 'v1.0.9');
 });
 
 // ---------------------------------------------------------------------------
