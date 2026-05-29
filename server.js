@@ -301,7 +301,10 @@ app.get('/api/session', (_req, res) => {
 });
 
 app.use('/api', (req, res, next) => {
-  if (req.path === '/session') return next();
+  // /session hands out the token itself; /proxy-image is a read-only image
+  // passthrough loaded via <img>/Image (which can't attach custom headers),
+  // so both are exempt from the token gate. Everything else needs the token.
+  if (req.path === '/session' || req.path === '/proxy-image') return next();
   const token = req.get('x-trebuchet-session');
   if (token !== API_SESSION_TOKEN) {
     return res
@@ -918,6 +921,82 @@ app.get('/api/clmm-fee-tiers', async (_req, res) => {
   } catch (error) {
     console.error('Error fetching CLMM fee tiers:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Image proxy for token logos. The 3D coin preview (coinRenderer.js) draws the
+// back-face token logo into a WebGL texture, which requires the source image to
+// be CORS-clean — many logo hosts (CDNs, indexers) don't send CORS headers, so
+// loading them directly with crossOrigin fails and the coin falls back to
+// embossing the symbol text. Re-serving the logo from our own origin sidesteps
+// CORS entirely, so the coin shows the real logo for every token — the same
+// logo the pool-configuration rows already display via plain <img> tags.
+//
+// This is a read-only passthrough, but we still guard it like a proxy: https
+// only, block loopback/private/link-local hosts (SSRF), enforce a timeout, only
+// pass through real image content-types, and cap the response size.
+app.get('/api/proxy-image', async (req, res) => {
+  try {
+    const raw = req.query.url;
+    if (!raw || typeof raw !== 'string') throw new Error('url required');
+
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch (e) {
+      throw new Error('invalid url');
+    }
+
+    // https only — keeps file:, data:, and plain-http SSRF vectors out.
+    if (parsed.protocol !== 'https:') throw new Error('only https urls allowed');
+
+    // Block hosts that resolve (or obviously point) inside the local network,
+    // so the proxy can't be turned into a probe for internal services.
+    const host = parsed.hostname.toLowerCase();
+    const isPrivate =
+      host === 'localhost' ||
+      host === '0.0.0.0' ||
+      host.endsWith('.local') ||
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host);
+    if (isPrivate) throw new Error('host not allowed');
+
+    // Time-box the upstream fetch so a slow/hung host can't pin the request.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    let upstream;
+    try {
+      upstream = await fetch(parsed.toString(), {
+        signal: controller.signal,
+        headers: { Accept: 'image/*' },
+        redirect: 'follow',
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!upstream.ok) throw new Error('upstream ' + upstream.status);
+
+    const type = (upstream.headers.get('content-type') || '').toLowerCase();
+    if (!type.startsWith('image/')) throw new Error('not an image');
+
+    const MAX_BYTES = 2 * 1024 * 1024; // logos are tiny; refuse anything large
+    const declared = Number(upstream.headers.get('content-length') || 0);
+    if (declared && declared > MAX_BYTES) throw new Error('image too large');
+
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    if (buf.length > MAX_BYTES) throw new Error('image too large');
+
+    res.set('Content-Type', type);
+    // Logos rarely change; let the renderer/browser cache for a day.
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(buf);
+  } catch (error) {
+    // 404 (not 500) so a failed proxy cleanly triggers the client's image
+    // onerror path and the coin falls back to the embossed symbol quietly.
+    res.status(404).json({ success: false, error: error.message });
   }
 });
 

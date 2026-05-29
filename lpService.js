@@ -69,6 +69,12 @@ import {
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
 import { getRpcUrl } from './rpcConfig.js';
+// Token metadata + USD price helpers. Imported (not just re-exported below) so
+// they're bound in THIS module's scope — estimateRequiredFunding and the quote
+// USD lookups call getUsdPrice directly. A bare `export { ... } from` is only a
+// re-export and would leave these undefined locally (which silently sent every
+// SOL price into the fallback path).
+import { getTokenMetadata, getUsdPrice } from './tokenInfoService.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -153,7 +159,9 @@ export const KNOWN_QUOTES = {
 // Jupiter as a price fallback, with a small in-memory cache so the user
 // can flip between dropdown options without burning API quota.
 
-export { getTokenMetadata, getUsdPrice } from './tokenInfoService.js';
+// Re-export so other modules (e.g. server.js) can import these from lpService
+// too. The actual import that binds them locally is near the top of the file.
+export { getTokenMetadata, getUsdPrice };
 
 // ---------------------------------------------------------------------------
 // Diagnostic helpers

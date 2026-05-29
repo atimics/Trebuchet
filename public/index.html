@@ -9,6 +9,1006 @@
     <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
     <style>
         /* ========================================================
+           WEBSITE-MATCHED THEME
+           --------------------------------------------------------
+           Brings the app in line with makesometokens.com: the same
+           parchment/ink/rubric/gold palette, the same IM Fell DW Pica
+           display face and EB Garamond / JetBrains Mono support faces.
+
+           Fonts are bundled locally under vendor/fonts/ rather than
+           loaded from Google Fonts, because the app's CSP restricts
+           font-src to 'self' (external font CDNs are blocked by design
+           in a wallet-handling app). The website loads the same
+           families from Google Fonts; we self-host to match within the
+           CSP. See vendor/fonts/README.txt for licensing.
+
+           Design decision: the website uses a 19px serif body, which is
+           lovely for reading but too loose for a dense working tool
+           that people use repeatedly. So the app uses the display face
+           (IM Fell DW Pica) for headings / hero / section titles where
+           the manuscript character lives, EB Garamond only for prose-y
+           blocks (help text, disclaimers), and keeps a compact
+           system-sans + JetBrains-mono pairing for form controls and
+           data so the tool stays crisp and usable.
+           ======================================================== */
+
+        /* ---- Bundled font faces (woff2, latin subset) ---- */
+        @font-face {
+            font-family: 'IM Fell DW Pica';
+            font-style: normal;
+            font-weight: 400;
+            font-display: swap;
+            src: url('vendor/fonts/imfell-400.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'IM Fell DW Pica';
+            font-style: italic;
+            font-weight: 400;
+            font-display: swap;
+            src: url('vendor/fonts/imfell-400-italic.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'IM Fell DW Pica SC';
+            font-style: normal;
+            font-weight: 400;
+            font-display: swap;
+            src: url('vendor/fonts/imfellsc-400.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'EB Garamond';
+            font-style: normal;
+            font-weight: 400;
+            font-display: swap;
+            src: url('vendor/fonts/ebgaramond-400.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'EB Garamond';
+            font-style: italic;
+            font-weight: 400;
+            font-display: swap;
+            src: url('vendor/fonts/ebgaramond-400-italic.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'EB Garamond';
+            font-style: normal;
+            font-weight: 500;
+            font-display: swap;
+            src: url('vendor/fonts/ebgaramond-500.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'EB Garamond';
+            font-style: normal;
+            font-weight: 600;
+            font-display: swap;
+            src: url('vendor/fonts/ebgaramond-600.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'JetBrains Mono';
+            font-style: normal;
+            font-weight: 400;
+            font-display: swap;
+            src: url('vendor/fonts/jetbrainsmono-400.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'JetBrains Mono';
+            font-style: normal;
+            font-weight: 500;
+            font-display: swap;
+            src: url('vendor/fonts/jetbrainsmono-500.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'JetBrains Mono';
+            font-style: normal;
+            font-weight: 700;
+            font-display: swap;
+            src: url('vendor/fonts/jetbrainsmono-700.woff2') format('woff2');
+        }
+
+        /* ---- Design tokens (mirror the website's :root) ---- */
+        :root {
+            /* Parchment palette — warm, aged, ink-on-paper */
+            --paper:           #efe5cd;   /* base parchment */
+            --paper-deep:      #e4d6b3;   /* slightly darker fold */
+            --paper-shadow:    #d9c79a;   /* deeper crease for contrast */
+            --ink:             #1c1610;   /* near-black warm */
+            --ink-soft:        #4a3b27;   /* secondary text, faded ink */
+            --ink-fade:        #7a6a4f;   /* tertiary, captions */
+            --rubric:          #9a2424;   /* manuscript red — accent, links */
+            --rubric-dark:     #6e1818;   /* hover state */
+            --gold:            #b88a2a;   /* sparingly, for highlights */
+            --gold-soft:       #cda14a;   /* lighter gold for fills */
+            --rule:            rgba(28, 22, 16, 0.15);   /* hairline rules */
+            --rule-faint:      rgba(28, 22, 16, 0.07);   /* faint gridlines */
+            /* Panel surface. The website has no "card" tone lighter than
+               the page — panels are warm folds defined by ink borders,
+               never lighter-than-page white cards. A card lighter than
+               the page reads as a stark white box on parchment, which is
+               exactly the "too white" problem. So --paper-card is a warm
+               fold a touch below the page tone; borders + soft shadow do
+               the "lift", not a pale fill. */
+            --paper-card:      #e9dcbf;   /* panel fold (was #f5eeda, too white) */
+            /* Input field surface — warm and clearly fillable, but not
+               the near-white var(--field) that read as white on parchment. */
+            --field:           #f3ecd6;
+
+            /* Semantic state colors, tuned to sit on parchment without
+               looking like default Bulma. Success is an olive-forest
+               green (reads as "good" but warm, not neon); danger reuses
+               the manuscript rubric since red already means "stop". */
+            --success:         #5c7a35;
+            --danger:          var(--rubric);
+
+            /* Typography */
+            --font-display:    'IM Fell DW Pica', 'EB Garamond', Georgia, serif;
+            --font-display-sc: 'IM Fell DW Pica SC', 'IM Fell DW Pica', serif;
+            --font-prose:      'EB Garamond', Georgia, 'Times New Roman', serif;
+            --font-mono:       'JetBrains Mono', 'IBM Plex Mono', Menlo, monospace;
+            /* UI sans for dense controls — kept system-native for
+               crispness at small sizes; the serif faces are reserved
+               for headings and prose. */
+            --font-ui:         -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        /* ---- Bulma 0.9.4 component overrides ----
+           The bundled Bulma is 0.9.4, which predates Bulma's CSS-custom-
+           property theming — every color is hardcoded in the compiled
+           CSS. So we re-skin by overriding the actual component selectors
+           rather than setting --bulma-* variables (which this version
+           doesn't read). Each override below targets a specific compiled
+           Bulma rule and maps it onto the parchment palette. */
+
+        /* Boxes / cards → lifted parchment surface with a soft warm
+           shadow + hairline border, replacing Bulma's white + grey. */
+        .box {
+            background-color: var(--paper-card);
+            color: var(--ink);
+            border: 1px solid var(--rule);
+            box-shadow: 0 .4em .9em -.2em rgba(60, 44, 22, 0.18),
+                        0 0 0 1px rgba(60, 44, 22, 0.03);
+        }
+
+        /* Inputs / textareas / selects → warm off-white field, ink text,
+           rubric focus ring instead of Bulma blue. */
+        .input, .textarea, .select select {
+            background-color: var(--field);
+            border-color: var(--rule);
+            color: var(--ink);
+            font-family: var(--font-ui);
+        }
+        .input::placeholder, .textarea::placeholder { color: var(--ink-fade); }
+        .input:focus, .textarea:focus, .select select:focus,
+        .input.is-focused, .textarea.is-focused {
+            border-color: var(--rubric);
+            box-shadow: 0 0 0 0.125em rgba(154, 36, 36, 0.2);
+        }
+
+        .label { color: var(--ink-soft); }
+
+        /* Disabled inputs/textareas/selects. Bulma sets these to a cold
+           #f5f5f5 grey, which on parchment reads as a bright near-white
+           box (e.g. the Bootstrap field when its checkbox is off). Map
+           to a muted parchment field tone; the containing row already
+           dims via opacity, so this just keeps the fill in-theme. */
+        .input[disabled], .textarea[disabled], .select select[disabled],
+        fieldset[disabled] .input, fieldset[disabled] .textarea,
+        fieldset[disabled] .select select {
+            background-color: var(--paper-deep);
+            border-color: var(--rule);
+            color: var(--ink-fade);
+        }
+        .input[disabled]::placeholder,
+        .textarea[disabled]::placeholder { color: var(--ink-fade); }
+
+        /* Default button → parchment with ink text + hairline border. */
+        .button {
+            background-color: var(--field);
+            border-color: var(--rule);
+            color: var(--ink);
+            font-family: var(--font-ui);
+        }
+        .button:hover {
+            border-color: var(--ink-fade);
+            color: var(--ink);
+        }
+        /* Static (non-interactive) buttons — used as input addons like
+           the "%" suffix on the Allocation field. Bulma renders these in
+           cold grey (#f5f5f5 / #dbdbdb / #7a7a7a); map to a parchment
+           fold so the suffix reads as part of the field group. */
+        .button.is-static {
+            background-color: var(--paper-deep);
+            border-color: var(--rule);
+            color: var(--ink-soft);
+        }
+
+        /* Primary button → manuscript rubric red (was Bulma teal). This
+           is the main call-to-action color throughout the app, matching
+           the website's rubric links/buttons. */
+        .button.is-primary {
+            background-color: var(--rubric);
+            border-color: transparent;
+            color: #fdf6e3;
+        }
+        .button.is-primary:hover,
+        .button.is-primary.is-hovered {
+            background-color: var(--rubric-dark);
+            color: #fdf6e3;
+        }
+
+        /* Link button / link-styled → also rubric, since the website
+           treats links as rubric. (Was Bulma indigo #485fc7.) */
+        .button.is-link {
+            background-color: var(--rubric);
+            border-color: transparent;
+            color: #fdf6e3;
+        }
+        .button.is-link:hover {
+            background-color: var(--rubric-dark);
+            color: #fdf6e3;
+        }
+
+        /* Info button → gold, used for secondary/affordance actions. */
+        .button.is-info {
+            background-color: var(--gold);
+            border-color: transparent;
+            color: #fdf6e3;
+        }
+        .button.is-info:hover {
+            background-color: #a5781f;
+            color: #fdf6e3;
+        }
+
+        /* Success → the olive-green semantic token (was Bulma green). */
+        .button.is-success {
+            background-color: var(--success);
+            border-color: transparent;
+            color: #fdf6e3;
+        }
+        .button.is-success:hover { background-color: #4a6429; color: #fdf6e3; }
+
+        /* Danger keeps a true red but tuned to the rubric family. */
+        .button.is-danger {
+            background-color: #a52a2a;
+            border-color: transparent;
+            color: #fdf6e3;
+        }
+        .button.is-danger:hover { background-color: #841f1f; color: #fdf6e3; }
+
+        /* Text-link color (anchor tags and Bulma .has-text-link). */
+        a, .has-text-link { color: var(--rubric); }
+        a:hover { color: var(--rubric-dark); }
+
+        /* Tags → parchment-fold background. */
+        .tag:not(body) {
+            background-color: var(--paper-deep);
+            color: var(--ink-soft);
+        }
+        .tag.is-primary { background-color: var(--rubric); color: #fdf6e3; }
+        .tag.is-success { background-color: var(--success); color: #fdf6e3; }
+        .tag.is-info    { background-color: var(--gold); color: #fdf6e3; }
+
+        /* Notifications → tinted parchment rather than pastel Bulma. */
+        .notification { background-color: var(--paper-deep); color: var(--ink); }
+        .notification.is-primary { background-color: rgba(154, 36, 36, 0.12); color: var(--ink); }
+        .notification.is-success { background-color: rgba(92, 122, 53, 0.15); color: var(--ink); }
+        .notification.is-warning { background-color: rgba(184, 138, 42, 0.16); color: var(--ink); }
+        .notification.is-danger  { background-color: rgba(165, 42, 42, 0.14); color: var(--ink); }
+
+        /* Progress bars → rubric fill on a parchment track. */
+        .progress::-webkit-progress-value { background-color: var(--rubric); }
+        .progress::-moz-progress-bar { background-color: var(--rubric); }
+        .progress { background-color: var(--paper-shadow); }
+
+        /* Modal cards → parchment surface, display-face titles. */
+        .modal-card-head, .modal-card-foot {
+            background-color: var(--paper-deep);
+            border-color: var(--rule);
+        }
+        .modal-card-body { background-color: var(--paper-card); color: var(--ink); }
+        .modal-card-title { font-family: var(--font-display); color: var(--ink); }
+
+        /* ---- Hero: cancel Bulma's is-primary white-on-color ----
+           The hero markup still carries `is-primary`, which in Bulma
+           0.9.4 forces a teal background and white text. We've reskinned
+           the hero to parchment, so that white text became invisible.
+           Force ink/soft-ink text and a transparent background so our
+           .hero gradient (defined later) shows through. */
+        .hero.is-primary {
+            background-color: transparent;
+            background-image: none;
+            color: var(--ink);
+        }
+        .hero.is-primary .title,
+        .hero.is-primary .subtitle {
+            color: var(--ink);
+        }
+        .hero.is-primary .subtitle {
+            color: var(--ink-soft);
+        }
+
+        /* ---- Notifications: readable on parchment ----
+           Bulma's colored notifications assume white/dark text on a
+           saturated background. Our reskinned (tinted-parchment)
+           notifications need ink text instead, and the title + links
+           inside them must not be white. */
+        .notification,
+        .notification .title,
+        .notification p,
+        .notification li {
+            color: var(--ink);
+        }
+        /* Danger notification (public-RPC warning) — title in rubric so
+           it reads as a warning, body in ink. The markup tags the title
+           has-text-white; override it. */
+        .notification.is-danger .title,
+        .notification.is-danger .has-text-white {
+            color: var(--rubric-dark) !important;
+        }
+        .notification.is-danger a,
+        .notification.is-danger a .has-text-white,
+        .notification.is-danger .has-text-white a {
+            color: var(--rubric-dark) !important;
+        }
+        /* Warning notification (recovery panels) — title in gold-dark,
+           body in ink/soft so it's legible on the warm tint. */
+        .notification.is-warning .title {
+            color: #8a6518 !important;
+        }
+        .notification.is-warning,
+        .notification.is-warning p,
+        .notification.is-warning li {
+            color: var(--ink-soft);
+        }
+        /* has-text-grey inside notifications → soft ink (the default
+           Bulma grey is too light on parchment). */
+        .notification .has-text-grey,
+        .has-text-grey {
+            color: var(--ink-fade) !important;
+        }
+
+        /* ---- Native form controls ----
+           Checkboxes, radios, and range sliders render with the OS/
+           browser accent (Chromium blue in Electron). accent-color
+           recolors them to rubric in one line, covering every native
+           checkbox and slider in the app at once. */
+        input[type="checkbox"],
+        input[type="radio"],
+        input[type="range"] {
+            accent-color: var(--rubric);
+        }
+
+        /* Select dropdowns (Bulma .select wraps a native <select>).
+           Recolor the wrapper arrow from Bulma blue to ink, and give
+           the control a parchment field. */
+        .select:not(.is-multiple):not(.is-loading)::after {
+            border-color: var(--rubric);
+        }
+        .select select {
+            background-color: var(--field);
+            border-color: var(--rule);
+            color: var(--ink);
+        }
+        .select select:hover { border-color: var(--ink-fade); }
+
+        /* ---- Grey sub-surfaces → parchment ----
+           Several nested panels (token preview card, resolved-token info
+           block, bootstrap/ladder sub-cards) used Bulma/neutral greys
+           like #f5f5f5 / #fafafa. Map them onto a faint parchment fold
+           so they read as part of the theme rather than leftover chrome.
+           These selectors are the app's own custom classes. */
+        .token-preview-block,
+        .resolved-info-block,
+        .token-info-header {
+            background-color: var(--paper-deep) !important;
+            border-color: var(--rule) !important;
+        }
+
+        /* ---- "Link"-styled buttons / text links that were blue ----
+           Bulma's .is-link and .has-text-link resolve to indigo. The
+           button override earlier handles .button.is-link; this catches
+           text-style link buttons (e.g. "Customize pools manually",
+           "Learn more", "Add slice") that use .is-text or anchor styling. */
+        .button.is-text {
+            color: var(--rubric);
+            text-decoration-color: var(--rubric);
+        }
+        .button.is-text:hover {
+            color: var(--rubric-dark);
+            background-color: rgba(154, 36, 36, 0.06);
+        }
+
+        /* .is-light button variants (e.g. "Customize pools manually" =
+           is-link is-light, "Add slice" = is-light). Bulma renders these
+           as a pale tint of the base color with colored text. Map them
+           onto a parchment-fold fill with ink/rubric text. */
+        .button.is-light {
+            background-color: var(--paper-deep);
+            border-color: var(--rule);
+            color: var(--ink);
+        }
+        .button.is-light:hover {
+            background-color: var(--paper-shadow);
+            color: var(--ink);
+        }
+        .button.is-link.is-light,
+        .button.is-primary.is-light,
+        .button.is-info.is-light {
+            background-color: rgba(154, 36, 36, 0.08);
+            color: var(--rubric-dark);
+        }
+        .button.is-link.is-light:hover,
+        .button.is-primary.is-light:hover {
+            background-color: rgba(154, 36, 36, 0.14);
+            color: var(--rubric-dark);
+        }
+        .button.is-success.is-light {
+            background-color: rgba(92, 122, 53, 0.12);
+            color: #4a6429;
+        }
+        .button.is-danger.is-light {
+            background-color: rgba(165, 42, 42, 0.10);
+            color: #841f1f;
+        }
+
+        .has-text-info, .has-text-primary { color: var(--rubric) !important; }
+        .has-text-success { color: var(--success) !important; }
+
+        /* ---- Disabled-state button colors ----
+           Bulma defines `.button.is-primary[disabled]` (and the same for
+           every variant) with its own background-color and a specificity
+           of (0,2,1) — higher than our (0,2,0) `.button.is-primary`
+           override. The result: a DISABLED primary button reverted to
+           Bulma's teal, and a disabled link button to indigo, even
+           though enabled ones themed correctly. We re-assert the
+           parchment palette at matching specificity for the disabled
+           state. (Opacity 0.5 from Bulma still applies, so they still
+           read as disabled — just in-theme.) */
+        .button.is-primary[disabled],
+        fieldset[disabled] .button.is-primary {
+            background-color: var(--rubric);
+            border-color: transparent;
+            color: #fdf6e3;
+        }
+        .button.is-link[disabled],
+        fieldset[disabled] .button.is-link {
+            background-color: var(--rubric);
+            border-color: transparent;
+            color: #fdf6e3;
+        }
+        .button.is-info[disabled],
+        fieldset[disabled] .button.is-info {
+            background-color: var(--gold);
+            border-color: transparent;
+            color: #fdf6e3;
+        }
+        .button.is-success[disabled],
+        fieldset[disabled] .button.is-success {
+            background-color: var(--success);
+            border-color: transparent;
+            color: #fdf6e3;
+        }
+        /* Plain disabled button → parchment, not Bulma white. */
+        .button[disabled],
+        fieldset[disabled] .button {
+            background-color: var(--field);
+            border-color: var(--rule);
+        }
+
+        /* ---- is-info is-light notification ("About this step") ----
+           Bulma's is-info is-light is a pale blue panel. Recolor to a
+           faint parchment-fold info tint so it reads as a help/aside
+           block in-theme rather than a blue callout. */
+        .notification.is-info.is-light,
+        .notification.is-info {
+            background-color: var(--paper-deep);
+            color: var(--ink);
+        }
+        .notification.is-info.is-light p,
+        .notification.is-info p { color: var(--ink-soft); }
+
+        /* is-success is-light → faint olive tint. */
+        .notification.is-success.is-light,
+        .notification.is-success {
+            background-color: rgba(92, 122, 53, 0.13);
+            color: var(--ink);
+        }
+        .notification.is-success.is-light .title { color: #4a6429 !important; }
+
+        /* is-danger is-light → faint rose tint (distinct from the solid
+           is-danger warning panel). */
+        .notification.is-danger.is-light {
+            background-color: rgba(165, 42, 42, 0.10);
+            color: var(--ink);
+        }
+        .notification.is-danger.is-light .title { color: var(--rubric-dark) !important; }
+
+        /* ---- has-text-link summaries / toggles ("Show cost breakdown",
+           "Show/Hide", details summaries) → rubric instead of indigo. */
+        .has-text-link { color: var(--rubric) !important; }
+        summary.has-text-link,
+        summary .has-text-link { color: var(--rubric) !important; }
+        /* <details> summary markers and clickable summaries in ink. */
+        summary.is-clickable { color: var(--ink); }
+        summary.is-clickable.has-text-link { color: var(--rubric) !important; }
+
+        /* ========================================================
+           SUB-SURFACES — kill leftover white/grey panels
+           --------------------------------------------------------
+           Many of the app's own custom classes (and Bulma's .table)
+           hardcoded white / #f0f0f0 / #fafafa backgrounds. On parchment
+           those read as bright cut-outs. Map them onto parchment tones.
+           ======================================================== */
+
+        /* Bulma table (funding cost breakdown). White rows with grey
+           striping -> parchment with faint fold striping + hairline rows
+           so it reads as a manuscript ledger. */
+        .table {
+            background-color: transparent;
+            color: var(--ink);
+        }
+        .table td, .table th {
+            border-color: var(--rule-faint);
+            color: var(--ink);
+        }
+        .table.is-striped tbody tr:not(.is-selected):nth-child(even) {
+            background-color: rgba(60, 44, 22, 0.04);
+        }
+        .table tbody tr:hover { background-color: rgba(60, 44, 22, 0.05); }
+        .table .has-text-grey td,
+        .table tr.has-text-grey td { color: var(--ink-fade) !important; }
+
+        /* Token preview card (step 2) — was #f0f0f0 + light italic text. */
+        .token-preview-block { background: var(--paper-deep) !important; }
+        .token-preview-logo,
+        .token-preview-logo-fallback { background: var(--paper-card) !important; }
+        .token-preview-name { color: var(--ink) !important; }
+        .token-preview-symbol,
+        .token-preview-desc,
+        .token-preview-tech { color: var(--ink-soft) !important; }
+
+        /* Pool sub-panels and rows.
+           The pool .box panel is the --paper-card fold (darker than the
+           page). Rows and sub-blocks INSIDE it lift back up toward the
+           page tone with a hairline border, so they read as distinct
+           items on the fold rather than vanishing into it. Inputs lift
+           further to --field. This gives a clear ladder:
+             page  <  panel fold (--paper-card)  <  row (--paper)  <  field
+           with borders defining every edge. */
+        .pool-row .pool-row-header,
+        .pool-row .pool-row-header-right,
+        .pool-row-actions {
+            background: transparent !important;
+        }
+        /* The token-identity block (SOL / Solana / decimals) is a
+           recessed fold — deeper than the panel — so it reads as an
+           embedded reference card. */
+        .token-info-header {
+            background: var(--paper-deep) !important;
+            border: 1px solid var(--rule) !important;
+        }
+
+        .token-info-name { color: var(--ink) !important; }
+        .token-info-symbol { color: var(--ink-soft) !important; }
+        .resolved-info-name { color: var(--ink) !important; }
+        .resolved-info-symbol,
+        .resolved-info-tech { color: var(--ink-soft) !important; }
+
+        /* Slice rows and ladder-band rows — lift to page tone with a
+           hairline border so each row is a clear card on the fold. */
+        .slice-row,
+        .distribution-expanded-header {
+            background: var(--paper) !important;
+            border: 1px solid var(--rule) !important;
+        }
+        /* The distribution container that wraps the slice rows is just a
+           grouping wrapper — transparent so the panel fold shows through
+           between rows. */
+        .distribution-slices {
+            background: transparent !important;
+        }
+
+        /* Bordered numeric fields inside pool/slice/band rows use the
+           warm field tone (lightest in the ladder) with a border. */
+        .pool-row-allocation .input,
+        .distribution-slices .input,
+        .slice-row .input {
+            background: var(--field) !important;
+            color: var(--ink);
+        }
+
+        /* QR stays white for scannability, but bordered so it doesn't
+           float as a bare rectangle. */
+        .qr-code { border: 1px solid var(--rule); }
+
+        /* Secret-key reveal container. */
+        .secret-key-container {
+            background: var(--paper-deep) !important;
+            border-color: var(--rule) !important;
+        }
+
+        /* simple-config container + customize row. */
+        #simpleConfigContainer,
+        .simple-config-customize-row { background: var(--paper-card) !important; }
+
+        /* Balance-row logo chip border. */
+        .balance-row .row-logo { border-color: var(--rule) !important; }
+
+        /* Logo upload file input chips (Bulma renders these white). */
+        .logo-upload-row .file-name,
+        .file-name {
+            background-color: var(--field);
+            border-color: var(--rule);
+            color: var(--ink-soft);
+        }
+        .file-cta {
+            background-color: var(--paper-deep);
+            border-color: var(--rule);
+            color: var(--ink);
+        }
+
+        /* Grey "?" detail icons were very light -> faded ink. */
+        .resolved-info-icon,
+        .token-info-header .icon { color: var(--ink-fade); }
+
+        /* Bulma background utilities. The ladder-positions panel uses
+           `box has-background-light`; Bulma's .has-background-light is a
+           grey with !important that beats our .box fill. Remap the
+           light/white utilities to parchment tones. As a nested .box it
+           reads as a recessed sub-panel (deeper fold). */
+        .has-background-light { background-color: var(--paper-card) !important; }
+        .has-background-white,
+        .has-background-white-bis,
+        .has-background-white-ter { background-color: var(--paper-card) !important; }
+        .pool-ladder-section.box {
+            background-color: var(--paper-card) !important;
+            border: 1px solid var(--rule);
+        }
+
+        /* pool-section wrapper (per-pool container in customize mode). */
+        .pool-section {
+            background: var(--paper-card);
+            border: 1px solid var(--rule);
+        }
+        /* The dashed divider above the distribution section — warm rule
+           instead of cold grey. */
+        .distribution-section { border-top-color: var(--rule) !important; }
+
+        /* Nested .box inside .box uses the deeper fold for depth. */
+        .box .box { background-color: var(--paper-deep); }
+
+
+        /* ---- Base surface + parchment texture ---- */
+        body {
+            background: var(--paper);
+            color: var(--ink);
+            font-family: var(--font-ui);
+            position: relative;
+        }
+
+        /* Parchment grain — faint procedural texture, same technique as
+           the website (layered radial gradients, no image asset). Fixed
+           so it doesn't scroll. pointer-events:none so it never
+           intercepts clicks.
+
+           z-index: -1 places both texture layers BEHIND all normal page
+           content without needing to set an explicit z-index on every
+           body child. The earlier approach (body > * { z-index: 1 })
+           had a nasty side effect: it overrode Bulma's
+           `.modal { position: fixed; z-index: 40 }`, collapsing modals
+           into normal document flow so they rendered at the bottom of
+           the page instead of floating centered. Pushing the texture to
+           -1 instead leaves every interactive layer (modals, sticky bar,
+           dropdowns) with its own Bulma-assigned stacking intact. */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: -1;
+            opacity: 0.5;
+            background:
+                radial-gradient(circle at 12% 18%, rgba(112, 80, 40, 0.06) 0, transparent 25%),
+                radial-gradient(circle at 78% 32%, rgba(112, 80, 40, 0.05) 0, transparent 30%),
+                radial-gradient(circle at 35% 78%, rgba(112, 80, 40, 0.07) 0, transparent 28%),
+                radial-gradient(circle at 92% 88%, rgba(112, 80, 40, 0.05) 0, transparent 25%);
+        }
+        /* Faint blueprint grid — schematic manuscript feel. */
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: -1;
+            opacity: 0.4;
+            background-image:
+                linear-gradient(var(--rule-faint) 1px, transparent 1px),
+                linear-gradient(90deg, var(--rule-faint) 1px, transparent 1px);
+            background-size: 32px 32px;
+        }
+
+        /* ---- Headings use the display face ---- */
+        .title,
+        h1.title, h2.title, h3.title {
+            font-family: var(--font-display);
+            color: var(--ink);
+            letter-spacing: 0.01em;
+        }
+        .subtitle {
+            font-family: var(--font-prose);
+            color: var(--ink-soft);
+        }
+        /* Monospace data keeps the website's mono face. */
+        code, pre, .is-family-monospace, .mono {
+            font-family: var(--font-mono);
+        }
+
+        /* ========================================================
+           Medieval gauntlet cursor theme
+           --------------------------------------------------------
+           Everything hangs off body.medieval-cursor so it can be
+           toggled from settings without affecting other styles.
+
+           Ten poses cover every cursor state Chromium uses:
+             gauntlet        — open hand           (default / idle)
+             gauntlet-point  — pointing finger     (pointer / hover)
+             gauntlet-fist   — clenched fist       (active / mousedown / grabbing)
+             gauntlet-quill  — feather quill       (text input)
+             gauntlet-no     — hand + red slash    (not-allowed / disabled)
+             gauntlet-wait   — hourglass           (wait / progress / busy)
+             gauntlet-resize-ns    — up/down arrows         (vertical resize)
+             gauntlet-resize-ew    — left/right arrows      (horizontal resize)
+             gauntlet-resize-nwse  — diagonal ↖↘ arrows     (corner resize)
+             gauntlet-resize-nesw  — diagonal ↗↙ arrows     (other-corner resize)
+
+           Hotspot coordinates (the active click pixel) are tuned per
+           pose so the click lands where the user expects:
+             - idle:    fingertip of the hand pointing upper-LEFT (7, 1)
+             - point:   fingertip of the hand pointing LEFT   (1, 7)
+             - no:      centre of the red no-entry sign       (15, 15)
+             - fist:    knuckles, top-centre (15, 4)
+             - quill:   silver nib at lower-left (3, 30)
+             - wait:    centre of the hourglass (15, 15)
+             - resize:  centre (16,16)
+           The trailing keyword (auto, pointer, text, etc.) is the
+           REQUIRED fallback used when the image fails to load or is
+           too large (Chromium ignores cursor images over 128x128).
+           image-set() lets hi-dpi displays pick the 64px asset.
+           -------------------------------------------------------- */
+
+        /* --- Default / idle -------------------------------------- */
+        /* The idle hand is tilted 45 deg clockwise then mirrored, so it
+           points to the upper-left; hotspot sits at that fingertip (7, 1). */
+        body.medieval-cursor {
+            cursor: image-set(
+                url('cursors/gauntlet.png') 1x,
+                url('cursors/gauntlet@2x.png') 2x
+            ) 7 1, auto;
+        }
+
+        /* --- Gap / container fallback ---------------------------- */
+        /* `cursor` is an inherited property, so these structural
+           containers ought to show the idle hand automatically. But in
+           Electron/Chromium an *inherited* custom (image-set) cursor is
+           not reliably painted over bare areas that have no cursor rule
+           of their own -- the gaps between widgets, a field's label, the
+           padding around inputs -- and the native arrow leaks through.
+           Pinning the idle cursor explicitly onto the common
+           non-interactive Bulma layout + label containers forces it to
+           paint in those gaps. None of these are clickable themselves
+           (their interactive children carry their own pointer/text
+           rules, which are more specific and still win), so this cannot
+           override a more specific pose. If another bare gap turns up,
+           add its container class to this list. */
+        body.medieval-cursor .columns,
+        body.medieval-cursor .column,
+        body.medieval-cursor .field,
+        body.medieval-cursor .field-label,
+        body.medieval-cursor .field-body,
+        body.medieval-cursor .control,
+        body.medieval-cursor .label,
+        body.medieval-cursor .help,
+        body.medieval-cursor .box,
+        body.medieval-cursor .content {
+            cursor: image-set(
+                url('cursors/gauntlet.png') 1x,
+                url('cursors/gauntlet@2x.png') 2x
+            ) 7 1, auto;
+        }
+
+        /* --- Pointer / hover ------------------------------------- */
+        /* Mirrors every element that ordinarily gets cursor:pointer
+           or behaves clickably. The hand points LEFT, so the hotspot
+           sits at the left-edge fingertip (1, 7), matching where the
+           user perceives the click target.
+
+           NOTE: this list must include anything the app makes clickable.
+           A few extra entries below cover elements that set their own
+           bare `cursor:pointer` (which would otherwise paint the NATIVE
+           cursor): the plain <button> element, Bulma's .delete, and a
+           handful of custom widgets. The ID selector (#activityLogHeader)
+           is listed in full so it out-ranks its own id-level rule. */
+        body.medieval-cursor a,
+        body.medieval-cursor .button,
+        body.medieval-cursor [role="button"],
+        body.medieval-cursor summary,
+        body.medieval-cursor .is-clickable,
+        body.medieval-cursor .step-card.is-completed .step-header,
+        body.medieval-cursor .pool-row-header,
+        body.medieval-cursor label.checkbox,
+        body.medieval-cursor input[type="checkbox"],
+        body.medieval-cursor input[type="radio"],
+        body.medieval-cursor input[type="file"],
+        body.medieval-cursor input[type="range"],
+        body.medieval-cursor input[type="submit"],
+        body.medieval-cursor input[type="button"],
+        body.medieval-cursor input[type="reset"],
+        body.medieval-cursor select,
+        body.medieval-cursor .select,
+        body.medieval-cursor .select select,
+        body.medieval-cursor .simple-config-toggle,
+        body.medieval-cursor button,
+        body.medieval-cursor .delete,
+        body.medieval-cursor .splash-screen,
+        body.medieval-cursor .peek-banner-close,
+        body.medieval-cursor .resolved-info-icon,
+        body.medieval-cursor .rpc-header,
+        body.medieval-cursor .file-label,
+        body.medieval-cursor .file-cta,
+        body.medieval-cursor .balance-row .row-retry-btn,
+        body.medieval-cursor #activityLogHeader,
+        body.medieval-cursor .cursor-pointer {
+            cursor: image-set(
+                url('cursors/gauntlet-point.png') 1x,
+                url('cursors/gauntlet-point@2x.png') 2x
+            ) 1 7, pointer;
+        }
+
+        /* --- Active / mousedown (clenched fist) ------------------ */
+        /* :active fires while the pointer is held on the element. */
+        body.medieval-cursor a:active,
+        body.medieval-cursor .button:active,
+        body.medieval-cursor [role="button"]:active,
+        body.medieval-cursor summary:active,
+        body.medieval-cursor .is-clickable:active,
+        body.medieval-cursor .step-header:active,
+        body.medieval-cursor .pool-row-header:active,
+        body.medieval-cursor label.checkbox:active,
+        body.medieval-cursor select:active,
+        body.medieval-cursor .simple-config-toggle:active {
+            cursor: image-set(
+                url('cursors/gauntlet-fist.png') 1x,
+                url('cursors/gauntlet-fist@2x.png') 2x
+            ) 15 4, pointer;
+        }
+        /* And a global mousedown — set by app.js on body — so a click
+           on EMPTY space also shows the fist. Without this the idle
+           hand keeps showing while the mouse is held over a panel. */
+        body.medieval-cursor.cursor-clenched {
+            cursor: image-set(
+                url('cursors/gauntlet-fist.png') 1x,
+                url('cursors/gauntlet-fist@2x.png') 2x
+            ) 15 4, auto;
+        }
+
+        /* --- Text input (quill) ---------------------------------- */
+        /* The quill's silver nib is at the bottom-left. Hotspot (3, 30)
+           places the click right at that writing tip — feels right for
+           text-editing precision. */
+        body.medieval-cursor input[type="text"],
+        body.medieval-cursor input[type="number"],
+        body.medieval-cursor input[type="search"],
+        body.medieval-cursor input[type="password"],
+        body.medieval-cursor input[type="email"],
+        body.medieval-cursor input[type="url"],
+        body.medieval-cursor input[type="tel"],
+        body.medieval-cursor textarea,
+        body.medieval-cursor [contenteditable="true"] {
+            cursor: image-set(
+                url('cursors/gauntlet-quill.png') 1x,
+                url('cursors/gauntlet-quill@2x.png') 2x
+            ) 3 30, text;
+        }
+
+        /* --- Number-input spinner buttons ------------------------ */
+        /* A type="number" field shows the quill on its text area (rule
+           above), but the little up/down stepper at its right edge is a
+           native widget part (::-webkit-(inner|outer)-spin-button) that
+           falls back to the OS arrow. These are clickable, so we point
+           them at the pointer pose. NOTE: when the native dropdown of a
+           <select> is actually OPEN, that popup list is drawn by the OS
+           and cannot be themed from CSS — only the closed control can. */
+        body.medieval-cursor input[type="number"]::-webkit-inner-spin-button,
+        body.medieval-cursor input[type="number"]::-webkit-outer-spin-button {
+            cursor: image-set(
+                url('cursors/gauntlet-point.png') 1x,
+                url('cursors/gauntlet-point@2x.png') 2x
+            ) 1 7, pointer;
+        }
+
+        /* --- Not-allowed / disabled (hand + slash) --------------- */
+        /* The :disabled forms and the fully-qualified .row-retry-btn
+           selector are included so they out-rank the app's own bare
+           `cursor:not-allowed` on that deeply-nested button. */
+        body.medieval-cursor button[disabled],
+        body.medieval-cursor button:disabled,
+        body.medieval-cursor .button[disabled],
+        body.medieval-cursor input[disabled],
+        body.medieval-cursor textarea[disabled],
+        body.medieval-cursor select[disabled],
+        body.medieval-cursor .select select[disabled],
+        body.medieval-cursor .balance-row .row-retry-btn:disabled,
+        body.medieval-cursor .is-disabled,
+        body.medieval-cursor [aria-disabled="true"],
+        body.medieval-cursor .cursor-not-allowed {
+            cursor: image-set(
+                url('cursors/gauntlet-no.png') 1x,
+                url('cursors/gauntlet-no@2x.png') 2x
+            ) 15 15, not-allowed;
+        }
+
+        /* --- Wait / progress / busy ------------------------------ */
+        /* Hourglass shown across the whole app during long-running
+           operations. body.cursor-busy is set by app.js while a launch
+           step or RPC test is running, then cleared when done. */
+        body.medieval-cursor.cursor-busy,
+        body.medieval-cursor .cursor-wait {
+            cursor: image-set(
+                url('cursors/gauntlet-wait.png') 1x,
+                url('cursors/gauntlet-wait@2x.png') 2x
+            ) 15 15, wait;
+        }
+
+        /* --- Resize handles -------------------------------------- */
+        /* The textarea resize handle (the little dots in the
+           bottom-right corner) is drawn by the browser at that one
+           pixel area only — we can't reach it from CSS — so the user
+           will see the native diagonal-arrow there. The four classes
+           below let any other element opt into themed resize cursors. */
+        body.medieval-cursor .cursor-resize-ns {
+            cursor: image-set(
+                url('cursors/gauntlet-resize-ns.png') 1x,
+                url('cursors/gauntlet-resize-ns@2x.png') 2x
+            ) 16 16, ns-resize;
+        }
+        body.medieval-cursor .cursor-resize-ew {
+            cursor: image-set(
+                url('cursors/gauntlet-resize-ew.png') 1x,
+                url('cursors/gauntlet-resize-ew@2x.png') 2x
+            ) 16 16, ew-resize;
+        }
+        body.medieval-cursor .cursor-resize-nwse {
+            cursor: image-set(
+                url('cursors/gauntlet-resize-nwse.png') 1x,
+                url('cursors/gauntlet-resize-nwse@2x.png') 2x
+            ) 16 16, nwse-resize;
+        }
+        body.medieval-cursor .cursor-resize-nesw {
+            cursor: image-set(
+                url('cursors/gauntlet-resize-nesw.png') 1x,
+                url('cursors/gauntlet-resize-nesw@2x.png') 2x
+            ) 16 16, nesw-resize;
+        }
+
+        /* --- Grab / grabbing (drag-and-drop) --------------------- */
+        /* draggable=true matches without inline-style conflicts.
+           Mid-drag swaps to the fist via :active. The .cursor-grab
+           utility class is available for elements that want grab
+           behaviour without being draggable. */
+        body.medieval-cursor [draggable="true"],
+        body.medieval-cursor .cursor-grab {
+            cursor: image-set(
+                url('cursors/gauntlet.png') 1x,
+                url('cursors/gauntlet@2x.png') 2x
+            ) 16 16, grab;
+        }
+        body.medieval-cursor [draggable="true"]:active,
+        body.medieval-cursor .cursor-grabbing {
+            cursor: image-set(
+                url('cursors/gauntlet-fist.png') 1x,
+                url('cursors/gauntlet-fist@2x.png') 2x
+            ) 16 16, grabbing;
+        }
+
+        /* ========================================================
            Splash screen — plays intro.mp4 on load, auto-dismisses.
            ======================================================== */
         .splash-screen {
@@ -65,10 +1065,13 @@
         }
         .disclaimer-modal .modal-card-body {
             line-height: 1.55;
+            font-family: var(--font-prose);
+            font-size: 1.05rem;
         }
         .disclaimer-modal .title.is-6 {
             margin-top: 0.25rem;
-            color: #2c3e50;
+            color: var(--rubric);
+            font-family: var(--font-display);
         }
         .disclaimer-list {
             list-style: disc;
@@ -81,7 +1084,8 @@
             margin-bottom: 0;
         }
         .disclaimer-agree-field {
-            background: #f5f7fa;
+            background: var(--paper-deep);
+            border: 1px solid var(--rule);
             border-radius: 4px;
             padding: 0.75rem 1rem;
             margin-top: 1rem;
@@ -95,24 +1099,53 @@
         .disclaimer-declined {
             text-align: center;
             padding: 2rem 1rem;
-            color: #555;
+            color: var(--ink-soft);
         }
         /* ========================================================
            Layout & visual style
            ======================================================== */
         .hero {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 1.5rem 1.5rem 1rem;
+            background: linear-gradient(160deg, var(--paper-deep) 0%, var(--paper-shadow) 100%);
+            border-bottom: 1.5px solid var(--rule);
+            position: relative;
+        }
+        /* Compact the hero. Bulma's .hero-body defaults to 1.5rem of
+           padding and our own .hero added more on top, plus a large
+           is-2 display title — together that ate a big vertical band
+           for what's just a title + one subtitle line. This is a
+           working tool, so the header should be a tight strip, not a
+           landing-page banner. Tighten the body padding and pull the
+           title/subtitle close together. */
+        .hero .hero-body {
+            padding: 0.85rem 1.5rem;
+        }
+        /* Thin gold accent line under the hero — the website uses gold
+           sparingly as a highlight; one hairline reads as "manuscript
+           illumination" without being loud. */
+        .hero::after {
+            content: '';
+            position: absolute;
+            left: 0; right: 0; bottom: -1.5px;
+            height: 1.5px;
+            background: linear-gradient(90deg, transparent, var(--gold) 30%, var(--gold) 70%, transparent);
+            opacity: 0.6;
         }
         .hero .title {
-            margin-bottom: 0.75rem;
-            line-height: 1.2;
+            margin-bottom: 0.55rem;
+            line-height: 1.3;
+            font-size: 1.9rem;
+            font-family: var(--font-display);
+            color: var(--ink);
         }
         .hero .subtitle {
-            line-height: 1.4;
+            line-height: 1.35;
+            font-size: 0.95rem;
+            margin-bottom: 0;
+            font-family: var(--font-prose);
+            color: var(--ink-soft);
         }
         body {
-            background: #f5f6fa;
+            background: var(--paper);
         }
 
         /* ========================================================
@@ -122,9 +1155,9 @@
             position: sticky;
             top: 0;
             z-index: 30;
-            background: rgba(255, 255, 255, 0.96);
+            background: rgba(245, 238, 218, 0.96);
             backdrop-filter: blur(8px);
-            border-bottom: 1px solid #e0e0e0;
+            border-bottom: 1px solid var(--rule);
             padding: 0.5rem 1rem;
             display: none;       /* hidden until wallet generated */
             justify-content: space-between;
@@ -136,14 +1169,14 @@
         }
         #stickyBar .status-text {
             font-size: 0.9em;
-            color: #555;
+            color: var(--ink-soft);
             min-width: 0;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
         #stickyBar .status-text strong {
-            color: #1a1a1a;
+            color: var(--ink);
         }
 
         /* ========================================================
@@ -176,11 +1209,11 @@
         }
         .step-card.is-active {
             opacity: 1;
-            border-left-color: #3273dc;
+            border-left-color: var(--rubric);
         }
         .step-card.is-completed {
             opacity: 1;
-            border-left-color: #48c774;
+            border-left-color: var(--gold);
         }
         /*
          * Peek mode: a completed step that the user has clicked on the
@@ -235,22 +1268,22 @@
             display: flex;
             align-items: center;
             gap: 0.75rem;
-            background: #fff8d6;
-            border: 1px solid #f7d774;
+            background: rgba(184, 138, 42, 0.14);
+            border: 1px solid rgba(184, 138, 42, 0.4);
             border-radius: 4px;
             padding: 0.4rem 0.75rem;
             margin: 0 0 0.75rem 0;
             font-size: 0.78rem;
-            color: #6b5e1f;
+            color: #6e5618;
         }
         .peek-banner-text {
             flex: 1;
         }
         .peek-banner-close {
             flex-shrink: 0;
-            background: #ffe580;
-            border: 1px solid #d4a82e;
-            color: #5a4912;
+            background: var(--gold-soft);
+            border: 1px solid var(--gold);
+            color: #fdf6e3;
             padding: 0.2rem 0.7rem;
             border-radius: 3px;
             font-size: 0.78rem;
@@ -258,7 +1291,7 @@
             cursor: pointer;
         }
         .peek-banner-close:hover {
-            background: #ffd552;
+            background: var(--gold);
         }
         .peek-banner-close:focus {
             outline: 2px solid #d4a82e;
@@ -285,32 +1318,34 @@
             width: 1.75rem;
             height: 1.75rem;
             border-radius: 50%;
-            background: #dbdbdb;
+            background: var(--rule);
             color: white;
             font-weight: 600;
             font-size: 0.9em;
             flex-shrink: 0;
         }
         .step-card.is-active .step-header .step-num {
-            background: #3273dc;
+            background: var(--rubric);
         }
         .step-card.is-completed .step-header .step-num {
-            background: #48c774;
+            background: var(--gold);
         }
         .step-header .step-title {
             font-weight: 600;
-            font-size: 1.05em;
+            font-size: 1.15em;
             flex: 1;
             min-width: 0;
+            font-family: var(--font-display);
+            color: var(--ink);
         }
         .step-header .step-summary {
-            color: #888;
+            color: var(--ink-fade);
             font-size: 0.85em;
             font-weight: normal;
             margin-left: 0.5em;
         }
         .step-header .step-chevron {
-            color: #999;
+            color: var(--ink-fade);
             transition: transform 0.2s ease;
         }
         .step-card.is-pending .step-header .step-chevron,
@@ -394,7 +1429,7 @@
         .log-entry { margin-bottom: 2px; line-height: 1.4; }
         .log-entry .timestamp { color: #666; margin-right: 8px; }
         .log-entry.info span:not(.timestamp) { color: #00ff88; }
-        .log-entry.success span:not(.timestamp) { color: #48c774; }
+        .log-entry.success span:not(.timestamp) { color: var(--success); }
         .log-entry.danger span:not(.timestamp) { color: #ff5266; }
         .log-entry.warning span:not(.timestamp) { color: #ffdd57; }
         /* Server-streamed log lines: slightly dimmed so they don't
@@ -434,7 +1469,7 @@
             display: grid;
             grid-template-columns: repeat(4, 1fr);
             gap: 6px 12px;
-            background: #f5f5f5;
+            background: var(--paper-deep);
             padding: 10px;
             border-radius: 4px;
             margin: 10px 0;
@@ -442,7 +1477,7 @@
             font-size: 0.85em;
         }
         .mnemonic-grid .num {
-            color: #999;
+            color: var(--ink-fade);
             margin-right: 4px;
             user-select: none;
         }
@@ -466,8 +1501,8 @@
             gap: 0.75rem;
             flex-wrap: wrap;
             padding: 0.75rem 1rem;
-            background: #fafafa;
-            border: 1px solid #dbdbdb;
+            background: var(--paper-card);
+            border: 1px solid var(--rule);
             border-radius: 6px;
         }
         .simple-config-toggle {
@@ -500,14 +1535,14 @@
         }
         .simple-config-slider-value {
             font-size: 0.85em;
-            color: #4a4a4a;
+            color: var(--ink);
             font-variant-numeric: tabular-nums;
             min-width: 2.5em;
             text-align: right;
         }
         .simple-config-help-text {
             font-size: 0.85em;
-            color: #6b6b6b;
+            color: var(--ink-soft);
             margin: 0.5rem 0 0.75rem;
         }
         .simple-config-customize-row {
@@ -524,8 +1559,8 @@
             header strip with no leftover whitespace below.
         */
         .pool-row {
-            background: #fafafa;
-            border: 1px solid #dbdbdb;
+            background: var(--paper-card);
+            border: 1px solid var(--rule);
             border-radius: 6px;
             margin-bottom: 1rem;
             overflow: hidden;
@@ -540,7 +1575,7 @@
             user-select: none;
         }
         .pool-row .pool-row-header:hover {
-            background: #f5f5f5;
+            background: var(--paper-deep);
         }
         .pool-row .pool-row-header-left {
             display: flex;
@@ -572,14 +1607,14 @@
             object-fit: cover;
         }
         .pool-row-logo.pool-row-logo-fallback {
-            background: #e8e8e8;
-            color: #555;
+            background: var(--paper-deep);
+            color: var(--ink-soft);
             font-size: 11px;
             font-weight: 600;
         }
         .pool-row-affordance {
             font-size: 0.78rem;
-            color: #999;
+            color: var(--ink-fade);
             user-select: none;
         }
         .pool-row-affordance.pool-row-affordance-warn {
@@ -588,12 +1623,12 @@
         }
         .pool-row .pool-row-body {
             padding: 0.25rem 1rem 1rem;
-            border-top: 1px solid #ececec;
+            border-top: 1px solid var(--rule);
         }
 
         .slice-row {
-            background: #ffffff;
-            border: 1px solid #e5e5e5;
+            background: var(--paper);
+            border: 1px solid var(--rule);
             border-radius: 4px;
             padding: 0.5rem 0.75rem;
             margin-bottom: 0.4rem;
@@ -657,7 +1692,7 @@
         .advanced-section {
             margin-top: 0.5rem;
             padding: 0.75rem;
-            background: #f0f0f0;
+            background: var(--paper-deep);
             border-radius: 4px;
             font-size: 0.9em;
         }
@@ -679,7 +1714,7 @@
         .distribution-section {
             margin-top: 0.75rem;
             padding-top: 0.6rem;
-            border-top: 1px dashed #e5e5e5;
+            border-top: 1px dashed var(--rule);
         }
         .distribution-expanded-header {
             display: flex;
@@ -694,7 +1729,7 @@
         }
         .distribution-slices {
             padding-left: 0.85rem;
-            border-left: 2px solid #e5e5e5;
+            border-left: 2px solid var(--rule);
             margin-bottom: 0.4rem;
         }
 
@@ -741,8 +1776,8 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #d8d8d8;
-            color: #555;
+            background: var(--paper-deep);
+            color: var(--ink-soft);
             font-weight: 600;
             font-size: 14px;
         }
@@ -754,8 +1789,8 @@
             display: none;
         }
         .resolved-logo.resolved-logo-fallback {
-            background: #d8d8d8;
-            color: #555;
+            background: var(--paper-deep);
+            color: var(--ink-soft);
             font-weight: 600;
             font-size: 14px;
         }
@@ -774,23 +1809,23 @@
             font-size: 0.95rem;
         }
         .resolved-info-name {
-            color: #6b6b6b;
+            color: var(--ink);
             font-size: 0.85em;
             margin-top: 1px;
         }
         .resolved-info-tech {
-            color: #888;
+            color: var(--ink-soft);
             font-size: 0.8em;
             margin-top: 2px;
         }
         .resolved-info-icon {
-            color: #b5b5b5;
+            color: var(--ink-fade);
             cursor: pointer;
             margin-left: 4px;
             text-decoration: none;
         }
         .resolved-info-icon:hover {
-            color: #3273dc;
+            color: var(--rubric);
         }
 
         /*
@@ -811,16 +1846,42 @@
         }
         .token-preview-row-inner {
             width: 100%;
-            max-width: 480px;
+            max-width: 600px;
         }
         .token-preview-block {
             display: flex;
-            gap: 0.7rem;
-            padding: 0.75rem 0.9rem;
+            align-items: center;
+            gap: 1.25rem;
+            padding: 1.25rem 1.4rem;
             background: #f0f0f0;
-            border-radius: 4px;
+            border-radius: 6px;
             font-size: 0.85em;
-            min-height: 84px;
+            min-height: 200px;
+        }
+        /* The 3D coin mount replaces the old flat logo circle. It's a square
+           box the WebGL canvas fills; coinRenderer sizes the canvas to this
+           element via a ResizeObserver. Fixed size keeps the layout stable
+           as the coin spins. The fallback flat logo (.token-preview-logo)
+           is still rendered underneath for the no-WebGL / coin-off case. */
+        .token-preview-coin {
+            width: 240px;
+            height: 240px;
+            flex-shrink: 0;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        /* The fallback flat logo sits centered BEHIND the WebGL canvas.
+           When the coin is active the canvas (position relative, z above)
+           covers it; when the coin is off/unavailable the logo shows. */
+        .token-preview-coin .token-preview-logo {
+            position: absolute;
+            z-index: 0;
+        }
+        .token-preview-coin canvas {
+            position: relative;
+            z-index: 1;
         }
         .token-preview-logo {
             width: 48px;
@@ -842,7 +1903,7 @@
             object-fit: cover;
         }
         .token-preview-logo-fallback {
-            background: #d8d8d8;
+            background: var(--rule);
             color: #555;
             font-weight: 600;
             font-size: 18px;
@@ -897,8 +1958,8 @@
             object-fit: cover;
         }
         .logo-thumb-fallback {
-            background: #d8d8d8;
-            color: #888;
+            background: var(--paper-deep);
+            color: var(--ink-fade);
             font-weight: 600;
             font-size: 20px;
         }
@@ -907,16 +1968,18 @@
             min-width: 0;
         }
         .token-preview-symbol {
-            font-weight: 600;
-            font-size: 1rem;
+            font-weight: 700;
+            font-size: 1.4rem;
+            line-height: 1.15;
+            letter-spacing: 0.005em;
         }
         .token-preview-symbol.is-placeholder {
-            color: #b5b5b5;
+            color: var(--ink-fade);
             font-weight: 500;
             font-style: italic;
         }
         .token-preview-name {
-            color: #555;
+            color: var(--ink);
             font-size: 0.9em;
             margin-top: 1px;
             overflow: hidden;
@@ -924,7 +1987,7 @@
             white-space: nowrap;
         }
         .token-preview-tech {
-            color: #888;
+            color: var(--ink-soft);
             font-size: 0.8em;
             margin-top: 3px;
             overflow: hidden;
@@ -932,7 +1995,7 @@
             white-space: nowrap;
         }
         .token-preview-desc {
-            color: #6b6b6b;
+            color: var(--ink-soft);
             font-size: 0.85em;
             margin-top: 6px;
             font-style: italic;
@@ -942,6 +2005,118 @@
             -webkit-line-clamp: 2;
             -webkit-box-orient: vertical;
             line-clamp: 2;
+        }
+
+        /* --- Preview card polish + the behind-the-coin fix ----------
+           Hide the flat fallback logo once the live 3D coin canvas is
+           mounted. Without this, when the coin spins edge-on its
+           transparent canvas reveals the 2D logo sitting behind it
+           (the bug seen in the screenshots). The fallback still shows
+           when WebGL/the coin is unavailable (no .coin-live class). */
+        .token-preview-coin.coin-live .token-preview-logo {
+            display: none;
+        }
+        /* The glow around the coin is rendered in 3D (a fresnel rim shell in
+           coinRenderer.js) so it emits from the coin's actual contour. No CSS
+           glow here. */
+        /* Frame the card as a slightly recessed panel. */
+        .token-preview-block {
+            border: 1px solid var(--rule);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25),
+                        0 1px 3px rgba(0, 0, 0, 0.06);
+        }
+        /* Symbol + name header, divided from the stat grid below. */
+        .token-preview-head {
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--rule);
+            margin-bottom: 0.55rem;
+        }
+        /* Two-tier stat block: hero tiles, a meta line, and pool chips. */
+        .token-preview-stats {
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+        /* Hero tiles — the glanceable numbers (market cap, start price,
+           est. cost). They share the row and wrap on narrow widths. */
+        .token-preview-stats .tps-tiles {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .token-preview-stats .tps-tile {
+            flex: 1 1 auto;
+            padding: 0.45rem 0.6rem;
+            background: var(--paper-card);
+            border: 1px solid var(--rule);
+            border-radius: 7px;
+        }
+        .token-preview-stats .tps-tile-label {
+            color: var(--ink-fade);
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+        }
+        .token-preview-stats .tps-tile-value {
+            color: var(--ink);
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-top: 2px;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        /* Est. cost is the number that moves with pool config — accent it. */
+        .token-preview-stats .tps-tile-value.is-cost {
+            color: var(--rubric);
+        }
+        /* Meta line: supply · decimals · % to liquidity. */
+        .token-preview-stats .tps-meta {
+            color: var(--ink-soft);
+            font-size: 0.82rem;
+        }
+        /* Pool chips: small pills, one per unique quote token. */
+        .token-preview-stats .tps-pools {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .token-preview-stats .tps-pools-label {
+            color: var(--ink-fade);
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+            margin-right: 0.1rem;
+        }
+        /* Pool logos: a row of round token icons (no ticker text — the symbol
+           is a hover title). Mirrors .pool-row-logo so the preview and the
+           pool-config rows read consistently. */
+        .token-preview-stats .tps-pool-logo {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: #fff;
+            flex-shrink: 0;
+            overflow: hidden;
+            border: 1px solid var(--rule);
+        }
+        .token-preview-stats .tps-pool-logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        /* Coloured-initial fallback when a pool has no logo URL (or it fails
+           to load) — keeps the round shape rather than leaving a gap. */
+        .token-preview-stats .tps-pool-logo.tps-pool-logo-fallback {
+            background: var(--paper-deep);
+            color: var(--ink-soft);
+            font-size: 11px;
+            font-weight: 700;
         }
 
         /* Token info modal — logo + name header at top of body. */
@@ -956,7 +2131,7 @@
             border-radius: 50%;
             object-fit: cover;
             background: #fff;
-            border: 1px solid #e5e5e5;
+            border: 1px solid var(--rule);
             flex-shrink: 0;
         }
         .token-info-titles {
@@ -989,7 +2164,7 @@
             justify-content: space-between;
             align-items: center;
             padding: 0.4rem 0;
-            border-bottom: 1px dashed #e5e5e5;
+            border-bottom: 1px dashed var(--rule);
         }
         .balance-row:last-child { border-bottom: none; }
         .balance-row .status-dot {
@@ -1000,14 +2175,14 @@
             margin-right: 0.5rem;
             background: #b5b5b5;
         }
-        .balance-row.met .status-dot { background: #48c774; }
+        .balance-row.met .status-dot { background: var(--success); }
         .balance-row .row-logo {
             width: 20px;
             height: 20px;
             border-radius: 50%;
             object-fit: cover;
             background: #fff;
-            border: 1px solid #e5e5e5;
+            border: 1px solid var(--rule);
             margin-right: 0.4rem;
             vertical-align: middle;
         }
@@ -1016,8 +2191,8 @@
             width: 20px;
             height: 20px;
             border-radius: 50%;
-            background: #f5f5f5;
-            border: 1px dashed #e5e5e5;
+            background: var(--paper-deep);
+            border: 1px dashed var(--rule);
             margin-right: 0.4rem;
             vertical-align: middle;
         }
@@ -1032,17 +2207,17 @@
         .balance-row .row-retry-btn {
             display: none;
             background: transparent;
-            border: 1px solid #dbdbdb;
+            border: 1px solid var(--rule);
             border-radius: 4px;
             cursor: pointer;
             padding: 0.15rem 0.4rem;
-            color: #3273dc;
+            color: var(--rubric);
             font-size: 0.75rem;
             line-height: 1;
         }
         .balance-row .row-retry-btn:hover {
-            background: #f5f5f5;
-            border-color: #3273dc;
+            background: var(--paper-deep);
+            border-color: var(--rubric);
         }
         .balance-row .row-retry-btn:disabled {
             opacity: 0.5;
@@ -1062,9 +2237,9 @@
             font-size: 0.85em;
         }
         .progress-step .icon { margin-right: 0.5rem; min-width: 20px; }
-        .progress-step.pending { color: #999; }
-        .progress-step.running { color: #3273dc; font-weight: 600; }
-        .progress-step.done { color: #48c774; }
+        .progress-step.pending { color: var(--ink-fade); }
+        .progress-step.running { color: var(--rubric); font-weight: 600; }
+        .progress-step.done { color: var(--success); }
         .progress-step.failed { color: #ff3860; }
 
         /* RPC settings (top of page) */
@@ -1080,7 +2255,7 @@
             justify-content: space-between;
             align-items: center;
             padding: 0.5rem 0;
-            border-bottom: 1px dashed #e5e5e5;
+            border-bottom: 1px dashed var(--rule);
             gap: 0.5rem;
             flex-wrap: wrap;
         }
@@ -1329,13 +2504,21 @@
             <div class="notification is-warning is-light hidden mb-4" id="launchJournalsPanel">
                 <h5 class="title is-6 mb-2">
                     <span class="icon"><i class="fas fa-history"></i></span>
-                    Incomplete launch journals from previous sessions
+                    Incomplete launches from previous sessions
                 </h5>
                 <p class="is-size-7 mb-3">
-                    These entries show what Trebuchet recorded before a previous
-                    launch stopped. They do not contain private keys. Use the
-                    matching recoverable wallet entry below to recover or sweep
-                    assets, then dismiss the journal when you've handled it.
+                    These entries are launches that stopped before completing.
+                    Each one gathers everything needed to deal with it: a summary
+                    of what Trebuchet recorded, and — when the matching launch
+                    wallet is still available — its recovery phrase, so you can
+                    recover or sweep assets and then clear the entry once you've
+                    handled it.
+                </p>
+                <p class="is-size-7 mb-3 has-text-grey">
+                    Recovery phrases are encrypted at rest using your OS keychain
+                    (Keychain on macOS, DPAPI on Windows, libsecret/kwallet on
+                    Linux) — the file on disk can't be read on another user
+                    account or another machine.
                 </p>
                 <div id="launchJournalsList"></div>
             </div>
@@ -1352,13 +2535,13 @@
             <div class="notification is-warning is-light hidden mb-4" id="pendingWalletsPanel">
                 <h5 class="title is-6 mb-2">
                     <span class="icon"><i class="fas fa-exclamation-triangle"></i></span>
-                    Recoverable wallets from previous sessions
+                    Recoverable wallets without a matching launch
                 </h5>
                 <p class="is-size-7 mb-3">
                     These temporary wallets were generated for previous launches
-                    that didn't complete cleanly. If you sent funds to any of
-                    them, copy the recovery phrase and import it into a wallet
-                    app (Phantom, Solflare, Backpack) to recover the funds.
+                    but couldn't be matched to an entry above. If you sent funds
+                    to any of them, copy the recovery phrase and import it into a
+                    wallet app (Phantom, Solflare, Backpack) to recover the funds.
                     Discard an entry only once you're sure there's nothing left
                     to recover.
                 </p>
@@ -2039,6 +3222,12 @@
         </div>
     </div>
 
+    <!-- three.js (vendored, r158 UMD global build) powers the 3D coin
+         preview; coinRenderer.js is our self-contained coin module. Both
+         load before app.js so window.coinRenderer is ready when app.js
+         wires it up. Loaded from 'self' to satisfy the CSP. -->
+    <script src="vendor/three/three.min.js"></script>
+    <script src="coinRenderer.js"></script>
     <script src="app.js"></script>
     <!-- ============================================================ -->
     <!-- Generic Confirm Modal                                          -->

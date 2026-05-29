@@ -197,10 +197,6 @@ export async function discoverRaydiumRoute({ quoteMint, quoteDecimals, solUsd })
           // Effective USD price per whole quote token: (SOL spent in USD) / tokens received.
           const effectiveQuoteUsd = solWhole.mul(solUsd).div(tokensWhole);
           result = { available: true, effectiveQuoteUsd };
-          console.log(
-            `discoverRaydiumRoute: ${quoteMint} → routable, ` +
-              `effective price ~$${effectiveQuoteUsd.toSignificantDigits(4)}`,
-          );
         }
       } else {
         // Trade API said no route. Surface the message in logs to help

@@ -584,21 +584,16 @@ async function resolvePriceUsd(mintAddress) {
   }
 
   let price = await fetchPriceFromGecko(mintAddress);
-  let source = 'gecko';
   if (price == null) {
     price = await fetchPriceFromJupiter(mintAddress);
-    source = price != null ? 'jupiter' : null;
   }
   if (price == null) {
     price = await fetchPriceFromDexScreener(mintAddress);
-    source = price != null ? 'dexscreener' : 'none';
   }
   if (price == null) {
     console.warn(
       `tokenInfoService: no USD price for ${mintAddress} from Gecko, Jupiter, or DexScreener`,
     );
-  } else {
-    console.log(`tokenInfoService: priced ${mintAddress} via ${source} = ${price.toString()}`);
   }
 
   // Cache the result either way — including null. Caching null prevents
