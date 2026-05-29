@@ -706,7 +706,7 @@ export function resetConnectionFactoryForTests() {
 }
 
 export function setTradeApiForTests(api) {
-  __tradeApiForTests = api;;
+  __tradeApiForTests = api;
 }
 
 export function resetTradeApiForTests() {
