@@ -281,11 +281,8 @@ export async function getClmmFeeTiers() {
  * Build a fresh Raydium SDK instance for the given owner keypair. We don't
  * cache across calls because the owner changes per launch.
  */
-async function initSdk(ownerKeypair) {
-  const connection = new Connection(getRpcUrl(), {
-    commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 60_000,
-  });
+async function defaultInitSdk(ownerKeypair) {
+  const connection = _connectionFactory();
   return Raydium.load({
     owner: ownerKeypair,
     connection,
@@ -295,6 +292,58 @@ async function initSdk(ownerKeypair) {
     blockhashCommitment: 'finalized',
   });
 }
+
+function defaultConnectionFactory() {
+  return new Connection(getRpcUrl(), {
+    commitment: 'confirmed',
+    confirmTransactionInitialTimeout: 60_000,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Dependency-injection seams (TEST-ONLY).
+//
+// Production default is unchanged: `_sdkFactory` builds a real Raydium SDK
+// over a real Connection. Tests may swap `_sdkFactory` for one that returns
+// a mock raydium object (see test/helpers/mockRaydium.mjs), and/or
+// `_connectionFactory` for a fake connection, to drive createPoolsAndPositions
+// and the phase helpers without touching mainnet. These do nothing unless a
+// test explicitly calls a setter.
+// ---------------------------------------------------------------------------
+let _connectionFactory = defaultConnectionFactory;
+let _sdkFactory = defaultInitSdk;
+
+// initSdk delegates to the (overridable) factory. Production code paths that
+// call initSdk are unchanged when no test factory is set.
+async function initSdk(ownerKeypair) {
+  return _sdkFactory(ownerKeypair);
+}
+
+// TEST-ONLY: override the Raydium SDK builder (returns the mock raydium).
+export function setSdkFactoryForTests(fn) {
+  _sdkFactory = fn;
+}
+
+// TEST-ONLY: override the Connection builder used by the default SDK factory.
+export function setConnectionFactoryForTests(fn) {
+  _connectionFactory = fn;
+}
+
+// TEST-ONLY: restore the real SDK + connection factories.
+export function resetTestFactories() {
+  _sdkFactory = defaultInitSdk;
+  _connectionFactory = defaultConnectionFactory;
+}
+
+// TEST-ONLY: expose the private phase helpers so integration tests can drive
+// each launch phase through a mock SDK and assert recoverable state. These are
+// not used by production code.
+export const __testHooks = {
+  get createSinglePool() { return createSinglePool; },
+  get openBootstrapPosition() { return openBootstrapPosition; },
+  get lockAllPositions() { return lockAllPositions; },
+  get transferFeeKeys() { return transferFeeKeys; },
+};
 
 // ---------------------------------------------------------------------------
 // Quote-token resolution
