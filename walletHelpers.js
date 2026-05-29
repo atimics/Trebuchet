@@ -443,6 +443,10 @@ let __connectionFactoryForTests = null;
 export function setConnectionFactoryForTests(factory) {
   __connectionFactoryForTests = factory;
 }
+export function resetTestFactories() {
+  __connectionFactoryForTests = null;
+}
+
 export function resetConnectionFactoryForTests() {
   __connectionFactoryForTests = null;
 }

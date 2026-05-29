@@ -45,7 +45,7 @@ function makeBalanceReader({ solLamports = 5_000_000_000n, tokenRaw = 0n } = {})
 
 test("swapSolForQuote: acquires quote tokens via Trade API", async () => {
   swapService.setConnectionFactoryForTests(() => makeFakeConnection());
-  swapService.setTradeApiFactoryForTests(() => makeMockTradeApi());
+  swapService.setTradeApiForTests(() => makeMockTradeApi());
   // Stateful balance reader: 0 initially, satisfying after swap lands.
   // Call order: initial check → SOL check → retry pre-check → post-swap.
   let tokenReads = 0;
@@ -79,7 +79,7 @@ test("swapSolForQuote: acquires quote tokens via Trade API", async () => {
 
 test('swapSolForQuote: already satisfied — no tx, zero attempts', async () => {
   swapService.setConnectionFactoryForTests(() => makeFakeConnection());
-  swapService.setTradeApiFactoryForTests(() => makeMockTradeApi());
+  swapService.setTradeApiForTests(() => makeMockTradeApi());
   swapService.setBalanceReaderForTests(
     makeBalanceReader({ tokenRaw: 2_000_000n }),
   );
@@ -106,7 +106,7 @@ test('swapSolForQuote: already satisfied — no tx, zero attempts', async () => 
 
 test('swapSolForQuote: INSUFFICIENT_SOL when wallet cannot cover swap', async () => {
   swapService.setConnectionFactoryForTests(() => makeFakeConnection());
-  swapService.setTradeApiFactoryForTests(() => makeMockTradeApi());
+  swapService.setTradeApiForTests(() => makeMockTradeApi());
   swapService.setBalanceReaderForTests(
     makeBalanceReader({ solLamports: 10_000n, tokenRaw: 0n }),
   );
@@ -131,7 +131,7 @@ test('swapSolForQuote: INSUFFICIENT_SOL when wallet cannot cover swap', async ()
 
 test('swapSolForQuote: NO_USABLE_POOL when Trade API cannot route', async () => {
   swapService.setConnectionFactoryForTests(() => makeFakeConnection());
-  swapService.setTradeApiFactoryForTests(() =>
+  swapService.setTradeApiForTests(() =>
     makeMockTradeApi({ quoteResult: 'no-route' }),
   );
   swapService.setBalanceReaderForTests(makeBalanceReader());
@@ -156,7 +156,7 @@ test('swapSolForQuote: NO_USABLE_POOL when Trade API cannot route', async () => 
 
 test('swapSolForQuote: ALL_ATTEMPTS_FAILED after retry ladder exhausted', async () => {
   swapService.setConnectionFactoryForTests(() => makeFakeConnection());
-  swapService.setTradeApiFactoryForTests(() =>
+  swapService.setTradeApiForTests(() =>
     makeMockTradeApi({ quoteResult: 'timeout' }),
   );
   swapService.setBalanceReaderForTests(makeBalanceReader());
@@ -181,7 +181,7 @@ test('swapSolForQuote: ALL_ATTEMPTS_FAILED after retry ladder exhausted', async 
 
 test('swapSolForQuote: retries partial fill when balance < minRaw', async () => {
   swapService.setConnectionFactoryForTests(() => makeFakeConnection());
-  swapService.setTradeApiFactoryForTests(() =>
+  swapService.setTradeApiForTests(() =>
     makeMockTradeApi({ quoteOutputAmount: '500' }),
   );
   swapService.setBalanceReaderForTests(makeBalanceReader());
@@ -207,7 +207,7 @@ test('swapSolForQuote: retries partial fill when balance < minRaw', async () => 
 
 test('swapSolForQuote: accepts partial fill >= minRaw even if < targetRaw', async () => {
   swapService.setConnectionFactoryForTests(() => makeFakeConnection());
-  swapService.setTradeApiFactoryForTests(() =>
+  swapService.setTradeApiForTests(() =>
     makeMockTradeApi({ quoteOutputAmount: '500000' }),
   );
   // Balance already >= minRaw → fast path, no swap needed.
@@ -235,7 +235,7 @@ test('swapSolForQuote: accepts partial fill >= minRaw even if < targetRaw', asyn
 
 test('swapService DI seams are exported and reset safely', () => {
   assert.equal(typeof swapService.setConnectionFactoryForTests, 'function');
-  assert.equal(typeof swapService.setTradeApiFactoryForTests, 'function');
+  assert.equal(typeof swapService.setTradeApiForTests, 'function');
   assert.equal(typeof swapService.setBalanceReaderForTests, 'function');
   assert.equal(typeof swapService.resetTestFactories, 'function');
   assert.doesNotThrow(() => swapService.resetTestFactories());
@@ -260,7 +260,7 @@ test('discoverRaydiumRoute: returns null for SOL→SOL (no self-swap)', async ()
 
 test('swapSolForQuote: maxSpendLamports caps the swap spend', async () => {
   swapService.setConnectionFactoryForTests(() => makeFakeConnection());
-  swapService.setTradeApiFactoryForTests(() => makeMockTradeApi());
+  swapService.setTradeApiForTests(() => makeMockTradeApi());
   // Balance always 0 — the swap will try but the tiny maxSpend produces
   // almost no output, so the retry ladder exhausts.
   swapService.setBalanceReaderForTests(makeBalanceReader());
@@ -287,7 +287,7 @@ test('swapSolForQuote: maxSpendLamports caps the swap spend', async () => {
 
 test('swapSolForQuote: mid-retry idempotency — previous tx landed, balance now satisfies', async () => {
   swapService.setConnectionFactoryForTests(() => makeFakeConnection());
-  swapService.setTradeApiFactoryForTests(() => makeMockTradeApi());
+  swapService.setTradeApiForTests(() => makeMockTradeApi());
   // First swap attempt sends but "fails" (balance still 0). On the next
   // retry's idempotency pre-check, the balance reader reports satisfaction,
   // simulating a previous tx that landed but we lost the confirmation.
