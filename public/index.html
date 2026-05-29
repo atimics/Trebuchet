@@ -306,6 +306,213 @@
         .modal-card-body { background-color: var(--paper-card); color: var(--ink); }
         .modal-card-title { font-family: var(--font-display); color: var(--ink); }
 
+        /* ============================================================
+           Launch Success Modal
+           ------------------------------------------------------------
+           Shown after a successful step-6 transfer. The hero row at
+           the top has a live 3D coin on the left (re-using the same
+           coinRenderer module the step-2 preview uses) and the token
+           identity + summary on the right. Below the hero is a list
+           of "next step" cards — download report, list on Jupiter /
+           CoinGecko / DexScreener, set up a community.
+
+           The coin slot is fixed-size so the WebGL canvas has stable
+           dimensions; the renderer's ResizeObserver picks up changes
+           automatically but we don't want a layout that resizes the
+           coin per keystroke or scrollbar change.
+
+           Action cards use the same parchment-fold treatment as boxes
+           elsewhere (warm tone below page, hairline border, soft
+           shadow). Hover and active states use a tiny lift so the
+           list reads as tappable without screaming buttoniness.
+        ============================================================ */
+        .launch-success-modal-card {
+            width: 92vw;
+            max-width: 720px;
+        }
+        .launch-success-head {
+            /* Display face is already inherited from .modal-card-title;
+               here we just bump the title a notch and warm the head a
+               touch so the celebratory tone lands. */
+            background-color: var(--paper-deep);
+            border-bottom: 1px solid var(--gold);
+        }
+        .launch-success-head .modal-card-title {
+            font-size: 1.5rem;
+        }
+        .launch-success-hero {
+            display: flex;
+            align-items: center;
+            gap: 1.25rem;
+            margin-bottom: 0.75rem;
+        }
+        /* Square mount for the coin canvas — same sizing pattern as
+           the step-2 preview's .token-preview-coin. The canvas gets
+           appended inside on init(); the .coin-live class hides the
+           flat fallback once the WebGL canvas is up. */
+        .launch-success-coin {
+            width: 180px;
+            height: 180px;
+            flex-shrink: 0;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .launch-success-coin .token-preview-logo {
+            position: absolute;
+            z-index: 0;
+        }
+        .launch-success-coin canvas {
+            position: relative;
+            z-index: 1;
+        }
+        .launch-success-coin.coin-live .token-preview-logo {
+            display: none;
+        }
+        .launch-success-hero-stack {
+            flex: 1;
+            min-width: 0;
+        }
+        .launch-success-congrats {
+            font-family: var(--font-display);
+            font-size: 1.6rem;
+            line-height: 1.1;
+            color: var(--ink);
+            margin: 0 0 0.35rem 0;
+        }
+        .launch-success-token {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: var(--ink);
+            margin: 0 0 0.15rem 0;
+        }
+        .launch-success-mint {
+            font-size: 0.75rem;
+            color: var(--ink-soft);
+            margin: 0 0 0.55rem 0;
+            word-break: break-all;
+            line-height: 1.35;
+        }
+        .launch-success-summary {
+            font-size: 0.85rem;
+            color: var(--ink-soft);
+            margin: 0;
+            line-height: 1.4;
+        }
+        .launch-success-divider {
+            border: none;
+            border-top: 1px solid var(--rule);
+            margin: 0.75rem 0 0.85rem 0;
+        }
+        .launch-success-cta-intro {
+            font-size: 0.85rem;
+            color: var(--ink-soft);
+            font-style: italic;
+            margin-bottom: 0.55rem;
+        }
+        .launch-success-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        /* Each action card is a left-aligned button: icon column +
+           text column (title + description). Styled as a parchment
+           fold below the page tone, with a subtle hover lift so it
+           feels tappable. We deliberately don't use .button because
+           Bulma's button rules force vertical centering and clip the
+           description text — a flex row gives us the layout we want
+           without fighting Bulma. */
+        .launch-success-action {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.85rem;
+            width: 100%;
+            padding: 0.7rem 0.85rem;
+            background-color: var(--paper-deep);
+            color: var(--ink);
+            border: 1px solid var(--rule);
+            border-radius: 4px;
+            cursor: pointer;
+            text-align: left;
+            font-family: var(--font-ui);
+            transition: background-color 120ms ease,
+                        border-color 120ms ease,
+                        transform 120ms ease,
+                        box-shadow 120ms ease;
+            box-shadow: 0 1px 0 rgba(60, 44, 22, 0.05);
+        }
+        .launch-success-action:hover {
+            background-color: var(--paper-shadow);
+            border-color: var(--gold);
+            transform: translateY(-1px);
+            box-shadow: 0 .25em .6em -.1em rgba(60, 44, 22, 0.18);
+        }
+        .launch-success-action:active {
+            transform: translateY(0);
+            box-shadow: inset 0 1px 2px rgba(60, 44, 22, 0.15);
+        }
+        .launch-success-action:focus {
+            outline: 2px solid var(--gold);
+            outline-offset: 1px;
+        }
+        .launch-success-action-icon {
+            flex-shrink: 0;
+            width: 2rem;
+            height: 2rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--gold);
+            font-size: 1.1rem;
+            margin-top: 0.05rem;
+        }
+        .launch-success-action-body {
+            /* Flex item — gets sized by the button's flex. Its INTERNAL
+               layout is independent of the button's flex; default span
+               display is inline, so we make it block so its title/desc
+               children can stack as block-level elements. (We use spans
+               throughout because divs are not phrasing content and so
+               are technically invalid inside <button>.) */
+            display: block;
+            flex: 1;
+            min-width: 0;
+        }
+        .launch-success-action-title {
+            /* Block-level so the description below stacks under it rather
+               than flowing inline. Without this, the spans render as one
+               continuous line — title and description run together. */
+            display: block;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--ink);
+            line-height: 1.25;
+            margin-bottom: 0.15rem;
+        }
+        .launch-success-action-desc {
+            display: block;
+            font-size: 0.78rem;
+            color: var(--ink-soft);
+            line-height: 1.35;
+        }
+        /* Stack the hero vertically on narrow viewports — without this
+           the coin + text gets cramped at <520px window widths and
+           the description overflows.  */
+        @media (max-width: 520px) {
+            .launch-success-hero {
+                flex-direction: column;
+                align-items: center;
+                text-align: center;
+            }
+            .launch-success-coin {
+                width: 160px;
+                height: 160px;
+            }
+            .launch-success-mint {
+                font-size: 0.7rem;
+            }
+        }
+
         /* ---- Hero: cancel Bulma's is-primary white-on-color ----
            The hero markup still carries `is-primary`, which in Bulma
            0.9.4 forces a teal background and white text. We've reskinned
@@ -3101,6 +3308,23 @@
                                 <span class="icon"><i class="fas fa-file-download"></i></span>
                                 <span>Download launch report</span>
                             </button>
+                            <!-- Re-open the launch-success modal. The
+                                 modal pops automatically on transfer
+                                 success and contains the listing /
+                                 verification / community links; this
+                                 button gives the user a way back to it
+                                 if they dismissed it accidentally.
+
+                                 Starts hidden. runTransfer() removes
+                                 .hidden only on a fully clean transfer
+                                 (no partial-failure warnings), matching
+                                 the path that auto-opens the modal —
+                                 so the button is in lock-step with the
+                                 modal it re-opens. -->
+                            <button class="button is-link is-light mt-2 ml-2 hidden" id="viewLaunchSummaryBtn">
+                                <span class="icon"><i class="fas fa-trophy"></i></span>
+                                <span>View launch summary</span>
+                            </button>
                         </div>
                     </div>
 
@@ -3375,6 +3599,122 @@
             </section>
             <footer class="modal-card-foot">
                 <button class="button" id="flywheelInfoDismissBtn">Got it</button>
+            </footer>
+        </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- Launch Success Modal                                           -->
+    <!-- ============================================================ -->
+    <!--
+      Shown after a successful step-6 transfer (runTransfer() success
+      branch). Celebrates the launch, displays the live 3D coin (same
+      coinRenderer module the step-2 preview uses, re-initialised in
+      this modal's mount), and offers next-step actions: download the
+      launch report, submit to Jupiter VRFD, request a CoinGecko
+      listing, update DexScreener Enhanced Info, and set up a
+      community.
+
+      External-URL actions use window.open(url, '_blank') — Electron's
+      setWindowOpenHandler in main.js intercepts that and routes the
+      open to the system default browser via shell.openExternal, so
+      the user lands in their normal browser, not in the Electron
+      renderer.
+
+      The coin's WebGL context is initialised when this modal opens
+      and torn down when it closes (browsers cap live WebGL contexts;
+      we don't want a stray live coin lingering after dismissal).
+    -->
+    <div class="modal" id="launchSuccessModal" role="dialog" aria-modal="true" aria-labelledby="launchSuccessTitle">
+        <div class="modal-background"></div>
+        <div class="modal-card launch-success-modal-card">
+            <header class="modal-card-head launch-success-head">
+                <p class="modal-card-title" id="launchSuccessTitle">🎉 Launch Complete</p>
+                <button class="delete" aria-label="close" id="launchSuccessCloseBtn"></button>
+            </header>
+            <section class="modal-card-body">
+                <!-- Hero row: coin on the left, identity + summary on the right. -->
+                <div class="launch-success-hero">
+                    <!-- Coin mount. coinRenderer.init() attaches a canvas
+                         inside this div on modal open; the inner span is
+                         a flat-logo fallback for the no-WebGL case (same
+                         pattern as #tokenPreviewCoin in step 2). -->
+                    <div class="launch-success-coin" id="launchSuccessCoin">
+                        <span class="token-preview-logo token-preview-logo-fallback" id="launchSuccessCoinFallback">?</span>
+                    </div>
+                    <div class="launch-success-hero-stack">
+                        <h2 class="launch-success-congrats">Congratulations!</h2>
+                        <p class="launch-success-token">
+                            $<span id="launchSuccessSymbol">?</span><span id="launchSuccessNameWrap" class="hidden"> · <span id="launchSuccessName"></span></span>
+                        </p>
+                        <p class="launch-success-mint is-family-monospace" id="launchSuccessMint"></p>
+                        <p class="launch-success-summary" id="launchSuccessSummary"></p>
+                    </div>
+                </div>
+
+                <hr class="launch-success-divider">
+
+                <p class="launch-success-cta-intro">Where to go from here:</p>
+
+                <div class="launch-success-actions">
+                    <!-- Download launch report. Calls downloadLaunchReport()
+                         (same function as the step-5 and step-6 buttons). -->
+                    <button class="launch-success-action" type="button" id="launchSuccessReportBtn">
+                        <span class="launch-success-action-icon"><i class="fas fa-file-alt"></i></span>
+                        <span class="launch-success-action-body">
+                            <span class="launch-success-action-title">Download launch report</span>
+                            <span class="launch-success-action-desc">A self-contained HTML report with token info, pool IDs, position NFTs, and every transaction signature. Keep a copy somewhere safe.</span>
+                        </span>
+                    </button>
+
+                    <!-- Jupiter VRFD verification. data-url is read by a
+                         shared external-action click handler in app.js. -->
+                    <button class="launch-success-action" type="button"
+                            data-action="external"
+                            data-url="https://verified.jup.ag/">
+                        <span class="launch-success-action-icon"><i class="fas fa-shield-alt"></i></span>
+                        <span class="launch-success-action-body">
+                            <span class="launch-success-action-title">Submit to Jupiter for verification</span>
+                            <span class="launch-success-action-desc">Jupiter VRFD reviews your token and adds a verified checkmark across the Jupiter ecosystem. Opens verified.jup.ag in your browser.</span>
+                        </span>
+                    </button>
+
+                    <!-- CoinGecko self-serve listing request. -->
+                    <button class="launch-success-action" type="button"
+                            data-action="external"
+                            data-url="https://support.coingecko.com/hc/en-us/articles/33084534107289-Self-Serve-Request-Form">
+                        <span class="launch-success-action-icon"><i class="fas fa-chart-line"></i></span>
+                        <span class="launch-success-action-body">
+                            <span class="launch-success-action-title">Request CoinGecko listing</span>
+                            <span class="launch-success-action-desc">Get your token tracked on CoinGecko. Requires a free account and a public verification post. Opens the request guide in your browser.</span>
+                        </span>
+                    </button>
+
+                    <!-- DexScreener Enhanced Token Info marketplace. -->
+                    <button class="launch-success-action" type="button"
+                            data-action="external"
+                            data-url="https://marketplace.dexscreener.com/product/token-info">
+                        <span class="launch-success-action-icon"><i class="fas fa-search-dollar"></i></span>
+                        <span class="launch-success-action-body">
+                            <span class="launch-success-action-title">Update DexScreener Enhanced Info</span>
+                            <span class="launch-success-action-desc">Add your logo, description, and socials to your token's DexScreener page so traders see your project info instead of "unknown token".</span>
+                        </span>
+                    </button>
+
+                    <!-- Set up a community at coincommunities.org. -->
+                    <button class="launch-success-action" type="button"
+                            data-action="external"
+                            data-url="https://coincommunities.org/">
+                        <span class="launch-success-action-icon"><i class="fas fa-users"></i></span>
+                        <span class="launch-success-action-body">
+                            <span class="launch-success-action-title">Set up a community</span>
+                            <span class="launch-success-action-desc">Spin up a hub for your project on coincommunities.org — handy starting point for routing holders to your socials, chat, and announcements.</span>
+                        </span>
+                    </button>
+                </div>
+            </section>
+            <footer class="modal-card-foot">
+                <button class="button" id="launchSuccessDoneBtn">Done</button>
             </footer>
         </div>
     </div>
