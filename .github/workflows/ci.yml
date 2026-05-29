@@ -48,6 +48,10 @@ jobs:
             os: macos-15
             smoke_command: npm exec electron-builder -- --mac --arm64 --dir --publish=never
             artifact: trebuchet-macos-arm64
+          - name: macOS x64
+            os: macos-15-intel
+            smoke_command: npm exec electron-builder -- --mac --x64 --dir --publish=never
+            artifact: trebuchet-macos-x64
           - name: Windows
             os: windows-latest
             smoke_command: npm exec electron-builder -- --win --dir --publish=never
