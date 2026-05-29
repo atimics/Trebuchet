@@ -3,6 +3,8 @@
 A barebones Solana token launcher. No frills, no extractive nonsense.
 
 > The trebuchet is the superior siege weapon. It can launch a 90 kg
+
+[![CI](https://github.com/AnOversizedMooseWithSocks/Trebuchet/actions/workflows/ci.yml/badge.svg)](https://github.com/AnOversizedMooseWithSocks/Trebuchet/actions/workflows/ci.yml)
 > projectile over 300 meters.
 
 Trebuchet mints an SPL token, deploys it as single-sided liquidity on
@@ -550,6 +552,26 @@ Source files of interest:
   needed for the parchment-themed launch report)
 - `main.js` — Electron entry point, menu definition, BrowserWindow
   lifecycle
+
+### Merge requirements
+
+Pull requests must pass the **Test** job before merging. The Test job
+runs syntax checks, the full unit/integration test suite, and a
+critical npm audit. A maintainer may enable branch protection to
+enforce this automatically; until then, reviewers are expected to
+confirm a passing CI run before approving.
+
+The **Build** job (smoke package builds for all four platforms:
+macOS arm64, macOS x64, Windows, and Linux) is advisory — it confirms
+the app packages without errors but is not required for merge. A
+failing Build job is a signal, not a gate.
+
+To enable required checks via the GitHub UI:
+1. Go to **Settings → Rules → Rulesets**.
+2. Create a ruleset targeting the default branch.
+3. Under **Required checks**, add `Test`.
+4. Optionally require at least one approving review.
+
 
 Running on devnet: change `cluster: 'mainnet'` to `'devnet'` in
 `lpService.js`, swap to `DEVNET_PROGRAM_ID.CLMM_PROGRAM_ID`, hit a

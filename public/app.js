@@ -35,54 +35,6 @@ function bind(id, event, handler) {
 }
 
 // ===========================================================================
-// Local API session header
-// ===========================================================================
-//
-// The backend requires an x-trebuchet-session header on every /api request
-// except /api/session. Same-origin code can read that token; cross-origin
-// pages cannot read it because the server does not opt into CORS.
-const originalFetch = window.fetch.bind(window);
-let apiSessionTokenPromise = null;
-
-function isLocalApiRequest(input) {
-  const raw = typeof input === 'string' ? input : input?.url;
-  if (!raw) return false;
-  const url = new URL(raw, window.location.href);
-  return (
-    url.origin === window.location.origin &&
-    url.pathname.startsWith('/api/') &&
-    url.pathname !== '/api/session'
-  );
-}
-
-async function getApiSessionToken() {
-  if (!apiSessionTokenPromise) {
-    apiSessionTokenPromise = originalFetch('/api/session', {
-      credentials: 'same-origin',
-    })
-      .then((r) => {
-        if (!r.ok) throw new Error(`API session failed: HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data) => {
-        if (!data?.token) throw new Error('API session response missing token');
-        return data.token;
-      });
-  }
-  return apiSessionTokenPromise;
-}
-
-window.fetch = async (input, init = {}) => {
-  if (!isLocalApiRequest(input)) return originalFetch(input, init);
-
-  const headers = new Headers(
-    init.headers || (input instanceof Request ? input.headers : undefined),
-  );
-  headers.set('x-trebuchet-session', await getApiSessionToken());
-  return originalFetch(input, { ...init, headers });
-};
-
-// ===========================================================================
 // Global state
 // ===========================================================================
 

@@ -1,8 +1,8 @@
 import express from 'express';
-import multer from 'multer';
+
 import path from 'path';
 import fs from 'fs';
-import crypto from 'crypto';
+
 import { fileURLToPath } from 'url';
 
 import {
@@ -183,20 +183,6 @@ const AUTOSWAP_CONCURRENCY = 1;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_SESSION_TOKEN = crypto.randomBytes(32).toString('base64url');
-const CONTENT_SECURITY_POLICY = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:",
-  "font-src 'self' data:",
-  "media-src 'self'",
-  "connect-src 'self'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-].join('; ');
 
 // Boot-time log: confirms which config values the server is actually
 // using on this launch. Streams to the in-app activity log via the
@@ -205,19 +191,6 @@ console.log(`[boot] AUTOSWAP_CONCURRENCY = ${AUTOSWAP_CONCURRENCY}`);
 console.log(`[boot] PORT = ${PORT}`);
 console.log('[boot] RPC endpoint: configured via in-app RPC settings');
 
-// Configure multer for file uploads
-const storage = multer.memoryStorage();
-const upload = multer({
-  storage,
-  limits: { fileSize: 100 * 1024 }, // 100KB Arweave free-tier limit
-  fileFilter: (_req, file, cb) => {
-    if (file.mimetype === 'image/png' || file.mimetype === 'image/jpeg') {
-      cb(null, true);
-      return;
-    }
-    cb(new Error('Logo must be a PNG or JPG image'));
-  },
-});
 
 // ---------------------------------------------------------------------------
 // Host header allowlist — DNS rebinding defense.
@@ -255,33 +228,10 @@ const upload = multer({
 // This middleware is registered first, before the body parser, so a
 // rejected request never has its body read into memory.
 // ---------------------------------------------------------------------------
-const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost']);
 
-app.use((req, res, next) => {
-  const hostHeader = req.headers.host || '';
-  // Host header format is "hostname" or "hostname:port". Strip the
-  // port for the allowlist check — we don't care which port the
-  // client believes it's talking to (the connection wouldn't have
-  // reached us if it weren't on our actual port), only the hostname.
-  const hostname = hostHeader.split(':')[0];
-  if (!ALLOWED_HOSTS.has(hostname)) {
-    console.warn(
-      `Rejected request with disallowed Host header: ${hostHeader} ` +
-      `${req.method} ${req.url}`,
-    );
-    return res
-      .status(403)
-      .json({ success: false, error: 'invalid Host header' });
-  }
-  next();
-});
+app.use(hostCheckMiddleware);
 
-app.use((_req, res, next) => {
-  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  next();
-});
+app.use(securityHeadersMiddleware);
 
 // CORS is intentionally not configured. The Trebuchet frontend loads from
 // http://127.0.0.1:<port> and the API serves from the same origin, so no
@@ -300,19 +250,7 @@ app.get('/api/session', (_req, res) => {
     .json({ success: true, token: API_SESSION_TOKEN });
 });
 
-app.use('/api', (req, res, next) => {
-  // /session hands out the token itself; /proxy-image is a read-only image
-  // passthrough loaded via <img>/Image (which can't attach custom headers),
-  // so both are exempt from the token gate. Everything else needs the token.
-  if (req.path === '/session' || req.path === '/proxy-image') return next();
-  const token = req.get('x-trebuchet-session');
-  if (token !== API_SESSION_TOKEN) {
-    return res
-      .status(403)
-      .json({ success: false, error: 'invalid API session' });
-  }
-  next();
-});
+app.use("/api", apiSessionMiddleware);
 
 app.use(express.json({ limit: '5mb' }));
 
@@ -331,23 +269,7 @@ app.use(express.json({ limit: '5mb' }));
 //     The detection finds "\app.asar" (or "/app.asar" on Unix) and
 //     verifies what follows is end-of-string or another separator
 //     (so we don't false-match a hypothetical "app.asarx" component).
-function resolvePublicDir() {
-  const marker = `${path.sep}app.asar`;
-  const idx = __dirname.indexOf(marker);
-  if (idx === -1) {
-    return path.join(__dirname, 'public');
-  }
-  const after = __dirname[idx + marker.length];
-  if (after !== undefined && after !== path.sep) {
-    return path.join(__dirname, 'public');
-  }
-  const rewritten =
-    __dirname.slice(0, idx) +
-    `${path.sep}app.asar.unpacked` +
-    __dirname.slice(idx + marker.length);
-  return path.join(rewritten, 'public');
-}
-const publicDir = resolvePublicDir();
+const publicDir = resolvePublicDir(__dirname);
 
 app.use(express.static(publicDir));
 
