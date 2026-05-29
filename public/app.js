@@ -917,6 +917,12 @@ function injectPeekBanner(card, stepNum) {
   // is-completed class — so we don't need to do anything else here.
   closeBtn.addEventListener('click', () => {
     setStepState(stepNum, 'completed');
+    // Mirror the header-collapse path: free the coin's WebGL context when
+    // leaving a peeked step 2 (it was rebuilt on peek-open).
+    if (stepNum === 2 && currentStep !== 2 &&
+        typeof destroyCoinPreview === 'function') {
+      destroyCoinPreview();
+    }
   });
   banner.appendChild(closeBtn);
 
@@ -1013,6 +1019,13 @@ function bindStepHeaders() {
         // Currently peeked → collapse back to completed.
         setStepState(i, 'completed');
         card.classList.remove('is-peeking');
+        // Free the coin's WebGL context again when leaving a peeked step 2
+        // (we rebuilt it on peek-open). Guard on currentStep so we never tear
+        // down a coin that legitimately belongs to the active step.
+        if (i === 2 && currentStep !== 2 &&
+            typeof destroyCoinPreview === 'function') {
+          destroyCoinPreview();
+        }
         return;
       }
 
@@ -1038,6 +1051,13 @@ function bindStepHeaders() {
       // after setStepState because setStepState tears down any prior
       // banner as part of its general state-change cleanup.
       injectPeekBanner(card, i);
+      // The 3D coin lives on step 2 and is torn down when the user navigates
+      // past it (activateStep frees its WebGL context). Peeking step 2 for
+      // review re-shows the step body but does NOT go through activateStep,
+      // so the coin would be missing — rebuild the preview here.
+      if (i === 2 && typeof renderTokenPreview === 'function') {
+        renderTokenPreview();
+      }
     });
   }
 }
@@ -2809,6 +2829,11 @@ function applySimpleConfigMode() {
 // when the file is cleared (length 0) and on logo-not-set fallback.
 let _tokenPreviewLogoObjectUrl = null;
 
+// Set once we've attached the capture-phase image-error listener to the
+// preview block (so a broken pool-logo URL in a chip degrades to the letter
+// fallback). Guards against re-adding the listener on every re-render.
+let _previewLogoFailBound = false;
+
 // ===========================================================================
 // 3D coin preview lifecycle
 // ---------------------------------------------------------------------------
@@ -2821,8 +2846,9 @@ let _tokenPreviewLogoObjectUrl = null;
 // weak hardware or when WebGL/the script isn't available.
 // ===========================================================================
 
-// Feature flag. Stays true unless the coin pref is off or coinRenderer/THREE
-// failed to load. setupUserPrefs() flips this from the persisted pref.
+// Feature flag for the 3D coin. The coin is an always-on feature (no user
+// toggle), so this stays true; it only gates coinCanRun() together with the
+// runtime check that coinRenderer/THREE actually loaded.
 let coinPreviewEnabled = true;
 // Remembers the last front URL and back signature we pushed, so we only
 // rebuild a face texture when its source actually changed (texture uploads
@@ -2863,13 +2889,28 @@ function coinCanRun() {
     webglAvailable();
 }
 
+// Wrap a remote logo URL so it loads from our own origin. The 3D coin draws
+// the back-face logo into a WebGL texture, which needs CORS-clean pixels;
+// many logo hosts don't send CORS headers, so we route through the local
+// /api/proxy-image passthrough (same-origin → no CORS, canvas not tainted).
+// Same-origin/blob URLs are returned unchanged. This is only needed for the
+// canvas/WebGL path — plain <img> tags (pool rows, preview chips) display any
+// URL directly, which is why those already work.
+function proxiedImageUrl(url) {
+  if (!url) return null;
+  if (/^(blob:|data:)/i.test(url)) return url;
+  if (url.startsWith('/')) return url; // already same-origin
+  return '/api/proxy-image?url=' + encodeURIComponent(url);
+}
+
 // Compute the back face source from the current pools. Returns
 // { url, symbol } — url may be null (then the symbol is embossed instead).
 function coinBackSource() {
   const pool = largestPool(pools);
   if (!pool) return { url: null, symbol: 'SOL' };
   return {
-    url: pool.resolvedImageUrl || null,
+    // Proxy the remote logo so the coin's WebGL texture can read it (CORS).
+    url: proxiedImageUrl(pool.resolvedImageUrl) || null,
     symbol: pool.resolvedSymbol || pool.quoteSelect || 'SOL',
   };
 }
@@ -2887,6 +2928,12 @@ function updateCoinPreview(frontUrl, symbol) {
     // Force a fresh push of both faces after init.
     _coinFrontUrl = undefined;
     _coinBackSig = undefined;
+  } else if (!mount.querySelector('canvas')) {
+    // Already initialised, but this mount has no canvas — the surrounding DOM
+    // was re-rendered (e.g. entering "review completed step" rebuilds the
+    // step), detaching our canvas. Move the live canvas into the new mount
+    // instead of spinning up a second WebGL context.
+    window.coinRenderer.reattach(mount);
   }
 
   // The live 3D coin is mounted, so hide the flat fallback logo that sits
@@ -2935,6 +2982,11 @@ function destroyCoinPreview() {
     clearTimeout(_coinBackUpdateTimer);
     _coinBackUpdateTimer = null;
   }
+  // Drop the coin-live marker so that if the mount is visible without a live
+  // coin (e.g. the canvas was torn down while step 2 is still on screen) the
+  // flat fallback logo shows through instead of a blank circle.
+  const mount = document.getElementById('tokenPreviewCoin');
+  if (mount) mount.classList.remove('coin-live');
 }
 
 // Build the live stat grid shown in the preview card: token facts (supply,
@@ -2976,7 +3028,6 @@ function buildPreviewStatsHtml() {
   // --- Meta line: supporting facts that don't need their own tile. ---
   const meta = [];
   if (supplyValid) meta.push(`${supply.toLocaleString()} supply`);
-  meta.push('9 decimals');                       // always 9 (createMint default)
   if (Array.isArray(pools) && pools.length) {
     const alloc = pools.reduce((s, p) => s + (Number(p.supplyPercent) || 0), 0);
     if (alloc > 0) {
@@ -2998,7 +3049,30 @@ function buildPreviewStatsHtml() {
       const key = label.toUpperCase();
       if (seen.has(key)) continue;
       seen.add(key);
-      chips.push(`<span class="tps-chip">${escapeHtml(label)}</span>`);
+      // Round logo when we have an image URL, otherwise a coloured initial
+      // circle — mirrors the pool-editor logos (updatePoolLogo) so the
+      // preview reads consistently. Logo-only (no ticker text); the symbol is
+      // kept as a hover title for accessibility. A plain <img> displays any
+      // remote URL directly (no CORS needed for display — same as the pool
+      // rows), with a fail-to-initial fallback for broken/blocked URLs.
+      const initial = (label.charAt(0) || '?').toUpperCase();
+      const safeLabel = escapeHtml(label);
+      const safeInitial = escapeHtml(initial);
+      if (p.resolvedImageUrl) {
+        chips.push(
+          `<span class="tps-pool-logo" title="${safeLabel}" ` +
+                `data-fallback-initial="${safeInitial}">` +
+            `<img src="${escapeHtml(p.resolvedImageUrl)}" alt="${safeLabel}" ` +
+                 `loading="lazy" data-action="preview-pool-logo-fail">` +
+          `</span>`
+        );
+      } else {
+        chips.push(
+          `<span class="tps-pool-logo tps-pool-logo-fallback" title="${safeLabel}">` +
+            safeInitial +
+          `</span>`
+        );
+      }
     }
     chipsHtml =
       `<div class="tps-pools">` +
@@ -3130,10 +3204,26 @@ function renderTokenPreview() {
     else block.insertAdjacentHTML('beforeend', stackHtml);
   }
 
+  // Pool-chip logos can fail to load (dead/blocked URL). Image 'error' events
+  // don't bubble, so we listen in the capture phase on the stable block — once
+  // — and swap a failed chip logo for its letter fallback. This mirrors the
+  // pool-editor's pool-logo-fail handling so the preview degrades the same way.
+  if (!_previewLogoFailBound) {
+    _previewLogoFailBound = true;
+    block.addEventListener('error', (e) => {
+      const img = e.target;
+      if (!img || img.tagName !== 'IMG') return;
+      if (img.dataset.action !== 'preview-pool-logo-fail') return;
+      const wrapper = img.closest('.tps-pool-logo');
+      if (!wrapper) return;
+      wrapper.textContent = wrapper.dataset.fallbackInitial || '?';
+      wrapper.classList.add('tps-pool-logo-fallback');
+    }, true);
+  }
+
   // Drive the 3D coin. Initialise once when the mount first exists, then
   // update the front face whenever the uploaded logo changes. Guarded by
-  // coinPreviewEnabled so the feature can be turned off (weak hardware /
-  // user preference) and by the presence of the global (script load order
+  // coinPreviewEnabled and by the presence of the global (script load order
   // / WebGL availability). updateCoinPreview() handles the rest.
   updateCoinPreview(logoUrl, symbol);
 
@@ -9469,10 +9559,10 @@ function launchJournalStageLabel(journal) {
 function launchJournalRecoveryText(journal) {
   const unsafeEvents = unsafeCreatedPoolEvents(journal);
   if (unsafeEvents.length > 0) {
-    return 'A pool was created before Trebuchet recorded completed LP positions for it. Automatic resume is blocked to avoid duplicate pool work; use the launch wallet recovery entry below to sweep or handle the pool manually.';
+    return 'A pool was created before Trebuchet recorded completed LP positions for it. Automatic resume is blocked to avoid duplicate pool work; use this entry\u2019s recovery phrase to sweep or handle the pool manually.';
   }
   if (journal.transfer?.walletEmpty === false || journal.stage === 'transfer_partial') {
-    return 'Final sweep did not prove the launch wallet empty. Check the matching recoverable wallet below and sweep or import it manually.';
+    return 'Final sweep did not prove the launch wallet empty. Use this entry\u2019s recovery phrase to sweep or import the wallet manually.';
   }
   if (journal.lp?.failedPhase === 'bootstrap') {
     return 'Pools and main positions were recorded, but one or more bootstrap positions are missing. Created pools are permanent; sweep the wallet or retry bootstraps from the recorded plan.';
@@ -9489,7 +9579,7 @@ function launchJournalRecoveryText(journal) {
   if (journal.token?.mint) {
     return 'The token mint was recorded. If the launch stopped before pools or transfer, the minted supply should still be controlled by the launch wallet.';
   }
-  return 'A launch wallet was generated, but no token mint was recorded. If you funded this wallet, use the matching recovery entry below to recover the funds.';
+  return 'A launch wallet was generated, but no token mint was recorded. If you funded this wallet, use this entry\u2019s recovery phrase to recover the funds.';
 }
 
 function launchJournalPoolRows(journal) {
@@ -9624,7 +9714,7 @@ async function resumeLaunchJournal(journal, wallet, btn) {
     title: `${actionLabel}?`,
     body:
       `<p>${completedLp ? 'Recover the recorded launch session' : 'Resume the recorded launch'} for <strong>${escapeHtml(journal.token?.symbol || 'this token')}</strong>?</p>` +
-      `<p>Trebuchet will use the matching recoverable wallet entry ${completedLp ? 'and take you to the final transfer step.' : 'and retry only work that the journal does not show as complete. Review the activity log after it finishes.'}</p>`,
+      `<p>Trebuchet will use the recovered launch wallet ${completedLp ? 'and take you to the final transfer step.' : 'and retry only work that the journal does not show as complete. Review the activity log after it finishes.'}</p>`,
     confirmLabel: actionLabel,
   });
   if (!ok) return;
@@ -9689,6 +9779,32 @@ function buildLaunchJournalRow(journal, wallet) {
     ? `<div class="has-text-grey mt-2">Automatic resume is unavailable${wallet?.decryptionFailed ? ': wallet secret could not be decrypted' : unsafeCreatedPoolEvents(journal).length > 0 ? ': unsafe partial pool state recorded' : ': matching recoverable wallet is missing'}.</div>`
     : '';
 
+  // Recovery material from the matching wallet, folded into this card so the
+  // whole stalled launch is handled in one place (no second panel to
+  // cross-reference). hasSecret is true only when the wallet exists and its
+  // secret decrypted; secretIsMnemonic picks the recovery-phrase vs raw-key
+  // wording. When a wallet is attached but can't be decrypted we show a note
+  // instead of a copy button.
+  const hasSecret = !!(wallet && !wallet.decryptionFailed && (wallet.mnemonic || wallet.secretKeyB58));
+  const secretIsMnemonic = hasSecret && !!wallet.mnemonic;
+  const recoverBtnHtml = hasSecret ? `
+        <div class="control">
+          <button class="button is-small is-info" data-action="copy-recovery">
+            <span class="icon is-small"><i class="fas ${secretIsMnemonic ? 'fa-list-ol' : 'fa-key'}"></i></span>
+            <span>${secretIsMnemonic ? 'Copy recovery phrase' : 'Copy secret key'}</span>
+          </button>
+        </div>` : '';
+  const decryptNoteHtml = (wallet && wallet.decryptionFailed) ? `
+    <div class="notification is-danger is-light is-size-7 py-2 px-3 my-2">
+      The recoverable wallet for this launch can't be decrypted — the OS
+      keychain key has likely changed (file copied to another account or
+      machine, or the keychain was reset). If you backed up the recovery
+      phrase elsewhere, use that.
+    </div>` : '';
+  // The removal action also discards the wallet secret when one is attached,
+  // so the label and confirmation make that consequence explicit.
+  const removeLabel = hasSecret ? 'Dismiss &amp; discard wallet' : 'Dismiss journal';
+
   wrap.innerHTML = `
     <div class="mb-1">
       <strong>${escapeHtml(tokenLabel)}</strong>
@@ -9701,6 +9817,7 @@ function buildLaunchJournalRow(journal, wallet) {
     <div class="notification is-warning is-light is-size-7 py-2 px-3 my-2">
       ${escapeHtml(launchJournalRecoveryText(journal))}
     </div>
+    ${decryptNoteHtml}
     ${launchJournalPoolRows(journal)}
     ${launchJournalTxRows(journal)}
     ${resumeHelp}
@@ -9713,6 +9830,7 @@ function buildLaunchJournalRow(journal, wallet) {
           </button>
         </div>
       ` : ''}
+      ${recoverBtnHtml}
       ${journal.token?.mint ? `
         <div class="control">
           <button class="button is-small" data-action="copy-token">
@@ -9730,7 +9848,7 @@ function buildLaunchJournalRow(journal, wallet) {
       <div class="control">
         <button class="button is-small is-danger is-light" data-action="dismiss">
           <span class="icon is-small"><i class="fas fa-trash"></i></span>
-          <span>Dismiss journal</span>
+          <span>${removeLabel}</span>
         </button>
       </div>
     </div>
@@ -9751,17 +9869,34 @@ function buildLaunchJournalRow(journal, wallet) {
   wrap.querySelector('[data-action="copy-wallet"]').addEventListener('click', async () => {
     await copyText(journal.walletPublicKey, 'Launch wallet public key');
   });
+  wrap.querySelector('[data-action="copy-recovery"]')?.addEventListener('click', async () => {
+    const text = wallet && (wallet.mnemonic || wallet.secretKeyB58);
+    if (!text) {
+      log(`No recovery secret available for ${walletShort}`, 'warning');
+      return;
+    }
+    await copyText(text, wallet.mnemonic ? 'Recovery phrase' : 'Secret key');
+  });
   wrap.querySelector('[data-action="resume"]')?.addEventListener('click', async (event) => {
     await resumeLaunchJournal(journal, wallet, event.currentTarget);
   });
   wrap.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
+    // When a recoverable wallet is attached, removal clears both the journal
+    // summary AND the wallet secret — so the confirmation spells out that the
+    // recovery phrase is permanently deleted. With no wallet attached it's the
+    // harmless journal-only dismiss.
     const ok = await confirmDialog({
-      title: 'Dismiss launch journal?',
-      body:
-        `<p>Dismiss the journal for <strong>${escapeHtml(tokenLabel)}</strong>?</p>` +
-        `<p>This hides the audit/recovery summary but does not move funds or delete any on-chain assets. ` +
-        `Only dismiss it after you have recovered, swept, or intentionally abandoned the launch wallet.</p>`,
-      confirmLabel: 'Dismiss journal',
+      title: hasSecret ? 'Dismiss and discard wallet?' : 'Dismiss launch journal?',
+      body: hasSecret
+        ? `<p>Remove the recovery entry for <strong>${escapeHtml(tokenLabel)}</strong>?</p>` +
+          `<p>This permanently deletes the recovery phrase / secret key for the launch wallet ` +
+          `(<span class="is-family-monospace">${escapeHtml(walletShort)}</span>) and clears the ` +
+          `journal summary. Make sure you've moved any funds out of this wallet, or are certain ` +
+          `none were ever sent there — this cannot be undone.</p>`
+        : `<p>Dismiss the journal for <strong>${escapeHtml(tokenLabel)}</strong>?</p>` +
+          `<p>This hides the recovery summary but does not move funds or delete any on-chain assets. ` +
+          `Only dismiss it after you have recovered, swept, or intentionally abandoned the launch wallet.</p>`,
+      confirmLabel: hasSecret ? 'Discard wallet & dismiss' : 'Dismiss journal',
       danger: true,
     });
     if (!ok) return;
@@ -9771,7 +9906,17 @@ function buildLaunchJournalRow(journal, wallet) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: journal.id }),
       });
+      // Also discard the matching wallet secret when one is attached, so the
+      // whole entry is cleaned up in a single action.
+      if (hasSecret) {
+        await fetch('/api/pending-wallets/dismiss', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ publicKey: journal.walletPublicKey }),
+        });
+      }
       await loadLaunchJournals();
+      await loadPendingWallets();
     } catch (e) {
       log(`Failed to dismiss launch journal: ${e.message}`, 'danger');
     }
@@ -9809,8 +9954,23 @@ async function loadPendingWallets() {
   if (!panel || !list) return;
 
   try {
-    const resp = await fetch('/api/pending-wallets').then((r) => r.json());
+    // Fetch the journals too: any wallet that has a matching launch journal
+    // is now shown — with its recovery phrase — inside that journal's card
+    // (see buildLaunchJournalRow). So this panel only needs to surface
+    // "orphan" wallets with no journal, which avoids showing the same
+    // wallet in two places. Using the current journal set (not the startup
+    // snapshot) means a wallet re-appears here if its journal is later
+    // dismissed without discarding the wallet.
+    const [resp, journalResp] = await Promise.all([
+      fetch('/api/pending-wallets').then((r) => r.json()),
+      fetch('/api/launch-journals').then((r) => r.json()).catch(() => ({ journals: [] })),
+    ]);
     let wallets = (resp && resp.wallets) || [];
+    const journalWalletKeys = new Set(
+      ((journalResp && journalResp.journals) || [])
+        .map((j) => j.walletPublicKey)
+        .filter(Boolean),
+    );
 
     // First call: capture the set of pubkeys present at startup. Anything
     // generated during this session is added to the server-side cache but
@@ -9819,11 +9979,12 @@ async function loadPendingWallets() {
       pendingWalletStartupKeys = new Set(wallets.map((w) => w.publicKey));
     }
 
-    // Filter: only show entries that were in the startup snapshot AND
-    // are still present in the cache. (An entry leaves the cache when
-    // transfer-assets verifies the wallet is empty, or when the user
-    // explicitly discards.)
-    wallets = wallets.filter((w) => pendingWalletStartupKeys.has(w.publicKey));
+    // Filter: only show entries that were in the startup snapshot, are
+    // still present in the cache, AND have no matching journal (those are
+    // handled by the journal card).
+    wallets = wallets.filter(
+      (w) => pendingWalletStartupKeys.has(w.publicKey) && !journalWalletKeys.has(w.publicKey),
+    );
 
     if (wallets.length === 0) {
       panel.classList.add('hidden');
@@ -10458,70 +10619,18 @@ setupSplashScreen();
 // ===========================================================================
 // User preferences (renderer side)
 // ---------------------------------------------------------------------------
-// Fetches the persisted prefs once on startup and applies the ones that
-// affect the renderer (currently the medieval gauntlet cursor theme), then
-// wires the settings checkbox so toggling it both updates the UI live and
-// persists via the same /api/user-prefs round-trip the update-check pref
-// already uses. Server-side userPrefs.set() ignores unknown keys and
-// type-mismatched values, so the POST is safe even if prefs drift.
+// The medieval gauntlet cursor theme and the 3D coin token preview are
+// always-on features — not user-toggleable. We apply the cursor theme
+// unconditionally here; the coin preview is gated by coinPreviewEnabled,
+// which defaults to true. (No settings UI and no persisted pref for either.)
 // ===========================================================================
-(function setupUserPrefs() {
-  const cursorToggle = document.getElementById('medievalCursorToggle');
-  const coinToggle = document.getElementById('coinPreviewToggle');
-
-  // Apply a boolean cursor pref to the document + checkbox.
-  function applyMedievalCursor(on) {
-    document.body.classList.toggle('medieval-cursor', !!on);
-    if (cursorToggle) cursorToggle.checked = !!on;
-  }
-
-  // Apply the coin pref: flip the feature flag, sync the checkbox, and
-  // init or tear down the coin live if we're currently on the preview.
-  function applyCoinPreview(on) {
-    coinPreviewEnabled = !!on;
-    if (coinToggle) coinToggle.checked = !!on;
-    if (!on) {
-      // Turning off: tear down any running coin (the flat logo shows
-      // through underneath).
-      if (typeof destroyCoinPreview === 'function') destroyCoinPreview();
-    } else {
-      // Turning on while on the create-token screen: re-render so the
-      // coin initialises. Harmless elsewhere (mount won't exist).
-      if (typeof renderTokenPreview === 'function') renderTokenPreview();
-    }
-  }
-
-  // Persist a partial prefs change, fire-and-forget. A transient failure
-  // just means the visual toggle succeeded but didn't save — the user can
-  // toggle again next session. That's preferable to blocking the UI.
-  function persistPref(partial) {
-    fetch('/api/user-prefs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(partial),
-    }).catch((err) => console.warn('Failed to persist preference:', err));
-  }
-
-  // Wire the settings checkboxes.
-  if (cursorToggle) {
-    cursorToggle.addEventListener('change', () => {
-      const on = cursorToggle.checked;
-      document.body.classList.toggle('medieval-cursor', on);
-      persistPref({ medievalCursor: on });
-    });
-  }
-  if (coinToggle) {
-    coinToggle.addEventListener('change', () => {
-      const on = coinToggle.checked;
-      applyCoinPreview(on);
-      persistPref({ coinPreview: on });
-    });
-  }
+(function setupAppearance() {
+  // Cursor theme: always on.
+  document.body.classList.add('medieval-cursor');
 
   // Global mousedown clench: a click ANYWHERE adds .cursor-clenched so the
   // gauntlet shows the fist even over non-interactive space, then relaxes on
-  // release. Harmless when the theme is off (the class only matters under
-  // body.medieval-cursor). Listeners are passive — we never preventDefault.
+  // release. Listeners are passive — we never preventDefault.
   document.addEventListener('mousedown', () => {
     document.body.classList.add('cursor-clenched');
   }, { passive: true });
@@ -10533,23 +10642,6 @@ setupSplashScreen();
   window.addEventListener('blur', () => {
     document.body.classList.remove('cursor-clenched');
   });
-
-  // Fetch persisted prefs once and apply. On any failure, fall back to
-  // the same defaults the server uses (cursor on, coin on) so a prefs
-  // hiccup never silently flips the user's experience.
-  fetch('/api/user-prefs')
-    .then((r) => r.json())
-    .then((data) => {
-      const prefs = (data && data.prefs) || {};
-      // medievalCursor and coinPreview both default to true when missing.
-      applyMedievalCursor(prefs.medievalCursor !== false);
-      applyCoinPreview(prefs.coinPreview !== false);
-    })
-    .catch((err) => {
-      console.warn('Failed to load user preferences:', err);
-      applyMedievalCursor(true);
-      applyCoinPreview(true);
-    });
 })();
 
 

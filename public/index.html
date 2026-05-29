@@ -772,10 +772,7 @@
            REQUIRED fallback used when the image fails to load or is
            too large (Chromium ignores cursor images over 128x128).
            image-set() lets hi-dpi displays pick the 64px asset.
-           --------------------------------------------------------
-           Artwork credit: most poses adapted from icons by Lorc at
-           game-icons.net (CC BY 3.0). Resize arrows are original.
-           See README + in-app disclaimer for full attribution. */
+           -------------------------------------------------------- */
 
         /* --- Default / idle -------------------------------------- */
         /* The idle hand is tilted 45 deg clockwise then mirrored, so it
@@ -1867,8 +1864,8 @@
            as the coin spins. The fallback flat logo (.token-preview-logo)
            is still rendered underneath for the no-WebGL / coin-off case. */
         .token-preview-coin {
-            width: 180px;
-            height: 180px;
+            width: 240px;
+            height: 240px;
             flex-shrink: 0;
             position: relative;
             display: flex;
@@ -2019,19 +2016,9 @@
         .token-preview-coin.coin-live .token-preview-logo {
             display: none;
         }
-        /* Soft golden glow behind the coin for a bit of depth/interest. */
-        .token-preview-coin::before {
-            content: "";
-            position: absolute;
-            inset: -8%;
-            z-index: 0;
-            border-radius: 50%;
-            background: radial-gradient(circle at 50% 45%,
-                rgba(201, 154, 54, 0.30) 0%,
-                rgba(201, 154, 54, 0.12) 45%,
-                rgba(201, 154, 54, 0) 70%);
-            pointer-events: none;
-        }
+        /* The glow around the coin is rendered in 3D (a fresnel rim shell in
+           coinRenderer.js) so it emits from the coin's actual contour. No CSS
+           glow here. */
         /* Frame the card as a slightly recessed panel. */
         .token-preview-block {
             border: 1px solid var(--rule);
@@ -2103,20 +2090,33 @@
             text-transform: uppercase;
             margin-right: 0.1rem;
         }
-        .token-preview-stats .tps-chip {
+        /* Pool logos: a row of round token icons (no ticker text — the symbol
+           is a hover title). Mirrors .pool-row-logo so the preview and the
+           pool-config rows read consistently. */
+        .token-preview-stats .tps-pool-logo {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
             display: inline-flex;
             align-items: center;
-            max-width: 170px;
-            padding: 0.1rem 0.55rem;
-            background: var(--paper-card);
-            border: 1px solid var(--rule);
-            border-radius: 999px;
-            font-size: 0.74rem;
-            font-weight: 600;
-            color: var(--ink-soft);
-            white-space: nowrap;
+            justify-content: center;
+            background: #fff;
+            flex-shrink: 0;
             overflow: hidden;
-            text-overflow: ellipsis;
+            border: 1px solid var(--rule);
+        }
+        .token-preview-stats .tps-pool-logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        /* Coloured-initial fallback when a pool has no logo URL (or it fails
+           to load) — keeps the round shape rather than leaving a gap. */
+        .token-preview-stats .tps-pool-logo.tps-pool-logo-fallback {
+            background: var(--paper-deep);
+            color: var(--ink-soft);
+            font-size: 11px;
+            font-weight: 700;
         }
 
         /* Token info modal — logo + name header at top of body. */
@@ -2351,13 +2351,6 @@
                     <li>The Trebuchet authors aren't liable for losses, network issues, or anything else that goes wrong during your use of the app.</li>
                 </ul>
 
-                <p class="is-size-7 has-text-grey mb-4" style="border-top:1px solid var(--rule); padding-top:0.75rem;">
-                    Credits: the gauntlet cursor artwork is adapted from icons by Delapouite and Lorc,
-                    <a href="https://game-icons.net" target="_blank" rel="noopener">game-icons.net</a>,
-                    licensed under <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noopener">CC BY 3.0</a>.
-                    The 3D coin uses three.js (MIT). Fonts are under the SIL Open Font License.
-                </p>
-
                 <div class="field disclaimer-agree-field">
                     <label class="checkbox">
                         <input type="checkbox" id="disclaimerAgreeCheck">
@@ -2465,19 +2458,6 @@
                         </div>
                     </div>
                     <p id="rpcTestResult" class="help"></p>
-
-                    <hr class="my-3">
-                    <h6 class="subtitle is-6 mb-2">Appearance</h6>
-                    <label class="checkbox is-size-7" style="display:flex; align-items:center; gap:0.5rem; user-select:none;">
-                        <input type="checkbox" id="medievalCursorToggle">
-                        <span>Medieval gauntlet cursor</span>
-                    </label>
-                    <p class="help is-size-7" style="margin-top:0.25rem;">A themed cursor set (open hand idle, pointing finger on hover, fist when clicking, quill on text fields, hourglass when busy). On by default — turn off if you rely on OS cursor-size or high-contrast settings.</p>
-                    <label class="checkbox is-size-7" style="display:flex; align-items:center; gap:0.5rem; user-select:none; margin-top:0.6rem;">
-                        <input type="checkbox" id="coinPreviewToggle">
-                        <span>3D coin token preview</span>
-                    </label>
-                    <p class="help is-size-7" style="margin-top:0.25rem;">Shows a spinning gold coin (your logo on the front, the main pool's token on the back) in the preview card. Turn off for a flat logo on low-end hardware.</p>
                 </div>
             </div>
 
@@ -2524,13 +2504,21 @@
             <div class="notification is-warning is-light hidden mb-4" id="launchJournalsPanel">
                 <h5 class="title is-6 mb-2">
                     <span class="icon"><i class="fas fa-history"></i></span>
-                    Incomplete launch journals from previous sessions
+                    Incomplete launches from previous sessions
                 </h5>
                 <p class="is-size-7 mb-3">
-                    These entries show what Trebuchet recorded before a previous
-                    launch stopped. They do not contain private keys. Use the
-                    matching recoverable wallet entry below to recover or sweep
-                    assets, then dismiss the journal when you've handled it.
+                    These entries are launches that stopped before completing.
+                    Each one gathers everything needed to deal with it: a summary
+                    of what Trebuchet recorded, and — when the matching launch
+                    wallet is still available — its recovery phrase, so you can
+                    recover or sweep assets and then clear the entry once you've
+                    handled it.
+                </p>
+                <p class="is-size-7 mb-3 has-text-grey">
+                    Recovery phrases are encrypted at rest using your OS keychain
+                    (Keychain on macOS, DPAPI on Windows, libsecret/kwallet on
+                    Linux) — the file on disk can't be read on another user
+                    account or another machine.
                 </p>
                 <div id="launchJournalsList"></div>
             </div>
@@ -2547,13 +2535,13 @@
             <div class="notification is-warning is-light hidden mb-4" id="pendingWalletsPanel">
                 <h5 class="title is-6 mb-2">
                     <span class="icon"><i class="fas fa-exclamation-triangle"></i></span>
-                    Recoverable wallets from previous sessions
+                    Recoverable wallets without a matching launch
                 </h5>
                 <p class="is-size-7 mb-3">
                     These temporary wallets were generated for previous launches
-                    that didn't complete cleanly. If you sent funds to any of
-                    them, copy the recovery phrase and import it into a wallet
-                    app (Phantom, Solflare, Backpack) to recover the funds.
+                    but couldn't be matched to an entry above. If you sent funds
+                    to any of them, copy the recovery phrase and import it into a
+                    wallet app (Phantom, Solflare, Backpack) to recover the funds.
                     Discard an entry only once you're sure there's nothing left
                     to recover.
                 </p>
