@@ -35,6 +35,16 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'userPrefs.json');
 // disk is filled in from here on get().
 const DEFAULTS = Object.freeze({
   checkForUpdatesOnStartup: true,
+  // Medieval gauntlet cursor theme. On by default — covers every
+  // cursor state (idle, pointer, active, text, wait, resize, etc.)
+  // with hand-and-quill artwork. Can be turned off in settings for
+  // users who rely on OS cursor-size / high-contrast accessibility
+  // overrides, since custom cursors bypass those.
+  medievalCursor: true,
+  // 3D spinning coin in the token preview card. On by default; can be
+  // turned off (falls back to the flat logo) for weak hardware or
+  // personal preference.
+  coinPreview: true,
 });
 
 // Lazy-loaded in-memory cache. We refresh from disk on every get()

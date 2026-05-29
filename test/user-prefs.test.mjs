@@ -66,10 +66,15 @@ test('round-trips multiple writes without losing or duplicating fields', async (
   userPrefs.set({ checkForUpdatesOnStartup: true });
   userPrefs.set({ checkForUpdatesOnStartup: false });
 
-  // The on-disk file should have exactly one key — no leftover state
-  // from previous writes, no duplicate entries.
+  // The on-disk file should have exactly the schema keys — no leftover
+  // state from previous writes, no duplicate entries. persist() always
+  // writes the full DEFAULTS-shaped object, so we assert against the
+  // current schema rather than just the one key we touched.
   const onDisk = JSON.parse(readFileSync(path.join(configDir, 'userPrefs.json'), 'utf8'));
-  assert.deepEqual(Object.keys(onDisk), ['checkForUpdatesOnStartup']);
+  assert.deepEqual(
+    Object.keys(onDisk).sort(),
+    ['checkForUpdatesOnStartup', 'coinPreview', 'medievalCursor'].sort(),
+  );
   assert.equal(onDisk.checkForUpdatesOnStartup, false);
 });
 
@@ -101,9 +106,13 @@ test('rejects unknown keys without corrupting existing state', async (t) => {
   assert.equal('totallyMadeUpKey' in after, false);
   assert.equal('anotherFakeOne' in after, false);
 
-  // And the on-disk file doesn't carry the junk forward either.
+  // And the on-disk file doesn't carry the junk forward either — it holds
+  // exactly the schema keys.
   const onDisk = JSON.parse(readFileSync(path.join(configDir, 'userPrefs.json'), 'utf8'));
-  assert.deepEqual(Object.keys(onDisk), ['checkForUpdatesOnStartup']);
+  assert.deepEqual(
+    Object.keys(onDisk).sort(),
+    ['checkForUpdatesOnStartup', 'coinPreview', 'medievalCursor'].sort(),
+  );
 });
 
 test('rejects type-mismatched values without corrupting existing state', async (t) => {
