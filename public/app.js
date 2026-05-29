@@ -5635,6 +5635,17 @@ function resetForNewLaunch() {
   document.getElementById('fundingWalletInfo')?.classList.add('hidden');
   const destWalletEl = document.getElementById('destinationWallet');
   if (destWalletEl) destWalletEl.value = '';
+  // Re-hide the "View launch summary" button — runTransfer's success
+  // branch reveals it, so a Start Over after a complete launch would
+  // leave it visible on the fresh attempt's empty step 6 otherwise.
+  document.getElementById('viewLaunchSummaryBtn')?.classList.add('hidden');
+  // Defensive close of the launch-success modal. The modal is normally
+  // open only after a successful step-6 transfer (after which Start
+  // Over isn't typically reachable since step 6 is the terminal step),
+  // but a future flow could open Start Over while the modal is up and
+  // we'd want to clean up its WebGL coin context regardless. Safe to
+  // call when the modal is already closed.
+  if (typeof hideLaunchSuccessModal === 'function') hideLaunchSuccessModal();
   // Step 6 cancelled panel: restore normal body, hide cancelled.
   document.getElementById('step6NormalBody')?.classList.remove('hidden');
   document.getElementById('step6CancelledPanel')?.classList.add('hidden');
@@ -7096,6 +7107,258 @@ async function downloadLaunchReport() {
 
 bind('downloadReportBtnStep5', 'click', downloadLaunchReport);
 bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
+
+// ===========================================================================
+// Launch Success Modal
+// ---------------------------------------------------------------------------
+// Pops automatically after a successful step-6 transfer (the only place
+// runTransfer() considers the launch "fully done"). Shows the live 3D
+// coin, the token identity, a short summary of what was created, and
+// a list of next-step actions: download the launch report, submit to
+// Jupiter VRFD, request a CoinGecko listing, update DexScreener
+// Enhanced Info, set up a community.
+//
+// Coin lifecycle:
+//   - coinRenderer is a page-wide singleton (one WebGL context at a time).
+//     destroyCoinPreview() ran when the user left step 2, so by the time
+//     this modal opens the renderer is inactive.
+//   - showLaunchSuccessModal() calls coinRenderer.init() on the modal's
+//     mount and then setFaces() with the user's logo (data URL) and the
+//     largest pool's quote-token logo. Same data-URL trick the launch
+//     report uses, so we don't need a CORS proxy for the front face and
+//     the back face goes through the existing /api/proxy-image route
+//     (via proxiedImageUrl) like the step-2 preview does.
+//   - hideLaunchSuccessModal() destroys the renderer to free the WebGL
+//     context. Browsers cap live contexts; we don't want to keep one
+//     alive in a hidden modal.
+// ===========================================================================
+
+// Show the launch success modal. Populates token identity, the summary
+// line, and (re)initialises the 3D coin in the modal's mount.
+async function showLaunchSuccessModal() {
+  const modal = document.getElementById('launchSuccessModal');
+  if (!modal) return;
+
+  // ---- Populate identity & summary ----
+  // Prefer the resolved on-chain info (createdTokenInfo, set by
+  // createToken), fall back to the live form values for any field
+  // that's missing — should never happen by step 6, but the safety
+  // net costs nothing.
+  const tokenInfo = createdTokenInfo || {};
+  const symbol = tokenInfo.symbol
+    || document.getElementById('tokenSymbol')?.value.trim()
+    || '?';
+  const name = tokenInfo.name
+    || document.getElementById('tokenName')?.value.trim()
+    || '';
+  const mint = tokenInfo.mint || '';
+
+  document.getElementById('launchSuccessSymbol').textContent = symbol;
+  // Only show the "$SYMBOL · Name" suffix when name differs from symbol
+  // (many memecoin launches have symbol === name; doubling it reads as
+  // a typo).
+  const nameWrap = document.getElementById('launchSuccessNameWrap');
+  if (name && name !== symbol) {
+    document.getElementById('launchSuccessName').textContent = name;
+    nameWrap.classList.remove('hidden');
+  } else {
+    nameWrap.classList.add('hidden');
+  }
+  document.getElementById('launchSuccessMint').textContent = mint
+    ? mint
+    : '(mint address not available)';
+
+  // Coin fallback letter — shown if WebGL is unavailable or the renderer
+  // fails to come up. Uses the same single-letter trick as the step-2
+  // preview's flat fallback.
+  const initial = (symbol.charAt(0) || name.charAt(0) || '?').toUpperCase();
+  const fallback = document.getElementById('launchSuccessCoinFallback');
+  if (fallback) fallback.textContent = initial;
+
+  // Summary line: pool count, locked-position count, transferred Fee
+  // Keys. Computed from lpResult exactly like the launch report does
+  // so the two stay consistent.
+  const results = (lpResult && Array.isArray(lpResult.results)) ? lpResult.results : [];
+  const summary = (typeof computeLockSummary === 'function')
+    ? computeLockSummary(results)
+    : { total: 0, locked: 0, totalRecipient: 0, transferred: 0, allLocked: false };
+  const poolCount = results.length;
+  const summaryParts = [
+    `${poolCount} pool${poolCount === 1 ? '' : 's'} created`,
+  ];
+  if (summary.total > 0) {
+    summaryParts.push(`${summary.locked} / ${summary.total} positions locked`);
+  }
+  if (summary.totalRecipient > 0) {
+    summaryParts.push(`${summary.transferred} / ${summary.totalRecipient} Fee Key NFTs delivered`);
+  }
+  document.getElementById('launchSuccessSummary').textContent =
+    summaryParts.join(' · ') + '. Liquidity is live; the launch is committed on-chain.';
+
+  // ---- Activate the modal ----
+  // Add is-active first so the mount has dimensions before the coin
+  // renderer attaches (ResizeObserver in coinRenderer reads the mount's
+  // computed size on init; a 0×0 mount would size the canvas to nothing).
+  modal.classList.add('is-active');
+
+  // ---- Spin up the 3D coin in the modal ----
+  // Read the uploaded logo as a data URL so the renderer doesn't need
+  // CORS proxying for the front face. Falls back to null if the user
+  // didn't upload one or the read fails — setFaces handles a null URL
+  // by leaving the front blank.
+  let frontUrl = null;
+  try {
+    frontUrl = await readLogoAsDataUrl();
+  } catch (e) {
+    console.warn('Launch success modal: failed to read logo for coin:', e);
+  }
+
+  // The user may have dismissed the modal during the await above (clicked
+  // close before the logo finished reading, hit Esc, or clicked the
+  // backdrop). hideLaunchSuccessModal already ran in that case but found
+  // no live coin to tear down — if we proceed here we'd init a WebGL
+  // context inside a now-hidden modal, leaking it until the modal is
+  // reopened or the page reloaded. Bailing keeps the coin lifecycle
+  // honest: it only ever runs while the modal is actually visible.
+  if (!modal.classList.contains('is-active')) return;
+
+  if (typeof coinCanRun === 'function' && coinCanRun()) {
+    const mount = document.getElementById('launchSuccessCoin');
+    if (mount) {
+      try {
+        // Destroy any prior coin context first. By construction the coin
+        // should already be down (destroyCoinPreview ran when leaving
+        // step 2), but if the user reopens the modal via the step-6
+        // "View launch summary" button we need to tear down the modal's
+        // own coin from the previous open before init() will succeed.
+        if (window.coinRenderer.isActive()) {
+          window.coinRenderer.destroy();
+        }
+        window.coinRenderer.init(mount);
+        mount.classList.add('coin-live');
+
+        // Back face: largest pool's quote-token logo, computed the same
+        // way the step-2 preview does (coinBackSource → largestPool).
+        const back = (typeof coinBackSource === 'function')
+          ? coinBackSource()
+          : { url: null, symbol: 'SOL' };
+
+        if (back.url) {
+          window.coinRenderer.setFaces(frontUrl || null, back.url, back.symbol);
+        } else {
+          // No back-face logo URL available — emboss the symbol text.
+          // (Happens when the only pool is SOL with the default fallback
+          // and resolvedImageUrl was never set, or when proxiedImageUrl
+          // returns null for a non-http source.)
+          window.coinRenderer.setFaces(frontUrl || null, null, back.symbol);
+        }
+      } catch (e) {
+        // Surface to the console only — the modal still shows the
+        // fallback letter, so the user isn't blocked. The launch is
+        // already complete; this is pure decoration.
+        console.warn('Launch success modal: failed to start 3D coin:', e);
+      }
+    }
+  }
+}
+
+// Hide the launch success modal and free the coin's WebGL context. Safe
+// to call when the modal is already closed (no-op in that case).
+function hideLaunchSuccessModal() {
+  const modal = document.getElementById('launchSuccessModal');
+  if (!modal) return;
+  modal.classList.remove('is-active');
+
+  // Tear down the coin. Browsers cap live WebGL contexts, so leaving
+  // one alive in a hidden modal is bad citizenship. The renderer is a
+  // page-wide singleton; destroying it here is safe because nothing
+  // else owns it at this point in the flow (step 2's coin was already
+  // destroyed when the user moved past step 2).
+  try {
+    if (typeof window.coinRenderer !== 'undefined' &&
+        window.coinRenderer.isActive()) {
+      window.coinRenderer.destroy();
+    }
+  } catch (e) {
+    console.warn('Launch success modal: failed to tear down coin:', e);
+  }
+
+  // Drop the coin-live marker so the flat fallback shows if the modal
+  // is reopened before the coin reinits (briefly visible during the
+  // async showLaunchSuccessModal flow on re-open).
+  const mount = document.getElementById('launchSuccessCoin');
+  if (mount) mount.classList.remove('coin-live');
+}
+
+// ---- Wire up modal close paths ----
+// Three ways to close: the X in the header, the Done button in the
+// footer, and clicking the modal background. Each calls the same
+// hideLaunchSuccessModal so the coin teardown runs every time.
+bind('launchSuccessCloseBtn', 'click', hideLaunchSuccessModal);
+bind('launchSuccessDoneBtn', 'click', hideLaunchSuccessModal);
+(function wireLaunchSuccessBackdrop() {
+  const modal = document.getElementById('launchSuccessModal');
+  if (!modal) return;
+  const bg = modal.querySelector('.modal-background');
+  if (bg) bg.addEventListener('click', hideLaunchSuccessModal);
+})();
+
+// Esc-to-close. Separate from the EXTRA_CLOSE_MODAL_IDS list further
+// down because that list's generic close just removes is-active — it
+// doesn't tear down the coin. Adding our own keydown listener keeps
+// the coin lifecycle correct regardless of how the modal is dismissed.
+// Idempotency: hideLaunchSuccessModal is safe to call when already
+// closed, so even if both listeners fire we just no-op the second time.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const modal = document.getElementById('launchSuccessModal');
+  if (modal && modal.classList.contains('is-active')) {
+    hideLaunchSuccessModal();
+  }
+});
+
+// ---- Wire up the action buttons ----
+// The download-report action calls the same function the step-5/step-6
+// buttons use. We deliberately DON'T close the modal here — the user
+// is likely to want to click more than one action.
+bind('launchSuccessReportBtn', 'click', () => {
+  downloadLaunchReport();
+});
+
+// External actions (Jupiter, CoinGecko, DexScreener, CoinCommunities):
+// one delegated handler reads data-url off whichever .launch-success-action
+// was clicked. window.open with _blank is intercepted by Electron's
+// setWindowOpenHandler (main.js) and routed to the system default
+// browser via shell.openExternal, so the link opens outside the app.
+// Same as we don't close on the report action — let the user click
+// multiple things in one sitting.
+(function wireLaunchSuccessActions() {
+  const container = document.querySelector('#launchSuccessModal .launch-success-actions');
+  if (!container) return;
+  container.addEventListener('click', (e) => {
+    const btn = e.target.closest('.launch-success-action[data-action="external"]');
+    if (!btn) return;
+    const url = btn.getAttribute('data-url');
+    if (!url) return;
+    try {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      // Shouldn't happen in Electron (popup blockers don't apply) but
+      // log it just in case so the user isn't met with silence.
+      console.warn('Failed to open external URL:', url, err);
+      log(`Could not open ${url} — please copy and open it manually.`, 'warning');
+    }
+  });
+})();
+
+// Re-open from the step-6 "View launch summary" button. Same path as
+// the auto-open after a successful transfer — re-runs showLaunchSuccessModal,
+// which re-inits the coin in the modal's mount. The button itself is
+// only revealed (via classList.remove('hidden') in runTransfer) after
+// a successful transfer, so clicking before then is impossible.
+bind('viewLaunchSummaryBtn', 'click', () => {
+  showLaunchSuccessModal();
+});
 
 function buildAllocationsForApi() {
   return pools.map((p) => {
@@ -9436,6 +9699,29 @@ async function runTransfer() {
         document.getElementById('transferAssetsBtn').classList.add('hidden');
         log('Transfer complete', 'success');
         setStepSummary(6, 'transferred');
+
+        // Reveal the "View launch summary" button next to the report
+        // download. The launch-success modal is about to auto-open, but
+        // if the user dismisses it accidentally this button gets them
+        // back to the listing / verification / community links. Markup
+        // for it starts with .hidden and we only drop the class here,
+        // on the fully-clean path that also auto-opens the modal — the
+        // two stay in lock-step.
+        document.getElementById('viewLaunchSummaryBtn')?.classList.remove('hidden');
+
+        // Auto-open the launch-success modal. Async (reads the logo
+        // as a data URL inside) but we don't need to await it — the
+        // rest of this success branch is independent. Catch on the
+        // promise so a coin-init failure doesn't surface as an
+        // unhandled rejection; showLaunchSuccessModal already logs
+        // its own warnings on internal failures.
+        try {
+          Promise.resolve(showLaunchSuccessModal()).catch((err) => {
+            console.warn('showLaunchSuccessModal rejected:', err);
+          });
+        } catch (err) {
+          console.warn('showLaunchSuccessModal threw synchronously:', err);
+        }
       } else {
         log('Transfer partially complete — see warnings above', 'warning');
         setStepSummary(6, 'partial — see warnings');
@@ -9698,6 +9984,13 @@ function prepareRecoveredSessionFromJournal(journal, wallet) {
   document.getElementById('createLpBtn')?.classList.add('hidden');
   document.getElementById('transferAssetsBtn')?.classList.remove('hidden');
   document.getElementById('transferResult')?.classList.add('hidden');
+  // The "View launch summary" button is revealed only on a fully clean
+  // transfer (runTransfer success branch). When resuming a stale journal
+  // in a session where a previous launch already completed successfully,
+  // the button could still carry over visible from that earlier success.
+  // Re-hide it here so the resumed launch's step 6 starts in the right
+  // state — symmetrical with the transferResult reset right above.
+  document.getElementById('viewLaunchSummaryBtn')?.classList.add('hidden');
   const dest = document.getElementById('destinationWallet');
   if (dest) dest.value = '';
 
