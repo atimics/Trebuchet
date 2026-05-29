@@ -184,3 +184,11 @@ export function makeResultEntry({
   };
   return entry;
 }
+
+// Reset module-level counters between tests. Call in afterEach to avoid
+// test-order-dependent IDs (mock-tx-1, mock-tx-2, etc.).
+export function resetMockCounters() {
+  nftCounter = 0;
+  txCounter = 0;
+  poolCounter = 0;
+}
