@@ -202,3 +202,67 @@ test('API_SESSION_TOKEN is a non-empty string', () => {
   assert.equal(typeof API_SESSION_TOKEN, 'string');
   assert.ok(API_SESSION_TOKEN.length > 0);
 });
+
+// ---------------------------------------------------------------------------
+// Security fixes: case-insensitive host, array Host guard
+// ---------------------------------------------------------------------------
+
+test('hostCheckMiddleware: passes when Host is mixed-case Localhost', () => {
+  const req = stubReq({ headers: { host: 'Localhost:3000' } });
+  const next = stubNext();
+  hostCheckMiddleware(req, stubRes(), next);
+  assert.equal(next.called(), true, 'mixed-case Localhost should pass');
+});
+
+test('hostCheckMiddleware: passes when Host is LOCALHOST', () => {
+  const req = stubReq({ headers: { host: 'LOCALHOST' } });
+  const next = stubNext();
+  hostCheckMiddleware(req, stubRes(), next);
+  assert.equal(next.called(), true, 'uppercase LOCALHOST should pass');
+});
+
+test('hostCheckMiddleware: Host header whitespace-only does not crash', () => {
+  const req = stubReq({ headers: { host: '  ' } });
+  const res = stubRes();
+  const next = stubNext();
+  assert.doesNotThrow(() => hostCheckMiddleware(req, res, next));
+  // Whitespace-only hostname should be rejected
+  assert.equal(next.called(), false);
+});
+
+// ---------------------------------------------------------------------------
+// apiSessionMiddleware: near-miss paths
+// ---------------------------------------------------------------------------
+
+test('apiSessionMiddleware: /sessions is NOT exempt (requires token)', () => {
+  const req = stubReq({ path: '/sessions', headers: {} });
+  const res = stubRes();
+  const next = stubNext();
+  apiSessionMiddleware(req, res, next);
+  assert.equal(next.called(), false);
+  assert.equal(res.statusCode, 403);
+});
+
+test('apiSessionMiddleware: /session/ is NOT exempt (trailing slash)', () => {
+  const req = stubReq({ path: '/session/', headers: {} });
+  const res = stubRes();
+  const next = stubNext();
+  apiSessionMiddleware(req, res, next);
+  assert.equal(next.called(), false);
+  assert.equal(res.statusCode, 403);
+});
+
+// ---------------------------------------------------------------------------
+// resolvePublicDir: app.asar/subdir false-positive guard
+// ---------------------------------------------------------------------------
+
+test('resolvePublicDir: does not rewrite app.asar when it is a directory component', () => {
+  const result = resolvePublicDir(
+    '/path/to/resources/app.asar/subdir',
+  );
+  assert.equal(
+    result,
+    path.join('/path/to/resources/app.asar/subdir', 'public'),
+    'app.asar as directory component should not be rewritten',
+  );
+});
