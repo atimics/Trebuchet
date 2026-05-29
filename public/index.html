@@ -742,6 +742,276 @@
         }
 
         /* ========================================================
+           Medieval gauntlet cursor theme
+           --------------------------------------------------------
+           Everything hangs off body.medieval-cursor so it can be
+           toggled from settings without affecting other styles.
+
+           Ten poses cover every cursor state Chromium uses:
+             gauntlet        — open hand           (default / idle)
+             gauntlet-point  — pointing finger     (pointer / hover)
+             gauntlet-fist   — clenched fist       (active / mousedown / grabbing)
+             gauntlet-quill  — feather quill       (text input)
+             gauntlet-no     — hand + red slash    (not-allowed / disabled)
+             gauntlet-wait   — hourglass           (wait / progress / busy)
+             gauntlet-resize-ns    — up/down arrows         (vertical resize)
+             gauntlet-resize-ew    — left/right arrows      (horizontal resize)
+             gauntlet-resize-nwse  — diagonal ↖↘ arrows     (corner resize)
+             gauntlet-resize-nesw  — diagonal ↗↙ arrows     (other-corner resize)
+
+           Hotspot coordinates (the active click pixel) are tuned per
+           pose so the click lands where the user expects:
+             - idle:    fingertip of the hand pointing upper-LEFT (7, 1)
+             - point:   fingertip of the hand pointing LEFT   (1, 7)
+             - no:      centre of the red no-entry sign       (15, 15)
+             - fist:    knuckles, top-centre (15, 4)
+             - quill:   silver nib at lower-left (3, 30)
+             - wait:    centre of the hourglass (15, 15)
+             - resize:  centre (16,16)
+           The trailing keyword (auto, pointer, text, etc.) is the
+           REQUIRED fallback used when the image fails to load or is
+           too large (Chromium ignores cursor images over 128x128).
+           image-set() lets hi-dpi displays pick the 64px asset.
+           --------------------------------------------------------
+           Artwork credit: most poses adapted from icons by Lorc at
+           game-icons.net (CC BY 3.0). Resize arrows are original.
+           See README + in-app disclaimer for full attribution. */
+
+        /* --- Default / idle -------------------------------------- */
+        /* The idle hand is tilted 45 deg clockwise then mirrored, so it
+           points to the upper-left; hotspot sits at that fingertip (7, 1). */
+        body.medieval-cursor {
+            cursor: image-set(
+                url('cursors/gauntlet.png') 1x,
+                url('cursors/gauntlet@2x.png') 2x
+            ) 7 1, auto;
+        }
+
+        /* --- Gap / container fallback ---------------------------- */
+        /* `cursor` is an inherited property, so these structural
+           containers ought to show the idle hand automatically. But in
+           Electron/Chromium an *inherited* custom (image-set) cursor is
+           not reliably painted over bare areas that have no cursor rule
+           of their own -- the gaps between widgets, a field's label, the
+           padding around inputs -- and the native arrow leaks through.
+           Pinning the idle cursor explicitly onto the common
+           non-interactive Bulma layout + label containers forces it to
+           paint in those gaps. None of these are clickable themselves
+           (their interactive children carry their own pointer/text
+           rules, which are more specific and still win), so this cannot
+           override a more specific pose. If another bare gap turns up,
+           add its container class to this list. */
+        body.medieval-cursor .columns,
+        body.medieval-cursor .column,
+        body.medieval-cursor .field,
+        body.medieval-cursor .field-label,
+        body.medieval-cursor .field-body,
+        body.medieval-cursor .control,
+        body.medieval-cursor .label,
+        body.medieval-cursor .help,
+        body.medieval-cursor .box,
+        body.medieval-cursor .content {
+            cursor: image-set(
+                url('cursors/gauntlet.png') 1x,
+                url('cursors/gauntlet@2x.png') 2x
+            ) 7 1, auto;
+        }
+
+        /* --- Pointer / hover ------------------------------------- */
+        /* Mirrors every element that ordinarily gets cursor:pointer
+           or behaves clickably. The hand points LEFT, so the hotspot
+           sits at the left-edge fingertip (1, 7), matching where the
+           user perceives the click target.
+
+           NOTE: this list must include anything the app makes clickable.
+           A few extra entries below cover elements that set their own
+           bare `cursor:pointer` (which would otherwise paint the NATIVE
+           cursor): the plain <button> element, Bulma's .delete, and a
+           handful of custom widgets. The ID selector (#activityLogHeader)
+           is listed in full so it out-ranks its own id-level rule. */
+        body.medieval-cursor a,
+        body.medieval-cursor .button,
+        body.medieval-cursor [role="button"],
+        body.medieval-cursor summary,
+        body.medieval-cursor .is-clickable,
+        body.medieval-cursor .step-card.is-completed .step-header,
+        body.medieval-cursor .pool-row-header,
+        body.medieval-cursor label.checkbox,
+        body.medieval-cursor input[type="checkbox"],
+        body.medieval-cursor input[type="radio"],
+        body.medieval-cursor input[type="file"],
+        body.medieval-cursor input[type="range"],
+        body.medieval-cursor input[type="submit"],
+        body.medieval-cursor input[type="button"],
+        body.medieval-cursor input[type="reset"],
+        body.medieval-cursor select,
+        body.medieval-cursor .select,
+        body.medieval-cursor .select select,
+        body.medieval-cursor .simple-config-toggle,
+        body.medieval-cursor button,
+        body.medieval-cursor .delete,
+        body.medieval-cursor .splash-screen,
+        body.medieval-cursor .peek-banner-close,
+        body.medieval-cursor .resolved-info-icon,
+        body.medieval-cursor .rpc-header,
+        body.medieval-cursor .file-label,
+        body.medieval-cursor .file-cta,
+        body.medieval-cursor .balance-row .row-retry-btn,
+        body.medieval-cursor #activityLogHeader,
+        body.medieval-cursor .cursor-pointer {
+            cursor: image-set(
+                url('cursors/gauntlet-point.png') 1x,
+                url('cursors/gauntlet-point@2x.png') 2x
+            ) 1 7, pointer;
+        }
+
+        /* --- Active / mousedown (clenched fist) ------------------ */
+        /* :active fires while the pointer is held on the element. */
+        body.medieval-cursor a:active,
+        body.medieval-cursor .button:active,
+        body.medieval-cursor [role="button"]:active,
+        body.medieval-cursor summary:active,
+        body.medieval-cursor .is-clickable:active,
+        body.medieval-cursor .step-header:active,
+        body.medieval-cursor .pool-row-header:active,
+        body.medieval-cursor label.checkbox:active,
+        body.medieval-cursor select:active,
+        body.medieval-cursor .simple-config-toggle:active {
+            cursor: image-set(
+                url('cursors/gauntlet-fist.png') 1x,
+                url('cursors/gauntlet-fist@2x.png') 2x
+            ) 15 4, pointer;
+        }
+        /* And a global mousedown — set by app.js on body — so a click
+           on EMPTY space also shows the fist. Without this the idle
+           hand keeps showing while the mouse is held over a panel. */
+        body.medieval-cursor.cursor-clenched {
+            cursor: image-set(
+                url('cursors/gauntlet-fist.png') 1x,
+                url('cursors/gauntlet-fist@2x.png') 2x
+            ) 15 4, auto;
+        }
+
+        /* --- Text input (quill) ---------------------------------- */
+        /* The quill's silver nib is at the bottom-left. Hotspot (3, 30)
+           places the click right at that writing tip — feels right for
+           text-editing precision. */
+        body.medieval-cursor input[type="text"],
+        body.medieval-cursor input[type="number"],
+        body.medieval-cursor input[type="search"],
+        body.medieval-cursor input[type="password"],
+        body.medieval-cursor input[type="email"],
+        body.medieval-cursor input[type="url"],
+        body.medieval-cursor input[type="tel"],
+        body.medieval-cursor textarea,
+        body.medieval-cursor [contenteditable="true"] {
+            cursor: image-set(
+                url('cursors/gauntlet-quill.png') 1x,
+                url('cursors/gauntlet-quill@2x.png') 2x
+            ) 3 30, text;
+        }
+
+        /* --- Number-input spinner buttons ------------------------ */
+        /* A type="number" field shows the quill on its text area (rule
+           above), but the little up/down stepper at its right edge is a
+           native widget part (::-webkit-(inner|outer)-spin-button) that
+           falls back to the OS arrow. These are clickable, so we point
+           them at the pointer pose. NOTE: when the native dropdown of a
+           <select> is actually OPEN, that popup list is drawn by the OS
+           and cannot be themed from CSS — only the closed control can. */
+        body.medieval-cursor input[type="number"]::-webkit-inner-spin-button,
+        body.medieval-cursor input[type="number"]::-webkit-outer-spin-button {
+            cursor: image-set(
+                url('cursors/gauntlet-point.png') 1x,
+                url('cursors/gauntlet-point@2x.png') 2x
+            ) 1 7, pointer;
+        }
+
+        /* --- Not-allowed / disabled (hand + slash) --------------- */
+        /* The :disabled forms and the fully-qualified .row-retry-btn
+           selector are included so they out-rank the app's own bare
+           `cursor:not-allowed` on that deeply-nested button. */
+        body.medieval-cursor button[disabled],
+        body.medieval-cursor button:disabled,
+        body.medieval-cursor .button[disabled],
+        body.medieval-cursor input[disabled],
+        body.medieval-cursor textarea[disabled],
+        body.medieval-cursor select[disabled],
+        body.medieval-cursor .select select[disabled],
+        body.medieval-cursor .balance-row .row-retry-btn:disabled,
+        body.medieval-cursor .is-disabled,
+        body.medieval-cursor [aria-disabled="true"],
+        body.medieval-cursor .cursor-not-allowed {
+            cursor: image-set(
+                url('cursors/gauntlet-no.png') 1x,
+                url('cursors/gauntlet-no@2x.png') 2x
+            ) 15 15, not-allowed;
+        }
+
+        /* --- Wait / progress / busy ------------------------------ */
+        /* Hourglass shown across the whole app during long-running
+           operations. body.cursor-busy is set by app.js while a launch
+           step or RPC test is running, then cleared when done. */
+        body.medieval-cursor.cursor-busy,
+        body.medieval-cursor .cursor-wait {
+            cursor: image-set(
+                url('cursors/gauntlet-wait.png') 1x,
+                url('cursors/gauntlet-wait@2x.png') 2x
+            ) 15 15, wait;
+        }
+
+        /* --- Resize handles -------------------------------------- */
+        /* The textarea resize handle (the little dots in the
+           bottom-right corner) is drawn by the browser at that one
+           pixel area only — we can't reach it from CSS — so the user
+           will see the native diagonal-arrow there. The four classes
+           below let any other element opt into themed resize cursors. */
+        body.medieval-cursor .cursor-resize-ns {
+            cursor: image-set(
+                url('cursors/gauntlet-resize-ns.png') 1x,
+                url('cursors/gauntlet-resize-ns@2x.png') 2x
+            ) 16 16, ns-resize;
+        }
+        body.medieval-cursor .cursor-resize-ew {
+            cursor: image-set(
+                url('cursors/gauntlet-resize-ew.png') 1x,
+                url('cursors/gauntlet-resize-ew@2x.png') 2x
+            ) 16 16, ew-resize;
+        }
+        body.medieval-cursor .cursor-resize-nwse {
+            cursor: image-set(
+                url('cursors/gauntlet-resize-nwse.png') 1x,
+                url('cursors/gauntlet-resize-nwse@2x.png') 2x
+            ) 16 16, nwse-resize;
+        }
+        body.medieval-cursor .cursor-resize-nesw {
+            cursor: image-set(
+                url('cursors/gauntlet-resize-nesw.png') 1x,
+                url('cursors/gauntlet-resize-nesw@2x.png') 2x
+            ) 16 16, nesw-resize;
+        }
+
+        /* --- Grab / grabbing (drag-and-drop) --------------------- */
+        /* draggable=true matches without inline-style conflicts.
+           Mid-drag swaps to the fist via :active. The .cursor-grab
+           utility class is available for elements that want grab
+           behaviour without being draggable. */
+        body.medieval-cursor [draggable="true"],
+        body.medieval-cursor .cursor-grab {
+            cursor: image-set(
+                url('cursors/gauntlet.png') 1x,
+                url('cursors/gauntlet@2x.png') 2x
+            ) 16 16, grab;
+        }
+        body.medieval-cursor [draggable="true"]:active,
+        body.medieval-cursor .cursor-grabbing {
+            cursor: image-set(
+                url('cursors/gauntlet-fist.png') 1x,
+                url('cursors/gauntlet-fist@2x.png') 2x
+            ) 16 16, grabbing;
+        }
+
+        /* ========================================================
            Splash screen — plays intro.mp4 on load, auto-dismisses.
            ======================================================== */
         .splash-screen {
@@ -1579,16 +1849,42 @@
         }
         .token-preview-row-inner {
             width: 100%;
-            max-width: 480px;
+            max-width: 600px;
         }
         .token-preview-block {
             display: flex;
-            gap: 0.7rem;
-            padding: 0.75rem 0.9rem;
+            align-items: center;
+            gap: 1.25rem;
+            padding: 1.25rem 1.4rem;
             background: #f0f0f0;
-            border-radius: 4px;
+            border-radius: 6px;
             font-size: 0.85em;
-            min-height: 84px;
+            min-height: 200px;
+        }
+        /* The 3D coin mount replaces the old flat logo circle. It's a square
+           box the WebGL canvas fills; coinRenderer sizes the canvas to this
+           element via a ResizeObserver. Fixed size keeps the layout stable
+           as the coin spins. The fallback flat logo (.token-preview-logo)
+           is still rendered underneath for the no-WebGL / coin-off case. */
+        .token-preview-coin {
+            width: 180px;
+            height: 180px;
+            flex-shrink: 0;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        /* The fallback flat logo sits centered BEHIND the WebGL canvas.
+           When the coin is active the canvas (position relative, z above)
+           covers it; when the coin is off/unavailable the logo shows. */
+        .token-preview-coin .token-preview-logo {
+            position: absolute;
+            z-index: 0;
+        }
+        .token-preview-coin canvas {
+            position: relative;
+            z-index: 1;
         }
         .token-preview-logo {
             width: 48px;
@@ -1675,8 +1971,10 @@
             min-width: 0;
         }
         .token-preview-symbol {
-            font-weight: 600;
-            font-size: 1rem;
+            font-weight: 700;
+            font-size: 1.4rem;
+            line-height: 1.15;
+            letter-spacing: 0.005em;
         }
         .token-preview-symbol.is-placeholder {
             color: var(--ink-fade);
@@ -1710,6 +2008,115 @@
             -webkit-line-clamp: 2;
             -webkit-box-orient: vertical;
             line-clamp: 2;
+        }
+
+        /* --- Preview card polish + the behind-the-coin fix ----------
+           Hide the flat fallback logo once the live 3D coin canvas is
+           mounted. Without this, when the coin spins edge-on its
+           transparent canvas reveals the 2D logo sitting behind it
+           (the bug seen in the screenshots). The fallback still shows
+           when WebGL/the coin is unavailable (no .coin-live class). */
+        .token-preview-coin.coin-live .token-preview-logo {
+            display: none;
+        }
+        /* Soft golden glow behind the coin for a bit of depth/interest. */
+        .token-preview-coin::before {
+            content: "";
+            position: absolute;
+            inset: -8%;
+            z-index: 0;
+            border-radius: 50%;
+            background: radial-gradient(circle at 50% 45%,
+                rgba(201, 154, 54, 0.30) 0%,
+                rgba(201, 154, 54, 0.12) 45%,
+                rgba(201, 154, 54, 0) 70%);
+            pointer-events: none;
+        }
+        /* Frame the card as a slightly recessed panel. */
+        .token-preview-block {
+            border: 1px solid var(--rule);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25),
+                        0 1px 3px rgba(0, 0, 0, 0.06);
+        }
+        /* Symbol + name header, divided from the stat grid below. */
+        .token-preview-head {
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--rule);
+            margin-bottom: 0.55rem;
+        }
+        /* Two-tier stat block: hero tiles, a meta line, and pool chips. */
+        .token-preview-stats {
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+        /* Hero tiles — the glanceable numbers (market cap, start price,
+           est. cost). They share the row and wrap on narrow widths. */
+        .token-preview-stats .tps-tiles {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .token-preview-stats .tps-tile {
+            flex: 1 1 auto;
+            padding: 0.45rem 0.6rem;
+            background: var(--paper-card);
+            border: 1px solid var(--rule);
+            border-radius: 7px;
+        }
+        .token-preview-stats .tps-tile-label {
+            color: var(--ink-fade);
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+        }
+        .token-preview-stats .tps-tile-value {
+            color: var(--ink);
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-top: 2px;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        /* Est. cost is the number that moves with pool config — accent it. */
+        .token-preview-stats .tps-tile-value.is-cost {
+            color: var(--rubric);
+        }
+        /* Meta line: supply · decimals · % to liquidity. */
+        .token-preview-stats .tps-meta {
+            color: var(--ink-soft);
+            font-size: 0.82rem;
+        }
+        /* Pool chips: small pills, one per unique quote token. */
+        .token-preview-stats .tps-pools {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .token-preview-stats .tps-pools-label {
+            color: var(--ink-fade);
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+            margin-right: 0.1rem;
+        }
+        .token-preview-stats .tps-chip {
+            display: inline-flex;
+            align-items: center;
+            max-width: 170px;
+            padding: 0.1rem 0.55rem;
+            background: var(--paper-card);
+            border: 1px solid var(--rule);
+            border-radius: 999px;
+            font-size: 0.74rem;
+            font-weight: 600;
+            color: var(--ink-soft);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         /* Token info modal — logo + name header at top of body. */
@@ -1944,6 +2351,13 @@
                     <li>The Trebuchet authors aren't liable for losses, network issues, or anything else that goes wrong during your use of the app.</li>
                 </ul>
 
+                <p class="is-size-7 has-text-grey mb-4" style="border-top:1px solid var(--rule); padding-top:0.75rem;">
+                    Credits: the gauntlet cursor artwork is adapted from icons by Delapouite and Lorc,
+                    <a href="https://game-icons.net" target="_blank" rel="noopener">game-icons.net</a>,
+                    licensed under <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noopener">CC BY 3.0</a>.
+                    The 3D coin uses three.js (MIT). Fonts are under the SIL Open Font License.
+                </p>
+
                 <div class="field disclaimer-agree-field">
                     <label class="checkbox">
                         <input type="checkbox" id="disclaimerAgreeCheck">
@@ -2051,6 +2465,19 @@
                         </div>
                     </div>
                     <p id="rpcTestResult" class="help"></p>
+
+                    <hr class="my-3">
+                    <h6 class="subtitle is-6 mb-2">Appearance</h6>
+                    <label class="checkbox is-size-7" style="display:flex; align-items:center; gap:0.5rem; user-select:none;">
+                        <input type="checkbox" id="medievalCursorToggle">
+                        <span>Medieval gauntlet cursor</span>
+                    </label>
+                    <p class="help is-size-7" style="margin-top:0.25rem;">A themed cursor set (open hand idle, pointing finger on hover, fist when clicking, quill on text fields, hourglass when busy). On by default — turn off if you rely on OS cursor-size or high-contrast settings.</p>
+                    <label class="checkbox is-size-7" style="display:flex; align-items:center; gap:0.5rem; user-select:none; margin-top:0.6rem;">
+                        <input type="checkbox" id="coinPreviewToggle">
+                        <span>3D coin token preview</span>
+                    </label>
+                    <p class="help is-size-7" style="margin-top:0.25rem;">Shows a spinning gold coin (your logo on the front, the main pool's token on the back) in the preview card. Turn off for a flat logo on low-end hardware.</p>
                 </div>
             </div>
 
@@ -2807,6 +3234,12 @@
         </div>
     </div>
 
+    <!-- three.js (vendored, r158 UMD global build) powers the 3D coin
+         preview; coinRenderer.js is our self-contained coin module. Both
+         load before app.js so window.coinRenderer is ready when app.js
+         wires it up. Loaded from 'self' to satisfy the CSP. -->
+    <script src="vendor/three/three.min.js"></script>
+    <script src="coinRenderer.js"></script>
     <script src="app.js"></script>
     <!-- ============================================================ -->
     <!-- Generic Confirm Modal                                          -->

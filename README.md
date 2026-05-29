@@ -560,3 +560,17 @@ faucet, iterate freely.
 ## License
 
 MIT
+
+### Third-party assets
+
+Trebuchet bundles a few vendored assets:
+
+- **Cursor artwork** (the medieval gauntlet cursor theme) is adapted from
+  icons by Delapouite and Lorc, [game-icons.net](https://game-icons.net),
+  licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+  The icons were recoloured and resized; the originals are unmodified in
+  meaning.
+- **three.js** (the 3D coin preview) is licensed under the MIT License.
+  See `public/vendor/three/LICENSE`.
+- **Fonts** (IM Fell DW Pica, EB Garamond, JetBrains Mono) are licensed
+  under the SIL Open Font License; see `public/vendor/fonts/OFL.txt`.
