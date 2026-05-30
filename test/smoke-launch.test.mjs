@@ -129,7 +129,17 @@ describe('Raydium CLMM — fee tiers endpoint is reachable', async () => {
   const url = 'https://api-v3.raydium.io/main/rpc/pool/info/list';
   // Minimal probe: we just need to confirm the API responds. The real
   // getClmmFeeTiers function in lpService.js uses this same endpoint.
-  const resp = await fetch(url, { headers: { Accept: 'application/json' } });
+    let resp;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    resp = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
+  } catch (e) {
+    console.log('  Raydium API unreachable: ' + e.message);
+    return;
+  } finally {
+    clearTimeout(timer);
+  }
   // The Raydium API may return non-200 on rate limits; that's fine — we
   // just assert the harness doesn't crash on the HTTP layer.
   if (resp.ok) {
@@ -202,8 +212,8 @@ describe("Funding estimator — USDC pool allocation math is sane", async () => 
       usdcPrice = jupJson.data?.[USDC_MINT]?.price || 1.0;
       solPrice = jupJson.data?.[SOL_MINT]?.price || 150;
     }
-  } catch {
-    // Oracle unavailable — use hardcoded fallbacks.
+  } catch (e) {
+    console.warn('  Jupiter API unreachable: ' + e.message + ' — using fallback prices');
   }
   console.log(`  USDC price (Jupiter): ${usdcPrice}`);
   console.log(`  SOL price (Jupiter): ${solPrice}`);

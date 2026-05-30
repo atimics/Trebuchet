@@ -6,8 +6,9 @@
 //
 // Usage in a smoke test file:
 //
-//   import { requireSmokeRpc, SMOKE_RPC } from './helpers/smoke-guard.mjs';
-//   const describe = requireSmokeRpc(import.meta.url);
+//   import { smokeEnabled, SMOKE_RPC } from './helpers/smoke-guard.mjs';
+//     const enabled = smokeEnabled();
+// const describe = enabled ? test : test.skip(import.meta.url);
 //   // Tests run only when TREBUCHET_SMOKE_TEST_RPC is set.
 //
 // Environment variable reference:

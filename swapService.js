@@ -689,7 +689,7 @@ export async function swapSolForQuote({
 //
 // The synthetic module-level variables below (prefixed with __) are the
 // injection points. In production they hold the real implementations;
-// tests swap them via setConnectionFactoryForTests / setTradeApiFactoryForTests.
+// tests swap them via setConnectionFactoryForTests / setTradeApiForTests.
 //
 // NOTE: routeDiscoveryCache is cleared in resetTestFactories so every test
 // starts with a clean cache regardless of what earlier tests discovered.
@@ -705,11 +705,11 @@ export function resetConnectionFactoryForTests() {
   __connectionFactoryForTests = null;
 }
 
-export function setTradeApiFactoryForTests(factory) {
-  __tradeApiForTests = factory();
+export function setTradeApiForTests(api) {
+  __tradeApiForTests = api;
 }
 
-export function resetTradeApiFactoryForTests() {
+export function resetTradeApiForTests() {
   __tradeApiForTests = null;
 
 }
@@ -729,6 +729,14 @@ export const __testHooks = {
 
 // Test-only balance reader injection. When set, swapSolForQuote uses these
 // instead of the real on-chain readers. Both must be provided.
+// Test-only balance reader injection. When set, swapSolForQuote uses these
+// instead of the real on-chain readers. Both readTokenBalanceRaw and
+// readSolBalanceLamports must be provided.
+//
+// IMPORTANT: the injected readers must replicate the production contract —
+// on error, return BN(0), never throw. The swap function's error
+// classification (INSUFFICIENT_SOL, NO_USABLE_POOL, ALL_ATTEMPTS_FAILED)
+// depends on readers returning 0 on failure rather than throwing exceptions.
 let __balanceReaderForTests = null;
 export function setBalanceReaderForTests(reader) {
   __balanceReaderForTests = reader;
