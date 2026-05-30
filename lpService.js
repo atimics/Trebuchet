@@ -65,6 +65,8 @@ import {
   computeLadderTicks,
   computeLadderTicksManual,
   computeMainTicks,
+  computeSupportTicks,
+  SUPPORT_DEPTH_PCT_DEFAULT,
 } from './lpMath.js';
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
@@ -96,6 +98,14 @@ const DEFAULT_AMM_CONFIG_INDEX = 3;
 // Bootstrap funding: 1 whole token of each side. Just enough to make the
 // pool tradable; intentionally negligible value.
 const BOOTSTRAP_BASE_TOKENS_WHOLE = 1;
+
+// USD price assumed per SOL when the live price oracle isn't available
+// (offline, API down, etc.). Used as a fallback for sizing the SOL
+// equivalent of an auto-swap line and for support-position quote-side
+// conversion when no live SOL price is available; the safety buffer
+// absorbs any inaccuracy. Slightly conservative on the high side so we
+// don't under-fund.
+const FALLBACK_SOL_USD = 200;
 
 // Floor on the SOL allocation when a SOL pool is included. Aggregators
 // (Jupiter, GeckoTerminal, etc.) work best with a non-trivial SOL pool.
@@ -734,6 +744,23 @@ async function createSinglePool({
   ladderMode,
   ladderBands,
   ladderCeiling,
+  // Support position parameters.
+  //   supportEnabled: true if a custom-mode support position should be
+  //                   opened in this pool. When false, the support block
+  //                   is skipped entirely and `supportPositions` in the
+  //                   returned result is an empty array.
+  //   supportQuoteRaw: BN raw amount of QUOTE token to deposit. Computed
+  //                    by the orchestrator from the user's solValue input
+  //                    (SOL-equivalent USD value of starting support).
+  //                    Single-sided in quote — no launched-token supply
+  //                    is consumed, so this is orthogonal to wideBaseRaw,
+  //                    bootstrapBaseRaw, and ladder shares.
+  //   supportDepthPct: how far below launch price the support position
+  //                    extends, in percent. Defaults to
+  //                    SUPPORT_DEPTH_PCT_DEFAULT (10) when omitted.
+  supportEnabled,
+  supportQuoteRaw,
+  supportDepthPct,
   // NOTE: this function no longer takes lockPositions. Locking and
   // Fee Key transfers are deferred to dedicated phases in the
   // orchestrator (lockAllPositions, transferFeeKeys). The orchestrator
@@ -1090,6 +1117,118 @@ async function createSinglePool({
   }
 
   // -----------------------------------------------------------------------
+  // Open the support position (optional).
+  //
+  // The support position is single-sided in QUOTE, sitting just below
+  // current tick (for mintA-side launches; mirrored above for mintB).
+  // It backs any preallocated supply held outside LP — team tokens, VC
+  // allocations, presale tokens, staking rewards, etc. — by providing
+  // a buy wall the recipients can sell into without requiring matching
+  // token-side liquidity.
+  //
+  // Because the position is single-sided in quote, opening it does NOT
+  // consume any launched-token supply. The quote-side amount comes from
+  // the user's funding wallet — already present at this point (SOL for
+  // SOL pools, auto-swapped quote tokens for non-SOL pools). The actual
+  // raw quote amount is computed by the orchestrator from the user's
+  // solValue input and passed in as supportQuoteRaw.
+  //
+  // We open it AFTER the ladder bands but BEFORE the bootstrap deferral.
+  // The pool is not yet tradable (no in-range liquidity until bootstrap
+  // lands), so a support position sitting below currentTick is dormant
+  // — exactly what we want. Once the bootstrap opens, support becomes
+  // the implicit buy wall for sellers (preallocation holders) cashing
+  // out below launch price.
+  //
+  // Modeled as an array (currently 0 or 1 entry) for symmetry with
+  // mainPositions/ladderPositions. Future iterations could open multiple
+  // support bands at different depths without changing the result shape.
+  // -----------------------------------------------------------------------
+  const supportPositions = [];
+  if (supportEnabled && supportQuoteRaw && supportQuoteRaw.gt(new BN(0))) {
+    const depthPct = Number.isFinite(Number(supportDepthPct))
+      ? Number(supportDepthPct)
+      : SUPPORT_DEPTH_PCT_DEFAULT;
+    const supportTicks = computeSupportTicks({
+      currentTick,
+      tickSpacing,
+      launchedIsMintA,
+      depthPct,
+    });
+    console.log(
+      `  support: ticks=[${supportTicks.tickLower}, ${supportTicks.tickUpper}] ` +
+        `(depth=-${depthPct}%, quoteRaw=${supportQuoteRaw.toString()})`,
+    );
+    // Sanity-check the range is on the correct side of currentTick to
+    // be single-sided in quote. mintA: quote = mintB, position must be
+    // below currentTick. mintB: quote = mintA, position must be above.
+    if (launchedIsMintA && currentTick < supportTicks.tickUpper) {
+      throw new Error(
+        `Support range mispositioned for launched=mintA: tickUpper ` +
+          `(${supportTicks.tickUpper}) must be <= currentTick (${currentTick}) ` +
+          `so the position is single-sided in the quote (mintB).`,
+      );
+    }
+    if (!launchedIsMintA && currentTick >= supportTicks.tickLower) {
+      throw new Error(
+        `Support range mispositioned for launched=mintB: tickLower ` +
+          `(${supportTicks.tickLower}) must be > currentTick (${currentTick}) ` +
+          `so the position is single-sided in the quote (mintA).`,
+      );
+    }
+    progress({ stage: 'support_open_start' });
+
+    // Base side for the support position is the QUOTE side (opposite of
+    // launched). For launchedIsMintA: launched is MintA, so quote is
+    // MintB → base = 'MintB'. For launchedIsMintB: launched is MintB,
+    // so quote is MintA → base = 'MintA'.
+    //
+    // The position is fully single-sided in quote, so otherAmountMax = 0
+    // is exact (same pattern as ladder bands, just in the opposite
+    // direction). useSOLBalance:true lets the SDK auto-wrap native SOL
+    // for SOL-pool support positions without us having to pre-fund the
+    // wSOL ATA manually.
+    const supportRes = await raydium.clmm.openPositionFromBase({
+      poolInfo,
+      poolKeys,
+      tickLower: supportTicks.tickLower,
+      tickUpper: supportTicks.tickUpper,
+      base: launchedIsMintA ? 'MintB' : 'MintA',
+      baseAmount: supportQuoteRaw,
+      otherAmountMax: new BN(0),
+      ownerInfo: { useSOLBalance: true },
+      txVersion: TxVersion.V0,
+      computeBudgetConfig: { units: 600_000, microLamports: 50_000 },
+    });
+    const supportTx = await supportRes.execute({ sendAndConfirm: true });
+    const supportNftMint = supportRes.extInfo?.nftMint?.toBase58();
+    console.log(`  support opened: nft=${supportNftMint}, tx=${supportTx.txId}`);
+    progress({
+      stage: 'support_open_done',
+      nftMint: supportNftMint,
+      txId: supportTx.txId,
+    });
+
+    supportPositions.push({
+      tickLower: supportTicks.tickLower,
+      tickUpper: supportTicks.tickUpper,
+      depthPct,
+      // Raw quote amount deposited. Useful for the journal and the user-
+      // facing summary at the end of the launch.
+      quoteRaw: supportQuoteRaw.toString(),
+      nftMint: supportNftMint,
+      // Phase 3 will flip this to true. Support positions never have
+      // recipients (Fee Keys stay with the launch wallet and sweep
+      // back) — same lifecycle as ladder bands and the bootstrap.
+      locked: false,
+      txIds: {
+        open: supportTx.txId,
+        lock: null,
+      },
+    });
+  }
+
+  // -----------------------------------------------------------------------
   // NOTE: the bootstrap position is intentionally NOT opened here.
   //
   // The bootstrap is the position that makes the pool tradable (it's the
@@ -1115,6 +1254,7 @@ async function createSinglePool({
     launchedSide: launchedIsMintA ? 'mintA' : 'mintB',
     mainPositions,
     ladderPositions,
+    supportPositions,
     txIds: { createPool: createTx.txId },
     // Context the deferred bootstrap step needs. Not part of the user-facing
     // result shape — caller strips this before returning.
@@ -1460,7 +1600,63 @@ async function lockAllPositions({ raydium, results, onProgress }) {
       }
     }
 
-    // 3c. Lock the bootstrap for this pool.
+    // 3c. Lock each support position in order. Same lifecycle as ladder
+    //     bands — independent positions, fee key stays with the launch
+    //     wallet, no recipient. We lock them after main/ladder but
+    //     before bootstrap so the on-chain ordering matches the open
+    //     order from Phase 1.
+    for (let si = 0; si < (r.supportPositions || []).length; si++) {
+      const sp = r.supportPositions[si];
+      if (sp.locked) {
+        console.log(`[${symbol}] support position ${si + 1}: already locked (skip)`);
+        continue;
+      }
+      if (!sp.nftMint) {
+        console.log(`[${symbol}] support position ${si + 1}: no nftMint — skip`);
+        lockFailures.push({
+          allocationIndex: allocIdx,
+          positionType: 'support',
+          sliceIndex: si,
+          nftMint: null,
+          error: 'no nftMint on support result entry',
+        });
+        continue;
+      }
+      console.log(`[${symbol}] locking support position ${si + 1}/${r.supportPositions.length}: nft=${sp.nftMint}`);
+      try {
+        const lockRes = await raydium.clmm.lockPosition({
+          ownerPosition: { nftMint: new PublicKey(sp.nftMint) },
+          txVersion: TxVersion.V0,
+        });
+        const lockTx = await lockRes.execute({ sendAndConfirm: true });
+        sp.locked = true;
+        sp.txIds.lock = lockTx.txId;
+        console.log(`  locked: tx=${lockTx.txId}`);
+        progress({
+          stage: 'support_lock_done',
+          allocationIndex: allocIdx,
+          supportIndex: si,
+          txId: lockTx.txId,
+        });
+      } catch (e) {
+        console.error(`  lock FAILED: ${e.message}`);
+        lockFailures.push({
+          allocationIndex: allocIdx,
+          positionType: 'support',
+          sliceIndex: si,
+          nftMint: sp.nftMint,
+          error: e.message,
+        });
+        progress({
+          stage: 'support_lock_failed',
+          allocationIndex: allocIdx,
+          supportIndex: si,
+          error: e.message,
+        });
+      }
+    }
+
+    // 3d. Lock the bootstrap for this pool.
     const bs = r.bootstrap;
     if (bs && bs.nftMint && !bs.locked) {
       console.log(`[${symbol}] locking bootstrap: nft=${bs.nftMint}`);
@@ -1947,6 +2143,79 @@ export async function createPoolsAndPositions({
   }
 
   // -----------------------------------------------------------------------
+  // 3.7. Validate per-allocation support configuration.
+  //
+  // The support block (optional) opens a single-sided QUOTE position
+  // adjacent to launch price, providing buy-side liquidity that any
+  // preallocated supply (held outside LP, e.g. team/VC/presale tokens)
+  // can sell into without needing token-side liquidity to back it.
+  //
+  // Shape:
+  //   support: { mode: 'off' }                          // default
+  //   support: { mode: 'custom', solValue: number }     // user-funded
+  //
+  // The position covers [launch - 10%, launch - 1 tickSpacing] for
+  // mintA-side launches, mirrored above currentTick for mintB. Single-
+  // sided in the quote — no launched-token supply is required, so
+  // support is orthogonal to the pool's supplyPercent budget.
+  //
+  // We only validate the shape here; the per-pool quote-side funding
+  // requirement is sized by estimateRequiredFunding and rolled into the
+  // same SOL bucket (SOL pools) or auto-swap target (non-SOL pools) as
+  // the bootstrap's quote-side cost.
+  // -----------------------------------------------------------------------
+  for (let i = 0; i < allocations.length; i++) {
+    const a = allocations[i];
+    const sp = a.support;
+    if (!sp) continue; // absent → treated as off, no further checks
+    if (sp.mode !== 'off' && sp.mode !== 'custom') {
+      const err = new Error(
+        `Allocation ${i + 1}: support.mode must be 'off' or 'custom' ` +
+          `(got '${sp.mode}')`,
+      );
+      err.failedPhase = 'pre_flight';
+      err.failedAllocationIndex = i;
+      err.failedAllocation = a;
+      err.partialResults = priorResults;
+      throw err;
+    }
+    if (sp.mode !== 'custom') continue;
+    const sv = Number(sp.solValue);
+    if (!Number.isFinite(sv) || sv <= 0) {
+      const err = new Error(
+        `Allocation ${i + 1}: custom-mode support requires a positive ` +
+          `solValue (got ${sp.solValue})`,
+      );
+      err.failedPhase = 'pre_flight';
+      err.failedAllocationIndex = i;
+      err.failedAllocation = a;
+      err.partialResults = priorResults;
+      throw err;
+    }
+    // depthPct is optional. Falls back to SUPPORT_DEPTH_PCT_DEFAULT
+    // when absent — that's the historical hardcoded value. Bounds chosen
+    // to keep the position useful: too small (below 1%) collapses on
+    // high-tickSpacing fee tiers (computeSupportTicks has a guard, but
+    // a position spanning just one tickSpacing is so thin it's almost
+    // pointless). Too large (above 50%) covers so much price territory
+    // that the per-tick liquidity density gets diluted to nothing.
+    if (sp.depthPct !== undefined && sp.depthPct !== null) {
+      const dp = Number(sp.depthPct);
+      if (!Number.isFinite(dp) || dp < 1 || dp > 50) {
+        const err = new Error(
+          `Allocation ${i + 1}: support.depthPct must be in [1, 50] ` +
+            `(got ${sp.depthPct})`,
+        );
+        err.failedPhase = 'pre_flight';
+        err.failedAllocationIndex = i;
+        err.failedAllocation = a;
+        err.partialResults = priorResults;
+        throw err;
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // 4. Fetch CLMM AmmConfigs once (used per-pool)
   // -----------------------------------------------------------------------
   const allConfigs = await raydium.api.getClmmConfigs();
@@ -2019,6 +2288,25 @@ export async function createPoolsAndPositions({
   // -----------------------------------------------------------------------
   const results = [];
   const bootstrapQueue = [];
+
+  // SOL USD price — looked up once for the whole launch and used to
+  // convert per-allocation support.solValue (denominated in SOL) into
+  // the equivalent USD value, which then gets converted to raw quote
+  // units inside each per-allocation loop iteration. Fallback to a
+  // hardcoded value if the lookup fails so the orchestrator still
+  // makes progress; the estimator surfaced the same scenario at funding
+  // time, so by the time we reach here the funding wallet has enough
+  // SOL regardless of which exact price we use.
+  let solUsdForSupport = null;
+  try {
+    solUsdForSupport = await getUsdPrice(WSOL_MINT);
+  } catch (e) {
+    console.warn(`createPoolsAndPositions: SOL price lookup failed (${e.message}); using fallback`);
+  }
+  if (!solUsdForSupport) {
+    solUsdForSupport = new Decimal(FALLBACK_SOL_USD);
+  }
+  console.log(`SOL/USD used for support sizing: $${solUsdForSupport.toString()}`);
 
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
     const alloc = allocations[allocIdx];
@@ -2288,6 +2576,48 @@ export async function createPoolsAndPositions({
             : ''),
       );
 
+      // 6e.5. Resolve support config and compute the raw quote amount.
+      //
+      // Support is single-sided in quote, so it doesn't consume any
+      // launched-token supply — the math here is purely quote-side. The
+      // user enters a SOL value (canonical UI input), and we convert
+      // through USD into raw units of THIS pool's quote token:
+      //
+      //   supportUsd     = solValue × solUsd
+      //   supportWhole   = supportUsd / quoteUsd   (whole quote tokens)
+      //   supportQuoteRaw = floor(supportWhole × 10^quoteDecimals)
+      //
+      // For SOL pools, quoteUsd === solUsd, so the formula collapses
+      // cleanly to (solValue × LAMPORTS_PER_SOL). For non-SOL pools, the
+      // user's intent ("X SOL of starting support") translates to the
+      // equivalent USD value at current prices, then to that many quote
+      // tokens — same conversion the funding estimator does to size the
+      // auto-swap target.
+      //
+      // When support is off (or absent), we pass false/zero through to
+      // createSinglePool which short-circuits the open call.
+      const supportCfg = alloc.support || { mode: 'off' };
+      const supportEnabled = supportCfg.mode === 'custom'
+        && Number(supportCfg.solValue) > 0;
+      let supportQuoteRaw = new BN(0);
+      if (supportEnabled) {
+        const solValueDec = new Decimal(Number(supportCfg.solValue));
+        const supportUsdDec = solValueDec.mul(solUsdForSupport);
+        const supportWholeDec = supportUsdDec.div(quoteUsd);
+        // Floor to raw units — over-depositing isn't a concern, the
+        // single-sided position math caps at the user's intended amount.
+        const supportQuoteRawStr = supportWholeDec
+          .mul(new Decimal(10).pow(quoteToken.decimals))
+          .toFixed(0, Decimal.ROUND_FLOOR);
+        supportQuoteRaw = new BN(supportQuoteRawStr);
+        console.log(
+          `  support: solValue=${solValueDec.toString()} SOL ` +
+            `→ ~$${supportUsdDec.toFixed(2)} ` +
+            `→ ${supportWholeDec.toFixed(6)} ${quoteToken.symbol} ` +
+            `(${supportQuoteRaw.toString()} raw)`,
+        );
+      }
+
       // 6f. Pick the AmmConfig
       const cfgIdx = alloc.ammConfigIndex ?? DEFAULT_AMM_CONFIG_INDEX;
       const baseCfg = allConfigs.find((c) => c.index === cfgIdx);
@@ -2333,6 +2663,15 @@ export async function createPoolsAndPositions({
         ladderMode,
         ladderBands,
         ladderCeiling: ladderMode === 'simple' ? Number(ladderCfg.ceilingMultiplier) : 0,
+        supportEnabled,
+        supportQuoteRaw,
+        // Per-allocation depth, with a defensive fallback to the module
+        // default. The pre-flight check above has already bounds-validated
+        // any user-supplied value, so anything still on the supportCfg
+        // here is safe to pass through.
+        supportDepthPct: supportEnabled && Number.isFinite(Number(supportCfg.depthPct))
+          ? Number(supportCfg.depthPct)
+          : SUPPORT_DEPTH_PCT_DEFAULT,
         onProgress: (event) =>
           onProgress && onProgress({ allocationIndex: allocIdx, ...event }),
       });
@@ -2655,12 +2994,6 @@ const AUTOSWAP_SIZING_MULTIPLIER = 2;
 const AUTOSWAP_CUSTOM_TARGET_MULTIPLIER = 1.15;  // 15% oversize on acquire
 const AUTOSWAP_CUSTOM_SIZING_MULTIPLIER = 1.10;  // 10% extra SOL on top
 
-// USD price assumed per SOL when the live price oracle isn't available
-// (offline, API down, etc.). Used only as a fallback for sizing the SOL
-// equivalent of an auto-swap line; safety buffer absorbs any inaccuracy.
-// Slightly conservative on the high side so we don't under-fund.
-const FALLBACK_SOL_USD = 200;
-
 /**
  * Estimate funding required for the configured pools, with a per-line
  * breakdown the UI can render so the user can see exactly what each cost
@@ -2798,6 +3131,21 @@ export async function estimateRequiredFunding({
       );
     }
 
+    // Support position cost — only the NFT mint + lock fee. The
+    // quote-side deposit itself is added later (it's either rolled into
+    // the SOL bucket for SOL pools or added to the bootstrap auto-swap
+    // target for non-SOL pools, both handled in the bootstrap-cost
+    // section below).
+    const supportCfg = a.support || { mode: 'off' };
+    const supportEnabled = supportCfg.mode === 'custom'
+      && Number(supportCfg.solValue) > 0;
+    if (supportEnabled) {
+      addSol(
+        `${poolLabel}: support position (NFT mint + lock)`,
+        COST_POSITION_SOL + COST_LOCK_SOL,
+      );
+    }
+
     // Determine the bootstrap mode and USD budget for the quote-side.
     //
     // Minimal mode: budget is the historical $1 (manual prefund) / $2
@@ -2826,6 +3174,15 @@ export async function estimateRequiredFunding({
       bsActualUsd = BS_BOOTSTRAP_USD; // $1
     }
 
+    // Compute the support's USD-equivalent quote-side need. Support is
+    // single-sided in quote and the user enters a SOL value; convert
+    // through current SOL/USD to USD. Same path as the bootstrap-custom
+    // quote-side, just routed through a different input. Zero when
+    // support is disabled (mode='off' or absent).
+    const supportActualUsd = supportEnabled
+      ? Number(supportCfg.solValue) * Number(solUsd.toString())
+      : 0;
+
     // Bootstrap quote-side requirement: three branches.
     //   (1) SOL pool       → SOL deposited directly (auto-wrapped at deposit).
     //   (2) Trade API can route SOL→quoteMint (typical case)
@@ -2835,6 +3192,11 @@ export async function estimateRequiredFunding({
     //
     // In minimal mode the USD value is dust ($1); in custom mode it's the
     // user's chosen support amount. The branch logic is identical otherwise.
+    //
+    // When a support position is also configured, its quote-side need
+    // adds to the same bucket — it's just more of the same quote token
+    // sitting in the same wallet at LP-creation time. We surface support
+    // as its own breakdown line so the user sees what each piece costs.
     if (isSol) {
       // (1) SOL pool — quote-side is just SOL.
       // For minimal mode we keep the historical dust constant (0.001 SOL,
@@ -2850,6 +3212,16 @@ export async function estimateRequiredFunding({
         label = `${poolLabel}: bootstrap quote-side (SOL, dust)`;
       }
       addSol(label, solCost);
+
+      // Support deposit (only emitted when enabled). Its own line so the
+      // user can see the support cost broken out — the SOL amount is
+      // exactly solValue, no conversion math needed for a SOL pool.
+      if (supportEnabled) {
+        addSol(
+          `${poolLabel}: support position (~$${supportActualUsd.toFixed(2)} as SOL)`,
+          Number(supportCfg.solValue),
+        );
+      }
     } else {
       // Try Raydium Trade API for route discovery. The probe quote also
       // gives us the effective price (USD per whole quote token), which
@@ -2914,6 +3286,16 @@ export async function estimateRequiredFunding({
         targetUsd = isAutoSwap ? AUTOSWAP_TARGET_USD : BS_BOOTSTRAP_USD;
       }
 
+      // Support's contribution to the same quote-token target. Support
+      // uses the custom-mode multiplier since it's also user-funded at
+      // a meaningful scale (vs the minimal-mode dust target). When
+      // support is disabled this is zero.
+      const supportTargetUsd = supportEnabled
+        ? (isAutoSwap
+            ? supportActualUsd * AUTOSWAP_CUSTOM_TARGET_MULTIPLIER
+            : supportActualUsd)
+        : 0;
+
       // Compute the target raw amount: targetUsd worth of quote token if
       // we know the price, else fixed fallback. ceil() ensures we don't
       // round down below the requirement.
@@ -2928,6 +3310,24 @@ export async function estimateRequiredFunding({
       }
       const rawAmt = Math.ceil(targetWhole * Math.pow(10, quoteDecimals));
 
+      // Support whole/raw for this quote, computed against the same
+      // quoteUsd so the unit conversion is consistent with bootstrap.
+      let supportWhole = 0;
+      let supportRaw = 0;
+      if (supportEnabled) {
+        if (quoteUsd && quoteUsd.gt(0)) {
+          supportWhole = new Decimal(supportTargetUsd).div(quoteUsd).toNumber();
+        } else {
+          // No price oracle data — fall back to a multiple of the
+          // bootstrap fallback. Custom-scale launches without any price
+          // data are an edge case the user must address by setting
+          // quoteUsdOverride; this keeps the numbers proportional.
+          supportWhole = BS_FALLBACK_WHOLE *
+            Math.max(1, Math.ceil(supportTargetUsd / BS_BOOTSTRAP_USD));
+        }
+        supportRaw = Math.ceil(supportWhole * Math.pow(10, quoteDecimals));
+      }
+
       if (isAutoSwap) {
         // (2) Auto-swap branch.
         // SOL spend scales with the acquire target × the sizing multiplier.
@@ -2936,7 +3336,7 @@ export async function estimateRequiredFunding({
         // need (compound 1.265× of bsActualUsd) spent for ~15% over need
         // acquired. Most of the buffer absorbs swap slippage; the small
         // acquire-side buffer absorbs partial fills.
-        const spendMultiplier = bsIsCustom
+        const spendMultiplier = (bsIsCustom || supportEnabled)
           ? AUTOSWAP_CUSTOM_SIZING_MULTIPLIER
           : AUTOSWAP_SIZING_MULTIPLIER;
         const estSolSpend = new Decimal(targetUsd)
@@ -2947,6 +3347,21 @@ export async function estimateRequiredFunding({
           ? `${poolLabel}: bootstrap support (auto-swap → ~$${bsActualUsd.toFixed(2)} ${quoteSymbol})`
           : `${poolLabel}: bootstrap quote-side (auto-swap → ~$${targetUsd} ${quoteSymbol})`;
         addSol(label, estSolSpend);
+
+        // Support's auto-swap spend, emitted as its own line. The
+        // acquire job will pick up the per-mint cumulative target from
+        // the per-mint plan items below — we don't need to sum here.
+        let supportSolSpend = 0;
+        if (supportEnabled) {
+          supportSolSpend = new Decimal(supportTargetUsd)
+            .mul(spendMultiplier)
+            .div(solUsd)
+            .toNumber();
+          addSol(
+            `${poolLabel}: support position (auto-swap → ~$${supportActualUsd.toFixed(2)} ${quoteSymbol})`,
+            supportSolSpend,
+          );
+        }
         // Compute the actual bootstrap need (vs the ambitious acquire
         // target) so the frontend can mark a row "met" once we have
         // ENOUGH for the bootstrap, even if the swap underperformed
@@ -2960,6 +3375,20 @@ export async function estimateRequiredFunding({
           minWhole = BS_FALLBACK_WHOLE;
         }
         const minRaw = Math.ceil(minWhole * Math.pow(10, quoteDecimals));
+
+        // The acquire-job expects a single target per (allocationIndex,
+        // quoteMint) pair. Combine bootstrap + support raw amounts and
+        // their min equivalents so a single swap call acquires both
+        // pieces in one go.
+        const combinedTargetRaw = rawAmt + supportRaw;
+        const combinedMinRaw = minRaw + (supportEnabled
+          ? Math.ceil(
+              (quoteUsd && quoteUsd.gt(0)
+                ? new Decimal(supportActualUsd).div(quoteUsd).toNumber()
+                : BS_FALLBACK_WHOLE)
+              * Math.pow(10, quoteDecimals),
+            )
+          : 0);
         autoSwapPlan.push({
           allocationIndex: poolIdx,
           quoteMint: quoteAddr,
@@ -2969,8 +3398,10 @@ export async function estimateRequiredFunding({
           // (oversize for slippage buffer). minRaw is the actual
           // bootstrap requirement on-chain. Frontend uses minRaw for
           // the "met" check, targetRaw for the display "≈ N" amount.
-          targetRaw: String(rawAmt),
-          minRaw: String(minRaw),
+          // Both now sum bootstrap + support so a single swap satisfies
+          // both per-pool quote-side needs.
+          targetRaw: String(combinedTargetRaw),
+          minRaw: String(combinedMinRaw),
           // quoteUsd here is what swapSolForQuote uses to size the SOL
           // spend at swap time (re-computes the same formula). Pass the
           // effective price we used for the estimate so the budgets
@@ -2982,7 +3413,7 @@ export async function estimateRequiredFunding({
           // makes that explicit in any logs the value flows into.
           poolId: 'trade-api',
           poolKind: 'route',
-          estSolSpend,
+          estSolSpend: estSolSpend + supportSolSpend,
           // sizingMultiplier and bootstrapMode propagate the estimator's
           // mode-aware budget choices down to the actual swap execution.
           // The swap function (swapService.js) has its own slippage
@@ -2992,10 +3423,10 @@ export async function estimateRequiredFunding({
           // its actual swap silently floored to ~0.05 SOL by the cap,
           // delivering almost no quote tokens and failing the bootstrap.
           // server.js threads these through to swapSolForQuote.
-          sizingMultiplier: bsIsCustom
+          sizingMultiplier: (bsIsCustom || supportEnabled)
             ? AUTOSWAP_CUSTOM_SIZING_MULTIPLIER
             : AUTOSWAP_SIZING_MULTIPLIER,
-          bootstrapMode: bsIsCustom ? 'custom' : 'minimal',
+          bootstrapMode: (bsIsCustom || supportEnabled) ? 'custom' : 'minimal',
         });
       } else {
         // (3) Manual pre-fund branch.
@@ -3012,6 +3443,18 @@ export async function estimateRequiredFunding({
           amount: Number(Number(targetWhole).toPrecision(6)),
           mint: quoteAddr,
         });
+
+        // Support's contribution to manual prefund — emitted as its
+        // own breakdown line so the user can see what each piece is.
+        if (supportEnabled) {
+          byQuote[quoteAddr] = (byQuote[quoteAddr] || 0) + supportRaw;
+          quoteBreakdown.push({
+            label: `${poolLabel}: support position (~$${supportActualUsd.toFixed(2)})`,
+            symbol: quoteSymbol,
+            amount: Number(Number(supportWhole).toPrecision(6)),
+            mint: quoteAddr,
+          });
+        }
       }
     }
 

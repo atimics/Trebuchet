@@ -1000,6 +1000,25 @@ app.get('/api/proxy-image', async (req, res) => {
   }
 });
 
+// Mint-compatibility cache. The Raydium CLMM compat check (program
+// ownership, Token-2022 extensions, whitelist status) reads on-chain
+// data that NEVER changes for a given mint — a token's program owner
+// and Token-2022 extensions are baked at mint creation and immutable.
+// Once we've successfully checked a mint, the result is permanent for
+// the lifetime of the server process.
+//
+// This cache exists because /api/quote-token-info is called frequently
+// by the frontend (every quote-token input/change), and each compat
+// check costs one Solana RPC call (getAccountInfo). For the meme
+// flywheel mint specifically, repeated calls during a single launch
+// configuration session would generate enough RPC traffic to trigger
+// rate limiting. The cache turns those into zero-cost lookups.
+//
+// We cache the SUCCESS path only — failures (RPC down, mint not on
+// chain) are left uncached so the user can retry without waiting for
+// the cache to clear.
+const compatCache = new Map();
+
 // Quote-token info: when the user picks/enters a quote token in the UI,
 // we look up its symbol/decimals/USD price for inline display. For known
 // quote tokens (SOL/USDC/USDT) we use built-in constants. For arbitrary
@@ -1073,25 +1092,54 @@ app.post('/api/quote-token-info', async (req, res) => {
       // we still return what we found from indexers, but mark compat as
       // unknown so the UI doesn't silently let the user pick a token
       // we couldn't verify.
-      try {
-        const connection = new Connection(getRpcConfig().active, 'confirmed');
-        const compat = await getMintCompatibilityWithRaydiumClmm(
-          connection,
-          new PublicKey(quoteToken),
-        );
-        infoOut.compatible = compat.compatible;
-        infoOut.isToken2022 = compat.isToken2022;
-        infoOut.extensions = compat.extensions;
-        infoOut.disallowedNames = compat.disallowedNames;
-        // If we read decimals from chain and indexers gave us a different
-        // number, trust the chain (the chain is the source of truth).
-        if (compat.decimals != null) {
-          infoOut.decimals = compat.decimals;
+      //
+      // Cache hit short-circuit: a mint's compat profile (program owner,
+      // Token-2022 extensions, whitelist status) is immutable on-chain.
+      // Once we've successfully resolved it, we can return the cached
+      // result forever without re-hitting RPC. This is the main defense
+      // against rate-limit storms when the frontend re-resolves quote
+      // tokens on every keystroke.
+      const cachedCompat = compatCache.get(quoteToken);
+      if (cachedCompat) {
+        infoOut.compatible = cachedCompat.compatible;
+        infoOut.isToken2022 = cachedCompat.isToken2022;
+        infoOut.extensions = cachedCompat.extensions;
+        infoOut.disallowedNames = cachedCompat.disallowedNames;
+        if (cachedCompat.decimals != null) {
+          infoOut.decimals = cachedCompat.decimals;
         }
-      } catch (e) {
-        console.warn('Compat check failed:', e.message);
-        infoOut.compatible = null; // null = "unknown", distinct from false
-        infoOut.compatError = e.message;
+      } else {
+        try {
+          const connection = new Connection(getRpcConfig().active, 'confirmed');
+          const compat = await getMintCompatibilityWithRaydiumClmm(
+            connection,
+            new PublicKey(quoteToken),
+          );
+          infoOut.compatible = compat.compatible;
+          infoOut.isToken2022 = compat.isToken2022;
+          infoOut.extensions = compat.extensions;
+          infoOut.disallowedNames = compat.disallowedNames;
+          // If we read decimals from chain and indexers gave us a different
+          // number, trust the chain (the chain is the source of truth).
+          if (compat.decimals != null) {
+            infoOut.decimals = compat.decimals;
+          }
+          // Cache the success. We only cache successful checks because a
+          // failure mode (RPC down, mint not yet on chain) is transient —
+          // the user could retry seconds later with a healthy RPC. Caching
+          // failures would force users to wait out a TTL after recovery.
+          compatCache.set(quoteToken, {
+            compatible: compat.compatible,
+            isToken2022: compat.isToken2022,
+            extensions: compat.extensions,
+            disallowedNames: compat.disallowedNames,
+            decimals: compat.decimals,
+          });
+        } catch (e) {
+          console.warn('Compat check failed:', e.message);
+          infoOut.compatible = null; // null = "unknown", distinct from false
+          infoOut.compatError = e.message;
+        }
       }
     }
 

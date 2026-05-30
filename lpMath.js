@@ -5,6 +5,12 @@ export const MIN_TICK = -443636;
 export const MAX_TICK = 443636;
 export const MINIMAL_BOOTSTRAP_WIDTH_PCT = 30;
 
+// Default depth (in %) for support positions: position covers launch
+// price down to -SUPPORT_DEPTH_PCT_DEFAULT% below it. Single-sided in
+// the quote, so the user contributes quote-side funds only — no token
+// supply is required to back the range.
+export const SUPPORT_DEPTH_PCT_DEFAULT = 10;
+
 export function floorToSpacing(tick, tickSpacing) {
   return Math.floor(tick / tickSpacing) * tickSpacing;
 }
@@ -158,4 +164,60 @@ export function computeLadderTicksManual({
   }
 
   return result;
+}
+
+/**
+ * Compute the tick range for a single-sided support position. The position
+ * holds 100% quote at deposit time (no launched-token supply required),
+ * covering the price band from 1 tickSpacing below launch price down to
+ * (100 - depthPct)% of launch price. For mintB launches, the range mirrors
+ * above currentTick.
+ *
+ *   launchedIsMintA: launched_price = P (the pool price). Price drops →
+ *     P drops → tick drops. So the support range lives BELOW currentTick.
+ *     A position below currentTick holds 100% mintB (quote). ✓
+ *
+ *   launchedIsMintB: launched_price = 1/P. Launched price drops → P rises
+ *     → tick rises. So the support range lives ABOVE currentTick. A
+ *     position above currentTick holds 100% mintA (quote). ✓
+ *
+ * `depthPct` defaults to SUPPORT_DEPTH_PCT_DEFAULT. Range collapses are
+ * guarded by ensuring at least one tickSpacing of width — this matters
+ * for high-tickSpacing fee tiers (1% has tickSpacing=200, a 1% depth
+ * would round to 0 spacings without the guard).
+ */
+export function computeSupportTicks({
+  currentTick,
+  tickSpacing,
+  launchedIsMintA,
+  depthPct = SUPPORT_DEPTH_PCT_DEFAULT,
+}) {
+  const logBase = Math.log(1.0001);
+  // Tick distance corresponding to a price change of -depthPct%. Always
+  // expressed as a positive integer; the sign is applied per-branch below.
+  const factor = (100 - depthPct) / 100;
+  const tickDelta = Math.abs(Math.round(Math.log(factor) / logBase));
+
+  if (launchedIsMintA) {
+    // Range below currentTick: tickUpper just below current, tickLower at
+    // currentTick − tickDelta. Position holds 100% mintB (quote) until
+    // launched price drops into the range.
+    let tickUpper = floorToSpacing(currentTick - 1, tickSpacing);
+    let tickLower = ceilToSpacing(currentTick - tickDelta, tickSpacing);
+    if (tickLower >= tickUpper) {
+      // Degenerate range — happens when depthPct is small relative to the
+      // pool's tickSpacing. Expand to one full tickSpacing of width so the
+      // position is still openable.
+      tickLower = tickUpper - tickSpacing;
+    }
+    return { tickLower, tickUpper };
+  }
+
+  // launchedIsMintB: range above currentTick.
+  let tickLower = ceilToSpacing(currentTick + 1, tickSpacing);
+  let tickUpper = floorToSpacing(currentTick + tickDelta, tickSpacing);
+  if (tickUpper <= tickLower) {
+    tickUpper = tickLower + tickSpacing;
+  }
+  return { tickLower, tickUpper };
 }

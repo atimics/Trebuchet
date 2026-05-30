@@ -94,6 +94,42 @@ let lpResult = null;
 let pools = [];
 let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 
+// Cache of resolved quote-token info, keyed by the canonical input the
+// user typed/picked (e.g. 'SOL', 'USDC', or a base58 mint address). Each
+// entry is the full info payload that resolvePoolQuote would otherwise
+// fetch from /api/quote-token-info, plus a fetchedAt timestamp for
+// price-staleness logic.
+//
+// Why we cache: rebuildPoolsFromSimple() (called on every simple-mode
+// input event) clears pools[] and re-adds them, which without this cache
+// would re-fire one network round-trip per pool per keystroke. That
+// hammers the server's compat check (which calls Solana RPC and gets
+// rate-limited) for no benefit — the user didn't change the quote token,
+// the same mint resolves to the same metadata.
+//
+// Two TTLs:
+//   - METADATA never expires for a given mint. Symbol, decimals, name,
+//     image URL, Token-2022 status, and Raydium-CLMM compatibility don't
+//     change for a given mint. Once we've successfully resolved them
+//     they're permanent for the page session.
+//   - PRICE expires after 60s. We re-fetch the price (and only the price)
+//     after the TTL elapses. This is hit only on the next actual resolve
+//     call, not on a timer — we don't want to drive RPC traffic from a
+//     background loop.
+//
+// Cache survives across rebuildPoolsFromSimple() calls because it lives
+// at module scope, not on the pool objects themselves.
+const quoteInfoCache = new Map();
+const QUOTE_PRICE_TTL_MS = 60_000;
+
+// In-flight fetch promises keyed by the same quoteToken string. Used to
+// coalesce simultaneous resolve calls for the same mint — without this,
+// the first render storm after a wallet generation could fire N parallel
+// fetches for SOL before the first one returns, defeating the cache.
+// Each entry is a Promise; subsequent callers await the same promise
+// rather than starting a new fetch.
+const quoteInfoInFlight = new Map();
+
 // ---------------------------------------------------------------------------
 // Flywheel presets
 // ---------------------------------------------------------------------------
@@ -162,6 +198,20 @@ const LADDER_DEFAULT_BANDS = 5;
 const LADDER_MIN_BANDS = 3;
 const LADDER_MAX_BANDS = 10;
 const LADDER_CEILING_MULTIPLIER = 1000;
+
+// Support position depth bounds (in % below launch price).
+//   Default 10% — covers typical post-launch dip range without
+//   over-spreading the deposited SOL across too many ticks.
+//   Min 1%     — below this, computeSupportTicks collapses on
+//                high-tickSpacing fee tiers (the position would span
+//                a single tickSpacing, making it nearly useless).
+//   Max 50%    — below this, the per-tick density gets too thin for
+//                the support to actually backstop sells in any
+//                meaningful way; user might as well place liquidity
+//                via the normal main/ladder system.
+const SUPPORT_DEFAULT_DEPTH_PCT = 10;
+const SUPPORT_MIN_DEPTH_PCT = 1;
+const SUPPORT_MAX_DEPTH_PCT = 50;
 
 // Hard upper bound on the whole-token total supply the user can enter.
 //
@@ -261,6 +311,51 @@ let simpleConfig = {
   ladderEnabled: false,
   ladderPercent: LADDER_DEFAULT_PERCENT,
   ladderBandCount: LADDER_DEFAULT_BANDS,
+  // Preallocation: % of total token supply that's held BACK from LP. Used
+  // for team/VC/presale tokens, staking rewards, utility reserves, etc.
+  // The pool allocations scale down proportionally so the sum of all
+  // pool.supplyPercent values equals (100 - preallocationPercent).
+  //
+  // Preallocation by itself is purely a UI/budget concept — the tokens
+  // simply stay in the launch wallet (or get distributed by the user
+  // post-launch). Backing for that supply is provided via the SUPPORT
+  // position (see supportEnabled below).
+  preallocationEnabled: false,
+  preallocationPercent: 10, // % of total supply; default if user enables
+  // Support position: a single-sided QUOTE position sitting just below
+  // launch price (down to -supportDepthPct), funded by the user as SOL.
+  // It backs preallocated supply by giving the holders a buy wall to
+  // sell into. Quote-only — no token supply consumed, so this is
+  // orthogonal to the pool allocation math. The simple-UI toggle puts
+  // support on the SOL pool only; customize mode lets each pool
+  // configure its own.
+  //
+  // supportDepthPct is the % below launch that the position covers.
+  // Default of 10% balances coverage (catches typical post-launch dips)
+  // with per-tick liquidity density (deeper ranges spread the same SOL
+  // across more ticks, thinning each tick's depth).
+  supportEnabled: false,
+  supportSolValue: 1, // SOL committed to the support position
+  supportDepthPct: 10, // % depth below launch price, in [1, 50]
+  // When true, the support SOL value is kept in sync with the
+  // preallocation's USD-equivalent (the "honest backing" amount). When
+  // false, the user has manual control over the SOL value. Surfaced
+  // as an "Auto" checkbox next to the support SOL input. When ON the
+  // SOL input is disabled and shows the computed value; when OFF the
+  // user can type freely.
+  //
+  // Default true — the natural pairing of preallocation + support is
+  // equal-value backing, and starting with auto on makes that the
+  // path of least resistance. The user can switch to manual any time.
+  supportAutoSize: true,
+  // UI-only: whether the collapsible "Advanced options" section in
+  // simple mode is currently expanded. Persists across re-renders so
+  // the section doesn't snap shut when the user types in one of its
+  // inputs. Default closed because the advanced section is for users
+  // who specifically want it — most launches use the headline controls
+  // (flywheel, preallocation, support) and never touch the advanced
+  // ones (starting liquidity, split LP, ladder).
+  _advancedExpanded: false,
 };
 
 // Build a distribution array of N equal slices that sum to exactly 100%.
@@ -672,7 +767,7 @@ window.__showUpdateResult = async function (info) {
   const dontCheckCheckedNow = info.checkOnStartup === false;
   const checkboxHtml =
     `<div style="margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px solid rgba(0,0,0,0.08);">` +
-      `<label class="checkbox is-size-7" style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer; user-select: none;">` +
+      `<label class="checkbox is-size-7" style="display: flex; align-items: center; gap: 0.4rem; user-select: none;">` +
         `<input type="checkbox" id="updatePrefCheckbox"${dontCheckCheckedNow ? ' checked' : ''}>` +
         `<span>Don't check for updates automatically</span>` +
       `</label>` +
@@ -974,15 +1069,61 @@ function activateStep(num) {
     requestCostPreviewUpdate();
   }
 
-  // The 3D coin only lives on step 2 (the token-config screen). When the
-  // user moves forward into the funding/launch flow, free its WebGL context
-  // so it never accumulates across the launch. Returning to step 2 re-inits
-  // it lazily via renderTokenPreview(). We re-render the preview when
-  // arriving at step 2 so the coin mount gets (re)built and initialised.
+  // The token preview block (with its 3D coin) is a singleton DOM
+  // element. It lives in the config-stage slot by default; when the
+  // user advances to the funding stage we relocate it next to the QR
+  // code for visual continuity. Returning to step 2 (via Edit
+  // Configuration, or peeking step 2 while on a later step) moves it
+  // back. The 3D WebGL context survives the relocation since we're
+  // moving the same DOM node — appendChild() doesn't destroy children.
+  //
+  // For all OTHER steps (1, 4, 5, 6) the preview belongs back in the
+  // config slot AND the 3D coin is torn down to free its WebGL context
+  // — it serves no purpose past the funding stage and there's no
+  // reason to keep an idle context around.
   if (num === 2) {
+    relocateTokenPreview('config');
+    if (typeof renderTokenPreview === 'function') renderTokenPreview();
+  } else if (num === 3) {
+    relocateTokenPreview('funding');
+    // No destroy: the coin is still useful as a visual anchor on the
+    // funding stage. The block (and its canvas) was already initialised
+    // on step 2, so no re-render is needed — appendChild preserves it.
+    // We do call renderTokenPreview once to ensure the stat tiles reflect
+    // any last-moment changes the user made before clicking Continue.
     if (typeof renderTokenPreview === 'function') renderTokenPreview();
   } else {
+    relocateTokenPreview('config');
     if (typeof destroyCoinPreview === 'function') destroyCoinPreview();
+  }
+}
+
+// Move the singleton #tokenPreviewBlock between its config-stage slot
+// and its funding-stage slot. The card uses its full size in both
+// locations — the funding stage's column layout gives it room to
+// render alongside the QR code without needing a compact variant.
+//
+// where: 'config' | 'funding'
+//
+// Safe to call when the block isn't currently in either slot (e.g.
+// during early init) — querySelector returns null and the function
+// bails. Idempotent: calling with the same destination twice is a
+// no-op (appendChild a node already in the target is harmless).
+function relocateTokenPreview(where) {
+  const block = document.getElementById('tokenPreviewBlock');
+  if (!block) return;
+  const configSlot = document.getElementById('tokenPreviewSlotConfig');
+  const fundingSlot = document.getElementById('tokenPreviewSlotFunding');
+  if (where === 'funding') {
+    if (!fundingSlot) return;
+    fundingSlot.appendChild(block);
+  } else {
+    if (!configSlot) return;
+    // Re-insert at the end of the config slot. The slot also contains a
+    // <label>Preview</label> sibling that should stay on top, so append
+    // (not insert) places the block below the label as the original
+    // markup had it.
+    configSlot.appendChild(block);
   }
 }
 
@@ -1019,12 +1160,21 @@ function bindStepHeaders() {
         // Currently peeked → collapse back to completed.
         setStepState(i, 'completed');
         card.classList.remove('is-peeking');
-        // Free the coin's WebGL context again when leaving a peeked step 2
-        // (we rebuilt it on peek-open). Guard on currentStep so we never tear
-        // down a coin that legitimately belongs to the active step.
-        if (i === 2 && currentStep !== 2 &&
-            typeof destroyCoinPreview === 'function') {
-          destroyCoinPreview();
+        // If we just closed a peek of step 2, the preview block is
+        // currently in step 2's config slot (we moved it there when
+        // the peek opened — see below). Move it back to the slot that
+        // matches the actual current step: funding if currentStep is 3,
+        // otherwise stay in config and tear down the coin.
+        if (i === 2 && currentStep !== 2) {
+          if (currentStep === 3) {
+            relocateTokenPreview('funding');
+            // Re-render so the now-compact card's stat tiles re-layout.
+            if (typeof renderTokenPreview === 'function') renderTokenPreview();
+          } else {
+            // Past funding: free the WebGL context since the user isn't
+            // looking at the preview anymore.
+            if (typeof destroyCoinPreview === 'function') destroyCoinPreview();
+          }
         }
         return;
       }
@@ -1051,12 +1201,15 @@ function bindStepHeaders() {
       // after setStepState because setStepState tears down any prior
       // banner as part of its general state-change cleanup.
       injectPeekBanner(card, i);
-      // The 3D coin lives on step 2 and is torn down when the user navigates
-      // past it (activateStep frees its WebGL context). Peeking step 2 for
-      // review re-shows the step body but does NOT go through activateStep,
-      // so the coin would be missing — rebuild the preview here.
-      if (i === 2 && typeof renderTokenPreview === 'function') {
-        renderTokenPreview();
+      // The token preview block is a singleton. While the user is on
+      // step 3 it sits next to the QR in the funding slot. Peeking
+      // step 2 needs to show the preview INSIDE step 2 again, so move
+      // it back to the config slot for the duration of the peek. The
+      // peek-close handler above moves it back to wherever it should
+      // live afterwards.
+      if (i === 2) {
+        relocateTokenPreview('config');
+        if (typeof renderTokenPreview === 'function') renderTokenPreview();
       }
     });
   }
@@ -2139,6 +2292,20 @@ function addPool(initial = {}) {
     // backend's older 'simple' mode is preserved for direct API
     // users (scripts) but unused here.
     ladderConfig: initial.ladderConfig || { mode: 'off', bands: [] },
+    // Per-pool support configuration.
+    //   { mode: 'off' } — no support position
+    //   { mode: 'custom', solValue: N } — single-sided quote position
+    //                                     funded with N SOL of value
+    //
+    // Support is quote-only (no token supply required), so it's
+    // orthogonal to the pool's supplyPercent budget and to the bootstrap
+    // and ladder allocations. It exists purely as a buy wall sitting
+    // just below launch price (covering down to depthPct% below, default
+    // 10%), backing any preallocated supply held outside LP. Modeled with
+    // the same shape as bootstrap (mode + solValue + per-position config)
+    // for consistency, even though support has no derived supplyPercent
+    // — it doesn't carve from anything.
+    supportConfig: initial.supportConfig || { mode: 'off' },
     // UI-only: whether this pool's body is expanded in the editor. Set
     // by initialIsExpanded() at construction; the user can flip it via
     // the header click or via auto-expansion when the pool needs
@@ -2227,6 +2394,18 @@ function rebuildPoolsFromSimple() {
   // before calling this.
   pools.length = 0;
 
+  // Preallocation reduces the total LP budget by that %. Pool allocations
+  // (SOL + optional flywheel) get scaled proportionally to fit inside the
+  // remaining LP budget so the user's intended flywheel split is preserved.
+  // Default (no preallocation) is 100% to LP. When the user enables a 20%
+  // preallocation with a 90/10 SOL/flywheel split, pools end up at 72%/18%
+  // (sum = 80%), leaving 20% outside LP for the user to distribute as they
+  // see fit (airdrop, presale, team allocation, etc.).
+  const preallocPct = simpleConfig.preallocationEnabled
+    ? Math.max(0, Math.min(99, Number(simpleConfig.preallocationPercent) || 0))
+    : 0;
+  const lpBudget = 100 - preallocPct;
+
   // Helper: compute the wide-bucket total for a pool given its bs + ladder
   // configs. With unified semantics, bs + sum(ladder) + sum(wide slices)
   // = 100% of pool. So wide total = 100 - bs - sum(bands). Slices then
@@ -2246,15 +2425,39 @@ function rebuildPoolsFromSimple() {
         FLYWHEEL_MIN_PERCENT,
         Math.min(FLYWHEEL_MAX_PERCENT, Number(simpleConfig.flywheelPercent) || DEFAULT_FLYWHEEL_PERCENT),
       );
-      const solPercent = 100 - flywheelPct;
+      // Scale the SOL/flywheel split to fit inside the LP budget. The
+      // user's intended ratio (flywheelPct of the LP slice) is preserved
+      // — preallocation just shrinks the total they share. So if the
+      // user wants 20% flywheel and 80% SOL with a 10% preallocation,
+      // pools end up at 72% SOL / 18% flywheel (sum 90%) leaving 10%
+      // preallocated.
+      const solSharePct = 100 - flywheelPct; // share of LP budget for SOL
+      const solPoolPct = solSharePct * lpBudget / 100;
+      const fwPoolPct = flywheelPct * lpBudget / 100;
 
       // Compute bootstrap and ladder for each pool. Bootstrap is derived
       // per-pool (since the pool's supplyPercent matters for converting
       // dollar value to % of pool); ladder is the same shape on both.
-      const solBs = deriveBootstrapConfigFromSimple(solPercent, 2);
+      const solBs = deriveBootstrapConfigFromSimple(solPoolPct, 2);
       const solLadder = deriveLadderConfigFromSimple();
-      const fwBs = deriveBootstrapConfigFromSimple(flywheelPct, 2);
+      const fwBs = deriveBootstrapConfigFromSimple(fwPoolPct, 2);
       const fwLadder = deriveLadderConfigFromSimple();
+
+      // Support config: simple mode spreads the total support SOL
+      // equally across both pools (SOL and flywheel). Each pool gets
+      // totalSupportSol / 2 SOL of buy-side support — same equal-split
+      // pattern as starting liquidity. This matches the spec: "spread
+      // across the various pools similar to how the starting liquidity
+      // feature works."
+      //
+      // We clone the derived config for each pool so the two pools
+      // don't share the same object reference. Without this, a later
+      // mutation in customize mode (e.g. user toggles support off on
+      // one pool) would affect both pools. Cloning is cheap — the
+      // config is a flat object with 2-3 primitive fields.
+      const sharedSupport = deriveSupportConfigFromSimple(2);
+      const solSupport = { ...sharedSupport };
+      const fwSupport = { ...sharedSupport };
 
       // Distribution slices share the wide bucket. Split-the-LP applies
       // only to the SOL pool in simple mode; flywheel pool always gets
@@ -2269,17 +2472,19 @@ function rebuildPoolsFromSimple() {
       );
       addPool({
         quoteToken: 'SOL',
-        supplyPercent: solPercent,
+        supplyPercent: solPoolPct,
         distribution: solDistribution,
         bootstrapConfig: solBs,
         ladderConfig: solLadder,
+        supportConfig: solSupport,
       });
       addPool({
         quoteToken: fw.mint,
-        supplyPercent: flywheelPct,
+        supplyPercent: fwPoolPct,
         distribution: fwDistribution,
         bootstrapConfig: fwBs,
         ladderConfig: fwLadder,
+        supportConfig: fwSupport,
       });
       return;
     }
@@ -2290,42 +2495,52 @@ function rebuildPoolsFromSimple() {
 
   // Default / flywheel-disabled / unavailable-flywheel case. Only one
   // pool (SOL), so splitting that pool is the only kind of split that
-  // makes sense here.
-  const bsCfg = deriveBootstrapConfigFromSimple(100, 1);
+  // makes sense here. Preallocation still applies — the single pool's
+  // allocation shrinks to the LP budget, with the remainder held back.
+  const bsCfg = deriveBootstrapConfigFromSimple(lpBudget, 1);
   const ladderCfg = deriveLadderConfigFromSimple();
+  const supportCfg = deriveSupportConfigFromSimple(1);
   const distribution = buildEqualSplitDistribution(
     simpleConfig.splitEnabled ? simpleConfig.splitCount : 1,
     widePctForPool(bsCfg, ladderCfg),
   );
   addPool({
     quoteToken: 'SOL',
-    supplyPercent: 100,
+    supplyPercent: lpBudget,
     distribution,
     bootstrapConfig: bsCfg,
     ladderConfig: ladderCfg,
+    supportConfig: supportCfg,
   });
 }
 
-// Translate the simple-UI bootstrap toggle into a per-pool bootstrapConfig.
+// Translate the simple-UI bootstrap config into a per-pool bootstrapConfig.
 //
-// The canonical user-intent value is the SOL value of starting liquidity
-// (simpleConfig.bootstrapSolValue) split evenly across pools. We return
-// both the solValue (canonical) and the derived supplyPercent (% of
-// this pool), so the customize-mode UI can display either and the
-// wire-format conversion can use supplyPercent without recomputing.
+// As of the support-consolidation change, simple mode never exposes a
+// custom-bootstrap control to the user — the bootstrap is always a
+// minimal ~$1 reservation. Real quote-side starting liquidity is now
+// added via the Support position feature (single-sided, no token-side
+// thickening). Token-side density near launch is the job of the
+// Ladder feature.
 //
-// supplyPercent uses the live SOL price when available (read from the
-// SOL pool's resolvedPriceUsd), falling back to $200 when no pool has
-// resolved yet — same fallback the funding estimator uses. The post-
-// resolution refresh in resolvePoolQuote re-runs this and updates each
-// pool's supplyPercent + rebalances slices when the live price arrives.
+// The custom-bootstrap path is preserved in code for two reasons:
+//   1. customize mode still supports per-pool bootstrap overrides
+//      (the per-pool UI doesn't expose it anymore, but the data
+//      pipeline still works end-to-end for any future re-introduction)
+//   2. Saved configs that pre-date this change might still carry
+//      bootstrapMode='custom' in their state; the existing pre-flight
+//      and wire-format code handles those without regression.
 //
-// If any input is missing or invalid (no resolved SOL price yet, no
-// target mcap set, custom mode but zero SOL value), we return minimal
-// mode. Pre-flight will reject if a custom-mode pool ends up with a
-// bad supplyPercent, but returning minimal here is the friendlier
-// behavior because the user can still launch and then switch to
-// customize to fix it.
+// supplyPercent (when in custom mode) uses the live SOL price when
+// available (read from the SOL pool's resolvedPriceUsd), falling back
+// to $200 when no pool has resolved yet — same fallback the funding
+// estimator uses. The post-resolution refresh in resolvePoolQuote
+// re-runs this and updates each pool's supplyPercent + rebalances
+// slices when the live price arrives.
+//
+// If any input is missing or invalid, we return minimal mode. That's
+// the safe default — the pool will just spawn with a tradable ~$1
+// reserve and the user can recover by switching to customize.
 function deriveBootstrapConfigFromSimple(poolSupplyPercent, poolCount) {
   if (simpleConfig.mode !== 'default') return { mode: 'minimal' };
   if (simpleConfig.bootstrapMode !== 'custom') return { mode: 'minimal' };
@@ -2391,6 +2606,99 @@ function recomputePoolBootstrapAndRebalance(pool) {
   rebalanceWideSlicesByDelta(pool, newPct - oldPct);
 }
 
+// Translate the simple-UI support toggle into a per-pool supportConfig.
+//
+// Simple mode spreads the total support SOL equally across all pools —
+// each pool gets totalSol / poolCount SOL of buy-side support sitting
+// just below its launch price. This matches the bootstrap pattern (one
+// launch-level SOL value, equal split per pool) and gives every pool a
+// proportional buy wall so sellers routing into any pool find liquidity
+// to land on.
+//
+// Customize mode reads per-pool support configs directly — users can
+// tune each pool's solValue and depth independently from this simple
+// derivation.
+//
+// Returns { mode: 'off' } when the toggle is off or any input is
+// invalid. Returns the same mode/solValue/depthPct shape that
+// customize-mode would produce, so rebuildPoolsFromSimple can use the
+// result as-is without per-call special casing.
+function deriveSupportConfigFromSimple(poolCount) {
+  if (simpleConfig.mode !== 'default') return { mode: 'off' };
+  if (!simpleConfig.supportEnabled) return { mode: 'off' };
+  // Read the EFFECTIVE value (stored, clamped up to the auto-back
+  // floor when applicable). Centralizing the clamp in
+  // effectiveSupportSolValue() ensures the wire format and the inline
+  // display always agree, regardless of render timing.
+  const totalSol = effectiveSupportSolValue();
+  if (!Number.isFinite(totalSol) || totalSol <= 0) return { mode: 'off' };
+  // Defensive: callers should always pass a positive pool count, but
+  // guarding here keeps the function safe if a refactor ever drops the
+  // arg. Fallback to 1 pool (no division) so the user's intended SOL
+  // value still lands somewhere rather than vanishing.
+  const count = (Number.isFinite(poolCount) && poolCount > 0) ? poolCount : 1;
+  const perPoolSol = totalSol / count;
+  // Depth applies uniformly across all pools when derived from simple
+  // mode. customize-mode users can edit each pool's depth separately.
+  const depth = clampSupportDepth(simpleConfig.supportDepthPct);
+  return { mode: 'custom', solValue: perPoolSol, depthPct: depth };
+}
+
+// Clamp a depth value into the supported [min, max] range, falling
+// back to the default when the input is missing or non-finite. Used
+// at every write/read site so an out-of-range value never reaches the
+// backend (which has its own validation, but consistent UI defense
+// keeps the user from seeing pre-flight errors for what should be a
+// simple clamp).
+function clampSupportDepth(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return SUPPORT_DEFAULT_DEPTH_PCT;
+  return Math.max(SUPPORT_MIN_DEPTH_PCT, Math.min(SUPPORT_MAX_DEPTH_PCT, n));
+}
+
+// Compute the SOL value that would back a given preallocation percent at
+// equal USD value. This is the "honest" support sizing — the buy wall
+// can absorb exactly as much selling pressure as the preallocation
+// could create if every preallocated token tried to dump at launch.
+//
+// Returns null when either input we need isn't available (no market cap
+// entered yet, or no live SOL price). Callers should treat null as
+// "can't recommend a value yet" and fall back to a sensible default
+// (typically 1 SOL).
+//
+// Formula:
+//   preallocUsd = (preallocPct / 100) × marketCapUsd
+//   supportSol  = preallocUsd / solUsd
+//
+// Used both when auto-enabling support alongside preallocation, and
+// when displaying the "recommended: X SOL" hint next to the support
+// input so the user knows what would fully back their preallocation.
+function recommendedSupportSolForPreallocation(preallocPct) {
+  if (!Number.isFinite(preallocPct) || preallocPct <= 0) return null;
+  const mcap = parseNumberInput(document.getElementById('targetMarketCap'));
+  if (!Number.isFinite(mcap) || mcap <= 0) return null;
+  // Live SOL price comes from the SOL pool's resolved info; falls back
+  // to nothing rather than guessing, so we don't end up with a wildly
+  // wrong recommendation when prices haven't resolved yet.
+  const solPool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+  const solUsd = solPool && Number(solPool.resolvedPriceUsd) > 0
+    ? Number(solPool.resolvedPriceUsd) : null;
+  if (!solUsd) return null;
+  const preallocUsd = mcap * preallocPct / 100;
+  return preallocUsd / solUsd;
+}
+
+// Mirror of recomputePoolBootstrapAndRebalance for support. Support has
+// no derived supplyPercent (it's quote-only and doesn't carve from the
+// pool's token supply), so this is purely a hook for UI refresh — it
+// updates any cached display values that depend on the live SOL price.
+// Currently a no-op at the data level since supportConfig only stores
+// the user's canonical solValue input; the UI computes the USD-equivalent
+// display value on each render.
+function recomputePoolSupportAndRebalance(_pool) {
+  // No-op. Reserved for future use if support gains derived state.
+}
+
 // Translate the simple-UI ladder toggle into a per-pool ladderConfig.
 //
 // When the toggle is off (or the user is in customize mode but
@@ -2454,6 +2762,162 @@ function generateLogSpacedBands({ supplyPercent, bandCount, ceilingMultiplier })
   return bands;
 }
 
+// Returns true when the user is currently focused on an input or
+// element inside #simpleConfigBody. Used by code paths that would
+// otherwise re-render the simple config (and destroy the focused
+// element) — typing into a numeric input fires that input's handler
+// AND any async work (resolvePoolQuote completing, etc.) that wants
+// to re-render. We suppress the re-render when focus is in the body
+// so the user's typing isn't interrupted; the next render (triggered
+// by blur or by a structural change like toggling a feature) catches
+// up the displays.
+//
+// Implementation note: document.activeElement is a stable read in
+// every browser; checking `body.contains(activeElement)` correctly
+// returns false when focus is anywhere else on the page, including
+// the page-level mcap/tokenSupply/lockPositions inputs (which live
+// outside simpleConfigBody).
+function isFocusInsideSimpleConfigBody() {
+  const body = document.getElementById('simpleConfigBody');
+  if (!body) return false;
+  const focused = document.activeElement;
+  if (!focused || focused === document.body) return false;
+  return body.contains(focused);
+}
+
+// Debounce for rebuildPoolsFromSimple. Numeric inputs (preallocation %,
+// support SOL, support depth) fire their handler on EVERY keystroke,
+// and each rebuild fires resolvePoolQuote for each pool — which is
+// cheap (cache hits) but pegs the event loop and produces visible
+// work flicker (pool list re-renders, brief "resolving" states). A
+// 250ms debounce collapses rapid typing into a single rebuild after
+// the user pauses. We still call it synchronously on blur and on
+// non-typing events (toggle changes, dropdown selects) so structural
+// updates remain instant.
+//
+// The flush helper runs a rebuild immediately and clears any pending
+// debounce — it's called from blur handlers and the Continue click
+// to guarantee the pools reflect the user's latest input before any
+// follow-on action (estimator call, mode switch, etc.).
+let _rebuildDebounceHandle = null;
+function rebuildPoolsFromSimpleDebounced() {
+  if (_rebuildDebounceHandle != null) {
+    clearTimeout(_rebuildDebounceHandle);
+  }
+  _rebuildDebounceHandle = setTimeout(() => {
+    _rebuildDebounceHandle = null;
+    rebuildPoolsFromSimple();
+  }, 250);
+}
+function flushRebuildPoolsFromSimple() {
+  if (_rebuildDebounceHandle != null) {
+    clearTimeout(_rebuildDebounceHandle);
+    _rebuildDebounceHandle = null;
+  }
+  // Always run the rebuild on flush, even if no debounce was pending.
+  // Blur handlers and Continue clicks call flush as a "commit now"
+  // signal — they need the pool state current, and a no-op flush
+  // would let stale state slip through if (e.g.) the user typed and
+  // then waited >250ms before blurring (debounce fired, no-op flush
+  // is fine) versus typed and blurred immediately (debounce pending,
+  // flush triggers it). The unconditional rebuild covers both paths.
+  rebuildPoolsFromSimple();
+}
+
+// Effective support SOL value — the stored value, clamped up to the
+// auto-back floor when Auto-back is on and preallocation is enabled.
+// This is the single source of truth for "what SOL value should we
+// actually use right now?". Used by the inline display refresh, by
+// deriveSupportConfigFromSimple (for the wire format), and by the
+// render-time display computation in renderSimpleConfig. Keeping the
+// clamp logic in one place avoids the prior bug where the floor was
+// only applied at render time, leaving the wire format and inline
+// displays stale during typing (when the focus guard skips render).
+//
+// Returns the stored value as-is if Auto-back is off, preallocation
+// is off, or the recommended floor can't be computed (e.g. cold SOL
+// price cache, no market cap entered yet).
+function effectiveSupportSolValue() {
+  const stored = Number(simpleConfig.supportSolValue) || 0;
+  if (!simpleConfig.supportAutoSize || !simpleConfig.preallocationEnabled) {
+    return stored;
+  }
+  const rec = recommendedSupportSolForPreallocation(
+    Number(simpleConfig.preallocationPercent) || 0,
+  );
+  if (!Number.isFinite(rec) || rec <= 0) return stored;
+  return rec > stored ? rec : stored;
+}
+
+// Standalone version of the in-render refreshSimpleSupportDisplay
+// helper. Re-queries the DOM each call rather than closing over the
+// element references, so it can be invoked from anywhere (e.g. from
+// resolvePoolQuote's completion path when we want to refresh the
+// display without doing a full re-render that would steal input
+// focus). Safe to call when the simple config isn't rendered (the
+// querySelector returns null and the function bails).
+function refreshSimpleSupportDisplayInline() {
+  const supportDisplay = document.getElementById('simpleSupportDisplay');
+  if (!supportDisplay) return;
+  const sp = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+  const solUsd = sp && Number(sp.resolvedPriceUsd) > 0 ? Number(sp.resolvedPriceUsd) : null;
+  // Read the EFFECTIVE value (clamped to floor) so the display reflects
+  // what's actually going to land in the wire format — not just what
+  // the user has typed. During typing with Auto-back on, a value below
+  // the floor still shows the floor's USD figure here, so the user
+  // sees the honest buy-wall size.
+  const sv = effectiveSupportSolValue();
+  const dp = clampSupportDepth(simpleConfig.supportDepthPct);
+  const usd = solUsd && sv > 0 ? sv * solUsd : null;
+
+  let text;
+  if (usd != null) {
+    text = `≈ $${formatUsdRoughly(usd)} buy wall, launch to -${dp}%`;
+  } else if (sv > 0) {
+    text = `(USD value will show once SOL price resolves; range -${dp}%)`;
+  } else {
+    text = `single-sided quote liquidity covering -${dp}% below launch`;
+  }
+
+  if (simpleConfig.preallocationEnabled && usd != null) {
+    const mcap = parseNumberInput(document.getElementById('targetMarketCap'));
+    const pp = Number(simpleConfig.preallocationPercent) || 0;
+    if (Number.isFinite(mcap) && mcap > 0 && pp > 0) {
+      const preallocUsd = mcap * pp / 100;
+      const coverage = preallocUsd > 0 ? usd / preallocUsd : 1;
+      if (coverage >= 1) {
+        text += ` · fully backs preallocation ✓`;
+      } else {
+        const pct = Math.round(coverage * 100);
+        text += ` · backs ${pct}% of preallocation`;
+      }
+    }
+  }
+  supportDisplay.textContent = text;
+}
+
+// Same idea for the preallocation display — refresh the inline text
+// values (token count, USD figure) without touching the input element
+// the user is typing into. Reads target market cap and token supply
+// from their page-level input elements; both live outside the simple
+// config body so they survive any render.
+function refreshSimplePreallocDisplayInline() {
+  const preallocDisplay = document.getElementById('simplePreallocDisplay');
+  if (!preallocDisplay) return;
+  const tsi = parseNumberInput(document.getElementById('tokenSupply'));
+  const tmi = parseNumberInput(document.getElementById('targetMarketCap'));
+  const pp = Number(simpleConfig.preallocationPercent) || 0;
+  const tk = Number.isFinite(tsi) && tsi > 0 && pp > 0 ? tsi * pp / 100 : null;
+  const us = Number.isFinite(tmi) && tmi > 0 && pp > 0 ? tmi * pp / 100 : null;
+  preallocDisplay.textContent = (tk != null && us != null)
+    ? `≈ ${tk.toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens · $${formatUsdRoughly(us)}`
+    : (tk != null
+        ? `≈ ${tk.toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens`
+        : (us != null
+            ? `≈ $${formatUsdRoughly(us)}`
+            : 'enter supply and market cap above to see values'));
+}
+
 // Paint the simple-config UI into #simpleConfigBody. Called whenever
 // simpleConfig changes or when switching mode. Uses textContent /
 // dataset on the elements we listen to, but constructs them with
@@ -2462,6 +2926,23 @@ function generateLogSpacedBands({ supplyPercent, bandCount, ceilingMultiplier })
 function renderSimpleConfig() {
   const body = document.getElementById('simpleConfigBody');
   if (!body) return;
+
+  // Detach the Lock-liquidity field (if it's currently inside body
+  // from a prior render) before we wipe body.innerHTML. The field is
+  // a single canonical DOM element that lives at #lockPositionsField,
+  // physically moved between simple-mode and customize-mode slots by
+  // applySimpleConfigMode + relocateLockPositionsField. Without this
+  // detach, body.innerHTML='...' would destroy the element along with
+  // its event listeners and state, breaking the toggle.
+  //
+  // We move it temporarily to its page-level home; the post-render
+  // relocateLockPositionsField call moves it back into the new slot
+  // inside the freshly-rendered Advanced details.
+  const lockField = document.getElementById('lockPositionsField');
+  const pageHome = document.getElementById('lockPositionsSlotPage');
+  if (lockField && pageHome && lockField.parentElement !== pageHome) {
+    pageHome.appendChild(lockField);
+  }
 
   // Defensive: if simpleConfig.flywheelKey points at an unavailable
   // flywheel (e.g. someone re-flagged 'reserve' as unavailable, or a
@@ -2510,14 +2991,6 @@ function renderSimpleConfig() {
     ? 'A flywheel routes a portion of trade fees into a reserve token like XLRT, building accumulation pressure on it. Recommended for most launches.'
     : 'Your token will launch in a single SOL pool with all supply allocated. No flywheel mechanic — simple and standard.';
 
-  // Bootstrap-mode state. Clamp the SOL value defensively to prevent
-  // negative or absurd values from a corrupted state from rendering
-  // weirdly. The funding estimator does its own validation server-side;
-  // this is just for display.
-  const bsCustomChecked = simpleConfig.bootstrapMode === 'custom' ? 'checked' : '';
-  const bsInputDisabled = simpleConfig.bootstrapMode === 'custom' ? '' : 'disabled';
-  const bsSolValue = Math.max(0, Number(simpleConfig.bootstrapSolValue) || 0);
-
   // Ladder state. Disabled sliders when toggle is off — keeps the visible
   // values but conveys "this isn't doing anything" to the user.
   const ladderChecked = simpleConfig.ladderEnabled ? 'checked' : '';
@@ -2530,6 +3003,111 @@ function renderSimpleConfig() {
     LADDER_MIN_BANDS,
     Math.min(LADDER_MAX_BANDS, Number(simpleConfig.ladderBandCount) || LADDER_DEFAULT_BANDS),
   );
+
+  // Preallocation state. Inputs only matter when the toggle is on; we
+  // still render their values (just disabled) so the user can see what
+  // would happen at re-enable. Clamp the percent input to (0, 99] —
+  // 100% preallocation means no LP at all, which isn't a launch.
+  const preallocChecked = simpleConfig.preallocationEnabled ? 'checked' : '';
+  const preallocDisabled = simpleConfig.preallocationEnabled ? '' : 'disabled';
+  const preallocPct = Math.max(0, Math.min(
+    99, Number(simpleConfig.preallocationPercent) || 10,
+  ));
+
+  // Compute display values for the preallocation row. Token amount uses
+  // the total supply input (or 0 if unset). USD value uses the
+  // targetMarketCap input. Both gracefully degrade to a dash when the
+  // user hasn't entered the relevant input yet — the row stays readable.
+  const totalSupplyInput = parseNumberInput(document.getElementById('tokenSupply'));
+  const targetMcInput = parseNumberInput(document.getElementById('targetMarketCap'));
+  const preallocTokens = preallocChecked && Number.isFinite(totalSupplyInput) && totalSupplyInput > 0
+    ? totalSupplyInput * preallocPct / 100
+    : null;
+  const preallocUsd = preallocChecked && Number.isFinite(targetMcInput) && targetMcInput > 0
+    ? targetMcInput * preallocPct / 100
+    : null;
+  const preallocDisplayText = (preallocTokens != null && preallocUsd != null)
+    ? `≈ ${preallocTokens.toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens · $${formatUsdRoughly(preallocUsd)}`
+    : (preallocTokens != null
+        ? `≈ ${preallocTokens.toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens`
+        : (preallocUsd != null
+            ? `≈ $${formatUsdRoughly(preallocUsd)}`
+            : 'enter supply and market cap above to see values'));
+
+  // Support state. The SOL input is independent of preallocation in
+  // shape (you can technically have support without preallocation —
+  // it's just extra buy-side liquidity below launch), but it's most
+  // useful when there IS preallocation to back. The help text spells
+  // that out. We disable the input when the toggle is off (consistent
+  // with how the bootstrap row works) but don't gate enabling support
+  // on preallocation being on — let the user combine them as they like.
+  const supportChecked = simpleConfig.supportEnabled ? 'checked' : '';
+  // Depth is clamped to the supported range at render time, same belt-
+  // and-suspenders pattern as the other percent sliders. The input
+  // accepts integers between the min and max constants.
+  const supportDepthPct = clampSupportDepth(simpleConfig.supportDepthPct);
+
+  // Auto-back state: when on AND preallocation is also on, the SOL
+  // input value is clamped to a floor equal to the preallocation USD
+  // value (the user can still type a larger value for a deeper wall).
+  // Without preallocation enabled there's nothing to back, so the
+  // Auto-back checkbox is disabled.
+  const supportAutoChecked = simpleConfig.supportAutoSize ? 'checked' : '';
+  // SOL input is enabled whenever support is on. Auto-back doesn't
+  // lock the input — it only enforces a MINIMUM. The clamp happens
+  // at write-time in the input handler. Depth input follows the
+  // toggle only; user-tunable regardless of auto-back state.
+  const supportSolDisabled = simpleConfig.supportEnabled ? '' : 'disabled';
+  const supportDepthDisabled = simpleConfig.supportEnabled ? '' : 'disabled';
+
+  // Compute the displayed SOL value via the shared helper, which
+  // applies the auto-back floor when applicable. Mirror the clamped
+  // value into stored state so subsequent reads from
+  // simpleConfig.supportSolValue (other UI paths, customize-mode
+  // switch) see the same value the user is seeing.
+  const displayedSupportSol = effectiveSupportSolValue();
+  if (simpleConfig.supportAutoSize
+      && simpleConfig.preallocationEnabled
+      && displayedSupportSol > (Number(simpleConfig.supportSolValue) || 0)) {
+    simpleConfig.supportSolValue = displayedSupportSol;
+  }
+  // USD-equivalent of the support SOL value, using the live SOL price
+  // from the SOL pool if available. Falls back to no display when
+  // nothing's resolved yet — better to show nothing than show a wrong
+  // number.
+  const solPoolForSupport = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+  const solUsdForSupport = solPoolForSupport && Number(solPoolForSupport.resolvedPriceUsd) > 0
+    ? Number(solPoolForSupport.resolvedPriceUsd)
+    : null;
+  const supportUsd = supportChecked && solUsdForSupport && displayedSupportSol > 0
+    ? displayedSupportSol * solUsdForSupport
+    : null;
+  // Build the static display text — same logic as refreshSimpleSupportDisplay
+  // (which runs on subsequent input events) so the initial render matches
+  // what the user sees after typing. Includes the preallocation-coverage
+  // indicator when both features are on, so the rug-resistance link is
+  // visible at first paint.
+  let supportDisplayText;
+  if (supportUsd != null) {
+    supportDisplayText = `≈ $${formatUsdRoughly(supportUsd)} buy wall, launch to -${supportDepthPct}%`;
+  } else if (supportChecked && displayedSupportSol > 0) {
+    supportDisplayText = `(USD value will show once SOL price resolves; range -${supportDepthPct}%)`;
+  } else {
+    supportDisplayText = `single-sided quote liquidity covering -${supportDepthPct}% below launch`;
+  }
+  if (simpleConfig.preallocationEnabled && supportUsd != null) {
+    const _mcap = parseNumberInput(document.getElementById('targetMarketCap'));
+    const _pp = Number(simpleConfig.preallocationPercent) || 0;
+    if (Number.isFinite(_mcap) && _mcap > 0 && _pp > 0) {
+      const _preallocUsd = _mcap * _pp / 100;
+      const _coverage = _preallocUsd > 0 ? supportUsd / _preallocUsd : 1;
+      if (_coverage >= 1) {
+        supportDisplayText += ` · fully backs preallocation ✓`;
+      } else {
+        supportDisplayText += ` · backs ${Math.round(_coverage * 100)}% of preallocation`;
+      }
+    }
+  }
 
   body.innerHTML = `
     <div class="simple-config-row">
@@ -2552,58 +3130,130 @@ function renderSimpleConfig() {
       </div>
     </div>
     <p class="simple-config-help-text">${escapeHtml(helpText)}</p>
-    <div class="simple-config-row">
-      <label class="simple-config-toggle">
-        <input type="checkbox" id="simpleSplitToggle" ${splitChecked}>
-        <strong>Split the LP</strong>
-      </label>
-      <div class="simple-config-slider" ${splitSliderDisabled}>
-        <input type="range" id="simpleSplitSlider"
-               min="${SPLIT_MIN_COUNT}" max="${SPLIT_MAX_COUNT}" step="1"
-               value="${splitValue}" ${splitSliderDisabled}>
-        <span class="simple-config-slider-value" id="simpleSplitSliderValue">${splitReadoutText}</span>
+
+    <details id="simpleAdvancedDetails"${simpleConfig._advancedExpanded ? ' open' : ''} style="margin-top: 1rem; border-top: 1px dashed var(--rule, rgba(28,22,16,0.15)); padding-top: 0.75rem;">
+      <summary style="font-weight: 600; user-select: none; padding: 0.25rem 0;">
+        <span class="icon is-small" style="margin-right: 0.25rem;"><i class="fas fa-cog"></i></span>
+        Advanced options
+        ${(simpleConfig.splitEnabled
+            || simpleConfig.ladderEnabled
+            || simpleConfig.preallocationEnabled
+            || simpleConfig.supportEnabled)
+          // Render each active feature as its own pill with a real
+          // gap between them. Earlier the names were joined with " · "
+          // into a SINGLE pill, which read as one long label rather
+          // than a list of independent toggles. Separate pills make
+          // it visually obvious that each is its own switch — turning
+          // one off should make one pill disappear.
+          ? [
+              simpleConfig.preallocationEnabled ? 'preallocation' : null,
+              simpleConfig.supportEnabled ? 'support' : null,
+              simpleConfig.splitEnabled ? 'split LP' : null,
+              simpleConfig.ladderEnabled ? 'ladder' : null,
+            ].filter(Boolean).map((label) =>
+              `<span style="font-weight: normal; font-size: 0.85em; margin-left: 0.4rem; color: var(--ink-soft, #4a3b27); background: var(--gold-soft, #cda14a); padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid var(--gold, #b88a2a);">${label}</span>`
+            ).join('')
+          : `<span class="is-size-7 has-text-grey" style="font-weight: normal; margin-left: 0.5rem;">— preallocation, support, LP splitting, ladder, pool customization</span>`}
+      </summary>
+      <div style="margin-top: 0.75rem;">
+        <div class="simple-config-row">
+          <label class="simple-config-toggle">
+            <input type="checkbox" id="simplePreallocToggle" ${preallocChecked}>
+            <strong>Preallocate supply</strong>
+          </label>
+          <div class="simple-config-slider">
+            <input class="input is-small" type="number" min="0" max="99" step="1"
+                   id="simplePreallocPctInput"
+                   style="width: 6rem;"
+                   value="${preallocPct}" ${preallocDisabled}>
+            <span class="simple-config-slider-value" id="simplePreallocPctUnit">% of supply</span>
+          </div>
+          <label class="simple-config-toggle" style="margin-left:0.5rem;" title="When on, the Support position's SOL value is automatically pinned to a minimum that fully backs the preallocated supply. You can still set a larger Support value for a deeper buy wall.">
+            <input type="checkbox" id="simplePreallocAutoBackToggle" ${supportAutoChecked} ${preallocChecked ? '' : 'disabled'}>
+            <span class="is-size-7">Auto-back with support</span>
+          </label>
+          <div class="simple-config-slider-value" id="simplePreallocDisplay" style="font-style: italic; color: var(--text-muted, #666);">${escapeHtml(preallocDisplayText)}</div>
+        </div>
+        <div id="simplePreallocWarning" class="notification is-warning is-light py-2 px-3 mt-2 mb-0 is-size-7${preallocChecked && !simpleConfig.supportEnabled ? '' : ' hidden'}">
+          <strong>⚠ Preallocation is unbacked.</strong>
+          Without a Support position, holders of preallocated supply have no buy-side liquidity to sell into — this is the textbook rug shape.
+          <a href="#" id="simplePreallocEnableSupport"><strong>Enable Support position</strong></a> to add an honest exit.
+        </div>
+        <p class="simple-config-help-text">Holds back a percentage of total supply from LP — for team/VC tokens, presales, airdrops, staking rewards, or any utility reserve. Pool allocations scale down to fit the remaining budget, preserving your flywheel split. The preallocated tokens stay in the launch wallet for you to distribute after launch. With <strong>Auto-back with support</strong> on, the Support position below is pinned to a minimum SOL value that equals the preallocation's USD value — preventing an unbacked-supply rug.</p>
+        <div class="simple-config-row" id="simpleSupportRow"${preallocChecked && !simpleConfig.supportEnabled ? ' style="outline:2px solid #f5d76e; border-radius:4px; padding:0.25rem 0.5rem; margin-left:-0.5rem;"' : ''}>
+          <label class="simple-config-toggle">
+            <input type="checkbox" id="simpleSupportToggle" ${supportChecked}>
+            <strong>Add support position</strong>
+          </label>
+          <div class="simple-config-slider">
+            <input class="input is-small" type="number" min="0" step="0.1"
+                   id="simpleSupportSolInput"
+                   style="width: 7rem;"
+                   value="${Number(displayedSupportSol).toFixed(Math.abs(displayedSupportSol) >= 10 ? 1 : 3)}" ${supportSolDisabled}>
+            <span class="simple-config-slider-value" id="simpleSupportSolUnit">SOL</span>
+          </div>
+          <div class="simple-config-slider">
+            <span class="simple-config-slider-value" style="line-height:30px;">depth</span>
+            <input class="input is-small" type="number"
+                   min="${SUPPORT_MIN_DEPTH_PCT}" max="${SUPPORT_MAX_DEPTH_PCT}" step="1"
+                   id="simpleSupportDepthInput"
+                   style="width: 4.5rem;"
+                   value="${supportDepthPct}" ${supportDepthDisabled}>
+            <span class="simple-config-slider-value">%</span>
+          </div>
+          <div class="simple-config-slider-value" id="simpleSupportDisplay" style="font-style: italic; color: var(--text-muted, #666);">${escapeHtml(supportDisplayText)}</div>
+        </div>
+        <p class="simple-config-help-text">Single-sided buy-side liquidity sitting just below launch price — quote-only, so it doesn't carve from your token-side allocation. The depth setting controls how far the buy wall extends. The SOL you commit gets split evenly across every pool (SOL pool plus any flywheel pools). When <strong>Auto-back with support</strong> is on in the Preallocate row above, this SOL value is silently bumped up to whatever's needed to fully back the preallocation — type more if you want a deeper wall, but the minimum holds. For token-side density near launch price (resistance / accumulation bands), see Ladder positions below. Customize mode lets you tune each pool independently with per-pool depth.</p>
+        <div class="simple-config-row">
+          <label class="simple-config-toggle">
+            <input type="checkbox" id="simpleSplitToggle" ${splitChecked}>
+            <strong>Split the LP</strong>
+          </label>
+          <div class="simple-config-slider" ${splitSliderDisabled}>
+            <input type="range" id="simpleSplitSlider"
+                   min="${SPLIT_MIN_COUNT}" max="${SPLIT_MAX_COUNT}" step="1"
+                   value="${splitValue}" ${splitSliderDisabled}>
+            <span class="simple-config-slider-value" id="simpleSplitSliderValue">${splitReadoutText}</span>
+          </div>
+        </div>
+        <p class="simple-config-help-text">Splits the SOL pool into multiple positions, each minting its own transferable Fee Key NFT (when Lock liquidity is enabled below) — useful if you want to give away or sell partial fee streams. To split the flywheel pool too, use Customize.</p>
+        <div class="simple-config-row">
+          <label class="simple-config-toggle">
+            <input type="checkbox" id="simpleLadderToggle" ${ladderChecked}>
+            <strong>Ladder positions</strong>
+          </label>
+          <div class="simple-config-slider" ${ladderSlidersDisabled}>
+            <input type="range" id="simpleLadderPercentSlider"
+                   min="${LADDER_MIN_PERCENT}" max="${LADDER_MAX_PERCENT}" step="5"
+                   value="${ladderPercent}" ${ladderSlidersDisabled}>
+            <span class="simple-config-slider-value" id="simpleLadderPercentValue">${ladderPercent}% supply</span>
+          </div>
+          <div class="simple-config-slider" ${ladderSlidersDisabled}>
+            <input type="range" id="simpleLadderBandsSlider"
+                   min="${LADDER_MIN_BANDS}" max="${LADDER_MAX_BANDS}" step="1"
+                   value="${ladderBandCount}" ${ladderSlidersDisabled}>
+            <span class="simple-config-slider-value" id="simpleLadderBandsValue">${ladderBandCount} bands</span>
+          </div>
+        </div>
+        <p class="simple-config-help-text">Splits a portion of each pool's supply across discrete log-spaced price bands going up to 1000× launch (with gaps between bands for breakouts). Each band acts as resistance on the way up and support on the way back down. Smooths supply distribution so 90% isn't gobbled up by the time you hit 10× — leaves room for higher-mcap accumulation. The rest of the pool stays in a wide position covering all prices.</p>
+        <div class="simple-config-customize-row" style="margin-top: 0.75rem;">
+          <button type="button" class="button is-link is-light" id="simpleCustomizeBtn">
+            <span class="icon"><i class="fas fa-sliders-h"></i></span>
+            <span>Customize pools manually</span>
+          </button>
+          <p class="simple-config-help-text" style="margin-top: 0.5rem;">Switches to per-pool editing — pick the quote token, fee tier, and allocation for each pool individually, and configure support/ladder positions per-pool. The current simple-mode settings carry over as the starting point.</p>
+        </div>
+        <!--
+          Slot for the Lock-liquidity checkbox. The element lives at the
+          page level in index.html (#lockPositionsField) so customize
+          mode can also access it; applySimpleConfigMode() relocates
+          the element here when simple mode is active, and moves it
+          back to its page-level home when switching to customize mode.
+          Single source of truth, no duplicated state.
+        -->
+        <div id="lockPositionsSlotSimple" style="margin-top: 0.75rem; border-top: 1px dashed var(--rule, rgba(28,22,16,0.08)); padding-top: 0.5rem;"></div>
       </div>
-    </div>
-    <p class="simple-config-help-text">Splits the SOL pool into multiple positions, each minting its own transferable Fee Key NFT (when Lock liquidity is enabled below) — useful if you want to give away or sell partial fee streams. To split the flywheel pool too, use Customize.</p>
-    <div class="simple-config-row">
-      <label class="simple-config-toggle">
-        <input type="checkbox" id="simpleBootstrapCustomToggle" ${bsCustomChecked}>
-        <strong>Add starting liquidity</strong>
-      </label>
-      <div class="simple-config-slider">
-        <input class="input is-small" type="number" min="0" step="0.1"
-               id="simpleBootstrapSolInput"
-               style="width: 7rem;"
-               value="${bsSolValue}" ${bsInputDisabled}>
-        <span class="simple-config-slider-value" id="simpleBootstrapSolUnit">SOL total</span>
-      </div>
-    </div>
-    <p class="simple-config-help-text">By default the bootstrap is a tiny ~$1 position that just makes the pool tradable. Enable this to deposit real starting liquidity across all your pools — the SOL you commit gets split evenly across every pool (SOL pool plus any flywheel pools), and each pool's bootstrap uses a full-range position so the support shows up at every price level. Token-side liquidity carves out of each pool's allocation; you don't need extra tokens.</p>
-    <div class="simple-config-row">
-      <label class="simple-config-toggle">
-        <input type="checkbox" id="simpleLadderToggle" ${ladderChecked}>
-        <strong>Ladder positions</strong>
-      </label>
-      <div class="simple-config-slider" ${ladderSlidersDisabled}>
-        <input type="range" id="simpleLadderPercentSlider"
-               min="${LADDER_MIN_PERCENT}" max="${LADDER_MAX_PERCENT}" step="5"
-               value="${ladderPercent}" ${ladderSlidersDisabled}>
-        <span class="simple-config-slider-value" id="simpleLadderPercentValue">${ladderPercent}% supply</span>
-      </div>
-      <div class="simple-config-slider" ${ladderSlidersDisabled}>
-        <input type="range" id="simpleLadderBandsSlider"
-               min="${LADDER_MIN_BANDS}" max="${LADDER_MAX_BANDS}" step="1"
-               value="${ladderBandCount}" ${ladderSlidersDisabled}>
-        <span class="simple-config-slider-value" id="simpleLadderBandsValue">${ladderBandCount} bands</span>
-      </div>
-    </div>
-    <p class="simple-config-help-text">Splits a portion of each pool's supply across discrete log-spaced price bands going up to 1000× launch (with gaps between bands for breakouts). Each band acts as resistance on the way up and support on the way back down. Smooths supply distribution so 90% isn't gobbled up by the time you hit 10× — leaves room for higher-mcap accumulation. The rest of the pool stays in a wide position covering all prices.</p>
-    <div class="simple-config-customize-row">
-      <button type="button" class="button is-link is-light" id="simpleCustomizeBtn">
-        <span class="icon"><i class="fas fa-sliders-h"></i></span>
-        <span>Customize pools manually</span>
-      </button>
-    </div>
+    </details>
   `;
 
   // Wire up listeners. These elements are recreated on every render,
@@ -2617,8 +3267,6 @@ function renderSimpleConfig() {
   const splitToggle = body.querySelector('#simpleSplitToggle');
   const splitSlider = body.querySelector('#simpleSplitSlider');
   const splitReadout = body.querySelector('#simpleSplitSliderValue');
-  const bsCustomToggle = body.querySelector('#simpleBootstrapCustomToggle');
-  const bsSolInput = body.querySelector('#simpleBootstrapSolInput');
   const ladderToggle = body.querySelector('#simpleLadderToggle');
   const ladderPctSlider = body.querySelector('#simpleLadderPercentSlider');
   const ladderPctReadout = body.querySelector('#simpleLadderPercentValue');
@@ -2695,29 +3343,6 @@ function renderSimpleConfig() {
   // Bootstrap mode toggle: switch between minimal and custom. State
   // persists across toggle off/on cycles (the SOL value is kept), so a
   // user who accidentally untoggles doesn't lose their entered amount.
-  // Re-renders so the SOL input flips between enabled and disabled, and
-  // re-runs rebuildPoolsFromSimple so per-pool bootstrapConfig stays in
-  // sync (this is what makes the simple→customize transition show the
-  // bootstrap state correctly).
-  bsCustomToggle.addEventListener('change', (e) => {
-    simpleConfig.bootstrapMode = e.target.checked ? 'custom' : 'minimal';
-    rebuildPoolsFromSimple();
-    renderSimpleConfig();
-  });
-
-  // SOL value input. We update on `input` (every keystroke) rather than
-  // on `change` so the value is fresh when the user clicks Continue.
-  // The estimator will be called against the latest value at submit
-  // time — no live re-estimate per keystroke (those are expensive and
-  // bursty typing would drown the server). We also re-derive the
-  // per-pool bootstrapConfig so a customize-mode switch later sees the
-  // current value.
-  bsSolInput.addEventListener('input', (e) => {
-    const v = Number(e.target.value);
-    simpleConfig.bootstrapSolValue = Number.isFinite(v) && v >= 0 ? v : 0;
-    rebuildPoolsFromSimple();
-  });
-
   // Ladder toggle: enable/disable the ladder feature. State persists
   // (percent + band count are kept), and the sliders flip between
   // enabled/disabled via re-render. rebuildPoolsFromSimple regenerates
@@ -2746,6 +3371,340 @@ function renderSimpleConfig() {
     rebuildPoolsFromSimple();
   });
 
+  // Preallocation toggle: enable/disable the preallocation feature.
+  // When enabled, the % value (kept in state) determines how much of
+  // total supply is held back from LP — pools scale down proportionally.
+  // Full re-render so the input enables/disables and the help text
+  // updates. rebuildPoolsFromSimple regenerates each pool with the new
+  // scaling.
+  const preallocToggle = body.querySelector('#simplePreallocToggle');
+  const preallocPctInput = body.querySelector('#simplePreallocPctInput');
+  const preallocDisplay = body.querySelector('#simplePreallocDisplay');
+  if (preallocToggle) {
+    preallocToggle.addEventListener('change', (e) => {
+      simpleConfig.preallocationEnabled = e.target.checked;
+      // When the user turns preallocation ON, auto-enable support and
+      // pre-size its SOL value to match the preallocation's USD value.
+      // This is the rug-resistance link: preallocation without support
+      // is a rug, so the natural default is "both on, sized to match."
+      //
+      // The user can still disable support manually after this (we
+      // warn but don't block — same posture as the spec says: "We
+      // should not prevent people from doing what they want, and just
+      // warn"). They can also override the SOL value if they want a
+      // deeper or shallower buy wall than the equal-value default.
+      //
+      // When preallocation is turned OFF, we don't touch support —
+      // support-only is a legitimate configuration (extra buy-side
+      // liquidity below launch, no preallocation to back). Leaving the
+      // user's prior support state alone respects their choice.
+      if (simpleConfig.preallocationEnabled) {
+        const recommendedSol = recommendedSupportSolForPreallocation(
+          Number(simpleConfig.preallocationPercent) || 0,
+        );
+        // Seed the SOL value to at least the recommended floor when:
+        //   (a) support was off (fresh enable — natural to seed it)
+        //   (b) support was on but at a value below the new floor —
+        //       Auto-back's promise is "no less than required to back"
+        // If the user had support on with a value already at or above
+        // the floor, leave it alone. We never DECREASE a user's value
+        // — Auto-back is a minimum, not an assignment.
+        const currentSol = Number(simpleConfig.supportSolValue) || 0;
+        const needsSeed = recommendedSol != null && recommendedSol > 0
+          && (!simpleConfig.supportEnabled || recommendedSol > currentSol);
+        if (needsSeed) {
+          simpleConfig.supportSolValue = recommendedSol;
+        }
+        // Auto-back defaults ON when enabling preallocation — the
+        // standard backed configuration. The user can untick the
+        // Auto-back box if they want to set a smaller (or zero) value.
+        simpleConfig.supportAutoSize = true;
+        // Auto-enable support regardless — even if we couldn't compute
+        // a value, the user gets the toggle on so they see the section
+        // and understand support is the way to make preallocation
+        // honest. They can adjust the SOL value manually.
+        simpleConfig.supportEnabled = true;
+      }
+      rebuildPoolsFromSimple();
+      renderSimpleConfig();
+      // Allocation summary depends on preallocation; refresh it so the
+      // user sees the new breakdown without having to switch modes.
+      if (typeof updateAllocationSummary === 'function') updateAllocationSummary();
+      if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+    });
+  }
+  if (preallocPctInput) {
+    preallocPctInput.addEventListener('input', (e) => {
+      const v = Number(e.target.value);
+      // Clamp at write-time so the state never holds a value outside
+      // the displayed range. 99% is the practical upper bound — 100%
+      // means no LP at all, which isn't a launch.
+      simpleConfig.preallocationPercent = Math.max(0, Math.min(99,
+        Number.isFinite(v) ? v : 0,
+      ));
+      // Keep the support SOL value at or above the preallocation floor
+      // as long as Auto-back is on. Auto-back enforces a MINIMUM — if
+      // the user typed a higher value manually (deeper wall than the
+      // preallocation requires), we leave their value alone. If the
+      // floor rises above what they typed (preallocation % increased),
+      // we silently bump it up to the new floor.
+      if (simpleConfig.preallocationEnabled && simpleConfig.supportAutoSize) {
+        const recommendedSol = recommendedSupportSolForPreallocation(
+          simpleConfig.preallocationPercent,
+        );
+        if (recommendedSol != null && recommendedSol > 0
+            && recommendedSol > (Number(simpleConfig.supportSolValue) || 0)) {
+          simpleConfig.supportSolValue = recommendedSol;
+        }
+      }
+      rebuildPoolsFromSimpleDebounced();
+      // Refresh inline displays without re-rendering. Using the
+      // standalone helpers (rather than the in-render closures) so
+      // this code path is identical whether we re-render or not.
+      refreshSimplePreallocDisplayInline();
+      // Also refresh the support displays since the SOL value may have
+      // changed in sync (Auto-back floor bump). We have to touch the
+      // input element's value directly because that element is what
+      // the user sees — not just the textContent span.
+      const supportSolEl = body.querySelector('#simpleSupportSolInput');
+      if (supportSolEl && simpleConfig.supportAutoSize) {
+        // Only overwrite the input value if the user isn't currently
+        // focused there. Writing to an unfocused input is safe; writing
+        // to a focused one would clobber whatever they're typing.
+        if (document.activeElement !== supportSolEl) {
+          supportSolEl.value = Number(simpleConfig.supportSolValue).toFixed(
+            Math.abs(simpleConfig.supportSolValue) >= 10 ? 1 : 3,
+          );
+        }
+      }
+      refreshSimpleSupportDisplayInline();
+      if (typeof updateAllocationSummary === 'function') updateAllocationSummary();
+      if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+    });
+    // On blur, flush any pending debounced rebuild so the pool state
+    // is current before the user can interact with the rest of the
+    // form (Continue button, customize switch, etc.). Without the
+    // flush, the user could click Continue during the 250ms debounce
+    // window and the funding estimator would see stale pool state.
+    preallocPctInput.addEventListener('blur', () => {
+      flushRebuildPoolsFromSimple();
+    });
+  }
+
+  // Support toggle: enable/disable the support position. Like the
+  // bootstrap toggle, just flipping this on/off swaps the per-pool
+  // supportConfig between { mode: 'off' } and { mode: 'custom', solValue }.
+  // Full re-render so the SOL input enables/disables.
+  const supportToggle = body.querySelector('#simpleSupportToggle');
+  const supportSolInput = body.querySelector('#simpleSupportSolInput');
+  const supportDepthInput = body.querySelector('#simpleSupportDepthInput');
+  const supportDisplay = body.querySelector('#simpleSupportDisplay');
+
+  // Shared in-place refresh for the support hint text. Reads the latest
+  // simpleConfig values and the live SOL price; writes a context-appropriate
+  // string into the hint span. Keeps the depth value in the display synced
+  // with whichever input the user just touched. Avoiding a full re-render
+  // here lets the user keep typing in the SOL or depth input without
+  // losing focus or caret position.
+  //
+  // When preallocation is also enabled, the hint additionally calls out
+  // whether the current SOL value backs the preallocation fully (≥ 100%),
+  // partially (1-99%), or not at all (0). This gives the user immediate
+  // feedback on whether they've sized support honestly without having to
+  // wait for the Continue-button warning to fire.
+  function refreshSimpleSupportDisplay() {
+    if (!supportDisplay) return;
+    const sp = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+    const solUsd = sp && Number(sp.resolvedPriceUsd) > 0 ? Number(sp.resolvedPriceUsd) : null;
+    // Use the effective value (with auto-back floor applied) so the
+    // displayed USD and coverage match what the wire format will send.
+    const sv = effectiveSupportSolValue();
+    const dp = clampSupportDepth(simpleConfig.supportDepthPct);
+    const usd = solUsd && sv > 0 ? sv * solUsd : null;
+
+    // Base hint (always shown when support is on).
+    let text;
+    if (usd != null) {
+      text = `≈ $${formatUsdRoughly(usd)} buy wall, launch to -${dp}%`;
+    } else if (sv > 0) {
+      text = `(USD value will show once SOL price resolves; range -${dp}%)`;
+    } else {
+      text = `single-sided quote liquidity covering -${dp}% below launch`;
+    }
+
+    // Backing indicator (only shown when preallocation is also enabled).
+    // Surfaces the coverage ratio inline so the user sees right away
+    // whether they're fully backing the preallocation.
+    if (simpleConfig.preallocationEnabled && usd != null) {
+      const mcap = parseNumberInput(document.getElementById('targetMarketCap'));
+      const pp = Number(simpleConfig.preallocationPercent) || 0;
+      if (Number.isFinite(mcap) && mcap > 0 && pp > 0) {
+        const preallocUsd = mcap * pp / 100;
+        const coverage = preallocUsd > 0 ? usd / preallocUsd : 1;
+        if (coverage >= 1) {
+          text += ` · fully backs preallocation ✓`;
+        } else {
+          const pct = Math.round(coverage * 100);
+          text += ` · backs ${pct}% of preallocation`;
+        }
+      }
+    }
+    supportDisplay.textContent = text;
+  }
+
+  if (supportToggle) {
+    supportToggle.addEventListener('change', (e) => {
+      simpleConfig.supportEnabled = e.target.checked;
+      // When the user re-enables support after disabling it (with
+      // preallocation still on), restore the auto-link by default —
+      // they presumably want the support to back the preallocation,
+      // which is what the toggle is for. This mirrors the
+      // preallocation-toggle behavior (re-enable seeds a clean state).
+      if (simpleConfig.supportEnabled && simpleConfig.preallocationEnabled) {
+        simpleConfig.supportAutoSize = true;
+      }
+      rebuildPoolsFromSimple();
+      renderSimpleConfig();
+      if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+    });
+  }
+
+  // Auto-back-with-support toggle. Lives on the Preallocate row but
+  // controls the support sizing: when on, the support SOL value is
+  // clamped to a minimum equal to the preallocation USD value. The
+  // user can still set a LARGER value (deeper wall) — the clamp only
+  // prevents going below the floor. Disabled when preallocation is off,
+  // since there's no preallocation USD to back. State name kept as
+  // `supportAutoSize` for backward compat with saved configs and the
+  // existing derive/wire-format code.
+  const preallocAutoBackToggle = body.querySelector('#simplePreallocAutoBackToggle');
+  if (preallocAutoBackToggle) {
+    preallocAutoBackToggle.addEventListener('change', (e) => {
+      simpleConfig.supportAutoSize = e.target.checked;
+      // Enabling auto-back: bump the support SOL value up to the
+      // required minimum if it's currently below. Also flip support
+      // on if it was off — auto-back without support enabled is a
+      // no-op and confuses the user.
+      if (e.target.checked) {
+        if (!simpleConfig.supportEnabled) {
+          simpleConfig.supportEnabled = true;
+        }
+        const rec = recommendedSupportSolForPreallocation(
+          Number(simpleConfig.preallocationPercent) || 0,
+        );
+        if (Number.isFinite(rec) && rec > (Number(simpleConfig.supportSolValue) || 0)) {
+          simpleConfig.supportSolValue = rec;
+        }
+      }
+      rebuildPoolsFromSimple();
+      renderSimpleConfig();
+      if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+    });
+  }
+
+  // Preallocation-warning "Enable Support position" link: a one-click
+  // fix for the most common case where the warning fires. Turning
+  // support on here also re-establishes the auto-link by default,
+  // since the user is asking for the standard backed configuration.
+  const preallocEnableSupportLink = body.querySelector('#simplePreallocEnableSupport');
+  if (preallocEnableSupportLink) {
+    preallocEnableSupportLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      simpleConfig.supportEnabled = true;
+      simpleConfig.supportAutoSize = true;
+      rebuildPoolsFromSimple();
+      renderSimpleConfig();
+      if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+    });
+  }
+  if (supportSolInput) {
+    supportSolInput.addEventListener('input', (e) => {
+      const typed = Number(e.target.value);
+      const safeTyped = Number.isFinite(typed) && typed >= 0 ? typed : 0;
+      // When Auto-back is on with preallocation enabled, clamp the
+      // typed value to the required minimum. We silently bump UP (the
+      // user can always go higher for a deeper wall, but not below
+      // what's needed to back the preallocation). When Auto-back is
+      // off, the user has full control — accept whatever they typed.
+      //
+      // Note: we don't write the clamped value back to the input
+      // element here (would fight the user's typing). The clamp is
+      // applied to stored state only; the displayed input will catch
+      // up on blur or any subsequent render. refreshSimpleSupportDisplay
+      // is called below to update the inline USD/coverage display so
+      // the user immediately sees the effective value at work.
+      let effective = safeTyped;
+      if (simpleConfig.supportAutoSize && simpleConfig.preallocationEnabled) {
+        const rec = recommendedSupportSolForPreallocation(
+          Number(simpleConfig.preallocationPercent) || 0,
+        );
+        if (Number.isFinite(rec) && rec > safeTyped) {
+          effective = rec;
+        }
+      }
+      simpleConfig.supportSolValue = effective;
+      rebuildPoolsFromSimpleDebounced();
+      refreshSimpleSupportDisplay();
+      if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+    });
+    // On blur, snap the visible input value to whatever was actually
+    // stored. If Auto-back clamped the user's input upward, this is
+    // when we honestly show them the value we're using. Without this,
+    // a user who typed "1" with a required minimum of "5" would see
+    // their "1" sitting in the field even though the stored value is
+    // "5" — confusing. Also flushes any pending debounced rebuild.
+    supportSolInput.addEventListener('blur', () => {
+      flushRebuildPoolsFromSimple();
+      const stored = Number(simpleConfig.supportSolValue) || 0;
+      const typed = Number(supportSolInput.value);
+      if (Number.isFinite(typed) && Math.abs(typed - stored) > 1e-9) {
+        // Match the same formatting used at render time.
+        supportSolInput.value = stored.toFixed(Math.abs(stored) >= 10 ? 1 : 3);
+      }
+    });
+  }
+  if (supportDepthInput) {
+    supportDepthInput.addEventListener('input', (e) => {
+      // Clamp at write-time so state never holds an out-of-range value.
+      // We don't snap the input itself back to the clamped value during
+      // typing — that would fight the user mid-keystroke (e.g. clearing
+      // "1" to retype "20" would briefly read as out-of-range). The
+      // clamp happens at use-sites (rebuildPoolsFromSimple, wire format,
+      // display refresh), so storage is always safe.
+      const v = Number(e.target.value);
+      simpleConfig.supportDepthPct = Number.isFinite(v) ? v : SUPPORT_DEFAULT_DEPTH_PCT;
+      rebuildPoolsFromSimpleDebounced();
+      refreshSimpleSupportDisplay();
+      if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+    });
+    // On blur, snap a clamped-but-out-of-range value back into the
+    // visible input. This is the right time to "correct" what the user
+    // typed — they've finished and we're showing them the value we'll
+    // actually use. Keeps the displayed value honest without interrupting
+    // their typing flow. flushRebuildPoolsFromSimple runs an immediate
+    // rebuild so the clamped value lands in pool state before any
+    // follow-on action (e.g. Continue click).
+    supportDepthInput.addEventListener('blur', (e) => {
+      const v = clampSupportDepth(e.target.value);
+      simpleConfig.supportDepthPct = v;
+      e.target.value = v;
+      flushRebuildPoolsFromSimple();
+      refreshSimpleSupportDisplay();
+    });
+  }
+
+  // Persist the open/closed state of the Advanced options section
+  // across re-renders. Without this, any input event that triggers a
+  // re-render (e.g. typing in the support SOL input) would snap the
+  // section closed mid-interaction. The toggle event fires whenever
+  // the user opens or closes the <details> element.
+  const advancedDetails = body.querySelector('#simpleAdvancedDetails');
+  if (advancedDetails) {
+    advancedDetails.addEventListener('toggle', () => {
+      simpleConfig._advancedExpanded = advancedDetails.open;
+    });
+  }
+
   customizeBtn.addEventListener('click', () => {
     // Switch into customize mode. Pools stay as they are — user starts
     // tuning from the current state. The Customize button (now hidden)
@@ -2754,6 +3713,14 @@ function renderSimpleConfig() {
     simpleConfig.mode = 'customize';
     applySimpleConfigMode();
   });
+
+  // Move the Lock-liquidity field into the Advanced slot. We detached
+  // it at the top of this function (before the innerHTML rebuild) and
+  // parked it at the page-level home; now that the new Advanced slot
+  // exists in the DOM, move it there. This keeps the field visible
+  // inside Advanced in simple mode while preserving its identity as
+  // a single DOM element.
+  relocateLockPositionsField('simple');
 }
 
 // ===========================================================================
@@ -2808,10 +3775,49 @@ function applySimpleConfigMode() {
     simpleC.classList.remove('hidden');
     customC.classList.add('hidden');
     renderSimpleConfig();
+    // Move the Lock-liquidity field into the Advanced details slot
+    // inside simple mode. This is done AFTER renderSimpleConfig so the
+    // slot element exists. The field is the same DOM element that
+    // lives at #lockPositionsSlotPage in customize mode — we physically
+    // relocate it between modes rather than duplicating, so the
+    // checkbox state and any external listeners stay attached to a
+    // single canonical element.
+    relocateLockPositionsField('simple');
   } else {
     simpleC.classList.add('hidden');
     customC.classList.remove('hidden');
     renderPools();
+    // Move the Lock-liquidity field back to its page-level home so
+    // customize-mode users can access it.
+    relocateLockPositionsField('customize');
+  }
+}
+
+// Move the #lockPositionsField element between its two homes:
+//
+//   target='simple'    → into the Advanced options slot inside simple mode
+//   target='customize' → back to the page-level slot (below the customize
+//                        container, where it lives by default)
+//
+// No-ops if the field or the target slot can't be found (e.g. called
+// before the DOM is built, or with an unknown target). The same single
+// DOM element moves between locations; its state (checked/unchecked)
+// and any attached listeners are preserved by appendChild.
+function relocateLockPositionsField(target) {
+  const field = document.getElementById('lockPositionsField');
+  if (!field) return;
+  let slot;
+  if (target === 'simple') {
+    slot = document.getElementById('lockPositionsSlotSimple');
+  } else {
+    slot = document.getElementById('lockPositionsSlotPage');
+  }
+  if (!slot) return;
+  // appendChild moves the element if it has a parent; no need to
+  // detach first. Re-appending into the same slot is a no-op (the
+  // element is already a child).
+  if (field.parentElement !== slot) {
+    slot.appendChild(field);
   }
 }
 
@@ -3033,6 +4039,17 @@ function buildPreviewStatsHtml() {
     if (alloc > 0) {
       const allocText = (alloc % 1 === 0) ? alloc.toFixed(0) : alloc.toFixed(1);
       meta.push(`${allocText}% to liquidity`);
+    }
+    // When the pool allocations leave some supply uncommitted (sum < 100),
+    // call out the gap explicitly as "preallocated". Works in both
+    // simple-mode (where the user enables preallocation via the toggle)
+    // and customize-mode (where they manually set lower pool percentages).
+    // We surface the larger of (100 - alloc) and the simpleConfig pct so
+    // the display stays consistent across mode switches.
+    const gap = Math.max(0, 100 - alloc);
+    if (gap > 0.01) {
+      const gapText = (gap % 1 === 0) ? gap.toFixed(0) : gap.toFixed(1);
+      meta.push(`${gapText}% preallocated`);
     }
   }
   const metaHtml = `<div class="tps-meta">${meta.map(escapeHtml).join(' &middot; ')}</div>`;
@@ -4232,17 +5249,25 @@ function buildPoolNode(pool, idx) {
   addSliceBtn.addEventListener('click', () => addSlice(idx));
   distSection.appendChild(addSliceBtn);
 
-  // Bootstrap section: lets the user opt this pool in to custom-mode
-  // bootstrap (a meaningful starting-liquidity position at launch).
-  // Rendered as a slice-style row matching the rest of the position UI.
-  body.appendChild(buildBootstrapNode(pool, idx));
-
   // Ladder section: lets the user view, add, edit, or remove individual
   // ladder bands. Each band has supplyPercent (of pool), lowerMultiplier,
   // and upperMultiplier (relative to launch price). Bands are independent
   // — they can be overlapping or have gaps, and the order doesn't matter
   // to the backend math.
+  //
+  // Note: the per-pool bootstrap section used to render here too, but
+  // was removed as part of the support-consolidation change. The
+  // bootstrap is now always a minimal ~$1 reservation; real quote-side
+  // starting liquidity is added via the Support position (below).
+  // Token-side density near launch price is the Ladder's job.
   body.appendChild(buildLadderNode(pool, idx));
+
+  // Support section: lets the user attach a single-sided quote-only
+  // position just below launch price, backing any preallocated supply.
+  // Quote-only — does not affect supplyPercent or the positions-total
+  // calculation, so it sits between the ladder section and the totals
+  // indicator without participating in that math.
+  body.appendChild(buildSupportNode(pool, idx));
 
   // Positions total indicator. Under unified semantics, bootstrap
   // (if custom) + sum(slice sharePercents) + sum(band supplyPercents)
@@ -4339,6 +5364,169 @@ function refreshWideSliceInputs(poolIdx) {
       inp.value = pool.distribution[i].sharePercent;
     }
   });
+}
+
+// Build the per-pool support section shown in customize mode. Mirrors
+// the bootstrap section in shape: a toggle to enable/disable, plus a
+// SOL input as the canonical user-intent value. Unlike bootstrap,
+// support is quote-only — it doesn't carve from supplyPercent, so the
+// section has no slice-rebalancing or positions-total hooks. It's a
+// pure cost-addition position.
+//
+// Storage: pool.supportConfig = {
+//   mode: 'off' | 'custom',
+//   solValue: number   (custom only; user's input — SOL value of the
+//                       support deposit. Converted to USD-equivalent
+//                       quote tokens by the orchestrator.)
+// }
+function buildSupportNode(pool, poolIdx) {
+  const node = document.createElement('div');
+  node.className = 'pool-support-section';
+
+  const cfg = pool.supportConfig || { mode: 'off' };
+  const isCustom = cfg.mode === 'custom';
+  const solValue = Number(cfg.solValue) || 0;
+  // Depth: defaults to the module default when the pool was created
+  // before depth became configurable, or when mode is 'off' (in which
+  // case the value is preserved but not used). Clamped for display.
+  const depthPct = clampSupportDepth(
+    cfg.depthPct != null ? cfg.depthPct : SUPPORT_DEFAULT_DEPTH_PCT,
+  );
+
+  // USD-equivalent display: convert SOL value through the SOL pool's
+  // resolved price, if available. Falls back to no display when nothing
+  // has resolved yet — same pattern as the simple-config support row.
+  const solPool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+  const solUsd = solPool && Number(solPool.resolvedPriceUsd) > 0
+    ? Number(solPool.resolvedPriceUsd) : null;
+  const initialHint = isCustom && solUsd && solValue > 0
+    ? `≈ $${formatUsdRoughly(solValue * solUsd)} buy wall (launch to -${depthPct}%)`
+    : (isCustom
+        ? `(USD value will show once SOL price resolves; range -${depthPct}%)`
+        : '');
+
+  node.innerHTML = `
+    <label class="label is-small mb-1 mt-3">
+      <input type="checkbox" data-support-toggle ${isCustom ? 'checked' : ''}>
+      Support position
+    </label>
+    <p class="is-size-7 has-text-grey mb-1">
+      Single-sided buy-side liquidity that backs preallocated supply with an honest exit.
+      The position sits just below launch price (covering down to the configured depth)
+      and gives holders of preallocated tokens — team, VCs, presale contributors,
+      staking rewards, utility reserves — a buy wall to sell into.
+      Quote-only: doesn't carve from this pool's supply allocation.
+    </p>
+    <div class="slice-row support-row" ${isCustom ? '' : 'style="opacity:0.5;pointer-events:none;"'}>
+      <span class="slice-label">Support</span>
+      <input class="input is-small" type="number" min="0" step="0.01"
+             data-support-sol-value value="${solValue}" ${isCustom ? '' : 'disabled'}
+             style="width: 8rem;">
+      <span style="line-height:30px;">SOL, down to&nbsp;-</span>
+      <input class="input is-small" type="number"
+             min="${SUPPORT_MIN_DEPTH_PCT}" max="${SUPPORT_MAX_DEPTH_PCT}" step="1"
+             data-support-depth value="${depthPct}" ${isCustom ? '' : 'disabled'}
+             style="width: 4.5rem;">
+      <span style="line-height:30px;">% below launch</span>
+      <span class="is-size-7 has-text-grey-dark" data-support-hint
+            style="margin-left:0.5rem;line-height:30px;flex:1;">${escapeHtml(initialHint)}</span>
+    </div>
+  `;
+
+  const toggle = node.querySelector('[data-support-toggle]');
+  const solInput = node.querySelector('[data-support-sol-value]');
+  const depthInput = node.querySelector('[data-support-depth]');
+  const hint = node.querySelector('[data-support-hint]');
+
+  // Helper: refresh the hint text from current config. Called after any
+  // change so the display tracks state without a full re-render.
+  function refreshHint() {
+    const cur = pool.supportConfig || { mode: 'off' };
+    if (cur.mode !== 'custom') {
+      hint.textContent = '';
+      return;
+    }
+    const sv = Number(cur.solValue) || 0;
+    const dp = clampSupportDepth(cur.depthPct);
+    const sp = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+    const su = sp && Number(sp.resolvedPriceUsd) > 0 ? Number(sp.resolvedPriceUsd) : null;
+    if (su && sv > 0) {
+      hint.textContent = `≈ $${formatUsdRoughly(sv * su)} buy wall (launch to -${dp}%)`;
+    } else if (sv > 0) {
+      hint.textContent = `(USD value will show once SOL price resolves; range -${dp}%)`;
+    } else {
+      hint.textContent = '';
+    }
+  }
+
+  // Toggle: flip between off and custom. When flipping ON, restore the
+  // last-known solValue + depthPct (or defaults for a fresh enable).
+  // When flipping OFF, preserve both fields on the object so a re-toggle
+  // restores the user's input — wire format ignores them in off-mode.
+  toggle.addEventListener('change', (e) => {
+    if (e.target.checked) {
+      const restoredSol = Number(pool.supportConfig?.solValue) > 0
+        ? Number(pool.supportConfig.solValue) : 1.0;
+      const restoredDepth = clampSupportDepth(pool.supportConfig?.depthPct);
+      pool.supportConfig = {
+        mode: 'custom',
+        solValue: restoredSol,
+        depthPct: restoredDepth,
+      };
+    } else {
+      pool.supportConfig = {
+        mode: 'off',
+        solValue: Number(pool.supportConfig?.solValue) || 0,
+        depthPct: clampSupportDepth(pool.supportConfig?.depthPct),
+      };
+    }
+    renderPools();
+    // Allocation summary doesn't change (support is orthogonal), but
+    // the continue-to-funding check might surface a related warning.
+    if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+  });
+
+  // SOL input: canonical user-intent value. No supplyPercent to compute
+  // or rebalance — support is quote-only. Just update state and the
+  // hint, in place, so focus stays on the input the user is typing in.
+  solInput.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (!Number.isFinite(v) || v < 0) return;
+    pool.supportConfig = {
+      mode: 'custom',
+      solValue: v,
+      depthPct: clampSupportDepth(pool.supportConfig?.depthPct),
+    };
+    refreshHint();
+    if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+  });
+
+  // Depth input: percent below launch the position covers. Same in-place
+  // refresh pattern as the SOL input — don't snap the input value
+  // during typing (would interrupt the user mid-keystroke); snap on blur.
+  depthInput.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (!Number.isFinite(v)) return;
+    pool.supportConfig = {
+      mode: 'custom',
+      solValue: Number(pool.supportConfig?.solValue) || 0,
+      depthPct: v, // un-clamped during typing; clamped at use-sites
+    };
+    refreshHint();
+    if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+  });
+  depthInput.addEventListener('blur', (e) => {
+    const v = clampSupportDepth(e.target.value);
+    pool.supportConfig = {
+      mode: 'custom',
+      solValue: Number(pool.supportConfig?.solValue) || 0,
+      depthPct: v,
+    };
+    e.target.value = v;
+    refreshHint();
+  });
+
+  return node;
 }
 
 function buildBootstrapNode(pool, poolIdx) {
@@ -4729,6 +5917,24 @@ function formatUsdRoughly(value) {
   return `${(value / 1_000_000_000).toFixed(1)}B`;
 }
 
+// USD formatter for the funding-step auto-swap rows. Returns a $-prefixed
+// short form that handles the wide value range we see there:
+//   $0.0001 / $0.05 / $1.23 / $42 / $1.2k / $5M
+// Differs from formatUsdRoughly above (which omits the $ and treats
+// sub-dollar as "0") because the auto-swap context routinely shows
+// fractional-dollar values (memecoin acquire targets are often a few
+// cents). Returns '<$0.01' rather than "$0" for the truly tiny case so
+// the user knows the figure is meaningful but small.
+function formatUsdShort(value) {
+  if (!Number.isFinite(value) || value <= 0) return '$0';
+  if (value < 0.01) return '<$0.01';
+  if (value < 1) return `$${value.toFixed(2)}`;
+  if (value < 1000) return `$${value.toFixed(value < 10 ? 2 : 0)}`;
+  if (value < 1_000_000) return `$${(value / 1000).toFixed(value < 10000 ? 1 : 0)}k`;
+  if (value < 1_000_000_000) return `$${(value / 1_000_000).toFixed(value < 10_000_000 ? 1 : 0)}M`;
+  return `$${(value / 1_000_000_000).toFixed(1)}B`;
+}
+
 function buildSliceNode(pool, poolIdx, slice, sliceIdx) {
   const node = document.createElement('div');
   node.className = 'slice-row';
@@ -4798,96 +6004,264 @@ function buildSliceNode(pool, poolIdx, slice, sliceIdx) {
   return node;
 }
 
+// Apply a resolved-info payload to a pool object. Used by both the
+// fresh-fetch path and the cache-hit path so behavior is consistent.
+// Mutates the pool in place; doesn't trigger any rendering.
+function applyResolvedInfoToPool(pool, info) {
+  pool.resolvedSymbol = info.symbol;
+  pool.resolvedDecimals = info.decimals ?? null;
+  pool.resolvedPriceUsd = info.priceUsd;
+  // Save the resolved on-chain mint too. We need it at token-creation
+  // time to seed the keypair search that ensures the launched token
+  // sorts as mintA in every pool (which puts the launched token in
+  // the *denominator* of the displayed Raydium price, matching user
+  // expectations of "launch price up to infinity").
+  pool.resolvedMint = info.address;
+  // Display-only fields. Either may be null if no indexer had the
+  // token; the UI handles that by hiding the logo and falling back
+  // on the symbol where the name would have appeared.
+  pool.resolvedName = info.name ?? null;
+  pool.resolvedImageUrl = info.imageUrl ?? null;
+  // Raydium CLMM compatibility info. Server-side we check whether the
+  // quote token's mint program + Token-2022 extensions are allowed by
+  // Raydium's on-chain `is_supported_mint` rules. The values here:
+  //   compatible === true    → safe to use (either classic SPL, or
+  //                            Token-2022 with allowlisted extensions,
+  //                            or Token-2022 in Raydium's hardcoded
+  //                            mint whitelist like PYUSD/AUSD)
+  //   compatible === false   → pool creation WILL fail; we warn loudly
+  //                            and disable the Continue button
+  //   compatible === null    → couldn't check (mint missing on chain,
+  //                            RPC down). Treat as unknown — surface
+  //                            a note, don't block.
+  pool.resolvedCompatible = info.compatible;
+  pool.resolvedIsToken2022 = !!info.isToken2022;
+  pool.resolvedDisallowedNames = info.disallowedNames || [];
+  pool.resolvedCompatError = info.compatError || null;
+  // Mark resolution as succeeded so the retry hint goes away.
+  pool.resolvedFailed = false;
+  pool.resolvedFailedError = null;
+}
+
+// Fetch quote-token info from the server, with two layers of protection
+// against redundant calls:
+//   1. Hard cache (quoteInfoCache) — once we've successfully fetched a
+//      mint's metadata, subsequent calls within the price TTL return
+//      from cache. After the price TTL, we re-fetch (and re-cache);
+//      metadata never expires so it stays correct across re-fetches.
+//   2. In-flight dedup (quoteInfoInFlight) — if multiple callers ask
+//      for the same mint while a fetch is already pending, they all
+//      await the same Promise rather than firing parallel requests.
+//
+// Returns the info payload (same shape the server returns), or throws
+// on hard failure. Caller decides what to do on failure.
+async function fetchQuoteInfoCached(quoteToken) {
+  // Cache hit with fresh price → return immediately.
+  const cached = quoteInfoCache.get(quoteToken);
+  if (cached && (Date.now() - cached.fetchedAt) < QUOTE_PRICE_TTL_MS) {
+    return cached.info;
+  }
+  // Another caller is already fetching this mint → await their promise.
+  if (quoteInfoInFlight.has(quoteToken)) {
+    return quoteInfoInFlight.get(quoteToken);
+  }
+  // Fresh fetch. Wrap in a promise we store so concurrent callers wait
+  // on it. Clear the in-flight entry in finally{} so a failed fetch
+  // doesn't poison subsequent attempts (the user can retry).
+  const promise = (async () => {
+    try {
+      const resp = await fetch('/api/quote-token-info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quoteToken }),
+      });
+      const data = await resp.json();
+      if (!data.success) {
+        throw new Error(data.error || 'quote-token-info failed');
+      }
+      // Cache the new payload. When we had a prior cached entry
+      // (stale-price refresh case), merge so the fresh response augments
+      // the prior data rather than wholesale replacing it. Specifically:
+      //
+      // - Fields the server returned with a real (non-null) value
+      //   overwrite the prior value (fresh data wins).
+      // - Fields the server returned as null/undefined fall back to the
+      //   prior value (we trust our cached "I know this" over a fresh
+      //   "I don't know right now").
+      //
+      // This matters most for priceUsd. If the price oracle is briefly
+      // down on a refresh, we want to keep showing the user the last
+      // known price — not switch to null and break the UI. Metadata
+      // fields (symbol/decimals/name/etc.) are almost always present
+      // on a successful response, but the same fallback protects us
+      // against any future server-side path that might return them as
+      // null transiently.
+      let merged;
+      if (cached) {
+        merged = { ...cached.info };
+        for (const [k, v] of Object.entries(data.info)) {
+          if (v !== null && v !== undefined) {
+            merged[k] = v;
+          }
+        }
+      } else {
+        merged = data.info;
+      }
+      // Only cache successful resolutions — ones where we actually read
+      // the mint on-chain. A response with decimals=null means the mint
+      // wasn't on-chain at fetch time (transient RPC failure, or the
+      // mint will exist soon). Caching that placeholder would lock the
+      // user into the failure state for 60s, preventing legitimate
+      // retries from going through. Without the cache write here, the
+      // user retrying immediately fires a fresh network call which can
+      // succeed once the chain catches up.
+      //
+      // Note: this guard intentionally does NOT clear the in-flight
+      // map (the finally block at function end does that); we let the
+      // current pending callers all receive this placeholder result so
+      // they each render the failure UI, but subsequent calls don't
+      // get short-circuited by a cache hit.
+      if (merged && merged.decimals != null) {
+        quoteInfoCache.set(quoteToken, {
+          info: merged,
+          fetchedAt: Date.now(),
+        });
+      }
+      return merged;
+    } finally {
+      quoteInfoInFlight.delete(quoteToken);
+    }
+  })();
+  quoteInfoInFlight.set(quoteToken, promise);
+  return promise;
+}
+
 async function resolvePoolQuote(idx) {
   const pool = pools[idx];
-  if (!pool.quoteToken) return;
+  if (!pool || !pool.quoteToken) return;
+  // Capture the quote token at call time. If pools[] gets rebuilt while
+  // we're awaiting the fetch (e.g. user types in support input), the
+  // pool reference here might be orphaned by the time we return. We
+  // re-look-up the pool by index after the await and only apply the
+  // result if the pool at that index still has the same quote token.
+  const requestedQuote = pool.quoteToken;
+  // Read the SOL price from the cache BEFORE we await — this is the
+  // baseline we compare against to detect a "first-time" or "after-TTL"
+  // SOL price arrival. We compare against the cache (not pool state)
+  // because pool state gets reset to null on every rebuildPoolsFromSimple
+  // call, which would otherwise make every cache-hit resolve look like
+  // "SOL price just appeared" and trigger spurious rebuilds.
+  //
+  // The cache survives across rebuilds, so it gives a stable reference
+  // point: only when the cache itself changes (cold load brings in new
+  // data, or 60s TTL expires and re-fetch returns a different price)
+  // do we count this as a real SOL price change worth cascading.
+  const solCachedBefore = quoteInfoCache.get('SOL');
+  const solUsdBefore = solCachedBefore && solCachedBefore.info && Number(solCachedBefore.info.priceUsd) > 0
+    ? Number(solCachedBefore.info.priceUsd) : null;
   try {
-    const resp = await fetch('/api/quote-token-info', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quoteToken: pool.quoteToken }),
-    });
-    const data = await resp.json();
-    if (data.success) {
-      pool.resolvedSymbol = data.info.symbol;
-      pool.resolvedDecimals = data.info.decimals ?? null;
-      pool.resolvedPriceUsd = data.info.priceUsd;
-      // Save the resolved on-chain mint too. We need it at token-creation
-      // time to seed the keypair search that ensures the launched token
-      // sorts as mintA in every pool (which puts the launched token in
-      // the *denominator* of the displayed Raydium price, matching user
-      // expectations of "launch price up to infinity").
-      pool.resolvedMint = data.info.address;
-      // Display-only fields. Either may be null if no indexer had the
-      // token; the UI handles that by hiding the logo and falling back
-      // on the symbol where the name would have appeared.
-      pool.resolvedName = data.info.name ?? null;
-      pool.resolvedImageUrl = data.info.imageUrl ?? null;
-      // Raydium CLMM compatibility info. Server-side we check whether the
-      // quote token's mint program + Token-2022 extensions are allowed by
-      // Raydium's on-chain `is_supported_mint` rules. The values here:
-      //   compatible === true    → safe to use (either classic SPL, or
-      //                            Token-2022 with allowlisted extensions,
-      //                            or Token-2022 in Raydium's hardcoded
-      //                            mint whitelist like PYUSD/AUSD)
-      //   compatible === false   → pool creation WILL fail; we warn loudly
-      //                            and disable the Continue button
-      //   compatible === null    → couldn't check (mint missing on chain,
-      //                            RPC down). Treat as unknown — surface
-      //                            a note, don't block.
-      pool.resolvedCompatible = data.info.compatible;
-      pool.resolvedIsToken2022 = !!data.info.isToken2022;
-      pool.resolvedDisallowedNames = data.info.disallowedNames || [];
-      pool.resolvedCompatError = data.info.compatError || null;
-      // Mark resolution as succeeded so the retry hint goes away.
-      pool.resolvedFailed = false;
-      pool.resolvedFailedError = null;
-
-      // Post-resolution refresh of derived values that depend on the
-      // live SOL price. Bootstrap supplyPercent is derived from
-      // solValue × solUsd / poolUsd, so a SOL price update changes
-      // the % each pool's bootstrap takes — without this refresh,
-      // the positions total would drift away from 100% (the classic
-      // "99.94% on initial load with default settings" bug). The
-      // rebalance helper absorbs the delta into the wide slices.
-      //
-      // Runs in both simple AND customize mode because in both, the
-      // user's intent is the SOL value they typed; the % is derived.
-      // The only path we skip is when bootstrap is in minimal mode
-      // (no solValue to recompute) — handled inside the helper.
-      for (const p of pools) {
-        recomputePoolBootstrapAndRebalance(p);
-      }
-      // Full pool re-render to surface the refreshed values in the
-      // bootstrap row hint (%, $ amount). Use renderPools() rather
-      // than the per-pool helper because the rebalance may have
-      // touched any pool's slice values too.
-      renderPools();
-
-      // Targeted update only — we used to call renderPools() here, which
-      // would destroy whatever input the user was typing in if the lookup
-      // completed mid-keystroke (typically 100–500ms after they changed
-      // the quote token). Now we update only the elements that actually
-      // depend on resolved info: the per-pool resolved-display paragraph
-      // and the continue-button validation state.
-      updateQuoteResolvedDisplay(idx);
-      updateContinueToFundingState();
-
-      // The largest pool's quote logo is the coin's back face. Now that
-      // this pool's resolvedImageUrl/resolvedSymbol may have changed,
-      // refresh the back face (debounced, no-ops if unchanged or if the
-      // coin isn't running).
-      refreshCoinBackFace();
+    const info = await fetchQuoteInfoCached(requestedQuote);
+    // Re-check: is the pool at this index still the one we resolved for?
+    // If the user changed the quote token or pools[] was rebuilt and the
+    // index now refers to a different mint, applying our stale resolution
+    // would corrupt the new pool's state.
+    const currentPool = pools[idx];
+    if (!currentPool || currentPool.quoteToken !== requestedQuote) {
+      return;
     }
+    applyResolvedInfoToPool(currentPool, info);
+
+    // Post-resolution refresh of derived values that depend on the
+    // live SOL price. Bootstrap supplyPercent is derived from
+    // solValue × solUsd / poolUsd, so a SOL price update changes
+    // the % each pool's bootstrap takes — without this refresh,
+    // the positions total would drift away from 100% (the classic
+    // "99.94% on initial load with default settings" bug). The
+    // rebalance helper absorbs the delta into the wide slices.
+    //
+    // Runs in both simple AND customize mode because in both, the
+    // user's intent is the SOL value they typed; the % is derived.
+    // The only path we skip is when bootstrap is in minimal mode
+    // (no solValue to recompute) — handled inside the helper.
+    for (const p of pools) {
+      recomputePoolBootstrapAndRebalance(p);
+    }
+    renderPools();
+
+    // Simple-mode follow-up: rebuild pools when the SOL price changed
+    // in the CACHE (not pool state). Cache-vs-cache comparison avoids
+    // the false-positive that would fire on every cache-hit resolve
+    // following a rebuildPoolsFromSimple() — without this guard, every
+    // user keystroke would trigger a feedback loop of rebuilds.
+    //
+    // Real cases this fires on:
+    //   - Cold load: cache had no SOL entry, now it does
+    //   - 60s TTL expiry refetch returned a different SOL price
+    //
+    // False cases it correctly skips:
+    //   - Cache hit after rebuild: SOL price in cache is the same
+    //     value as it was when we entered this function
+    //   - Any non-SOL resolve: SOL cache unchanged
+    if (simpleConfig.mode === 'default') {
+      const solCachedAfter = quoteInfoCache.get('SOL');
+      const solUsdAfter = solCachedAfter && solCachedAfter.info && Number(solCachedAfter.info.priceUsd) > 0
+        ? Number(solCachedAfter.info.priceUsd) : null;
+      const solPriceChanged = solUsdBefore !== solUsdAfter;
+      if (solPriceChanged) {
+        // Rebuild so any auto-sized derived values (support SOL value
+        // when auto+preallocation are on) get a fresh computation
+        // against the new SOL price and propagate to every pool.
+        rebuildPoolsFromSimple();
+      }
+      // Skip the simple-config re-render when the user is actively
+      // typing into one of its inputs. Re-rendering destroys the
+      // input element they're focused on, snapping their cursor out
+      // of the field mid-keystroke. The resolve's data is still
+      // applied to pool state above; the next render (triggered by
+      // blur or any structural change) will catch up the displays.
+      //
+      // Inline display updates that don't depend on a full re-render
+      // (USD figures, coverage indicator) are handled by their own
+      // refresh helpers — see refreshSimpleSupportDisplay / the
+      // inline patches in the prealloc-pct-input handler.
+      if (!isFocusInsideSimpleConfigBody()) {
+        renderSimpleConfig();
+      } else {
+        // Lightweight refresh of the displays that depend on resolved
+        // prices, without destroying the input elements. Keeps the
+        // user's typing focus intact while still reflecting that
+        // (e.g.) the SOL price just arrived and we now know the
+        // USD value of their typed support SOL.
+        refreshSimpleSupportDisplayInline();
+        refreshSimplePreallocDisplayInline();
+      }
+    }
+
+    // Targeted update for the per-pool resolved-info block and the
+    // continue-button validation state.
+    updateQuoteResolvedDisplay(idx);
+    updateContinueToFundingState();
+
+    // The largest pool's quote logo is the coin's back face. Now that
+    // this pool's resolvedImageUrl/resolvedSymbol may have changed,
+    // refresh the back face (debounced, no-ops if unchanged or if the
+    // coin isn't running).
+    refreshCoinBackFace();
   } catch (e) {
     // Resolution failed (network blip, RPC error, server error). Surface
     // this in the resolved-info block with a retry affordance, instead
     // of just logging silently. Without this, the user sees an empty
     // resolved-info area and has no obvious recovery — they'd have to
     // edit the address field and tab away to re-trigger resolution.
-    pool.resolvedFailed = true;
-    pool.resolvedFailedError = e.message || 'unknown error';
-    log(`Couldn't resolve quote info for ${pool.quoteToken}: ${e.message}`, 'warning');
+    //
+    // Re-check the pool still exists at this index before writing the
+    // failure marker — same robustness as the success path. If pools[]
+    // was rebuilt mid-fetch, our failure was for an obsolete request.
+    const currentPool = pools[idx];
+    if (!currentPool || currentPool.quoteToken !== requestedQuote) return;
+    currentPool.resolvedFailed = true;
+    currentPool.resolvedFailedError = e.message || 'unknown error';
+    log(`Couldn't resolve quote info for ${requestedQuote}: ${e.message}`, 'warning');
     updateQuoteResolvedDisplay(idx);
     updateContinueToFundingState();
   }
@@ -4942,10 +6316,87 @@ function updateContinueToFundingState() {
   const btn = document.getElementById('continueToFundingBtn');
   if (!btn) return;
   const reasons = [];
+  // Warnings are non-blocking — they surface a real concern but don't
+  // disable the Continue button. The user explicitly said they want to
+  // be allowed to launch with supply outside LP (presale, team alloc,
+  // etc.); we just call out the choice so it isn't accidental.
+  const warnings = [];
 
   if (pools.length === 0) reasons.push('No pools configured');
   const totalAlloc = pools.reduce((s, p) => s + p.supplyPercent, 0);
   if (totalAlloc > 100) reasons.push('Allocations exceed 100%');
+  // Under-allocation: supply held outside LP. Per the spec, this is
+  // allowed — "We should not prevent people from doing what they want,
+  // and just warn." We do compute whether the existing support across
+  // all pools covers the USD value of the preallocated supply, so the
+  // warning text can be specific about what's actually risky:
+  //
+  //   - Preallocation with NO support → "rug risk, no backing"
+  //   - Preallocation with PARTIAL support → "underbacked, support
+  //     covers ~X% of preallocated value"
+  //   - Preallocation with FULL support → no warning (the user has
+  //     explicitly backed the held-back supply with equal-or-greater
+  //     liquidity, which is the honest configuration)
+  //
+  // Computation:
+  //   gapUsd      = (100 - totalAlloc) / 100 × marketCap
+  //   supportUsd  = sum over pools of (supportConfig.solValue × solUsd)
+  //   coverage    = supportUsd / gapUsd  (clamped to [0, 1] for the warning)
+  //
+  // When market cap or SOL price isn't available yet, we fall back to
+  // the original "consider adding support" wording — we can't compute
+  // coverage without prices, but we still want to surface the gap.
+  if (totalAlloc < 99.99 && pools.length > 0) {
+    const gap = 100 - totalAlloc;
+    const gapText = (gap % 1 === 0) ? gap.toFixed(0) : gap.toFixed(1);
+    const mcap = parseNumberInput(document.getElementById('targetMarketCap'));
+    const solPool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+    const solUsd = solPool && Number(solPool.resolvedPriceUsd) > 0
+      ? Number(solPool.resolvedPriceUsd) : null;
+    // Sum support USD across all pools that have support enabled. Each
+    // pool's support is in SOL, so we multiply by the live SOL price to
+    // get USD (consistent with how the funding estimate sizes it).
+    let totalSupportUsd = 0;
+    for (const p of pools) {
+      const sc = p.supportConfig;
+      if (sc && sc.mode === 'custom' && Number(sc.solValue) > 0 && solUsd) {
+        totalSupportUsd += Number(sc.solValue) * solUsd;
+      }
+    }
+    if (Number.isFinite(mcap) && mcap > 0 && solUsd) {
+      const gapUsd = mcap * gap / 100;
+      const coverage = gapUsd > 0 ? totalSupportUsd / gapUsd : 1;
+      if (coverage >= 1) {
+        // Fully backed — no warning. The preallocation is honest.
+      } else if (totalSupportUsd <= 0) {
+        warnings.push(
+          `${gapText}% of supply (~$${formatUsdRoughly(gapUsd)}) is allocated outside LP ` +
+            `with no support position backing it. This is a rug risk — add a Support ` +
+            `position sized to ~$${formatUsdRoughly(gapUsd)} so holders of the preallocated ` +
+            `supply have a buy wall to sell into.`,
+        );
+      } else {
+        const coveragePct = Math.round(coverage * 100);
+        const shortfallUsd = gapUsd - totalSupportUsd;
+        warnings.push(
+          `${gapText}% of supply (~$${formatUsdRoughly(gapUsd)}) is allocated outside LP, ` +
+            `but Support only backs ~${coveragePct}% of it. Consider increasing Support ` +
+            `by ~$${formatUsdRoughly(shortfallUsd)} (or in SOL terms, ` +
+            `~${(shortfallUsd / solUsd).toFixed(2)} SOL) to fully back the preallocation.`,
+        );
+      }
+    } else {
+      // Fallback for when prices aren't available — generic warning.
+      // No coverage math possible, so we can't be specific about how
+      // much support is needed. The user will see this update once
+      // prices resolve.
+      warnings.push(
+        `${gapText}% of supply is allocated outside LP (preallocation). ` +
+          `Add a Support position to back it — without one, holders of the preallocated ` +
+          `supply have no buy-side liquidity to sell into.`,
+      );
+    }
+  }
 
   for (const [i, p] of pools.entries()) {
     if (!p.quoteToken) reasons.push(`Pool ${i + 1}: no quote token`);
@@ -5024,24 +6475,36 @@ function updateContinueToFundingState() {
   // a tooltip-only hint they may not even hover over.
   const reasonBox = document.getElementById('continueReasons');
   if (reasonBox) {
-    if (reasons.length === 0) {
-      reasonBox.classList.add('hidden');
-      reasonBox.innerHTML = '';
-    } else {
-      reasonBox.classList.remove('hidden');
-      // If we're in simple mode and any of the reasons reference a pool,
-      // append a hint pointing the user to Customize — that's where the
-      // controls to fix pool-level issues (override price, etc.) live.
-      // Without this hint, simple-mode users see "Pool 2: no USD price"
-      // and have no idea where Pool 2 even is.
+    // Build the blocking-reasons block (if any), then the warnings block
+    // (if any). Warnings render even when reasons is empty, so a clean
+    // launch with preallocation still surfaces the heads-up.
+    let inner = '';
+    if (reasons.length > 0) {
       const hasPoolReason = reasons.some((r) => /^Pool \d/.test(r));
       const hint = (simpleConfig.mode === 'default' && hasPoolReason)
         ? '<p class="is-size-7 mt-2 mb-0"><em>Click <strong>Customize pools manually</strong> to access pool-level controls.</em></p>'
         : '';
-      reasonBox.innerHTML =
+      inner +=
         '<strong>Cannot continue yet:</strong><ul style="margin-top: 0.25rem; margin-bottom: 0;">' +
         reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join('') +
         '</ul>' + hint;
+    }
+    if (warnings.length > 0) {
+      // Soft warnings — different prefix and styling so the user can
+      // tell at a glance whether something is blocking vs informational.
+      // Margin separates from the blocking-reasons block when both are
+      // present.
+      const sep = reasons.length > 0 ? 'margin-top: 0.75rem;' : '';
+      inner += `<div style="${sep}"><strong>Heads up:</strong><ul style="margin-top: 0.25rem; margin-bottom: 0;">` +
+        warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('') +
+        '</ul></div>';
+    }
+    if (inner === '') {
+      reasonBox.classList.add('hidden');
+      reasonBox.innerHTML = '';
+    } else {
+      reasonBox.classList.remove('hidden');
+      reasonBox.innerHTML = inner;
     }
   }
 
@@ -5232,6 +6695,48 @@ bind('targetMarketCap', 'input', () => {
     // total indicator all depend on mcap; re-render to refresh them.
     renderPools();
   }
+  // Preallocation display in the simple config also depends on mcap
+  // (USD value of the held-back tokens). The auto-sized support value
+  // also depends on mcap (preallocation USD ÷ SOL price), so we run
+  // rebuildPoolsFromSimple — debounced so rapid typing doesn't fire
+  // a rebuild per keystroke. The inline display helpers patch the
+  // visible figures (USD, token count, coverage indicator) in place,
+  // so the user sees their input reflected immediately without us
+  // having to destroy and rebuild the simple-config body.
+  if (simpleConfig.mode === 'default') {
+    rebuildPoolsFromSimpleDebounced();
+    refreshSimplePreallocDisplayInline();
+    refreshSimpleSupportDisplayInline();
+    // Continue-state check too, since the coverage warning depends on
+    // the latest support → preallocation USD comparison.
+    if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+  }
+});
+
+// Token supply input also feeds the preallocation token-count display
+// (% × supply = preallocated tokens). Refresh the simple config so the
+// display tracks the user's input. Token supply doesn't affect support
+// sizing (support is USD-denominated via market cap, not supply), so a
+// rebuild isn't strictly necessary — but we call it anyway for symmetry
+// and to handle any future supply-dependent derived values cleanly.
+// Debounced + inline-display approach matches the mcap handler above
+// so typing into supply doesn't cost a full simple-config rebuild
+// per keystroke.
+bind('tokenSupply', 'input', () => {
+  if (simpleConfig.mode === 'default') {
+    rebuildPoolsFromSimpleDebounced();
+    refreshSimplePreallocDisplayInline();
+  }
+});
+
+// Blur handlers: flush any pending debounced rebuild so the pools
+// reflect the user's latest input before they interact with the
+// rest of the form (Continue button, customize switch, etc.).
+bind('targetMarketCap', 'blur', () => {
+  flushRebuildPoolsFromSimple();
+});
+bind('tokenSupply', 'blur', () => {
+  flushRebuildPoolsFromSimple();
 });
 
 // Live token-preview card. The same five fields that drive the
@@ -5320,6 +6825,16 @@ function poolsMatchSimpleDefaults() {
   );
   const singleDist = buildEqualSplitDistribution(1);
 
+  // Mirror rebuildPoolsFromSimple's preallocation scaling so the
+  // expected pool sizes match what a fresh rebuild would actually
+  // produce. Without this, enabling preallocation in simple mode would
+  // be perpetually flagged as "drift from defaults" even though
+  // customize-mode state matches it exactly.
+  const preallocPct = simpleConfig.preallocationEnabled
+    ? Math.max(0, Math.min(99, Number(simpleConfig.preallocationPercent) || 0))
+    : 0;
+  const lpBudget = 100 - preallocPct;
+
   let expected;
   if (simpleConfig.flywheelEnabled) {
     const fw = FLYWHEELS[simpleConfig.flywheelKey];
@@ -5330,15 +6845,24 @@ function poolsMatchSimpleDefaults() {
         FLYWHEEL_MIN_PERCENT,
         Math.min(FLYWHEEL_MAX_PERCENT, Number(simpleConfig.flywheelPercent) || DEFAULT_FLYWHEEL_PERCENT),
       );
+      const solShare = 100 - flywheelPct;
       expected = [
-        { quoteToken: 'SOL', supplyPercent: 100 - flywheelPct, distribution: splitDist },
-        { quoteToken: fw.mint, supplyPercent: flywheelPct, distribution: singleDist },
+        {
+          quoteToken: 'SOL',
+          supplyPercent: solShare * lpBudget / 100,
+          distribution: splitDist,
+        },
+        {
+          quoteToken: fw.mint,
+          supplyPercent: flywheelPct * lpBudget / 100,
+          distribution: singleDist,
+        },
       ];
     } else {
-      expected = [{ quoteToken: 'SOL', supplyPercent: 100, distribution: splitDist }];
+      expected = [{ quoteToken: 'SOL', supplyPercent: lpBudget, distribution: splitDist }];
     }
   } else {
-    expected = [{ quoteToken: 'SOL', supplyPercent: 100, distribution: splitDist }];
+    expected = [{ quoteToken: 'SOL', supplyPercent: lpBudget, distribution: splitDist }];
   }
 
   if (pools.length !== expected.length) return false;
@@ -5346,7 +6870,11 @@ function poolsMatchSimpleDefaults() {
     const p = pools[i];
     const e = expected[i];
     if (p.quoteToken !== e.quoteToken) return false;
-    if (Number(p.supplyPercent) !== e.supplyPercent) return false;
+    // Tolerance compare on supplyPercent — preallocation scaling can
+    // produce non-integer values (e.g. 80 × 80/100 = 64) but rounding
+    // through the user's last input vs. the canonical math can diverge
+    // by 1 ULP. 0.01% is well below any user-visible difference.
+    if (Math.abs(Number(p.supplyPercent) - e.supplyPercent) > 0.01) return false;
     if (p.ammConfigIndex !== 3) return false; // 1% is the simple default
     // Distribution shape match. Compare slice count and each slice's
     // sharePercent within a small tolerance to absorb floating-point
@@ -5406,11 +6934,40 @@ function poolsMatchSimpleDefaults() {
         if (Math.abs(Number(ab.upperMultiplier) - Number(eb.upperMultiplier)) > 0.001) return false;
       }
     }
+
+    // Support config comparison. Mirrors rebuildPoolsFromSimple:
+    // simple mode applies the same derived supportConfig to every
+    // pool — the totalSupportSol gets split equally, so each pool's
+    // expected solValue is totalSupportSol / poolCount. We compute the
+    // expected config once with the actual pool count and compare it
+    // against every pool's stored config (they should all be identical
+    // in simple mode).
+    //
+    // We compare solValue (canonical) and depthPct (canonical) rather
+    // than anything derived. depthPct comparison goes through
+    // clampSupportDepth on both sides so an out-of-range raw value
+    // (e.g. user typed 75 then it was clamped to 50) still matches.
+    const expectedSupport = deriveSupportConfigFromSimple(pools.length);
+    const actualSupport = p.supportConfig || { mode: 'off' };
+    if (actualSupport.mode !== expectedSupport.mode) return false;
+    if (actualSupport.mode === 'custom') {
+      if (Math.abs(Number(actualSupport.solValue) - Number(expectedSupport.solValue)) > 0.0001) {
+        return false;
+      }
+      if (clampSupportDepth(actualSupport.depthPct) !== clampSupportDepth(expectedSupport.depthPct)) {
+        return false;
+      }
+    }
   }
   return true;
 }
 
 bind('continueToFundingBtn', 'click', async () => {
+  // Flush any pending debounced pool rebuild so the estimator sees
+  // the user's latest input. Without this, a Continue click during
+  // the 250ms debounce window would send stale allocations to the
+  // server and the funding estimate would be wrong.
+  flushRebuildPoolsFromSimple();
   await withRunState(async () => {
     try {
       const allocations = buildAllocationsForApi();
@@ -5497,6 +7054,48 @@ bind('backToConfigBtn', 'click', () => {
   setStepSummary(2, '');
   log('Returned to configuration. Edit and click Continue to Funding when ready.', 'info');
   activateStep(2);
+});
+
+// Copy-wallet-address button on the funding step. The address is the
+// destination for the user's manual SOL transfer; QR scanning works
+// for mobile wallets but desktop wallet users typically copy-paste.
+// Uses navigator.clipboard.writeText with a 1.4s visual confirmation
+// (checkmark icon swap + 'Copied!' label) so the user knows it worked
+// without needing a separate toast. Falls back gracefully if the
+// clipboard API is unavailable (logs to activity log instead).
+bind('step3WalletAddrCopyBtn', 'click', async () => {
+  // Read from tempWallet rather than from the DOM textContent, since
+  // the DOM string is what's displayed (potentially wrapped, with no
+  // formatting differences here, but it's still cleaner to copy the
+  // source of truth). tempWallet is populated by step 1's generate-
+  // wallet flow and remains valid throughout the launch.
+  if (!tempWallet || !tempWallet.publicKey) {
+    log('No wallet address available to copy', 'warning');
+    return;
+  }
+  const btn = document.getElementById('step3WalletAddrCopyBtn');
+  const icon = btn && btn.querySelector('i');
+  try {
+    await navigator.clipboard.writeText(tempWallet.publicKey);
+    log('Wallet address copied to clipboard', 'info');
+    // Visual confirmation: swap the copy icon for a check, change the
+    // button color to the "ok" tone, and revert after 1.4s. Mirrors
+    // the .copy-btn.copied pattern used in the recovery-flow report.
+    if (icon) {
+      icon.classList.remove('fa-copy');
+      icon.classList.add('fa-check');
+    }
+    if (btn) btn.classList.add('is-success');
+    setTimeout(() => {
+      if (icon) {
+        icon.classList.remove('fa-check');
+        icon.classList.add('fa-copy');
+      }
+      if (btn) btn.classList.remove('is-success');
+    }, 1400);
+  } catch (e) {
+    log(`Couldn't copy address (${e.message})`, 'warning');
+  }
 });
 
 // Reset all token/pool state to defaults so the user can start a fresh
@@ -6131,7 +7730,13 @@ function computeLockSummary(results) {
   for (const r of results) {
     const mains = Array.isArray(r.mainPositions) ? r.mainPositions : [];
     const ladder = Array.isArray(r.ladderPositions) ? r.ladderPositions : [];
-    const all = [...mains, ...ladder, ...(r.bootstrap ? [r.bootstrap] : [])];
+    // Support positions carry the same locked-or-not lifecycle as
+    // ladder bands. They never have recipients (Fee Keys stay with
+    // the launch wallet), so they only contribute to total + locked
+    // counts, never to totalRecipient/transferred. Defensive against
+    // older result entries that pre-date the field.
+    const support = Array.isArray(r.supportPositions) ? r.supportPositions : [];
+    const all = [...mains, ...ladder, ...support, ...(r.bootstrap ? [r.bootstrap] : [])];
     for (const p of all) {
       total++;
       if (p.locked) locked++;
@@ -6268,6 +7873,30 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
           </div>
           ${renderFactRow('Range', rangeLabel)}
           ${supplyText ? renderFactRow('Token-supply share', supplyText) : ''}
+          ${renderAddressRow('Position NFT', pos.nftMint)}
+          ${renderAddressRow('Open TX', pos.txIds?.open, 'tx')}
+          ${renderAddressRow('Lock TX', pos.txIds?.lock, 'tx')}
+        </div>`;
+    });
+
+    // Support positions. Single-sided quote position(s) sitting below
+    // launch price (above for mintB-side launches). Backs preallocated
+    // supply with a quote-side buy wall. No recipient — Fee Keys stay
+    // with the launch wallet. Currently always 0 or 1 entries per pool,
+    // but rendered as a loop in case future iterations open multiple
+    // support bands at different depths.
+    const support = Array.isArray(r.supportPositions) ? r.supportPositions : [];
+    support.forEach((pos, si) => {
+      const depthLabel = pos.depthPct != null
+        ? `launch price down to -${Number(pos.depthPct).toFixed(0)}% (single-sided quote)`
+        : `tick ${pos.tickLower} → ${pos.tickUpper}`;
+      positionsHtml += `
+        <div class="position-card">
+          <div class="position-header">
+            <span class="position-kind">Support position${support.length > 1 ? ` ${si + 1}/${support.length}` : ''}</span>
+            ${renderLockBadge(pos.locked)}
+          </div>
+          ${renderFactRow('Range', depthLabel)}
           ${renderAddressRow('Position NFT', pos.nftMint)}
           ${renderAddressRow('Open TX', pos.txIds?.open, 'tx')}
           ${renderAddressRow('Lock TX', pos.txIds?.lock, 'tx')}
@@ -7371,10 +9000,24 @@ function buildAllocationsForApi() {
       p.quoteUsdOverride != null
         ? p.quoteUsdOverride
         : (p.resolvedPriceUsd != null ? Number(p.resolvedPriceUsd) : null);
-    const effectiveSymbolOverride =
-      p.quoteSymbolOverride != null && p.quoteSymbolOverride !== ''
-        ? p.quoteSymbolOverride
-        : (p.resolvedSymbol || null);
+    // Symbol-override resolution priority:
+    //   1. User-typed override in customize mode (explicit user intent)
+    //   2. Resolved symbol from tokenInfoService (GeckoTerminal / Jupiter
+    //      / DexScreener) — usually present for liquid tokens
+    //   3. Flywheel label — bespoke flywheel tokens may not be in price
+    //      APIs yet; the label ("Reserve" / "Meme" / etc.) is a much
+    //      better display string than the first 6 chars of the mint
+    //   4. null — server falls back to mint.slice(0,6), which is the
+    //      "we genuinely don't know" surface for arbitrary tokens
+    let effectiveSymbolOverride;
+    if (p.quoteSymbolOverride != null && p.quoteSymbolOverride !== '') {
+      effectiveSymbolOverride = p.quoteSymbolOverride;
+    } else if (p.resolvedSymbol) {
+      effectiveSymbolOverride = p.resolvedSymbol;
+    } else {
+      const fw = Object.values(FLYWHEELS).find((f) => f.mint === p.quoteToken);
+      effectiveSymbolOverride = fw ? fw.label : null;
+    }
     const effectiveDecimalsOverride =
       p.quoteDecimalsOverride != null
         ? p.quoteDecimalsOverride
@@ -7442,6 +9085,27 @@ function buildAllocationsForApi() {
       distribution = [{ sharePercent: 100, recipient: null }];
     }
 
+    // Wire support config: { mode: 'off' } or { mode: 'custom', solValue, depthPct }.
+    // The solValue is the user's canonical input in SOL; the orchestrator
+    // converts to USD-equivalent raw quote units at LP-creation time
+    // using the live SOL price. depthPct controls how far below launch
+    // the position covers (range [1, 50], default 10). Support is
+    // quote-only — no supplyPercent conversion needed since it doesn't
+    // carve from token supply.
+    const supportCfg = p.supportConfig || { mode: 'off' };
+    const support = (supportCfg.mode === 'custom' && Number(supportCfg.solValue) > 0)
+      ? {
+          mode: 'custom',
+          solValue: Number(supportCfg.solValue),
+          // Clamp at wire-time so a transient out-of-range UI value (e.g.
+          // mid-keystroke typing) never gets sent to pre-flight. Pre-flight
+          // validates again with the same bounds; clamping here gives a
+          // cleaner UX (user doesn't see "invalid depthPct" errors from
+          // a value the UI will eventually correct on blur).
+          depthPct: clampSupportDepth(supportCfg.depthPct),
+        }
+      : { mode: 'off' };
+
     return {
       quoteToken: p.quoteToken,
       supplyPercent: p.supplyPercent,
@@ -7452,6 +9116,7 @@ function buildAllocationsForApi() {
       distribution,
       bootstrap,
       ladder,
+      support,
     };
   });
 }
@@ -7551,7 +9216,16 @@ function renderFundingRequirements() {
   Object.entries(fundingRequirement.byQuote).forEach(([mint, rawAmt]) => {
     const pool = findPoolByMint(mint);
     const decimals = pool?.resolvedDecimals ?? pool?.quoteDecimalsOverride ?? 6;
-    const symbol = pool?.resolvedSymbol ?? pool?.quoteSymbolOverride ?? mint.slice(0, 6);
+    // Symbol resolution — same priority as buildAllocationsForApi:
+    // user override > resolved symbol > flywheel label > mint prefix.
+    // The mint-prefix fallback only fires for truly unknown tokens
+    // (no price-API coverage, not a flywheel, no user override) and
+    // even then is a worst-case display rather than a stable ticker.
+    let symbol = pool?.resolvedSymbol ?? pool?.quoteSymbolOverride;
+    if (!symbol) {
+      const fw = Object.values(FLYWHEELS).find((f) => f.mint === mint);
+      symbol = fw ? fw.label : mint.slice(0, 6);
+    }
     // neededWhole is the precise target (what the bootstrap actually
     // needs on-chain). displayNeeded is the user-facing rounded form;
     // displayed value may have lost precision via toPrecision/floor in
@@ -7560,6 +9234,17 @@ function renderFundingRequirements() {
     // would produce false "met" states for small fractional targets.
     const neededWhole = rawAmt / Math.pow(10, decimals);
     const displayNeeded = formatTokenDisplay(neededWhole);
+    // Approximate USD value of this manual-prefund target. Uses the
+    // pool's resolved price for the conversion — same source the
+    // estimator and cost-preview use. Hidden when we don't have a
+    // price (genuinely unpriced token).
+    const priceUsd = Number(pool?.resolvedPriceUsd ?? pool?.quoteUsdOverride);
+    const usdValue = Number.isFinite(priceUsd) && priceUsd > 0
+      ? neededWhole * priceUsd
+      : null;
+    const usdChip = usdValue != null
+      ? ` <span class="is-size-7 has-text-grey">(${formatUsdShort(usdValue)})</span>`
+      : '';
 
     const row = document.createElement('div');
     row.className = 'balance-row';
@@ -7568,7 +9253,7 @@ function renderFundingRequirements() {
     row.dataset.decimals = decimals;
     row.dataset.target = String(neededWhole);
     row.innerHTML = `
-      <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(symbol)}</strong></span>
+      <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(symbol)}</strong>${usdChip}</span>
       <span><span data-field="actual">0</span> / <span data-field="needed">${displayNeeded}</span></span>
     `;
     sendContainer.appendChild(row);
@@ -7599,6 +9284,21 @@ function renderFundingRequirements() {
       const acquireWhole = Number(item.targetRaw) / Math.pow(10, item.quoteDecimals);
       const minWhole = Number(item.minRaw || item.targetRaw) / Math.pow(10, item.quoteDecimals);
       const displayTarget = formatTokenDisplay(acquireWhole);
+      // Approximate USD value of the acquire target. item.quoteUsd is a
+      // string-encoded Decimal from the server estimator (the same price
+      // the swap budget was sized against). Multiplying by acquireWhole
+      // gives the dollar amount the user should expect to see swapped.
+      // Shown in parentheses next to the token count so the user can
+      // sanity-check magnitude — "3149 tokens" is meaningless without
+      // knowing each is worth $0.001, but "$3.15" is universally
+      // understood. Falls back to no USD chip when price is missing.
+      const quoteUsdPrice = Number(item.quoteUsd);
+      const usdValue = Number.isFinite(quoteUsdPrice) && quoteUsdPrice > 0
+        ? acquireWhole * quoteUsdPrice
+        : null;
+      const usdChip = usdValue != null
+        ? ` <span class="is-size-7 has-text-grey">(${formatUsdShort(usdValue)})</span>`
+        : '';
 
       const row = document.createElement('div');
       row.className = 'balance-row';
@@ -7616,7 +9316,7 @@ function renderFundingRequirements() {
       // it. Clicking it re-runs Acquire for just this one row.
       row.innerHTML = `
         <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(item.quoteSymbol)}</strong>
-          <span class="is-size-7 has-text-grey ml-2">≈ ${displayTarget}</span></span>
+          <span class="is-size-7 has-text-grey ml-2">≈ ${displayTarget}</span>${usdChip}</span>
         <span class="row-status-cell">
           <span data-field="status" class="is-size-7 has-text-grey">Pending</span>
           <button class="row-retry-btn" type="button" title="Retry this swap" aria-label="Retry">
@@ -8516,6 +10216,15 @@ function convertAutoSwapRowToManual(quoteMint, quoteSymbol) {
   // precise value; the displayed text is formatted for readability.
   const pool = findPoolByMint(quoteMint);
   const displayTarget = formatTokenDisplay(manualTarget);
+  // USD chip for consistency with the original Section-1 manual rows.
+  // Same source-of-truth (pool's resolved price) and same formatter.
+  const priceUsd = Number(pool?.resolvedPriceUsd ?? pool?.quoteUsdOverride);
+  const usdValue = Number.isFinite(priceUsd) && priceUsd > 0
+    ? manualTarget * priceUsd
+    : null;
+  const usdChip = usdValue != null
+    ? ` <span class="is-size-7 has-text-grey">(${formatUsdShort(usdValue)})</span>`
+    : '';
   const newRow = document.createElement('div');
   newRow.className = 'balance-row';
   newRow.dataset.kind = 'token';
@@ -8523,7 +10232,7 @@ function convertAutoSwapRowToManual(quoteMint, quoteSymbol) {
   newRow.dataset.decimals = decimals;
   newRow.dataset.target = String(manualTarget);
   newRow.innerHTML = `
-    <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(quoteSymbol)}</strong>
+    <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(quoteSymbol)}</strong>${usdChip}
       <span class="tag is-warning is-light is-small ml-2">send manually</span></span>
     <span><span data-field="actual">0</span> / <span data-field="needed">${displayTarget}</span></span>
   `;
@@ -9046,7 +10755,7 @@ function buildPhaseProgressTree(pools, lockPositions) {
     ? Number(simpleConfig.ladderBandCount) || LADDER_DEFAULT_BANDS
     : 0;
 
-  // --- Phase 1: pool creates + main opens + ladder opens
+  // --- Phase 1: pool creates + main opens + ladder opens + support opens
   const phase1 = document.createElement('div');
   phase1.className = 'progress-pool';
   phase1.id = 'pp-phase1';
@@ -9054,13 +10763,32 @@ function buildPhaseProgressTree(pools, lockPositions) {
   pools.forEach((p, i) => {
     const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
     const sliceCount = p.distribution.length;
+    // Per-pool ladder band count: in customize mode each pool has its
+    // own ladder config; in simple mode the simpleConfig values apply
+    // uniformly. The progress tree always uses the per-pool value so
+    // it matches what createSinglePool will actually do.
+    const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
+      && Array.isArray(p.ladderConfig.bands))
+      ? p.ladderConfig.bands.length
+      : ladderBandCount;
+    // Per-pool support presence: support adds one progress row per
+    // pool that has it configured. In simple mode the user's launch-
+    // level total SOL is split equally across pools (same pattern as
+    // bootstrap) so every pool typically gets a row. In customize
+    // mode the user controls support per-pool. Either way, we read
+    // each pool's supportConfig and add the row when needed.
+    const poolHasSupport = p.supportConfig?.mode === 'custom'
+      && Number(p.supportConfig.solValue) > 0;
     phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="pool"><span class="icon">◯</span>${label} — Create pool</div>`;
     for (let s = 0; s < sliceCount; s++) {
       phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="slice-${s}"><span class="icon">◯</span>${label} — Open slice ${s + 1} of ${sliceCount}</div>`;
     }
     // Ladder bands per pool, ordered low-to-high (band 1 = closest to launch)
-    for (let b = 0; b < ladderBandCount; b++) {
-      phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="ladder-${b}"><span class="icon">◯</span>${label} — Open ladder band ${b + 1} of ${ladderBandCount}</div>`;
+    for (let b = 0; b < poolLadderBandCount; b++) {
+      phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="ladder-${b}"><span class="icon">◯</span>${label} — Open ladder band ${b + 1} of ${poolLadderBandCount}</div>`;
+    }
+    if (poolHasSupport) {
+      phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="support-open"><span class="icon">◯</span>${label} — Open support position</div>`;
     }
   });
   phase1.innerHTML = `
@@ -9099,11 +10827,23 @@ function buildPhaseProgressTree(pools, lockPositions) {
     pools.forEach((p, i) => {
       const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
       const sliceCount = p.distribution.length;
+      // Same per-pool ladder count + support detection as Phase 1, so
+      // the phase rows are perfectly symmetric and the lock progress
+      // matches what got opened.
+      const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
+        && Array.isArray(p.ladderConfig.bands))
+        ? p.ladderConfig.bands.length
+        : ladderBandCount;
+      const poolHasSupport = p.supportConfig?.mode === 'custom'
+        && Number(p.supportConfig.solValue) > 0;
       for (let s = 0; s < sliceCount; s++) {
         phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="lock-${s}"><span class="icon">◯</span>${label} — Lock slice ${s + 1}</div>`;
       }
-      for (let b = 0; b < ladderBandCount; b++) {
+      for (let b = 0; b < poolLadderBandCount; b++) {
         phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="ladder-lock-${b}"><span class="icon">◯</span>${label} — Lock ladder band ${b + 1}</div>`;
+      }
+      if (poolHasSupport) {
+        phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="support-lock"><span class="icon">◯</span>${label} — Lock support position</div>`;
       }
       phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="bs-lock"><span class="icon">◯</span>${label} — Lock bootstrap</div>`;
     });
@@ -9235,6 +10975,34 @@ function markPoolDone(idx, poolResult) {
       );
       if (lockRow) markRowDone(lockRow);
     }
+  }
+
+  // Support position rows. Same shape as ladder bands but currently
+  // capped at one support per pool, so the progress tree only has one
+  // "support-open" and one "support-lock" row per pool. If a pool
+  // has multiple support positions in the future, this would need
+  // per-index data-stage attributes ("support-open-0" etc) like ladder
+  // — for now the one-position case keeps the row IDs simpler.
+  const sp = Array.isArray(poolResult && poolResult.supportPositions)
+    ? poolResult.supportPositions
+    : [];
+  // We mark the row done as soon as ANY support position has the field
+  // populated. With more than one support position this would mismark,
+  // but the current data model has 0 or 1. The defensive `.some` form
+  // makes adding multi-band support later just a matter of extending
+  // the row builder; this check would still flip when the first one
+  // lands.
+  if (sp.some((pos) => pos && pos.nftMint)) {
+    const openRow = document.querySelector(
+      `#lpProgressTree [data-pool-idx="${idx}"][data-stage="support-open"]`,
+    );
+    if (openRow) markRowDone(openRow);
+  }
+  if (sp.some((pos) => pos && pos.locked)) {
+    const lockRow = document.querySelector(
+      `#lpProgressTree [data-pool-idx="${idx}"][data-stage="support-lock"]`,
+    );
+    if (lockRow) markRowDone(lockRow);
   }
 }
 
