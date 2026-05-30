@@ -17,15 +17,13 @@
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
-
   "engines": {
     "node": ">=22.12.0",
     "npm": ">=10"
   },
-
   "scripts": {
     "start": "electron .",
-    "web": "node server.js",
+    "web": "node scripts/build-app-js.mjs && node server.js",
     "web:dev": "node --watch server.js",
     "check:syntax": "node scripts/check-syntax.mjs",
     "test": "node --test test/*.test.mjs",
@@ -33,9 +31,9 @@
     "build": "electron-builder",
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux"
+    "build:linux": "electron-builder --linux",
+    "build:js": "node scripts/build-app-js.mjs"
   },
-
   "files": [
     "build/**/*",
     "docs/**/*",
@@ -62,7 +60,6 @@
     "metadata.json",
     "public/**/*"
   ],
-
   "dependencies": {
     "@metaplex-foundation/mpl-token-metadata": "^3.2.1",
     "@metaplex-foundation/umi": "^0.9.2",
@@ -84,13 +81,11 @@
     "multer": "^2.1.1",
     "qrcode": "^1.5.4"
   },
-
   "devDependencies": {
     "@types/node": "^20.14.10",
     "electron": "^42.2.0",
     "electron-builder": "^26.8.1"
   },
-
   "overrides": {
     "axios": "^1.16.1",
     "bn.js": "^5.2.3",
@@ -100,18 +95,15 @@
     "uuid": "^11.1.1",
     "ws": "^8.21.0"
   },
-
   "build": {
     "appId": "com.makesometokens.trebuchet",
     "productName": "Trebuchet",
     "executableName": "Trebuchet",
     "publish": null,
-
     "directories": {
       "buildResources": "build",
       "output": "dist"
     },
-
     "files": [
       "main.js",
       "server.js",
@@ -138,24 +130,25 @@
       "public/**/*",
       "package.json"
     ],
-
     "asarUnpack": [
       "public/**/*",
       "public/intro.mp4"
     ],
-
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "artifactName": "Trebuchet-${version}-${arch}.${ext}"
     },
-
     "win": {
       "icon": "build/icon.ico",
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
-
     "nsis": {
       "artifactName": "${productName}-${version}-Setup.${ext}",
       "preCompressedFileExtensions": []
@@ -164,7 +157,9 @@
       "artifactName": "${productName}-${version}-Portable.${ext}"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "category": "Development",
       "executableName": "Trebuchet",
       "artifactName": "Trebuchet-${version}-${arch}.${ext}"
