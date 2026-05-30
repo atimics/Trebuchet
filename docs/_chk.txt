@@ -1,2 +1,0 @@
-LP_OK
-TOK_OK
