@@ -1,0 +1,68 @@
+
+=== Phase 3: Locking positions ===
+[SOL] locking main slice 1/2: nft=CiDwVBFgWV9E5MvXWoLgnEgn2hK7rJikbvfWavzAQz4
+  locked: tx=mock-tx-1
+[SOL] locking main slice 2/2: nft=GcdayuLaLyrdmUu324nahyv33G5poQdLUEZ1nEytDeQ
+  locked: tx=mock-tx-2
+[SOL] locking bootstrap: nft=LX3EUdRUBUa3TbsYXLEUdj9J3prXkWXvLYSWyYyc2Jk
+  bootstrap locked: tx=mock-tx-3
+=== Phase 3 done: 0 failure(s) ===
+
+
+=== Phase 3: Locking positions ===
+[SOL] locking main slice 1/2: nft=g35TxFqwMx95vCk63fTxGTHb6ei4W24qg5t2x6xD3cU
+[SOL] locking main slice 2/2: nft=jwV7SyvqCSrVcKibYvurCCWr7DUmT7yRYPmY9QwvrGp
+  lock FAILED: injected lockPosition execute failure
+  locked: tx=mock-tx-4
+[SOL] locking bootstrap: nft=oqtkwi1j2wZuJSh74CMk7wk77nFUQDt1Qhf3LiweewA
+  bootstrap locked: tx=mock-tx-5
+=== Phase 3 done: 1 failure(s) ===
+
+Creating CLMM pool: __LAUNCHED__ / So11111111111111111111111111111111111111112
+  pool created: 25TXLvcMJNvRY4vb95G9Kpvf9A3LJCdWLswD47xvXsaY, tx: mock-tx-6
+✔ lpService exposes test-only DI seams without affecting production defaults (0.326708ms)
+✔ lock phase happy path: all positions + bootstrap lock, txIds recorded, zero failures (0.653834ms)
+✖ lock phase partial failure: 2nd lock fails, recoverable state recorded (what locked vs not) (0.555083ms)
+  launched token sorted as mintA, currentTick=0, tickSpacing=60
+  main range: [60, 443580]
+  range positioning verified: launched=mintA, position is above currentTick by 60 ticks
+Creating CLMM pool: __LAUNCHED__ / So11111111111111111111111111111111111111112
+
+=== Phase 4: Transferring Fee Key NFTs ===
+[SOL] main slice 1: not locked, no Fee Key to transfer
+=== Phase 4 done: 1 failure(s) ===
+
+=== Phase 4: no Fee Key transfers needed (skip) ===
+
+✔ createSinglePool create-step happy path: returns a pool id and create tx (2005.271375ms)
+✔ createSinglePool create-step failure: pool creation throws, no recoverable position state created (1.587833ms)
+✔ transfer phase: unlocked position cannot transfer Fee Key, surfaced as recoverable failure (0.998125ms)
+✔ transfer phase: no recipients short-circuits cleanly (no failures) (0.373167ms)
+✔ journal records a recoverable partial-launch (failedPhase=locks) rather than only logging (4.920583ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 7
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2187.645334
+
+✖ failing tests:
+
+test at test/launch-lifecycle.test.mjs:72:1
+✖ lock phase partial failure: 2nd lock fails, recoverable state recorded (what locked vs not) (0.555083ms)
+  AssertionError [ERR_ASSERTION]: failure identifies WHICH position did not lock
+  
+  0 !== 1
+  
+      at TestContext.<anonymous> (file:///Users/ratimics/develop/trebuchet/test/launch-lifecycle.test.mjs:83:10)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
