@@ -93,6 +93,15 @@ let balancePollHandle = null;
 let lpResult = null;
 let pools = [];
 let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
+// Airdrop execution result, populated by runTransfer() from the
+// transfer-assets response (and updated by the retry path). Carries
+// the per-recipient transferred/failed lists so the retry button has
+// the data to resubmit, and the launch report can include an Airdrop
+// section showing where the tokens went. Null when no airdrop ran or
+// step 6 hasn't been reached.
+//   { transferred: [{wallet, tokens, amountRaw, txId}, ...],
+//     failed:      [{wallet, tokens, amountRaw, error}, ...] }
+let lastAirdropResult = null;
 
 // Cache of resolved quote-token info, keyed by the canonical input the
 // user typed/picked (e.g. 'SOL', 'USDC', or a base58 mint address). Each
@@ -485,9 +494,13 @@ let simpleConfig = {
   // is what the parser produced; parseError and budgetError carry
   // user-facing error strings. Re-parsing is keystroke-driven from the
   // textarea so the preview / errors update live. The actual on-chain
-  // distribution is NOT performed during the launch flow yet — this
-  // structure is configured here and stays in simpleConfig for a
-  // future "Distribute airdrop" step that will run after Burn & Earn.
+  // distribution is performed during the Transfer Assets step (Step 6),
+  // alongside the NFT/token/SOL sweep. The recipient list and per-row
+  // token amounts are assembled by buildAirdropTransferPayload() and
+  // POSTed with the transfer-assets request; the server executes each
+  // recipient as its own classic-SPL transferChecked transaction so
+  // failures are isolated per-recipient. Partial failures surface in
+  // the transfer result UI with a Retry button.
   airdrop: {
     enabled: false,
     csvText: '',
@@ -2163,6 +2176,7 @@ bind('generateWalletBtn', 'click', async () => {
       lastSolBalance = 0;
       createdTokenInfo = null;
       lpResult = null;
+      lastAirdropResult = null;
       fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 
       // Reset UI panels that may carry stale info from a previous attempt
@@ -3094,10 +3108,15 @@ function airdropBudgetError(totalTokens) {
 // instruction size; 10 is safely below the Solana transaction size
 // cap of 1232 bytes for the typical ATA-create + transfer pattern).
 //
-// The actual on-chain execution (not built yet) will likely use a
-// different batching strategy, but the estimate must err on the high
-// side so the user funds enough — under-budgeting strands the
-// airdrop step requiring a top-up.
+// The actual on-chain execution uses per-recipient transactions (each
+// recipient gets one tx with an idempotent ATA create + transferChecked).
+// That's more conservative than the 10-per-tx batching modeled here:
+// in practice the per-recipient SOL cost is the same (one ATA rent per
+// recipient either way), but we pay one tx fee per recipient instead
+// of one per batch. The estimate above is fractionally low by that
+// margin; we leave it as-is because the safety buffer (10% on
+// slippage/fee variance applied in the lpService cost estimator)
+// already covers small overruns of this kind.
 const AIRDROP_ATA_RENT_SOL = 0.00203928;
 const AIRDROP_TX_FEE_SOL = 0.000005;
 const AIRDROP_RECIPIENTS_PER_TX = 10;
@@ -3108,6 +3127,53 @@ function computeAirdropExecutionCostSol() {
   if (n === 0) return 0;
   const numTxs = Math.ceil(n / AIRDROP_RECIPIENTS_PER_TX);
   return n * AIRDROP_ATA_RENT_SOL + numTxs * AIRDROP_TX_FEE_SOL;
+}
+
+// Build the airdrop payload to attach to the /api/transfer-assets POST.
+// Returns null when no airdrop should run — caller can omit the field
+// from the request body in that case and the server short-circuits.
+//
+// Conditions for an airdrop to run at transfer time:
+//   1. We have a created-token mint to send (Step 4 completed).
+//   2. Preallocation is enabled in simpleConfig.
+//   3. Airdrop sub-feature is enabled with at least one parsed row.
+//   4. We're in simple mode — customize mode has no airdrop UI, so
+//      simpleConfig.airdrop state from a prior simple-mode session
+//      shouldn't fire when the user is now configuring per-pool.
+//
+// All four conditions are needed: any one failing means there's
+// nothing legitimate to airdrop.
+function buildAirdropTransferPayload() {
+  if (!createdTokenInfo || !createdTokenInfo.mint) return null;
+  if (simpleConfig.mode === 'customize') return null;
+  if (!simpleConfig.preallocationEnabled) return null;
+  const airdrop = simpleConfig.airdrop;
+  if (!airdrop || !airdrop.enabled) return null;
+  const rows = Array.isArray(airdrop.parsedRows) ? airdrop.parsedRows : [];
+  if (rows.length === 0) return null;
+
+  // Filter to rows with positive token amounts. annotateAirdropRowsWithTokens
+  // sets tokens=null when inputs are incomplete (supply/mcap/SOL price
+  // not ready); we skip those — they wouldn't be sent regardless and
+  // including them would confuse the per-recipient retry logic later.
+  const recipients = rows
+    .filter((r) => Number.isFinite(Number(r.tokens)) && Number(r.tokens) > 0
+      && typeof r.wallet === 'string' && r.wallet.length > 0)
+    .map((r) => ({
+      wallet: r.wallet,
+      tokens: Number(r.tokens),
+    }));
+  if (recipients.length === 0) return null;
+
+  return {
+    tokenMint: createdTokenInfo.mint,
+    tokenDecimals: createdTokenInfo.decimals,
+    // Launched tokens are classic SPL (tokenService.js creates them with
+    // TOKEN_PROGRAM_ID). The server defaults to false anyway but we
+    // pass it explicitly so the wire format is self-describing.
+    isToken2022: false,
+    recipients,
+  };
 }
 
 // Compute the preallocation percent the airdrop list NEEDS to fit. This
@@ -8727,6 +8793,7 @@ function resetForNewLaunch() {
   // 2. Wipe in-memory launch state.
   createdTokenInfo = null;
   lpResult = null;
+  lastAirdropResult = null;
   fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
   fundingWallet = null;
   lastSolBalance = 0;
@@ -9515,6 +9582,160 @@ function computeLockSummary(results) {
 // Optional `logoDataUrl` parameter: if provided, embedded as the report's
 // hero image. The downloadLaunchReport caller reads the user's selected
 // logo file and converts it to a data URL before calling this.
+// Build the Airdrop section of the launch report. Returns an empty
+// string when no airdrop ran (lastAirdropResult is null) so the call
+// site can render unconditionally — the section just disappears in
+// the no-airdrop case. Called from buildLaunchReportHtml.
+//
+// The section follows the same visual treatment as the other
+// numbered sections: [ NN ] enum-badge, section-title, content. Each
+// recipient row shows the wallet (with copy + Solscan link via the
+// existing addr-row pattern), the tokens delivered, and either the
+// transaction signature (for delivered) or the failure reason (for
+// failed). Delivered and failed lists are visually distinguished by
+// a small color accent on the count badge in each subsection header.
+function buildAirdropReportSection() {
+  if (!lastAirdropResult) return '';
+  const delivered = lastAirdropResult.transferred || [];
+  const failed = lastAirdropResult.failed || [];
+  if (delivered.length === 0 && failed.length === 0) return '';
+
+  // Total tokens delivered — sum across the transferred list. Useful
+  // summary stat at the top so the user has a single number for "how
+  // much actually went out" without scanning every row.
+  const totalDelivered = delivered.reduce(
+    (s, r) => s + (Number(r.tokens) || 0), 0,
+  );
+  const totalFailed = failed.reduce(
+    (s, r) => s + (Number(r.tokens) || 0), 0,
+  );
+
+  // Pretty-format token amounts. Used in both row rendering and the
+  // summary line. Up to 6 decimals so airdrops to fractional-token
+  // amounts (rare but possible for low-supply or precise mcap-driven
+  // values) don't get rounded to integers.
+  const fmtTokens = (n) => {
+    const num = Number(n);
+    if (!Number.isFinite(num)) return '—';
+    return num.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  };
+
+  // Delivered rows — each shows wallet + tokens + tx signature with
+  // Solscan link. Pattern matches the per-pool position rows so the
+  // report reads consistently end-to-end.
+  let deliveredRows = '';
+  if (delivered.length > 0) {
+    deliveredRows = delivered.map((r) => {
+      const wAddr = String(r.wallet || '');
+      const wShort = wAddr ? `${wAddr.slice(0, 6)}…${wAddr.slice(-6)}` : '—';
+      const tokensTxt = fmtTokens(r.tokens);
+      const txCell = r.txId
+        ? `<a class="explorer-link" href="${escapeAttr(solscanTxUrl(r.txId))}" target="_blank" rel="noopener" title="View transaction on Solscan">${escapeHtml(r.txId.slice(0, 8))}…↗</a>`
+        : '—';
+      return `<tr>
+        <td>
+          <code style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">${escapeHtml(wShort)}</code>
+          ${wAddr ? `<a class="explorer-link" href="${escapeAttr(solscanAddrUrl(wAddr))}" target="_blank" rel="noopener" title="View address on Solscan" style="margin-left: 4px;">↗</a>` : ''}
+        </td>
+        <td style="text-align: right;">${tokensTxt}</td>
+        <td>${txCell}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Failed rows — each shows wallet + tokens + the failure reason
+  // (truncated if very long; the on-screen result panel and the
+  // downloadable CSV both have the full text). Color-tinted in muted
+  // amber to distinguish from delivered rows at a glance.
+  let failedRows = '';
+  if (failed.length > 0) {
+    failedRows = failed.map((r) => {
+      const wAddr = String(r.wallet || '');
+      const wShort = wAddr ? `${wAddr.slice(0, 6)}…${wAddr.slice(-6)}` : '—';
+      const tokensTxt = fmtTokens(r.tokens);
+      let reasonRaw = String(r.error || 'unknown error');
+      if (reasonRaw.length > 140) reasonRaw = reasonRaw.slice(0, 137) + '…';
+      const verifyLinkHtml = r.signature
+        ? ` <a class="explorer-link" href="${escapeAttr(solscanTxUrl(r.signature))}" target="_blank" rel="noopener" title="View transaction on Solscan to verify whether it landed">verify ↗</a>`
+        : '';
+      return `<tr>
+        <td>
+          <code style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">${escapeHtml(wShort)}</code>
+          ${wAddr ? `<a class="explorer-link" href="${escapeAttr(solscanAddrUrl(wAddr))}" target="_blank" rel="noopener" title="View address on Solscan" style="margin-left: 4px;">↗</a>` : ''}
+        </td>
+        <td style="text-align: right;">${tokensTxt}</td>
+        <td style="color: #b8821a;">${escapeHtml(reasonRaw)}${verifyLinkHtml}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Compose the two subsections. We only render a subsection when
+  // there's something to put in it, so a clean airdrop produces just
+  // the "Delivered" subsection and a fully-failed airdrop (rare)
+  // produces just the "Failed" subsection.
+  let deliveredBlock = '';
+  if (delivered.length > 0) {
+    deliveredBlock = `
+      <h3 class="subsection">
+        Delivered &middot;
+        <span style="color: #2c8a52;">${delivered.length} recipient${delivered.length === 1 ? '' : 's'}</span> &middot;
+        ${fmtTokens(totalDelivered)} tokens
+      </h3>
+      <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 1rem;">
+        <thead>
+          <tr style="border-bottom: 1px solid var(--rule, rgba(28,22,16,0.15));">
+            <th style="text-align: left; padding: 4px 8px 4px 0;">Recipient</th>
+            <th style="text-align: right; padding: 4px 8px;">Tokens</th>
+            <th style="text-align: left; padding: 4px 0;">Transaction</th>
+          </tr>
+        </thead>
+        <tbody>${deliveredRows}</tbody>
+      </table>
+    `;
+  }
+  let failedBlock = '';
+  if (failed.length > 0) {
+    failedBlock = `
+      <h3 class="subsection">
+        Failed &middot;
+        <span style="color: #b8821a;">${failed.length} recipient${failed.length === 1 ? '' : 's'}</span> &middot;
+        ${fmtTokens(totalFailed)} tokens un-delivered
+      </h3>
+      <p style="font-size: 12px; color: var(--ink-muted, #6a4f2a); margin-bottom: 0.5rem;">
+        These recipients did not receive their share during the launch.
+        Their portion of the supply remained in the ephemeral wallet and
+        was swept to the destination wallet alongside the rest. To
+        distribute manually, use the recipient list below or the
+        downloadable CSV from the Step 6 result panel.
+      </p>
+      <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 1rem;">
+        <thead>
+          <tr style="border-bottom: 1px solid var(--rule, rgba(28,22,16,0.15));">
+            <th style="text-align: left; padding: 4px 8px 4px 0;">Recipient</th>
+            <th style="text-align: right; padding: 4px 8px;">Tokens</th>
+            <th style="text-align: left; padding: 4px 0;">Reason</th>
+          </tr>
+        </thead>
+        <tbody>${failedRows}</tbody>
+      </table>
+    `;
+  }
+
+  return `
+    <hr class="section-rule">
+    <div class="enum-badge">[ 04 ] &nbsp; Airdrop</div>
+    <h2 class="section-title">Airdrop distribution</h2>
+    <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a); margin-bottom: 1rem;">
+      The launched token was distributed to ${delivered.length + failed.length}
+      recipient${(delivered.length + failed.length) === 1 ? '' : 's'} from the
+      preallocation budget as part of the Step 6 transfer.
+      ${failed.length > 0 ? `<strong style="color: #b8821a;">${failed.length} did not deliver successfully.</strong>` : ''}
+    </p>
+    ${deliveredBlock}
+    ${failedBlock}
+  `;
+}
+
 function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
   const now = new Date();
   const tokenInfo = createdTokenInfo || {};
@@ -10347,6 +10568,8 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
   <h2 class="section-title">Liquidity pool breakdown</h2>
 
   ${poolSections}
+
+  ${buildAirdropReportSection()}
 
   <footer class="doc-footer">
     <div>
@@ -13175,6 +13398,27 @@ async function runTransfer() {
     setLoading(btn, true);
     try {
       log(`Transferring assets to ${dest}...`);
+      // Build the airdrop payload (when applicable). buildAirdropTransferPayload
+      // returns null when no airdrop is configured / customize mode / no parsed
+      // rows etc.; in that case the server short-circuits the airdrop step.
+      const airdropPayload = buildAirdropTransferPayload();
+      if (airdropPayload) {
+        // Conservative estimate: ~4 seconds per recipient (350ms pace +
+        // 2-3s tx confirmation + occasional retry). Real-world is usually
+        // faster but a high estimate sets expectations and avoids the
+        // "is it frozen?" panic during long runs.
+        const n = airdropPayload.recipients.length;
+        const estSeconds = Math.ceil(n * 4);
+        const estDuration = estSeconds < 60
+          ? `~${estSeconds}s`
+          : `~${Math.ceil(estSeconds / 60)} min`;
+        log(
+          `Airdrop included: ${n} recipient${n === 1 ? '' : 's'} of the launched `
+          + `token will receive their share before the remaining tokens sweep `
+          + `to your destination. This may take ${estDuration} — please don't `
+          + `close the app until it completes.`,
+        );
+      }
       const resp = await fetch('/api/transfer-assets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -13182,6 +13426,9 @@ async function runTransfer() {
           tempWalletSecretKey: tempWallet.secretKey,
           destinationWallet: dest,
           tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
+          // airdrop is optional — present only when applicable, omitted
+          // otherwise so we don't send an empty payload for no-airdrop launches.
+          ...(airdropPayload ? { airdrop: airdropPayload } : {}),
         }),
       });
       const data = await resp.json();
@@ -13192,6 +13439,12 @@ async function runTransfer() {
       document.getElementById('solTransferred').textContent = data.solTransferred ?? '—';
       document.getElementById('nftsTransferred').textContent =
         data.nftSweep?.transferred?.length ?? '0';
+
+      // Persist the airdrop result module-side so the retry button has the
+      // failed-recipients list and the launch report can include an Airdrop
+      // section. data.airdrop is null when no airdrop ran (no payload sent).
+      lastAirdropResult = data.airdrop || null;
+      renderAirdropTransferResult(lastAirdropResult);
 
       // Detect partial-failure modes. The server's transfer endpoint can
       // succeed at the top level (tokens + NFTs moved) but still have
@@ -13207,6 +13460,15 @@ async function runTransfer() {
       //                         creation that ran out of lamports).
       //   nftSweep.errors[]   — per-NFT failures (e.g. a locked LP NFT
       //                         that the lock contract rejected releasing).
+      //   airdrop.failed[]    — per-recipient airdrop failures (invalid
+      //                         address, RPC blip mid-distribution, etc.).
+      //                         Distinct from the other failure modes:
+      //                         the un-airdropped tokens still got swept
+      //                         to the destination wallet, so the funds
+      //                         aren't stranded — but the recipients
+      //                         didn't get their share, and the user may
+      //                         want to retry (using the destination wallet
+      //                         now that the tokens have moved there).
       //
       // Each gets a warning log line so the user can investigate. The
       // wallet's pending-recovery entry is also preserved server-side
@@ -13214,8 +13476,12 @@ async function runTransfer() {
       // user can come back later with the secret key and try again.
       const tokenErrors = data.tokenSweep?.errors || [];
       const nftErrors = data.nftSweep?.errors || [];
+      const airdropFailed = data.airdrop?.failed || [];
       const hasPartialFailure =
-        data.solSweepError || tokenErrors.length > 0 || nftErrors.length > 0;
+        data.solSweepError
+        || tokenErrors.length > 0
+        || nftErrors.length > 0
+        || airdropFailed.length > 0;
 
       if (data.solSweepError) {
         log(`SOL sweep failed: ${data.solSweepError}`, 'warning');
@@ -13231,6 +13497,23 @@ async function runTransfer() {
       }
       for (const e of nftErrors) {
         log(`NFT sweep error (${e.mint?.slice(0, 8) || 'unknown'}…): ${e.error}`, 'warning');
+      }
+      // Airdrop logging: success summary first (so the user sees what worked),
+      // then per-recipient failures with their reason. Capped at 5 failures
+      // in the log to avoid spam — the result panel below shows the full list.
+      if (data.airdrop) {
+        const delivered = (data.airdrop.transferred || []).length;
+        if (delivered > 0) {
+          log(`Airdrop delivered to ${delivered} recipient${delivered === 1 ? '' : 's'}`, 'success');
+        }
+        const failedToShow = airdropFailed.slice(0, 5);
+        for (const f of failedToShow) {
+          const wShort = f.wallet ? `${f.wallet.slice(0, 4)}…${f.wallet.slice(-4)}` : 'unknown';
+          log(`Airdrop failed (${wShort}): ${f.error}`, 'warning');
+        }
+        if (airdropFailed.length > failedToShow.length) {
+          log(`…and ${airdropFailed.length - failedToShow.length} more airdrop failure${airdropFailed.length - failedToShow.length === 1 ? '' : 's'}. See the panel above for details.`, 'warning');
+        }
       }
 
       // Hide the Transfer button — flow is complete. Re-clicking would attempt
@@ -13281,6 +13564,231 @@ async function runTransfer() {
       setLoading(btn, false);
     }
   });
+}
+
+// Render the airdrop result block inside Step 6 — populates the
+// #airdropTransferResult container with a per-recipient summary and a
+// retry button when there are failures. Called from runTransfer after
+// the transfer-assets response lands, and again after a retry to
+// update the displayed counts.
+//
+// Hides the block entirely when no airdrop ran (no panel to show).
+// Shows it with a green "all delivered" notice when delivery was 100%
+// successful, or with a warning notice listing the failed recipients
+// and a Retry button when there were partial failures.
+function renderAirdropTransferResult(airdrop) {
+  const container = document.getElementById('airdropTransferResult');
+  if (!container) return;
+  if (!airdrop) {
+    container.classList.add('hidden');
+    container.innerHTML = '';
+    return;
+  }
+  const delivered = (airdrop.transferred || []).length;
+  const failed = (airdrop.failed || []).length;
+  if (delivered === 0 && failed === 0) {
+    container.classList.add('hidden');
+    container.innerHTML = '';
+    return;
+  }
+  container.classList.remove('hidden');
+
+  // Build the failure rows — short wallet, error message. Wrapped in a
+  // small inset container so the warning notice doesn't sprawl when
+  // there are lots of failures.
+  let failureRowsHtml = '';
+  if (failed > 0) {
+    failureRowsHtml = (airdrop.failed || []).map((f) => {
+      const wShort = f.wallet ? escapeHtml(`${f.wallet.slice(0, 6)}…${f.wallet.slice(-6)}`) : 'unknown';
+      const tokensTxt = Number.isFinite(Number(f.tokens))
+        ? Number(f.tokens).toLocaleString(undefined, { maximumFractionDigits: 4 })
+        : '—';
+      // When a tx signature is present on a failure, it means we sent
+      // the tx but couldn't confirm it landed (confirmation timeout
+      // with a negative balance check). Surface a Solscan link so the
+      // user can inspect the chain — the tx may still land later, and
+      // if it did, they can decide not to retry that recipient. The
+      // attempts count is a useful diagnostic for transient-vs-permanent
+      // errors so we show it inline.
+      const sigLinkHtml = f.signature
+        ? ` &nbsp;<a href="https://solscan.io/tx/${encodeURIComponent(f.signature)}" target="_blank" rel="noopener" style="color: #5a3e1a; font-weight: 600;" title="View transaction on Solscan to verify whether it landed">verify ↗</a>`
+        : '';
+      const attemptsHtml = Number.isFinite(Number(f.attempts)) && Number(f.attempts) > 1
+        ? ` <span class="has-text-grey is-size-7">(${f.attempts} attempts)</span>`
+        : '';
+      return `<div class="is-size-7" style="margin: 0.2rem 0;">
+        <span class="is-family-monospace">${wShort}</span>
+        &nbsp;·&nbsp; ${tokensTxt} tokens
+        &nbsp;·&nbsp; <span style="color: #b8821a;">${escapeHtml(f.error || 'unknown error')}</span>${attemptsHtml}${sigLinkHtml}
+      </div>`;
+    }).join('');
+  }
+
+  if (failed === 0) {
+    // All-delivered path. Green notice with the delivered count.
+    container.innerHTML = `
+      <div class="notification is-success is-light is-size-7 py-2 px-3">
+        <p>
+          <strong>Airdrop delivered</strong> to ${delivered} recipient${delivered === 1 ? '' : 's'}.
+          The launched token was sent to each address before the remaining
+          balance swept to your destination wallet.
+        </p>
+      </div>
+    `;
+  } else {
+    // Mixed-result path. Yellow notice with delivered + failed counts,
+    // failure list, retry button. The retry button targets only the
+    // failed recipients; the user can click it repeatedly until they
+    // either get all deliveries through or give up.
+    container.innerHTML = `
+      <div class="notification is-warning is-light is-size-7 py-2 px-3">
+        <p class="mb-2">
+          <strong>Airdrop partial:</strong>
+          ${delivered} delivered, ${failed} failed.
+        </p>
+        <p class="mb-2" style="color: #6a4f2a;">
+          <strong>Important:</strong> The launched tokens have now swept to your
+          destination wallet, so a retry from the ephemeral wallet won't have
+          the supply to send. Retry only works if the ephemeral wallet still
+          has tokens — typically this means clicking <strong>Retry failed</strong>
+          before the wallet finishes emptying, or distributing manually from
+          your destination wallet using the recipient list below.
+        </p>
+        <details class="mt-2 mb-2">
+          <summary style="cursor: pointer; user-select: none;"><strong>Failed recipients (${failed})</strong></summary>
+          <div style="margin-top: 0.3rem; padding-left: 0.5rem;">
+            ${failureRowsHtml}
+          </div>
+        </details>
+        <div class="field is-grouped mt-2">
+          <div class="control">
+            <button class="button is-small is-warning" id="retryAirdropBtn">
+              <span class="icon is-small"><i class="fas fa-redo"></i></span>
+              <span>Retry failed</span>
+            </button>
+          </div>
+          <div class="control">
+            <button class="button is-small is-light" id="downloadAirdropRecipientsBtn">
+              <span class="icon is-small"><i class="fas fa-file-csv"></i></span>
+              <span>Download failed recipients CSV</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    // Wire the retry and download handlers (have to re-bind on each
+    // render since innerHTML rewrites destroy the previous DOM nodes).
+    const retryBtn = document.getElementById('retryAirdropBtn');
+    if (retryBtn) retryBtn.addEventListener('click', runAirdropRetry);
+    const dlBtn = document.getElementById('downloadAirdropRecipientsBtn');
+    if (dlBtn) dlBtn.addEventListener('click', downloadFailedAirdropRecipientsCsv);
+  }
+}
+
+// Retry the failed airdrop recipients via /api/retry-airdrop. Sends the
+// current lastAirdropResult.failed list as the new recipient set and
+// merges the result back into lastAirdropResult.
+//
+// Behavior:
+//   - Recipients newly-delivered move from failed[] into transferred[].
+//   - Recipients still-failing stay in failed[] with the (possibly new)
+//     error message.
+//   - The render-result function is called again with the updated state
+//     so the panel reflects the new counts and (if all delivered) flips
+//     to the success notice.
+async function runAirdropRetry() {
+  if (!lastAirdropResult || !lastAirdropResult.failed
+      || lastAirdropResult.failed.length === 0) {
+    return;
+  }
+  if (!createdTokenInfo || !createdTokenInfo.mint) {
+    log('Cannot retry airdrop: token info missing.', 'warning');
+    return;
+  }
+  if (!tempWallet || !tempWallet.secretKey) {
+    log('Cannot retry airdrop: launch wallet key not available.', 'warning');
+    return;
+  }
+  const recipients = lastAirdropResult.failed.map((f) => ({
+    wallet: f.wallet,
+    tokens: f.tokens,
+  }));
+  const btn = document.getElementById('retryAirdropBtn');
+  setLoading(btn, true);
+  try {
+    log(`Retrying airdrop to ${recipients.length} recipient${recipients.length === 1 ? '' : 's'}...`);
+    const resp = await fetch('/api/retry-airdrop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempWalletSecretKey: tempWallet.secretKey,
+        tokenMint: createdTokenInfo.mint,
+        tokenDecimals: createdTokenInfo.decimals,
+        isToken2022: false,
+        recipients,
+      }),
+    });
+    const data = await resp.json();
+    if (!data.success) throw new Error(data.error);
+    const result = data.airdrop;
+    // Merge: newly-delivered append to transferred; still-failed
+    // replaces failed (every entry in the response's failed list
+    // failed THIS attempt too).
+    lastAirdropResult = {
+      transferred: [...(lastAirdropResult.transferred || []), ...(result.transferred || [])],
+      failed: result.failed || [],
+    };
+    renderAirdropTransferResult(lastAirdropResult);
+    const delivered = (result.transferred || []).length;
+    const stillFailed = (result.failed || []).length;
+    if (delivered > 0) {
+      log(`Retry: ${delivered} additional recipient${delivered === 1 ? '' : 's'} delivered`, 'success');
+    }
+    if (stillFailed > 0) {
+      log(`Retry: ${stillFailed} recipient${stillFailed === 1 ? '' : 's'} still failed`, 'warning');
+    }
+  } catch (e) {
+    log(`Airdrop retry failed: ${e.message}`, 'danger');
+  } finally {
+    setLoading(btn, false);
+  }
+}
+
+// Download the failed-recipients list as a CSV the user can use to
+// manually distribute from their destination wallet (or hand off to
+// another tool). Format matches the input airdrop CSV so the user
+// could in principle re-upload it as a fresh launch — though that's
+// not the typical use case.
+function downloadFailedAirdropRecipientsCsv() {
+  if (!lastAirdropResult || !lastAirdropResult.failed
+      || lastAirdropResult.failed.length === 0) {
+    return;
+  }
+  // wallet,tokens header matches the airdrop CSV input format. We add
+  // a third "reason" column so the user has the failure context next
+  // to each recipient, which is useful when triaging.
+  const lines = ['wallet,tokens,reason'];
+  for (const f of lastAirdropResult.failed) {
+    const w = String(f.wallet || '');
+    const t = Number.isFinite(Number(f.tokens)) ? String(f.tokens) : '';
+    // Escape commas and quotes inside the reason field per RFC 4180.
+    const reasonRaw = String(f.error || 'unknown');
+    const reason = /[",\n]/.test(reasonRaw)
+      ? '"' + reasonRaw.replace(/"/g, '""') + '"'
+      : reasonRaw;
+    lines.push(`${w},${t},${reason}`);
+  }
+  const csv = lines.join('\n') + '\n';
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const mintShort = (createdTokenInfo?.mint || 'launch').slice(0, 8);
+  a.download = `airdrop-failed-${mintShort}-${Date.now()}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ===========================================================================

@@ -31,6 +31,7 @@ import {
   sweepNftsToDestination,
   sweepAllTokensToDestination,
   sweepSolToDestination,
+  executeAirdrop,
 } from './walletHelpers.js';
 
 import {
@@ -60,6 +61,36 @@ import {
   normalizeWholeTokenSupply,
 } from './validators.js';
 import { isWalletEffectivelyEmpty } from './walletRecovery.js';
+
+// In-flight airdrop guard. Maps wallet public key → boolean (currently
+// running). Used to reject concurrent /api/transfer-assets and
+// /api/retry-airdrop calls against the same launch wallet — a second
+// concurrent call would re-send transactions while the first is still
+// running, risking double-payment to recipients whose first-pass tx
+// already landed.
+//
+// This is an in-memory guard. It does NOT survive a server restart
+// (intentionally — if the server crashed mid-airdrop, the in-flight
+// run is no longer in flight; the user should be able to retry the
+// failed recipients without artificial blocking). It DOES protect
+// against the much-more-common case of: user clicks button, network
+// is slow, user clicks again thinking nothing happened.
+//
+// The Map approach scales to many concurrent launches (different
+// wallets); each wallet's airdrop is independent. Entries are added
+// when an airdrop step begins and deleted on completion (success or
+// failure) in a try/finally to guarantee cleanup even on uncaught
+// throws.
+const airdropsInFlight = new Map();
+function airdropInFlight(walletPublicKey) {
+  return airdropsInFlight.get(walletPublicKey) === true;
+}
+function markAirdropInFlight(walletPublicKey) {
+  airdropsInFlight.set(walletPublicKey, true);
+}
+function clearAirdropInFlight(walletPublicKey) {
+  airdropsInFlight.delete(walletPublicKey);
+}
 
 // Configuration constants are defined below in the "Configuration" section
 // (just after __dirname is computed). Internal env vars (PORT,
@@ -1834,6 +1865,106 @@ app.post('/api/transfer-assets', async (req, res) => {
       destinationWallet,
     });
 
+    // 1.5. Airdrop, if configured. Inserted BEFORE the token sweep
+    //      because the airdrop sends the launched token to the recipient
+    //      wallets from the ephemeral wallet's balance — those tokens
+    //      must still be present. The optional `airdrop` payload carries
+    //      the token mint, decimals, program info, and recipient list;
+    //      when absent (no airdrop configured / simple mode without
+    //      airdrop / customize mode) this step is a clean no-op.
+    //
+    //      Partial failures don't abort the transfer. Failed recipients
+    //      are returned in `airdropResult.failed` so the frontend can
+    //      offer a retry. Un-airdropped tokens stay in the launch wallet
+    //      and get picked up by the token sweep below, so even if the
+    //      user gives up on retrying, the funds aren't stranded — they
+    //      reach the destination wallet via the standard sweep path.
+    let airdropResult = null;
+    if (req.body.airdrop
+        && Array.isArray(req.body.airdrop.recipients)
+        && req.body.airdrop.recipients.length > 0
+        && req.body.airdrop.tokenMint
+        && Number.isFinite(req.body.airdrop.tokenDecimals)) {
+      // Concurrency guard: reject if another airdrop is currently
+      // running for this same launch wallet. Without this, a user
+      // clicking Transfer Assets twice (or a slow network triggering
+      // a double-submit) could send overlapping airdrops and
+      // double-pay recipients whose first-pass tx already landed.
+      if (airdropInFlight(walletPublicKey)) {
+        console.warn(
+          `Rejecting concurrent airdrop request for wallet ${walletPublicKey} `
+          + `— another airdrop is already in flight.`,
+        );
+        airdropResult = {
+          transferred: [],
+          failed: req.body.airdrop.recipients.map((r) => ({
+            wallet: r.wallet,
+            tokens: r.tokens,
+            amountRaw: null,
+            error: 'Another airdrop is already running for this launch wallet. '
+              + 'Wait for it to complete before retrying.',
+          })),
+        };
+      } else {
+        // Record airdrop start in the journal so a crashed-mid-airdrop
+        // case is debuggable from the journal alone. recordEvent appends
+        // to the wallet's event stream without mutating the top-level
+        // status (the transfer is still active overall).
+        launchJournal.recordEvent(walletPublicKey, {
+          stage: 'airdrop_started',
+          recipients: req.body.airdrop.recipients.length,
+          tokenMint: req.body.airdrop.tokenMint,
+        });
+        markAirdropInFlight(walletPublicKey);
+        try {
+          airdropResult = await executeAirdrop({
+            tempWalletSecretKey: secretKeyArr,
+            tokenMint: req.body.airdrop.tokenMint,
+            tokenDecimals: req.body.airdrop.tokenDecimals,
+            isToken2022: !!req.body.airdrop.isToken2022,
+            recipients: req.body.airdrop.recipients,
+          });
+          console.log(
+            `Airdrop summary: ${airdropResult.transferred.length} delivered, `
+            + `${airdropResult.failed.length} failed`,
+          );
+          // Record completion. Includes a partial flag so the journal
+          // viewer can distinguish a fully-clean airdrop from one that
+          // had per-recipient failures.
+          launchJournal.recordEvent(walletPublicKey, {
+            stage: 'airdrop_completed',
+            delivered: airdropResult.transferred.length,
+            failed: airdropResult.failed.length,
+            partial: airdropResult.failed.length > 0,
+          });
+        } catch (e) {
+          // An UNEXPECTED airdrop failure (one that bypassed per-recipient
+          // try/catch — likely a bad mint or connection init failure)
+          // shouldn't abort the rest of the sweep. We log it and mark
+          // every recipient as failed so the user sees what happened.
+          console.error('Airdrop step failed unexpectedly:', e.message);
+          launchJournal.recordEvent(walletPublicKey, {
+            stage: 'airdrop_crashed',
+            error: e.message,
+          });
+          airdropResult = {
+            transferred: [],
+            failed: req.body.airdrop.recipients.map((r) => ({
+              wallet: r.wallet,
+              tokens: r.tokens,
+              amountRaw: null,
+              error: `Airdrop step crashed: ${e.message}`,
+            })),
+          };
+        } finally {
+          // ALWAYS clear the in-flight flag so a future retry isn't
+          // blocked. The flag's purpose is to serialize concurrent
+          // attempts, not to prevent legitimate re-runs.
+          clearAirdropInFlight(walletPublicKey);
+        }
+      }
+    }
+
     // 2. All fungible tokens — launched token + any auto-swapped quote
     //    tokens that weren't fully consumed by the bootstrap positions.
     const tokenSweep = await sweepAllTokensToDestination({
@@ -1885,10 +2016,12 @@ app.post('/api/transfer-assets', async (req, res) => {
     // future UI iterations can show per-token results.
     const tokensTransferred = tokenSweep.transferred.length;
     const solTransferred = solSweep.solTransferred;
+    const airdropFailedCount = airdropResult ? airdropResult.failed.length : 0;
     const hasPartialFailure =
       !!solSweepError ||
       (tokenSweep.errors || []).length > 0 ||
       (nftSweep.errors || []).length > 0 ||
+      airdropFailedCount > 0 ||
       !walletEmpty;
     launchJournal.upsertForWallet(
       walletPublicKey,
@@ -1923,6 +2056,7 @@ app.post('/api/transfer-assets', async (req, res) => {
       nftSweep,
       tokenSweep,
       solSweepError,
+      airdrop: airdropResult,
     });
   } catch (error) {
     console.error('Error transferring assets:', error);
@@ -1937,6 +2071,115 @@ app.post('/api/transfer-assets', async (req, res) => {
         { stage: 'transfer_failed', error: error.message },
       );
     }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Airdrop retry — used when /api/transfer-assets returns partial airdrop
+// failures and the user clicks the "Retry failed airdrops" button. Takes
+// just the failed recipients and re-attempts them.
+//
+// IMPORTANT timing window: this endpoint is most useful while the
+// ephemeral wallet still holds the un-airdropped tokens — that means
+// BEFORE the user clicks Transfer Assets a second time (which would
+// sweep everything to the destination). The frontend wires the retry
+// button to fire before the partial-failure transfer is re-run, and
+// the docs in the UI warn that retrying after sweep won't work.
+//
+// If retry is called after the tokens have been swept, executeAirdrop
+// fails with insufficient-balance for every recipient. The response
+// makes that condition obvious so the frontend can show a "tokens
+// have moved to your destination wallet — distribute manually from
+// there" message.
+// ---------------------------------------------------------------------------
+app.post('/api/retry-airdrop', async (req, res) => {
+  let walletPublicKey = null;
+  try {
+    const {
+      tempWalletSecretKey,
+      tokenMint,
+      tokenDecimals,
+      isToken2022 = false,
+      recipients,
+    } = req.body;
+
+    if (!tempWalletSecretKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'tempWalletSecretKey required',
+      });
+    }
+    if (!tokenMint || !Number.isFinite(tokenDecimals)) {
+      return res.status(400).json({
+        success: false,
+        error: 'tokenMint and tokenDecimals required',
+      });
+    }
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'recipients must be a non-empty array',
+      });
+    }
+
+    const secretKeyArr = typeof tempWalletSecretKey === 'string'
+      ? JSON.parse(tempWalletSecretKey)
+      : tempWalletSecretKey;
+    walletPublicKey = walletPubkeyFromSecretArray(secretKeyArr);
+
+    // Concurrency guard. Same reasoning as in /api/transfer-assets: a
+    // second concurrent airdrop run could double-pay recipients whose
+    // first-pass tx already landed. The retry path is especially
+    // vulnerable because the user is more likely to click the retry
+    // button impatiently than the main Transfer button.
+    if (airdropInFlight(walletPublicKey)) {
+      console.warn(
+        `Rejecting concurrent airdrop retry for wallet ${walletPublicKey} `
+        + `— another airdrop is already in flight.`,
+      );
+      return res.status(409).json({
+        success: false,
+        error: 'Another airdrop is already running for this launch wallet. '
+          + 'Wait for it to complete before retrying.',
+      });
+    }
+    markAirdropInFlight(walletPublicKey);
+
+    console.log(`Retrying airdrop to ${recipients.length} recipient(s)`);
+    let airdropResult;
+    try {
+      airdropResult = await executeAirdrop({
+        tempWalletSecretKey: secretKeyArr,
+        tokenMint,
+        tokenDecimals,
+        isToken2022,
+        recipients,
+      });
+    } finally {
+      clearAirdropInFlight(walletPublicKey);
+    }
+    console.log(
+      `Retry summary: ${airdropResult.transferred.length} delivered, `
+      + `${airdropResult.failed.length} still failed`,
+    );
+
+    // Record a retry event in the journal so the launch history shows
+    // the recovery attempt. We don't change the launch's overall status
+    // here — the journal entry is informational.
+    launchJournal.recordEvent(walletPublicKey, {
+      stage: 'airdrop_retry',
+      retried: recipients.length,
+      delivered: airdropResult.transferred.length,
+      stillFailed: airdropResult.failed.length,
+    });
+
+    res.json({
+      success: true,
+      airdrop: airdropResult,
+    });
+  } catch (error) {
+    console.error('Airdrop retry failed:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

@@ -3513,6 +3513,21 @@
                             <span>Transfer Assets</span>
                         </button>
 
+                        <!--
+                          Airdrop result block, populated by
+                          renderAirdropTransferResult() after the
+                          transfer-assets response lands. Hidden when no
+                          airdrop ran. Shows a success notice when 100%
+                          of recipients were delivered, or a warning
+                          notice with retry/CSV-download buttons when
+                          some recipients failed. Placed ABOVE the
+                          transferResult success block so the user
+                          sees the airdrop outcome (the more nuanced
+                          part of the transfer) prominently rather
+                          than as a footnote to the general sweep.
+                        -->
+                        <div id="airdropTransferResult" class="hidden mt-3"></div>
+
                         <div id="transferResult" class="hidden mt-3">
                             <div class="notification is-success is-light is-size-7 py-2 px-3">
                                 <p><strong>Done!</strong></p>
