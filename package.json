@@ -23,7 +23,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "web": "node scripts/build-app-js.mjs && node server.js",
+    "web": "npm run build:c && npm run build:js && node server.js",
     "web:dev": "node --watch server.js",
     "check:syntax": "node scripts/check-syntax.mjs",
     "test": "node --test test/*.test.mjs",
@@ -32,7 +32,8 @@
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
-    "build:js": "node scripts/build-app-js.mjs"
+    "build:js": "node scripts/build-app-js.mjs",
+    "build:c": "make -C c"
   },
   "files": [
     "build/**/*",
@@ -58,7 +59,8 @@
     "updateCheckBridge.js",
     "validators.js",
     "metadata.json",
-    "public/**/*"
+    "public/**/*",
+    "c/build/**/*"
   ],
   "dependencies": {
     "@metaplex-foundation/mpl-token-metadata": "^3.2.1",

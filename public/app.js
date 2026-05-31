@@ -8791,6 +8791,21 @@ bind('createTokenBtn', 'click', async () => {
         .map((p) => p.resolvedMint)
         .filter((m) => typeof m === 'string' && m.length > 0);
       formData.append('quoteMints', JSON.stringify(quoteMints));
+      // Vanity CA: if we pre-ground a keypair, send it. Otherwise
+      // fall back to prefix/suffix for server-side grinding.
+      if (vanityCAKeypair) {
+        formData.append('vanityCAKeypair', JSON.stringify(vanityCAKeypair.secretKey));
+      } else {
+        const vanityTarget = document.getElementById('vanityCATarget')?.value.trim();
+        if (vanityTarget) {
+          const vanityMode = document.getElementById('vanityCAMode')?.value || 'suffix';
+          if (vanityMode === 'prefix') {
+            formData.append('vanityPrefix', vanityTarget);
+          } else {
+            formData.append('vanitySuffix', vanityTarget);
+          }
+        }
+      }
       const logoFile = document.getElementById('tokenLogo').files[0];
       if (logoFile) formData.append('logo', logoFile);
 
@@ -9801,6 +9816,77 @@ function prefillDestinationFromFunder() {
   }
 }
 
+
+// Vanity CA grind — pre-grinds the token mint address before token creation
+let vanityCAKeypair = null; // { publicKey, secretKey }
+
+bind('grindCABtn', 'click', async () => {
+  const btn = document.getElementById('grindCABtn');
+  const target = document.getElementById('vanityCATarget').value.trim();
+  if (!target) {
+    log('Enter a vanity target first.', 'warn');
+    return;
+  }
+
+  await withRunState(async () => {
+    setLoading(btn, true);
+    try {
+      const mode = document.getElementById('vanityCAMode').value;
+      const isSuffix = mode === 'suffix';
+
+      // Show progress
+      const progressEl = document.getElementById('vanityCAProgress');
+      const bar = document.getElementById('vanityCAProgressBar');
+      const text = document.getElementById('vanityCAProgressText');
+      const resultEl = document.getElementById('vanityCAResult');
+      const resultAddr = document.getElementById('vanityCAResultAddr');
+      if (progressEl) progressEl.classList.remove('hidden');
+      if (resultEl) resultEl.classList.add('hidden');
+      if (bar) bar.style.width = '0%';
+      if (text) text.textContent = 'Grinding...';
+
+      const resp = await fetch('/api/generate-vanity-wallet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(isSuffix ? { suffix: target } : { prefix: target }),
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error);
+
+      vanityCAKeypair = {
+        publicKey: data.wallet.publicKey,
+        secretKey: data.wallet.secretKey,
+      };
+
+      if (progressEl) progressEl.classList.add('hidden');
+      showVanityCAResult(data.wallet);
+
+      log(`Vanity CA: ${data.wallet.publicKey} (${data.wallet.rarity}, ${data.wallet.attempts} attempts)`, 'success');
+    } catch (e) {
+      log(`Vanity CA grind failed: ${e.message}`, 'danger');
+      document.getElementById('vanityCAProgress')?.classList.add('hidden');
+    } finally {
+      setLoading(btn, false);
+    }
+  });
+});
+
+// After grind, show rarity info
+function showVanityCAResult(data) {
+  const resultEl = document.getElementById('vanityCAResult');
+  const resultAddr = document.getElementById('vanityCAResultAddr');
+  const resultRarity = document.getElementById('vanityCARarity');
+  if (!resultEl) return;
+  resultEl.classList.remove('hidden');
+  if (resultAddr) resultAddr.textContent = data.publicKey || data.wallet?.publicKey;
+  if (resultRarity) {
+    const rarity = data.rarity || data.wallet?.rarity || 'Common';
+    const epochs = data.epochs || data.wallet?.epochs || 0;
+    resultRarity.textContent = `${rarity} (${epochs.toFixed(1)} epochs)`;
+    const tierColors = { Common: 'is-info', Rare: 'is-success', Legendary: 'is-warning', Mythic: 'is-danger' };
+    resultRarity.className = `tag ${tierColors[rarity] || 'is-light'} is-size-7 ml-2`;
+  }
+}
 
 // ===========================================================================
 // STEP 6: Transfer assets

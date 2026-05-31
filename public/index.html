@@ -2543,6 +2543,27 @@
             border-radius: 2px;
         }
 
+
+        /* ---- Vanity progress bar ---- */
+        .vanity-progress-bar {
+            width: 100%;
+            height: 6px;
+            background: #e0d6c2;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .vanity-progress-fill {
+            height: 100%;
+            background: #c4a44a;
+            border-radius: 3px;
+            animation: vanityPulse 1.2s ease-in-out infinite;
+            transition: width 0.3s ease;
+        }
+        @keyframes vanityPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
     </style>
 </head>
 <body>
@@ -2862,7 +2883,7 @@
                         <span>Generate Wallet</span>
                     </button>
 
-                    <div id="walletInfo" class="hidden mt-4">
+                    <div id="walletInfo" class="hidden mt-4"> class="hidden mt-4">
                         <div class="columns is-vcentered">
                             <div class="column is-narrow">
                                 <div class="qr-code">
@@ -2977,6 +2998,38 @@
                             </div>
                         </div>
                     </div>
+                    <!-- Vanity CA: grind a custom token mint address -->
+                    <h4 class="title is-6 mt-4">Vanity CA <span class="tag is-warning is-light is-size-7" style="vertical-align: middle;">Optional</span></h4>
+                    <p class="help is-size-7 mb-2">Make your token CA start or end with a custom string. Grinds during token creation. 4 chars ~30s, 5 chars ~30min.</p>
+                    <div class="field has-addons">
+                        <p class="control">
+                            <span class="select is-small">
+                                <select id="vanityCAMode">
+                                    <option value="suffix">Ends with</option>
+                                    <option value="prefix">Starts with</option>
+                                </select>
+                            </span>
+                        </p>
+                        <p class="control is-expanded">
+                            <input class="input is-small is-family-monospace" type="text" id="vanityCATarget" placeholder="e.g. RATi" maxlength="10">
+                        </p>
+                        <p class="control">
+                            <button class="button is-primary is-small" id="grindCABtn">
+                                <span class="icon"><i class="fas fa-star"></i></span>
+                                <span>Grind</span>
+                            </button>
+                        </p>
+                    </div>
+                    <div id="vanityCAProgress" class="hidden mt-2">
+                        <div class="vanity-progress-bar">
+                            <div id="vanityCAProgressBar" class="vanity-progress-fill" style="width: 0%"></div>
+                        </div>
+                        <p class="help is-size-7 has-text-centered mt-1" id="vanityCAProgressText">Grinding...</p>
+                    </div>
+                    <div id="vanityCAResult" class="hidden mt-2">
+                        <p class="help is-success is-size-7">CA found: <span class="is-family-monospace" id="vanityCAResultAddr"></span> <span id="vanityCARarity" class="tag is-info is-size-7 ml-2"></span></p>
+                    </div>
+
 
                     <!--
                         Live preview row. Updated on every input event
