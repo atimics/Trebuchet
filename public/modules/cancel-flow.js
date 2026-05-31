@@ -163,8 +163,10 @@ bind('cancelConfirmProceedBtn', 'click', async () => {
       // Refresh pending-wallets panel — server retains a recovery
       // entry in case of partial-failure or delayed deposits.
       loadPendingWallets();
+      markLaunchActiveForRpcHealth(false);
     } catch (e) {
       log(`Cancel failed: ${e.message}`, 'danger');
+      markLaunchActiveForRpcHealth(false);
     }
   });
 });

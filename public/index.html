@@ -2477,6 +2477,72 @@
             gap: 0.25rem;
             flex-shrink: 0;
         }
+    
+        /* RPC health dot */
+        .rpc-health-dot {
+            display: inline-block;
+            font-size: 0.65rem;
+            margin-left: 0.4rem;
+            vertical-align: middle;
+            transition: color 200ms ease;
+        }
+        .rpc-health-dot.health-good { color: var(--success); }
+        .rpc-health-dot.health-slow { color: #d4a017; }
+        .rpc-health-dot.health-error { color: var(--rubric); }
+        .rpc-health-dot.health-unknown { color: var(--ink-fade); }
+
+        /* Structured error display */
+        .error-banner { cursor: default; }
+        .error-banner-category {
+            display: inline-block;
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 0.1rem 0.4rem;
+            border-radius: 3px;
+            margin-right: 0.4rem;
+            vertical-align: middle;
+            background: rgba(165, 42, 42, 0.15);
+            color: var(--rubric-dark);
+        }
+        .error-banner-category.cat-rpc { background: rgba(165, 42, 42, 0.15); color: var(--rubric-dark); }
+        .error-banner-category.cat-onchain { background: rgba(184, 138, 42, 0.18); color: #8b6914; }
+        .error-banner-category.cat-validation { background: rgba(92, 122, 53, 0.15); color: #4a6429; }
+        .error-banner-category.cat-network { background: rgba(100, 100, 120, 0.15); color: #555; }
+
+        .error-what-happened {
+            margin-top: 0.5rem;
+            border-top: 1px dashed var(--rule);
+            padding-top: 0.5rem;
+        }
+        .error-what-happened summary {
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.8rem;
+            color: var(--ink-soft);
+            user-select: none;
+        }
+        .error-what-happened summary:hover { color: var(--ink); }
+        .error-what-happened .what-happened-body {
+            margin-top: 0.35rem;
+            font-size: 0.78rem;
+            line-height: 1.45;
+            color: var(--ink-soft);
+        }
+        .error-what-happened .what-happened-body p { margin-bottom: 0.3rem; }
+
+        .error-recovery-suggestion {
+            margin-top: 0.4rem;
+            font-size: 0.78rem;
+            color: var(--ink);
+            line-height: 1.4;
+            padding: 0.35rem 0.5rem;
+            background: rgba(92, 122, 53, 0.08);
+            border-left: 3px solid var(--success);
+            border-radius: 2px;
+        }
+
     </style>
 </head>
 <body>
@@ -2631,6 +2697,7 @@
                         <span class="icon"><i class="fas fa-server"></i></span>
                         <strong>RPC:</strong>
                         <span id="rpcCurrentDisplay" class="is-family-monospace is-size-7">loading...</span>
+                        <span class="rpc-health-dot" id="rpcHealthDot" title="RPC health unknown">&bull;</span>
                     </div>
                     <span class="icon">
                         <i class="fas fa-chevron-down" id="rpcSettingsChevron"></i>
@@ -2679,6 +2746,24 @@
             <!-- active URL — once the user adds and selects a dedicated RPC,  -->
             <!-- the banner disappears.                                        -->
             <!-- ============================================================ -->
+            
+            <!-- ============================================================ -->
+            <!-- RPC health warning banner.                                    -->
+            <!--                                                               -->
+            <!-- Shown when the active RPC starts returning errors during a    -->
+            <!-- launch flow. Polls every 30s. Includes a one-click "Switch    -->
+            <!-- RPC" suggestion via the RPC settings panel.                   -->
+            <!-- ============================================================ -->
+            <div class="notification is-warning is-light hidden mb-4" id="rpcHealthWarning">
+                <h5 class="title is-6 mb-2">
+                    <span class="icon"><i class="fas fa-exclamation-circle"></i></span>
+                    Your RPC endpoint is reporting errors.
+                </h5>
+                <p class="is-size-7 mb-2" id="rpcHealthWarningDetail"></p>
+                <p class="is-size-7">
+                    <a href="#" id="rpcHealthWarningSwitch" class="has-text-weight-semibold">Open RPC settings to switch endpoints</a>
+                </p>
+            </div>
             <div class="notification is-danger hidden mb-4" id="publicRpcWarning">
                 <h5 class="title is-6 mb-2 has-text-white">
                     <span class="icon"><i class="fas fa-exclamation-triangle"></i></span>

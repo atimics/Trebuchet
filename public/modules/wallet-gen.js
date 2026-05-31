@@ -77,6 +77,7 @@ bind('generateWalletBtn', 'click', async () => {
       document.body.classList.add('has-log');
 
       log(`Wallet generated: ${data.wallet.publicKey}`, 'success');
+      markLaunchActiveForRpcHealth(false);
 
       if (pools.length === 0) {
         // Build pools from simpleConfig defaults — produces 90/10
