@@ -3042,12 +3042,31 @@ export async function estimateRequiredFunding({
   const quoteBreakdown = [];
   const byQuote = {};
   const autoSwapPlan = [];
-  let subtotal = 0;
+  // Buffered vs unbuffered cost tracking. The 10% safety buffer is there
+  // to cover the things that can fluctuate between estimate time and
+  // launch time:
+  //   - swap slippage when buying quote tokens via auto-swap (price
+  //     drift, partial fills, route changes)
+  //   - on-chain fee variance (compute unit price changes, signature
+  //     fees, rent for unexpected new accounts)
+  //   - small rebalances during pool creation as ticks snap
+  // Things that are EXACT deposits with no swap and no fee variance
+  // don't need buffer padding — most importantly the support-position
+  // SOL deposit on SOL pools (a precise transfer of a known amount to
+  // a single-sided position). Non-SOL support also gets excluded since
+  // its auto-swap branch already builds in a 1.5x spend multiplier to
+  // cover slippage; layering another 10% on top is double-counting.
+  let bufferedSubtotal = 0;
+  let unbufferedSubtotal = 0;
 
-  // Helper to add a SOL line to both the breakdown and running total
-  const addSol = (label, sol) => {
+  // Helper to add a SOL line to the breakdown and running total. The
+  // optional `buffered` arg defaults to true (most costs) — passing
+  // false routes the amount into the unbuffered bucket so the safety
+  // buffer math skips it.
+  const addSol = (label, sol, buffered = true) => {
     solBreakdown.push({ label, sol });
-    subtotal += sol;
+    if (buffered) bufferedSubtotal += sol;
+    else unbufferedSubtotal += sol;
   };
 
   // Look up SOL price once. We use it for sizing the SOL equivalent of
@@ -3216,10 +3235,17 @@ export async function estimateRequiredFunding({
       // Support deposit (only emitted when enabled). Its own line so the
       // user can see the support cost broken out — the SOL amount is
       // exactly solValue, no conversion math needed for a SOL pool.
+      //
+      // Marked unbuffered: this is an exact deposit of a known SOL
+      // amount into a single-sided position, no swap involved, no fee
+      // variance to insulate against. The 10% safety buffer would just
+      // pad the user's funding requirement without serving any real
+      // protective purpose.
       if (supportEnabled) {
         addSol(
           `${poolLabel}: support position (~$${supportActualUsd.toFixed(2)} as SOL)`,
           Number(supportCfg.solValue),
+          false,
         );
       }
     } else {
@@ -3351,6 +3377,13 @@ export async function estimateRequiredFunding({
         // Support's auto-swap spend, emitted as its own line. The
         // acquire job will pick up the per-mint cumulative target from
         // the per-mint plan items below — we don't need to sum here.
+        //
+        // Marked unbuffered: the spendMultiplier (1.5x) already pads the
+        // SOL spend to cover swap slippage on the SOL→quote conversion.
+        // Adding the 10% safety buffer on top would double-count
+        // slippage protection. The bootstrap auto-swap line above stays
+        // buffered because its multiplier is smaller and the bootstrap
+        // amount is a hard floor (under-bootstrapping fails the launch).
         let supportSolSpend = 0;
         if (supportEnabled) {
           supportSolSpend = new Decimal(supportTargetUsd)
@@ -3360,6 +3393,7 @@ export async function estimateRequiredFunding({
           addSol(
             `${poolLabel}: support position (auto-swap → ~$${supportActualUsd.toFixed(2)} ${quoteSymbol})`,
             supportSolSpend,
+            false,
           );
         }
         // Compute the actual bootstrap need (vs the ambitious acquire
@@ -3466,12 +3500,16 @@ export async function estimateRequiredFunding({
   // the breakdown so the user sees it).
   addSol('Token creation (mint + metadata)', COST_TOKEN_CREATE_SOL);
 
-  // Safety buffer applies to the whole subtotal
-  const buffer = subtotal * SAFETY_BUFFER_PCT;
+  // Safety buffer applies only to the buffered subtotal — exact deposits
+  // (support positions) live in the unbuffered subtotal and pass through
+  // to the total without padding. See the bufferedSubtotal /
+  // unbufferedSubtotal comment up top for the why.
+  const buffer = bufferedSubtotal * SAFETY_BUFFER_PCT;
   solBreakdown.push({
-    label: `Safety buffer (${(SAFETY_BUFFER_PCT * 100).toFixed(0)}%)`,
+    label: `Safety buffer (${(SAFETY_BUFFER_PCT * 100).toFixed(0)}% on slippage/fee variance)`,
     sol: buffer,
   });
+  const subtotal = bufferedSubtotal + unbufferedSubtotal;
   const total = subtotal + buffer;
 
   return {

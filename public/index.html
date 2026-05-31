@@ -3040,8 +3040,6 @@
 
                     <hr class="my-3">
 
-                    <h4 class="title is-6">Pool Configuration</h4>
-
                     <!--
                         Simple config — the default pool-configuration UI for
                         users who don't want to think about pools. Toggle
@@ -3049,8 +3047,15 @@
                         SOL pool. Most users only see this section.
                         renderSimpleConfig() in app.js paints the toggle row +
                         help text + customize button into #simpleConfigBody.
+
+                        In simple mode the section title is "Pool Configuration"
+                        because the preallocation UI (when used) is buried in
+                        Advanced — pools are the visible top-level concept.
+                        Customize mode below splits this into two specific
+                        sections instead.
                     -->
                     <div id="simpleConfigContainer">
+                        <h4 class="title is-6">Pool Configuration</h4>
                         <div id="simpleConfigBody"></div>
                     </div>
 
@@ -3059,15 +3064,42 @@
                         used to be the default. Hidden by default; shown when
                         the user clicks Customize. Switching back to simple
                         mode wipes pool customizations and rebuilds defaults.
+
+                        Two clearly-titled sections: "Preallocation" above
+                        and "Pool Configuration" below. Preallocation is
+                        conceptually the FIRST allocation step (supply held
+                        back from LP), so it gets the top section. Pools
+                        receive whatever supply remains after preallocation,
+                        so they get the second section. This makes the page
+                        read top-to-bottom in the same order the system
+                        actually allocates supply.
+
+                        The "Use a preset instead" button lives in the
+                        Preallocation section header (topmost interactive
+                        element) so users can return to simple mode from the
+                        first thing they see, without scrolling.
                     -->
                     <div id="customizeConfigContainer" class="hidden">
+                        <!--
+                          Section 1: Preallocation. The actual UI lives at
+                          #preallocationBlock — a single DOM element built
+                          by renderSimpleConfig and physically moved between
+                          this slot (customize mode) and the Advanced details
+                          inside simple mode. Same relocation pattern
+                          lockPositionsField uses.
+                        -->
                         <div class="is-flex is-justify-content-space-between is-align-items-center mb-2">
-                            <label class="label is-small mb-0">Pools to Create</label>
+                            <h4 class="title is-6 mb-0">Preallocation</h4>
                             <button type="button" class="button is-small is-light" id="returnToSimpleBtn">
                                 <span class="icon is-small"><i class="fas fa-arrow-left"></i></span>
                                 <span>Use a preset instead</span>
                             </button>
                         </div>
+                        <div id="customizePreallocSlot" class="mb-4"></div>
+
+                        <!-- Section 2: Pool Configuration. -->
+                        <h4 class="title is-6">Pool Configuration</h4>
+                        <label class="label is-small mb-2">Pools to Create</label>
                         <div id="poolList"></div>
                         <button class="button is-light is-small" id="addPoolBtn">
                             <span class="icon"><i class="fas fa-plus"></i></span>
@@ -3075,8 +3107,9 @@
                         </button>
 
                         <div class="notification is-info is-light is-size-7 my-3 py-2 px-3" id="allocationSummary">
-                            <strong>Total allocated:</strong> <span id="totalAllocPct">0</span>% &nbsp;
-                            (<span id="unallocatedPct">100</span>% will remain in your wallet)
+                            <strong>Allocated to LP:</strong> <span id="totalAllocPct">0</span>%
+                            &nbsp;&middot;&nbsp;
+                            <strong>Preallocation:</strong> <span id="unallocatedPct">100</span>% (held in launch wallet)
                         </div>
                     </div>
 

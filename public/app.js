@@ -122,6 +122,108 @@ let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 const quoteInfoCache = new Map();
 const QUOTE_PRICE_TTL_MS = 60_000;
 
+// localStorage key for the persisted metadata cache. Versioned (v1) so
+// if we ever change the metadata shape we can bump the version and
+// gracefully ignore the older payload rather than crash on a
+// schema-mismatched entry.
+const QUOTE_META_LS_KEY = 'trebuchet:quote-meta-v1';
+
+// Fields that are SAFE to persist long-term. These are properties of
+// the on-chain mint itself — they don't change once the token is
+// created — so caching them across sessions is correct and helpful.
+// Anything not in this list (notably priceUsd) is volatile and gets
+// refetched every session.
+//
+// If you add a new resolved field to the server payload, decide
+// whether it belongs here (immutable mint property) or is volatile
+// (changes with market/network state) and route accordingly.
+const QUOTE_META_PERSISTENT_FIELDS = [
+  'symbol',
+  'decimals',
+  'name',
+  'imageUrl',
+  'address',
+  'compatible',
+  'isToken2022',
+  'disallowedNames',
+  // Intentionally NOT persisted:
+  //   compatError — a transient string from the compat check (e.g.
+  //   "RPC failure"). Persisting it would survive across sessions
+  //   and, because the cache-merge "non-null wins, null falls back"
+  //   rule preserves prior non-null values, a successful retry
+  //   (compatError: null) wouldn't clear the stale error string.
+  //   The pool would carry a phantom warning the user can't dismiss.
+  //   Other compat fields (compatible, isToken2022, disallowedNames)
+  //   are properties of the on-chain mint itself and self-heal across
+  //   refetches.
+];
+
+// Read the persisted metadata map from localStorage. Returns a plain
+// object keyed by quoteToken (mint address or canonical string).
+// Returns an empty object on any error — corrupted storage shouldn't
+// break the app, the worst case is we re-fetch metadata once.
+function readPersistedQuoteMeta() {
+  try {
+    const raw = localStorage.getItem(QUOTE_META_LS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (e) {
+    console.warn(`[quote-meta-cache] read failed: ${e.message}`);
+    return {};
+  }
+}
+
+// Write the persisted metadata map. Best-effort — localStorage can be
+// disabled, full, or unavailable (e.g. private browsing in some
+// browsers). On failure we log and continue; the in-memory cache
+// still works for the current session.
+function writePersistedQuoteMeta(map) {
+  try {
+    localStorage.setItem(QUOTE_META_LS_KEY, JSON.stringify(map));
+  } catch (e) {
+    console.warn(`[quote-meta-cache] write failed: ${e.message}`);
+  }
+}
+
+// Persist one mint's metadata. Reads the existing map, sets/replaces
+// the entry, writes back. We do this on every successful fetch so the
+// cache stays current as new mints are encountered.
+function persistQuoteMeta(quoteToken, info) {
+  if (!info) return;
+  const meta = {};
+  for (const field of QUOTE_META_PERSISTENT_FIELDS) {
+    if (info[field] !== undefined) meta[field] = info[field];
+  }
+  // Skip persisting if we don't have enough to be useful — a payload
+  // with no symbol and no decimals is a failed resolution we shouldn't
+  // pin to disk.
+  if (meta.symbol == null && meta.decimals == null) return;
+  const map = readPersistedQuoteMeta();
+  map[quoteToken] = meta;
+  writePersistedQuoteMeta(map);
+}
+
+// On startup, hydrate the in-memory cache with persisted metadata.
+// Each hydrated entry is marked with priceFetchedAt = 0 so the next
+// fetchQuoteInfoCached call for that mint goes to the server for a
+// fresh price (priceUsd null → cache miss on TTL check). The merge
+// logic then preserves the persisted metadata as the fresh response
+// augments the cached entry.
+//
+// IIFE-wrapped so the hydration logic doesn't pollute module scope
+// with temporary variables. Runs once at module load.
+(function hydrateQuoteMetaFromStorage() {
+  const map = readPersistedQuoteMeta();
+  for (const [quoteToken, meta] of Object.entries(map)) {
+    if (!meta || typeof meta !== 'object') continue;
+    quoteInfoCache.set(quoteToken, {
+      info: { ...meta, priceUsd: null },
+      fetchedAt: 0, // 0 = always-stale, forces a price refresh on first use
+    });
+  }
+})();
+
 // In-flight fetch promises keyed by the same quoteToken string. Used to
 // coalesce simultaneous resolve calls for the same mint — without this,
 // the first render storm after a wallet generation could fire N parallel
@@ -321,7 +423,19 @@ let simpleConfig = {
   // post-launch). Backing for that supply is provided via the SUPPORT
   // position (see supportEnabled below).
   preallocationEnabled: false,
-  preallocationPercent: 10, // % of total supply; default if user enables
+  preallocationPercent: 1, // % of total supply; default if user enables
+  // The user's *typed* value for prealloc %. When auto-fit is on, the
+  // effective preallocationPercent is max(this, airdrop_required_pct).
+  // Stored separately so the user's typed value survives airdrop edits
+  // that bump the effective percent up; lowering the airdrop later
+  // returns the effective percent to the user's typed value.
+  preallocationPercentInput: 1,
+  // Auto-fit airdrop: when on, the preallocation % is automatically
+  // raised (but never lowered) to fit the airdrop list's required
+  // tokens. The user's typed % acts as a minimum floor. Off means
+  // the over-budget red error fires when the airdrop exceeds the
+  // typed %, leaving the fix to the user.
+  preallocationAutoFit: true,
   // Support position: a single-sided QUOTE position sitting just below
   // launch price (down to -supportDepthPct), funded by the user as SOL.
   // It backs preallocated supply by giving the holders a buy wall to
@@ -356,6 +470,38 @@ let simpleConfig = {
   // (flywheel, preallocation, support) and never touch the advanced
   // ones (starting liquidity, split LP, ladder).
   _advancedExpanded: false,
+  // Airdrop config — a sub-feature of preallocation that lets the user
+  // upload a CSV of {wallet, sol_contributed} rows and have the launcher
+  // calculate token amounts per recipient based on the launch starting
+  // price. Each row's token count = (sol × SOL_USD × supply) / market_cap
+  // — the same "fair value at launch" rate the launch itself uses, so a
+  // contributor receives tokens worth the same USD as they sent.
+  //
+  // Disabled (and the toggle/inputs greyed) when preallocation is off,
+  // since the preallocation supply is the budget for the airdrop —
+  // without preallocation there's nothing to distribute.
+  //
+  // csvText is the raw user input (file upload or pasted). parsedRows
+  // is what the parser produced; parseError and budgetError carry
+  // user-facing error strings. Re-parsing is keystroke-driven from the
+  // textarea so the preview / errors update live. The actual on-chain
+  // distribution is NOT performed during the launch flow yet — this
+  // structure is configured here and stays in simpleConfig for a
+  // future "Distribute airdrop" step that will run after Burn & Earn.
+  airdrop: {
+    enabled: false,
+    csvText: '',
+    parsedRows: [],
+    parseError: null,
+    budgetError: null,
+    // _expanded: collapse state for the AIRDROP <details> sub-section
+    // (CSV upload UI). _breakdownExpanded: collapse state for the
+    // per-wallet rows nested inside the preallocation breakdown table.
+    // Both persist across re-renders so a render triggered by typing
+    // doesn't snap the section shut.
+    _expanded: false,
+    _breakdownExpanded: false,
+  },
 };
 
 // Build a distribution array of N equal slices that sum to exactly 100%.
@@ -2314,7 +2460,24 @@ function addPool(initial = {}) {
     _isExpanded: initial._isExpanded ?? false,
   });
   renderPools();
-  resolvePoolQuote(pools.length - 1);
+  // Pool quote resolution kicks off async. For mints we've already
+  // resolved this session (cached in quoteInfoCache), apply the cached
+  // info SYNCHRONOUSLY first so the pool starts with resolved fields
+  // populated and downstream renders don't see a transient empty
+  // state. The async resolvePoolQuote still runs — it handles TTL
+  // refresh and the uncached case — but the synchronous pre-fill
+  // closes the race window that produced missing logos in the
+  // funding step (Continue → flushRebuildPoolsFromSimple clears
+  // pools → addPool creates fresh empty pools → renderFundingRequirements
+  // ran before resolvePoolQuote's async microtask fired).
+  const newPoolIdx = pools.length - 1;
+  const newPool = pools[newPoolIdx];
+  const cachedQuoteInfo = quoteInfoCache.get(newPool.quoteToken);
+  if (cachedQuoteInfo && cachedQuoteInfo.info
+      && typeof applyResolvedInfoToPool === 'function') {
+    applyResolvedInfoToPool(newPool, cachedQuoteInfo.info);
+  }
+  resolvePoolQuote(newPoolIdx);
 }
 
 function removePool(idx) {
@@ -2393,6 +2556,29 @@ function rebuildPoolsFromSimple() {
   // doing — switching from customize → default mode should confirm
   // before calling this.
   pools.length = 0;
+
+  // Before deriving any pool config, ensure simpleConfig.supportSolValue
+  // is at or above the auto-back floor. Without this sync, every rebuild
+  // path would have to remember to seed the floor explicitly — and the
+  // ones that forget (initial page load, anywhere a rebuild fires
+  // without first running through a write handler) produce pools with
+  // stale support values. The auto-back floor depends on SOL price; if
+  // the price isn't resolved yet the floor is null and we leave stored
+  // alone (the next rebuild after SOL resolves will catch up).
+  //
+  // We only WRITE when the floor is strictly higher than stored — the
+  // auto-back promise is "no less than the floor," not "exactly the
+  // floor." A user who typed a deeper-than-required wall keeps their
+  // typed value.
+  if (simpleConfig.supportAutoSize && simpleConfig.preallocationEnabled) {
+    const rec = recommendedSupportSolForPreallocation(
+      Number(simpleConfig.preallocationPercent) || 0,
+    );
+    if (Number.isFinite(rec) && rec > 0
+        && rec > (Number(simpleConfig.supportSolValue) || 0)) {
+      simpleConfig.supportSolValue = rec;
+    }
+  }
 
   // Preallocation reduces the total LP budget by that %. Pool allocations
   // (SOL + optional flywheel) get scaled proportionally to fit inside the
@@ -2688,6 +2874,314 @@ function recommendedSupportSolForPreallocation(preallocPct) {
   return preallocUsd / solUsd;
 }
 
+// ============================================================================
+// Airdrop helpers
+// ============================================================================
+//
+// The airdrop sub-feature of preallocation lets the user supply a CSV of
+// {wallet, sol_contributed} rows; we compute the token amount each
+// wallet should receive at the launch starting price (= same USD value
+// in tokens as they contributed in SOL).
+//
+// This whole feature is configured but not yet executed during a launch
+// — the parsed list lives in simpleConfig.airdrop.parsedRows. A future
+// step (after Burn & Earn) will perform the actual SPL transfers using
+// this data; that work isn't in this file yet.
+
+// Base58 alphabet check + length range. Real cryptographic validation
+// (decode + ed25519 curve point check) requires @solana/web3.js, which
+// isn't loaded in the browser. This regex catches typos and rejects
+// any input with disallowed chars (most importantly the easy mix-ups:
+// 0/O, I/l). The server will do full validation when the airdrop
+// runs; this check is for catching obvious errors at config time.
+//
+// Solana addresses are 32-byte ed25519 public keys; in base58 that's
+// almost always 43-44 chars, occasionally 42 if the key happens to
+// start with leading zero bytes. We allow 32-44 to be generous — any
+// shorter than 32 is definitely not a real key.
+const SOL_BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+function isPlausibleSolAddress(s) {
+  if (typeof s !== 'string') return false;
+  return SOL_BASE58_RE.test(s.trim());
+}
+
+// Parse the user's airdrop CSV into structured rows. Format:
+//   - First non-comment, non-blank line is the header: wallet,sol
+//   - Subsequent rows are data: <address>,<sol_amount>
+//   - Lines starting with # are comments (ignored)
+//   - Blank lines are ignored
+//   - Leading BOM (UTF-8) stripped
+//   - Values may be quoted ("...") to allow commas inside (we strip)
+//
+// Returns { rows, error }:
+//   rows: array of { wallet, sol, lineNumber } when successful
+//   error: string when parsing failed; rows is empty in that case
+//
+// Errors include the 1-indexed line number where the problem occurred,
+// so the user can locate the bad line in their source CSV.
+function parseAirdropCsv(text) {
+  if (!text || typeof text !== 'string') {
+    return { rows: [], error: null }; // empty input isn't an error
+  }
+  // Strip BOM, normalize line endings.
+  const normalized = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  const lines = normalized.split('\n');
+  const rows = [];
+  const seenAddresses = new Set();
+  let headerSeen = false;
+  for (let i = 0; i < lines.length; i++) {
+    const lineNumber = i + 1;
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed) continue;                      // blank line
+    if (trimmed.startsWith('#')) continue;       // comment
+
+    // Split on the first comma only — addresses don't contain commas
+    // but quoted SOL values theoretically could, and we'll strip quotes.
+    const commaIdx = trimmed.indexOf(',');
+    if (commaIdx < 0) {
+      return {
+        rows: [],
+        error: `Line ${lineNumber}: missing comma (expected "wallet,sol")`,
+      };
+    }
+    const left = trimmed.slice(0, commaIdx).trim().replace(/^"|"$/g, '');
+    const right = trimmed.slice(commaIdx + 1).trim().replace(/^"|"$/g, '');
+
+    if (!headerSeen) {
+      // First content line should be the header. We're lenient about
+      // exact wording — accept anything that looks like a header
+      // (non-numeric right side) and use it as the header marker. This
+      // way users who paste data directly without a header get a
+      // helpful error rather than silent first-row consumption.
+      const rightLooksNumeric = /^\d*\.?\d+$/.test(right);
+      if (rightLooksNumeric) {
+        return {
+          rows: [],
+          error: `Line ${lineNumber}: missing header row (expected "wallet,sol" as the first line)`,
+        };
+      }
+      headerSeen = true;
+      continue;
+    }
+
+    // Data row. Validate address and SOL amount.
+    if (!isPlausibleSolAddress(left)) {
+      return {
+        rows: [],
+        error: `Line ${lineNumber}: "${left.slice(0, 12)}${left.length > 12 ? '…' : ''}" is not a valid Solana address`,
+      };
+    }
+    if (seenAddresses.has(left)) {
+      return {
+        rows: [],
+        error: `Line ${lineNumber}: duplicate address (${left.slice(0, 8)}…) — each wallet must appear at most once`,
+      };
+    }
+    seenAddresses.add(left);
+
+    const sol = Number(right);
+    if (!Number.isFinite(sol) || sol <= 0) {
+      return {
+        rows: [],
+        error: `Line ${lineNumber}: "${right}" is not a positive SOL amount`,
+      };
+    }
+
+    rows.push({ wallet: left, sol, lineNumber });
+  }
+
+  // A CSV with only a header (no data rows) isn't an error per se, but
+  // it's almost certainly not what the user wanted. Surface that as a
+  // soft message via parseError so they don't get a silent "0 rows"
+  // preview.
+  if (headerSeen && rows.length === 0) {
+    return {
+      rows: [],
+      error: 'No data rows found (the CSV has a header but no wallet entries below it)',
+    };
+  }
+  if (!headerSeen) {
+    return {
+      rows: [],
+      error: 'No header row found (expected "wallet,sol" as the first line)',
+    };
+  }
+
+  return { rows, error: null };
+}
+
+// Compute the token amount each parsed CSV row maps to, plus the USD
+// equivalent of that token amount. Uses launch starting price:
+//   start_price_usd_per_token = market_cap_usd / total_supply
+//   tokens = (sol × SOL_USD) / start_price_usd_per_token
+//          = (sol × SOL_USD × total_supply) / market_cap_usd
+//
+// usd is the USD value the contributor sent (sol × SOL_USD). At launch
+// price, the token allocation is worth the same USD — the "fair value"
+// rate. This is shown alongside the token count so the user can sanity-
+// check the per-row magnitude.
+//
+// Returns { rows, totalTokens, totalUsd } where rows is the input with
+// { tokens, usd } added. If marketCap, supply, or solUsd is missing/
+// invalid, returns the input rows unchanged (tokens and usd are null)
+// and the caller can show a "fill in supply / market cap first" hint.
+function annotateAirdropRowsWithTokens(parsedRows) {
+  const supply = parseNumberInput(document.getElementById('tokenSupply'));
+  const mcap = parseNumberInput(document.getElementById('targetMarketCap'));
+  const solPool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+  const solUsd = solPool && Number(solPool.resolvedPriceUsd) > 0
+    ? Number(solPool.resolvedPriceUsd) : null;
+
+  // Without complete inputs we can still show the rows (wallet + sol)
+  // but can't compute token allocations. annotate with null fields.
+  const ready = Number.isFinite(supply) && supply > 0
+    && Number.isFinite(mcap) && mcap > 0
+    && solUsd != null;
+
+  let totalTokens = 0;
+  let totalUsd = 0;
+  const rows = parsedRows.map((r) => {
+    if (!ready) {
+      return { ...r, tokens: null, usd: null };
+    }
+    const usd = r.sol * solUsd;
+    const tokens = (r.sol * solUsd * supply) / mcap;
+    totalTokens += tokens;
+    totalUsd += usd;
+    return { ...r, tokens, usd };
+  });
+
+  return { rows, totalTokens: ready ? totalTokens : null, totalUsd: ready ? totalUsd : null, ready };
+}
+
+// Check the airdrop against the preallocation supply budget.
+//   budget tokens = total_supply × prealloc_pct / 100
+// Returns a user-facing error string if over budget, or null if OK.
+// Returns null too when we don't have enough inputs to compute the
+// budget (caller handles "incomplete inputs" separately via annotate).
+function airdropBudgetError(totalTokens) {
+  if (totalTokens == null) return null;
+  if (!simpleConfig.preallocationEnabled) {
+    return 'Preallocation must be enabled to airdrop supply';
+  }
+  const supply = parseNumberInput(document.getElementById('tokenSupply'));
+  const preallocPct = Number(simpleConfig.preallocationPercent) || 0;
+  if (!Number.isFinite(supply) || supply <= 0 || preallocPct <= 0) return null;
+  const budget = supply * preallocPct / 100;
+  if (totalTokens > budget) {
+    const overshoot = totalTokens - budget;
+    const overshootPct = (overshoot / budget) * 100;
+    return `Airdrop list needs ${formatTokenDisplay(totalTokens)} tokens but preallocation only holds ${formatTokenDisplay(budget)} ` +
+           `(over by ${formatTokenDisplay(overshoot)}, ${overshootPct.toFixed(1)}%). ` +
+           `Raise the preallocation % or reduce SOL amounts in the list.`;
+  }
+  return null;
+}
+
+// SOL cost to execute the airdrop transfers, in SOL. Returns 0 when
+// airdrop is disabled or empty, so callers can always add this to the
+// launch total without a special case.
+//
+// Cost model (per recipient):
+//   - ATA rent exemption: ~0.00203928 SOL (canonical value for an
+//     SPL token account; we assume creation since the launched token
+//     is brand new so no recipient already has an ATA for it).
+//   - Tx fee: 5000 lamports = 0.000005 SOL, amortized over the batch.
+//
+// Batching: we conservatively assume ~10 ATA-create + transfer pairs
+// per transaction (the practical limit is higher but depends on
+// instruction size; 10 is safely below the Solana transaction size
+// cap of 1232 bytes for the typical ATA-create + transfer pattern).
+//
+// The actual on-chain execution (not built yet) will likely use a
+// different batching strategy, but the estimate must err on the high
+// side so the user funds enough — under-budgeting strands the
+// airdrop step requiring a top-up.
+const AIRDROP_ATA_RENT_SOL = 0.00203928;
+const AIRDROP_TX_FEE_SOL = 0.000005;
+const AIRDROP_RECIPIENTS_PER_TX = 10;
+function computeAirdropExecutionCostSol() {
+  const airdrop = simpleConfig.airdrop;
+  if (!airdrop || !airdrop.enabled || !simpleConfig.preallocationEnabled) return 0;
+  const n = airdrop.parsedRows.length;
+  if (n === 0) return 0;
+  const numTxs = Math.ceil(n / AIRDROP_RECIPIENTS_PER_TX);
+  return n * AIRDROP_ATA_RENT_SOL + numTxs * AIRDROP_TX_FEE_SOL;
+}
+
+// Compute the preallocation percent the airdrop list NEEDS to fit. This
+// is the airdrop's total tokens as a percent of total supply, ceil'd
+// to one decimal so the % input doesn't show fiddly values like
+// "12.5934567%". Returns null when we can't compute (airdrop off /
+// empty / token amounts not yet ready / supply not entered).
+//
+// Used as the floor for auto-fit: the effective preallocation % is
+// max(user_typed_percent, airdropRequiredPreallocationPercent()) when
+// auto-fit is on.
+function airdropRequiredPreallocationPercent() {
+  const airdrop = simpleConfig.airdrop;
+  if (!airdrop || !airdrop.enabled || !simpleConfig.preallocationEnabled) return null;
+  if (!airdrop.parsedRows || airdrop.parsedRows.length === 0) return null;
+  const supply = parseNumberInput(document.getElementById('tokenSupply'));
+  if (!Number.isFinite(supply) || supply <= 0) return null;
+  let totalTokens = 0;
+  for (const r of airdrop.parsedRows) {
+    if (r.tokens == null) return null; // inputs incomplete, can't compute
+    totalTokens += r.tokens;
+  }
+  const requiredPct = (totalTokens / supply) * 100;
+  if (!Number.isFinite(requiredPct) || requiredPct <= 0) return null;
+  // Round UP to one decimal so we definitely cover the airdrop. The
+  // percent input visually accepts integers but tolerates decimals
+  // numerically; clamping to 99% (the input's max) prevents a runaway
+  // airdrop from setting the prealloc above the input bound.
+  const ceiled = Math.ceil(requiredPct * 10) / 10;
+  return Math.min(99, ceiled);
+}
+
+// Recompute simpleConfig.preallocationPercent from the user's typed
+// value (preallocationPercentInput) and the airdrop's required floor.
+// This is the single chokepoint for the auto-fit logic — call it from
+// every handler that could change either the typed value or the
+// airdrop's required percentage:
+//   - prealloc-% input keystrokes
+//   - airdrop CSV changes
+//   - token supply / market cap changes (affect airdrop required %)
+//   - auto-fit toggle on/off
+//   - airdrop enabled/disabled toggle
+//
+// Returns true if the effective percent changed, false if not (so
+// callers can skip downstream refreshes when nothing changed). The
+// effective percent is what every read site uses; the typed input
+// is preserved separately on simpleConfig.preallocationPercentInput.
+function recomputeEffectivePreallocationPercent() {
+  // Fall back to the legacy preallocationPercent field when
+  // preallocationPercentInput hasn't been initialized (e.g. older
+  // saved configs, or first-render before the user has typed). This
+  // ensures recompute doesn't silently zero out the user's value.
+  const rawTyped = simpleConfig.preallocationPercentInput != null
+    ? simpleConfig.preallocationPercentInput
+    : simpleConfig.preallocationPercent;
+  const typed = Number(rawTyped);
+  const typedClamped = Math.max(0, Math.min(99,
+    Number.isFinite(typed) ? typed : 0,
+  ));
+  // Also write back the clamped typed value so the field stays
+  // canonical (next read sees the validated number).
+  simpleConfig.preallocationPercentInput = typedClamped;
+  let effective = typedClamped;
+  if (simpleConfig.preallocationAutoFit) {
+    const required = airdropRequiredPreallocationPercent();
+    if (required != null && required > effective) {
+      effective = required;
+    }
+  }
+  const prev = Number(simpleConfig.preallocationPercent) || 0;
+  simpleConfig.preallocationPercent = effective;
+  return Math.abs(effective - prev) > 0.001;
+}
+
 // Mirror of recomputePoolBootstrapAndRebalance for support. Support has
 // no derived supplyPercent (it's quote-only and doesn't carve from the
 // pool's token supply), so this is purely a hook for UI refresh — it
@@ -2824,6 +3318,79 @@ function flushRebuildPoolsFromSimple() {
   rebuildPoolsFromSimple();
 }
 
+// =============================================================
+// Mode-aware prealloc/airdrop refresh helpers.
+//
+// The preallocation and airdrop handlers fire from BOTH modes —
+// the same #preallocationBlock DOM is relocated between simple
+// and customize containers, so the same handlers run regardless.
+// But the right follow-on behavior differs:
+//
+//   SIMPLE mode: pool sizes are DERIVED from simpleConfig (the
+//   flywheel split slider + preallocation %). A change to the
+//   prealloc % means pool sizes change. rebuildPoolsFromSimple
+//   regenerates pools from the new simpleConfig and renderSimpleConfig
+//   rebuilds the whole config DOM to reflect derived state.
+//
+//   CUSTOMIZE mode: pool sizes are USER-SET. Each pool's
+//   supplyPercent, fee tier, slice splits, ladder bands, etc. are
+//   things the user typed. rebuildPoolsFromSimple here would
+//   `pools.length = 0` and rebuild from the simple defaults —
+//   destroying every customization. We must NOT do that. The
+//   preallocation % is independent: it just tells the allocator
+//   "hold back X% of total supply for the launch wallet" and
+//   leaves the user's per-pool config alone.
+//
+// preallocRebuildIfApplicable: replaces rebuildPoolsFromSimple()
+//   in prealloc/airdrop handlers. No-op in customize mode.
+// preallocRerenderIfApplicable: replaces renderSimpleConfig() in
+//   prealloc/airdrop handlers. In customize mode it refreshes the
+//   inline prealloc displays (breakdown table, auto-fit hint,
+//   in-place prealloc input value) without a full DOM rebuild,
+//   which would lose focus and pool DOM state.
+// =============================================================
+function preallocRebuildIfApplicable() {
+  if (simpleConfig.mode === 'customize') {
+    // In customize mode pool sizes are user-controlled, not derived.
+    // Skip the rebuild entirely.
+    return;
+  }
+  rebuildPoolsFromSimple();
+}
+function preallocRebuildDebouncedIfApplicable() {
+  if (simpleConfig.mode === 'customize') return;
+  rebuildPoolsFromSimpleDebounced();
+}
+function preallocRerenderIfApplicable() {
+  if (simpleConfig.mode === 'customize') {
+    // Customize mode: refresh ONLY the parts of the page that depend
+    // on preallocation/airdrop state. Don't call renderSimpleConfig
+    // (which rebuilds the whole simple-config DOM and would force the
+    // preallocation block to be re-built and re-relocated — losing
+    // input focus and forcing a paint flash).
+    //
+    // The pool list itself stays put — user pool config is unaffected
+    // by prealloc changes in this mode.
+    if (typeof refreshSimplePreallocDisplayInline === 'function') {
+      refreshSimplePreallocDisplayInline();
+    }
+    if (typeof refreshSimplePreallocAutoFitHint === 'function') {
+      refreshSimplePreallocAutoFitHint();
+    }
+    if (typeof refreshAirdropDisplayInline === 'function') {
+      refreshAirdropDisplayInline();
+    }
+    if (typeof refreshAirdropCostDisplays === 'function') {
+      refreshAirdropCostDisplays();
+    }
+    if (typeof updateAllocationSummary === 'function') {
+      updateAllocationSummary();
+    }
+    return;
+  }
+  renderSimpleConfig();
+}
+
 // Effective support SOL value — the stored value, clamped up to the
 // auto-back floor when Auto-back is on and preallocation is enabled.
 // This is the single source of truth for "what SOL value should we
@@ -2918,6 +3485,445 @@ function refreshSimplePreallocDisplayInline() {
             : 'enter supply and market cap above to see values'));
 }
 
+// Update the auto-fit hint annotation next to the preallocation display.
+// Shows "⇡ auto-fit: 10% → 20.1% to cover airdrop" when the effective
+// preallocation % is higher than what the user typed (because the
+// airdrop list demanded more). The input itself displays the effective
+// value; this hint exists so the user understands that the input value
+// is NOT their last-typed value but a transient auto-fit bump. Hidden
+// when typed == effective or auto-fit is off.
+function refreshSimplePreallocAutoFitHint() {
+  const hint = document.getElementById('simplePreallocAutoFitHint');
+  if (!hint) return;
+  const autoFitOn = simpleConfig.preallocationAutoFit !== false;
+  const typed = Number(simpleConfig.preallocationPercentInput) || 0;
+  const eff = Number(simpleConfig.preallocationPercent) || 0;
+  const raised = autoFitOn && simpleConfig.preallocationEnabled
+    && Math.abs(eff - typed) > 0.05;
+  if (raised) {
+    // Tell the user the input value isn't their typed value — auto-fit
+    // raised it. Showing both numbers (`from X% to Y%`) makes the gap
+    // visible at a glance and signals "this is a transient bump; your
+    // typed floor is preserved."
+    hint.textContent = `⇡ auto-fit: ${typed}% → ${eff.toFixed(eff % 1 === 0 ? 0 : 1)}% to cover airdrop`;
+    hint.style.display = '';
+  } else {
+    hint.style.display = 'none';
+  }
+}
+
+// Format a SOL total with magnitude-appropriate precision. Avoids
+// float-tail noise on small contributions (1.0000000001 SOL) and
+// useless decimals on large totals (1,234.567 SOL).
+function formatSolTotal(s) {
+  if (!Number.isFinite(s) || s <= 0) return '0';
+  if (s < 1) return s.toFixed(4);
+  if (s < 1000) return s.toFixed(2);
+  return s.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
+// Truncate a base58 address with a middle ellipsis: first 6 chars,
+// ellipsis, last 6 chars. Short enough to fit a table cell, distinctive
+// enough that the user can verify against their CSV. The full address
+// remains in simpleConfig.airdrop.parsedRows for execution.
+function truncateAddressMiddle(s, head = 6, tail = 6) {
+  if (typeof s !== 'string') return '';
+  return s.length <= head + tail + 1 ? s : `${s.slice(0, head)}…${s.slice(-tail)}`;
+}
+
+// Build the airdrop sub-section's content (error notification + wallet/
+// SOL totals line). NO per-wallet table — that lives in the unified
+// preallocation breakdown table outside the airdrop panel. This helper
+// is for the contents of [data-airdrop-results].
+//
+// Reads from simpleConfig.airdrop (parsedRows, parseError, budgetError)
+// which the caller is responsible for populating before invoking.
+function buildAirdropResultsHtml() {
+  const airdrop = simpleConfig.airdrop;
+  let totalTokens = 0;
+  let totalReady = true;
+  let totalSol = 0;
+  for (const r of airdrop.parsedRows) {
+    totalSol += r.sol;
+    if (r.tokens == null) { totalReady = false; continue; }
+    totalTokens += r.tokens;
+  }
+  const supply = parseNumberInput(document.getElementById('tokenSupply'));
+  const pPct = Number(simpleConfig.preallocationPercent) || 0;
+  const budgetTokens = (Number.isFinite(supply) && supply > 0 && pPct > 0)
+    ? supply * pPct / 100 : null;
+  const walletCountText = `${airdrop.parsedRows.length} wallet${airdrop.parsedRows.length === 1 ? '' : 's'}`;
+  const solTotalText = `${formatSolTotal(totalSol)} SOL contributed`;
+  const summaryLineHtml = (() => {
+    if (airdrop.parsedRows.length === 0) return '';
+    if (budgetTokens == null || !totalReady) {
+      return `<p class="is-size-7 has-text-grey mt-2 mb-0">${walletCountText} · ${solTotalText} (enter supply, market cap, and let SOL price resolve to see token amounts)</p>`;
+    }
+    const usedPct = (totalTokens / budgetTokens) * 100;
+    const colorClass = airdrop.budgetError ? 'has-text-danger' : 'has-text-success';
+    return `<p class="is-size-7 mt-2 mb-0 ${colorClass}">
+      ${walletCountText} · ${solTotalText} · ${formatTokenDisplay(totalTokens)} of ${formatTokenDisplay(budgetTokens)} budget tokens (${usedPct.toFixed(1)}%)
+    </p>`;
+  })();
+  const errorHtml = (() => {
+    const err = airdrop.parseError || airdrop.budgetError;
+    if (!err) return '';
+    return `<div class="notification is-danger is-light py-2 px-3 mt-2 mb-0 is-size-7">
+      <strong>⚠</strong> ${escapeHtml(err)}
+    </div>`;
+  })();
+  return errorHtml + summaryLineHtml;
+}
+
+// Build the unified "Where does the preallocation go?" breakdown table.
+// Lives directly under the preallocation row, ABOVE the airdrop sub-
+// section. Three render variants:
+//
+//   - Preallocation OFF: returns empty string (table not shown).
+//   - Preallocation ON, no airdrop (or airdrop disabled / empty rows):
+//     single "Launch wallet" row holding the entire preallocation, plus
+//     the total row.
+//   - Preallocation ON, airdrop enabled with rows:
+//     "Airdrop (N wallets)" collapsible row showing the airdrop total,
+//     "Launch wallet" row with the leftover, and the total row. When the
+//     airdrop row is expanded (controlled by simpleConfig.airdrop
+//     ._breakdownExpanded), the per-wallet rows render beneath it.
+//
+// Returns just the inner <table> contents — caller wraps in any
+// container needed. Empty string when there's nothing to show.
+function buildPreallocationBreakdownHtml() {
+  if (!simpleConfig.preallocationEnabled) return '';
+
+  const supply = parseNumberInput(document.getElementById('tokenSupply'));
+  const mcap = parseNumberInput(document.getElementById('targetMarketCap'));
+  const pPct = Number(simpleConfig.preallocationPercent) || 0;
+  if (!Number.isFinite(supply) || supply <= 0 || pPct <= 0) {
+    // Without supply / prealloc%, we can't compute concrete numbers.
+    // Show a gentle prompt rather than an empty section.
+    return `<p class="is-size-7 has-text-grey mt-2 mb-0">
+      Enter supply above to see the preallocation breakdown.
+    </p>`;
+  }
+  const totalTokens = supply * pPct / 100;
+  const totalUsd = Number.isFinite(mcap) && mcap > 0 ? mcap * pPct / 100 : null;
+
+  // Format helpers used in every row, hoisted here so we don't re-define
+  // them across the branches below.
+  const fmtTokens = (n) => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  const fmtPct = (n) => n.toFixed(2) + '%';
+  const fmtUsd = (n) => n != null ? `$${formatUsdRoughly(n)}` : '<span class="has-text-grey">—</span>';
+
+  const airdrop = simpleConfig.airdrop;
+  const airdropActive = airdrop.enabled && airdrop.parsedRows.length > 0;
+
+  // Compute airdrop totals only when actually active. Otherwise the
+  // whole preallocation is "leftover" sitting in the launch wallet.
+  let airdropTokens = 0;
+  let airdropTokensReady = true;
+  let airdropSol = 0;
+  if (airdropActive) {
+    for (const r of airdrop.parsedRows) {
+      airdropSol += r.sol;
+      if (r.tokens == null) { airdropTokensReady = false; continue; }
+      airdropTokens += r.tokens;
+    }
+  }
+
+  // When over-budget, the displayed table clamps the airdrop row to
+  // the budget (per UX decision — show what would actually happen,
+  // not a negative leftover row). The error message above the table
+  // surfaces the overage. When the airdrop row's token total is
+  // unknown (incomplete inputs), the leftover can't be computed
+  // either — show "—" for both.
+  const airdropTokensDisplay = airdropTokensReady
+    ? Math.min(airdropTokens, totalTokens)
+    : null;
+  const leftoverTokens = airdropTokensReady
+    ? Math.max(0, totalTokens - airdropTokens)
+    : null;
+  const airdropPct = (airdropTokensDisplay != null && totalTokens > 0)
+    ? (airdropTokensDisplay / supply) * 100 : null;
+  const leftoverPct = (leftoverTokens != null && supply > 0)
+    ? (leftoverTokens / supply) * 100 : null;
+  const airdropUsd = (airdropPct != null && Number.isFinite(mcap) && mcap > 0)
+    ? mcap * airdropPct / 100 : null;
+  const leftoverUsd = (leftoverPct != null && Number.isFinite(mcap) && mcap > 0)
+    ? mcap * leftoverPct / 100 : null;
+
+  // Build per-wallet rows for the expanded airdrop section. Each row is
+  // a <tr> with a leading indent (left padding) to visually nest under
+  // the airdrop summary row. Initial visibility tracks the persisted
+  // _breakdownExpanded state so re-renders don't collapse a row group
+  // the user just opened. The click handler toggles both the state
+  // and the display style.
+  const initialWalletRowDisplay = airdrop._breakdownExpanded ? '' : 'none';
+  const MAX_WALLET_ROWS = 10;
+  const walletRowsHtml = airdropActive
+    ? airdrop.parsedRows.slice(0, MAX_WALLET_ROWS).map((r) => {
+        const tokensCell = r.tokens != null ? fmtTokens(r.tokens) : '<span class="has-text-grey">—</span>';
+        const pctCell = (r.tokens != null && supply > 0)
+          ? fmtPct((r.tokens / supply) * 100)
+          : '<span class="has-text-grey">—</span>';
+        const usdCell = r.usd != null ? `$${formatUsdRoughly(r.usd)}` : '<span class="has-text-grey">—</span>';
+        return `<tr data-airdrop-wallet-row style="display: ${initialWalletRowDisplay};">
+          <td class="is-family-monospace is-size-7" style="padding-left: 2.25rem;">${escapeHtml(truncateAddressMiddle(r.wallet))}
+            <span class="has-text-grey is-size-7 ml-2">${r.sol} SOL</span></td>
+          <td class="has-text-right">${tokensCell}</td>
+          <td class="has-text-right has-text-grey is-size-7">${pctCell}</td>
+          <td class="has-text-right has-text-grey is-size-7">${usdCell}</td>
+        </tr>`;
+      }).join('')
+    : '';
+  const moreRowsCount = airdropActive
+    ? Math.max(0, airdrop.parsedRows.length - MAX_WALLET_ROWS)
+    : 0;
+  const moreRowsHtml = moreRowsCount > 0
+    ? `<tr data-airdrop-wallet-row style="display: ${initialWalletRowDisplay};">
+        <td colspan="4" class="has-text-grey has-text-centered is-size-7" style="padding-left: 2.25rem;">
+          <em>… and ${moreRowsCount} more recipient${moreRowsCount === 1 ? '' : 's'} (full list will be processed at distribution time)</em>
+        </td>
+      </tr>`
+    : '';
+
+  // Airdrop summary row — clickable, with a chevron that rotates when
+  // expanded. The chevron's state is tracked via
+  // simpleConfig.airdrop._breakdownExpanded so it survives re-renders.
+  // Click handler in renderSimpleConfig toggles the data-* attribute
+  // and the wallet-row display.
+  const chevronClass = airdrop._breakdownExpanded ? 'fa-chevron-down' : 'fa-chevron-right';
+  const airdropSummaryRowHtml = airdropActive
+    ? `<tr data-airdrop-summary-row class="is-clickable" style="cursor: pointer;">
+        <td>
+          <span class="icon is-small mr-1" style="transition: transform 0.15s;"><i class="fas ${chevronClass}"></i></span>
+          <strong>Airdrop</strong>
+          <span class="has-text-grey is-size-7 ml-1">(${airdrop.parsedRows.length} wallet${airdrop.parsedRows.length === 1 ? '' : 's'} · ${formatSolTotal(airdropSol)} SOL)</span>
+        </td>
+        <td class="has-text-right">${airdropTokensDisplay != null ? fmtTokens(airdropTokensDisplay) : '<span class="has-text-grey">—</span>'}</td>
+        <td class="has-text-right has-text-grey is-size-7">${airdropPct != null ? fmtPct(airdropPct) : '<span class="has-text-grey">—</span>'}</td>
+        <td class="has-text-right has-text-grey is-size-7">${fmtUsd(airdropUsd)}</td>
+      </tr>`
+    : '';
+
+  // Launch wallet row — shows the leftover (or the full preallocation
+  // when airdrop isn't active). The hint text differs by case so the
+  // user understands what these tokens are for.
+  const launchWalletTokens = airdropActive ? leftoverTokens : totalTokens;
+  const launchWalletPct = airdropActive ? leftoverPct : pPct;
+  const launchWalletUsd = airdropActive ? leftoverUsd : totalUsd;
+  const launchWalletHint = airdropActive
+    ? 'unallocated — held in launch wallet for manual distribution after launch'
+    : 'held in launch wallet for manual distribution after launch';
+  const launchWalletRowHtml = `
+    <tr>
+      <td>
+        <strong>Launch wallet</strong>
+        <span class="has-text-grey is-size-7 ml-2">${launchWalletHint}</span>
+      </td>
+      <td class="has-text-right">${launchWalletTokens != null ? fmtTokens(launchWalletTokens) : '<span class="has-text-grey">—</span>'}</td>
+      <td class="has-text-right has-text-grey is-size-7">${launchWalletPct != null ? fmtPct(launchWalletPct) : '<span class="has-text-grey">—</span>'}</td>
+      <td class="has-text-right has-text-grey is-size-7">${fmtUsd(launchWalletUsd)}</td>
+    </tr>
+  `;
+
+  // Total row — boldface, no hint text. Matches the funding breakdown
+  // table style on step 3 (`has-text-weight-bold` plus monospace
+  // numbers via the existing td styling).
+  const totalRowHtml = `
+    <tr class="has-text-weight-bold" style="border-top: 1px solid var(--rule, rgba(28,22,16,0.15));">
+      <td>Total preallocation</td>
+      <td class="has-text-right">${fmtTokens(totalTokens)}</td>
+      <td class="has-text-right">${fmtPct(pPct)}</td>
+      <td class="has-text-right">${fmtUsd(totalUsd)}</td>
+    </tr>
+  `;
+
+  return `
+    <table class="table is-narrow is-fullwidth is-size-7 mt-2 mb-0" style="background: transparent;">
+      <thead>
+        <tr>
+          <th>Recipient</th>
+          <th class="has-text-right">Tokens</th>
+          <th class="has-text-right">% of supply</th>
+          <th class="has-text-right">≈ USD</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${airdropSummaryRowHtml}
+        ${walletRowsHtml}
+        ${moreRowsHtml}
+        ${launchWalletRowHtml}
+        ${totalRowHtml}
+      </tbody>
+    </table>
+  `;
+}
+
+// Re-parse the airdrop CSV and re-render the results area in place
+// (without re-rendering the whole simple-config — that would steal
+// focus from the textarea). Called from the textarea/file/clear
+// handlers, and also from the prealloc-% input handler since changing
+// the prealloc % changes the budget and may flip the budget verdict.
+function refreshAirdropDisplayInline() {
+  const details = document.getElementById('simpleAirdropDetails');
+  if (!details) return;
+  const airdrop = simpleConfig.airdrop;
+
+  // Step 1: parse + annotate. parsedRows feeds both the budget check
+  // and the auto-fit floor calculation. Annotation adds per-row token
+  // amounts based on supply / market cap / SOL price; rows without
+  // those inputs land as { tokens: null, usd: null }.
+  const parse = parseAirdropCsv(airdrop.csvText || '');
+  const annotated = annotateAirdropRowsWithTokens(parse.rows);
+  airdrop.parsedRows = annotated.rows;
+  airdrop.parseError = parse.error;
+
+  // Step 2: recompute the effective preallocation %. Auto-fit reads
+  // parsedRows we just populated above; without this step running
+  // BEFORE the budget check, the budget would test against the stale
+  // pre-CSV percentage and fire a false "over budget" error even when
+  // auto-fit has already raised the budget to accommodate.
+  const effChanged = recomputeEffectivePreallocationPercent();
+
+  // Step 3: now check the budget against the freshly-computed
+  // effective %. With auto-fit on this almost never fires; with
+  // auto-fit off it surfaces the over-budget condition for the user
+  // to fix manually.
+  airdrop.budgetError = airdropBudgetError(annotated.totalTokens);
+
+  // Step 4: cascade auto-fit side-effects (support SOL, prealloc
+  // display, hint, pool rebuild) if the effective % moved.
+  if (effChanged) {
+    // Cascade auto-fit side-effects (support SOL, prealloc display,
+    // hint, pool rebuild). Customize-mode guard: skip the simple-mode
+    // support-side-effects and the destructive pool rebuild. The
+    // inline display refreshers (support display, prealloc display)
+    // are safe no-ops when their target elements aren't visible.
+    if (simpleConfig.mode !== 'customize') {
+      if (simpleConfig.preallocationEnabled && simpleConfig.supportAutoSize) {
+        const recommendedSol = recommendedSupportSolForPreallocation(
+          simpleConfig.preallocationPercent,
+        );
+        if (recommendedSol != null && recommendedSol > 0
+            && recommendedSol > (Number(simpleConfig.supportSolValue) || 0)) {
+          simpleConfig.supportSolValue = recommendedSol;
+        }
+      }
+    }
+    // Push the new effective percent into the % input element itself
+    // so the user sees the value that's actually in use. We preserve
+    // the user's last-typed value separately on
+    // simpleConfig.preallocationPercentInput — when the airdrop is
+    // trimmed and the effective drops back below the typed floor,
+    // the input will display the typed floor again.
+    //
+    // Guard: don't write the input value if the user is currently
+    // focused there typing. Clobbering a focused field would steal
+    // their input mid-keystroke. The auto-fit hint annotation gives
+    // them a separate signal in that case.
+    const pctInputEl = document.getElementById('simplePreallocPctInput');
+    if (pctInputEl && document.activeElement !== pctInputEl) {
+      const eff = Number(simpleConfig.preallocationPercent) || 0;
+      pctInputEl.value = eff.toFixed(eff % 1 === 0 ? 0 : 1);
+    }
+    // Same trick for the support SOL input — the cascade may have bumped
+    // simpleConfig.supportSolValue (auto-back raising the floor to back
+    // the new preallocation %). Without pushing the new value back to
+    // the input element here, the user sees a stale number in the
+    // support field while the "$X buy wall" display text correctly
+    // reflects the new value — a confusing contradiction.
+    //
+    // Same focus guard as above: don't clobber the user's in-progress
+    // typing. The refreshSimpleSupportDisplayInline call below updates
+    // the secondary "$X buy wall" text either way.
+    if (simpleConfig.mode !== 'customize') {
+      const supportSolEl = document.getElementById('simpleSupportSolInput');
+      if (supportSolEl && simpleConfig.supportAutoSize
+          && document.activeElement !== supportSolEl) {
+        const sv = Number(simpleConfig.supportSolValue) || 0;
+        supportSolEl.value = sv.toFixed(Math.abs(sv) >= 10 ? 1 : 3);
+      }
+    }
+    refreshSimplePreallocDisplayInline();
+    refreshSimplePreallocAutoFitHint();
+    refreshSimpleSupportDisplayInline();
+    // Customize-mode guard: rebuildPoolsFromSimpleDebounced would
+    // schedule a destructive rebuild that wipes user pool customizations
+    // when it fires 250ms later. Use the mode-aware helper instead.
+    preallocRebuildDebouncedIfApplicable();
+    // Auto-fit raised the effective preallocation %, which raised the
+    // auto-back support SOL, which raises the server-side cost estimate
+    // (more SOL committed to the support position = more SOL the user
+    // must fund). The pool-rebuild above schedules in 250ms; we also
+    // need to schedule a fresh cost-preview fetch so _lastCostEstimate
+    // updates. Without this, refreshAirdropCostDisplays at the bottom
+    // of this function would refresh the displayed total using the
+    // STALE _lastCostEstimate.totalSol, and the user wouldn't see the
+    // support bump until something else triggered a fetch (toggling
+    // prealloc — which is exactly the workaround the user reported).
+    if (typeof requestCostPreviewUpdate === 'function') {
+      requestCostPreviewUpdate();
+    }
+  }
+
+  // Step 5: render the file name placeholder + clear button state.
+  const fileName = document.getElementById('simpleAirdropFileName');
+  if (fileName) {
+    fileName.textContent = airdrop.csvText
+      ? `${airdrop.parsedRows.length} row${airdrop.parsedRows.length === 1 ? '' : 's'} loaded`
+      : 'no file chosen';
+  }
+  const clearBtn = document.getElementById('simpleAirdropClearBtn');
+  if (clearBtn) {
+    clearBtn.disabled = !airdrop.csvText;
+  }
+
+  // Step 6: render the airdrop results panel (error + summary line).
+  // Reads airdrop.budgetError which we set in step 3 against the
+  // post-auto-fit effective %.
+  const interior = details.querySelector('[data-airdrop-results]');
+  if (interior) {
+    interior.innerHTML = buildAirdropResultsHtml();
+  }
+
+  // Step 7: render the breakdown table. Reads the effective preallo­
+  // cation % and the parsed airdrop rows; both have been updated by
+  // the steps above.
+  const breakdownContainer = document.querySelector('[data-prealloc-breakdown]');
+  if (breakdownContainer) {
+    breakdownContainer.innerHTML = buildPreallocationBreakdownHtml();
+  }
+
+  // Step 8: refresh the displayed cost. Airdrop execution cost (ATA
+  // rent + tx fees) rolls into the Est. Cost shown on the token
+  // preview card AND the cost preview card. Both surfaces need to
+  // track row-count changes.
+  refreshAirdropCostDisplays();
+}
+
+// Push the current airdrop execution cost into the two on-screen cost
+// surfaces (preview card's Est. Cost tile, and the cost preview card
+// below the form). Both add the airdrop cost on top of the server's
+// launch funding estimate. Safe to call any time — no-op when
+// _lastCostEstimate hasn't arrived yet (cost preview card stays in
+// whatever state it was; updatePreviewStats handles its own missing-
+// data case).
+//
+// Used as the single chokepoint for "airdrop changed, refresh displayed
+// cost" so the airdrop toggle, CSV edits, and any future trigger can
+// all funnel through the same path. Without this, each new trigger
+// would need to remember to call both updatePreviewStats and
+// setCostPreviewState individually.
+function refreshAirdropCostDisplays() {
+  if (typeof updatePreviewStats === 'function') {
+    updatePreviewStats();
+  }
+  if (_lastCostEstimate && Number.isFinite(_lastCostEstimate.totalSol)
+      && typeof setCostPreviewState === 'function') {
+    const airdropExecutionSol = computeAirdropExecutionCostSol();
+    setCostPreviewState('ready', _lastCostEstimate.totalSol + airdropExecutionSol);
+  }
+}
+
 // Paint the simple-config UI into #simpleConfigBody. Called whenever
 // simpleConfig changes or when switching mode. Uses textContent /
 // dataset on the elements we listen to, but constructs them with
@@ -2943,6 +3949,17 @@ function renderSimpleConfig() {
   if (lockField && pageHome && lockField.parentElement !== pageHome) {
     pageHome.appendChild(lockField);
   }
+
+  // Defensive: remove any existing #preallocationBlock from the DOM
+  // before rebuilding. Unlike lockField (which is a long-lived element
+  // with persistent state we want to preserve), the preallocation
+  // block's contents are entirely state-driven — renderSimpleConfig
+  // will build a fresh block with fresh handlers as part of the
+  // innerHTML below. Without this cleanup, a previously-relocated
+  // block (e.g. moved to #customizePreallocSlot when the user was in
+  // customize mode) would persist after the rebuild and create
+  // duplicate IDs, breaking getElementById calls in refresh paths.
+  document.querySelectorAll('#preallocationBlock').forEach((b) => b.remove());
 
   // Defensive: if simpleConfig.flywheelKey points at an unavailable
   // flywheel (e.g. someone re-flagged 'reserve' as unavailable, or a
@@ -3008,11 +4025,32 @@ function renderSimpleConfig() {
   // still render their values (just disabled) so the user can see what
   // would happen at re-enable. Clamp the percent input to (0, 99] —
   // 100% preallocation means no LP at all, which isn't a launch.
+  //
+  // Refresh the effective preallocation percent before reading: that
+  // way handlers that mutated csvText or other inputs since the last
+  // render see their effects propagate to the displayed values here.
+  // (No-op when the value is already current.)
+  recomputeEffectivePreallocationPercent();
   const preallocChecked = simpleConfig.preallocationEnabled ? 'checked' : '';
   const preallocDisabled = simpleConfig.preallocationEnabled ? '' : 'disabled';
+  // EFFECTIVE percent — what every downstream computation should use.
+  // Includes the auto-fit floor.
   const preallocPct = Math.max(0, Math.min(
-    99, Number(simpleConfig.preallocationPercent) || 10,
+    99, Number(simpleConfig.preallocationPercent) || 1,
   ));
+  // TYPED percent — what the user last typed into the input. Shown in
+  // the input itself so auto-fit's bumps don't clobber what the user
+  // typed. When auto-fit is off these are the same value.
+  const preallocPctInputValue = Math.max(0, Math.min(
+    99, Number(simpleConfig.preallocationPercentInput) || preallocPct,
+  ));
+  // Auto-fit state and a hint string for when auto-fit raised the
+  // effective above the typed. We only show the hint when there's an
+  // actual discrepancy and the user might wonder where the bump came
+  // from — otherwise it'd just be visual noise.
+  const autoFitChecked = simpleConfig.preallocationAutoFit !== false ? 'checked' : '';
+  const autoFitRaised = simpleConfig.preallocationAutoFit !== false
+    && Math.abs(preallocPct - preallocPctInputValue) > 0.05;
 
   // Compute display values for the preallocation row. Token amount uses
   // the total supply input (or 0 if unset). USD value uses the
@@ -3109,6 +4147,31 @@ function renderSimpleConfig() {
     }
   }
 
+  // ---- Airdrop sub-section state ---------------------------------------
+  // The airdrop UI sits inside the preallocation block — disabled when
+  // preallocation is off. Re-parse the user's CSV every render so the
+  // preview/errors stay in sync with simpleConfig.airdrop.csvText.
+  // (The textarea handler keeps csvText in sync with the user's typing,
+  // then triggers a render; render does the parse from there.)
+  const airdrop = simpleConfig.airdrop;
+  const airdropEnabled = airdrop.enabled && simpleConfig.preallocationEnabled;
+  const airdropParse = parseAirdropCsv(airdrop.csvText || '');
+  const airdropAnnotated = annotateAirdropRowsWithTokens(airdropParse.rows);
+  const airdropBudgetErr = airdropBudgetError(airdropAnnotated.totalTokens);
+  // Persist computed results on the airdrop state so other code paths
+  // (e.g. a future "execute airdrop" step) can read them without re-
+  // parsing. parsedRows holds the token-annotated rows; parseError
+  // carries any CSV-format problem; budgetError flags over-budget.
+  airdrop.parsedRows = airdropAnnotated.rows;
+  airdrop.parseError = airdropParse.error;
+  airdrop.budgetError = airdropBudgetErr;
+
+  // Build the airdrop results HTML once via the same helper the
+  // in-place refresh path uses, so first-paint and subsequent updates
+  // produce identical markup. Reads simpleConfig.airdrop which we just
+  // populated above (parsedRows, parseError, budgetError).
+  const airdropResultsHtml = buildAirdropResultsHtml();
+
   body.innerHTML = `
     <div class="simple-config-row">
       <label class="simple-config-toggle">
@@ -3156,6 +4219,18 @@ function renderSimpleConfig() {
           : `<span class="is-size-7 has-text-grey" style="font-weight: normal; margin-left: 0.5rem;">— preallocation, support, LP splitting, ladder, pool customization</span>`}
       </summary>
       <div style="margin-top: 0.75rem;">
+        <!--
+          Preallocation block — wrapped in a single #preallocationBlock
+          div so the entire section (toggle row, warning, help text,
+          airdrop sub-section, breakdown table) can be relocated as a
+          unit between this simple-mode Advanced slot and the
+          customize-mode #customizePreallocSlot above the pool list.
+          Handlers wired on its children survive the move via
+          appendChild — that's the same pattern lockPositionsField uses.
+          See renderSimpleConfig's tail and applySimpleConfigMode for
+          the relocation calls.
+        -->
+        <div id="preallocationBlock">
         <div class="simple-config-row">
           <label class="simple-config-toggle">
             <input type="checkbox" id="simplePreallocToggle" ${preallocChecked}>
@@ -3165,21 +4240,130 @@ function renderSimpleConfig() {
             <input class="input is-small" type="number" min="0" max="99" step="1"
                    id="simplePreallocPctInput"
                    style="width: 6rem;"
-                   value="${preallocPct}" ${preallocDisabled}>
+                   value="${preallocPct.toFixed(preallocPct % 1 === 0 ? 0 : 1)}" ${preallocDisabled}>
             <span class="simple-config-slider-value" id="simplePreallocPctUnit">% of supply</span>
           </div>
+          <label class="simple-config-toggle" style="margin-left:0.5rem;" title="When on, the preallocation % is automatically raised (never lowered) to fit the airdrop list. Your typed value acts as a minimum. If the airdrop changes, the floor follows.">
+            <input type="checkbox" id="simplePreallocAutoFitToggle" ${autoFitChecked} ${preallocChecked ? '' : 'disabled'}>
+            <span class="is-size-7">Auto-fit airdrop</span>
+          </label>
+          ${simpleConfig.mode === 'customize' ? '' : `
           <label class="simple-config-toggle" style="margin-left:0.5rem;" title="When on, the Support position's SOL value is automatically pinned to a minimum that fully backs the preallocated supply. You can still set a larger Support value for a deeper buy wall.">
             <input type="checkbox" id="simplePreallocAutoBackToggle" ${supportAutoChecked} ${preallocChecked ? '' : 'disabled'}>
             <span class="is-size-7">Auto-back with support</span>
-          </label>
+          </label>`}
           <div class="simple-config-slider-value" id="simplePreallocDisplay" style="font-style: italic; color: var(--text-muted, #666);">${escapeHtml(preallocDisplayText)}</div>
+          <span class="is-size-7 has-text-warning-dark ml-2" id="simplePreallocAutoFitHint" style="font-style: normal;${autoFitRaised ? '' : ' display: none;'}">⇡ auto-fit: ${preallocPctInputValue}% → ${preallocPct.toFixed(preallocPct % 1 === 0 ? 0 : 1)}% to cover airdrop</span>
         </div>
         <div id="simplePreallocWarning" class="notification is-warning is-light py-2 px-3 mt-2 mb-0 is-size-7${preallocChecked && !simpleConfig.supportEnabled ? '' : ' hidden'}">
           <strong>⚠ Preallocation is unbacked.</strong>
           Without a Support position, holders of preallocated supply have no buy-side liquidity to sell into — this is the textbook rug shape.
-          <a href="#" id="simplePreallocEnableSupport"><strong>Enable Support position</strong></a> to add an honest exit.
+          ${simpleConfig.mode === 'customize'
+            ? 'Add a support position to one of your pools to provide an honest exit.'
+            : '<a href="#" id="simplePreallocEnableSupport"><strong>Enable Support position</strong></a> to add an honest exit.'}
         </div>
-        <p class="simple-config-help-text">Holds back a percentage of total supply from LP — for team/VC tokens, presales, airdrops, staking rewards, or any utility reserve. Pool allocations scale down to fit the remaining budget, preserving your flywheel split. The preallocated tokens stay in the launch wallet for you to distribute after launch. With <strong>Auto-back with support</strong> on, the Support position below is pinned to a minimum SOL value that equals the preallocation's USD value — preventing an unbacked-supply rug.</p>
+        <p class="simple-config-help-text">Holds back a percentage of total supply from LP — for team/VC tokens, presales, airdrops, staking rewards, or any utility reserve. ${simpleConfig.mode === 'customize'
+          ? 'You control pool allocations directly; the preallocation simply sits outside your pools.'
+          : 'Pool allocations scale down to fit the remaining budget, preserving your flywheel split.'} The preallocated tokens stay in the launch wallet for you to distribute after launch.${simpleConfig.mode === 'customize' ? '' : ' With <strong>Auto-back with support</strong> on, the Support position below is pinned to a minimum SOL value that equals the preallocation\'s USD value — preventing an unbacked-supply rug.'}</p>
+
+        <!--
+          Airdrop sub-section. Nested under preallocation because it
+          consumes preallocated supply; disabled (and visually muted)
+          when preallocation is off. The collapsible <details> remembers
+          its expand/collapse state via simpleConfig.airdrop._expanded so
+          a render triggered by typing (e.g. CSV textarea input event)
+          doesn't snap the section shut.
+
+          When enabled, the user uploads or pastes a CSV with header
+          "wallet,sol". We parse on every keystroke, validate addresses
+          and amounts, compute per-row token allocations at the launch
+          starting price, and check the total against the preallocation
+          budget. Errors render in a red notification; the rows render
+          in a preview table with the budget verdict line below.
+
+          Sits ABOVE the breakdown table because the user's action
+          (configuring the airdrop) flows naturally into the result
+          (the table showing how preallocation gets split). Reversed
+          order would be backwards — table first then the inputs that
+          produced it.
+        -->
+        <details id="simpleAirdropDetails"${airdrop._expanded ? ' open' : ''} class="mt-2"
+                 style="${simpleConfig.preallocationEnabled ? '' : 'opacity: 0.55; pointer-events: none;'} background: var(--paper-card, #e9dcbf); border: 1px solid var(--rule, rgba(28,22,16,0.15)); border-radius: 4px; padding: 0.6rem 0.85rem;">
+          <summary style="user-select: none; padding: 0.15rem 0;">
+            <label class="simple-config-toggle" style="display: inline-flex;" onclick="event.stopPropagation();">
+              <input type="checkbox" id="simpleAirdropToggle" ${airdropEnabled ? 'checked' : ''} ${simpleConfig.preallocationEnabled ? '' : 'disabled'}>
+              <strong>Airdrop to wallet list</strong>
+            </label>
+            <span class="is-size-7 has-text-grey ml-2">distribute preallocated supply to contributors based on SOL sent</span>
+          </summary>
+          <div class="mt-2" style="${airdropEnabled ? '' : 'opacity: 0.55; pointer-events: none;'}">
+            <p class="is-size-7 has-text-grey mb-2">
+              CSV format: first line <code>wallet,sol</code>, then one row per recipient. Each wallet's token allocation is computed at the launch starting price (the USD value of the SOL they sent, converted to tokens at <em>market cap ÷ supply</em>). Lines starting with <code>#</code> are treated as comments.
+              <a href="#" id="simpleAirdropSampleLink"><strong>Download sample CSV</strong></a>
+            </p>
+            <div class="field is-grouped is-align-items-flex-start">
+              <div class="control">
+                <div class="file is-small has-name">
+                  <label class="file-label">
+                    <input class="file-input" type="file" id="simpleAirdropFileInput" accept=".csv,text/csv,text/plain" ${airdropEnabled ? '' : 'disabled'}>
+                    <span class="file-cta">
+                      <span class="file-icon"><i class="fas fa-upload"></i></span>
+                      <span class="file-label">Upload CSV</span>
+                    </span>
+                    <span class="file-name" id="simpleAirdropFileName">${airdrop.csvText ? `${airdrop.parsedRows.length} row${airdrop.parsedRows.length === 1 ? '' : 's'} loaded` : 'no file chosen'}</span>
+                  </label>
+                </div>
+              </div>
+              <div class="control">
+                <button class="button is-small is-light" id="simpleAirdropClearBtn" ${airdrop.csvText ? '' : 'disabled'}>
+                  <span class="icon is-small"><i class="fas fa-times"></i></span>
+                  <span>Clear</span>
+                </button>
+              </div>
+            </div>
+            <textarea class="textarea is-small is-family-monospace" id="simpleAirdropCsvText"
+                      placeholder="wallet,sol&#10;FSfR6uRBJPbGiBSAtR7b7LrgAVu77WrTe7HT7J3afWdz,0.5&#10;CVeDKELHaC76REcBnkrQGV5XX6wJKoYpdLu6E8vEHiPS,1.25"
+                      rows="4"
+                      style="font-size: 0.8em; background-color: var(--paper-deep, #e4d6b3); border-color: var(--rule, rgba(28,22,16,0.15));"
+                      ${airdropEnabled ? '' : 'disabled'}>${escapeHtml(airdrop.csvText || '')}</textarea>
+            <!--
+              Results container — the error notification, preview table,
+              and budget-line are rendered here. Marked with a data
+              attribute so refreshAirdropDisplayInline() can target it
+              for in-place updates without re-rendering the whole
+              section (which would steal focus from the textarea).
+              The same buildAirdropResultsHtml() helper produces this
+              markup both at first paint and on every subsequent
+              keystroke, so the rendering stays consistent.
+            -->
+            <div data-airdrop-results>${airdropResultsHtml}</div>
+          </div>
+        </details>
+
+        <!--
+          Preallocation breakdown table. Shows where the preallocation
+          goes: airdrop recipients (when enabled) and the launch wallet
+          (everything not airdropped). When airdrop is active, the
+          "Airdrop" row is clickable to expand the full per-wallet list
+          beneath it; collapsed by default since wallet lists can be
+          long.
+
+          Always rendered when preallocation is on, regardless of
+          whether airdrop is enabled — so a user with a 10% prealloc
+          and no airdrop sees a single "Launch wallet: 100% of preallo­
+          cation" row, which is the right answer for that case.
+
+          Sits BELOW the airdrop sub-section: the user configures the
+          airdrop above, then sees the resulting allocation summarised
+          in this table.
+
+          buildPreallocationBreakdownHtml() handles all the rendering
+          logic (preallocation OFF returns ''); refresh-paths update
+          the [data-prealloc-breakdown] container in place.
+        -->
+        <div data-prealloc-breakdown class="mt-2"${preallocChecked ? '' : ' style="display: none;"'}>${buildPreallocationBreakdownHtml()}</div>
+        </div><!-- /#preallocationBlock -->
+
         <div class="simple-config-row" id="simpleSupportRow"${preallocChecked && !simpleConfig.supportEnabled ? ' style="outline:2px solid #f5d76e; border-radius:4px; padding:0.25rem 0.5rem; margin-left:-0.5rem;"' : ''}>
           <label class="simple-config-toggle">
             <input type="checkbox" id="simpleSupportToggle" ${supportChecked}>
@@ -3398,7 +4582,18 @@ function renderSimpleConfig() {
       // support-only is a legitimate configuration (extra buy-side
       // liquidity below launch, no preallocation to back). Leaving the
       // user's prior support state alone respects their choice.
-      if (simpleConfig.preallocationEnabled) {
+      if (simpleConfig.preallocationEnabled && simpleConfig.mode !== 'customize') {
+        // Simple-mode-only support-seeding cascade. In customize mode
+        // support is configured per-pool and simpleConfig.supportSolValue
+        // / supportEnabled aren't read by the customize-mode pool
+        // configuration. Skipping this avoids silently mutating
+        // simple-mode state from a customize-mode action.
+        //
+        // Refresh the effective preallocation percent before reading it
+        // — auto-fit may want to bump it based on an airdrop CSV that
+        // was entered while preallocation was off. Without this, the
+        // support SOL would size to the stale percent.
+        recomputeEffectivePreallocationPercent();
         const recommendedSol = recommendedSupportSolForPreallocation(
           Number(simpleConfig.preallocationPercent) || 0,
         );
@@ -3424,13 +4619,29 @@ function renderSimpleConfig() {
         // and understand support is the way to make preallocation
         // honest. They can adjust the SOL value manually.
         simpleConfig.supportEnabled = true;
+      } else if (simpleConfig.preallocationEnabled) {
+        // Customize mode: still recompute the effective percent so the
+        // airdrop auto-fit math has a fresh number to work from, but
+        // skip every simple-mode-support side-effect.
+        recomputeEffectivePreallocationPercent();
       }
-      rebuildPoolsFromSimple();
-      renderSimpleConfig();
+      preallocRebuildIfApplicable();
+      preallocRerenderIfApplicable();
       // Allocation summary depends on preallocation; refresh it so the
       // user sees the new breakdown without having to switch modes.
       if (typeof updateAllocationSummary === 'function') updateAllocationSummary();
       if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+      // Airdrop execution cost contributes to Est. Cost only when
+      // preallocation is enabled (computeAirdropExecutionCostSol
+      // returns 0 when prealloc is off). When the user toggles prealloc
+      // off with airdrop on, the airdrop cost portion of Est. Cost
+      // should disappear immediately rather than waiting for the
+      // server cost re-estimate to come back.
+      refreshAirdropCostDisplays();
+      // Toggle changes are definitive; bypass the cost-preview debounce
+      // so the user sees the support-inclusive total immediately rather
+      // than waiting 500ms (prealloc enable auto-enables support too).
+      requestCostPreviewUpdate({ immediate: true });
     });
   }
   if (preallocPctInput) {
@@ -3439,16 +4650,29 @@ function renderSimpleConfig() {
       // Clamp at write-time so the state never holds a value outside
       // the displayed range. 99% is the practical upper bound — 100%
       // means no LP at all, which isn't a launch.
-      simpleConfig.preallocationPercent = Math.max(0, Math.min(99,
+      //
+      // The typed value goes into preallocationPercentInput; the
+      // EFFECTIVE percent (which auto-fit may raise) is computed
+      // separately by recomputeEffectivePreallocationPercent. That
+      // way the user's typed value survives airdrop bumps and is
+      // visible if they ever turn auto-fit off.
+      simpleConfig.preallocationPercentInput = Math.max(0, Math.min(99,
         Number.isFinite(v) ? v : 0,
       ));
+      recomputeEffectivePreallocationPercent();
       // Keep the support SOL value at or above the preallocation floor
       // as long as Auto-back is on. Auto-back enforces a MINIMUM — if
       // the user typed a higher value manually (deeper wall than the
       // preallocation requires), we leave their value alone. If the
       // floor rises above what they typed (preallocation % increased),
       // we silently bump it up to the new floor.
-      if (simpleConfig.preallocationEnabled && simpleConfig.supportAutoSize) {
+      //
+      // Customize-mode guard: simple-mode support is not the customize-
+      // mode support (which is per-pool). Skip this side-effect in
+      // customize mode to avoid silently mutating unused state.
+      if (simpleConfig.mode !== 'customize'
+          && simpleConfig.preallocationEnabled
+          && simpleConfig.supportAutoSize) {
         const recommendedSol = recommendedSupportSolForPreallocation(
           simpleConfig.preallocationPercent,
         );
@@ -3457,7 +4681,7 @@ function renderSimpleConfig() {
           simpleConfig.supportSolValue = recommendedSol;
         }
       }
-      rebuildPoolsFromSimpleDebounced();
+      preallocRebuildDebouncedIfApplicable();
       // Refresh inline displays without re-rendering. Using the
       // standalone helpers (rather than the in-render closures) so
       // this code path is identical whether we re-render or not.
@@ -3478,6 +4702,11 @@ function renderSimpleConfig() {
         }
       }
       refreshSimpleSupportDisplayInline();
+      // Budget verdict for the airdrop depends on the prealloc %.
+      // Refresh in-place so the verdict color/text updates without
+      // re-rendering the simple-config (which would steal focus
+      // from the prealloc input).
+      refreshAirdropDisplayInline();
       if (typeof updateAllocationSummary === 'function') updateAllocationSummary();
       if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
     });
@@ -3486,8 +4715,185 @@ function renderSimpleConfig() {
     // form (Continue button, customize switch, etc.). Without the
     // flush, the user could click Continue during the 250ms debounce
     // window and the funding estimator would see stale pool state.
+    //
+    // Customize-mode guard: no debounced rebuild was scheduled in
+    // customize mode (preallocRebuildDebouncedIfApplicable was a
+    // no-op), so we must skip the flush — flushRebuildPoolsFromSimple
+    // unconditionally calls rebuildPoolsFromSimple, which would wipe
+    // user pool customizations.
     preallocPctInput.addEventListener('blur', () => {
+      if (simpleConfig.mode === 'customize') return;
       flushRebuildPoolsFromSimple();
+    });
+  }
+
+  // ---- Airdrop handlers ---------------------------------------------------
+  //
+  // The airdrop toggle, file upload, textarea, and clear button all live
+  // inside the preallocation block. The textarea handler is the hot path
+  // (fires on every keystroke), so it does an IN-PLACE refresh of just
+  // the airdrop interior — no full re-render, which would steal focus
+  // and reset caret position. The toggle and clear paths go through
+  // renderSimpleConfig() since they change the section's overall
+  // enabled state.
+  const airdropToggle = body.querySelector('#simpleAirdropToggle');
+  const airdropDetails = body.querySelector('#simpleAirdropDetails');
+  const airdropCsvText = body.querySelector('#simpleAirdropCsvText');
+  const airdropFileInput = body.querySelector('#simpleAirdropFileInput');
+  const airdropFileName = body.querySelector('#simpleAirdropFileName');
+  const airdropClearBtn = body.querySelector('#simpleAirdropClearBtn');
+  const airdropSampleLink = body.querySelector('#simpleAirdropSampleLink');
+
+  // Toggle the <details> expanded state and keep it in sync with stored
+  // simpleConfig so re-renders preserve it. The native toggle event
+  // fires AFTER the open attr changes, so we read it directly here.
+  if (airdropDetails) {
+    airdropDetails.addEventListener('toggle', () => {
+      simpleConfig.airdrop._expanded = airdropDetails.open;
+    });
+  }
+
+  // Enable/disable the airdrop. When enabling, expand the section
+  // automatically (otherwise the user clicks the toggle then has to
+  // click again to expand — annoying). Disable doesn't auto-collapse.
+  if (airdropToggle) {
+    airdropToggle.addEventListener('change', (e) => {
+      simpleConfig.airdrop.enabled = e.target.checked;
+      if (simpleConfig.airdrop.enabled) {
+        simpleConfig.airdrop._expanded = true;
+      }
+      preallocRerenderIfApplicable();
+      // Airdrop execution cost contributes to the displayed Est. Cost.
+      // Toggling airdrop on/off changes whether that contribution
+      // counts (computeAirdropExecutionCostSol returns 0 when off).
+      // renderSimpleConfig doesn't touch the cost displays itself, so
+      // refresh them here.
+      refreshAirdropCostDisplays();
+    });
+  }
+
+  // Preallocation breakdown table — the airdrop summary row is
+  // clickable to expand/collapse the per-wallet rows beneath it.
+  // Delegation lets us survive renderSimpleConfig rebuilds (the block
+  // itself is rebuilt, but document persists). We bind on document
+  // rather than body because the preallocation block can be relocated
+  // OUTSIDE of body (into #customizePreallocSlot) in customize mode —
+  // a body-bound listener would miss clicks once the block has moved.
+  //
+  // Bind ONCE across the app's lifetime via a dataset flag on
+  // documentElement (which is stable). The flag prevents listener
+  // accumulation across re-renders.
+  if (!document.documentElement.dataset.airdropBreakdownBound) {
+    document.documentElement.dataset.airdropBreakdownBound = '1';
+    document.addEventListener('click', (e) => {
+      const summaryRow = e.target.closest('[data-airdrop-summary-row]');
+      if (!summaryRow) return;
+      // Don't toggle if the user clicked a link/button inside the row.
+      if (e.target.closest('a, button')) return;
+      const willExpand = !simpleConfig.airdrop._breakdownExpanded;
+      simpleConfig.airdrop._breakdownExpanded = willExpand;
+      // Toggle each wallet row's visibility. Scope to the breakdown's
+      // immediate container so we only affect rows in the SAME table
+      // the user clicked — if (somehow) multiple breakdown tables
+      // existed concurrently we wouldn't toggle the wrong one.
+      const breakdownContainer = summaryRow.closest('[data-prealloc-breakdown]') || document;
+      breakdownContainer.querySelectorAll('[data-airdrop-wallet-row]').forEach((row) => {
+        row.style.display = willExpand ? '' : 'none';
+      });
+      // Rotate the chevron icon. The icon is the first <i> inside the
+      // first <span class="icon"> in the row.
+      const icon = summaryRow.querySelector('.icon i');
+      if (icon) {
+        icon.classList.toggle('fa-chevron-right', !willExpand);
+        icon.classList.toggle('fa-chevron-down', willExpand);
+      }
+    });
+  }
+
+  // The airdrop refresh + results-builder helpers are top-level
+  // functions (defined alongside refreshSimplePreallocDisplayInline)
+  // so the prealloc-% input handler can call them when the budget
+  // changes. Handlers below reference them directly.
+
+  // Textarea input handler — fires per-keystroke. Update state, refresh
+  // the display in-place. No full re-render: the textarea must keep
+  // focus and caret position.
+  if (airdropCsvText) {
+    airdropCsvText.addEventListener('input', (e) => {
+      simpleConfig.airdrop.csvText = e.target.value;
+      refreshAirdropDisplayInline();
+    });
+  }
+
+  // File upload handler — read the file, push contents into the
+  // textarea, then refresh in-place. We intentionally update the
+  // textarea (rather than just the stored csvText) so the user can
+  // see/edit the uploaded content.
+  if (airdropFileInput) {
+    airdropFileInput.addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      // Guard against huge files — a presale with 100k contributors is
+      // ~5MB at 50 bytes/line. Larger than that is almost certainly a
+      // mistake (wrong file selected) and would freeze the parser.
+      if (file.size > 5 * 1024 * 1024) {
+        simpleConfig.airdrop.parseError = `File too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum is 5 MB — split into smaller batches if needed.`;
+        refreshAirdropDisplayInline();
+        return;
+      }
+      try {
+        const text = await file.text();
+        simpleConfig.airdrop.csvText = text;
+        if (airdropCsvText) airdropCsvText.value = text;
+        refreshAirdropDisplayInline();
+      } catch (err) {
+        simpleConfig.airdrop.parseError = `Couldn't read file: ${err.message}`;
+        refreshAirdropDisplayInline();
+      }
+    });
+  }
+
+  // Clear button — wipe csvText and parsed state, refresh in-place.
+  if (airdropClearBtn) {
+    airdropClearBtn.addEventListener('click', () => {
+      simpleConfig.airdrop.csvText = '';
+      simpleConfig.airdrop.parsedRows = [];
+      simpleConfig.airdrop.parseError = null;
+      simpleConfig.airdrop.budgetError = null;
+      if (airdropCsvText) airdropCsvText.value = '';
+      if (airdropFileInput) airdropFileInput.value = '';
+      refreshAirdropDisplayInline();
+    });
+  }
+
+  // Sample-CSV download link. We construct a data: URL with a small
+  // example so users can see the format without hunting through docs.
+  // The wallet addresses in the sample are real-but-arbitrary Solana
+  // addresses (just for format demonstration — they're not associated
+  // with this app or the user).
+  if (airdropSampleLink) {
+    airdropSampleLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      const sample =
+        '# Airdrop CSV — first line is the header, then one row per recipient.\n' +
+        '# Comments (lines starting with #) and blank lines are ignored.\n' +
+        '# The SOL column is what each wallet contributed; token allocation\n' +
+        '# is computed at the launch starting price (market cap / supply).\n' +
+        'wallet,sol\n' +
+        'FSfR6uRBJPbGiBSAtR7b7LrgAVu77WrTe7HT7J3afWdz,0.5\n' +
+        'CVeDKELHaC76REcBnkrQGV5XX6wJKoYpdLu6E8vEHiPS,1.25\n' +
+        '8i2NtsSoJqZDMCpe9fV5gbRdDQkGMQFMtLttuB2Z2gdw,0.1\n';
+      const blob = new Blob([sample], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'trebuchet-airdrop-sample.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Free the object URL after the click handler runs — the
+      // download will already have started.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
   }
 
@@ -3566,6 +4972,10 @@ function renderSimpleConfig() {
       rebuildPoolsFromSimple();
       renderSimpleConfig();
       if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+      // Toggle changes are definitive (not per-keystroke), so bypass
+      // the cost-preview debounce — the user sees the updated number
+      // immediately rather than waiting 500ms.
+      requestCostPreviewUpdate({ immediate: true });
     });
   }
 
@@ -3602,6 +5012,40 @@ function renderSimpleConfig() {
     });
   }
 
+  // Auto-fit airdrop toggle. When on, the effective preallocation %
+  // is automatically raised (but never lowered) to fit the airdrop
+  // list. The typed % acts as a minimum floor. Toggling this triggers
+  // a full re-render so the prealloc display and breakdown reflect
+  // the change immediately.
+  const preallocAutoFitToggle = body.querySelector('#simplePreallocAutoFitToggle');
+  if (preallocAutoFitToggle) {
+    preallocAutoFitToggle.addEventListener('change', (e) => {
+      simpleConfig.preallocationAutoFit = e.target.checked;
+      // Recompute the effective percent now — this either bumps it
+      // up (auto-fit turned ON with an airdrop demand above the typed
+      // floor) or returns it to the typed value (auto-fit turned OFF
+      // with auto-fit previously holding a higher value).
+      recomputeEffectivePreallocationPercent();
+      // Auto-back sizing depends on the effective preallocation %.
+      // If auto-back is also on, bump the support SOL to track the
+      // new effective preallocation USD value. Customize mode skips
+      // this — simple-mode support is irrelevant when each pool has
+      // its own support.
+      if (simpleConfig.mode !== 'customize'
+          && simpleConfig.preallocationEnabled
+          && simpleConfig.supportAutoSize) {
+        const rec = recommendedSupportSolForPreallocation(
+          simpleConfig.preallocationPercent,
+        );
+        if (Number.isFinite(rec) && rec > (Number(simpleConfig.supportSolValue) || 0)) {
+          simpleConfig.supportSolValue = rec;
+        }
+      }
+      preallocRebuildIfApplicable();
+      preallocRerenderIfApplicable();
+      if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+    });
+  }
   // Preallocation-warning "Enable Support position" link: a one-click
   // fix for the most common case where the warning fires. Turning
   // support on here also re-establishes the auto-link by default,
@@ -3721,6 +5165,40 @@ function renderSimpleConfig() {
   // inside Advanced in simple mode while preserving its identity as
   // a single DOM element.
   relocateLockPositionsField('simple');
+
+  // Relocate the preallocation block based on mode. In simple mode it
+  // stays where renderSimpleConfig just rendered it (inside the
+  // Advanced details). In customize mode we move it to the slot above
+  // the pool list. Same appendChild move pattern as lockPositionsField:
+  // handlers wired by the prealloc/airdrop setup above are attached
+  // directly to the block's children, so they survive the move.
+  relocatePreallocationBlock();
+}
+
+// Move the #preallocationBlock element between its two homes:
+//
+//   simpleConfig.mode === 'default'   → leave it inside the simple
+//                                        container's Advanced section
+//                                        (its natural location after
+//                                        renderSimpleConfig)
+//   simpleConfig.mode === 'customize' → into #customizePreallocSlot,
+//                                        which lives above the pool
+//                                        list in customize mode
+//
+// Idempotent: re-running with the same mode is a no-op (appendChild
+// of an already-correct parent does nothing). Safe to call whenever
+// the mode might have changed without tracking previous mode.
+function relocatePreallocationBlock() {
+  const block = document.getElementById('preallocationBlock');
+  if (!block) return;
+  if (simpleConfig.mode === 'customize') {
+    const slot = document.getElementById('customizePreallocSlot');
+    if (slot && block.parentElement !== slot) {
+      slot.appendChild(block);
+    }
+  }
+  // Simple mode: block already sits in the simple container's Advanced
+  // section where renderSimpleConfig placed it. No move needed.
 }
 
 // ===========================================================================
@@ -3786,6 +5264,16 @@ function applySimpleConfigMode() {
   } else {
     simpleC.classList.add('hidden');
     customC.classList.remove('hidden');
+    // renderSimpleConfig still needs to run in customize mode — it
+    // builds the preallocation block (and wires its handlers), which
+    // relocatePreallocationBlock (called inside renderSimpleConfig)
+    // then moves into #customizePreallocSlot above the pool list.
+    // The simple container itself stays hidden; we only need its DOM
+    // contents to exist so the block can be detached from it. The
+    // mode-aware HTML in the prealloc block hides the auto-back toggle
+    // and the "Enable Support position" link in customize mode (those
+    // refer to the simple-mode support row which isn't visible here).
+    renderSimpleConfig();
     renderPools();
     // Move the Lock-liquidity field back to its page-level home so
     // customize-mode users can access it.
@@ -4027,7 +5515,13 @@ function buildPreviewStatsHtml() {
     if (priceText) addTile('Start price', priceText);
   }
   if (_lastCostEstimate && Number.isFinite(_lastCostEstimate.totalSol)) {
-    addTile('Est. cost', `≈ ${_lastCostEstimate.totalSol.toFixed(3)} SOL`, 'is-cost');
+    // Airdrop execution (ATA rent + tx fees per recipient) is computed
+    // client-side and added on top of the server's launch-funding total
+    // since the server doesn't yet know about the airdrop list. When
+    // airdrop is disabled or empty this returns 0.
+    const airdropExecutionSol = computeAirdropExecutionCostSol();
+    const grandTotal = _lastCostEstimate.totalSol + airdropExecutionSol;
+    addTile('Est. cost', `≈ ${grandTotal.toFixed(3)} SOL`, 'is-cost');
   }
   const tilesHtml = tiles.length ? `<div class="tps-tiles">${tiles.join('')}</div>` : '';
 
@@ -6008,20 +7502,34 @@ function buildSliceNode(pool, poolIdx, slice, sliceIdx) {
 // fresh-fetch path and the cache-hit path so behavior is consistent.
 // Mutates the pool in place; doesn't trigger any rendering.
 function applyResolvedInfoToPool(pool, info) {
-  pool.resolvedSymbol = info.symbol;
-  pool.resolvedDecimals = info.decimals ?? null;
-  pool.resolvedPriceUsd = info.priceUsd;
+  if (!info) return;
+  // For each field, prefer the new value when it's non-null, else
+  // keep whatever's already on the pool. This protects against two
+  // failure modes:
+  //   1. Persisted metadata hydration (priceUsd: null in the cached
+  //      entry) overwriting a fresh price that was already fetched
+  //      since the page loaded.
+  //   2. A partial server response (e.g. price oracle briefly down,
+  //      priceUsd comes back null) clobbering a value we had.
+  // For metadata fields the new value is usually the same as the
+  // stored one anyway; the guard only matters for the volatile price.
+  const setIfPresent = (field, value) => {
+    if (value !== null && value !== undefined) pool[field] = value;
+  };
+  setIfPresent('resolvedSymbol', info.symbol);
+  setIfPresent('resolvedDecimals', info.decimals);
+  setIfPresent('resolvedPriceUsd', info.priceUsd);
   // Save the resolved on-chain mint too. We need it at token-creation
   // time to seed the keypair search that ensures the launched token
   // sorts as mintA in every pool (which puts the launched token in
   // the *denominator* of the displayed Raydium price, matching user
   // expectations of "launch price up to infinity").
-  pool.resolvedMint = info.address;
+  setIfPresent('resolvedMint', info.address);
   // Display-only fields. Either may be null if no indexer had the
   // token; the UI handles that by hiding the logo and falling back
   // on the symbol where the name would have appeared.
-  pool.resolvedName = info.name ?? null;
-  pool.resolvedImageUrl = info.imageUrl ?? null;
+  setIfPresent('resolvedName', info.name);
+  setIfPresent('resolvedImageUrl', info.imageUrl);
   // Raydium CLMM compatibility info. Server-side we check whether the
   // quote token's mint program + Token-2022 extensions are allowed by
   // Raydium's on-chain `is_supported_mint` rules. The values here:
@@ -6034,10 +7542,17 @@ function applyResolvedInfoToPool(pool, info) {
   //   compatible === null    → couldn't check (mint missing on chain,
   //                            RPC down). Treat as unknown — surface
   //                            a note, don't block.
-  pool.resolvedCompatible = info.compatible;
-  pool.resolvedIsToken2022 = !!info.isToken2022;
-  pool.resolvedDisallowedNames = info.disallowedNames || [];
-  pool.resolvedCompatError = info.compatError || null;
+  setIfPresent('resolvedCompatible', info.compatible);
+  // Boolean: a non-null incoming value wins, null/undef leaves prior.
+  if (info.isToken2022 !== null && info.isToken2022 !== undefined) {
+    pool.resolvedIsToken2022 = !!info.isToken2022;
+  }
+  // Arrays: empty array is a real value (means "no disallowed names")
+  // so we update unconditionally when the response carries one.
+  if (Array.isArray(info.disallowedNames)) {
+    pool.resolvedDisallowedNames = info.disallowedNames;
+  }
+  setIfPresent('resolvedCompatError', info.compatError);
   // Mark resolution as succeeded so the retry hint goes away.
   pool.resolvedFailed = false;
   pool.resolvedFailedError = null;
@@ -6126,6 +7641,10 @@ async function fetchQuoteInfoCached(quoteToken) {
           info: merged,
           fetchedAt: Date.now(),
         });
+        // Mirror the static metadata fields to localStorage so the
+        // next session starts with logos/symbols/decimals already
+        // known. Price isn't persisted — it's always re-fetched.
+        persistQuoteMeta(quoteToken, merged);
       }
       return merged;
     } finally {
@@ -6366,7 +7885,15 @@ function updateContinueToFundingState() {
     if (Number.isFinite(mcap) && mcap > 0 && solUsd) {
       const gapUsd = mcap * gap / 100;
       const coverage = gapUsd > 0 ? totalSupportUsd / gapUsd : 1;
-      if (coverage >= 1) {
+      // Treat coverage ≥ 99.5% as "fully backed". Without this tolerance,
+      // float drift between the auto-back floor calculation and this
+      // check (different rounding moments, SOL price ticks between
+      // reads, etc.) causes a 99.9%-coverage warning that asks the user
+      // to add ~$0 / ~0.00 SOL — confusing and actionable in name only.
+      // Math.round(coverage * 100) below would round 0.999 to "100%"
+      // anyway, producing a "Support only backs ~100%" message that
+      // contradicts itself.
+      if (coverage >= 0.995) {
         // Fully backed — no warning. The preallocation is honest.
       } else if (totalSupportUsd <= 0) {
         warnings.push(
@@ -6556,9 +8083,24 @@ function setCostPreviewState(state, value) {
   }
   card.classList.remove('hidden');
   if (state === 'loading') {
-    labelEl.textContent = 'Estimating cost: ';
-    valueEl.textContent = '…';
-    hintEl.textContent = '(computing)';
+    // Keep the previously-displayed value if we have one — clearing
+    // it to "…" causes visible flicker every time the cost preview
+    // re-fetches (which can happen multiple times in quick succession
+    // as multiple pool resolves complete). The label changes subtly
+    // to signal a refresh is in progress without removing the number
+    // the user was reading.
+    if (!valueEl.textContent || !valueEl.textContent.includes('SOL')) {
+      // First-ever load (or post-error) — show the spinner-like
+      // placeholder since there's nothing to keep displayed.
+      labelEl.textContent = 'Estimating cost: ';
+      valueEl.textContent = '…';
+      hintEl.textContent = '(computing)';
+    } else {
+      // Subsequent refresh — leave the value alone, just dim the hint
+      // text to a subtle "(updating…)" so the user knows a refresh is
+      // in flight without losing the value they were reading.
+      hintEl.textContent = '(updating…)';
+    }
     return;
   }
   if (state === 'ready') {
@@ -6587,12 +8129,36 @@ function setCostPreviewState(state, value) {
 function shouldShowCostPreview() {
   if (typeof currentStep === 'number' && currentStep !== 2) return false;
   if (!Array.isArray(pools) || pools.length === 0) return false;
-  // Allocations should sum to ~100% — under-allocated pools would
-  // estimate a cost for missing liquidity, over-allocated would
-  // double-count. A small tolerance handles floating-point fuzz from
-  // slider math.
+  // Allocation total semantics differ by mode:
+  //
+  //   SIMPLE mode: pool % is driven by the flywheel split slider; it
+  //   always sums to (100 - preallocationPercent) exactly. Deviating
+  //   from that means something is mid-rebuild and an estimate would
+  //   be wrong. We check equality within a small floating-point fuzz.
+  //
+  //   CUSTOMIZE mode: the user freely types per-pool %. Any sum from
+  //   0% up to and including 100% is a valid configuration — the gap
+  //   between the sum and 100% is implicit preallocation, held back in
+  //   the launch wallet with no LP cost. We only bail if the sum
+  //   EXCEEDS 100% (server-side validation would reject it anyway, so
+  //   no point estimating).
+  //
+  // Under-allocated pools in simple mode would estimate a cost for
+  // missing liquidity, over-allocated in any mode would double-count.
+  const isSimpleMode = !simpleConfig.mode || simpleConfig.mode === 'default';
   const total = pools.reduce((s, p) => s + (Number(p.supplyPercent) || 0), 0);
-  if (Math.abs(total - 100) > 0.5) return false;
+  if (isSimpleMode) {
+    const preallocPct = simpleConfig.preallocationEnabled
+      ? Math.max(0, Math.min(99, Number(simpleConfig.preallocationPercent) || 0))
+      : 0;
+    const expectedTotal = 100 - preallocPct;
+    if (Math.abs(total - expectedTotal) > 0.5) return false;
+  } else {
+    // Customize mode — only fail on overflow. A small +0.5 tolerance
+    // matches the simple-mode fuzz so rounding doesn't cause false
+    // negatives right at 100%.
+    if (total > 100.5) return false;
+  }
   // Bail if any pool's quote isn't resolved yet. The estimator's
   // bootstrap-cost math needs the quote token's USD price, and an
   // unresolved quote produces a worst-case estimate that scares users
@@ -6619,6 +8185,7 @@ async function runCostPreview() {
   try {
     const allocations = buildAllocationsForApi();
     const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+
     const resp = await fetch('/api/estimate-lp-funding', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -6629,6 +8196,7 @@ async function runCostPreview() {
     // overwrite a fresher one and the user sees the wrong number.
     if (seq !== _costPreviewRequestSeq) return;
     const data = await resp.json();
+
     if (!data.success || !data.estimate) {
       _lastCostEstimate = null;
       updatePreviewStats();
@@ -6637,7 +8205,11 @@ async function runCostPreview() {
     }
     _lastCostEstimate = data.estimate;
     updatePreviewStats();
-    setCostPreviewState('ready', data.estimate.totalSol);
+    // Surface the grand total (launch + airdrop execution) in the
+    // cost preview card. updatePreviewStats above also adds airdrop
+    // cost to its own Est. Cost tile, so the two displays agree.
+    const airdropExecutionSol = computeAirdropExecutionCostSol();
+    setCostPreviewState('ready', data.estimate.totalSol + airdropExecutionSol);
   } catch (e) {
     if (seq !== _costPreviewRequestSeq) return;
     // Don't surface the error message — the user will see a real one
@@ -6648,7 +8220,7 @@ async function runCostPreview() {
   }
 }
 
-function requestCostPreviewUpdate() {
+function requestCostPreviewUpdate(options) {
   // Reflect pool/allocation edits in the preview card immediately (the
   // cost number itself updates a moment later when the debounced fetch
   // returns). Cheap — touches only the stat grid, not the coin.
@@ -6665,7 +8237,15 @@ function requestCostPreviewUpdate() {
     return;
   }
   if (_costPreviewDebounceHandle) clearTimeout(_costPreviewDebounceHandle);
-  _costPreviewDebounceHandle = setTimeout(runCostPreview, 500);
+  // immediate=true bypasses the debounce for definitive config changes
+  // (toggle changes, full re-renders) where the user expects to see the
+  // new total right away — not 500ms later. Per-keystroke typing still
+  // uses the debounce so we don't hammer the server.
+  if (options && options.immediate) {
+    runCostPreview();
+  } else {
+    _costPreviewDebounceHandle = setTimeout(runCostPreview, 500);
+  }
 }
 
 ['tokenName', 'tokenSymbol', 'tokenSupply', 'targetMarketCap'].forEach((id) => {
@@ -6707,6 +8287,10 @@ bind('targetMarketCap', 'input', () => {
     rebuildPoolsFromSimpleDebounced();
     refreshSimplePreallocDisplayInline();
     refreshSimpleSupportDisplayInline();
+    // Airdrop token allocations depend on launch starting price
+    // (market cap / supply), so mcap changes shift every row's
+    // tokens and may flip the budget verdict.
+    refreshAirdropDisplayInline();
     // Continue-state check too, since the coverage warning depends on
     // the latest support → preallocation USD comparison.
     if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
@@ -6726,16 +8310,26 @@ bind('tokenSupply', 'input', () => {
   if (simpleConfig.mode === 'default') {
     rebuildPoolsFromSimpleDebounced();
     refreshSimplePreallocDisplayInline();
+    // Total-supply directly affects the preallocation budget AND each
+    // airdrop row's token count (tokens = sol × SOL_USD × supply / mcap).
+    refreshAirdropDisplayInline();
   }
 });
 
 // Blur handlers: flush any pending debounced rebuild so the pools
 // reflect the user's latest input before they interact with the
 // rest of the form (Continue button, customize switch, etc.).
+//
+// Customize-mode guard: no debounced rebuild was scheduled in
+// customize mode (the input handlers above gate on simple mode), so
+// flushing here would unconditionally call rebuildPoolsFromSimple
+// and wipe user pool customizations. Skip when in customize mode.
 bind('targetMarketCap', 'blur', () => {
+  if (simpleConfig.mode === 'customize') return;
   flushRebuildPoolsFromSimple();
 });
 bind('tokenSupply', 'blur', () => {
+  if (simpleConfig.mode === 'customize') return;
   flushRebuildPoolsFromSimple();
 });
 
@@ -6967,7 +8561,15 @@ bind('continueToFundingBtn', 'click', async () => {
   // the user's latest input. Without this, a Continue click during
   // the 250ms debounce window would send stale allocations to the
   // server and the funding estimate would be wrong.
-  flushRebuildPoolsFromSimple();
+  //
+  // Customize-mode guard: no debounced rebuild was scheduled (the
+  // rebuild helpers short-circuit on customize mode). The pools
+  // array IS the user's source of truth here — flushing would call
+  // rebuildPoolsFromSimple and silently wipe every customization
+  // right before sending allocations to the server.
+  if (simpleConfig.mode !== 'customize') {
+    flushRebuildPoolsFromSimple();
+  }
   await withRunState(async () => {
     try {
       const allocations = buildAllocationsForApi();
@@ -7139,6 +8741,9 @@ function resetForNewLaunch() {
 
   // 3. Reset simpleConfig to its initial defaults so the simple-UI shows
   //    the "fresh launch" state. Mirror of the let-initializer at file top.
+  //    When adding new fields to the initializer, mirror them here too —
+  //    otherwise a Start Over will carry over stale values from the
+  //    previous launch and the user gets a "fresh" form that isn't fresh.
   simpleConfig = {
     mode: 'default',
     flywheelEnabled: true,
@@ -7151,6 +8756,38 @@ function resetForNewLaunch() {
     ladderEnabled: false,
     ladderPercent: LADDER_DEFAULT_PERCENT,
     ladderBandCount: LADDER_DEFAULT_BANDS,
+    // Preallocation defaults — disabled by default, 1% if the user
+    // enables it. Auto-fit defaults on so the airdrop CSV automatically
+    // raises the floor as needed. Both effective and typed values seed
+    // to 1 so a fresh enable shows 1% in the input.
+    preallocationEnabled: false,
+    preallocationPercent: 1,
+    preallocationPercentInput: 1,
+    preallocationAutoFit: true,
+    // Support position defaults — disabled by default. Auto-back ties
+    // the SOL value to whatever fully backs the preallocation; on by
+    // default so the natural "preallocation + backing" pairing is the
+    // path of least resistance when the user enables both.
+    supportEnabled: false,
+    supportSolValue: 1,
+    supportDepthPct: 10,
+    supportAutoSize: true,
+    // UI-only: advanced section collapsed by default so Start Over
+    // produces the same minimal landing view as a fresh page load.
+    _advancedExpanded: false,
+    // Airdrop state — mirror of the top-of-file defaults. Without
+    // resetting this, the next launch would carry over the previous
+    // launch's csvText and parsed rows, which is wrong (each launch
+    // has its own recipient list).
+    airdrop: {
+      enabled: false,
+      csvText: '',
+      parsedRows: [],
+      parseError: null,
+      budgetError: null,
+      _expanded: false,
+      _breakdownExpanded: false,
+    },
   };
 
   // 4. Reset token form inputs back to their HTML defaults. These hold
@@ -7376,6 +9013,77 @@ function buildTokenomicsArcs() {
       });
     }
   });
+  // Preallocation arcs — render AFTER pool arcs so the donut reads
+  // "LP positions clockwise, then preallocation holdback" with a
+  // visual break at the boundary.
+  //
+  // The gap is purely a function of how much supply isn't allocated
+  // to LP. Both modes contribute here:
+  //   - SIMPLE mode with preallocation on: the user dialed the
+  //     simple-mode prealloc slider; pools sum to (100 - prealloc%).
+  //   - CUSTOMIZE mode: the user freely sized pools; whatever's left
+  //     between the sum and 100% is implicit preallocation, held in
+  //     the launch wallet.
+  // Either way, the gap is preallocation and the donut should show
+  // it explicitly so the user sees the full 100% of supply broken
+  // down. Without this, customize-mode under-allocation produced a
+  // visual gap in the donut that read as "missing config" rather
+  // than "deliberately held back."
+  //
+  // The airdrop split — separating the airdrop's covered portion
+  // from the launch-wallet remainder — only applies in simple mode,
+  // since customize mode has no airdrop UI. In customize mode the
+  // whole gap is a single "launch wallet (held back)" slice.
+  //
+  // Each arc carries a `poolIdx: -1` sentinel so renderTokenomicsBreakdownHtml
+  // knows to render them in their own non-pool section. Coloring uses
+  // a separate palette (slate/grey) so the preallocation slices are
+  // visually distinct from any pool's color family.
+  const poolsTotalPct = pools.reduce((s, p) => s + (Number(p.supplyPercent) || 0), 0);
+  const gapPct = Math.max(0, 100 - poolsTotalPct);
+  if (gapPct > 0.01) {
+    const isSimpleMode = !simpleConfig.mode || simpleConfig.mode === 'default';
+    const totalSupply = parseNumberInput(document.getElementById('tokenSupply'));
+    // Airdrop only applies in simple mode (no airdrop UI in customize).
+    const airdropOn = isSimpleMode
+      && simpleConfig.preallocationEnabled
+      && simpleConfig.airdrop && simpleConfig.airdrop.enabled
+      && Array.isArray(simpleConfig.airdrop.parsedRows)
+      && simpleConfig.airdrop.parsedRows.length > 0;
+    // Airdrop's covered token amount as a fraction of total supply.
+    let airdropFraction = 0;
+    if (airdropOn && Number.isFinite(totalSupply) && totalSupply > 0) {
+      const totalAirdropTokens = simpleConfig.airdrop.parsedRows
+        .reduce((s, r) => s + (Number(r.tokens) || 0), 0);
+      airdropFraction = totalAirdropTokens / totalSupply;
+      // Clamp to the gap fraction — airdrop can never exceed the
+      // preallocation. The budget gate normally blocks an over-budget
+      // CSV before it reaches here; this cap is a defensive sanity
+      // bound against any transient bookkeeping mismatch.
+      airdropFraction = Math.min(airdropFraction, gapPct / 100);
+    }
+    const launchWalletFraction = (gapPct / 100) - airdropFraction;
+    if (airdropFraction > 0) {
+      arcs.push({
+        poolIdx: -1,
+        kind: 'prealloc-airdrop',
+        variant: 0,
+        label: 'Airdrop',
+        share: airdropFraction,
+        color: 'hsl(210, 22%, 48%)', // slate-blue, distinct from any pool hue
+      });
+    }
+    if (launchWalletFraction > 0.0001) {
+      arcs.push({
+        poolIdx: -1,
+        kind: 'prealloc-launch',
+        variant: 0,
+        label: airdropOn ? 'Launch wallet (unallocated)' : 'Launch wallet (held back)',
+        share: launchWalletFraction,
+        color: 'hsl(210, 14%, 65%)', // lighter slate for the leftover
+      });
+    }
+  }
   return arcs;
 }
 
@@ -7554,12 +9262,53 @@ function renderTokenomicsBreakdownHtml(arcs) {
     html += '</div></div>';
   });
 
-  // Totals footer.
+  // Preallocation section — listed AFTER pools since it's the holdback
+  // portion that wasn't allocated to LP. Only renders when there are
+  // preallocation arcs in the chart (poolIdx === -1 sentinel). The
+  // header line summarizes the total holdback %; sub-lines split it
+  // into airdrop / launch-wallet portions matching the chart slices.
+  const preallocArcs = arcs.filter((a) => a.poolIdx === -1);
+  if (preallocArcs.length > 0) {
+    const preallocTotalShare = preallocArcs.reduce((s, a) => s + a.share, 0);
+    const preallocTotalPct = (preallocTotalShare * 100).toFixed(2);
+    html += `
+      <div class="mb-3">
+        <p class="is-size-7 mb-1">
+          <strong>Preallocation</strong> &nbsp;·&nbsp; ${preallocTotalPct}% of supply
+          &nbsp;·&nbsp; held back from LP
+        </p>
+        <div style="margin-left:1rem;">
+    `;
+    preallocArcs.forEach((arc) => {
+      html += `
+        <div class="is-size-7" style="display:flex;align-items:center;gap:0.4rem;margin:0.15rem 0;">
+          <span style="display:inline-block;width:10px;height:10px;background:${arc.color};border-radius:2px;flex-shrink:0;"></span>
+          <span style="flex:1;">${escapeHtml(arc.label)}</span>
+          <span class="has-text-grey">${(arc.share * 100).toFixed(2)}% of supply</span>
+        </div>
+      `;
+    });
+    html += '</div></div>';
+  }
+
+  // Totals footer. The chart shows 100% when (pool allocations) +
+  // (preallocation) sums to the full supply. Both are real arcs in
+  // the `arcs` array, so the existing sum already covers this case
+  // — but we need the warning text to actually be readable, so we
+  // swap the unreadable yellow Bulma class for a darker amber tone
+  // that has enough contrast against the parchment background.
   const totalShare = arcs.reduce((s, a) => s + a.share, 0);
   const totalPct = (totalShare * 100).toFixed(2);
   const allocated = totalPct === '100.00';
+  // Use explicit colors instead of has-text-warning (a pale yellow
+  // that disappears against the parchment background). Success stays
+  // as the green class (good contrast). The warning case gets a deep
+  // amber that reads clearly on the cream/parchment surface.
+  const footerStyle = allocated
+    ? 'color: #2c8a52;'  // ok-green, same family as has-text-success but tuned for parchment
+    : 'color: #b8821a;'; // deep amber — readable on parchment, still clearly "caution"
   html += `
-    <p class="is-size-7 mt-3 ${allocated ? 'has-text-success' : 'has-text-warning'}">
+    <p class="is-size-7 mt-3" style="${footerStyle} font-weight: 600;">
       <strong>${allocated ? '✓' : '⚠'}</strong>
       &nbsp;${totalPct}% of supply allocated across all positions${allocated ? '' : ' — should be 100%'}
     </p>
@@ -9198,8 +10947,15 @@ function renderFundingRequirements() {
   // When that happens, a small grey/yellow note appears next to the
   // numbers indicating the buffer is below recommended but the launch
   // can still proceed.
-  const solReqSol = fundingRequirement.totalSol
-    || fundingRequirement.solLamports / 1e9;
+  // The launch's funding requirement comes from the server. The
+  // airdrop execution cost (ATA rent + tx fees for the recipient
+  // transfers) is computed client-side and added on top so the user
+  // funds enough for the entire flow including the post-launch
+  // distribution. When airdrop is disabled or empty this adds 0.
+  const airdropExecutionSol = computeAirdropExecutionCostSol();
+  const solReqSol = (fundingRequirement.totalSol
+    || fundingRequirement.solLamports / 1e9)
+    + airdropExecutionSol;
   const solRow = document.createElement('div');
   solRow.className = 'balance-row';
   solRow.dataset.kind = 'sol';
@@ -9362,9 +11118,22 @@ function renderFundingBreakdown() {
       <td class="has-text-right is-family-monospace">${item.amount} ${escapeHtml(item.symbol)}</td>
     </tr>`;
   }
+  // Airdrop execution cost (ATA rent + tx fees) is calculated client-
+  // side since the server estimator doesn't know about the airdrop
+  // list. Show as a separate line item so the user understands where
+  // the SOL goes, then include in the displayed total below.
+  const airdropExecutionSol = computeAirdropExecutionCostSol();
+  if (airdropExecutionSol > 0) {
+    const n = simpleConfig.airdrop.parsedRows.length;
+    html += `<tr>
+      <td>Airdrop execution (${n} recipient${n === 1 ? '' : 's'}: ATA rent + tx fees)</td>
+      <td class="has-text-right is-family-monospace">${airdropExecutionSol.toFixed(4)} SOL</td>
+    </tr>`;
+  }
+  const displayedTotal = (fundingRequirement.totalSol || 0) + airdropExecutionSol;
   html += `<tr class="has-text-weight-bold">
     <td>Total SOL</td>
-    <td class="has-text-right is-family-monospace">${fundingRequirement.totalSol.toFixed(4)} SOL</td>
+    <td class="has-text-right is-family-monospace">${displayedTotal.toFixed(4)} SOL</td>
   </tr>`;
   html += '</tbody></table>';
   container.innerHTML = html;
@@ -9428,8 +11197,15 @@ async function pollBalances() {
     const subtotalSol = fundingRequirement.subtotalSol || 0;
     const totalSol = fundingRequirement.totalSol || (fundingRequirement.solLamports / 1e9);
     const solCredit = fundingRequirement.solCreditedForCompletedSwaps || 0;
-    const solMinNeeded = Math.max(0, subtotalSol - solCredit);
-    const solRecommended = Math.max(0, totalSol - solCredit);
+    // Airdrop execution cost is real SOL the wallet must hold even
+    // though it won't be spent until after the launch completes. Both
+    // the bare-minimum threshold and the recommended threshold get
+    // bumped by this — under-funding would leave the airdrop step
+    // stranded after the launch finishes, with the user having to
+    // top-up to complete the flow.
+    const airdropExecutionSol = computeAirdropExecutionCostSol();
+    const solMinNeeded = Math.max(0, subtotalSol - solCredit) + airdropExecutionSol;
+    const solRecommended = Math.max(0, totalSol - solCredit) + airdropExecutionSol;
     const solMet = sol >= solMinNeeded;
     const solHasFullBuffer = sol >= solRecommended;
     // The displayed "needed" is the bare minimum — the threshold that
