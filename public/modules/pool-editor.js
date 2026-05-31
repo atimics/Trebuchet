@@ -1,0 +1,2572 @@
+function renderTokenPreview() {
+  const block = document.getElementById('tokenPreviewBlock');
+  if (!block) return;
+
+  // Read all the inputs. parseNumberInput strips commas from the
+  // number-formatted ones; trim whitespace from text fields.
+  const nameEl = document.getElementById('tokenName');
+  const symbolEl = document.getElementById('tokenSymbol');
+  const descEl = document.getElementById('tokenDescription');
+  const logoEl = document.getElementById('tokenLogo');
+
+  const name = nameEl ? nameEl.value.trim() : '';
+  const symbol = symbolEl ? symbolEl.value.trim() : '';
+  const description = descEl ? descEl.value.trim() : '';
+  const logoFile = logoEl && logoEl.files && logoEl.files[0] ? logoEl.files[0] : null;
+
+  // Manage the object URL lifecycle. Revoke any prior URL whenever we
+  // replace or clear it. createObjectURL returns a new URL each call
+  // so we must store the last one to know what to revoke.
+  let logoUrl = null;
+  if (logoFile) {
+    if (_tokenPreviewLogoObjectUrl) URL.revokeObjectURL(_tokenPreviewLogoObjectUrl);
+    logoUrl = URL.createObjectURL(logoFile);
+    _tokenPreviewLogoObjectUrl = logoUrl;
+  } else if (_tokenPreviewLogoObjectUrl) {
+    URL.revokeObjectURL(_tokenPreviewLogoObjectUrl);
+    _tokenPreviewLogoObjectUrl = null;
+  }
+
+  // Logo fallback letter — shown inside the flat logo circle that sits
+  // UNDER the coin canvas. With the 3D coin active the canvas covers it;
+  // it's the graceful fallback when WebGL/coin is unavailable.
+  const initial = (symbol.charAt(0) || name.charAt(0) || '?').toUpperCase();
+  let logoHtml;
+  if (logoUrl) {
+    logoHtml =
+      `<span class="token-preview-logo token-preview-logo-fallback">` +
+      `${escapeHtml(initial)}` +
+      `<img src="${escapeHtml(logoUrl)}" alt="">` +
+      `</span>`;
+  } else {
+    logoHtml = `<span class="token-preview-logo token-preview-logo-fallback">${escapeHtml(initial)}</span>`;
+  }
+
+  // Symbol line. Shown as a ticker with a leading "$" (e.g. $TEST), the
+  // convention crypto tokens use. Placeholder italic-grey when empty;
+  // keeps the same vertical space so the layout doesn't jump as the user
+  // fills in.
+  const symbolLine = symbol
+    ? `<div class="token-preview-symbol">$${escapeHtml(symbol)}</div>`
+    : `<div class="token-preview-symbol is-placeholder">Your token preview</div>`;
+
+  // Name line. Only shown when distinct from symbol — same logic the
+  // resolved-info card uses for resolved tokens. Empty string kept as
+  // empty markup so spacing stays consistent (margin-top on the next
+  // line handles separation regardless).
+  const nameLine = (name && name !== symbol)
+    ? `<div class="token-preview-name">${escapeHtml(name)}</div>`
+    : '';
+
+  // Tech facts (supply, market cap, start price, decimals) plus live pool
+  // config and the running launch-cost estimate are all rendered by the
+  // shared stat-grid builder, so this card and the lightweight pool/cost
+  // refresh path (updatePreviewStats) always agree.
+  const statsHtml = buildPreviewStatsHtml();
+
+  // Description line — only when present; truncated to 2 lines via CSS.
+  const descLine = description
+    ? `<div class="token-preview-desc">${escapeHtml(description)}</div>`
+    : '';
+
+  // Header (symbol + name) divided from the stat grid; then the grid and
+  // the optional description.
+  const stackHtml =
+    `<div class="token-preview-stack">` +
+      `<div class="token-preview-head">` +
+        symbolLine +
+        nameLine +
+      `</div>` +
+      statsHtml +
+      descLine +
+    `</div>`;
+
+  // Structure-preserving update. The card holds a persistent coin mount
+  // (.token-preview-coin) plus a text stack. We must NOT blow away the
+  // coin mount on every render — its <canvas> holds a live WebGL context,
+  // and recreating it per keystroke would thrash GL contexts (and hit the
+  // browser's context cap). So: build the mount + fallback logo once, and
+  // thereafter only replace the fallback-logo letter and the text stack.
+  let coinMount = block.querySelector('.token-preview-coin');
+  if (!coinMount) {
+    // First render: lay out [coin mount][text stack]. The fallback flat
+    // logo lives inside the mount, under where the canvas will attach.
+    block.innerHTML =
+      `<div class="token-preview-coin" id="tokenPreviewCoin">${logoHtml}</div>` +
+      stackHtml;
+    coinMount = block.querySelector('.token-preview-coin');
+  } else {
+    // Subsequent renders: update the fallback logo (preserving any canvas
+    // the coin renderer attached) and swap the text stack.
+    const existingCanvas = coinMount.querySelector('canvas');
+    coinMount.innerHTML = logoHtml;
+    if (existingCanvas) coinMount.appendChild(existingCanvas);
+    const oldStack = block.querySelector('.token-preview-stack');
+    if (oldStack) oldStack.outerHTML = stackHtml;
+    else block.insertAdjacentHTML('beforeend', stackHtml);
+  }
+
+  // Pool-chip logos can fail to load (dead/blocked URL). Image 'error' events
+  // don't bubble, so we listen in the capture phase on the stable block — once
+  // — and swap a failed chip logo for its letter fallback. This mirrors the
+  // pool-editor's pool-logo-fail handling so the preview degrades the same way.
+  if (!_previewLogoFailBound) {
+    _previewLogoFailBound = true;
+    block.addEventListener('error', (e) => {
+      const img = e.target;
+      if (!img || img.tagName !== 'IMG') return;
+      if (img.dataset.action !== 'preview-pool-logo-fail') return;
+      const wrapper = img.closest('.tps-pool-logo');
+      if (!wrapper) return;
+      wrapper.textContent = wrapper.dataset.fallbackInitial || '?';
+      wrapper.classList.add('tps-pool-logo-fallback');
+    }, true);
+  }
+
+  // Drive the 3D coin. Initialise once when the mount first exists, then
+  // update the front face whenever the uploaded logo changes. Guarded by
+  // coinPreviewEnabled and by the presence of the global (script load order
+  // / WebGL availability). updateCoinPreview() handles the rest.
+  updateCoinPreview(logoUrl, symbol);
+
+  // Also paint the small standalone logo thumbnail that sits next to
+  // the file-picker. Same pattern as the preview card's logo: the
+  // initial letter is the parent's text content, and the img — when
+  // a file is selected — sits on top via CSS. Failure to decode the
+  // image reveals the letter underneath. We always set both classes
+  // so the grey fallback background is the baseline; with an image
+  // loaded successfully, the img covers it.
+  const thumb = document.getElementById('tokenLogoThumb');
+  if (thumb) {
+    if (logoUrl) {
+      thumb.innerHTML =
+        `${escapeHtml(initial)}` +
+        `<img src="${escapeHtml(logoUrl)}" alt="">`;
+    } else {
+      thumb.innerHTML = escapeHtml(initial);
+    }
+  }
+}
+
+// Format a per-token USD price for the live preview. Crypto launches
+// span a huge range (from $1+ "blue chip" launches to nano-cent
+// memecoins) so a single fixed-decimals format doesn't cut it. We use
+// a tiered approach plus parseFloat to strip any trailing zeros that
+// toFixed leaves behind:
+//   ≥ $1            → 2 decimals with locale commas ($1,234.56)
+//   $0.01–$1        → up to 4 significant decimals ($0.5, $0.0123)
+//   $0.000001–$0.01 → up to 8 significant decimals ($0.0001, $0.00012345)
+//   anything tinier → scientific notation ($1.23e-10)
+// Returns null for invalid/zero/negative inputs so the caller can fall
+// back to a "decimals only" line.
+function formatPreviewPrice(p) {
+  if (!Number.isFinite(p) || p <= 0) return null;
+  if (p >= 1) {
+    return '$' + p.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  }
+  if (p >= 0.01) {
+    return '$' + parseFloat(p.toFixed(4)).toString();
+  }
+  if (p >= 0.000001) {
+    return '$' + parseFloat(p.toFixed(8)).toString();
+  }
+  return '$' + p.toExponential(2);
+}
+
+function renderPools() {
+  // Auto-expand any pool that needs attention before painting. Without
+  // this, errors that develop mid-flow (resolution fails, allocation
+  // gets bumped to 0%, slices stop summing to 100%) would be hidden
+  // inside a collapsed card. The user can still manually re-collapse
+  // a pool after fixing it; we only force-open here, never force-close.
+  for (const pool of pools) {
+    if (poolNeedsAttention(pool)) pool._isExpanded = true;
+  }
+  poolList.innerHTML = '';
+  pools.forEach((pool, idx) => {
+    poolList.appendChild(buildPoolNode(pool, idx));
+  });
+  updateAllocationSummary();
+  updateContinueToFundingState();
+}
+
+// ---------------------------------------------------------------------------
+// Pool-rendering helpers
+// ---------------------------------------------------------------------------
+
+// Friendly label for a pool's quote token: the resolved symbol, then a
+// user-supplied override, then a shortened mint address (so a raw 44-char
+// address never lands in the UI), then '?'. Shared by the pool list title
+// and the preview card so the two always read the same.
+function poolQuoteLabel(pool) {
+  if (pool.resolvedSymbol) return pool.resolvedSymbol;
+  if (pool.quoteSymbolOverride) return pool.quoteSymbolOverride;
+  const t = pool.quoteToken;
+  if (t) return t.length > 12 ? `${t.slice(0, 4)}…${t.slice(-4)}` : t;
+  return '?';
+}
+
+// Build the inner HTML of a pool's title, e.g. "Pool 1 · SOL · 90% of supply".
+//
+// The title carries enough info to scan a stack of pools without opening
+// any of them: quote-token symbol (resolved if available, falling back to
+// the user's input or a truncated mint address), and the supply allocation.
+//
+// When the pool has a 0% allocation, the title surfaces that inline as a
+// warning rather than just sitting on the validation reasons box at the
+// bottom of the step. New pools added to a fully-allocated budget land
+// here and must catch the user's eye.
+
+// Render the pool's title text (no logo — that's a sibling element in
+// the header, painted separately by updatePoolLogo). The title carries
+// pool number, symbol, and allocation percent, with the "Pool N" prefix
+// dropped when there's only one pool (noise, not signal).
+function renderPoolTitle(pool, idx) {
+  const label = poolQuoteLabel(pool);
+  const pct = Number(pool.supplyPercent);
+  const pctNum = Number.isFinite(pct) ? pct : 0;
+  const safeLabel = escapeHtml(String(label));
+
+  // "Pool N" prefix is only useful when there are multiple pools — for
+  // a single-pool launch (the most common case) it's noise, since
+  // there's nothing to disambiguate against.
+  const showPoolNum = pools.length > 1;
+  const prefix = showPoolNum
+    ? `<span class="has-text-weight-bold">Pool ${idx + 1}</span> &middot; `
+    : '';
+
+  if (pctNum === 0) {
+    return prefix +
+           `<span class="has-text-weight-bold">${safeLabel}</span>` +
+           ` &middot; <span class="has-text-warning-dark">0% of supply — set an allocation</span>`;
+  }
+  return prefix +
+         `<span class="has-text-weight-bold">${safeLabel}</span>` +
+         ` &middot; <span class="has-text-grey">${pctNum}% of supply</span>`;
+}
+
+// Update the small logo element in a pool's header. Separate from
+// renderPoolTitle so we can update logo and title independently and
+// because the logo is a sibling element in the new header layout, not
+// embedded in the title span. Falls back to a coloured initial-style
+// circle when no image URL is available — keeps the visual rhythm
+// stable rather than leaving an empty space.
+function updatePoolLogo(node, pool) {
+  const el = node.querySelector('[data-field="poolLogo"]');
+  if (!el) return;
+  const sym = pool.resolvedSymbol || pool.quoteSymbolOverride || '?';
+  const initial = sym.charAt(0).toUpperCase() || '?';
+  if (pool.resolvedImageUrl) {
+    const safeUrl = escapeHtml(pool.resolvedImageUrl);
+    el.innerHTML =
+      `<img src="${safeUrl}" alt="" loading="lazy" data-action="pool-logo-fail">`;
+    el.dataset.fallbackInitial = initial;
+    el.classList.remove('pool-row-logo-fallback');
+  } else {
+    delete el.dataset.fallbackInitial;
+    el.textContent = initial;
+    el.classList.add('pool-row-logo-fallback');
+  }
+}
+
+// Update the small "▸ configure" / "▾ collapse" / "needs attention"
+// affordance on the right side of the pool header. Reflects whether
+// the pool is currently expanded and whether it needs user attention.
+// In the warning case, the affordance becomes a clickable hint so users
+// can see at a glance what's pending without opening the pool.
+function updatePoolAffordance(node, pool) {
+  const el = node.querySelector('[data-field="poolAffordance"]');
+  if (!el) return;
+  const attention = poolNeedsAttention(pool);
+  if (attention) {
+    // Showing a warning takes priority — even if expanded, we want the
+    // user to know there's something pending. The exact message is
+    // already encoded in the pool title via renderPoolTitle()'s 0% case
+    // and the resolved-info block's error states; this is just a
+    // pointer to draw attention.
+    el.className = 'pool-row-affordance pool-row-affordance-warn';
+    el.textContent = '⚠ needs attention';
+  } else if (pool._isExpanded) {
+    el.className = 'pool-row-affordance';
+    el.textContent = '▾ collapse';
+  } else {
+    el.className = 'pool-row-affordance';
+    el.textContent = '▸ configure';
+  }
+}
+
+// Single source of truth for "this pool needs the user to do something
+// before they can launch." Used both by the new collapsed-header chrome
+// (to show a warning state and label) and by the auto-expansion logic
+// (to force a pool open when a collapsed view would hide the problem).
+//
+// Returns one of:
+//   null              — pool is fine, can stay collapsed
+//   'unresolved'      — resolution failed (no decimals); user must fix
+//                       the address or fill in overrides
+//   'price-missing'   — resolution succeeded but no USD price; user
+//                       must enter one in overrides
+//   'no-allocation'   — supplyPercent is 0; the pool would create with
+//                       no liquidity allocation, almost always wrong
+//   'slice-mismatch'  — legacy name; replaced by 'positions-mismatch'
+//   'positions-mismatch' — bootstrap + slices + ladder bands don't sum
+//                          to 100% of pool
+//
+// This intentionally doesn't account for "the user has opened the
+// override section but not filled in all values" — that's a finer-
+// grained validation handled by updateContinueToFundingState().
+function poolNeedsAttention(pool) {
+  if (!pool) return null;
+  if (Number(pool.supplyPercent) === 0) return 'no-allocation';
+  if (pool.resolvedSymbol && pool.resolvedDecimals == null) return 'unresolved';
+  if (pool.resolvedSymbol &&
+      pool.resolvedDecimals != null &&
+      pool.resolvedPriceUsd == null &&
+      pool.quoteUsdOverride == null) {
+    return 'price-missing';
+  }
+  // Positions total check: under unified semantics, the sum of
+  // bootstrap (if custom) + slice sharePercents + ladder band
+  // supplyPercents must equal 100% of pool. If not, the pool is
+  // misconfigured and we can't safely send it to the backend.
+  if (Math.abs(computePoolPositionsTotal(pool) - 100) > 0.01) return 'positions-mismatch';
+  return null;
+}
+
+// Compute the sum of all position percentages in a pool: bootstrap
+// (if custom), all wide slices, and all ladder bands. Each is "% of
+// pool" under unified semantics. The total should be 100%.
+function computePoolPositionsTotal(pool) {
+  const bsPct = (pool.bootstrapConfig && pool.bootstrapConfig.mode === 'custom')
+    ? Number(pool.bootstrapConfig.supplyPercent) || 0
+    : 0;
+  const slicePct = Array.isArray(pool.distribution)
+    ? pool.distribution.reduce((s, x) => s + (Number(x.sharePercent) || 0), 0)
+    : 0;
+  const bandPct = (pool.ladderConfig && pool.ladderConfig.mode === 'manual' && Array.isArray(pool.ladderConfig.bands))
+    ? pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
+    : 0;
+  return bsPct + slicePct + bandPct;
+}
+
+// Absorb a delta into the wide-slices bucket to keep positions total
+// at 100% after a structural toggle (bs on/off, ladder on/off). When
+// delta > 0, slices need to shrink to make room. When delta < 0,
+// slices need to grow to absorb. The adjustment lands on the LAST
+// slice — simplest and most predictable for the user (they can see
+// at a glance what changed). If absorbing fully would push the last
+// slice below 0, it clamps at 0 and the user gets a positions-total
+// warning to manually rebalance.
+//
+// Edge case: pool has no slices at all (distribution empty). Then we
+// can't rebalance through slices; total just drifts and the warning
+// fires. Should never happen in practice since addPool seeds one
+// slice, but we guard anyway.
+function rebalanceWideSlicesByDelta(pool, delta) {
+  if (!Array.isArray(pool.distribution) || pool.distribution.length === 0) return;
+  const lastIdx = pool.distribution.length - 1;
+  const newVal = Number(pool.distribution[lastIdx].sharePercent || 0) - delta;
+  pool.distribution[lastIdx].sharePercent = Math.max(0, Number(newVal.toFixed(4)));
+}
+
+// Update one pool's title in place.
+//
+// Called from every input/state change that affects the displayed title:
+// supplyPercent typing, quote-dropdown change, custom-mint typing, and
+// the async resolution callback. Touches only the title element so we
+// don't lose focus on whatever input the user is currently in.
+// Refresh a pool's header chrome in place: title, logo, and the
+// affordance hint. All three depend on overlapping fields (symbol,
+// allocation, resolution status, expanded state, attention status) so
+// it's simpler to update them together than to track which-affects-what.
+//
+// Called from every input/state change that affects the displayed
+// header: supplyPercent typing, quote-dropdown change, custom-mint
+// typing, and the async resolution callback. Touches only header
+// elements so we don't lose focus on whatever input the user is
+// currently in.
+//
+// (Function still named updatePoolTitle for backward compatibility with
+// existing call sites — its scope grew but the name stuck.)
+function updatePoolTitle(poolIdx) {
+  const pool = pools[poolIdx];
+  if (!pool) return;
+  const node = poolList.children[poolIdx];
+  if (!node) return;
+  const titleEl = node.querySelector('[data-field="poolTitle"]');
+  if (titleEl) titleEl.innerHTML = renderPoolTitle(pool, poolIdx);
+  updatePoolLogo(node, pool);
+  updatePoolAffordance(node, pool);
+}
+
+// Apply visibility rules for the per-pool override section ("manual quote
+// token info"). Auto-shown when:
+//   - resolution came back but with missing fields (the user has to fill
+//     them in to continue), or
+//   - the user already has any override value typed in (so editing stays
+//     accessible without forcing them to find a toggle), or
+//   - the user has explicitly opened the section via the toggle link
+//     (`_overrideForceOpen`).
+//
+// Otherwise the section is hidden behind a small "Override resolved
+// values" link — the override path stays available for power users but
+// doesn't clutter the default view when resolution succeeded.
+function applyOverrideVisibility(node, pool) {
+  const toggle = node.querySelector('[data-action="toggle-override"]');
+  const section = node.querySelector('[data-field="overrideSection"]');
+  if (!toggle || !section) return;
+
+  const hasUserOverride =
+    !!pool.quoteSymbolOverride ||
+    pool.quoteDecimalsOverride != null ||
+    pool.quoteUsdOverride != null;
+  const resolutionIncomplete =
+    !!pool.resolvedSymbol &&
+    (pool.resolvedDecimals == null || pool.resolvedPriceUsd == null);
+  // Resolution is "fully complete" when we have all three pieces of
+  // info (symbol + decimals + price) from the indexer. In that state
+  // there's nothing for the user to override, so the toggle button is
+  // pure clutter — hide it entirely. The button comes back the moment
+  // anything's missing, or the moment the user types an override.
+  const resolutionComplete =
+    !!pool.resolvedSymbol &&
+    pool.resolvedDecimals != null &&
+    pool.resolvedPriceUsd != null;
+
+  const shouldShow = resolutionIncomplete || hasUserOverride || pool._overrideForceOpen === true;
+
+  if (shouldShow) {
+    section.classList.remove('hidden');
+    toggle.classList.remove('hidden');
+    toggle.textContent = '▾ Hide override fields';
+  } else {
+    section.classList.add('hidden');
+    // Hide the toggle too when there's nothing to fix. Keeping it
+    // visible was making the resolved-info card look cluttered with a
+    // button for an action the user almost never needs to take.
+    if (resolutionComplete && !hasUserOverride && !pool._overrideForceOpen) {
+      toggle.classList.add('hidden');
+    } else {
+      toggle.classList.remove('hidden');
+      toggle.textContent = 'Override resolved values';
+    }
+  }
+}
+
+// Render the resolved-info content as a multi-line block. Layout:
+//
+//   ┌──────────────────────────────────────────────────┐
+//   │ [logo]   WETH                          ⓘ details │
+//   │          Wrapped Ether (Wormhole)                │
+//   │          8 decimals · $2,286.35                  │
+//   └──────────────────────────────────────────────────┘
+//
+// Three render states match the original logic exactly:
+//   - decimals missing: "Couldn't resolve" red message (hard stop, no
+//     logo since there's nothing to show in the modal anyway).
+//   - price missing: same layout but with a red "no USD price" line
+//     in place of the price (recoverable via override fields).
+//   - everything resolved: the full layout above.
+//
+// Used both from the initial buildPoolNode render and from the in-place
+// updateQuoteResolvedDisplay() that runs after async resolution returns,
+// to keep both rendering paths consistent.
+function renderResolvedInfoHtml(pool) {
+  // Resolution-failure case: show a clear error with a retry button.
+  // This is distinct from "haven't resolved yet" (pool.resolvedSymbol
+  // is null because the resolve call hasn't returned) and from "couldn't
+  // read from chain" (pool.resolvedDecimals is null). pool.resolvedFailed
+  // is the marker set by resolvePoolQuote when the fetch itself threw —
+  // typically a network/server issue where a retry is appropriate.
+  if (pool.resolvedFailed) {
+    const err = escapeHtml(pool.resolvedFailedError || 'unknown error');
+    return (
+      `<div class="has-text-danger is-size-7">` +
+      `<i class="fas fa-exclamation-circle"></i> ` +
+      `Couldn't fetch quote-token info (${err}). ` +
+      `<a data-action="retry-resolve" class="has-text-weight-bold">Retry</a>` +
+      `</div>`
+    );
+  }
+  if (!pool.resolvedSymbol) return '';
+
+  const safeSym = escapeHtml(pool.resolvedSymbol);
+
+  // Hard-stop case: on-chain read failed entirely. Single-line error,
+  // no logo / name / icon. Returns flat text since the parent block
+  // is a flex container — single-child works fine.
+  if (pool.resolvedDecimals == null) {
+    return `<div class="has-text-danger">Couldn't resolve ${safeSym} on-chain — check the address and your RPC.</div>`;
+  }
+
+  // Logo (36px circle, left column). Falls back to an initial-letter
+  // circle when the image fails to load. Implemented with a structural
+  // sibling fallback (the initial-letter is always in the DOM, hidden
+  // behind the img) rather than an inline image-error handler with
+  // interpolated content. The old approach worked but mixed HTML/JS
+  // contexts in a way that's hard to audit for injection — better to
+  // build it with regular HTML and CSS.
+  const initial = escapeHtml((pool.resolvedSymbol.charAt(0) || '?').toUpperCase());
+  let logoHtml;
+  if (pool.resolvedImageUrl) {
+    const safeUrl = escapeHtml(pool.resolvedImageUrl);
+    // The img sits on top of the fallback span. If the img's load fails,
+    // the data-action="logo-fail" listener (set up below) hides the img
+    // and reveals the fallback. The initial-letter is already in the
+    // markup, so the fallback content can't be injection-influenced.
+    logoHtml =
+      `<span class="resolved-logo resolved-logo-with-image">` +
+      `<span class="resolved-logo-initial">${initial}</span>` +
+      `<img src="${safeUrl}" alt="" loading="lazy" data-action="logo-fail">` +
+      `</span>`;
+  } else {
+    logoHtml = `<span class="resolved-logo resolved-logo-fallback">${initial}</span>`;
+  }
+
+  // Name line — only shown when distinct from symbol. For a token like
+  // SOL with name "Solana" we render both; for a token whose metadata
+  // has identical name/symbol, we skip the line entirely.
+  let nameLine = '';
+  if (pool.resolvedName && pool.resolvedName !== pool.resolvedSymbol) {
+    nameLine = `<div class="resolved-info-name">${escapeHtml(pool.resolvedName)}</div>`;
+  }
+
+  // Technicals line: decimals + price, OR decimals + the no-price hint.
+  let techLine;
+  if (pool.resolvedPriceUsd) {
+    const priceTxt = `$${Number(pool.resolvedPriceUsd).toLocaleString(
+      undefined,
+      { maximumFractionDigits: 6 },
+    )}`;
+    techLine = `<div class="resolved-info-tech">${pool.resolvedDecimals} decimals · ${priceTxt}</div>`;
+  } else {
+    // Symbol+decimals came back from on-chain reads but neither
+    // GeckoTerminal nor Jupiter could give us a USD price. Common for
+    // very-low-volume tokens, including the flywheel tokens this app
+    // is designed around. Tell the user clearly and point them at the
+    // override fields below — applyOverrideVisibility() auto-shows
+    // them when the price is missing, so the user doesn't need to
+    // hunt for a toggle.
+    techLine =
+      `<div class="resolved-info-tech">${pool.resolvedDecimals} decimals · ` +
+      `<span class="has-text-danger">no USD price — set one in the override fields below</span></div>`;
+  }
+
+  // Info icon — opens the token info modal on click. Wired via delegated
+  // event handling on the pool node so this helper just emits HTML.
+  const infoIcon =
+    `<a class="resolved-info-icon" data-action="show-token-info" title="Token info">` +
+    `<i class="fas fa-info-circle"></i> details</a>`;
+
+  // Raydium CLMM compatibility line. We surface three states:
+  //   - hard incompatible: red text, names the disallowed extensions.
+  //     updateContinueToFundingState also blocks "Continue" in this case.
+  //   - unknown (compatible === null): yellow note ("couldn't verify").
+  //     Continue is not blocked; user can override via Advanced settings
+  //     or fix RPC and retry.
+  //   - compatible: nothing (silent), OR a small "Token-2022" pill when
+  //     the user is dealing with a Token-2022 mint, so they know the
+  //     pool will involve transfer fees / extension semantics.
+  let compatLine = '';
+  if (pool.resolvedCompatible === false) {
+    const exts = (pool.resolvedDisallowedNames || []).join(', ');
+    compatLine =
+      `<div class="resolved-info-tech has-text-danger">` +
+        `<i class="fas fa-exclamation-triangle"></i> ` +
+        `Not compatible with Raydium CLMM — ` +
+        `unsupported Token-2022 extension${exts.split(',').length === 1 ? '' : 's'}: ` +
+        `${escapeHtml(exts)}` +
+      `</div>`;
+  } else if (pool.resolvedCompatible === null) {
+    compatLine =
+      `<div class="resolved-info-tech has-text-warning-dark">` +
+        `<i class="fas fa-question-circle"></i> ` +
+        `Couldn't verify Raydium compatibility ` +
+        `(${escapeHtml(pool.resolvedCompatError || 'RPC error')})` +
+      `</div>`;
+  } else if (pool.resolvedIsToken2022) {
+    // Compatible Token-2022. Quiet informational marker so the user
+    // knows this isn't a vanilla SPL token — relevant for understanding
+    // transfer fee behavior, metadata via on-chain extensions, etc.
+    compatLine =
+      `<div class="resolved-info-tech has-text-info">` +
+        `<i class="fas fa-shield-alt"></i> ` +
+        `Token-2022 (compatible)` +
+      `</div>`;
+  }
+
+  return `${logoHtml}` +
+         `<div class="resolved-info-stack">` +
+         `<div class="resolved-info-top">` +
+           `<span class="resolved-info-symbol">${safeSym}</span>` +
+           infoIcon +
+         `</div>` +
+         nameLine +
+         techLine +
+         compatLine +
+         `</div>`;
+}
+
+// Populate and show the token info modal for a given pool. The modal
+// markup lives in index.html alongside the other modals; this just
+// fills in its slots and flips the .is-active class to show it.
+//
+// Re-uses the same pattern as confirmDialog/cancelConfirmModal — no new
+// modal infrastructure. External links are constructed from the resolved
+// mint, which is the canonical address for any of the explorers.
+function showTokenInfoModal(pool) {
+  const modal = document.getElementById('tokenInfoModal');
+  if (!modal) return;
+  const body = document.getElementById('tokenInfoBody');
+  if (!body) return;
+  const mint = pool.resolvedMint || pool.quoteToken || '';
+  const symbol = pool.resolvedSymbol || pool.quoteSymbolOverride || '?';
+  const name = pool.resolvedName || symbol;
+  const decimals = pool.resolvedDecimals ?? pool.quoteDecimalsOverride ?? '—';
+  const priceUsd = pool.resolvedPriceUsd ?? pool.quoteUsdOverride;
+  const priceTxt = priceUsd
+    ? `$${Number(priceUsd).toLocaleString(undefined, { maximumFractionDigits: 8 })}`
+    : '<span class="has-text-grey">unavailable</span>';
+
+  const logoHtml = pool.resolvedImageUrl
+    ? `<img src="${escapeHtml(pool.resolvedImageUrl)}" alt="" class="token-info-logo" data-action="token-info-logo-fail">`
+    : '';
+
+  const safeMint = escapeHtml(mint);
+  // External explorer links. We just need the mint — every explorer
+  // uses it as the canonical identifier in the URL path.
+  const solscanUrl = `https://solscan.io/token/${encodeURIComponent(mint)}`;
+  const geckoUrl = `https://www.geckoterminal.com/solana/tokens/${encodeURIComponent(mint)}`;
+  const dexscreenerUrl = `https://dexscreener.com/solana/${encodeURIComponent(mint)}`;
+
+  body.innerHTML = `
+    <div class="token-info-header">
+      ${logoHtml}
+      <div class="token-info-titles">
+        <div class="token-info-name">${escapeHtml(name)}</div>
+        <div class="token-info-symbol">${escapeHtml(symbol)}</div>
+      </div>
+    </div>
+
+    <table class="table is-narrow is-fullwidth is-size-7 mt-3 mb-3">
+      <tbody>
+        <tr>
+          <td class="has-text-grey" style="width: 30%;">Mint</td>
+          <td>
+            <span class="is-family-monospace" style="word-break: break-all;">${safeMint}</span>
+            <button class="button is-small is-light ml-2" data-action="copy-mint" title="Copy mint address">
+              <span class="icon is-small"><i class="fas fa-copy"></i></span>
+            </button>
+          </td>
+        </tr>
+        <tr>
+          <td class="has-text-grey">Decimals</td>
+          <td>${escapeHtml(String(decimals))}</td>
+        </tr>
+        <tr>
+          <td class="has-text-grey">USD price</td>
+          <td>${priceTxt}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="is-size-7 has-text-grey mb-2">View on:</p>
+    <div class="buttons are-small">
+      <a class="button is-light" href="${escapeHtml(solscanUrl)}" target="_blank" rel="noopener noreferrer">Solscan</a>
+      <a class="button is-light" href="${escapeHtml(geckoUrl)}" target="_blank" rel="noopener noreferrer">GeckoTerminal</a>
+      <a class="button is-light" href="${escapeHtml(dexscreenerUrl)}" target="_blank" rel="noopener noreferrer">DexScreener</a>
+    </div>
+  `;
+
+  body.querySelectorAll('[data-action="token-info-logo-fail"]').forEach((img) => {
+    img.addEventListener('error', () => {
+      img.remove();
+    }, { once: true });
+  });
+
+  // Wire up the copy-mint button. Clipboard write is async but we don't
+  // need to await — just fire and forget, log on success.
+  const copyBtn = body.querySelector('[data-action="copy-mint"]');
+  if (copyBtn && mint) {
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(mint);
+        log(`Mint address copied: ${mint.slice(0, 8)}…${mint.slice(-6)}`, 'info');
+      } catch (e) {
+        log(`Couldn't copy mint: ${e.message}`, 'warning');
+      }
+    });
+  }
+
+  // Wire up close handlers — close button, background click, and Esc.
+  // We do this on first open rather than at init time because app.js
+  // runs synchronously and is loaded before the modal markup later in
+  // the body, so the elements don't exist yet when init runs. Guarded
+  // with a dataset flag so we don't accumulate duplicate listeners on
+  // repeat opens of the modal.
+  if (!modal.dataset.closeHandlersWired) {
+    const close = () => modal.classList.remove('is-active');
+    const closeBtn = document.getElementById('tokenInfoCloseBtn');
+    if (closeBtn) closeBtn.addEventListener('click', close);
+    const bg = document.getElementById('tokenInfoBackground');
+    if (bg) bg.addEventListener('click', close);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && modal.classList.contains('is-active')) close();
+    });
+    modal.dataset.closeHandlersWired = 'true';
+  }
+
+  modal.classList.add('is-active');
+}
+
+function buildPoolNode(pool, idx) {
+  const node = document.createElement('div');
+  node.className = 'pool-row';
+
+  // Delegated click handler for the resolved-info row. Handles both the
+  // info-modal icon and the retry-resolve link, since both live inside
+  // the resolved-info block and may be re-rendered as state changes.
+  // Using delegation on the pool node means we don't need to re-attach
+  // these listeners each time the inner HTML rebuilds.
+  node.addEventListener('click', (e) => {
+    // Info icon → open the details modal.
+    if (e.target.closest('[data-action="show-token-info"]')) {
+      e.preventDefault();
+      showTokenInfoModal(pool);
+      return;
+    }
+    // Retry-resolve link (shown only when a prior resolve attempt failed)
+    // → re-run resolvePoolQuote. Clears the failure marker so the UI
+    // shows "resolving…" again, then the resolve call either succeeds
+    // (clearing resolvedFailed in its success path) or fails again
+    // (re-setting it in the catch).
+    if (e.target.closest('[data-action="retry-resolve"]')) {
+      e.preventDefault();
+      // Provisionally clear the failure state so the UI re-paints to a
+      // clean "resolving" state. If the retry fails too, resolvePoolQuote
+      // re-sets resolvedFailed in its catch block.
+      pool.resolvedFailed = false;
+      pool.resolvedFailedError = null;
+      updateQuoteResolvedDisplay(idx);
+      resolvePoolQuote(idx);
+      return;
+    }
+  });
+
+  // Logo image error handler. Uses event capture (third argument true)
+  // because the `error` event doesn't bubble through normal DOM
+  // propagation — listeners attached to a parent see it only on the
+  // capture phase. When the img fails to load (404, CORS, etc), we add
+  // .resolved-logo-img-failed to the wrapping span, which CSS uses to
+  // hide the img and reveal the initial-letter fallback that's already
+  // sitting underneath it. Same delegation pattern as the click handler
+  // above: works across renders without re-attaching.
+  node.addEventListener('error', (e) => {
+    const img = e.target;
+    if (!img || img.tagName !== 'IMG') return;
+    if (img.dataset.action === 'logo-fail') {
+      const wrapper = img.closest('.resolved-logo-with-image');
+      if (wrapper) wrapper.classList.add('resolved-logo-img-failed');
+      return;
+    }
+    if (img.dataset.action === 'pool-logo-fail') {
+      const wrapper = img.closest('[data-field="poolLogo"]');
+      if (!wrapper) return;
+      wrapper.textContent = wrapper.dataset.fallbackInitial || '?';
+      delete wrapper.dataset.fallbackInitial;
+      wrapper.classList.add('pool-row-logo-fallback');
+    }
+  }, true);
+
+  const header = document.createElement('div');
+  header.className = 'pool-row-header';
+  // Header is interactive: clicking anywhere except the trash toggles
+  // the body's collapsed/expanded state. We attach the toggle to the
+  // entire header (not just the left zone) so the affordance hint on
+  // the right side ("▸ configure" / "▾ collapse") is also clickable —
+  // it looks like a button, so it should act like one. The trash
+  // button stops propagation to avoid double-firing.
+  header.innerHTML = `
+    <div class="pool-row-header-left">
+      <span class="pool-row-logo" data-field="poolLogo"></span>
+      <span data-field="poolTitle">${renderPoolTitle(pool, idx)}</span>
+    </div>
+    <div class="pool-row-header-right">
+      <span class="pool-row-affordance" data-field="poolAffordance"></span>
+      <button class="button is-danger is-small is-light" data-action="remove-pool">
+        <span class="icon"><i class="fas fa-trash"></i></span>
+      </button>
+    </div>
+  `;
+  header.querySelector('[data-action="remove-pool"]').addEventListener('click', (e) => {
+    e.stopPropagation(); // don't also toggle expand
+    removePool(idx);
+  });
+  header.addEventListener('click', () => {
+    pool._isExpanded = !pool._isExpanded;
+    renderPools();
+  });
+  node.appendChild(header);
+
+  // Populate the header's logo and affordance text. These depend on
+  // resolved data plus the expansion state, so we set them after the
+  // header element is in place. Both code paths below (collapsed
+  // early-return and the expanded body build) need this — without it,
+  // the header's logo span stays empty and the user sees just a blank
+  // white circle next to the pool title.
+  updatePoolLogo(node, pool);
+  updatePoolAffordance(node, pool);
+
+  // Body wrapper. Holds the form grid, resolved-info block, override
+  // section, and distribution section. When the pool is collapsed,
+  // we simply skip building this entirely — everything inside it is
+  // unnecessary DOM. The body is rebuilt fresh on each renderPools()
+  // anyway, so there's no state lost by skipping it.
+  if (!pool._isExpanded) {
+    return node;
+  }
+
+  const body = document.createElement('div');
+  body.className = 'pool-row-body';
+  node.appendChild(body);
+
+  const row1 = document.createElement('div');
+  row1.className = 'columns is-mobile is-multiline pool-row-form';
+  row1.innerHTML = `
+    <div class="column is-half-mobile">
+      <label class="label is-small">Quote Token</label>
+      <div class="select is-small is-fullwidth">
+        <select data-field="quoteSelect">
+          <optgroup label="Native">
+            <option value="SOL">SOL</option>
+          </optgroup>
+          <optgroup label="Flywheels">
+            <option value="HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r">$seige (Meme flywheel — recommended)</option>
+            <option value="J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj">XLRT (Reserve flywheel)</option>
+          </optgroup>
+          <optgroup label="Majors">
+            <option value="3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh">wBTC (Wormhole)</option>
+            <option value="7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs">ETH (Wormhole)</option>
+          </optgroup>
+          <optgroup label="Stables">
+            <option value="USDC">USDC</option>
+            <option value="USDT">USDT</option>
+            <option value="USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB">USD1 (World Liberty Financial)</option>
+          </optgroup>
+          <optgroup label="Other">
+            <option value="__custom">Custom mint…</option>
+          </optgroup>
+        </select>
+      </div>
+      <input class="input is-small mt-1 hidden" type="text" data-field="quoteCustom" placeholder="SPL mint address">
+    </div>
+    <div class="column is-narrow pool-row-allocation">
+      <label class="label is-small">Allocation</label>
+      <div class="field has-addons">
+        <div class="control">
+          <input class="input is-small" type="number" min="0" max="100" step="0.01" data-field="supplyPercent" value="${pool.supplyPercent}">
+        </div>
+        <div class="control"><a class="button is-small is-static">%</a></div>
+      </div>
+    </div>
+    <div class="column">
+      <label class="label is-small">Fee Tier</label>
+      <div class="select is-small is-fullwidth">
+        <select data-field="ammConfig">
+          ${feeTiers.map((t) => {
+            const pct = (t.tradeFeeRate / 10000).toString();
+            const isDefault = t.index === 3;
+            const isSelected = pool.ammConfigIndex === t.index;
+            return `<option value="${t.index}" ${isSelected ? 'selected' : ''}>${pct}% / spacing ${t.tickSpacing}${isDefault ? ' (default)' : ''}</option>`;
+          }).join('')}
+        </select>
+      </div>
+    </div>
+  `;
+  body.appendChild(row1);
+
+  const quoteSelect = row1.querySelector('[data-field="quoteSelect"]');
+  const quoteCustom = row1.querySelector('[data-field="quoteCustom"]');
+
+  // The dropdown contains a mix of uppercase symbols (SOL/USDC/USDT — these
+  // are the tokens the server knows about via KNOWN_QUOTES) and raw mint
+  // addresses (the curated tokens in Flywheels/Majors/Stables — these go
+  // through the GeckoTerminal lookup path on resolve, same as any custom
+  // mint). To decide whether the saved pool.quoteToken matches a dropdown
+  // option, we collect all option values from the live <select> rather
+  // than maintaining a separate hardcoded list.
+  const dropdownValues = new Set(
+    Array.from(quoteSelect.querySelectorAll('option'))
+      .map((o) => o.value)
+      .filter((v) => v && v !== '__custom')
+  );
+
+  // Match symbols case-insensitively (SOL/USDC/USDT) and mint addresses
+  // case-sensitively (base58 is case-sensitive on Solana).
+  const isInDropdown = (() => {
+    const t = pool.quoteToken || '';
+    if (dropdownValues.has(t)) return true;
+    const upper = t.toUpperCase();
+    if (dropdownValues.has(upper)) return true;
+    return false;
+  })();
+
+  if (isInDropdown) {
+    // Snap to whichever case matches the option (symbols are uppercase in
+    // the dropdown; mint addresses are stored as-is).
+    quoteSelect.value = dropdownValues.has(pool.quoteToken)
+      ? pool.quoteToken
+      : pool.quoteToken.toUpperCase();
+    quoteCustom.classList.add('hidden');
+  } else {
+    quoteSelect.value = '__custom';
+    quoteCustom.classList.remove('hidden');
+    quoteCustom.value = pool.quoteToken;
+  }
+
+  // Initial resolved-info content is populated when resolvedBlock is
+  // constructed below (via renderResolvedInfoHtml). No need to set it
+  // here.
+
+  // Clear every resolved-state field on the pool. Called whenever the
+  // quote-token identity changes (dropdown change OR custom-address
+  // change) so stale info from the prior token doesn't bleed through
+  // until the new resolution returns.
+  //
+  // The compat fields (resolvedCompatible, resolvedIsToken2022, etc) are
+  // particularly important to reset: if the previous token was flagged
+  // incompatible, the red warning would persist on the new token until
+  // resolvePoolQuote() returned, AND updateContinueToFundingState() would
+  // keep blocking the Continue button on the stale compatible=false. By
+  // resetting to compatible=null (unknown), the UI cleanly transitions
+  // through "unknown" → "compatible/incompatible" as resolution
+  // completes, with no stale-state lockout.
+  function clearResolvedFields() {
+    pool.resolvedSymbol = null;
+    pool.resolvedDecimals = null;
+    pool.resolvedPriceUsd = null;
+    pool.resolvedMint = null;
+    pool.resolvedName = null;
+    pool.resolvedImageUrl = null;
+    pool.resolvedCompatible = null;
+    pool.resolvedIsToken2022 = false;
+    pool.resolvedDisallowedNames = [];
+    pool.resolvedCompatError = null;
+  }
+
+  quoteSelect.addEventListener('change', () => {
+    const v = quoteSelect.value;
+    if (v === '__custom') {
+      quoteCustom.classList.remove('hidden');
+      pool.quoteToken = quoteCustom.value || '';
+    } else {
+      quoteCustom.classList.add('hidden');
+      pool.quoteToken = v;
+    }
+    clearResolvedFields();
+    // Refresh the resolved-info block (now empty) and header chrome.
+    updateQuoteResolvedDisplay(idx);
+    // Also refresh the continue-state immediately — the previous quote
+    // may have been blocking via compatible=false; clearing it should
+    // unblock the button right away (subject to other pool validations).
+    updateContinueToFundingState();
+    resolvePoolQuote(idx);
+  });
+  quoteCustom.addEventListener('change', () => {
+    pool.quoteToken = quoteCustom.value;
+    clearResolvedFields();
+    updateQuoteResolvedDisplay(idx);
+    updateContinueToFundingState();
+    resolvePoolQuote(idx);
+  });
+
+  row1.querySelector('[data-field="supplyPercent"]').addEventListener('input', (e) => {
+    pool.supplyPercent = Number(e.target.value);
+    // Pool's allocation as % of total supply is one of the inputs to
+    // the bootstrap's derived supplyPercent (bs_pct = bs_usd / pool_usd
+    // × 100, and pool_usd = targetMc × pool.supplyPercent / 100). If we
+    // don't recompute on a pool-size change, positions total drifts and
+    // the bootstrap row's hint shows stale numbers.
+    recomputePoolBootstrapAndRebalance(pool);
+    refreshBootstrapHint(idx);
+    refreshWideSliceInputs(idx);
+    updateAllocationSummary();
+    updatePoolTitle(idx);
+    updatePoolPositionsTotal(idx);
+    updateContinueToFundingState();
+  });
+
+  row1.querySelector('[data-field="ammConfig"]').addEventListener('change', (e) => {
+    pool.ammConfigIndex = Number(e.target.value);
+  });
+
+  // Resolved-info block. Multi-line layout that gives token info room
+  // to breathe instead of cramming logo, name, decimals, and price onto
+  // a single overflowing line. Appended after the form grid so it sits
+  // between the inputs and the tier-3 action buttons. Filled by
+  // renderResolvedInfoHtml() — same renderer used by the in-place
+  // updateQuoteResolvedDisplay() so initial paint and post-resolution
+  // refresh look identical.
+  const resolvedBlock = document.createElement('div');
+  resolvedBlock.className = 'resolved-info-block';
+  resolvedBlock.dataset.field = 'resolvedBlock';
+  resolvedBlock.innerHTML = renderResolvedInfoHtml(pool);
+  // Hide the block entirely until resolution returns something — empty
+  // grey card looks like a layout bug otherwise.
+  if (!pool.resolvedSymbol) resolvedBlock.classList.add('hidden');
+  body.appendChild(resolvedBlock);
+
+  // Override section (manual quote token info).
+  //
+  // Always rendered in the DOM but visibility is controlled by the .hidden
+  // class via applyOverrideVisibility() — that lets the async resolution
+  // callback toggle visibility without re-rendering anything (and without
+  // losing focus on whatever input the user is in). The default is hidden
+  // when resolution succeeded fully, auto-shown when something failed or
+  // when the user has typed an override.
+  //
+  // The toggle is a real button now (was a text link); same applies to
+  // the distribution-section split toggle below. Tier-3 actions shouldn't
+  // look like article hyperlinks.
+  const actionRow = document.createElement('div');
+  actionRow.className = 'pool-row-actions';
+  body.appendChild(actionRow);
+
+  const advToggle = document.createElement('button');
+  advToggle.type = 'button';
+  advToggle.className = 'button is-small is-light';
+  advToggle.dataset.action = 'toggle-override';
+  // textContent is set by applyOverrideVisibility() below
+  actionRow.appendChild(advToggle);
+
+  const adv = document.createElement('div');
+  adv.className = 'advanced-section';
+  adv.dataset.field = 'overrideSection';
+  adv.innerHTML = `
+    <p class="help mb-2">Override the auto-detected info for this quote token. Decimals are read on-chain so they should always be present; symbol comes from Metaplex metadata if available; USD price tries GeckoTerminal then Jupiter. Set anything here to override what the app found, or fill in a price if neither indexer had one.</p>
+    <div class="columns is-mobile is-multiline">
+      <div class="column">
+        <label class="label is-small">Symbol override</label>
+        <input class="input is-small" type="text" data-field="symOverride" value="${escapeAttr(pool.quoteSymbolOverride || '')}">
+      </div>
+      <div class="column">
+        <label class="label is-small">Decimals override</label>
+        <input class="input is-small" type="number" min="0" max="18" data-field="decOverride" value="${pool.quoteDecimalsOverride ?? ''}">
+      </div>
+      <div class="column">
+        <label class="label is-small">USD price override</label>
+        <input class="input is-small" type="number" min="0" step="any" data-field="usdOverride" value="${pool.quoteUsdOverride ?? ''}">
+      </div>
+    </div>
+  `;
+  body.appendChild(adv);
+
+  // Set initial visibility + toggle text based on current resolution state.
+  applyOverrideVisibility(node, pool);
+
+  advToggle.addEventListener('click', () => {
+    // Manual user toggle. Only meaningful when the section would otherwise
+    // be hidden (resolution succeeded, no overrides set) — but flipping the
+    // flag is harmless when conditions auto-show the section anyway.
+    pool._overrideForceOpen = !pool._overrideForceOpen;
+    applyOverrideVisibility(node, pool);
+  });
+  adv.querySelector('[data-field="symOverride"]').addEventListener('change', (e) => {
+    pool.quoteSymbolOverride = e.target.value.trim() || null;
+    updatePoolTitle(idx);
+  });
+  adv.querySelector('[data-field="decOverride"]').addEventListener('change', (e) => {
+    const v = e.target.value;
+    pool.quoteDecimalsOverride = v === '' ? null : Number(v);
+    // Override may resolve a "price-missing" attention state; refresh
+    // the header's title + affordance accordingly.
+    updatePoolTitle(idx);
+    updateContinueToFundingState();
+  });
+  adv.querySelector('[data-field="usdOverride"]').addEventListener('change', (e) => {
+    const v = e.target.value;
+    pool.quoteUsdOverride = v === '' ? null : Number(v);
+    // Same — typing a USD override clears the price-missing warning.
+    updatePoolTitle(idx);
+    updateContinueToFundingState();
+  });
+
+  // Distribution section. Under the unified-positions model, slices
+  // are first-class wide LP positions sharing the pool's allocation
+  // alongside bootstrap and ladder bands. We always show the slice
+  // row(s) — even when there's just one — so the user can see how
+  // much of the pool is going to the main LP. Hiding this behind a
+  // collapsed "Split fee distribution" button was confusing because
+  // the user had no way to see the main LP's % allocation without
+  // first expanding.
+  //
+  // The single-slice case is the common one and that single row
+  // serves as "the main LP position." If the user wants to split fee
+  // ownership across multiple wallets, they click "Add slice" and
+  // the existing slice splits in half. Multiple slices = multiple
+  // positions at the same wide range, each with its own Fee Key NFT.
+  const distSection = document.createElement('div');
+  distSection.className = 'distribution-section';
+  body.appendChild(distSection);
+
+  // Header. Text is gentler in the single-slice case (where "slice"
+  // doesn't really describe anything — it's just the main LP) vs the
+  // multi-slice case (where the split-into-pieces framing is accurate).
+  const isSingleSlice = pool.distribution.length <= 1;
+  const expandedHeader = document.createElement('div');
+  expandedHeader.className = 'distribution-expanded-header';
+  expandedHeader.innerHTML = isSingleSlice
+    ? `<label class="label is-small mb-0">Main LP position <span class="has-text-grey has-text-weight-normal is-size-7">— wide position above launch; "Add slice" splits fee ownership across recipients</span></label>`
+    : `<label class="label is-small mb-0">Main LP positions <span class="has-text-grey has-text-weight-normal is-size-7">— each is a wide position above launch with its own Fee Key</span></label>`;
+  distSection.appendChild(expandedHeader);
+
+  const sliceContainer = document.createElement('div');
+  sliceContainer.className = 'distribution-slices';
+  distSection.appendChild(sliceContainer);
+
+  pool.distribution.forEach((slice, sliceIdx) => {
+    sliceContainer.appendChild(buildSliceNode(pool, idx, slice, sliceIdx));
+  });
+
+  const addSliceBtn = document.createElement('button');
+  addSliceBtn.className = 'button is-light is-small mt-1';
+  addSliceBtn.innerHTML = '<span class="icon"><i class="fas fa-plus"></i></span><span>Add slice</span>';
+  addSliceBtn.addEventListener('click', () => addSlice(idx));
+  distSection.appendChild(addSliceBtn);
+
+  // Bootstrap section: lets the user opt this pool in to custom-mode
+  // bootstrap (a meaningful starting-liquidity position at launch).
+  // Rendered as a slice-style row matching the rest of the position UI.
+  body.appendChild(buildBootstrapNode(pool, idx));
+
+  // Ladder section: lets the user view, add, edit, or remove individual
+  // ladder bands. Each band has supplyPercent (of pool), lowerMultiplier,
+  // and upperMultiplier (relative to launch price). Bands are independent
+  // — they can be overlapping or have gaps, and the order doesn't matter
+  // to the backend math.
+  body.appendChild(buildLadderNode(pool, idx));
+
+  // Positions total indicator. Under unified semantics, bootstrap
+  // (if custom) + sum(slice sharePercents) + sum(band supplyPercents)
+  // must equal 100% of the pool's allocation. Rendered as a paragraph
+  // at the bottom of the pool body with a stable data-attribute so
+  // updatePoolPositionsTotal() can find and update it in place.
+  const positionsTotal = document.createElement('p');
+  positionsTotal.className = 'has-text-weight-semibold mt-3';
+  positionsTotal.dataset.positionsTotal = '';
+  body.appendChild(positionsTotal);
+
+  // Paint the initial state.
+  refreshPoolPositionsTotalNode(positionsTotal, pool);
+
+  return node;
+}
+
+// Refresh a positions-total <p> in place with the latest sum and a
+// pass/fail visual. Extracted out so both the initial render (above)
+// and the in-place update from input handlers (updatePoolPositionsTotal
+// below) share the same formatting logic.
+function refreshPoolPositionsTotalNode(el, pool) {
+  const total = computePoolPositionsTotal(pool);
+  const ok = Math.abs(total - 100) <= 0.01;
+  el.textContent = `Positions total: ${total.toFixed(2)}% of pool` + (ok ? ' ✓' : ' — must be 100%');
+  el.classList.toggle('has-text-success', ok);
+  el.classList.toggle('has-text-danger', !ok);
+}
+
+// In-place update of the positions-total indicator for one pool.
+// Called from every input that changes a position's supply share:
+// bootstrap supply input + SOL input, slice-share input, band supply
+// input, plus add/remove operations on bands and slices.
+//
+// We rely on the pool's DOM node being the corresponding index'th
+// child of poolList (renderPools paints them in order), and look up
+// the indicator inside it via the stable data-attribute selector.
+function updatePoolPositionsTotal(poolIdx) {
+  const pool = pools[poolIdx];
+  if (!pool) return;
+  const poolNode = poolList.children[poolIdx];
+  if (!poolNode) return;
+  const el = poolNode.querySelector('[data-positions-total]');
+  if (!el) return;
+  refreshPoolPositionsTotalNode(el, pool);
+  // The positions-total state also drives the pool's "needs attention"
+  // affordance, so refresh that. updatePoolTitle paints the title
+  // + affordance together.
+  updatePoolTitle(poolIdx);
+  updateContinueToFundingState();
+}
+
+// Update one pool's bootstrap-hint text in place. Reads the live
+// targetMarketCap and the pool's current bs supplyPercent + pool size
+// to render "≈ X% of pool · $Y of token supply". Safe to call when
+// bootstrap is in minimal mode (clears the hint) or when target mcap
+// is missing (clears the hint). Used by every input handler that can
+// change inputs to the derivation (the bs SOL input, the pool's
+// supplyPercent input) so we keep the hint accurate without a full
+// renderPools() that would lose focus.
+function refreshBootstrapHint(poolIdx) {
+  const pool = pools[poolIdx];
+  if (!pool) return;
+  const node = poolList.children[poolIdx];
+  if (!node) return;
+  const hint = node.querySelector('[data-bs-hint]');
+  if (!hint) return;
+  const isCustom = pool.bootstrapConfig?.mode === 'custom';
+  if (!isCustom) { hint.textContent = ''; return; }
+  const pct = Number(pool.bootstrapConfig.supplyPercent) || 0;
+  const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+  if (!Number.isFinite(targetMc) || targetMc <= 0 || pct <= 0) {
+    hint.textContent = '';
+    return;
+  }
+  const poolUsd = targetMc * (Number(pool.supplyPercent) / 100);
+  const bsUsd = (pct / 100) * poolUsd;
+  hint.textContent = `≈ ${pct.toFixed(3)}% of pool · $${formatUsdRoughly(bsUsd)} of token supply`;
+}
+
+// Refresh wide slice input values in place after a rebalance, without
+// touching whichever input the user is currently typing in. Used by
+// any handler that calls rebalanceWideSlicesByDelta without doing a
+// full renderPools() (typically because the user is mid-keystroke in
+// an input we'd destroy on re-render).
+function refreshWideSliceInputs(poolIdx) {
+  const pool = pools[poolIdx];
+  if (!pool) return;
+  const node = poolList.children[poolIdx];
+  if (!node) return;
+  const inputs = node.querySelectorAll('.distribution-slices .slice-share');
+  inputs.forEach((inp, i) => {
+    if (pool.distribution[i] && document.activeElement !== inp) {
+      inp.value = pool.distribution[i].sharePercent;
+    }
+  });
+}
+
+function buildBootstrapNode(pool, poolIdx) {
+  // Bootstrap is one of three position types (alongside wide slices
+  // and ladder bands). Two states:
+  //   minimal — 1-whole-token reserve, no user funds, no slot in 100%
+  //   custom  — user-funded position, sized by an absolute SOL value
+  //
+  // The user thinks in terms of "how much starting liquidity do I want
+  // to put down", not "what % of supply." So this row has a single SOL
+  // input as the canonical control; the supplyPercent (% of pool) is
+  // derived live and shown in the hint. Whenever solValue changes, or
+  // target mcap changes, or SOL price resolves, supplyPercent is
+  // recomputed and the wide slices auto-rebalance so positions total
+  // stays at 100%.
+  //
+  // Storage: pool.bootstrapConfig = {
+  //   mode: 'minimal' | 'custom',
+  //   solValue: number   (custom only; user's input)
+  //   supplyPercent: number   (custom only; derived from solValue)
+  // }
+  // The wire format conversion in buildAllocationsForApi uses
+  // supplyPercent directly — solValue stays on the UI side.
+  const node = document.createElement('div');
+  node.className = 'pool-bootstrap-section';
+
+  const cfg = pool.bootstrapConfig || { mode: 'minimal' };
+  const isCustom = cfg.mode === 'custom';
+  const solValue = Number(cfg.solValue) || 0;
+
+  node.innerHTML = `
+    <label class="label is-small mb-1 mt-3">
+      <input type="checkbox" data-bs-toggle ${isCustom ? 'checked' : ''}>
+      Bootstrap support liquidity
+    </label>
+    <p class="is-size-7 has-text-grey mb-1">
+      Single full-range position centered on launch price.
+      Off: a tiny ~$1 reserve that just makes the pool tradable.
+      On: a meaningful starting-liquidity position. Token-side carves from this pool's allocation;
+      quote-side is funded during the next step.
+    </p>
+    <div class="slice-row bootstrap-row" ${isCustom ? '' : 'style="opacity:0.5;pointer-events:none;"'}>
+      <span class="slice-label">Bootstrap</span>
+      <input class="input is-small" type="number" min="0" step="0.001"
+             data-bs-sol-value value="${solValue}" ${isCustom ? '' : 'disabled'}
+             style="width: 8rem;">
+      <span style="line-height:30px;">SOL of starting liquidity</span>
+      <span class="is-size-7 has-text-grey-dark" data-bs-hint style="margin-left:0.5rem;line-height:30px;flex:1;"></span>
+    </div>
+  `;
+
+  const toggle = node.querySelector('[data-bs-toggle]');
+  const solInput = node.querySelector('[data-bs-sol-value]');
+
+  // Render the initial hint via the shared helper. Subsequent refreshes
+  // also go through the helper so the rendering stays consistent.
+  refreshBootstrapHint(poolIdx);
+
+  // Toggle: flip between minimal and custom.
+  //   custom default: 0.5 SOL of starting liquidity (matches simple-UI
+  //   default). When flipping back to minimal, preserve solValue so
+  //   re-toggling restores it without losing user input.
+  // After flipping, the bs supplyPercent (derived) changes by the
+  // full bs amount; rebalance wide slices accordingly so positions
+  // total stays at 100%.
+  toggle.addEventListener('change', (e) => {
+    const oldPct = (pool.bootstrapConfig && pool.bootstrapConfig.mode === 'custom')
+      ? Number(pool.bootstrapConfig.supplyPercent) || 0
+      : 0;
+    if (e.target.checked) {
+      // Restore prior solValue if any; default to 0.5 SOL.
+      const restoredSol = Number(pool.bootstrapConfig?.solValue) > 0
+        ? Number(pool.bootstrapConfig.solValue) : 0.5;
+      const newPct = computeBootstrapSupplyPercent(restoredSol, Number(pool.supplyPercent)) || 0;
+      pool.bootstrapConfig = { mode: 'custom', solValue: restoredSol, supplyPercent: newPct };
+    } else {
+      // Preserve solValue on the object so re-toggle restores it. Wire
+      // format ignores solValue/supplyPercent in minimal mode.
+      pool.bootstrapConfig = {
+        mode: 'minimal',
+        solValue: Number(pool.bootstrapConfig?.solValue) || 0,
+        supplyPercent: 0,
+      };
+    }
+    const newPct = (pool.bootstrapConfig.mode === 'custom')
+      ? Number(pool.bootstrapConfig.supplyPercent) || 0 : 0;
+    rebalanceWideSlicesByDelta(pool, newPct - oldPct);
+    renderPools();
+  });
+
+  // SOL input: canonical value. Compute new supplyPercent and rebalance
+  // slices so positions total stays at 100%. We update only the hint
+  // text and the positions-total indicator in place — full re-render
+  // would lose focus on the input the user is typing in.
+  solInput.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (!Number.isFinite(v) || v < 0) return;
+    const oldPct = Number(pool.bootstrapConfig?.supplyPercent) || 0;
+    const newPct = computeBootstrapSupplyPercent(v, Number(pool.supplyPercent)) || 0;
+    pool.bootstrapConfig = { mode: 'custom', solValue: v, supplyPercent: newPct };
+    rebalanceWideSlicesByDelta(pool, newPct - oldPct);
+    refreshBootstrapHint(poolIdx);
+    refreshWideSliceInputs(poolIdx);
+    updatePoolPositionsTotal(poolIdx);
+  });
+
+  return node;
+}
+
+function buildLadderNode(pool, poolIdx) {
+  // Ladder section. Shows the current bands (if any) and lets the user
+  // toggle ladder on/off, add bands, edit individual bands, remove bands,
+  // or load a 5-band log-spaced preset.
+  const node = document.createElement('div');
+  node.className = 'pool-ladder-section box has-background-light p-3 mt-3 mb-0';
+
+  const cfg = pool.ladderConfig || { mode: 'off', bands: [] };
+  const enabled = cfg.mode === 'manual';
+  const checked = enabled ? 'checked' : '';
+
+  node.innerHTML = `
+    <label class="label is-small mb-1">
+      <input type="checkbox" data-ladder-toggle ${checked}>
+      Ladder positions
+    </label>
+    <p class="is-size-7 has-text-grey mb-2">
+      Discrete single-sided positions at specific price ranges above launch.
+      Each band carves out a slice of this pool's allocated supply and provides resistance
+      going up / support coming back down. Bands can overlap or have gaps — both are valid.
+    </p>
+    <div class="ladder-bands-container" ${enabled ? '' : 'style="display:none;"'}>
+      <div class="ladder-bands-list" data-ladder-bands></div>
+      <div class="ladder-bands-actions" style="margin-top: 0.5rem;">
+        <button type="button" class="button is-small is-light" data-ladder-add>
+          <span class="icon"><i class="fas fa-plus"></i></span><span>Add band</span>
+        </button>
+        <button type="button" class="button is-small is-light" data-ladder-preset>
+          <span class="icon"><i class="fas fa-magic"></i></span><span>Generate 5-band preset to 1000×</span>
+        </button>
+      </div>
+      <p class="help is-danger mt-1 hidden" data-ladder-warning></p>
+    </div>
+  `;
+
+  const toggle = node.querySelector('[data-ladder-toggle]');
+  const container = node.querySelector('.ladder-bands-container');
+  const bandsList = node.querySelector('[data-ladder-bands]');
+  const addBtn = node.querySelector('[data-ladder-add]');
+  const presetBtn = node.querySelector('[data-ladder-preset]');
+  const warning = node.querySelector('[data-ladder-warning]');
+
+  // Render the current band rows. Called from the toggle, the add/remove
+  // band handlers, and the preset handler. Editing an individual band
+  // updates state in place via the row's own event handlers without
+  // re-rendering — same pattern as slice rows.
+  function renderBands() {
+    bandsList.innerHTML = '';
+    const bands = Array.isArray(pool.ladderConfig?.bands) ? pool.ladderConfig.bands : [];
+    bands.forEach((band, bandIdx) => {
+      bandsList.appendChild(buildBandRow(pool, poolIdx, band, bandIdx, renderBands, updateWarning));
+    });
+    updateWarning();
+  }
+
+  // Validate the band list and surface a warning paragraph when the
+  // total supplyPercent exceeds 100% or any band has bad geometry.
+  // Backend pre-flight will catch the same conditions, but inline
+  // feedback during editing is much friendlier.
+  function updateWarning() {
+    const bands = Array.isArray(pool.ladderConfig?.bands) ? pool.ladderConfig.bands : [];
+    let msg = '';
+    const totalPct = bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0);
+    if (totalPct > 100) {
+      msg = `Band supply totals ${totalPct.toFixed(2)}% — must be ≤ 100%.`;
+    } else {
+      for (let i = 0; i < bands.length; i++) {
+        const b = bands[i];
+        const lo = Number(b.lowerMultiplier);
+        const hi = Number(b.upperMultiplier);
+        if (!(lo >= 1)) {
+          msg = `Band ${i + 1}: lower multiplier must be ≥ 1× launch price.`;
+          break;
+        }
+        if (!(hi > lo)) {
+          msg = `Band ${i + 1}: upper multiplier must be greater than lower.`;
+          break;
+        }
+        if (!(b.supplyPercent > 0)) {
+          msg = `Band ${i + 1}: supply % must be greater than 0.`;
+          break;
+        }
+      }
+    }
+    if (msg) {
+      warning.textContent = msg;
+      warning.classList.remove('hidden');
+    } else {
+      warning.classList.add('hidden');
+    }
+  }
+
+  toggle.addEventListener('change', (e) => {
+    // Compute the ladder total before and after the toggle so we can
+    // absorb the delta into the wide slices and keep positions total
+    // at 100%. Same rationale as the bootstrap toggle.
+    const oldLadderTotal = (pool.ladderConfig && pool.ladderConfig.mode === 'manual' && Array.isArray(pool.ladderConfig.bands))
+      ? pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
+      : 0;
+    if (e.target.checked) {
+      // Turning ladder on with no existing bands → seed with the preset.
+      // If the user had bands from a previous toggle-on, preserve them.
+      const existing = Array.isArray(pool.ladderConfig?.bands)
+        ? pool.ladderConfig.bands
+        : [];
+      pool.ladderConfig = {
+        mode: 'manual',
+        bands: existing.length > 0 ? existing : generateLogSpacedBands({
+          supplyPercent: LADDER_DEFAULT_PERCENT,
+          bandCount: LADDER_DEFAULT_BANDS,
+          ceilingMultiplier: LADDER_CEILING_MULTIPLIER,
+        }),
+      };
+      container.style.display = '';
+    } else {
+      // Off: keep the bands on the object for restoration on re-toggle.
+      pool.ladderConfig = {
+        mode: 'off',
+        bands: Array.isArray(pool.ladderConfig?.bands) ? pool.ladderConfig.bands : [],
+      };
+      container.style.display = 'none';
+    }
+    const newLadderTotal = (pool.ladderConfig.mode === 'manual' && Array.isArray(pool.ladderConfig.bands))
+      ? pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
+      : 0;
+    rebalanceWideSlicesByDelta(pool, newLadderTotal - oldLadderTotal);
+    // Full re-render: the wide slice values changed, the band list
+    // toggled visibility, the positions-total needs refresh, and the
+    // pool affordance may have flipped between attention/normal.
+    renderPools();
+  });
+
+  addBtn.addEventListener('click', () => {
+    if (!Array.isArray(pool.ladderConfig?.bands)) {
+      pool.ladderConfig = { mode: 'manual', bands: [] };
+    }
+    // New band gets sensible defaults: 5% supply, 1.5× to 2× range.
+    // User can edit immediately. The 5% is taken from the wide bucket
+    // via rebalance so positions total stays at 100% — without this,
+    // adding a band would silently overshoot 100% and the user would
+    // see a confusing warning they didn't trigger intentionally.
+    const newBand = { supplyPercent: 5, lowerMultiplier: 1.5, upperMultiplier: 2.0 };
+    pool.ladderConfig.bands.push(newBand);
+    rebalanceWideSlicesByDelta(pool, newBand.supplyPercent);
+    renderPools();
+  });
+
+  presetBtn.addEventListener('click', () => {
+    // Replace current bands with the 5-band log-spaced preset. This is
+    // a destructive action but the user explicitly asked for it; a
+    // confirmation prompt would be overkill since they can just edit
+    // bands afterward if they liked the prior state.
+    //
+    // Compute the band-total delta and rebalance wide slices so the
+    // pool's positions total stays at 100%. The preset is always
+    // LADDER_DEFAULT_PERCENT (50%) so most likely the wide bucket
+    // shrinks to absorb the increase — unless the user had a heavier
+    // ladder configured manually, in which case wide grows.
+    const oldTotal = (pool.ladderConfig?.mode === 'manual' && Array.isArray(pool.ladderConfig.bands))
+      ? pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
+      : 0;
+    pool.ladderConfig = {
+      mode: 'manual',
+      bands: generateLogSpacedBands({
+        supplyPercent: LADDER_DEFAULT_PERCENT,
+        bandCount: LADDER_DEFAULT_BANDS,
+        ceilingMultiplier: LADDER_CEILING_MULTIPLIER,
+      }),
+    };
+    const newTotal = pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0);
+    rebalanceWideSlicesByDelta(pool, newTotal - oldTotal);
+    renderPools();
+  });
+
+  // Initial paint.
+  renderBands();
+
+  return node;
+}
+
+// Build a single band-row editor. Each band has three numeric inputs
+// (supplyPercent of pool, lowerMultiplier, upperMultiplier) plus a
+// remove button. The mcap hint below shows the dollar-value range
+// based on the current target market cap input.
+//
+// Uses the same slice-row CSS class as wide slices and the bootstrap
+// row so all positions in the pool look visually consistent.
+function buildBandRow(pool, poolIdx, band, bandIdx, rerenderBands, updateWarning) {
+  const row = document.createElement('div');
+  row.className = 'slice-row band-row';
+
+  row.innerHTML = `
+    <span class="slice-label">Band ${bandIdx + 1}</span>
+    <input class="input is-small slice-share" type="number" min="0" max="100" step="0.01"
+           data-field="supplyPercent" value="${Number(band.supplyPercent)}">
+    <span style="line-height:30px;">% of pool</span>
+    <span class="is-size-7 has-text-grey" style="line-height:30px;">Range:</span>
+    <input class="input is-small" type="number" min="1" step="0.01"
+           data-field="lowerMultiplier" value="${Number(band.lowerMultiplier)}" style="width: 5rem;">
+    <span class="is-size-7" style="line-height:30px;">× to</span>
+    <input class="input is-small" type="number" min="1" step="0.01"
+           data-field="upperMultiplier" value="${Number(band.upperMultiplier)}" style="width: 5rem;">
+    <span class="is-size-7" style="line-height:30px;">× launch</span>
+    <span class="is-size-7 has-text-grey-dark" data-mcap-hint style="line-height:30px;margin-left:0.4rem;flex:1;"></span>
+    <button class="button is-danger is-small is-light" data-action="remove-band" title="Remove band">
+      <span class="icon is-small"><i class="fas fa-times"></i></span>
+    </button>
+  `;
+
+  const hint = row.querySelector('[data-mcap-hint]');
+
+  // Refresh the mcap hint based on current targetMarketCap input. Called
+  // on initial render and whenever the lower/upper multipliers change.
+  function updateMcapHint() {
+    const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+    const lo = Number(band.lowerMultiplier);
+    const hi = Number(band.upperMultiplier);
+    if (Number.isFinite(targetMc) && targetMc > 0 && lo > 0 && hi > 0) {
+      hint.textContent = `≈ $${formatUsdRoughly(lo * targetMc)} – $${formatUsdRoughly(hi * targetMc)} mcap`;
+    } else {
+      hint.textContent = '';
+    }
+  }
+
+  // Wire the three numeric inputs. Each updates the band object in
+  // place and re-runs the cross-band validation that lights up the
+  // warning paragraph below the row list. Also re-runs the pool-level
+  // positions-total recompute, since changing a band's % of pool
+  // changes what's left for the wide bucket.
+  row.querySelector('[data-field="supplyPercent"]').addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (Number.isFinite(v) && v >= 0) {
+      band.supplyPercent = v;
+      updateWarning();
+      updatePoolPositionsTotal(poolIdx);
+    }
+  });
+  row.querySelector('[data-field="lowerMultiplier"]').addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (Number.isFinite(v) && v >= 1) {
+      band.lowerMultiplier = v;
+      updateMcapHint();
+      updateWarning();
+    }
+  });
+  row.querySelector('[data-field="upperMultiplier"]').addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (Number.isFinite(v) && v >= 1) {
+      band.upperMultiplier = v;
+      updateMcapHint();
+      updateWarning();
+    }
+  });
+
+  row.querySelector('[data-action="remove-band"]').addEventListener('click', () => {
+    // Removing a band frees up its share back to the wide bucket so
+    // positions total stays at 100%. Same pattern as remove-slice and
+    // the bs/ladder toggles.
+    const removedShare = Number(pool.ladderConfig.bands[bandIdx].supplyPercent) || 0;
+    pool.ladderConfig.bands.splice(bandIdx, 1);
+    rebalanceWideSlicesByDelta(pool, -removedShare);
+    renderPools();
+  });
+
+  // Initial mcap hint.
+  updateMcapHint();
+
+  return row;
+}
+
+// Format a USD number for compact display: $1.2k, $35k, $1.2M, etc.
+// Used by the ladder + bootstrap dollar hints next to multiplier-based
+// inputs, so user can see the absolute mcap each input maps to.
+function formatUsdRoughly(value) {
+  if (!Number.isFinite(value) || value <= 0) return '0';
+  if (value < 1000) return value.toFixed(0);
+  if (value < 1_000_000) return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}k`;
+  if (value < 1_000_000_000) return `${(value / 1_000_000).toFixed(value < 10_000_000 ? 1 : 0)}M`;
+  return `${(value / 1_000_000_000).toFixed(1)}B`;
+}
+
+function buildSliceNode(pool, poolIdx, slice, sliceIdx) {
+  const node = document.createElement('div');
+  node.className = 'slice-row';
+  // Hide the remove button when this is the only slice — removeSlice
+  // short-circuits in that case anyway, and a non-functional X button
+  // is more confusing than just not showing it.
+  const isOnlySlice = pool.distribution.length === 1;
+  // Label is "Slice N/M" only when there's more than one; for a single
+  // slice the "Main LP position" header above already provides context
+  // and "Slice 1/1" reads oddly.
+  const labelText = isOnlySlice ? 'Slice' : `Slice ${sliceIdx + 1}/${pool.distribution.length}`;
+  node.innerHTML = `
+    <span class="slice-label">${labelText}</span>
+    <input class="input is-small slice-share" type="number" min="0" max="100" step="0.01" value="${slice.sharePercent}">
+    <span style="line-height:30px;">% of pool</span>
+    <label class="checkbox is-small" style="line-height:30px;">
+      <input type="checkbox" data-field="useExternal" ${slice.useExternalRecipient ? 'checked' : ''}>
+      &nbsp;Send to a different wallet
+    </label>
+    <input class="input is-small ${slice.useExternalRecipient ? '' : 'hidden'}" type="text" data-field="recipient" placeholder="Recipient address" value="${slice.recipient || ''}" style="flex: 1; min-width: 200px;">
+    ${isOnlySlice ? '' : `<button class="button is-danger is-small is-light" data-action="remove-slice"><span class="icon is-small"><i class="fas fa-times"></i></span></button>`}
+  `;
+
+  const shareInput = node.querySelector('.slice-share');
+  shareInput.addEventListener('input', (e) => {
+    slice.sharePercent = Number(e.target.value);
+    // Targeted update only — we used to call renderPools() here, which
+    // destroyed and recreated *every* input element in *every* pool on
+    // every keystroke. The browser would lose focus on the input you were
+    // typing in, the cursor would reset, and typing felt broken.
+    //
+    // Under unified semantics, slice sharePercent is "% of pool" and
+    // the constraint is at the pool level (bs + slices + bands = 100%).
+    // updatePoolPositionsTotal refreshes the pool-level indicator, the
+    // title affordance, and the continue button state in one shot.
+    updatePoolPositionsTotal(poolIdx);
+  });
+
+  const useExt = node.querySelector('[data-field="useExternal"]');
+  const recipientInput = node.querySelector('[data-field="recipient"]');
+
+  useExt.addEventListener('change', (e) => {
+    slice.useExternalRecipient = e.target.checked;
+    if (e.target.checked) {
+      recipientInput.classList.remove('hidden');
+    } else {
+      recipientInput.classList.add('hidden');
+      slice.recipient = null;
+      recipientInput.value = '';
+    }
+    updateContinueToFundingState();
+  });
+  recipientInput.addEventListener('change', (e) => {
+    slice.recipient = e.target.value.trim() || null;
+    updateContinueToFundingState();
+  });
+
+  // Remove button only rendered when there's more than one slice;
+  // guard the lookup so single-slice rows don't throw.
+  const removeBtn = node.querySelector('[data-action="remove-slice"]');
+  if (removeBtn) {
+    removeBtn.addEventListener('click', () => {
+      removeSlice(poolIdx, sliceIdx);
+    });
+  }
+
+  return node;
+}
+
+async function resolvePoolQuote(idx) {
+  const pool = pools[idx];
+  if (!pool.quoteToken) return;
+  try {
+    const resp = await fetch('/api/quote-token-info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quoteToken: pool.quoteToken }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      pool.resolvedSymbol = data.info.symbol;
+      pool.resolvedDecimals = data.info.decimals ?? null;
+      pool.resolvedPriceUsd = data.info.priceUsd;
+      // Save the resolved on-chain mint too. We need it at token-creation
+      // time to seed the keypair search that ensures the launched token
+      // sorts as mintA in every pool (which puts the launched token in
+      // the *denominator* of the displayed Raydium price, matching user
+      // expectations of "launch price up to infinity").
+      pool.resolvedMint = data.info.address;
+      // Display-only fields. Either may be null if no indexer had the
+      // token; the UI handles that by hiding the logo and falling back
+      // on the symbol where the name would have appeared.
+      pool.resolvedName = data.info.name ?? null;
+      pool.resolvedImageUrl = data.info.imageUrl ?? null;
+      // Raydium CLMM compatibility info. Server-side we check whether the
+      // quote token's mint program + Token-2022 extensions are allowed by
+      // Raydium's on-chain `is_supported_mint` rules. The values here:
+      //   compatible === true    → safe to use (either classic SPL, or
+      //                            Token-2022 with allowlisted extensions,
+      //                            or Token-2022 in Raydium's hardcoded
+      //                            mint whitelist like PYUSD/AUSD)
+      //   compatible === false   → pool creation WILL fail; we warn loudly
+      //                            and disable the Continue button
+      //   compatible === null    → couldn't check (mint missing on chain,
+      //                            RPC down). Treat as unknown — surface
+      //                            a note, don't block.
+      pool.resolvedCompatible = data.info.compatible;
+      pool.resolvedIsToken2022 = !!data.info.isToken2022;
+      pool.resolvedDisallowedNames = data.info.disallowedNames || [];
+      pool.resolvedCompatError = data.info.compatError || null;
+      // Mark resolution as succeeded so the retry hint goes away.
+      pool.resolvedFailed = false;
+      pool.resolvedFailedError = null;
+
+      // Post-resolution refresh of derived values that depend on the
+      // live SOL price. Bootstrap supplyPercent is derived from
+      // solValue × solUsd / poolUsd, so a SOL price update changes
+      // the % each pool's bootstrap takes — without this refresh,
+      // the positions total would drift away from 100% (the classic
+      // "99.94% on initial load with default settings" bug). The
+      // rebalance helper absorbs the delta into the wide slices.
+      //
+      // Runs in both simple AND customize mode because in both, the
+      // user's intent is the SOL value they typed; the % is derived.
+      // The only path we skip is when bootstrap is in minimal mode
+      // (no solValue to recompute) — handled inside the helper.
+      for (const p of pools) {
+        recomputePoolBootstrapAndRebalance(p);
+      }
+      // Full pool re-render to surface the refreshed values in the
+      // bootstrap row hint (%, $ amount). Use renderPools() rather
+      // than the per-pool helper because the rebalance may have
+      // touched any pool's slice values too.
+      renderPools();
+
+      // Targeted update only — we used to call renderPools() here, which
+      // would destroy whatever input the user was typing in if the lookup
+      // completed mid-keystroke (typically 100–500ms after they changed
+      // the quote token). Now we update only the elements that actually
+      // depend on resolved info: the per-pool resolved-display paragraph
+      // and the continue-button validation state.
+      updateQuoteResolvedDisplay(idx);
+      updateContinueToFundingState();
+
+      // The largest pool's quote logo is the coin's back face. Now that
+      // this pool's resolvedImageUrl/resolvedSymbol may have changed,
+      // refresh the back face (debounced, no-ops if unchanged or if the
+      // coin isn't running).
+      refreshCoinBackFace();
+    }
+  } catch (e) {
+    // Resolution failed (network blip, RPC error, server error). Surface
+    // this in the resolved-info block with a retry affordance, instead
+    // of just logging silently. Without this, the user sees an empty
+    // resolved-info area and has no obvious recovery — they'd have to
+    // edit the address field and tab away to re-trigger resolution.
+    pool.resolvedFailed = true;
+    pool.resolvedFailedError = e.message || 'unknown error';
+    log(`Couldn't resolve quote info for ${pool.quoteToken}: ${e.message}`, 'warning');
+    updateQuoteResolvedDisplay(idx);
+    updateContinueToFundingState();
+  }
+}
+
+function updateAllocationSummary() {
+  const total = pools.reduce((s, p) => s + p.supplyPercent, 0);
+  document.getElementById('totalAllocPct').textContent = total.toFixed(2);
+  document.getElementById('unallocatedPct').textContent = Math.max(0, 100 - total).toFixed(2);
+  const note = document.getElementById('allocationSummary');
+  note.classList.toggle('is-danger', total > 100);
+  note.classList.toggle('is-info', total <= 100);
+}
+
+// Update one pool's resolved-quote-info display in place.
+//
+// Used after resolvePoolQuote() finishes its async lookup and we've
+// updated pool.resolvedSymbol / decimals / priceUsd / name / imageUrl.
+// Touches only the resolved-info block below the form grid, the pool
+// header (which carries logo + title + affordance), and the
+// override-section visibility (which depends on whether resolution
+// came back complete). Everything else in the pool's DOM (including
+// any input the user might be typing in) stays untouched.
+//
+// Also handles the empty-state case: when no resolution data is
+// present (typical right after the user changes the quote-token
+// dropdown), the block is hidden entirely so we don't render an
+// empty grey card that looks like a layout glitch.
+function updateQuoteResolvedDisplay(poolIdx) {
+  const pool = pools[poolIdx];
+  if (!pool) return;
+  const node = poolList.children[poolIdx];
+  if (!node) return;
+  const block = node.querySelector('[data-field="resolvedBlock"]');
+  if (block) {
+    if (pool.resolvedSymbol) {
+      block.innerHTML = renderResolvedInfoHtml(pool);
+      block.classList.remove('hidden');
+    } else {
+      block.innerHTML = '';
+      block.classList.add('hidden');
+    }
+  }
+  // Refresh the title (now shows the resolved symbol and logo) and the
+  // override section visibility (auto-shown when resolution came back
+  // incomplete). updatePoolTitle covers logo + affordance too.
+  updatePoolTitle(poolIdx);
+  applyOverrideVisibility(node, pool);
+}
+
+function updateContinueToFundingState() {
+  const btn = document.getElementById('continueToFundingBtn');
+  if (!btn) return;
+  const reasons = [];
+
+  if (pools.length === 0) reasons.push('No pools configured');
+  const totalAlloc = pools.reduce((s, p) => s + p.supplyPercent, 0);
+  if (totalAlloc > 100) reasons.push('Allocations exceed 100%');
+
+  for (const [i, p] of pools.entries()) {
+    if (!p.quoteToken) reasons.push(`Pool ${i + 1}: no quote token`);
+    if (p.supplyPercent <= 0) reasons.push(`Pool ${i + 1}: 0% allocation`);
+    if ((p.quoteToken || '').toUpperCase() === 'SOL' && p.supplyPercent < 1) {
+      reasons.push(`Pool ${i + 1}: SOL allocation must be ≥ 1%`);
+    }
+    // Decimals must be resolved before we can do any launch math. If the
+    // mint isn't on-chain or the user's RPC failed, p.resolvedDecimals is
+    // null and the Advanced override is the only escape hatch — but if
+    // they haven't supplied an override either, we can't continue.
+    const hasDecimals = p.resolvedDecimals != null || p.quoteDecimalsOverride != null;
+    if (!hasDecimals) {
+      reasons.push(`Pool ${i + 1}: couldn't resolve decimals for ${p.resolvedSymbol || p.quoteToken}`);
+    }
+    const hasPrice = p.resolvedPriceUsd != null || p.quoteUsdOverride != null;
+    if (!hasPrice) {
+      reasons.push(`Pool ${i + 1}: no USD price for ${p.resolvedSymbol || p.quoteToken}`);
+    }
+    // Hard-block on known Raydium-CLMM incompatibility. We do NOT block on
+    // resolvedCompatible === null (couldn't verify) — that's a soft warning,
+    // user might be on a flaky RPC or the mint is new. Only resolvedCompatible
+    // === false (we positively read the mint and found unsupported extensions)
+    // gets blocked here. The pre-flight on the server side is a belt-and-
+    // suspenders catch if this somehow gets bypassed.
+    if (p.resolvedCompatible === false) {
+      const exts = (p.resolvedDisallowedNames || []).join(', ');
+      reasons.push(
+        `Pool ${i + 1}: ${p.resolvedSymbol || p.quoteToken} is not Raydium-CLMM ` +
+          `compatible (Token-2022 extensions: ${exts})`,
+      );
+    }
+    // Pool-level positions total. Under the unified model, bootstrap
+    // (if custom) + sum(slice sharePercents) + sum(band supplyPercents)
+    // must equal 100% of pool. Failing this means the user has either
+    // over- or under-allocated and the launch can't proceed.
+    const positionsTotal = computePoolPositionsTotal(p);
+    if (Math.abs(positionsTotal - 100) > 0.01) {
+      reasons.push(
+        `Pool ${i + 1}: positions total ${positionsTotal.toFixed(2)}% — ` +
+          `bootstrap + slices + ladder must sum to 100%`,
+      );
+    }
+    // Per-slice checks. We no longer flag a 0% slice as an error because
+    // buildAllocationsForApi filters those out automatically (they
+    // contribute nothing to the pool's allocation). A slice with an
+    // external recipient configured but no address is still a real
+    // mistake — flag it.
+    for (const [si, slice] of p.distribution.entries()) {
+      if (slice.useExternalRecipient && !slice.recipient) {
+        reasons.push(`Pool ${i + 1} slice ${si + 1}: recipient address required`);
+      }
+    }
+  }
+
+  const name = document.getElementById('tokenName')?.value.trim();
+  const symbol = document.getElementById('tokenSymbol')?.value.trim();
+  const supply = parseNumberInput(document.getElementById('tokenSupply'));
+  const mc = parseNumberInput(document.getElementById('targetMarketCap'));
+  if (!name) reasons.push('Token name required');
+  if (!symbol) reasons.push('Token symbol required');
+  if (!supply || supply <= 0) {
+    reasons.push('Token supply must be > 0');
+  } else if (supply > MAX_TOKEN_SUPPLY) {
+    // Sanity cap below the on-chain u64 ceiling — see MAX_TOKEN_SUPPLY
+    // definition for rationale. Surface the actual cap in the message so
+    // the user can adjust without guessing what an acceptable value is.
+    reasons.push(`Token supply must not exceed ${MAX_TOKEN_SUPPLY.toLocaleString()}`);
+  }
+  if (!mc || mc <= 0) reasons.push('Target market cap must be > 0');
+
+  btn.disabled = reasons.length > 0;
+  btn.title = reasons.join('; ');
+
+  // Also surface reasons inline. The empty-state takes the user further than
+  // a tooltip-only hint they may not even hover over.
+  const reasonBox = document.getElementById('continueReasons');
+  if (reasonBox) {
+    if (reasons.length === 0) {
+      reasonBox.classList.add('hidden');
+      reasonBox.innerHTML = '';
+    } else {
+      reasonBox.classList.remove('hidden');
+      // If we're in simple mode and any of the reasons reference a pool,
+      // append a hint pointing the user to Customize — that's where the
+      // controls to fix pool-level issues (override price, etc.) live.
+      // Without this hint, simple-mode users see "Pool 2: no USD price"
+      // and have no idea where Pool 2 even is.
+      const hasPoolReason = reasons.some((r) => /^Pool \d/.test(r));
+      const hint = (simpleConfig.mode === 'default' && hasPoolReason)
+        ? '<p class="is-size-7 mt-2 mb-0"><em>Click <strong>Customize pools manually</strong> to access pool-level controls.</em></p>'
+        : '';
+      reasonBox.innerHTML =
+        '<strong>Cannot continue yet:</strong><ul style="margin-top: 0.25rem; margin-bottom: 0;">' +
+        reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join('') +
+        '</ul>' + hint;
+    }
+  }
+
+  // Rolling cost preview. Piggybacking on this function's existing role as
+  // the central "config changed, recheck" chokepoint means we automatically
+  // pick up every config-mutation site without having to thread cost-update
+  // calls through 17 separate handlers. The debounce inside
+  // requestCostPreviewUpdate() handles per-keystroke firing.
+  requestCostPreviewUpdate();
+}
+
+// ---------------------------------------------------------------------------
+// Step 2 cost preview
+// ---------------------------------------------------------------------------
+//
+// Shows an approximate SOL cost in step 2 so users see the price impact of
+// their pool/config choices BEFORE they commit to step 3 funding. Addresses
+// the "sticker shock at the funding stage" complaint: users who configured
+// without any cost feedback would land at step 3 surprised by how much SOL
+// they needed to send.
+//
+// Approach: call the same /api/estimate-lp-funding endpoint that step 3
+// uses, but only display the total SOL (not the full breakdown — that's
+// reserved for step 3 to avoid duplicating UI). Debounced 500ms so rapid
+// keystrokes don't hammer the endpoint, with a sequence number so an
+// in-flight stale response can't overwrite a newer one.
+//
+// Hidden on steps other than 2 — step 3+ already shows the real estimate,
+// and showing the preview would just add confusion.
+
+let _costPreviewDebounceHandle = null;
+let _costPreviewRequestSeq = 0;
+// The most recent funding estimate, cached so the preview card can show the
+// running launch cost. Set by runCostPreview() on success; cleared when the
+// config can't be estimated. updatePreviewStats() reads it.
+let _lastCostEstimate = null;
+
+function setCostPreviewState(state, value) {
+  const card = document.getElementById('costPreview');
+  if (!card) return;
+  const valueEl = document.getElementById('costPreviewValue');
+  const labelEl = document.getElementById('costPreviewLabel');
+  const hintEl = document.getElementById('costPreviewHint');
+  if (!valueEl || !labelEl || !hintEl) return;
+
+  if (state === 'hidden') {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+  if (state === 'loading') {
+    labelEl.textContent = 'Estimating cost: ';
+    valueEl.textContent = '…';
+    hintEl.textContent = '(computing)';
+    return;
+  }
+  if (state === 'ready') {
+    labelEl.textContent = 'Estimated cost: ';
+    // 3 decimals matches the breakdown in step 3. Use ≈ rather than = so
+    // the user reads it as "approximate" — the actual number can shift
+    // slightly between this preview and step 3's estimate because the
+    // server may pick up fresher SOL/quote-token prices in the interim.
+    valueEl.textContent = `≈ ${Number(value).toFixed(3)} SOL`;
+    hintEl.textContent = '(approximate; full breakdown shows on next step)';
+    return;
+  }
+  if (state === 'error') {
+    labelEl.textContent = '';
+    valueEl.textContent = "Couldn't compute preview";
+    hintEl.textContent = '(full estimate will run when you click Continue)';
+    return;
+  }
+}
+
+// Decide whether the preview should run at all. We only want it on step 2
+// (config stage), and only when pools are configured to a state the
+// estimator can actually handle. Trying to estimate an incomplete config
+// would either fail server-side (noisy) or return a misleading number
+// (worse — gives the user a wrong sense of cost).
+function shouldShowCostPreview() {
+  if (typeof currentStep === 'number' && currentStep !== 2) return false;
+  if (!Array.isArray(pools) || pools.length === 0) return false;
+  // Allocations should sum to ~100% — under-allocated pools would
+  // estimate a cost for missing liquidity, over-allocated would
+  // double-count. A small tolerance handles floating-point fuzz from
+  // slider math.
+  const total = pools.reduce((s, p) => s + (Number(p.supplyPercent) || 0), 0);
+  if (Math.abs(total - 100) > 0.5) return false;
+  // Bail if any pool's quote isn't resolved yet. The estimator's
+  // bootstrap-cost math needs the quote token's USD price, and an
+  // unresolved quote produces a worst-case estimate that scares users
+  // unnecessarily.
+  for (const p of pools) {
+    if (p.resolvedPriceUsd == null && p.quoteUsdOverride == null) {
+      const sym = (p.quoteToken || '').toUpperCase();
+      const isSol = sym === 'SOL';
+      if (!isSol) return false;
+    }
+  }
+  return true;
+}
+
+async function runCostPreview() {
+  if (!shouldShowCostPreview()) {
+    _lastCostEstimate = null;
+    updatePreviewStats();
+    setCostPreviewState('hidden');
+    return;
+  }
+  const seq = ++_costPreviewRequestSeq;
+  setCostPreviewState('loading');
+  try {
+    const allocations = buildAllocationsForApi();
+    const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+    const resp = await fetch('/api/estimate-lp-funding', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc }),
+    });
+    // If a newer request started while this one was in flight, drop
+    // our result. Without this guard, an out-of-order response could
+    // overwrite a fresher one and the user sees the wrong number.
+    if (seq !== _costPreviewRequestSeq) return;
+    const data = await resp.json();
+    if (!data.success || !data.estimate) {
+      _lastCostEstimate = null;
+      updatePreviewStats();
+      setCostPreviewState('error');
+      return;
+    }
+    _lastCostEstimate = data.estimate;
+    updatePreviewStats();
+    setCostPreviewState('ready', data.estimate.totalSol);
+  } catch (e) {
+    if (seq !== _costPreviewRequestSeq) return;
+    // Don't surface the error message — the user will see a real one
+    // when they click Continue. This preview is best-effort.
+    _lastCostEstimate = null;
+    updatePreviewStats();
+    setCostPreviewState('error');
+  }
+}
+
+function requestCostPreviewUpdate() {
+  // Reflect pool/allocation edits in the preview card immediately (the
+  // cost number itself updates a moment later when the debounced fetch
+  // returns). Cheap — touches only the stat grid, not the coin.
+  updatePreviewStats();
+
+  // Hidden on non-step-2 contexts. Cancel any pending fetch and stop
+  // here so a freshly-arrived step-2 view sees a clean state.
+  if (!shouldShowCostPreview()) {
+    if (_costPreviewDebounceHandle) {
+      clearTimeout(_costPreviewDebounceHandle);
+      _costPreviewDebounceHandle = null;
+    }
+    setCostPreviewState('hidden');
+    return;
+  }
+  if (_costPreviewDebounceHandle) clearTimeout(_costPreviewDebounceHandle);
+  _costPreviewDebounceHandle = setTimeout(runCostPreview, 500);
+}
+
+['tokenName', 'tokenSymbol', 'tokenSupply', 'targetMarketCap'].forEach((id) => {
+  bind(id, 'input', updateContinueToFundingState);
+});
+
+// targetMarketCap also drives the bootstrap supplyPercent math (the
+// derived % depends on the pool's USD allocation, which is target mcap
+// × pool's supplyPercent). When the user changes it on step 2, recompute
+// each pool's bootstrap supplyPercent from its solValue, and rebalance
+// the wide slices to absorb the delta so positions total stays at 100%.
+//
+// Runs in both simple AND customize mode — customize-mode users still
+// have solValue as canonical, and a mcap change updates the derived %
+// just like for simple-mode users. The recompute helper is a no-op when
+// bootstrap is in minimal mode (no solValue to recompute).
+bind('targetMarketCap', 'input', () => {
+  let anyChange = false;
+  for (const p of pools) {
+    if (p.bootstrapConfig && p.bootstrapConfig.mode === 'custom') {
+      recomputePoolBootstrapAndRebalance(p);
+      anyChange = true;
+    }
+  }
+  if (anyChange) {
+    // The bootstrap dollar hint, the band mcap hints, and the positions-
+    // total indicator all depend on mcap; re-render to refresh them.
+    renderPools();
+  }
+});
+
+// Live token-preview card. The same five fields that drive the
+// continue-button state (above) plus description and logo all feed
+// renderTokenPreview() so the card on the right updates as the user
+// types/selects. Logo uses `change` since file inputs don't fire
+// `input`. Multiple listeners on tokenLogo coexist with the existing
+// filename-display handler bound earlier.
+['tokenName', 'tokenSymbol', 'tokenSupply', 'targetMarketCap', 'tokenDescription'].forEach((id) => {
+  bind(id, 'input', renderTokenPreview);
+});
+bind('tokenLogo', 'change', renderTokenPreview);
+
+// Format the two numeric inputs with thousand-separator commas as the
+// user types. The format on every input event preserves the user's
+// cursor position. Read sites use parseNumberInput() to strip commas
+// before passing the value to Number() or the server.
+['tokenSupply', 'targetMarketCap'].forEach((id) => {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener('input', () => formatNumberInput(el));
+    // The HTML default values are pre-formatted, but if a user has
+    // browser autofill or any other source pushes a raw number into
+    // the input, run the formatter once on focus too. Cheap insurance.
+    el.addEventListener('focus', () => formatNumberInput(el));
+  }
+});
+
+bind('addPoolBtn', 'click', () => {
+  // Suggest a useful default quote for the second/third pool: USDC if a
+  // SOL pool already exists, otherwise SOL. The supplyPercent default is
+  // now computed inside addPool() from the remaining budget. Open
+  // expanded since the user is explicitly configuring something.
+  const hasSol = pools.some((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+  addPool({ quoteToken: hasSol ? 'USDC' : 'SOL', _isExpanded: true });
+});
+
+// Return-to-simple-mode button: switches from customize mode back to
+// the simple toggle+dropdown UI. Wipes any pool customizations and
+// rebuilds defaults from simpleConfig — but only after confirming
+// with the user, since they could lose meaningful customization.
+//
+// Uses the HTML confirmDialog rather than window.confirm because the
+// rest of the codebase does — see the Chromium-on-Windows note in
+// the genericConfirmModal markup. Native confirm leaves inputs in
+// the page un-clickable until the next focus cycle on some Windows
+// builds.
+bind('returnToSimpleBtn', 'click', async () => {
+  // Detect "meaningful customization" — anything beyond the defaults
+  // simpleConfig would produce. If the current pools already match
+  // what rebuildPoolsFromSimple would produce, skip the confirm.
+  const currentMatchesSimple = poolsMatchSimpleDefaults();
+  if (!currentMatchesSimple) {
+    const ok = await confirmDialog({
+      title: 'Discard custom pool configuration?',
+      body: '<p>This will replace your custom pool setup with a preset. Any allocations, fee tier choices, slice splits, or override values you set will be discarded.</p>',
+      confirmLabel: 'Use preset',
+      danger: true,
+    });
+    if (!ok) return;
+  }
+  simpleConfig.mode = 'default';
+  rebuildPoolsFromSimple();
+  applySimpleConfigMode();
+});
+
+// Compare the current pools[] to what rebuildPoolsFromSimple() would
+// produce given the current simpleConfig. Used to skip the confirm
+// dialog when switching back to simple mode wouldn't actually lose
+// anything (e.g. user clicked Customize but didn't change anything).
+//
+// Compares the things that matter for the lossiness check: pool count,
+// quote tokens, allocations, fee tiers, and slice configuration.
+// Resolved-info fields and underscored UI-state fields are ignored.
+function poolsMatchSimpleDefaults() {
+  // Build what the defaults *would* look like by simulating in a
+  // throwaway array. We can't just call rebuildPoolsFromSimple()
+  // because that has the side effect of mutating pools[].
+  //
+  // The expected distribution is per-pool: the SOL pool gets the split
+  // (when split is enabled) but the flywheel pool always gets a single
+  // 100% slice — matching rebuildPoolsFromSimple's behavior. Splitting
+  // the flywheel side requires customize mode.
+  const splitDist = buildEqualSplitDistribution(
+    simpleConfig.splitEnabled ? simpleConfig.splitCount : 1,
+  );
+  const singleDist = buildEqualSplitDistribution(1);
+
+  let expected;
+  if (simpleConfig.flywheelEnabled) {
+    const fw = FLYWHEELS[simpleConfig.flywheelKey];
+    if (fw && fw.available && fw.mint) {
+      // Match rebuildPoolsFromSimple's clamp so the comparison uses the
+      // same effective value the rebuild would produce.
+      const flywheelPct = Math.max(
+        FLYWHEEL_MIN_PERCENT,
+        Math.min(FLYWHEEL_MAX_PERCENT, Number(simpleConfig.flywheelPercent) || DEFAULT_FLYWHEEL_PERCENT),
+      );
+      expected = [
+        { quoteToken: 'SOL', supplyPercent: 100 - flywheelPct, distribution: splitDist },
+        { quoteToken: fw.mint, supplyPercent: flywheelPct, distribution: singleDist },
+      ];
+    } else {
+      expected = [{ quoteToken: 'SOL', supplyPercent: 100, distribution: splitDist }];
+    }
+  } else {
+    expected = [{ quoteToken: 'SOL', supplyPercent: 100, distribution: splitDist }];
+  }
+
+  if (pools.length !== expected.length) return false;
+  for (let i = 0; i < pools.length; i++) {
+    const p = pools[i];
+    const e = expected[i];
+    if (p.quoteToken !== e.quoteToken) return false;
+    if (Number(p.supplyPercent) !== e.supplyPercent) return false;
+    if (p.ammConfigIndex !== 3) return false; // 1% is the simple default
+    // Distribution shape match. Compare slice count and each slice's
+    // sharePercent within a small tolerance to absorb floating-point
+    // drift. recipient/useExternalRecipient must be at defaults too —
+    // any user-set recipient is meaningful customization that we don't
+    // want to silently lose.
+    if (p.distribution.length !== e.distribution.length) return false;
+    for (let j = 0; j < p.distribution.length; j++) {
+      const ps = p.distribution[j];
+      const es = e.distribution[j];
+      if (Math.abs(Number(ps.sharePercent) - es.sharePercent) > 0.01) return false;
+      if (ps.useExternalRecipient) return false;
+      if (ps.recipient) return false;
+    }
+    // User-typed overrides count as "meaningful customization" — losing
+    // a price override the user manually entered (because resolution
+    // failed for their token) would be a real regression. Trigger the
+    // confirm if any override is set.
+    if (p.quoteSymbolOverride) return false;
+    if (p.quoteDecimalsOverride != null) return false;
+    if (p.quoteUsdOverride != null) return false;
+
+    // Bootstrap and ladder customizations: compare each pool's current
+    // config against what deriveBootstrapConfigFromSimple and
+    // deriveLadderConfigFromSimple would produce from the current
+    // simpleConfig. Any drift means the user changed something in
+    // customize mode and would lose it if we silently rebuilt.
+    //
+    // Both helpers are pure functions of simpleConfig + pool count, so
+    // calling them here is safe — no side effects, no state mutation.
+    const expectedBs = deriveBootstrapConfigFromSimple(Number(p.supplyPercent), pools.length);
+    const actualBs = p.bootstrapConfig || { mode: 'minimal' };
+    if (actualBs.mode !== expectedBs.mode) return false;
+    if (actualBs.mode === 'custom') {
+      // Compare solValue (canonical user intent) rather than supplyPercent
+      // (which is derived from solValue + live SOL price + mcap). A
+      // supplyPercent mismatch can happen when the user hasn't touched
+      // anything but the SOL price refreshed — we don't want that to
+      // count as a customization.
+      if (Math.abs(Number(actualBs.solValue) - Number(expectedBs.solValue)) > 0.0001) {
+        return false;
+      }
+    }
+
+    const expectedLd = deriveLadderConfigFromSimple();
+    const actualLd = p.ladderConfig || { mode: 'off', bands: [] };
+    if (actualLd.mode !== expectedLd.mode) return false;
+    if (actualLd.mode === 'manual') {
+      const actualBands = Array.isArray(actualLd.bands) ? actualLd.bands : [];
+      const expectedBands = Array.isArray(expectedLd.bands) ? expectedLd.bands : [];
+      if (actualBands.length !== expectedBands.length) return false;
+      for (let bi = 0; bi < actualBands.length; bi++) {
+        const ab = actualBands[bi];
+        const eb = expectedBands[bi];
+        if (Math.abs(Number(ab.supplyPercent) - Number(eb.supplyPercent)) > 0.01) return false;
+        if (Math.abs(Number(ab.lowerMultiplier) - Number(eb.lowerMultiplier)) > 0.001) return false;
+        if (Math.abs(Number(ab.upperMultiplier) - Number(eb.upperMultiplier)) > 0.001) return false;
+      }
+    }
+  }
+  return true;
+}
+
+bind('continueToFundingBtn', 'click', async () => {
+  await withRunState(async () => {
+    try {
+      const allocations = buildAllocationsForApi();
+      const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+      const resp = await fetch('/api/estimate-lp-funding', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // targetMarketCapUsd is only used by the estimator when a custom-
+        // mode bootstrap is present, but we send it unconditionally so the
+        // server has it available regardless. All-minimal launches ignore it.
+        body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc }),
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error);
+
+      fundingRequirement = data.estimate;
+      // Track how much of the SOL requirement has been "consumed" by
+      // completed auto-swaps. The original solLamports requirement
+      // includes budgeted SOL for all auto-swaps; once a swap finishes,
+      // that portion is already spent, so we need to subtract its
+      // estSolSpend from the effective requirement. Without this, the
+      // SOL row stays red after auto-swaps complete (because the wallet
+      // balance has gone down by ~$4 per swap) even though the launch
+      // can proceed. See decrementSolRequirementForSwap() below.
+      fundingRequirement.solCreditedForCompletedSwaps = 0;
+      const manualCount = Object.keys(fundingRequirement.byQuote).length;
+      const autoCount = (fundingRequirement.autoSwapPlan || []).length;
+      const extras = [];
+      if (autoCount) extras.push(`${autoCount} auto-swap`);
+      if (manualCount) extras.push(`${manualCount} manual`);
+      log(
+        `Funding estimate: ${fundingRequirement.totalSol.toFixed(3)} SOL` +
+        (extras.length ? ` + ${extras.join(', ')} token row${(autoCount + manualCount) === 1 ? '' : 's'}` : ''),
+        'info',
+      );
+
+      const symbol = document.getElementById('tokenSymbol').value.trim() || 'token';
+      const poolCount = pools.length;
+      setStepSummary(2, `${symbol}, ${poolCount} pool${poolCount === 1 ? '' : 's'}`);
+
+      renderFundingRequirements();
+      activateStep(3);
+      startBalancePolling();
+    } catch (e) {
+      log(`Funding estimation failed: ${e.message}`, 'danger');
+    }
+  });
+});
+
+// Back-to-configuration button on step 3 (Funding). The user has seen the
+// SOL requirement and wants to adjust pool config / target mcap / etc.
+// before committing funds. We just stop polling and reactivate step 2 —
+// all token form values and pool state are still in memory, so the user
+// picks up exactly where they left off. When they click Continue to
+// Funding again, the estimate is recomputed (with their changes) and
+// step 3 re-enters fresh.
+//
+// Funding deposits that may have already arrived in the wallet are NOT
+// touched here — they're refundable through Cancel & Refund if the user
+// decides to abandon the launch entirely. For a normal "re-estimate after
+// edit" flow, leaving them in place is fine; they count toward the new
+// estimate when the user comes back to step 3.
+bind('backToConfigBtn', 'click', () => {
+  // Don't allow navigation while an operation is running (e.g., an
+  // auto-swap is mid-flight). The cancel button has the same guard via
+  // updateCancelButtonState; mirror that here so the user can't yank
+  // the rug out from under a running operation. Reuses the activity log
+  // for user-facing feedback rather than a modal — operations are
+  // typically short and the user will get a chance again soon.
+  if (isRunningOperation) {
+    log('Wait for the running operation to finish before editing the configuration.', 'warning');
+    return;
+  }
+  if (balancePollHandle) {
+    clearInterval(balancePollHandle);
+    balancePollHandle = null;
+  }
+  // Clear step 3's summary so it doesn't read "ready" or similar when the
+  // user collapses it to look at step 2.
+  setStepSummary(3, '');
+  // Also clear step 2's summary — the user is about to re-edit, and the
+  // old "TOKEN, N pools" line would be misleading mid-edit. activateStep
+  // will reset visual states; the summary needs an explicit clear.
+  setStepSummary(2, '');
+  log('Returned to configuration. Edit and click Continue to Funding when ready.', 'info');
+  activateStep(2);
+});
+
+// Reset all token/pool state to defaults so the user can start a fresh
+// launch. The wallet (tempWallet) is intentionally preserved — that's the
+// whole point of "start over with the same wallet." Everything else gets
+// wiped: form values, pool config, simpleConfig, created-token info,
+// funding state, step summaries, the cancelled-panel itself, and all the
+// downstream-step DOM panels that may carry stale display data.
+//
+// Called by the Start Over affordance on the step-6 cancelled panel.
+// Safe to call from a clean cancelled state (wallet empty / refunded);
+// not intended for use mid-launch.
+//
+// Mirrors the per-launch state reset that happens in the generate-wallet
+// handler — we want "Start Over with same wallet" to leave the UI in
+// the same state as "Generate Wallet" minus the wallet itself.
+function resetForNewLaunch() {
+  // 1. Defensive: stop any background polling that might still be alive.
+  //    The cancel paths normally clear this before showing the cancelled
+  //    panel, but a future code path could land here without going
+  //    through cancel; better to be idempotent.
+  if (balancePollHandle) {
+    clearInterval(balancePollHandle);
+    balancePollHandle = null;
+  }
+
+  // 2. Wipe in-memory launch state.
+  createdTokenInfo = null;
+  lpResult = null;
+  fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
+  fundingWallet = null;
+  lastSolBalance = 0;
+  consecutivePollFailures = 0;
+  fundingDetectionExhausted = false;
+  // Auto-swap interlock — defensive reset. Cancel completion runs under
+  // withRunState which would have failed if an auto-swap was mid-flight,
+  // so reaching here with this flag set shouldn't be possible. Resetting
+  // unconditionally keeps the state machine clean if a future code path
+  // arrives here through a different route.
+  isAcquireFlowRunning = false;
+
+  // 3. Reset simpleConfig to its initial defaults so the simple-UI shows
+  //    the "fresh launch" state. Mirror of the let-initializer at file top.
+  simpleConfig = {
+    mode: 'default',
+    flywheelEnabled: true,
+    flywheelKey: 'meme',
+    flywheelPercent: DEFAULT_FLYWHEEL_PERCENT,
+    splitEnabled: false,
+    splitCount: 1,
+    bootstrapMode: 'minimal',
+    bootstrapSolValue: 1,
+    ladderEnabled: false,
+    ladderPercent: LADDER_DEFAULT_PERCENT,
+    ladderBandCount: LADDER_DEFAULT_BANDS,
+  };
+
+  // 4. Reset token form inputs back to their HTML defaults. These hold
+  //    whatever the user typed last time; leaving them prefilled with
+  //    that data would imply "we'll use this again" when in fact the
+  //    user explicitly chose to start over.
+  //
+  //    We read each input's `defaultValue` rather than hardcoding the
+  //    values here. defaultValue is the string from the HTML `value="..."`
+  //    attribute — empty for inputs that don't declare one (tokenName,
+  //    tokenSymbol, tokenDescription), and the displayed default for the
+  //    two that do (tokenSupply = "1,000,000,000", targetMarketCap =
+  //    "100,000"). This keeps the reset behaviour in sync with the HTML
+  //    automatically: if those defaults are ever changed in index.html,
+  //    the reset still does the right thing without needing to update
+  //    this list.
+  //
+  //    Prior version blindly cleared targetMarketCap to '' alongside the
+  //    text fields, which produced an empty market-cap field after Start
+  //    Over even though a fresh app open shows "100,000" — the bug Moose
+  //    flagged. The supply fix is a related tidy-up: prior code set it
+  //    to '1000000000' (no commas), which display-mismatches the HTML
+  //    default of '1,000,000,000'; the numeric value is identical after
+  //    parseNumberInput strips commas, but visually they differ.
+  const formIds = [
+    'tokenName',
+    'tokenSymbol',
+    'tokenSupply',
+    'targetMarketCap',
+    'tokenDescription',
+  ];
+  for (const id of formIds) {
+    const el = document.getElementById(id);
+    if (el) el.value = el.defaultValue;
+  }
+  // Logo: clear both the file input and any preview thumbnail.
+  // File inputs always have an empty defaultValue, so we set value=''
+  // explicitly to make the intent obvious at the call site rather than
+  // relying on the defaultValue happening to be empty.
+  const logoEl = document.getElementById('tokenLogo');
+  if (logoEl) logoEl.value = '';
+  if (_tokenPreviewLogoObjectUrl) {
+    URL.revokeObjectURL(_tokenPreviewLogoObjectUrl);
+    _tokenPreviewLogoObjectUrl = null;
+  }
+  // Tear down the 3D coin's WebGL context. renderTokenPreview() will
+  // re-init it lazily if the user returns to the create-token screen.
+  destroyCoinPreview();
+  const logoThumb = document.getElementById('tokenLogoThumb');
+  if (logoThumb) logoThumb.classList.add('hidden');
+  // Clear any stale logo validation error from a previous launch. The
+  // setLogoError helper handles the hidden-class toggle so the help
+  // text doesn't reserve vertical space when there's no message.
+  setLogoError(null);
+
+  // 5. Wipe pools and rebuild from the (now reset) simpleConfig defaults.
+  //    rebuildPoolsFromSimple wipes pools.length=0 and re-adds the default
+  //    SOL+flywheel pool split.
+  pools.length = 0;
+  rebuildPoolsFromSimple();
+  // applySimpleConfigMode flips the visible config panel (simple vs
+  // customize) based on simpleConfig.mode and re-runs the appropriate
+  // renderer. We need this in case the user was in customize mode before
+  // — without it the customize panel would still be visible while
+  // simpleConfig says we're in default mode.
+  applySimpleConfigMode();
+
+  // 6. Reset step-2-through-6 DOM panels that may carry display state from
+  //    the previous attempt. Mirror what the generate-wallet handler does
+  //    so Start Over leaves the UI in the same shape as Generate Wallet.
+  document.getElementById('tokenCreatedInfo')?.classList.add('hidden');
+  document.getElementById('createTokenBtn')?.classList.remove('hidden');
+  document.getElementById('createLpBtn')?.classList.remove('hidden');
+  document.getElementById('transferAssetsBtn')?.classList.remove('hidden');
+  document.getElementById('lpDoneInfo')?.classList.add('hidden');
+  document.getElementById('lpFailInfo')?.classList.add('hidden');
+  document.getElementById('lpProgress')?.classList.add('hidden');
+  const lpTree = document.getElementById('lpProgressTree');
+  if (lpTree) lpTree.innerHTML = '';
+  document.getElementById('transferResult')?.classList.add('hidden');
+  document.getElementById('fundingWalletInfo')?.classList.add('hidden');
+  const destWalletEl = document.getElementById('destinationWallet');
+  if (destWalletEl) destWalletEl.value = '';
+  // Re-hide the "View launch summary" button — runTransfer's success
+  // branch reveals it, so a Start Over after a complete launch would
+  // leave it visible on the fresh attempt's empty step 6 otherwise.
+  document.getElementById('viewLaunchSummaryBtn')?.classList.add('hidden');
+  // Defensive close of the launch-success modal. The modal is normally
+  // open only after a successful step-6 transfer (after which Start
+  // Over isn't typically reachable since step 6 is the terminal step),
+  // but a future flow could open Start Over while the modal is up and
+  // we'd want to clean up its WebGL coin context regardless. Safe to
+  // call when the modal is already closed.
+  if (typeof hideLaunchSuccessModal === 'function') hideLaunchSuccessModal();
+  // Step 6 cancelled panel: restore normal body, hide cancelled.
+  document.getElementById('step6NormalBody')?.classList.remove('hidden');
+  document.getElementById('step6CancelledPanel')?.classList.add('hidden');
+
+  // 7. Clear step summaries for steps 2-6. Step 1 stays — its summary
+  //    shows the wallet abbreviation, which is still accurate.
+  for (let i = 2; i <= 6; i++) setStepSummary(i, '');
+
+  // 8. Re-render the live token preview card (now empty since form is
+  //    cleared) and recompute the continue-button enabled state.
+  renderTokenPreview();
+  updateContinueToFundingState();
+  updateCancelButtonState();
+
+  // 9. Hand control back to step 2 and log a clear separator so the
+  //    activity log makes the boundary obvious.
+  log('— Started over. Configure your token and pools, then continue. —', 'info');
+  activateStep(2);
+}
+
+bind('startOverBtn', 'click', resetForNewLaunch);
+

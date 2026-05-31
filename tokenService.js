@@ -42,8 +42,6 @@ import {
 // public-mainnet default on first run and persists user-selected RPCs to
 // rpcConfig.json. The connection is rebuilt whenever the user switches RPCs
 // in the UI — server.js calls refreshConnection() after a successful change.
-let connection = makeConnection();
-
 function makeConnection() {
   const url = getRpcUrl();
   console.log('Using RPC endpoint:', url);
@@ -53,8 +51,52 @@ function makeConnection() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Dependency-injection seams (TEST-ONLY).
+//
+// Production behavior is the default: `_connectionFactory` is the real
+// `makeConnection`, and the umi/uploader factories are the real Metaplex
+// helpers. A test may swap these out via the `*ForTests` setters to exercise
+// createTokenWithMetaplex without any RPC, Arweave, or Irys network calls.
+// None of these change anything unless a test explicitly calls a setter.
+// ---------------------------------------------------------------------------
+let _connectionFactory = makeConnection;
+let _umiFactory = createTokenMetadataUmi;
+let _uploadMetadata = uploadTokenMetadata;
+
+let connection = _connectionFactory();
+
 export function refreshConnection() {
+  connection = _connectionFactory();
+}
+
+// TEST-ONLY: override how the module-level Solana connection is built.
+export function setConnectionFactoryForTests(fn) {
+  _connectionFactory = fn;
+  connection = _connectionFactory();
+}
+
+// TEST-ONLY: restore the real connection factory and rebuild the connection.
+export function resetConnectionFactoryForTests() {
+  _connectionFactory = makeConnection;
   connection = makeConnection();
+}
+
+// TEST-ONLY: override the umi builder used by createTokenWithMetaplex.
+export function setUmiFactoryForTests(fn) {
+  _umiFactory = fn;
+}
+
+// TEST-ONLY: override the metadata uploader used by createTokenWithMetaplex
+// (e.g. to simulate an Irys upload failure without network).
+export function setUploaderForTests(fn) {
+  _uploadMetadata = fn;
+}
+
+// TEST-ONLY: restore the real umi/uploader factories.
+export function resetMetadataFactoriesForTests() {
+  _umiFactory = createTokenMetadataUmi;
+  _uploadMetadata = uploadTokenMetadata;
 }
 
 // Generate a temporary wallet, with a BIP39 recovery phrase.
@@ -241,12 +283,12 @@ export async function createTokenWithMetaplex({
     // Convert secret key array back to Keypair
     const tempWallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
     
-    const umi = createTokenMetadataUmi(tempWallet);
-    
+    const umi = _umiFactory(tempWallet);
+
     console.log('Uploading logo to Arweave...');
     console.log('Uploading metadata to Arweave...');
 
-    const { metadataUri, imageUri } = await uploadTokenMetadata({
+    const { metadataUri, imageUri } = await _uploadMetadata({
       umi,
       logoBase64,
       name,

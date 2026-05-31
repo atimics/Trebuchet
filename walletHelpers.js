@@ -50,6 +50,7 @@ const TOKEN_PROGRAMS = [
 ];
 
 function makeConnection() {
+  if (__connectionFactoryForTests) return __connectionFactoryForTests();
   return new Connection(getRpcUrl(), {
     commitment: 'confirmed',
     confirmTransactionInitialTimeout: 60_000,
@@ -1008,4 +1009,19 @@ export async function executeAirdrop({
   );
 
   return { transferred, failed };
+}
+
+// ---------------------------------------------------------------------------
+// Test-only DI seam — connection factory override
+// ---------------------------------------------------------------------------
+let __connectionFactoryForTests = null;
+export function setConnectionFactoryForTests(factory) {
+  __connectionFactoryForTests = factory;
+}
+export function resetTestFactories() {
+  __connectionFactoryForTests = null;
+}
+
+export function resetConnectionFactoryForTests() {
+  __connectionFactoryForTests = null;
 }
