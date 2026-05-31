@@ -512,6 +512,43 @@ app.post('/api/rpc-config/test', async (req, res) => {
   res.json({ success: true, result });
 });
 
+// RPC health polling endpoint — called every 30s by the frontend to drive
+// the health indicator dot. Sends a lightweight getHealth JSON-RPC call
+// (lighter than getVersion — no blockhash fetch) against the currently
+// active RPC and reports latency + health status. getHealth is a Solana
+// JSON-RPC method that returns "ok" when the node is healthy — it's
+// universally supported and costs essentially nothing.
+app.get('/api/rpc-health', async (_req, res) => {
+  const url = getRpcConfig().active;
+  try {
+    const start = Date.now();
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getHealth', params: [] }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const latencyMs = Date.now() - start;
+    if (!resp.ok) {
+      return res.json({ success: true, health: 'error', latencyMs, error: `HTTP ${resp.status}` });
+    }
+    const json = await resp.json();
+    if (json.error) {
+      return res.json({ success: true, health: 'error', latencyMs, error: json.error.message });
+    }
+    const healthy = json.result === 'ok';
+    res.json({
+      success: true,
+      health: healthy ? (latencyMs < 400 ? 'good' : 'slow') : 'error',
+      latencyMs,
+    });
+  } catch (e) {
+    res.json({ success: true, health: 'error', latencyMs: null, error: e.message });
+  }
+});
+
+
+
 // ---------------------------------------------------------------------------
 // Token creation
 // ---------------------------------------------------------------------------

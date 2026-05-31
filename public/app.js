@@ -338,6 +338,149 @@ function log(message, type = 'info') {
 }
 
 // ===========================================================================
+// Structured error display — categorization and "What happened?" explainers
+// ===========================================================================
+//
+// Categorises error messages into types so the UI can show category-specific
+// recovery suggestions and plain-language explanations. Categories:
+//   rpc        — RPC endpoint errors (rate limiting, connection refused, etc.)
+//   onchain    — On-chain transaction failures (instruction errors, etc.)
+//   validation — User input / config errors (invalid addresses, bad amounts)
+//   network    — HTTP / fetch errors from our own server or third-parties
+//   unknown    — Anything that doesn\'t match a known pattern
+
+const ERROR_CATEGORIES = {
+  rpc: {
+    label: 'RPC',
+    cssClass: 'cat-rpc',
+    patterns: [
+      /rate.?limit/i, /429/i, /too many requests/i, /throttl/i,
+      /sendTransaction.*failed/i, /getHealth/i, /rpc.*error/i,
+      /Couldn\'t verify the wallet balance.*RPC/i, /RPC.*down/i,
+      /RPC.*unreachable/i, /Balance polling is failing/i,
+      /Connection.*refused/i, /ECONNREFUSED/i,
+      /getVersion.*error/i, /getBlockHeight.*error/i,
+    ],
+    suggestion: 'Try switching to a dedicated RPC endpoint (Helius, QuickNode, Triton). '
+      + 'Open the RPC settings panel above to add one — free tiers are plenty '
+      + 'for a launch. Public endpoints get rate-limited mid-flow.',
+    explainer: 'Solana RPC nodes have rate limits that can throttle or reject '
+      + 'transactions when they receive too many requests in a short window. '
+      + 'Pool creation sends dozens of transactions in rapid succession, which '
+      + 'is exactly the pattern that triggers these limits on shared/public endpoints. '
+      + 'A dedicated endpoint (even a free tier) has a much higher limit.',
+  },
+  onchain: {
+    label: 'On-chain',
+    cssClass: 'cat-onchain',
+    patterns: [
+      /instruction.?error/i, /custom.*program.*error/i, /0x[0-9a-f]{1,4}\b/i,
+      /insufficient.*lamports/i, /insufficient.*funds/i,
+      /ConstraintMintTokenProgram/i, /Token.*2022/i,
+      /Anchor.*constraint/i, /program.*failed/i,
+      /blockhash.*not found/i, /transaction.*expired/i,
+      /comput.*budget/i, /exceeded.*limit/i,
+    ],
+    suggestion: 'If this is a Token-2022 mint issue, use a standard SPL Token mint. '
+      + 'If it\'s a funds issue, your ephemeral wallet may need more SOL — add extra '
+      + 'SOL to the launch wallet and use Resume Launch. For compute-budget errors, '
+      + 'try reducing the number of pools or increasing the priority fee.',
+    explainer: 'This error means the Solana network rejected an on-chain transaction '
+      + 'during pool creation. Common causes: the token uses Token-2022 extensions that '
+      + 'Raydium CLMM pools don\'t support; the ephemeral wallet ran out of SOL for fees; '
+      + 'or the transaction hit a compute budget limit. Your assets remain safe in the '
+      + 'ephemeral wallet and can be recovered via Cancel & Refund or Resume Launch.',
+  },
+  validation: {
+    label: 'Validation',
+    cssClass: 'cat-validation',
+    patterns: [
+      /invalid.*(address|mint|token)/i, /(address|mint).*invalid/i,
+      /not.*valid/i, /must be/i, /required/i, /missing/i,
+      /unsupported.*(token|extension|program)/i,
+      /can\'t.*(be|use|create)/i, /cannot/i,
+      /token.*not found/i, /mint.*not found/i,
+      /no.*pool/i, /empty/i, /undefined/i,
+    ],
+    suggestion: 'Check your token details — the mint address, decimals, or symbol '
+      + 'may be incorrect. If you\'re using a pump.fun or other Token-2022 token, '
+      + 'those aren\'t directly supported for CLMM pools. Consider wrapping or '
+      + 'using a standard SPL Token instead.',
+    explainer: 'This error means something in your launch configuration doesn\'t '
+      + 'meet the requirements. It could be an invalid token address, unsupported '
+      + 'token format, or a missing required field. No on-chain actions have been '
+      + 'performed — you can fix the config and try again without losing any SOL.',
+  },
+  network: {
+    label: 'Network',
+    cssClass: 'cat-network',
+    patterns: [
+      /fetch.*fail/i, /network.*error/i, /timeout/i, /abort/i,
+      /ENOTFOUND/i, /EAI_AGAIN/i, /ECONNRESET/i, /ETIMEDOUT/i,
+      /Couldn\'t.*reach/i, /Couldn\'t.*connect/i, /unreachable/i,
+      /HTTP.*\d{3}/i, /response.*error/i, /server.*error/i,
+      /5\d\d/i, /internal.*server/i,
+    ],
+    suggestion: 'Check your internet connection and try again. If this persists, '
+      + 'the Trebuchet server or a third-party service (Jupiter, Raydium API) '
+      + 'may be temporarily down. Wait a minute and retry — on-chain state '
+      + 'from partial progress is preserved.',
+    explainer: 'A network request failed — either to your RPC endpoint, to the '
+      + 'Trebuchet server itself, or to an external service called during the '
+      + 'launch. Transient network issues are common on Solana mainnet. Your '
+      + 'on-chain state (created tokens, partially-created pools) is not affected '
+      + 'by network errors between requests.',
+  },
+};
+
+function categorizeError(message) {
+  if (!message || typeof message !== 'string') return 'unknown';
+  // Check categories in priority order: rpc > onchain > network > validation
+  // RPC errors should be caught first because many on-chain errors are
+  // actually downstream of RPC failures.
+  const order = ['rpc', 'onchain', 'network', 'validation'];
+  for (const cat of order) {
+    for (const pat of ERROR_CATEGORIES[cat].patterns) {
+      if (pat.test(message)) return cat;
+    }
+  }
+  return 'unknown';
+}
+
+function getErrorCategoryInfo(category) {
+  return ERROR_CATEGORIES[category] || null;
+}
+
+// Render a structured error block into a container element. Adds a category
+// badge, the error message, a "What happened?" expandable section, and a
+// recovery suggestion. Leaves existing content below the injected block
+// intact (e.g. the Resume Launch / Skip buttons in lpFailInfo).
+function renderStructuredError(container, message, category) {
+  if (!container || !message) return;
+  const cat = category || categorizeError(message);
+  const info = getErrorCategoryInfo(cat);
+
+  // Build the structured error block
+  let html = '<div class="error-banner">';
+  if (info && info.label) {
+    html += `<span class="error-banner-category ${info.cssClass}">${info.label}</span>`;
+  }
+  html += `<span class="has-text-weight-semibold">${escapeHtml(String(message))}</span>`;
+
+  if (info) {
+    html += '<details class="error-what-happened">';
+    html += '<summary>What happened?</summary>';
+    html += `<div class="what-happened-body"><p>${escapeHtml(info.explainer)}</p></div>`;
+    html += '</details>';
+    html += `<div class="error-recovery-suggestion">${escapeHtml(info.suggestion)}</div>`;
+  }
+
+  html += '</div>';
+  container.insertAdjacentHTML('afterbegin', html);
+}
+
+
+// ===========================================================================
 // Server log streaming
 // ===========================================================================
 //
@@ -470,6 +613,14 @@ async function withRunState(fn) {
   }
 }
 
+
+
+// RPC health polling state (used by rpc-panel.js)
+let _rpcHealthPollTimer = null;
+let _rpcHealthLastResult = null;
+let _rpcHealthLaunchActive = false;
+const RPC_HEALTH_INTERVAL_MS = 30000;
+const RPC_HEALTH_SLOW_THRESHOLD_MS = 400;
 
 // ===========================================================================
 // HTML confirm dialog
@@ -1346,8 +1497,10 @@ bind('cancelConfirmProceedBtn', 'click', async () => {
       // Refresh pending-wallets panel — server retains a recovery
       // entry in case of partial-failure or delayed deposits.
       loadPendingWallets();
+      markLaunchActiveForRpcHealth(false);
     } catch (e) {
       log(`Cancel failed: ${e.message}`, 'danger');
+      markLaunchActiveForRpcHealth(false);
     }
   });
 });
@@ -1406,6 +1559,97 @@ async function loadRpcConfig() {
     console.error('Failed to load RPC config:', e);
   }
 }
+
+// ===========================================================================
+// RPC health polling
+// ===========================================================================
+//
+// Polls /api/rpc-health every 30s during active use and updates a small
+// coloured dot next to the RPC display. The dot is green (healthy, fast),
+// yellow (healthy but slow), red (errors), or grey (unknown / not yet
+// polled). If the RPC returns errors during an active launch flow, a
+// warning banner appears with a one-click "Open RPC settings" link.
+
+function updateRpcHealthDot(health) {
+  const dot = document.getElementById('rpcHealthDot');
+  if (!dot) return;
+  dot.className = 'rpc-health-dot health-' + health;
+  const labels = {
+    good: 'RPC healthy, low latency',
+    slow: 'RPC healthy, high latency',
+    error: 'RPC returning errors',
+    unknown: 'RPC health unknown',
+  };
+  dot.title = labels[health] || labels.unknown;
+}
+
+function showRpcHealthWarning(detail) {
+  const banner = document.getElementById('rpcHealthWarning');
+  const detailEl = document.getElementById('rpcHealthWarningDetail');
+  if (!banner || !detailEl) return;
+  detailEl.textContent = detail;
+  banner.classList.remove('hidden');
+}
+
+function hideRpcHealthWarning() {
+  const banner = document.getElementById('rpcHealthWarning');
+  if (banner) banner.classList.add('hidden');
+}
+
+async function pollRpcHealth() {
+  try {
+    const resp = await fetch('/api/rpc-health').then(r => r.json());
+    if (!resp.success) return;
+    _rpcHealthLastResult = resp;
+    updateRpcHealthDot(resp.health);
+
+    // Show warning only during active launch flow + when RPC is erroring
+    if (_rpcHealthLaunchActive && resp.health === 'error') {
+      const detail = resp.error
+        ? `The RPC returned: ${resp.error}. Launches may fail mid-flow.`
+        : 'The RPC is not responding. Launches will likely fail.';
+      showRpcHealthWarning(detail);
+    } else if (resp.health !== 'error') {
+      hideRpcHealthWarning();
+    }
+  } catch {
+    // Network error from our own server — don't spam the activity log
+    // since this runs every 30s. Just mark unknown and move on.
+    updateRpcHealthDot('unknown');
+    _rpcHealthLastResult = { health: 'unknown', latencyMs: null, error: 'Could not reach health endpoint' };
+  }
+}
+
+function startRpcHealthPolling() {
+  if (_rpcHealthPollTimer) return; // already running
+  pollRpcHealth(); // immediate first check
+  _rpcHealthPollTimer = setInterval(pollRpcHealth, RPC_HEALTH_INTERVAL_MS);
+}
+
+function stopRpcHealthPolling() {
+  if (_rpcHealthPollTimer) {
+    clearInterval(_rpcHealthPollTimer);
+    _rpcHealthPollTimer = null;
+  }
+  hideRpcHealthWarning();
+  updateRpcHealthDot('unknown');
+}
+
+function markLaunchActiveForRpcHealth(active) {
+  _rpcHealthLaunchActive = active;
+  if (!active) hideRpcHealthWarning();
+}
+
+// RPC health warning: "Open RPC settings" link handler
+bind('rpcHealthWarningSwitch', 'click', (e) => {
+  e.preventDefault();
+  const panel = document.getElementById('rpcSettingsPanel');
+  const chevron = document.getElementById('rpcSettingsChevron');
+  panel.classList.remove('hidden');
+  chevron.classList.remove('fa-chevron-down');
+  chevron.classList.add('fa-chevron-up');
+});
+
 
 // Render an RPC URL safely for display. Keeps just the scheme and host
 // — everything else (path, query string) is redacted, because that's
@@ -1832,6 +2076,7 @@ bind('generateWalletBtn', 'click', async () => {
       document.body.classList.add('has-log');
 
       log(`Wallet generated: ${data.wallet.publicKey}`, 'success');
+      markLaunchActiveForRpcHealth(false);
 
       if (pools.length === 0) {
         // Build pools from simpleConfig defaults — produces 90/10
@@ -8523,6 +8768,7 @@ bind('createTokenBtn', 'click', async () => {
   const btn = document.getElementById('createTokenBtn');
   await withRunState(async () => {
     setLoading(btn, true);
+    markLaunchActiveForRpcHealth(true);
     try {
       log('Creating token...');
       const formData = new FormData();
@@ -8570,6 +8816,7 @@ bind('createTokenBtn', 'click', async () => {
       log(`Token created: ${data.tokenMint}`, 'success');
     } catch (e) {
       log(`Token creation failed: ${e.message}`, 'danger');
+      markLaunchActiveForRpcHealth(false);
     } finally {
       setLoading(btn, false);
     }
@@ -8633,6 +8880,7 @@ bind('createLpBtn', 'click', async () => {
   const btn = document.getElementById('createLpBtn');
   await withRunState(async () => {
     setLoading(btn, true);
+    markLaunchActiveForRpcHealth(true);
     try {
       document.getElementById('lpProgress').classList.remove('hidden');
       document.getElementById('lpProgressTree').innerHTML = '';
@@ -8790,6 +9038,15 @@ bind('createLpBtn', 'click', async () => {
             'on this launch exceeded the safety buffer.';
         }
         document.getElementById('lpFailSummary').textContent = friendly;
+
+        // Render structured error with category badge + "What happened?"
+        const lpFailContainer = document.getElementById('lpFailInfo').querySelector('.notification');
+        if (lpFailContainer) {
+          // Clear any previous structured error block
+          const prevBanner = lpFailContainer.querySelector('.error-banner');
+          if (prevBanner) prevBanner.remove();
+          renderStructuredError(lpFailContainer, friendly, categorizeError(friendly));
+        }
 
         // Show counts so the user knows what state things are in. These are
         // useful for understanding what they're recovering vs what they've
@@ -8958,6 +9215,7 @@ bind('createLpBtn', 'click', async () => {
       }
     } catch (e) {
       log(`LP creation failed: ${e.message}`, 'danger');
+      markLaunchActiveForRpcHealth(false);
     } finally {
       setLoading(btn, false);
     }
@@ -9330,6 +9588,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
 
   await withRunState(async () => {
     setLoading(btn, true);
+    markLaunchActiveForRpcHealth(true);
     try {
       log(`Resuming launch (${priorResults.length} pool${priorResults.length === 1 ? '' : 's'} carried over)…`);
       // Hide the fail banner while the resume runs so the user sees a
@@ -9390,6 +9649,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
         log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
         document.getElementById('lpDoneInfo').classList.remove('hidden');
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
+        markLaunchActiveForRpcHealth(false);
         return;
       }
 
@@ -9448,6 +9708,15 @@ bind('retryBootstrapsBtn', 'click', async () => {
       }
       document.getElementById('lpFailHeading').textContent = resumeHeading;
       document.getElementById('lpFailSummary').textContent = data.error;
+
+      // Render structured error with category badge + "What happened?"
+      const lpFailCtr = document.getElementById('lpFailInfo').querySelector('.notification');
+      if (lpFailCtr) {
+        const prevB = lpFailCtr.querySelector('.error-banner');
+        if (prevB) prevB.remove();
+        renderStructuredError(lpFailCtr, data.error, categorizeError(data.error));
+      }
+
       const successCount = (data.partialResults || []).length;
       const totalCount = allocations.length;
       document.getElementById('lpFailSucceededCount').innerHTML =
@@ -9510,6 +9779,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
       }
     } catch (e) {
       log(`Resume failed: ${e.message}`, 'danger');
+      markLaunchActiveForRpcHealth(false);
       // Show the fail banner again so the user can see what to do next.
       document.getElementById('lpFailInfo').classList.remove('hidden');
     } finally {
@@ -9667,6 +9937,7 @@ async function runTransfer() {
         // unhandled rejection; showLaunchSuccessModal already logs
         // its own warnings on internal failures.
         try {
+          markLaunchActiveForRpcHealth(false);
           Promise.resolve(showLaunchSuccessModal()).catch((err) => {
             console.warn('showLaunchSuccessModal rejected:', err);
           });
@@ -10419,6 +10690,7 @@ function formatAge(isoString) {
 // ===========================================================================
 log('Trebuchet is ready. Click "Generate Wallet" to begin.');
 loadRpcConfig();
+startRpcHealthPolling();
 loadLaunchJournals();
 loadPendingWallets();
 loadFeeTiers();

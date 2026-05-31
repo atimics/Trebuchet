@@ -133,6 +133,7 @@ async function runTransfer() {
         // unhandled rejection; showLaunchSuccessModal already logs
         // its own warnings on internal failures.
         try {
+          markLaunchActiveForRpcHealth(false);
           Promise.resolve(showLaunchSuccessModal()).catch((err) => {
             console.warn('showLaunchSuccessModal rejected:', err);
           });

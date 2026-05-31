@@ -6,6 +6,7 @@ bind('createTokenBtn', 'click', async () => {
   const btn = document.getElementById('createTokenBtn');
   await withRunState(async () => {
     setLoading(btn, true);
+    markLaunchActiveForRpcHealth(true);
     try {
       log('Creating token...');
       const formData = new FormData();
@@ -53,6 +54,7 @@ bind('createTokenBtn', 'click', async () => {
       log(`Token created: ${data.tokenMint}`, 'success');
     } catch (e) {
       log(`Token creation failed: ${e.message}`, 'danger');
+      markLaunchActiveForRpcHealth(false);
     } finally {
       setLoading(btn, false);
     }
@@ -116,6 +118,7 @@ bind('createLpBtn', 'click', async () => {
   const btn = document.getElementById('createLpBtn');
   await withRunState(async () => {
     setLoading(btn, true);
+    markLaunchActiveForRpcHealth(true);
     try {
       document.getElementById('lpProgress').classList.remove('hidden');
       document.getElementById('lpProgressTree').innerHTML = '';
@@ -273,6 +276,15 @@ bind('createLpBtn', 'click', async () => {
             'on this launch exceeded the safety buffer.';
         }
         document.getElementById('lpFailSummary').textContent = friendly;
+
+        // Render structured error with category badge + "What happened?"
+        const lpFailContainer = document.getElementById('lpFailInfo').querySelector('.notification');
+        if (lpFailContainer) {
+          // Clear any previous structured error block
+          const prevBanner = lpFailContainer.querySelector('.error-banner');
+          if (prevBanner) prevBanner.remove();
+          renderStructuredError(lpFailContainer, friendly, categorizeError(friendly));
+        }
 
         // Show counts so the user knows what state things are in. These are
         // useful for understanding what they're recovering vs what they've
@@ -441,6 +453,7 @@ bind('createLpBtn', 'click', async () => {
       }
     } catch (e) {
       log(`LP creation failed: ${e.message}`, 'danger');
+      markLaunchActiveForRpcHealth(false);
     } finally {
       setLoading(btn, false);
     }
@@ -813,6 +826,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
 
   await withRunState(async () => {
     setLoading(btn, true);
+    markLaunchActiveForRpcHealth(true);
     try {
       log(`Resuming launch (${priorResults.length} pool${priorResults.length === 1 ? '' : 's'} carried over)…`);
       // Hide the fail banner while the resume runs so the user sees a
@@ -873,6 +887,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
         log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
         document.getElementById('lpDoneInfo').classList.remove('hidden');
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
+        markLaunchActiveForRpcHealth(false);
         return;
       }
 
@@ -931,6 +946,15 @@ bind('retryBootstrapsBtn', 'click', async () => {
       }
       document.getElementById('lpFailHeading').textContent = resumeHeading;
       document.getElementById('lpFailSummary').textContent = data.error;
+
+      // Render structured error with category badge + "What happened?"
+      const lpFailCtr = document.getElementById('lpFailInfo').querySelector('.notification');
+      if (lpFailCtr) {
+        const prevB = lpFailCtr.querySelector('.error-banner');
+        if (prevB) prevB.remove();
+        renderStructuredError(lpFailCtr, data.error, categorizeError(data.error));
+      }
+
       const successCount = (data.partialResults || []).length;
       const totalCount = allocations.length;
       document.getElementById('lpFailSucceededCount').innerHTML =
@@ -993,6 +1017,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
       }
     } catch (e) {
       log(`Resume failed: ${e.message}`, 'danger');
+      markLaunchActiveForRpcHealth(false);
       // Show the fail banner again so the user can see what to do next.
       document.getElementById('lpFailInfo').classList.remove('hidden');
     } finally {
