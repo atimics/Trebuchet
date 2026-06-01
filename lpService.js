@@ -1110,6 +1110,21 @@ async function createSinglePool({
       );
       progress({ stage: 'ladder_open_start', bandIndex: bi });
 
+      // Refresh the SDK's cached token account info between bands.
+      // Each band drains the launched-token ATA, and without this refresh
+      // the SDK builds the next tx using stale cached balances — the CLMM
+      // program then rejects the increase_liquidity with Custom:1.
+      if (bi > 0) {
+        try {
+          await raydium.account.fetchWalletTokenAccounts({ forceUpdate: true });
+          console.log('    refreshed SDK token account cache for ladder band');
+        } catch (e) {
+          console.warn('    ladder cache refresh failed (non-fatal):', e.message);
+        }
+        // Brief settle so the previous tx is fully visible to the RPC
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+
       const ladderRes = await raydium.clmm.openPositionFromBase({
         poolInfo,
         poolKeys,

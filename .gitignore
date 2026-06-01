@@ -8,3 +8,7 @@ files.zip
 builder-debug.yml
 builder-effective-config.yaml
 latest.yml
+/c/build
+/launchJournals.json
+/pendingWallets.json
+/userPrefs.json

@@ -39,6 +39,10 @@
     return apiSessionTokenPromise;
   }
 
+  // Exposed so EventSource callers (which can't set custom headers)
+  // can pass the session token as a query parameter instead.
+  window.getApiSessionToken = getApiSessionToken;
+
   window.fetch = async function (input, init) {
     init = init || {};
     if (!isLocalApiRequest(input)) return originalFetch(input, init);

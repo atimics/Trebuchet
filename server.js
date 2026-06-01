@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'crypto';
 
 import path from 'path';
 import fs from 'fs';
@@ -60,6 +61,25 @@ import {
   normalizeWholeTokenSupply,
 } from './validators.js';
 import { isWalletEffectivelyEmpty } from './walletRecovery.js';
+
+// Lazy import to avoid crash on startup in packaged builds
+let _generateVanityKeypair = null;
+async function getVanityKeygen() {
+  if (!_generateVanityKeypair) {
+    const mod = await import('./vanityKeygen.js');
+    _generateVanityKeypair = mod.generateVanityKeypair;
+  }
+  return _generateVanityKeypair;
+}
+
+import {
+  hostCheckMiddleware,
+  securityHeadersMiddleware,
+  apiSessionMiddleware,
+  resolvePublicDir,
+  upload,
+  API_SESSION_TOKEN,
+} from './serverMiddleware.js';
 
 // Configuration constants are defined below in the "Configuration" section
 // (just after __dirname is computed). Internal env vars (PORT,
@@ -383,6 +403,174 @@ app.post('/api/generate-wallet', async (req, res) => {
 });
 
 // SOL-only balance (kept for backwards compatibility / Step 1 display)
+// ---------------------------------------------------------------------------
+
+// SSE streaming endpoint for vanity CA grind progress
+app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
+  let { prefix, suffix, threads, blockhash, token } = req.query;
+
+  // Validate session token inline.  This endpoint is exempt from the
+  // middleware so EventSource can connect, but we still gate on the
+  // session token delivered as a query parameter.
+  if (!token) {
+    return res.status(403).json({ success: false, error: 'session token required' });
+  }
+  const tokenBuf = Buffer.from(token);
+  const expectedBuf = Buffer.from(API_SESSION_TOKEN);
+  if (tokenBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
+    return res.status(403).json({ success: false, error: 'invalid session token' });
+  }
+
+  if (!prefix && !suffix) {
+    return res.status(400).json({ success: false, error: 'prefix or suffix required' });
+  }
+
+  // Clamp threads to a consumer-reasonable maximum
+  if (threads) {
+    threads = Math.min(Math.max(1, Number(threads)), 32);
+  }
+
+  // Auto-fetch a recent Solana blockhash for VRF seed binding.
+  // The VRF proves the seed was bound to a known-past blockhash,
+  // preventing the grinder from cherry-picking seeds across re-rolls.
+  if (!blockhash) {
+    try {
+      const blockhashResp = await fetch(getRpcUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1,
+          method: 'getLatestBlockhash',
+          params: [{ commitment: 'confirmed' }],
+        }),
+      });
+      const bhJson = await blockhashResp.json();
+      if (bhJson?.result?.value?.blockhash) {
+        blockhash = Buffer.from(bs58.decode(bhJson.result.value.blockhash)).toString('hex');
+      }
+    } catch (_) {
+      // If RPC fetch fails, continue without VRF (seed stays private).
+      console.warn('[vanity] Could not fetch blockhash for VRF; grinding without seed binding');
+    }
+  }
+
+  const target = prefix || suffix;
+  const targetLen = target.length;
+  // 58^len
+  const expected = Math.pow(58, targetLen);
+
+  // SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  // Send initial metadata
+  res.write(`data: ${JSON.stringify({ type: 'start', target, targetLen, expected })}\n\n`);
+
+  let lastAttempts = 0;
+  let lastSend = Date.now();
+
+  try {
+    const generateVanityKeypair = await getVanityKeygen();
+    const result = await generateVanityKeypair({
+      prefix, suffix, threads, blockhash,
+      onProgress: ({ attempts, key }) => {
+        // Throttle to ~4 updates/sec
+        const now = Date.now();
+        if (now - lastSend < 100) return;
+        lastSend = now;
+        lastAttempts = attempts;
+        const epoch = attempts / expected;
+        res.write(`data: ${JSON.stringify({ type: 'progress', attempts, epoch, key })}\n\n`);
+      },
+    });
+
+    const walletInfo = {
+      publicKey: result.publicKey,
+      secretKey: result.secretKey,
+      mnemonic: null,
+    };
+
+    const qrCode = await getWalletQRCode(walletInfo.publicKey);
+
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
+      success: true,
+      wallet: {
+        publicKey: walletInfo.publicKey,
+        secretKey: walletInfo.secretKey,
+        secretKeyB58: secretKeyToBase58(walletInfo.secretKey),
+        mnemonic: null,
+        vanity: true,
+        qrCode,
+        attempts: result.attempts,
+        rarity: result.rarity,
+        epochs: result.epochs,
+        expectedAttempts: result.expectedAttempts,
+        ...(result.vrfProof ? {
+          vrfProof: result.vrfProof,
+          vrfPk: result.vrfPk,
+          vrfBlockhash: result.vrfBlockhash,
+        } : {}),
+      },
+    })}\n\n`);
+
+    res.end();
+  } catch (error) {
+    console.error('Error generating vanity wallet:', error);
+    res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+    res.end();
+  }
+});
+
+app.post('/api/generate-vanity-wallet', async (req, res) => {
+  try {
+    const { prefix, suffix, threads } = req.body;
+    if (!prefix && !suffix) {
+      return res.status(400).json({ success: false, error: 'prefix or suffix required' });
+    }
+    const target = prefix || suffix;
+    console.log(`Generating vanity wallet (${prefix ? 'prefix' : 'suffix'}: "${target}")...`);
+
+    const generateVanityKeypair = await getVanityKeygen();
+    const result = await generateVanityKeypair({ prefix, suffix, threads });
+
+    // Vanity keypairs don't have a BIP39 mnemonic (they're generated from
+    // random seeds, not from a mnemonic phrase). The user can still export
+    // the raw secret key.
+    const walletInfo = {
+      publicKey: result.publicKey,
+      secretKey: result.secretKey,
+      mnemonic: null, // no mnemonic for vanity keypairs
+    };
+
+    const qrCode = await getWalletQRCode(walletInfo.publicKey);
+    pendingWallets.add(walletInfo.publicKey, walletInfo.secretKey, null);
+    launchJournal.start({ walletPublicKey: walletInfo.publicKey });
+
+    res.json({
+      success: true,
+      wallet: {
+        publicKey: walletInfo.publicKey,
+        secretKey: walletInfo.secretKey,
+        secretKeyB58: secretKeyToBase58(walletInfo.secretKey),
+        mnemonic: null,
+        vanity: true,
+        qrCode,
+        attempts: result.attempts,
+        rarity: result.rarity,
+        epochs: result.epochs,
+        expectedAttempts: result.expectedAttempts,
+      },
+    });
+  } catch (error) {
+    console.error('Error generating vanity wallet:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 app.post('/api/check-balance', async (req, res) => {
   try {
     const { publicKey } = req.body;
@@ -754,6 +942,9 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       description,
       totalSupply,
       quoteMints: quoteMintsRaw,
+      vanityPrefix,
+      vanitySuffix,
+      vanityCAKeypair: vanityCAKeypairRaw,
     } = req.body;
     const normalizedName = normalizeTokenName(name);
     const normalizedSymbol = normalizeTokenSymbol(symbol);
@@ -815,6 +1006,9 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       totalSupply: normalizedTotalSupply,
       logoBase64,
       quoteMints,
+      vanityPrefix,
+      vanitySuffix,
+      vanityCAKeypair: vanityCAKeypairRaw ? JSON.parse(vanityCAKeypairRaw) : null,
       onProgress: (event) => recordTokenJournalProgress(walletPublicKey, event),
     });
 
@@ -1686,6 +1880,202 @@ app.post('/api/resume-launch', async (req, res) => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Launch diagnostic — paste a token address, see what's on chain
+// ---------------------------------------------------------------------------
+
+app.get('/api/diagnose-launch', async (req, res) => {
+  try {
+    const { tokenMint } = req.query;
+    if (!tokenMint) {
+      return res.status(400).json({ success: false, error: 'tokenMint query param required' });
+    }
+
+    const connection = new Connection(getRpcConfig().active, 'confirmed');
+    const CLMM_PROGRAM = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
+    const report = { tokenMint, token: {}, pools: [] };
+
+    // 1. Token info
+    try {
+      const mintPk = new PublicKey(tokenMint);
+      const mintInfo = await connection.getAccountInfo(mintPk);
+      if (!mintInfo) {
+        return res.status(404).json({ success: false, error: 'Token mint not found on chain' });
+      }
+      report.token.exists = true;
+      report.token.owner = mintInfo.owner.toBase58();
+
+      const supply = await connection.getTokenSupply(mintPk);
+      report.token.supply = supply.value.uiAmount;
+      report.token.decimals = supply.value.decimals;
+
+      if (mintInfo.data.length >= 82) {
+        const mintAuthOption = mintInfo.data.readUInt32LE(0);
+        report.token.mintAuthority = mintAuthOption === 0 ? null
+          : new PublicKey(mintInfo.data.slice(4, 36)).toBase58();
+      }
+    } catch (e) {
+      report.token.error = e.message;
+    }
+
+    // 2. Discover pools by deriving pool PDAs for this token paired with SOL.
+    //    The CLMM pool PDA seed is based on the sorted mint pair (mintA < mintB)
+    //    and the amm config. We try spawning configs that are likely used.
+    //    This is more reliable than the Raydium API for freshly-created pools.
+    const KNOWN_AMM_CONFIGS = [
+      { index: 4,  id: '9iFER3bpjf1PTTCQCfTRu17EJgvsxo9pVyA9QWwEuX4x' },  // 0.01%
+      { index: 5,  id: '3XCQJQryqpDvvZBfGxR7CLAw5dpGJ9aa7kt1jRLdyxuZ' },  // 0.05%
+      { index: 8,  id: '3h2e43PunVA5K34vwKCLHWhZF4aZpyaC9RmxvshGAQpL' },  // 0.04%
+      { index: 3,  id: 'A1BBtTYJd4i3xU8D6Tc2FzU6ZN4oXZWXKZnCxwbHXr8x' },  // 1%
+    ];
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const QUOTE_MINTS = [SOL_MINT];  // Could extend with USDC, etc.
+
+    const launchMintPk = new PublicKey(tokenMint);
+    const discoveredPools = [];
+
+    for (const quoteMintStr of QUOTE_MINTS) {
+      const quoteMintPk = new PublicKey(quoteMintStr);
+      // Determine mintA/mintB ordering (CLMM sorts mints)
+      const mintA = launchMintPk.toBase58() < quoteMintStr ? launchMintPk : quoteMintPk;
+      const mintB = launchMintPk.toBase58() < quoteMintStr ? quoteMintPk : launchMintPk;
+
+      for (const cfg of KNOWN_AMM_CONFIGS) {
+        try {
+          const ammConfigPk = new PublicKey(cfg.id);
+          const [poolPda] = PublicKey.findProgramAddressSync(
+            [
+              Buffer.from('pool'),
+              ammConfigPk.toBuffer(),
+              mintA.toBuffer(),
+              mintB.toBuffer(),
+            ],
+            CLMM_PROGRAM
+          );
+          const poolInfo = await connection.getAccountInfo(poolPda);
+          if (poolInfo && poolInfo.owner.equals(CLMM_PROGRAM)) {
+            discoveredPools.push({
+              id: poolPda.toBase58(),
+              config: cfg,
+              quoteMint: quoteMintStr,
+              quoteSymbol: quoteMintStr === SOL_MINT ? 'SOL' : quoteMintStr.slice(0, 8),
+              mintA: mintA.toBase58(),
+              mintB: mintB.toBase58(),
+            });
+            console.log(`  Found pool: ${poolPda.toBase58()} (config ${cfg.index}, quote ${quoteMintStr === SOL_MINT ? 'SOL' : quoteMintStr.slice(0,8)})`);
+          }
+        } catch {}
+      }
+    }
+
+    // 3. Per-pool diagnostics
+    for (const p of discoveredPools) {
+      try {
+        const poolId = new PublicKey(p.id);
+        const poolInfo = await connection.getAccountInfo(poolId);
+        if (!poolInfo || !poolInfo.owner.equals(CLMM_PROGRAM)) continue;
+
+        // Pool already validated during discovery
+
+        const quoteMint = p.quoteMint;
+        const quoteSymbol = p.quoteSymbol || '?';
+
+        // Discover position NFTs by scanning the pool's position PDAs.
+        // CLMM position NFTs are minted by the program; we find them by
+        // checking the user's wallet token accounts (if provided) and
+        // verifying each candidate against the CLMM program.
+        const positions = [];
+        const userWalletParam = req.query.wallet || null;
+
+        if (userWalletParam) {
+          // Fast path: scan the user's wallet for position NFTs
+          const userPk = new PublicKey(userWalletParam);
+          const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+            userPk,
+            { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
+          );
+          for (const ta of tokenAccounts.value) {
+            const info = ta.account.data.parsed.info;
+            // Position NFTs: decimals=0, amount=1
+            if (info.tokenAmount.decimals !== 0 || info.tokenAmount.uiAmount !== 1) continue;
+            const nftMint = new PublicKey(info.mint);
+            // Verify this is a CLMM position by checking if a position PDA exists
+            try {
+              const [posPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from('position'), nftMint.toBuffer()],
+                CLMM_PROGRAM
+              );
+              const posData = await connection.getAccountInfo(posPda);
+              if (!posData) continue;
+
+
+              // Extract position data
+              const tickLower = posData.data.readInt32LE(8 + 32 + 32);
+              const tickUpper = posData.data.readInt32LE(8 + 32 + 32 + 4);
+              const holder = userWalletParam;
+
+              // Check lock status
+              let locked = false;
+              try {
+                const BURN_EARN = new PublicKey('lockC9UHYmzhfPqVX7BGpNrkCWrAVBVpRhb8P6UZ6yX');
+                const [lockPda] = PublicKey.findProgramAddressSync(
+                  [Buffer.from('lock_position'), BURN_EARN.toBuffer(), nftMint.toBuffer()],
+                  BURN_EARN
+                );
+                locked = !!(await connection.getAccountInfo(lockPda));
+              } catch {}
+
+              positions.push({
+                nftMint: nftMint.toBase58(),
+                holder,
+                tickLower,
+                tickUpper,
+                locked,
+              });
+            } catch { /* not a CLMM position */ }
+          }
+        }
+
+
+
+        report.pools.push({
+          poolId: p.id,
+          quoteMint,
+          quoteSymbol,
+          feeRate: p.config?.index || '?',
+          tvl: '0',
+          totalPositions: positions.length,
+          lockedPositions: positions.filter(po => po.locked).length,
+          holders: [...new Set(positions.map(po => po.holder).filter(Boolean))],
+          positions,
+        });
+      } catch (e) {
+        console.warn(`Pool ${p.id} diagnostic failed:`, e.message);
+      }
+    }
+
+    // 4. Summary
+    report.summary = {
+      poolCount: report.pools.length,
+      totalPositions: report.pools.reduce((s, p) => s + p.totalPositions, 0),
+      lockedPositions: report.pools.reduce((s, p) => s + p.lockedPositions, 0),
+      needsBootstrap: report.pools.some(p => p.totalPositions > 0),
+      needsLock: report.pools.some(p => p.lockedPositions < p.totalPositions),
+    };
+
+    console.log(
+      `Diagnostic for ${tokenMint}: ${report.summary.poolCount} pool(s), ${report.summary.totalPositions} positions`
+    );
+
+    res.json({ success: true, report });
+  } catch (e) {
+    console.error('diagnose-launch error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+
 
 // ---------------------------------------------------------------------------
 // Final transfer / sweep

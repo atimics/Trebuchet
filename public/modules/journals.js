@@ -382,6 +382,14 @@ function buildLaunchJournalRow(journal, wallet) {
           </button>
         </div>
       ` : ''}
+      ${hasSecret ? `
+        <div class="control">
+          <button class="button is-small is-success" data-action="use-wallet">
+            <span class="icon is-small"><i class="fas fa-play"></i></span>
+            <span>Use wallet for new launch</span>
+          </button>
+        </div>
+      ` : ''}
       ${recoverBtnHtml}
       ${journal.token?.mint ? `
         <div class="control">
@@ -420,6 +428,61 @@ function buildLaunchJournalRow(journal, wallet) {
   });
   wrap.querySelector('[data-action="copy-wallet"]').addEventListener('click', async () => {
     await copyText(journal.walletPublicKey, 'Launch wallet public key');
+  });
+
+  // Use-wallet button: load this wallet as active tempWallet for a fresh launch
+  wrap.querySelector('[data-action="use-wallet"]')?.addEventListener('click', async () => {
+    if (!wallet || !wallet.secretKey) return;
+    if (tempWallet) {
+      const ok = await confirmDialog({
+        title: 'Switch wallet?',
+        body: '<p>You already have a wallet from this session. Switching will discard it.</p><p>Proceed?</p>',
+        confirmLabel: 'Switch',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    fundingWallet = null;
+    fundingDetectionExhausted = false;
+    lastSolBalance = 0;
+    createdTokenInfo = null;
+    lpResult = null;
+    fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
+    if (typeof clearVanityCAs === 'function') clearVanityCAs();
+
+    tempWallet = {
+      publicKey: wallet.publicKey,
+      secretKey: wallet.secretKey,
+      secretKeyB58: wallet.secretKeyB58,
+      mnemonic: wallet.mnemonic || null,
+    };
+
+    document.getElementById('walletInfo').classList.remove('hidden');
+    document.getElementById('walletAddress').value = wallet.publicKey;
+    document.getElementById('qrCode').src = '';
+    document.getElementById('privateKeyContainer').classList.add('hidden');
+    document.getElementById('tokenCreatedInfo').classList.add('hidden');
+    document.getElementById('createTokenBtn').classList.remove('hidden');
+    document.getElementById('createLpBtn').classList.remove('hidden');
+    document.getElementById('transferAssetsBtn').classList.remove('hidden');
+    document.getElementById('lpDoneInfo').classList.add('hidden');
+    document.getElementById('lpFailInfo').classList.add('hidden');
+    document.getElementById('lpProgress').classList.add('hidden');
+    document.getElementById('lpProgressTree').innerHTML = '';
+    document.getElementById('transferResult').classList.add('hidden');
+    document.getElementById('fundingWalletInfo').classList.add('hidden');
+    document.getElementById('destinationWallet').value = '';
+
+    for (let i = 2; i <= 6; i++) setStepSummary(i, '');
+    document.body.classList.add('has-log');
+    log('Using wallet from incomplete launch: ' + wallet.publicKey, 'success');
+    markLaunchActiveForRpcHealth(false);
+    if (typeof rebuildPoolsFromSimple === 'function' && pools.length === 0) rebuildPoolsFromSimple();
+    if (typeof applySimpleConfigMode === 'function') applySimpleConfigMode();
+    setStepSummary(1, wallet.publicKey.slice(0, 8) + '…' + wallet.publicKey.slice(-6));
+    if (typeof activateStep === 'function') activateStep(2);
+    if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+    if (typeof updateCancelButtonState === 'function') updateCancelButtonState();
   });
   wrap.querySelector('[data-action="copy-recovery"]')?.addEventListener('click', async () => {
     const text = wallet && (wallet.mnemonic || wallet.secretKeyB58);

@@ -105,7 +105,7 @@ export function securityHeadersMiddleware(_req, res, next) {
 // Express strips the mount prefix, so req.path is '/session', not '/api/session'.
 // If the mount point changes, the exemption paths below must be updated.
 export function apiSessionMiddleware(req, res, next) {
-  if (req.path === '/session' || req.path === '/proxy-image') return next();
+  if (req.path === '/session' || req.path === '/proxy-image' || req.path === '/generate-vanity-wallet-stream') return next();
   const token = req.get('x-trebuchet-session');
   const tokenBuf = Buffer.from(token || '');
   const expectedBuf = Buffer.from(API_SESSION_TOKEN);
