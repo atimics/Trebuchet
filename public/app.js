@@ -8793,8 +8793,8 @@ bind('createTokenBtn', 'click', async () => {
       formData.append('quoteMints', JSON.stringify(quoteMints));
       // Vanity CA: if we pre-ground a keypair, send it. Otherwise
       // fall back to prefix/suffix for server-side grinding.
-      if (vanityCAKeypair) {
-        formData.append('vanityCAKeypair', JSON.stringify(vanityCAKeypair.secretKey));
+      if (selectedVanityCA !== null && vanityCAKeypairs[selectedVanityCA]) {
+        formData.append('vanityCAKeypair', JSON.stringify(vanityCAKeypairs[selectedVanityCA].secretKey));
       } else {
         const vanityTarget = document.getElementById('vanityCATarget')?.value.trim();
         if (vanityTarget) {
@@ -9818,7 +9818,150 @@ function prefillDestinationFromFunder() {
 
 
 // Vanity CA grind — pre-grinds the token mint address before token creation
-let vanityCAKeypair = null; // { publicKey, secretKey }
+let vanityCAKeypairs = []; // [{ publicKey, secretKey, rarity, epochs, attempts }]
+let selectedVanityCA = null; // index into vanityCAKeypairs
+
+// ---- Vanity CA epoch tiers (authoritative from C binary) ----
+// Rarity colors: Common=blue, Rare=green, Legendary=orange, Mythic=purple
+const VANITY_TIERS = [
+  { name: 'Common',    max: 1, color: '#3e8ed0' },
+  { name: 'Rare',      max: 2, color: '#48c774' },
+  { name: 'Legendary', max: 3, color: '#f4a236' },
+  { name: 'Mythic',    max: Infinity, color: '#9b59b6' },
+];
+
+// Get the tier index for a given epoch value
+function tierForEpoch(epoch) {
+  for (let i = 0; i < VANITY_TIERS.length; i++) {
+    if (epoch <= VANITY_TIERS[i].max) return i;
+  }
+  return VANITY_TIERS.length - 1;
+}
+
+// Reset the single progress bar for a new grind
+function setupGrindBar() {
+  const bar = document.getElementById('vanityCAProgressBar');
+  const label = document.getElementById('vanityCAProgressText');
+  if (bar) {
+    bar.style.width = '0%';
+    bar.style.background = '#e0d6c2';
+  }
+  if (label) label.textContent = 'Grinding...';
+}
+
+// Update the single progress bar with epoch data
+function updateGrindBar(epoch, attempts) {
+  const bar = document.getElementById('vanityCAProgressBar');
+  const label = document.getElementById('vanityCAProgressText');
+  if (!bar || !label) return;
+
+  const tierIdx = tierForEpoch(epoch);
+  const tier = VANITY_TIERS[tierIdx];
+  const prevMax = tierIdx === 0 ? 0 : VANITY_TIERS[tierIdx - 1].max;
+  const tierPct = Math.min(100, ((epoch - prevMax) / (tier.max - prevMax)) * 100);
+  const colors = VANITY_TIERS.map(t => t.color);
+
+  // Bar width = current tier progress (0-100% within the tier)
+  bar.style.width = tierPct + '%';
+
+  // Background: completed tiers shown as gradient, current tier solid
+  if (tierIdx === 0) {
+    bar.style.background = colors[0];
+  } else {
+    // Completed tiers each get a fixed portion of the bar's background
+    let gradient = 'linear-gradient(to right';
+    const segPct = 20; // each completed tier takes 20% of the current bar
+    for (let i = 0; i < tierIdx; i++) {
+      const start = i * segPct;
+      const end = (i + 1) * segPct;
+      gradient += ', ' + colors[i] + ' ' + start + '%, ' + colors[i] + ' ' + end + '%';
+    }
+    gradient += ', ' + colors[tierIdx] + ' ' + (tierIdx * segPct) + '%, ' + colors[tierIdx] + ' 100%';
+    gradient += ')';
+    bar.style.background = gradient;
+  }
+
+  label.textContent = tier.name + ' · Epoch ' + epoch.toFixed(2) + ' · ' + attempts.toLocaleString() + ' attempts';
+}
+
+// ---- Live key display below the grind bar ----
+// Shows the most recent tested key when it has prefix/suffix matches.
+// Match chars are colored by rarity tier: blue(1) green(2) orange(3) purple(4+)
+const MATCH_COLORS = [
+  null,          // 0 matches — not shown
+  '#3e8ed0',     // 1-char: Common blue
+  '#48c774',     // 2-char: Rare green
+  '#f4a236',     // 3-char: Legendary orange
+  '#9b59b6',     // 4-char: Mythic purple
+  '#9b59b6',     // 5+
+  '#9b59b6',     // 6+
+  '#9b59b6',     // 7+
+  '#9b59b6',     // 8+
+  '#9b59b6',     // 9+
+  '#9b59b6',     // 10+
+];
+
+let _keyDisplayTarget = '';
+let _lastKeyShown = '';
+
+function countMatchChars(key, target) {
+  // Count how many distinct chars of target appear anywhere in key.
+  if (!target || !key) return 0;
+  const keySet = new Set(key);
+  let n = 0;
+  for (const ch of target) {
+    if (keySet.has(ch)) n++;
+  }
+  return n;
+}
+
+function updateKeyDisplay(key, target) {
+  if (!key || key === _lastKeyShown) return;
+  const matchCount = countMatchChars(key, target);
+  if (matchCount === 0) return;
+  _lastKeyShown = key;
+
+  const el = document.getElementById('vanityCAKeyDisplay');
+  if (!el || el.offsetParent === null) return;
+
+  const targetSet = new Set(target);
+  const color = MATCH_COLORS[Math.min(matchCount, MATCH_COLORS.length - 1)];
+  let html = '<span class="is-family-monospace is-size-7" style="line-height:1.3;">';
+  for (let i = 0; i < key.length; i++) {
+    const isMatch = targetSet.has(key[i]);
+    if (isMatch) {
+      html += '<span class="vanity-char-match" style="color:' + color + ';display:inline-block;animation:vanityCharPop 0.3s ease-out;">' + key[i] + '</span>';
+    } else {
+      html += '<span style="color:#666">' + key[i] + '</span>';
+    }
+  }
+  html += '</span>';
+  el.innerHTML = html;
+}
+
+function setupKeyDisplay(target) {
+  _keyDisplayTarget = target;
+  _lastKeyShown = '';
+
+  let container = document.getElementById('vanityCAKeyDisplay');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'vanityCAKeyDisplay';
+    container.style.cssText = 'text-align:center;padding:6px 4px 2px;overflow:hidden;';
+    const progressEl = document.getElementById('vanityCAProgress');
+    if (progressEl) {
+      const textEl = document.getElementById('vanityCAProgressText');
+      if (textEl) textEl.parentNode.insertBefore(container, textEl);
+      else progressEl.appendChild(container);
+    }
+  }
+  container.innerHTML = '<span class="is-family-monospace is-size-7" style="color:#555;">waiting for matches…</span>';
+}
+
+function removeKeyDisplay() {
+  const container = document.getElementById('vanityCAKeyDisplay');
+  if (container) container.remove();
+}
 
 bind('grindCABtn', 'click', async () => {
   const btn = document.getElementById('grindCABtn');
@@ -9834,58 +9977,126 @@ bind('grindCABtn', 'click', async () => {
       const mode = document.getElementById('vanityCAMode').value;
       const isSuffix = mode === 'suffix';
 
-      // Show progress
+      // Show single active progress bar
       const progressEl = document.getElementById('vanityCAProgress');
-      const bar = document.getElementById('vanityCAProgressBar');
-      const text = document.getElementById('vanityCAProgressText');
-      const resultEl = document.getElementById('vanityCAResult');
-      const resultAddr = document.getElementById('vanityCAResultAddr');
+      const listContainer = document.getElementById('vanityCAListContainer');
       if (progressEl) progressEl.classList.remove('hidden');
-      if (resultEl) resultEl.classList.add('hidden');
-      if (bar) bar.style.width = '0%';
-      if (text) text.textContent = 'Grinding...';
+      if (listContainer) listContainer.classList.add('hidden');
 
-      const resp = await fetch('/api/generate-vanity-wallet', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(isSuffix ? { suffix: target } : { prefix: target }),
+      // Ensure original bar is visible, remove any old epoch bars
+      const barContainer = progressEl?.querySelector('.vanity-progress-bar');
+      if (barContainer) barContainer.style.display = '';
+      const oldEpochBars = document.getElementById('vanityCAEpochBars');
+      if (oldEpochBars) oldEpochBars.remove();
+      setupGrindBar();
+      setupKeyDisplay(target);
+
+      const params = new URLSearchParams();
+      if (isSuffix) params.set('suffix', target);
+      else params.set('prefix', target);
+      const es = new EventSource('/api/generate-vanity-wallet-stream?' + params.toString());
+
+      es.onerror = () => { es.close(); };
+
+      await new Promise((resolve, reject) => {
+        es.addEventListener('message', (e) => {
+          let data;
+          try { data = JSON.parse(e.data); } catch { return; }
+          if (data.type === 'start') {
+            // Metadata received
+          } else if (data.type === 'progress') {
+            updateGrindBar(data.epoch, data.attempts);
+            if (data.key) updateKeyDisplay(data.key, _keyDisplayTarget);
+          } else if (data.type === 'done') {
+            es.close();
+            removeKeyDisplay();
+            const entry = {
+              publicKey: data.wallet.publicKey,
+              secretKey: data.wallet.secretKey,
+              rarity: data.wallet.rarity,
+              epochs: data.wallet.epochs,
+              attempts: data.wallet.attempts,
+            };
+            if (data.wallet.vrfProof) {
+              entry.vrfProof = data.wallet.vrfProof;
+              entry.vrfPk = data.wallet.vrfPk;
+              entry.vrfBlockhash = data.wallet.vrfBlockhash;
+            }
+            vanityCAKeypairs.push(entry);
+            if (progressEl) progressEl.classList.add('hidden');
+            if (listContainer) listContainer.classList.remove('hidden');
+            renderVanityCAList();
+            log('Vanity CA: ' + data.wallet.publicKey + ' (' + data.wallet.rarity + ', ' + data.wallet.attempts.toLocaleString() + ' attempts)', 'success');
+            resolve();
+          } else if (data.type === 'error') {
+            es.close();
+            reject(new Error(data.error));
+          }
+        });
+        es.addEventListener('error', () => {
+          es.close();
+          reject(new Error('SSE connection failed'));
+        });
       });
-      const data = await resp.json();
-      if (!data.success) throw new Error(data.error);
-
-      vanityCAKeypair = {
-        publicKey: data.wallet.publicKey,
-        secretKey: data.wallet.secretKey,
-      };
-
-      if (progressEl) progressEl.classList.add('hidden');
-      showVanityCAResult(data.wallet);
-
-      log(`Vanity CA: ${data.wallet.publicKey} (${data.wallet.rarity}, ${data.wallet.attempts} attempts)`, 'success');
     } catch (e) {
-      log(`Vanity CA grind failed: ${e.message}`, 'danger');
+      log('Vanity CA grind failed: ' + e.message, 'danger');
+      removeKeyDisplay();
       document.getElementById('vanityCAProgress')?.classList.add('hidden');
+      // Clean up any extra elements
+      const epochBars = document.getElementById('vanityCAEpochBars');
+      if (epochBars) epochBars.remove();
     } finally {
       setLoading(btn, false);
     }
   });
 });
 
-// After grind, show rarity info
-function showVanityCAResult(data) {
-  const resultEl = document.getElementById('vanityCAResult');
-  const resultAddr = document.getElementById('vanityCAResultAddr');
-  const resultRarity = document.getElementById('vanityCARarity');
-  if (!resultEl) return;
-  resultEl.classList.remove('hidden');
-  if (resultAddr) resultAddr.textContent = data.publicKey || data.wallet?.publicKey;
-  if (resultRarity) {
-    const rarity = data.rarity || data.wallet?.rarity || 'Common';
-    const epochs = data.epochs || data.wallet?.epochs || 0;
-    resultRarity.textContent = `${rarity} (${epochs.toFixed(1)} epochs)`;
-    const tierColors = { Common: 'is-info', Rare: 'is-success', Legendary: 'is-warning', Mythic: 'is-danger' };
-    resultRarity.className = `tag ${tierColors[rarity] || 'is-light'} is-size-7 ml-2`;
+// Render the list of collected vanity CAs
+function renderVanityCAList() {
+  const listEl = document.getElementById('vanityCAList');
+  const emptyEl = document.getElementById('vanityCAListEmpty');
+  if (!listEl) return;
+
+  if (vanityCAKeypairs.length === 0) {
+    listEl.innerHTML = '';
+    if (emptyEl) emptyEl.classList.remove('hidden');
+    return;
   }
+
+  if (emptyEl) emptyEl.classList.add('hidden');
+
+  const tierColors = { Common: 'is-info', Rare: 'is-success', Legendary: 'is-warning', Mythic: 'is-danger' };
+  let html = '';
+  vanityCAKeypairs.forEach((ca, i) => {
+    const color = tierColors[ca.rarity] || 'is-light';
+    const selected = i === selectedVanityCA;
+    html += `<div class="vanity-ca-row ${selected ? 'vanity-ca-selected' : ''}" data-index="${i}" style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;border-bottom:1px solid var(--rule, #ddd);">
+      <span class="is-family-monospace is-size-7" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${ca.publicKey}</span>
+      <span class="tag ${color} is-size-7">${ca.rarity} (${ca.epochs.toFixed(1)}&times;)</span>
+      <span class="is-size-7 has-text-grey">${ca.attempts.toLocaleString()} tries</span>
+      ${selected ? '<span class="tag is-success is-size-7">Selected</span>' : ''}
+    </div>`;
+  });
+  listEl.innerHTML = html;
+
+  // Bind click handlers for selection
+  listEl.querySelectorAll('.vanity-ca-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const idx = parseInt(row.dataset.index, 10);
+      selectedVanityCA = idx;
+      renderVanityCAList();
+      const targetEl = document.getElementById('vanityCATarget');
+      if (targetEl) targetEl.value = '';
+      log(`Selected CA: ${vanityCAKeypairs[idx].publicKey}`, 'info');
+    });
+  });
+}
+
+// Clear collected CAs (called on wallet regenerate / full reset)
+function clearVanityCAs() {
+  vanityCAKeypairs = [];
+  selectedVanityCA = null;
+  renderVanityCAList();
 }
 
 // ===========================================================================
@@ -10432,6 +10643,14 @@ function buildLaunchJournalRow(journal, wallet) {
           </button>
         </div>
       ` : ''}
+      ${hasSecret ? `
+        <div class="control">
+          <button class="button is-small is-success" data-action="use-wallet">
+            <span class="icon is-small"><i class="fas fa-play"></i></span>
+            <span>Use wallet for new launch</span>
+          </button>
+        </div>
+      ` : ''}
       ${recoverBtnHtml}
       ${journal.token?.mint ? `
         <div class="control">
@@ -10470,6 +10689,61 @@ function buildLaunchJournalRow(journal, wallet) {
   });
   wrap.querySelector('[data-action="copy-wallet"]').addEventListener('click', async () => {
     await copyText(journal.walletPublicKey, 'Launch wallet public key');
+  });
+
+  // Use-wallet button: load this wallet as active tempWallet for a fresh launch
+  wrap.querySelector('[data-action="use-wallet"]')?.addEventListener('click', async () => {
+    if (!wallet || !wallet.secretKey) return;
+    if (tempWallet) {
+      const ok = await confirmDialog({
+        title: 'Switch wallet?',
+        body: '<p>You already have a wallet from this session. Switching will discard it.</p><p>Proceed?</p>',
+        confirmLabel: 'Switch',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    fundingWallet = null;
+    fundingDetectionExhausted = false;
+    lastSolBalance = 0;
+    createdTokenInfo = null;
+    lpResult = null;
+    fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
+    if (typeof clearVanityCAs === 'function') clearVanityCAs();
+
+    tempWallet = {
+      publicKey: wallet.publicKey,
+      secretKey: wallet.secretKey,
+      secretKeyB58: wallet.secretKeyB58,
+      mnemonic: wallet.mnemonic || null,
+    };
+
+    document.getElementById('walletInfo').classList.remove('hidden');
+    document.getElementById('walletAddress').value = wallet.publicKey;
+    document.getElementById('qrCode').src = '';
+    document.getElementById('privateKeyContainer').classList.add('hidden');
+    document.getElementById('tokenCreatedInfo').classList.add('hidden');
+    document.getElementById('createTokenBtn').classList.remove('hidden');
+    document.getElementById('createLpBtn').classList.remove('hidden');
+    document.getElementById('transferAssetsBtn').classList.remove('hidden');
+    document.getElementById('lpDoneInfo').classList.add('hidden');
+    document.getElementById('lpFailInfo').classList.add('hidden');
+    document.getElementById('lpProgress').classList.add('hidden');
+    document.getElementById('lpProgressTree').innerHTML = '';
+    document.getElementById('transferResult').classList.add('hidden');
+    document.getElementById('fundingWalletInfo').classList.add('hidden');
+    document.getElementById('destinationWallet').value = '';
+
+    for (let i = 2; i <= 6; i++) setStepSummary(i, '');
+    document.body.classList.add('has-log');
+    log('Using wallet from incomplete launch: ' + wallet.publicKey, 'success');
+    markLaunchActiveForRpcHealth(false);
+    if (typeof rebuildPoolsFromSimple === 'function' && pools.length === 0) rebuildPoolsFromSimple();
+    if (typeof applySimpleConfigMode === 'function') applySimpleConfigMode();
+    setStepSummary(1, wallet.publicKey.slice(0, 8) + '…' + wallet.publicKey.slice(-6));
+    if (typeof activateStep === 'function') activateStep(2);
+    if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+    if (typeof updateCancelButtonState === 'function') updateCancelButtonState();
   });
   wrap.querySelector('[data-action="copy-recovery"]')?.addEventListener('click', async () => {
     const text = wallet && (wallet.mnemonic || wallet.secretKeyB58);

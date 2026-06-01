@@ -1,7 +1,4 @@
 // ===========================================================================
-// Step orchestrator — step state machine, activation, cancel & refund
-// ===========================================================================
-// ===========================================================================
 //
 // A step's state is reflected by a CSS class on its card (.is-pending,
 // .is-active, .is-completed). The is-active card has its body visible;

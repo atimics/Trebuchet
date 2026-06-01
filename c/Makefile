@@ -1,14 +1,14 @@
 CC       ?= cc
-CFLAGS   ?= -O3 -flto -Wall -Wextra -Wpedantic -Wno-sign-compare
+CFLAGS   ?= -O3 -flto -march=native -Wall -Wextra -Wpedantic -Wno-sign-compare
 BUILD_DIR = build
 
 VENDOR_DIR = vendor
-INCLUDES   = -I$(VENDOR_DIR) -I$(VENDOR_DIR)/tweetnacl
+INCLUDES   = -I. -I$(VENDOR_DIR) -I$(VENDOR_DIR)/tweetnacl
 
 TWEETNACL_SRCS = $(VENDOR_DIR)/tweetnacl/tweetnacl.c \
                  $(VENDOR_DIR)/tweetnacl/randombytes.c
 
-VANITY_SRCS = vanity_keygen/vanity_keygen.c $(TWEETNACL_SRCS)
+VANITY_SRCS = vanity_keygen/vanity_keygen.c vrf_ed25519.c $(TWEETNACL_SRCS)
 VANITY_BIN  = $(BUILD_DIR)/vanity_keygen
 
 .PHONY: all clean

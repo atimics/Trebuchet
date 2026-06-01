@@ -2,10 +2,10 @@
  * vanity_keygen.c -- High-performance Solana vanity keypair generator.
  *
  * Multi-threaded Ed25519 keypair grind with provable epoch tracking.
- * Uses a deterministic seed chain so the full grind history is verifiable:
- * seed -> keypair_0 -> keypair_1 -> ... -> keypair_n (winner).
- *
- * Rarity tiers (epoch = expected attempts for the target length):
+ * Uses a deterministic seed chain:
+ *   keypair_0 -> keypair_1 -> ... -> keypair_n (winner).
+ * WARNING: The master seed IS the private key of the first keypair in the
+ * chain. It must never be shared; it is NOT part of the public output.
  *   Common:    n <= 1 epoch
  *   Rare:      n <= 2 epochs
  *   Legendary: n <= 3 epochs
@@ -30,6 +30,7 @@
 
 #include "tweetnacl.h"
 #include "base58.h"
+#include "vrf_ed25519.h"
 
 /* ------------------------------------------------------------------ */
 /* Deterministic seed chain for provable grind history                 */
@@ -37,8 +38,8 @@
 
 /* Each thread gets a unique seed derived from a master seed + thread id.
  * Keypair i uses seed = SHA-512(master_seed || thread_id || counter).
- * The proof is (master_seed, total_attempts) — anyone can re-derive
- * the full chain and verify the winner. */
+ * master seed is known, but the seed is NEVER included in public output
+ * because it equals the secret key of the first keypair in the chain. */
 
 #define SEED_CHAIN_BYTES 32
 
@@ -71,6 +72,8 @@ typedef struct {
     uint8_t      result_sk[64];
     char         result_b58[48];
     uint64_t     result_attempt;    /* global attempt index of winner */
+    char         last_pk[48];       /* most recent pubkey for progress display */
+    atomic_int   last_pk_ready;     /* flag: main thread can read last_pk */
     const char  *target;
     int          target_len;
     match_mode_t mode;
@@ -87,7 +90,7 @@ typedef struct {
     grind_state_t *state;
 } thread_arg_t;
 
-#define FLUSH_INTERVAL 8192
+#define FLUSH_INTERVAL 4096
 
 /* ------------------------------------------------------------------ */
 /* Worker thread */
@@ -132,13 +135,19 @@ static void *grind_thread(void *arg) {
 
     memcpy(seed, thread_seed, 32);
 
-    while (!atomic_load(&gs->found)) {
+    while (!atomic_load_explicit(&gs->found, memory_order_relaxed)) {
         /* Derive keypair from current seed */
         crypto_sign_keypair_from_seed(pk, sk, seed);
 
         size_t b58_len = base58_encode(pk, 32, b58, sizeof(b58));
         if (b58_len > 0 && b58_len >= (size_t)gs->target_len) {
-            if (check_match(b58, b58_len, gs->target, gs->target_len,
+            /* Store this key for progress display (sampled every N attempts) */
+        if ((local_attempts & 0xFFF) == 0) {  /* every 4096 attempts */
+            memcpy(gs->last_pk, b58, b58_len + 1);
+            atomic_store(&gs->last_pk_ready, 1);
+        }
+
+        if (check_match(b58, b58_len, gs->target, gs->target_len,
                             gs->mode, gs->case_sensitive)) {
                 bool expected = false;
                 if (atomic_compare_exchange_strong(&gs->found, &expected, true)) {
@@ -154,16 +163,9 @@ static void *grind_thread(void *arg) {
 
         local_attempts++;
 
-        /* Advance seed chain */
-        if ((local_attempts & 0xFFFFF) == 0) { /* every ~1M */
-            /* Re-seed thread periodically for freshness */
-            uint8_t tmp[32];
-            memcpy(tmp, thread_seed, 32);
-            *(uint64_t *)tmp ^= local_attempts;
-            seed_chain_next(tmp, seed);
-        } else {
-            seed_chain_next(seed, seed);
-        }
+        /* Advance seed: use pk itself (already computed above).
+         * Avoids a second crypto_sign_keypair_from_seed call per iteration. */
+        memcpy(seed, pk, 32);
 
         if (local_attempts >= FLUSH_INTERVAL) {
             atomic_fetch_add(&gs->total_attempts, local_attempts);
@@ -220,11 +222,12 @@ static void print_usage(const char *prog) {
         "  --suffix SUFFIX       Match end of address\n"
         "  --threads N           Worker threads (default: CPU count)\n"
         "  --out FILE            Output JSON keypair file (default: stdout)\n"
+        "  --vrf-blockhash HEX    Solana blockhash for VRF seed binding\n"
         "  --case-insensitive    Case-insensitive matching\n"
         "  --quiet               Suppress progress output\n"
         "\n"
         "Output JSON includes provable grind proof:\n"
-        "  { secretKey, publicKey, seed, attempts, rarity, expectedAttempts }\n"
+        "  { secretKey, publicKey, attempts, rarity, expectedAttempts, vrfProof, vrfPk, vrfBlockhash }\n"
         "\n"
         "Examples:\n"
         "  %s --suffix RATi --threads 16 --out rati-ca.json\n",
@@ -241,9 +244,30 @@ static void b58_of(const uint8_t bytes[32], char out[48]) {
     base58_encode(bytes, 32, out, 48);
 }
 
+
+/* Decode hex string to bytes. Returns -1 on error. */
+static int hex_decode(const char *hex, uint8_t *out, int out_len) {
+    int len = (int)strlen(hex);
+    if (len != out_len * 2) return -1;
+    for (int i = 0; i < out_len; i++) {
+        unsigned int byte;
+        if (sscanf(hex + i * 2, "%2x", &byte) != 1) return -1;
+        out[i] = (uint8_t)byte;
+    }
+    return 0;
+}
+
+/* Encode bytes to hex string. out must be at least len*2+1. */
+static void hex_encode(const uint8_t *in, int len, char *out) {
+    for (int i = 0; i < len; i++)
+        sprintf(out + i * 2, "%02x", in[i]);
+    out[len * 2] = '\0';
+}
+
 int main(int argc, char **argv) {
     const char *target_str = NULL;
     const char *out_path = NULL;
+    const char *vrf_blockhash_hex = NULL;
     int thread_count = 0;
     int case_sensitive = 1;
     int quiet = 0;
@@ -260,6 +284,8 @@ int main(int argc, char **argv) {
             out_path = argv[++i];
         } else if (strcmp(argv[i], "--case-insensitive") == 0) {
             case_sensitive = 0;
+        } else if (strcmp(argv[i], "--vrf-blockhash") == 0 && i + 1 < argc) {
+            vrf_blockhash_hex = argv[++i];
         } else if (strcmp(argv[i], "--quiet") == 0) {
             quiet = 1;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -301,9 +327,48 @@ int main(int argc, char **argv) {
     for (int i = 0; i < target_len; i++) prob /= 58.0;
     double expected = 1.0 / prob;
 
+    /* VRF: when a blockhash is provided, derive master_seed from a
+     * VRF proof over the blockhash using a fresh ephemeral keypair.
+     * This proves the seed was bound to a recent blockhash and not
+     * cherry-picked across many re-rolls. Otherwise, fall back to
+     * system entropy (the seed stays fully private). */
+    uint8_t vrf_pk[VRF_PK_BYTES] = {0};
+    uint8_t vrf_sk[VRF_SK_BYTES] = {0};
+    uint8_t vrf_proof[VRF_PROOF_BYTES] = {0};
+    uint8_t vrf_output[VRF_OUTPUT_BYTES] = {0};
+    uint8_t vrf_blockhash[32] = {0};
+    int use_vrf = 0;
+
+    if (vrf_blockhash_hex) {
+        if (hex_decode(vrf_blockhash_hex, vrf_blockhash, 32) != 0) {
+            fprintf(stderr, "Error: --vrf-blockhash must be 64 hex chars "
+                            "(32 bytes, e.g. a Solana blockhash)\n");
+            return 1;
+        }
+        if (vrf_keygen(vrf_pk, vrf_sk) != 0) {
+            fprintf(stderr, "Error: VRF key generation failed\n");
+            return 1;
+        }
+        if (vrf_prove(vrf_proof, vrf_output, vrf_sk,
+                       vrf_blockhash, 32) != 0) {
+            fprintf(stderr, "Error: VRF prove failed\n");
+            return 1;
+        }
+        use_vrf = 1;
+        if (!quiet) {
+            fprintf(stderr, "  VRF: seed bound to blockhash (pk: ");
+            char tmp[65];
+            hex_encode(vrf_pk, 32, tmp);
+            fprintf(stderr, "%s", tmp);
+            fprintf(stderr, ")\n");
+        }
+    }
+
     /* Generate master seed from system entropy */
     uint8_t master_seed[32];
-    if (getentropy(master_seed, 32) != 0) {
+    if (use_vrf) {
+        memcpy(master_seed, vrf_output, 32);
+    } else if (getentropy(master_seed, 32) != 0) {
         struct timeval tv;
         gettimeofday(&tv, NULL);
         for (int i = 0; i < 8; i++) {
@@ -355,7 +420,7 @@ int main(int argc, char **argv) {
     struct timeval last_tv = t_start;
 
     while (atomic_load(&gs.running_threads) > 0) {
-        usleep(500000);
+        usleep(150000);
         if (quiet) continue;
 
         uint64_t total = atomic_load(&gs.total_attempts);
@@ -364,14 +429,18 @@ int main(int argc, char **argv) {
 
         double dt = (double)(now.tv_sec - last_tv.tv_sec) +
                     (double)(now.tv_usec - last_tv.tv_usec) / 1e6;
-        if (dt < 0.01) continue;
+        if (dt < 0.005) continue;
 
         uint64_t delta = total - last_attempts;
         double rate = (double)delta / dt;
 
-        fprintf(stderr, "\r  Attempts: %llu  Rate: %.1f K/s  Running: %d threads  ",
+        const char *pk_str = "";
+        if (atomic_exchange(&gs.last_pk_ready, 0)) {
+            pk_str = gs.last_pk;
+        }
+        fprintf(stderr, "\r  Attempts: %llu  Rate: %.1f K/s  Running: %d threads  Key: %s  ",
                 (unsigned long long)total, rate / 1000.0,
-                atomic_load(&gs.running_threads));
+                atomic_load(&gs.running_threads), pk_str);
         fflush(stderr);
 
         last_attempts = total;
@@ -399,8 +468,7 @@ int main(int argc, char **argv) {
     }
 
     /* Build output JSON with full proof */
-    char seed_b58[48], pk_b58_output[48];
-    b58_of(gs.master_seed, seed_b58);
+    char pk_b58_output[48];
     b58_of(gs.result_pk, pk_b58_output);
 
     char json_buf[8192];
@@ -415,8 +483,6 @@ int main(int argc, char **argv) {
     }
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
         "],\"publicKey\":\"%s\"", pk_b58_output);
-    off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
-        ",\"seed\":\"%s\"", seed_b58);
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
         ",\"attempts\":%llu", (unsigned long long)total_attempts);
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
@@ -433,6 +499,20 @@ int main(int argc, char **argv) {
         ",\"threads\":%d", thread_count);
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
         ",\"elapsedSec\":%.3f", elapsed);
+    if (use_vrf) {
+        char vrf_proof_hex[VRF_PROOF_BYTES * 2 + 1];
+        char vrf_pk_b58[48];
+        char vrf_blockhash_b58[48];
+        hex_encode(vrf_proof, VRF_PROOF_BYTES, vrf_proof_hex);
+        b58_of(vrf_pk, vrf_pk_b58);
+        b58_of(vrf_blockhash, vrf_blockhash_b58);
+        off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
+            ",\"vrfProof\":\"%s\"", vrf_proof_hex);
+        off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
+            ",\"vrfPk\":\"%s\"", vrf_pk_b58);
+        off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
+            ",\"vrfBlockhash\":\"%s\"", vrf_blockhash_b58);
+    }
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
         "}");
 

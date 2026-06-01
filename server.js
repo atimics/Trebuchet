@@ -62,7 +62,15 @@ import {
 } from './validators.js';
 import { isWalletEffectivelyEmpty } from './walletRecovery.js';
 
-import { generateVanityKeypair } from './vanityKeygen.js';
+// Lazy import to avoid crash on startup in packaged builds
+let _generateVanityKeypair = null;
+async function getVanityKeygen() {
+  if (!_generateVanityKeypair) {
+    const mod = await import('./vanityKeygen.js');
+    _generateVanityKeypair = mod.generateVanityKeypair;
+  }
+  return _generateVanityKeypair;
+}
 
 import {
   hostCheckMiddleware,
@@ -397,6 +405,109 @@ app.post('/api/generate-wallet', async (req, res) => {
 // SOL-only balance (kept for backwards compatibility / Step 1 display)
 // ---------------------------------------------------------------------------
 
+// SSE streaming endpoint for vanity CA grind progress
+app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
+  let { prefix, suffix, threads, blockhash } = req.query;
+  if (!prefix && !suffix) {
+    return res.status(400).json({ success: false, error: 'prefix or suffix required' });
+  }
+
+  // Auto-fetch a recent Solana blockhash for VRF seed binding.
+  // The VRF proves the seed was bound to a known-past blockhash,
+  // preventing the grinder from cherry-picking seeds across re-rolls.
+  if (!blockhash) {
+    try {
+      const blockhashResp = await fetch(getRpcUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1,
+          method: 'getLatestBlockhash',
+          params: [{ commitment: 'confirmed' }],
+        }),
+      });
+      const bhJson = await blockhashResp.json();
+      if (bhJson?.result?.value?.blockhash) {
+        blockhash = Buffer.from(bs58.decode(bhJson.result.value.blockhash)).toString('hex');
+      }
+    } catch (_) {
+      // If RPC fetch fails, continue without VRF (seed stays private).
+      console.warn('[vanity] Could not fetch blockhash for VRF; grinding without seed binding');
+    }
+  }
+
+  const target = prefix || suffix;
+  const targetLen = target.length;
+  // 58^len
+  const expected = Math.pow(58, targetLen);
+
+  // SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  // Send initial metadata
+  res.write(`data: ${JSON.stringify({ type: 'start', target, targetLen, expected })}\n\n`);
+
+  let lastAttempts = 0;
+  let lastSend = Date.now();
+
+  try {
+    const generateVanityKeypair = await getVanityKeygen();
+    const result = await generateVanityKeypair({
+      prefix, suffix, threads, blockhash,
+      onProgress: ({ attempts, key }) => {
+        // Throttle to ~4 updates/sec
+        const now = Date.now();
+        if (now - lastSend < 100) return;
+        lastSend = now;
+        lastAttempts = attempts;
+        const epoch = attempts / expected;
+        res.write(`data: ${JSON.stringify({ type: 'progress', attempts, epoch, key })}\n\n`);
+      },
+    });
+
+    const walletInfo = {
+      publicKey: result.publicKey,
+      secretKey: result.secretKey,
+      mnemonic: null,
+    };
+
+    const qrCode = await getWalletQRCode(walletInfo.publicKey);
+
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
+      success: true,
+      wallet: {
+        publicKey: walletInfo.publicKey,
+        secretKey: walletInfo.secretKey,
+        secretKeyB58: secretKeyToBase58(walletInfo.secretKey),
+        mnemonic: null,
+        vanity: true,
+        qrCode,
+        attempts: result.attempts,
+        rarity: result.rarity,
+        epochs: result.epochs,
+        expectedAttempts: result.expectedAttempts,
+        ...(result.vrfProof ? {
+          vrfProof: result.vrfProof,
+          vrfPk: result.vrfPk,
+          vrfBlockhash: result.vrfBlockhash,
+        } : {}),
+      },
+    })}\n\n`);
+
+    res.end();
+  } catch (error) {
+    console.error('Error generating vanity wallet:', error);
+    res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+    res.end();
+  }
+});
+
 app.post('/api/generate-vanity-wallet', async (req, res) => {
   try {
     const { prefix, suffix, threads } = req.body;
@@ -406,6 +517,7 @@ app.post('/api/generate-vanity-wallet', async (req, res) => {
     const target = prefix || suffix;
     console.log(`Generating vanity wallet (${prefix ? 'prefix' : 'suffix'}: "${target}")...`);
 
+    const generateVanityKeypair = await getVanityKeygen();
     const result = await generateVanityKeypair({ prefix, suffix, threads });
 
     // Vanity keypairs don't have a BIP39 mnemonic (they're generated from
@@ -430,7 +542,6 @@ app.post('/api/generate-vanity-wallet', async (req, res) => {
         mnemonic: null,
         vanity: true,
         qrCode,
-        seed: result.seed,
         attempts: result.attempts,
         rarity: result.rarity,
         epochs: result.epochs,

@@ -38,8 +38,11 @@
   "files": [
     "build/**/*",
     "docs/**/*",
+    "lpConstants.js",
+    "lpEstimate.js",
     "main.js",
     "server.js",
+    "serverMiddleware.js",
     "tokenService.js",
     "tokenInfoService.js",
     "tokenMetadataLayout.js",
@@ -47,6 +50,7 @@
     "lpMath.js",
     "swapService.js",
     "swapMath.js",
+    "vanityKeygen.js",
     "walletHelpers.js",
     "walletRecovery.js",
     "rpcConfig.js",
@@ -107,8 +111,11 @@
       "output": "dist"
     },
     "files": [
+      "lpConstants.js",
+      "lpEstimate.js",
       "main.js",
       "server.js",
+      "serverMiddleware.js",
       "tokenService.js",
       "tokenInfoService.js",
       "tokenMetadataLayout.js",
@@ -116,6 +123,7 @@
       "lpMath.js",
       "swapService.js",
       "swapMath.js",
+      "vanityKeygen.js",
       "walletHelpers.js",
       "walletRecovery.js",
       "rpcConfig.js",
@@ -130,11 +138,13 @@
       "metadata.json",
       "README.md",
       "public/**/*",
+      "c/build/**/*",
       "package.json"
     ],
     "asarUnpack": [
       "public/**/*",
-      "public/intro.mp4"
+      "public/intro.mp4",
+      "c/build/**/*"
     ],
     "mac": {
       "icon": "build/icon.icns",
