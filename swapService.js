@@ -160,15 +160,30 @@ const routeDiscoveryCache = new Map();
  * @param solUsd           Decimal of USD per whole SOL (used to convert
  *                         the SOL→token rate from the probe into a
  *                         USD-per-token number)
+ * @param forceFresh       Default false. When true, bypasses the
+ *                         in-memory route cache entirely — both on read
+ *                         (always hits Trade API) and on write (cache
+ *                         isn't disturbed). Used by pool creation to
+ *                         get a just-in-time price right before the
+ *                         pool is created, since pool creation may run
+ *                         many minutes after the funding-estimate that
+ *                         populated the cache, and on thin pools the
+ *                         price can drift meaningfully in that window.
  * @returns { available: true, effectiveQuoteUsd: Decimal } on success,
  *          null if Raydium can't route the pair
  */
-export async function discoverRaydiumRoute({ quoteMint, quoteDecimals, solUsd }) {
+export async function discoverRaydiumRoute({
+  quoteMint,
+  quoteDecimals,
+  solUsd,
+  forceFresh = false,
+}) {
   if (quoteMint === WSOL_MINT) return null;
 
-  // Cache lookup. The cache stores both `null` (no route) and result
-  // objects (route found), so check via has() not value-truthiness.
-  if (routeDiscoveryCache.has(quoteMint)) {
+  // Cache lookup. Skipped when forceFresh is true. The cache stores
+  // both `null` (no route) and result objects (route found), so
+  // check via has() not value-truthiness.
+  if (!forceFresh && routeDiscoveryCache.has(quoteMint)) {
     return routeDiscoveryCache.get(quoteMint);
   }
 
@@ -212,8 +227,145 @@ export async function discoverRaydiumRoute({ quoteMint, quoteDecimals, solUsd })
     console.warn(`discoverRaydiumRoute: ${quoteMint} →`, e.message);
   }
 
-  routeDiscoveryCache.set(quoteMint, result);
+  // Only persist when not a forceFresh call. A forceFresh probe is a
+  // point-in-time snapshot for pool creation; it shouldn't poison the
+  // cache that other callers (funding-estimate refreshes) rely on.
+  if (!forceFresh) {
+    routeDiscoveryCache.set(quoteMint, result);
+  }
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Strict variant of the route probe — used at pool-creation time to
+// enforce the "Raydium probe must succeed or we abort" safety rule.
+//
+// Unlike discoverRaydiumRoute (which swallows failures and returns null
+// so callers can fall back gracefully), this function throws on every
+// failure with a structured `err.code` so the caller can produce a
+// specific user-facing message. The reason we need a separate function
+// is that the discovery semantics differ:
+//
+//   discoverRaydiumRoute: "did we find a route? (null is acceptable
+//                          and means 'no route, oracle fallback ok')"
+//   probeRaydiumPriceStrict: "give us the live price NOW, and tell us
+//                             precisely what went wrong if you can't"
+//
+// Always bypasses the route cache. The point of this call is to get
+// a just-in-time snapshot, never to use a stale value. Also never
+// writes to the cache (so concurrent funding-estimate refreshes
+// aren't perturbed by the strict probe).
+//
+// Throws with the following error.code values on failure:
+//   'NO_ROUTE'        — Trade API returned success=false / data absent.
+//                       Quote token has no Raydium liquidity.
+//   'HTTP_ERROR'      — Trade API responded with non-2xx status.
+//                       Likely a transient API problem.
+//   'NETWORK_ERROR'   — fetch threw (DNS, connection reset, timeout).
+//                       Likely transient infrastructure issue.
+//   'BAD_RESPONSE'    — Trade API success but amounts are zero/missing.
+//                       Indicates an API contract change or anomaly.
+//
+// On success returns { effectiveQuoteUsd: Decimal, inputLamports,
+// outputRaw } so callers can log diagnostics if they want.
+export async function probeRaydiumPriceStrict({
+  quoteMint,
+  quoteDecimals,
+  solUsd,
+}) {
+  if (quoteMint === WSOL_MINT) {
+    // SOL is the input side of the probe. There's no probe for SOL
+    // itself; callers should resolve SOL/USD via the oracle chain
+    // instead and treat oracle failure as the hard-stop condition.
+    const err = new Error('Cannot probe SOL against itself');
+    err.code = 'INVALID_USAGE';
+    throw err;
+  }
+
+  const url = new URL(`${RAYDIUM_SWAP_API}/compute/swap-base-in`);
+  url.searchParams.set('inputMint', WSOL_MINT);
+  url.searchParams.set('outputMint', quoteMint);
+  url.searchParams.set('amount', ROUTE_PROBE_LAMPORTS);
+  url.searchParams.set('slippageBps', '500');
+  url.searchParams.set('txVersion', 'V0');
+
+  let resp;
+  try {
+    resp = await fetchWithTimeout(url.toString(), {
+      headers: { Accept: 'application/json' },
+    });
+  } catch (e) {
+    // AbortError (timeout) and network failures land here.
+    const err = new Error(
+      `Couldn't reach the Raydium Trade API to verify the price of ${quoteMint}: ${e.message}`,
+    );
+    err.code = 'NETWORK_ERROR';
+    err.cause = e;
+    throw err;
+  }
+
+  if (!resp.ok) {
+    const err = new Error(
+      `Raydium Trade API returned HTTP ${resp.status} when probing ${quoteMint}`,
+    );
+    err.code = 'HTTP_ERROR';
+    err.status = resp.status;
+    throw err;
+  }
+
+  let json;
+  try {
+    json = await resp.json();
+  } catch (e) {
+    const err = new Error(
+      `Raydium Trade API returned malformed JSON when probing ${quoteMint}`,
+    );
+    err.code = 'BAD_RESPONSE';
+    err.cause = e;
+    throw err;
+  }
+
+  if (json?.success !== true || !json.data) {
+    const err = new Error(
+      `Raydium can't route a swap against ${quoteMint}: ${json?.msg || 'no route'}`,
+    );
+    err.code = 'NO_ROUTE';
+    err.raydiumMsg = json?.msg || null;
+    throw err;
+  }
+
+  // inputAmount is in lamports (SOL has 9 decimals).
+  // outputAmount is in raw quote token units.
+  const inputAmount = new Decimal(json.data.inputAmount || 0);
+  const outputAmount = new Decimal(json.data.outputAmount || 0);
+  if (!inputAmount.gt(0) || !outputAmount.gt(0)) {
+    const err = new Error(
+      `Raydium probe for ${quoteMint} returned zero amounts ` +
+      `(inputAmount=${inputAmount.toString()}, outputAmount=${outputAmount.toString()})`,
+    );
+    err.code = 'BAD_RESPONSE';
+    throw err;
+  }
+
+  const solWhole = inputAmount.div(new Decimal(10).pow(9));
+  const tokensWhole = outputAmount.div(new Decimal(10).pow(quoteDecimals));
+  // Effective USD price per whole quote token:
+  //   (SOL spent in USD) / (tokens received)
+  const effectiveQuoteUsd = solWhole.mul(solUsd).div(tokensWhole);
+
+  if (!effectiveQuoteUsd.isFinite() || !effectiveQuoteUsd.gt(0)) {
+    const err = new Error(
+      `Raydium probe for ${quoteMint} computed a non-positive price: ${effectiveQuoteUsd.toString()}`,
+    );
+    err.code = 'BAD_RESPONSE';
+    throw err;
+  }
+
+  return {
+    effectiveQuoteUsd,
+    inputLamports: inputAmount,
+    outputRaw: outputAmount,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -473,7 +625,7 @@ export async function swapSolForQuote({
   //    rather than reusing one from elsewhere — the launch flow may
   //    take long enough that a stale connection's TCP socket has
   //    timed out, and the cost of opening a new one is negligible.
-  const connection = __connectionFactoryForTests ? __connectionFactoryForTests() : new Connection(getRpcUrl(), {
+  const connection = new Connection(getRpcUrl(), {
     commitment: 'confirmed',
     confirmTransactionInitialTimeout: 60_000,
   });
@@ -483,8 +635,7 @@ export async function swapSolForQuote({
   //    (the oversize swap ambition). A previous partial-fill swap that
   //    delivered enough to satisfy the bootstrap should NOT trigger
   //    another swap on a re-call.
-  const bal = __balanceReaderForTests || { readTokenBalanceRaw, readSolBalanceLamports };
-  const initialQuoteRaw = await bal.readTokenBalanceRaw(connection, ownerPk, mintPk);
+  const initialQuoteRaw = await readTokenBalanceRaw(connection, ownerPk, mintPk);
   if (initialQuoteRaw.gte(effectiveMinRaw)) {
     console.log(
       `  already satisfied (${initialQuoteRaw.toString()} ≥ ${effectiveMinRaw.toString()})`,
@@ -521,7 +672,7 @@ export async function swapSolForQuote({
   // 5. Pre-flight: wallet must have spend + tx-fee headroom. Fail fast
   //    if not, so we surface the actionable error to the user instead
   //    of burning retry budget.
-  const walletSol = await bal.readSolBalanceLamports(connection, ownerPk);
+  const walletSol = await readSolBalanceLamports(connection, ownerPk);
   if (walletSol.lt(required)) {
     throw new Error(
       `INSUFFICIENT_SOL: wallet has ${(walletSol.toNumber() / LAMPORTS_PER_SOL).toFixed(6)} SOL, ` +
@@ -553,7 +704,7 @@ export async function swapSolForQuote({
     // need (e.g. $1), there's no point retrying just to hit the
     // bigger acquire target (e.g. $2). The bigger target exists as a
     // slippage buffer, not a hard requirement.
-    const currentRaw = await bal.readTokenBalanceRaw(connection, ownerPk, mintPk);
+    const currentRaw = await readTokenBalanceRaw(connection, ownerPk, mintPk);
     if (currentRaw.gte(effectiveMinRaw)) {
       console.log(
         `    balance now satisfies bootstrap need (${currentRaw.toString()} ≥ ${effectiveMinRaw.toString()}); finishing`,
@@ -575,8 +726,7 @@ export async function swapSolForQuote({
       );
 
       // 6a. Fetch quote.
-      const quoteFn = __tradeApiForTests?.fetchQuote || fetchTradeApiQuote;
-      const swapResponse = await quoteFn({
+      const swapResponse = await fetchTradeApiQuote({
         inputMint: WSOL_MINT,
         outputMint: quoteMint,
         amountLamports: spendLamports,
@@ -584,8 +734,7 @@ export async function swapSolForQuote({
       });
 
       // 6b. Build serialized transaction(s).
-      const txFn = __tradeApiForTests?.fetchTransactions || fetchTradeApiTransactions;
-      const txs = await txFn({
+      const txs = await fetchTradeApiTransactions({
         swapResponse,
         walletPubkey: ownerPk.toBase58(),
         priorityFeeMicroLamports: rung.priorityFeeMicroLamports,
@@ -606,7 +755,7 @@ export async function swapSolForQuote({
       //     covers minRaw is a SUCCESS — no need to retry. Only flag
       //     as partial-fill-retry when even the minimum wasn't met.
       await new Promise((r) => setTimeout(r, POST_SWAP_SETTLE_MS));
-      const finalRaw = await bal.readTokenBalanceRaw(connection, ownerPk, mintPk);
+      const finalRaw = await readTokenBalanceRaw(connection, ownerPk, mintPk);
       const swappedRaw = finalRaw.sub(initialQuoteRaw);
       if (finalRaw.lt(effectiveMinRaw)) {
         // Even the bootstrap minimum wasn't covered. This is a real
@@ -668,79 +817,4 @@ export async function swapSolForQuote({
   throw new Error(
     `ALL_ATTEMPTS_FAILED: tried ${attemptsTried} attempt(s); ${attemptErrors.join(' | ')}`,
   );
-}
-
-// ---------------------------------------------------------------------------
-// Test-only DI seams
-// ---------------------------------------------------------------------------
-//
-// Swap operations hit the Raydium Trade API and Solana RPC — two network
-// surfaces that make offline testing difficult. These seams let the swap
-// integration tests inject fakes for both, matching the pattern used by
-// tokenService.js and lpService.js.
-//
-// Two factories:
-//   - connectionFactory: replaces `new Connection(...)` calls. Must return
-//     an object with getBalance, getLatestBlockhash, sendTransaction,
-//     confirmTransaction, and getParsedAccountInfo.
-//   - tradeApiFactory: replaces the two Raydium Trade API HTTP calls.
-//     Must return { fetchQuote, fetchTransactions } where both are
-//     async functions matching the real signatures.
-//
-// The synthetic module-level variables below (prefixed with __) are the
-// injection points. In production they hold the real implementations;
-// tests swap them via setConnectionFactoryForTests / setTradeApiForTests.
-//
-// NOTE: routeDiscoveryCache is cleared in resetTestFactories so every test
-// starts with a clean cache regardless of what earlier tests discovered.
-
-let __connectionFactoryForTests = null;
-let __tradeApiForTests = null;
-
-export function setConnectionFactoryForTests(factory) {
-  __connectionFactoryForTests = factory;
-}
-
-export function resetConnectionFactoryForTests() {
-  __connectionFactoryForTests = null;
-}
-
-export function setTradeApiForTests(api) {
-  __tradeApiForTests = api;
-}
-
-export function resetTradeApiForTests() {
-  __tradeApiForTests = null;
-
-}
-
-export function resetTestFactories() {
-  __connectionFactoryForTests = null;
-  __tradeApiForTests = null;
-  __balanceReaderForTests = null;
-  routeDiscoveryCache.clear();
-}
-
-export const __testHooks = {
-  getConnectionFactory: () => __connectionFactoryForTests,
-  getTradeApi: () => __tradeApiForTests,
-  routeDiscoveryCache,
-};
-
-// Test-only balance reader injection. When set, swapSolForQuote uses these
-// instead of the real on-chain readers. Both must be provided.
-// Test-only balance reader injection. When set, swapSolForQuote uses these
-// instead of the real on-chain readers. Both readTokenBalanceRaw and
-// readSolBalanceLamports must be provided.
-//
-// IMPORTANT: the injected readers must replicate the production contract —
-// on error, return BN(0), never throw. The swap function's error
-// classification (INSUFFICIENT_SOL, NO_USABLE_POOL, ALL_ATTEMPTS_FAILED)
-// depends on readers returning 0 on failure rather than throwing exceptions.
-let __balanceReaderForTests = null;
-export function setBalanceReaderForTests(reader) {
-  __balanceReaderForTests = reader;
-}
-export function resetBalanceReaderForTests() {
-  __balanceReaderForTests = null;
 }

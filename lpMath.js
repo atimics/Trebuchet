@@ -221,3 +221,52 @@ export function computeSupportTicks({
   }
   return { tickLower, tickUpper };
 }
+
+// ===========================================================================
+// Price drift helpers
+// ===========================================================================
+//
+// Used by the Milestone A drift guard in lpService.js to compare a
+// just-in-time Raydium probe against the price the user committed to
+// at funding-estimate time. Kept here (no SDK dependencies) so the
+// logic can be unit-tested in isolation, separate from the network-
+// touching probe code.
+
+// Compute the symmetric drift ratio between two positive numbers. Always
+// returns >= 1; exactly 1 means the two values are identical, larger
+// values mean more drift. The "symmetric" part: ratio(0.8, 1.0) and
+// ratio(1.0, 0.8) both return 1.25, since drift is bidirectional —
+// the user committing at $1 and seeing live market at $0.80 is the
+// same magnitude of concern as committing at $0.80 and seeing live
+// market at $1.
+//
+// Inputs are plain numbers. Caller is responsible for ensuring they're
+// positive and finite; this function returns Infinity/NaN for invalid
+// inputs (e.g. one side is zero) so calling code can spot the problem
+// rather than the function silently doing the wrong thing.
+export function measurePriceDrift(a, b) {
+  if (!isFinite(a) || !isFinite(b) || a <= 0 || b <= 0) return NaN;
+  return a > b ? a / b : b / a;
+}
+
+// Boolean: does the drift between a and b exceed the threshold? The
+// threshold is expressed as a ratio (e.g. 1.25 means "abort if either
+// value is more than 25% larger than the other"). Returns false on
+// invalid input — caller's job to validate inputs separately if they
+// want to distinguish "no drift" from "input was bad."
+export function driftExceedsThreshold(a, b, thresholdRatio) {
+  if (!isFinite(thresholdRatio) || thresholdRatio < 1) return false;
+  const ratio = measurePriceDrift(a, b);
+  return isFinite(ratio) && ratio > thresholdRatio;
+}
+
+// Signed drift as a percent: how much higher (positive) or lower
+// (negative) `current` is than `reference`. Used for the human-
+// readable "Price is N% higher than the funding estimate" message
+// in the pre-commit confirmation modal.
+//
+// Returns NaN on invalid input.
+export function driftPercent(current, reference) {
+  if (!isFinite(current) || !isFinite(reference) || reference <= 0) return NaN;
+  return ((current - reference) / reference) * 100;
+}

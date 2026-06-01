@@ -1,8 +1,8 @@
 import express from 'express';
-
+import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 import {
@@ -16,15 +16,17 @@ import {
 
 import {
   createPoolsAndPositions,
+  preflightCreatePoolsAndPositions,
   estimateRequiredFunding,
   getUsdPrice,
   getTokenMetadata,
   getClmmFeeTiers,
   getMintCompatibilityWithRaydiumClmm,
   KNOWN_QUOTES,
+  KNOWN_SAFE_QUOTES,
 } from './lpService.js';
 
-import { swapSolForQuote } from './swapService.js';
+import { swapSolForQuote, probeRaydiumPriceStrict } from './swapService.js';
 
 import {
   checkWalletBalanceMultiToken,
@@ -214,6 +216,20 @@ const AUTOSWAP_CONCURRENCY = 1;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const API_SESSION_TOKEN = crypto.randomBytes(32).toString('base64url');
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  "media-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
 
 // Boot-time log: confirms which config values the server is actually
 // using on this launch. Streams to the in-app activity log via the
@@ -222,6 +238,19 @@ console.log(`[boot] AUTOSWAP_CONCURRENCY = ${AUTOSWAP_CONCURRENCY}`);
 console.log(`[boot] PORT = ${PORT}`);
 console.log('[boot] RPC endpoint: configured via in-app RPC settings');
 
+// Configure multer for file uploads
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage,
+  limits: { fileSize: 100 * 1024 }, // 100KB Arweave free-tier limit
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype === 'image/png' || file.mimetype === 'image/jpeg') {
+      cb(null, true);
+      return;
+    }
+    cb(new Error('Logo must be a PNG or JPG image'));
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Host header allowlist — DNS rebinding defense.
@@ -259,10 +288,33 @@ console.log('[boot] RPC endpoint: configured via in-app RPC settings');
 // This middleware is registered first, before the body parser, so a
 // rejected request never has its body read into memory.
 // ---------------------------------------------------------------------------
+const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost']);
 
-app.use(hostCheckMiddleware);
+app.use((req, res, next) => {
+  const hostHeader = req.headers.host || '';
+  // Host header format is "hostname" or "hostname:port". Strip the
+  // port for the allowlist check — we don't care which port the
+  // client believes it's talking to (the connection wouldn't have
+  // reached us if it weren't on our actual port), only the hostname.
+  const hostname = hostHeader.split(':')[0];
+  if (!ALLOWED_HOSTS.has(hostname)) {
+    console.warn(
+      `Rejected request with disallowed Host header: ${hostHeader} ` +
+      `${req.method} ${req.url}`,
+    );
+    return res
+      .status(403)
+      .json({ success: false, error: 'invalid Host header' });
+  }
+  next();
+});
 
-app.use(securityHeadersMiddleware);
+app.use((_req, res, next) => {
+  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
 
 // CORS is intentionally not configured. The Trebuchet frontend loads from
 // http://127.0.0.1:<port> and the API serves from the same origin, so no
@@ -281,7 +333,19 @@ app.get('/api/session', (_req, res) => {
     .json({ success: true, token: API_SESSION_TOKEN });
 });
 
-app.use("/api", apiSessionMiddleware);
+app.use('/api', (req, res, next) => {
+  // /session hands out the token itself; /proxy-image is a read-only image
+  // passthrough loaded via <img>/Image (which can't attach custom headers),
+  // so both are exempt from the token gate. Everything else needs the token.
+  if (req.path === '/session' || req.path === '/proxy-image') return next();
+  const token = req.get('x-trebuchet-session');
+  if (token !== API_SESSION_TOKEN) {
+    return res
+      .status(403)
+      .json({ success: false, error: 'invalid API session' });
+  }
+  next();
+});
 
 app.use(express.json({ limit: '5mb' }));
 
@@ -300,7 +364,23 @@ app.use(express.json({ limit: '5mb' }));
 //     The detection finds "\app.asar" (or "/app.asar" on Unix) and
 //     verifies what follows is end-of-string or another separator
 //     (so we don't false-match a hypothetical "app.asarx" component).
-const publicDir = resolvePublicDir(__dirname);
+function resolvePublicDir() {
+  const marker = `${path.sep}app.asar`;
+  const idx = __dirname.indexOf(marker);
+  if (idx === -1) {
+    return path.join(__dirname, 'public');
+  }
+  const after = __dirname[idx + marker.length];
+  if (after !== undefined && after !== path.sep) {
+    return path.join(__dirname, 'public');
+  }
+  const rewritten =
+    __dirname.slice(0, idx) +
+    `${path.sep}app.asar.unpacked` +
+    __dirname.slice(idx + marker.length);
+  return path.join(rewritten, 'public');
+}
+const publicDir = resolvePublicDir();
 
 app.use(express.static(publicDir));
 
@@ -972,6 +1052,29 @@ app.get('/api/proxy-image', async (req, res) => {
 // the cache to clear.
 const compatCache = new Map();
 
+// Step 2 swap-probe cache. Stores the verdict of probeRaydiumPriceStrict
+// for arbitrary (non-known-safe) quote tokens. The /api/quote-token-info
+// endpoint runs the probe to tell the user whether their chosen quote
+// token is Raydium-tradeable BEFORE they commit time to funding.
+//
+// Why cache: the frontend re-resolves quote-token info on every input
+// change as the user types/pastes a mint, which would hammer the
+// Raydium Trade API without caching. The 3-minute TTL is the plan's
+// resolved decision (long enough to absorb keystroke storms, short
+// enough that the cached "tradeable" claim doesn't drift far from
+// reality if Raydium's pools change).
+//
+// Cache entry shape:
+//   { verdict: 'tradeable' | 'no-route' | 'unreachable',
+//     priceUsd: Decimal | null,   // only set when verdict='tradeable'
+//     expiresAt: ms-epoch }
+//
+// IMPORTANT: This is a Step 2 short-circuit. The pool-create-time
+// just-in-time probe in createPoolsAndPositions still runs fresh
+// for every non-SOL quote regardless of this cache.
+const step2ProbeCache = new Map();
+const STEP2_PROBE_TTL_MS = 3 * 60 * 1000;  // 3 minutes
+
 // Quote-token info: when the user picks/enters a quote token in the UI,
 // we look up its symbol/decimals/USD price for inline display. For known
 // quote tokens (SOL/USDC/USDT) we use built-in constants. For arbitrary
@@ -999,19 +1102,36 @@ app.post('/api/quote-token-info', async (req, res) => {
       // and only hit external indexers for the live price.
       const info = { ...KNOWN_QUOTES[upper] };
       const priceUsd = await getUsdPrice(info.address);
+      // priceSource label: SOL uses the dedicated 'sol' label (matches
+      // what funding-estimate emits for SOL pools); USDC/USDT come from
+      // the aggregator chain (no Step 2 probe since they're in
+      // KNOWN_SAFE_QUOTES) so they get 'oracle'.
+      const priceSource = upper === 'SOL' ? 'sol' : 'oracle';
       infoOut = {
         ...info,
         priceUsd: priceUsd ? priceUsd.toString() : null,
+        priceSource,
         // Known quotes are all classic SPL Token and definitionally compatible.
         compatible: true,
         isToken2022: false,
         extensions: [],
         disallowedNames: [],
+        // Known quotes are in KNOWN_SAFE_QUOTES — authority audit is
+        // pre-vetted. Surface the fields explicitly so the UI doesn't
+        // need a special case for known vs arbitrary.
+        freezeAuthorityDisabled: true,
+        mintAuthorityRenounced: true,
+        freezeAuthorityBlock: false,
+        mintAuthorityWarning: false,
+        // Known quotes have well-established Raydium liquidity. Skip
+        // the Step 2 probe — pool-create time still runs a fresh probe
+        // so we can't silently use stale data here.
+        raydiumTradeable: 'yes',
       };
     } else {
       // Arbitrary mint address. tokenInfoService reads decimals + symbol
       // on-chain (always works for any real mint), then tries GeckoTerminal
-      // first then Jupiter as a price fallback. priceUsd may still come
+      // first then DexScreener as a price fallback. priceUsd may still come
       // back null if both indexers fail; the frontend handles that by
       // surfacing the Advanced overrides as the recommended next step.
       // imageUrl/name come from Gecko or DexScreener and may also be null
@@ -1023,6 +1143,12 @@ app.post('/api/quote-token-info', async (req, res) => {
           symbol: meta.symbol,
           decimals: meta.decimals,
           priceUsd: meta.priceUsd ? meta.priceUsd.toString() : null,
+          // Baseline priceSource: the aggregator chain (Gecko →
+          // DexScreener via tokenInfoService) is what produced this
+          // price. If a Raydium probe succeeds below, it'll overwrite
+          // both priceUsd and priceSource with the probe-derived
+          // values.
+          priceSource: meta.priceUsd ? 'oracle' : null,
           name: meta.name ?? null,
           imageUrl: meta.imageUrl ?? null,
         };
@@ -1040,18 +1166,17 @@ app.post('/api/quote-token-info', async (req, res) => {
         };
       }
 
-      // Try the Raydium CLMM compatibility check. If the mint doesn't
-      // exist on-chain (or RPC is down) this will throw — in that case
-      // we still return what we found from indexers, but mark compat as
-      // unknown so the UI doesn't silently let the user pick a token
-      // we couldn't verify.
+      // Try the Raydium CLMM compatibility check + authority audit. If the
+      // mint doesn't exist on-chain (or RPC is down) this will throw — in
+      // that case we still return what we found from indexers, but mark
+      // compat as unknown so the UI doesn't silently let the user pick a
+      // token we couldn't verify.
       //
       // Cache hit short-circuit: a mint's compat profile (program owner,
-      // Token-2022 extensions, whitelist status) is immutable on-chain.
-      // Once we've successfully resolved it, we can return the cached
-      // result forever without re-hitting RPC. This is the main defense
-      // against rate-limit storms when the frontend re-resolves quote
-      // tokens on every keystroke.
+      // Token-2022 extensions, whitelist status, freeze/mint authorities)
+      // is immutable-ish on-chain. Authorities CAN be revoked but never
+      // re-added, and a token that has had its authorities revoked at
+      // some point won't suddenly have them again. So caching is safe.
       const cachedCompat = compatCache.get(quoteToken);
       if (cachedCompat) {
         infoOut.compatible = cachedCompat.compatible;
@@ -1061,6 +1186,15 @@ app.post('/api/quote-token-info', async (req, res) => {
         if (cachedCompat.decimals != null) {
           infoOut.decimals = cachedCompat.decimals;
         }
+        // Old cache entries (written by a previous code version that
+        // didn't include the authority audit) lack these fields. Treat
+        // undefined as "not audited" — same as a fresh-fetch RPC
+        // failure — rather than letting the downstream derivation
+        // produce !undefined === true (false positive block/warning).
+        infoOut.freezeAuthorityDisabled =
+          cachedCompat.freezeAuthorityDisabled ?? null;
+        infoOut.mintAuthorityRenounced =
+          cachedCompat.mintAuthorityRenounced ?? null;
       } else {
         try {
           const connection = new Connection(getRpcConfig().active, 'confirmed');
@@ -1072,6 +1206,8 @@ app.post('/api/quote-token-info', async (req, res) => {
           infoOut.isToken2022 = compat.isToken2022;
           infoOut.extensions = compat.extensions;
           infoOut.disallowedNames = compat.disallowedNames;
+          infoOut.freezeAuthorityDisabled = compat.freezeAuthorityDisabled;
+          infoOut.mintAuthorityRenounced = compat.mintAuthorityRenounced;
           // If we read decimals from chain and indexers gave us a different
           // number, trust the chain (the chain is the source of truth).
           if (compat.decimals != null) {
@@ -1087,12 +1223,169 @@ app.post('/api/quote-token-info', async (req, res) => {
             extensions: compat.extensions,
             disallowedNames: compat.disallowedNames,
             decimals: compat.decimals,
+            freezeAuthorityDisabled: compat.freezeAuthorityDisabled,
+            mintAuthorityRenounced: compat.mintAuthorityRenounced,
           });
         } catch (e) {
           console.warn('Compat check failed:', e.message);
           infoOut.compatible = null; // null = "unknown", distinct from false
           infoOut.compatError = e.message;
+          // We couldn't verify authorities. Don't claim they're safe.
+          infoOut.freezeAuthorityDisabled = null;
+          infoOut.mintAuthorityRenounced = null;
         }
+      }
+
+      // Step 2 Raydium-route probe.
+      //
+      // Per the price-safety plan's Milestone D: tell the user EARLY
+      // (while they're still picking a quote token) whether Raydium can
+      // actually route a swap against their choice. If it can't, they
+      // should pick a different token — pool creation at Step 5 will
+      // hard-fail with a pre_flight error otherwise, but only after
+      // they've already invested time and SOL in Steps 3-4.
+      //
+      // Three possible outcomes, mirrored in the response's
+      // raydiumTradeable field:
+      //   'yes'      — probe succeeded, route exists. Use the probe-
+      //                derived price for display (more truthful than
+      //                the aggregator's number).
+      //   'no'       — Trade API was reached but returned no route.
+      //                Block the user from continuing with this quote.
+      //   'unknown'  — couldn't reach Trade API right now. Allow
+      //                continuation but warn the user; we'll catch it
+      //                again at Step 5.
+      //
+      // The 3-minute cache absorbs keystroke storms (this endpoint
+      // hits per keystroke in the frontend) without disturbing the
+      // pool-create-time probe, which always runs fresh regardless.
+      const isSafeQuote =
+        infoOut.address && KNOWN_SAFE_QUOTES.has(infoOut.address);
+      const needsProbe =
+        !isSafeQuote &&
+        infoOut.address &&
+        typeof infoOut.decimals === 'number' &&
+        infoOut.decimals >= 0 &&
+        infoOut.compatible !== false; // skip if we already know it's not raydium-compatible
+
+      if (isSafeQuote) {
+        infoOut.raydiumTradeable = 'yes';
+      } else if (needsProbe) {
+        // Cache lookup with TTL check.
+        const cachedProbe = step2ProbeCache.get(infoOut.address);
+        const now = Date.now();
+        if (cachedProbe && cachedProbe.expiresAt > now) {
+          // Translate the cache verdict ('tradeable' | 'no-route') into
+          // the API contract value ('yes' | 'no' | 'unknown').
+          if (cachedProbe.verdict === 'tradeable') {
+            infoOut.raydiumTradeable = 'yes';
+            if (cachedProbe.priceUsd) {
+              // Prefer the probe-derived price over the aggregator price.
+              // The probe IS the price the pool will be created at later;
+              // showing it here means the user sees the same number
+              // throughout the flow.
+              infoOut.priceUsd = cachedProbe.priceUsd;
+              infoOut.priceSource = 'raydium-probe (cached)';
+            }
+          } else if (cachedProbe.verdict === 'no-route') {
+            infoOut.raydiumTradeable = 'no';
+          } else {
+            // Future-proof: unknown verdict in cache → treat as unknown
+            // and force a fresh probe by not short-circuiting.
+            infoOut.raydiumTradeable = 'unknown';
+          }
+        } else {
+          // Run the probe. We need SOL/USD to convert the probe's
+          // SOL→token rate into USD.
+          let solUsdForProbe = null;
+          try {
+            solUsdForProbe = await getUsdPrice(KNOWN_QUOTES.SOL.address);
+          } catch (_) { /* silent — handled below */ }
+
+          if (!solUsdForProbe || !solUsdForProbe.gt(0)) {
+            // Can't probe without SOL/USD. Mark as unknown but don't
+            // cache — the user retrying in a moment may succeed.
+            infoOut.raydiumTradeable = 'unknown';
+            infoOut.raydiumProbeError =
+              'Could not resolve SOL/USD to run the probe';
+          } else {
+            try {
+              const probeResult = await probeRaydiumPriceStrict({
+                quoteMint: infoOut.address,
+                quoteDecimals: infoOut.decimals,
+                solUsd: solUsdForProbe,
+              });
+              // Probe succeeded. Cache and update infoOut.
+              const priceStr = probeResult.effectiveQuoteUsd.toString();
+              step2ProbeCache.set(infoOut.address, {
+                verdict: 'tradeable',
+                priceUsd: priceStr,
+                expiresAt: now + STEP2_PROBE_TTL_MS,
+              });
+              infoOut.raydiumTradeable = 'yes';
+              infoOut.priceUsd = priceStr;
+              infoOut.priceSource = 'raydium-probe';
+            } catch (probeErr) {
+              const code = probeErr.code || 'UNKNOWN';
+              if (code === 'NO_ROUTE') {
+                // Cache the verdict — the user typing the same mint
+                // 10 times in a row shouldn't probe 10 times.
+                step2ProbeCache.set(infoOut.address, {
+                  verdict: 'no-route',
+                  priceUsd: null,
+                  expiresAt: now + STEP2_PROBE_TTL_MS,
+                });
+                infoOut.raydiumTradeable = 'no';
+                // Raydium has no pool, but we may already have an
+                // aggregator price from getTokenMetadata earlier in
+                // this function. Label its source so the frontend
+                // techLine renders correctly. If priceUsd is null
+                // here (no aggregator either), the frontend's
+                // no-price warning takes over.
+                if (infoOut.priceUsd != null) {
+                  infoOut.priceSource = 'oracle';
+                }
+              } else {
+                // Network/HTTP/bad-response errors are transient.
+                // Don't cache the failure — let the user retry by
+                // re-typing or by refreshing.
+                infoOut.raydiumTradeable = 'unknown';
+                infoOut.raydiumProbeError = probeErr.message;
+              }
+            }
+          }
+        }
+      } else {
+        // Couldn't determine decimals or compatibility — can't probe.
+        infoOut.raydiumTradeable = 'unknown';
+      }
+
+      // Derive the user-facing block / warning flags from the authority
+      // audit, so the frontend can just check one boolean each.
+      //
+      // freezeAuthorityBlock: a non-null freeze authority on a non-known
+      // quote token is a hard block. The deployer can freeze the launch
+      // wallet's quote-token balance mid-launch and brick the entire
+      // process. Funds would become unrecoverable through normal sweep.
+      //
+      // mintAuthorityWarning: a non-null mint authority is a soft warning.
+      // Supply can be inflated (devaluing pool contents), but the launch
+      // itself can still proceed. User should be cautious.
+      //
+      // For known-safe quotes, both flags are false. For tokens where the
+      // authority audit didn't run (RPC down, mint not on-chain), both
+      // flags are null — the UI should show "couldn't verify" rather
+      // than green-lighting them.
+      if (isSafeQuote) {
+        infoOut.freezeAuthorityBlock = false;
+        infoOut.mintAuthorityWarning = false;
+      } else if (infoOut.freezeAuthorityDisabled === null) {
+        // Audit didn't run successfully — surface as unknown.
+        infoOut.freezeAuthorityBlock = null;
+        infoOut.mintAuthorityWarning = null;
+      } else {
+        infoOut.freezeAuthorityBlock = !infoOut.freezeAuthorityDisabled;
+        infoOut.mintAuthorityWarning = !infoOut.mintAuthorityRenounced;
       }
     }
 
@@ -1447,6 +1740,54 @@ app.get('/api/acquire-quote-tokens/:jobId', (req, res) => {
 app.delete('/api/acquire-quote-tokens/:jobId', (req, res) => {
   const existed = acquireJobs.delete(req.params.jobId);
   res.json({ deleted: existed });
+});
+// Pre-commit dry run of pool creation. Resolves prices, runs the
+// just-in-time Raydium probe, applies the drift guard — but does NO
+// on-chain action. Powers the Milestone C confirmation modal in the
+// frontend: the user sees the actual initialPrice each pool will be
+// created at and confirms before the irreversible /api/create-lp call.
+//
+// Error shape matches /api/create-lp's pre_flight branch so the
+// frontend can handle both with the same code path.
+app.post('/api/preflight-create-lp', async (req, res) => {
+  try {
+    const {
+      tokenTotalSupply,
+      targetMarketCapUsd,
+      allocations,
+    } = req.body;
+
+    if (!Array.isArray(allocations) || allocations.length === 0) {
+      throw new Error('allocations must be a non-empty array');
+    }
+    if (!tokenTotalSupply || !targetMarketCapUsd) {
+      throw new Error('tokenTotalSupply and targetMarketCapUsd required');
+    }
+
+    const result = await preflightCreatePoolsAndPositions({
+      tokenTotalSupply,
+      targetMarketCapUsd,
+      allocations,
+    });
+
+    res.json({
+      success: true,
+      preflight: result,
+    });
+  } catch (error) {
+    // Preflight failures are always pre_flight by definition. Surface
+    // them in the same envelope shape that /api/create-lp uses on
+    // failure so the frontend's error handler treats both identically.
+    console.error('Preflight failed:', error.message);
+    res.status(400).json({
+      success: false,
+      error: error.message,
+      failedPhase: error.failedPhase || 'pre_flight',
+      failedAllocationIndex: error.failedAllocationIndex ?? null,
+      failedAllocation: error.failedAllocation ?? null,
+      probeCode: error.probeCode || null,
+    });
+  }
 });
 
 

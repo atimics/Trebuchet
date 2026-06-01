@@ -3682,13 +3682,59 @@
         </div>
     </div>
 
+    <!-- ============================================================ -->
+    <!-- Pre-commit Confirmation Modal (Milestone C)                    -->
+    <!-- ============================================================ -->
+    <!--
+      Shown before /api/create-lp runs. The preflight endpoint resolves
+      the just-in-time Raydium price for every quote token and checks
+      for drift against what the user committed to at funding time.
+      Modal shows the actual initialPrice each pool will be created
+      at; user confirms or cancels.
+      Body slot is populated dynamically by app.js from the preflight
+      response. Header/footer are static markup.
+    -->
+    <div class="modal" id="createLpConfirmModal">
+        <div class="modal-background"></div>
+        <div class="modal-card" style="max-width: 720px;">
+            <header class="modal-card-head">
+                <p class="modal-card-title">Confirm pool creation</p>
+            </header>
+            <section class="modal-card-body">
+                <p class="mb-3">
+                    Review the initial price for each pool. These are the
+                    prices Trebuchet just fetched from Raydium — the same
+                    pools your launch will be measured against. Once you
+                    confirm, pool creation is irreversible.
+                </p>
+                <div id="createLpConfirmList">
+                    <!-- Populated dynamically: one row per allocation,
+                         showing quote symbol, resolved price, source
+                         label, and any drift indicator. -->
+                </div>
+                <div class="content is-size-7 mt-3 has-text-grey">
+                    <p>If a price looks off, click Cancel and refresh the
+                    funding estimate on Step 3. If prices keep drifting,
+                    you've picked a quote token with very thin liquidity
+                    — consider a different one.</p>
+                </div>
+            </section>
+            <footer class="modal-card-foot">
+                <button class="button" id="createLpConfirmCancelBtn">Cancel</button>
+                <button class="button is-primary" id="createLpConfirmProceedBtn">
+                    <span class="icon"><i class="fas fa-check"></i></span>
+                    <span>Confirm and Create Pools</span>
+                </button>
+            </footer>
+        </div>
+    </div>
+
     <!-- three.js (vendored, r158 UMD global build) powers the 3D coin
          preview; coinRenderer.js is our self-contained coin module. Both
          load before app.js so window.coinRenderer is ready when app.js
          wires it up. Loaded from 'self' to satisfy the CSP. -->
     <script src="vendor/three/three.min.js"></script>
     <script src="coinRenderer.js"></script>
-    <script src="api.js"></script>
     <script src="app.js"></script>
     <!-- ============================================================ -->
     <!-- Generic Confirm Modal                                          -->
