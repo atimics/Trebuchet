@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'crypto';
 
 import path from 'path';
 import fs from 'fs';
@@ -46,7 +47,6 @@ import * as launchJournal from './launchJournal.js';
 import * as userPrefs from './userPrefs.js';
 import * as updateCheckBridge from './updateCheckBridge.js';
 import {
-  Connection,
   Keypair,
   PublicKey,
 } from '@solana/web3.js';
@@ -407,9 +407,27 @@ app.post('/api/generate-wallet', async (req, res) => {
 
 // SSE streaming endpoint for vanity CA grind progress
 app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
-  let { prefix, suffix, threads, blockhash } = req.query;
+  let { prefix, suffix, threads, blockhash, token } = req.query;
+
+  // Validate session token inline.  This endpoint is exempt from the
+  // middleware so EventSource can connect, but we still gate on the
+  // session token delivered as a query parameter.
+  if (!token) {
+    return res.status(403).json({ success: false, error: 'session token required' });
+  }
+  const tokenBuf = Buffer.from(token);
+  const expectedBuf = Buffer.from(API_SESSION_TOKEN);
+  if (tokenBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
+    return res.status(403).json({ success: false, error: 'invalid session token' });
+  }
+
   if (!prefix && !suffix) {
     return res.status(400).json({ success: false, error: 'prefix or suffix required' });
+  }
+
+  // Clamp threads to a consumer-reasonable maximum
+  if (threads) {
+    threads = Math.min(Math.max(1, Number(threads)), 32);
   }
 
   // Auto-fetch a recent Solana blockhash for VRF seed binding.

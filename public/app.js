@@ -9994,6 +9994,12 @@ bind('grindCABtn', 'click', async () => {
       const params = new URLSearchParams();
       if (isSuffix) params.set('suffix', target);
       else params.set('prefix', target);
+      // Pass the session token as a query param — EventSource can't set
+      // custom headers, so the SSE endpoint validates it inline.
+      try {
+        const sessionToken = await window.getApiSessionToken();
+        if (sessionToken) params.set('token', sessionToken);
+      } catch (_) { /* proceed without token; server will reject if required */ }
       const es = new EventSource('/api/generate-vanity-wallet-stream?' + params.toString());
 
       es.onerror = () => { es.close(); };
@@ -10016,12 +10022,8 @@ bind('grindCABtn', 'click', async () => {
               rarity: data.wallet.rarity,
               epochs: data.wallet.epochs,
               attempts: data.wallet.attempts,
+              seed: data.wallet.seed,
             };
-            if (data.wallet.vrfProof) {
-              entry.vrfProof = data.wallet.vrfProof;
-              entry.vrfPk = data.wallet.vrfPk;
-              entry.vrfBlockhash = data.wallet.vrfBlockhash;
-            }
             vanityCAKeypairs.push(entry);
             if (progressEl) progressEl.classList.add('hidden');
             if (listContainer) listContainer.classList.remove('hidden');

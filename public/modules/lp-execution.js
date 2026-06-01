@@ -1232,6 +1232,12 @@ bind('grindCABtn', 'click', async () => {
       const params = new URLSearchParams();
       if (isSuffix) params.set('suffix', target);
       else params.set('prefix', target);
+      // Pass the session token as a query param — EventSource can't set
+      // custom headers, so the SSE endpoint validates it inline.
+      try {
+        const sessionToken = await window.getApiSessionToken();
+        if (sessionToken) params.set('token', sessionToken);
+      } catch (_) { /* proceed without token; server will reject if required */ }
       const es = new EventSource('/api/generate-vanity-wallet-stream?' + params.toString());
 
       es.onerror = () => { es.close(); };

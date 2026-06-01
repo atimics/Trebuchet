@@ -52,7 +52,19 @@ function getBinaryPath() {
  * The output includes the keypair, attempt count, and rarity tier.
  * The deterministic seed is NOT exposed — it equals the private key.
  */
+let _inFlight = null;
+
 export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onProgress } = {}) {
+  // Single-flight guard: only one grind at a time.  If a grind is
+  // already running, reject immediately to avoid spawning concurrent
+  // native processes that would fight for CPU / memory.
+  if (_inFlight) {
+    return Promise.reject(new Error('A vanity grind is already in progress'));
+  }
+
+  let flightResolve, flightReject;
+  _inFlight = new Promise((res, rej) => { flightResolve = res; flightReject = rej; });
+
   return new Promise((resolve, reject) => {
     let binary;
     try {
@@ -98,6 +110,8 @@ export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onPr
     });
 
     child.on('close', (code) => {
+      _inFlight = null;
+      if (flightResolve) flightResolve();
       if (code !== 0) {
         reject(new Error(`Vanity keygen exited ${code}: ${stderr}`));
         return;
@@ -132,6 +146,8 @@ export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onPr
     });
 
     child.on('error', (err) => {
+      _inFlight = null;
+      if (flightResolve) flightResolve();
       reject(new Error(`Spawn failed: ${err.message}`));
     });
   });

@@ -37,8 +37,12 @@ int vrf_verify(uint8_t output[VRF_OUTPUT_BYTES],
                const uint8_t pk[VRF_PK_BYTES],
                const uint8_t *msg, unsigned long long mlen,
                const uint8_t proof[VRF_PROOF_BYTES]) {
-    unsigned char decoded[mlen];
-    unsigned long long dlen = mlen;
+    /* Use a fixed-size stack buffer with a reasonable upper bound.
+     * In practice the only caller passes a 32-byte Solana blockhash,
+     * so a 256-byte buffer is generous. */
+    unsigned char decoded[256];
+    unsigned long long dlen = sizeof(decoded);
+    if (mlen > sizeof(decoded)) return -1;
     if (crypto_sign_open(decoded, &dlen, proof, VRF_PROOF_BYTES, pk) != 0)
         return -1;
     if (dlen != mlen || memcmp(decoded, msg, mlen) != 0) return -1;

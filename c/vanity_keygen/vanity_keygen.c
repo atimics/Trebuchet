@@ -37,9 +37,11 @@
 /* ------------------------------------------------------------------ */
 
 /* Each thread gets a unique seed derived from a master seed + thread id.
- * Keypair i uses seed = SHA-512(master_seed || thread_id || counter).
- * master seed is known, but the seed is NEVER included in public output
- * because it equals the secret key of the first keypair in the chain. */
+ * The seed chain advances by using the generated public key as the next
+ * seed: seed_{i+1} = pk_i[0..31]. This is a deterministic one-way chain
+ * (reversing it requires breaking Ed25519 preimage resistance).
+ * The master seed is NEVER included in public output because it equals
+ * the secret key of the first keypair in the chain. */
 
 #define SEED_CHAIN_BYTES 32
 
@@ -120,13 +122,14 @@ static void *grind_thread(void *arg) {
     uint64_t local_attempts = 0;
     uint64_t global_base = (uint64_t)ta->id * gs->attempts_per_thread;
 
-    /* Derive thread-specific seed from master_seed + thread_id */
+    /* Derive thread-specific seed from master_seed.
+     * XOR thread id into the first 8 bytes to give each thread a distinct
+     * starting point in the seed space, then one-way it so the master seed
+     * remains irrecoverable from any thread's seed. */
     uint8_t thread_seed[32];
     memcpy(thread_seed, gs->master_seed, 32);
-    /* XOR thread id into first 8 bytes for uniqueness */
     uint64_t tid = (uint64_t)ta->id;
     for (int i = 0; i < 8; i++) thread_seed[i] ^= (uint8_t)(tid >> (i * 8));
-    /* One-way it through the seed chain */
     seed_chain_next(thread_seed, thread_seed);
 
     uint8_t pk[32], sk[64];
@@ -141,11 +144,16 @@ static void *grind_thread(void *arg) {
 
         size_t b58_len = base58_encode(pk, 32, b58, sizeof(b58));
         if (b58_len > 0 && b58_len >= (size_t)gs->target_len) {
-            /* Store this key for progress display (sampled every N attempts) */
-        if ((local_attempts & 0xFFF) == 0) {  /* every 4096 attempts */
-            memcpy(gs->last_pk, b58, b58_len + 1);
-            atomic_store(&gs->last_pk_ready, 1);
-        }
+            /* Store this key for progress display (sampled every 4096 attempts).
+             * Use CAS on last_pk_ready so only one thread writes the buffer at a
+             * time — avoids a data race on the shared last_pk[48] across threads. */
+            if ((local_attempts & 0xFFF) == 0) {
+                int expected_flag = 0;
+                if (atomic_compare_exchange_strong(&gs->last_pk_ready, &expected_flag, 1)) {
+                    memcpy(gs->last_pk, b58, b58_len + 1);
+                    atomic_store_explicit(&gs->last_pk_ready, 1, memory_order_release);
+                }
+            }
 
         if (check_match(b58, b58_len, gs->target, gs->target_len,
                             gs->mode, gs->case_sensitive)) {
@@ -196,8 +204,7 @@ static const char *rarity_name(rarity_tier_t r) {
         case RARITY_COMMON:    return "Common";
         case RARITY_RARE:      return "Rare";
         case RARITY_LEGENDARY: return "Legendary";
-        case RARITY_MYTHIC:    return "Mythic";
-        default:               return "Unknown";
+        default:               return "Mythic";
     }
 }
 
@@ -250,9 +257,17 @@ static int hex_decode(const char *hex, uint8_t *out, int out_len) {
     int len = (int)strlen(hex);
     if (len != out_len * 2) return -1;
     for (int i = 0; i < out_len; i++) {
-        unsigned int byte;
-        if (sscanf(hex + i * 2, "%2x", &byte) != 1) return -1;
-        out[i] = (uint8_t)byte;
+        char hi = hex[i * 2], lo = hex[i * 2 + 1];
+        int val = 0;
+        if (hi >= '0' && hi <= '9') val = (hi - '0') << 4;
+        else if (hi >= 'a' && hi <= 'f') val = (hi - 'a' + 10) << 4;
+        else if (hi >= 'A' && hi <= 'F') val = (hi - 'A' + 10) << 4;
+        else return -1;
+        if (lo >= '0' && lo <= '9') val |= (lo - '0');
+        else if (lo >= 'a' && lo <= 'f') val |= (lo - 'a' + 10);
+        else if (lo >= 'A' && lo <= 'F') val |= (lo - 'A' + 10);
+        else return -1;
+        out[i] = (uint8_t)val;
     }
     return 0;
 }
@@ -369,13 +384,8 @@ int main(int argc, char **argv) {
     if (use_vrf) {
         memcpy(master_seed, vrf_output, 32);
     } else if (getentropy(master_seed, 32) != 0) {
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        for (int i = 0; i < 8; i++) {
-            master_seed[i]     = (uint8_t)(tv.tv_sec >> (i * 8));
-            master_seed[i + 8] = (uint8_t)(tv.tv_usec >> (i * 8));
-        }
-        for (int i = 16; i < 32; i++) master_seed[i] = (uint8_t)(master_seed[i - 16] ^ 0x5A);
+        fprintf(stderr, "Error: getentropy failed — cannot generate secure seed\n");
+        return 1;
     }
 
     if (!quiet) {
