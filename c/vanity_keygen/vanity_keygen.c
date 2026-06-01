@@ -45,21 +45,97 @@
 
 #define SEED_CHAIN_BYTES 32
 
-/* Simple SHA-512 using tweetnacl's internal hash (we'll use a simpler
- * construction: seed_i = crypto_hash_sha512(seed_{i-1})). Since tweetnacl
- * doesn't expose SHA-512 directly, we use crypto_sign_keypair_from_seed
- * which internally does SHA-512 + clamp + scalar multiply. For the seed
- * chain we just need a one-way function, so we'll use the first 32 bytes
- * of the generated public key as the next seed. */
+/* ------------------------------------------------------------------ */
+/* Fast suffix pre-check helpers                                       */
+/* ------------------------------------------------------------------ */
 
-static void seed_chain_next(const uint8_t prev[32], uint8_t next[32]) {
-    /* Derive a new seed by generating a keypair from the previous seed
-     * and using the first 32 bytes of the public key as the next seed.
-     * This creates a deterministic, irreversible chain (finding a preimage
-     * requires breaking Ed25519). */
-    uint8_t pk[32], sk[64];
-    crypto_sign_keypair_from_seed(pk, sk, prev);
-    memcpy(next, pk, 32);
+/* For suffix targets up to 10 chars (58^10 < 2^64), we pre-check
+ * pk % 58^target_len against the target's numeric value.  This skips
+ * the full base58_encode on ~98% of iterations for typical 4-char
+ * targets -- the single largest optimization in the hot loop.
+ *
+ * For case-insensitive matching, base58 characters have different
+ * indices for different cases (e.g. 'R'=24, 'r'=49), so we enumerate
+ * all 2^k case-variant numeric values and check against each. */
+#define MAX_FAST_TARGET_LEN 10
+#define MAX_CASE_VARIANTS    64
+
+static uint64_t pow58(int exp) {
+    uint64_t r = 1;
+    for (int i = 0; i < exp; i++) r *= 58ULL;
+    return r;
+}
+
+static uint64_t b58_to_u64(const char *s, int len, int *ok) {
+    uint64_t v = 0;
+    for (int i = 0; i < len; i++) {
+        int digit = -1;
+        for (int j = 0; BASE58_ALPHABET[j]; j++) {
+            if (BASE58_ALPHABET[j] == s[i]) { digit = j; break; }
+        }
+        if (digit < 0) { *ok = 0; return 0; }
+        v = v * 58ULL + (uint64_t)digit;
+    }
+    *ok = 1;
+    return v;
+}
+
+static uint64_t pk_mod64(const uint8_t pk[32], uint64_t mod) {
+    uint64_t r = 0;
+    for (int i = 0; i < 32; i++)
+        r = ((r << 8) | (uint64_t)pk[i]) % mod;
+    return r;
+}
+
+/* Generate all case-variant numeric forms of an L-char base58 target.
+ * For each position that is a letter (a-z, A-Z), both cases produce
+ * different base58 digit values.  Enumerates all 2^k combinations
+ * (capped at MAX_CASE_VARIANTS).  Returns the number of variants,
+ * or 0 if too many (caller falls back to full encode). */
+static int gen_case_variants(const char *target, int len,
+                              uint64_t *variants, int max_variants) {
+    int letter_positions[10];
+    int n_letters = 0;
+    for (int i = 0; i < len && n_letters < 10; i++) {
+        char c = target[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
+            letter_positions[n_letters++] = i;
+    }
+    int total = 1 << n_letters;
+    if (total > max_variants) return 0;
+
+    /* Map each char to its two possible base58 indices */
+    int b58_idx[2][10];
+    for (int i = 0; i < len; i++) {
+        char lo = (target[i] >= 'A' && target[i] <= 'Z')
+                   ? (char)(target[i] | 0x20) : target[i];
+        char up = (target[i] >= 'a' && target[i] <= 'z')
+                   ? (char)(target[i] & ~0x20) : target[i];
+        int idx_lo = -1, idx_up = -1;
+        for (int j = 0; BASE58_ALPHABET[j]; j++) {
+            if (BASE58_ALPHABET[j] == lo) idx_lo = j;
+            if (BASE58_ALPHABET[j] == up) idx_up = j;
+        }
+        if (idx_lo < 0 || idx_up < 0) return 0;
+        b58_idx[0][i] = idx_lo;
+        b58_idx[1][i] = idx_up;
+    }
+
+    for (int mask = 0; mask < total; mask++) {
+        uint64_t v = 0;
+        for (int pos = 0; pos < len; pos++) {
+            int use_up = 0;
+            for (int k = 0; k < n_letters; k++) {
+                if (letter_positions[k] == pos) {
+                    use_up = (mask >> k) & 1;
+                    break;
+                }
+            }
+            v = v * 58ULL + (uint64_t)b58_idx[use_up][pos];
+        }
+        variants[mask] = v;
+    }
+    return total;
 }
 
 /* ------------------------------------------------------------------ */
@@ -73,18 +149,22 @@ typedef struct {
     uint8_t      result_pk[32];
     uint8_t      result_sk[64];
     char         result_b58[48];
-    uint64_t     result_attempt;    /* global attempt index of winner */
-    char         last_pk[48];       /* most recent pubkey for progress display */
-    atomic_int   last_pk_ready;     /* flag: main thread can read last_pk */
+    uint64_t     result_attempt;
+    char         last_pk[48];
+    atomic_int   last_pk_ready;
     const char  *target;
     int          target_len;
     match_mode_t mode;
     int          case_sensitive;
     atomic_ullong total_attempts;
     atomic_int   running_threads;
-    /* Deterministic seed chain */
     uint8_t      master_seed[32];
-    uint64_t     attempts_per_thread; /* pre-allocated per-thread capacity */
+    uint64_t     attempts_per_thread;
+    /* Fast suffix match: modular check with case-variant support */
+    int          use_fast_match;
+    uint64_t     fast_mod;
+    int          fast_num_variants;
+    uint64_t     fast_target_vals[MAX_CASE_VARIANTS];
 } grind_state_t;
 
 typedef struct {
@@ -92,7 +172,7 @@ typedef struct {
     grind_state_t *state;
 } thread_arg_t;
 
-#define FLUSH_INTERVAL 4096
+#define FLUSH_INTERVAL 16384
 
 /* ------------------------------------------------------------------ */
 /* Worker thread */
@@ -116,21 +196,32 @@ static int check_match(const char *b58, size_t b58_len,
     }
 }
 
+/* CAS-guarded progress sample: encode pk for the display line */
+static inline void progress_sample(grind_state_t *gs, const uint8_t pk[32]) {
+    int expected_flag = 0;
+    if (atomic_compare_exchange_strong(&gs->last_pk_ready,
+                                       &expected_flag, 1)) {
+        base58_encode(pk, 32, gs->last_pk, sizeof(gs->last_pk));
+        atomic_store_explicit(&gs->last_pk_ready, 1, memory_order_release);
+    }
+}
+
 static void *grind_thread(void *arg) {
     thread_arg_t *ta = (thread_arg_t *)arg;
     grind_state_t *gs = ta->state;
     uint64_t local_attempts = 0;
     uint64_t global_base = (uint64_t)ta->id * gs->attempts_per_thread;
 
-    /* Derive thread-specific seed from master_seed.
-     * XOR thread id into the first 8 bytes to give each thread a distinct
-     * starting point in the seed space, then one-way it so the master seed
-     * remains irrecoverable from any thread's seed. */
+    /* Derive thread-specific seed from master_seed. */
     uint8_t thread_seed[32];
     memcpy(thread_seed, gs->master_seed, 32);
     uint64_t tid = (uint64_t)ta->id;
     for (int i = 0; i < 8; i++) thread_seed[i] ^= (uint8_t)(tid >> (i * 8));
-    seed_chain_next(thread_seed, thread_seed);
+    {
+        uint8_t tmp_pk[32], tmp_sk[64];
+        crypto_sign_keypair_from_seed(tmp_pk, tmp_sk, thread_seed);
+        memcpy(thread_seed, tmp_pk, 32);
+    }
 
     uint8_t pk[32], sk[64];
     uint8_t seed[32];
@@ -138,41 +229,65 @@ static void *grind_thread(void *arg) {
 
     memcpy(seed, thread_seed, 32);
 
+    int use_fast = gs->use_fast_match;
+
     while (!atomic_load_explicit(&gs->found, memory_order_relaxed)) {
-        /* Derive keypair from current seed */
         crypto_sign_keypair_from_seed(pk, sk, seed);
 
-        size_t b58_len = base58_encode(pk, 32, b58, sizeof(b58));
-        if (b58_len > 0 && b58_len >= (size_t)gs->target_len) {
-            /* Store this key for progress display (sampled every 4096 attempts).
-             * Use CAS on last_pk_ready so only one thread writes the buffer at a
-             * time — avoids a data race on the shared last_pk[48] across threads. */
-            if ((local_attempts & 0xFFF) == 0) {
-                int expected_flag = 0;
-                if (atomic_compare_exchange_strong(&gs->last_pk_ready, &expected_flag, 1)) {
-                    memcpy(gs->last_pk, b58, b58_len + 1);
-                    atomic_store_explicit(&gs->last_pk_ready, 1, memory_order_release);
+        int matched = 0;
+
+        if (use_fast) {
+            /* Suffix fast-path: pk % 58^L in variant set.
+             * Only do the full base58 encode + string match on a hit,
+             * which happens ~1 in 58^target_len iterations. */
+            uint64_t rem = pk_mod64(pk, gs->fast_mod);
+            int hit = 0;
+            for (int v = 0; v < gs->fast_num_variants; v++) {
+                if (rem == gs->fast_target_vals[v]) { hit = 1; break; }
+            }
+            if (hit) {
+                size_t b58_len = base58_encode(pk, 32, b58, sizeof(b58));
+                if (b58_len > 0) {
+                    matched = check_match(b58, b58_len, gs->target,
+                                          gs->target_len, gs->mode,
+                                          gs->case_sensitive);
                 }
             }
+            if ((local_attempts & 0xFFF) == 0)
+                progress_sample(gs, pk);
 
-        if (check_match(b58, b58_len, gs->target, gs->target_len,
-                            gs->mode, gs->case_sensitive)) {
-                bool expected = false;
-                if (atomic_compare_exchange_strong(&gs->found, &expected, true)) {
-                    memcpy(gs->result_pk, pk, 32);
-                    memcpy(gs->result_sk, sk, 64);
-                    memcpy(gs->result_b58, b58, b58_len + 1);
-                    gs->result_attempt = global_base + local_attempts;
+        } else {
+            /* Full encode every iteration (prefix mode or long suffix) */
+            size_t b58_len = base58_encode(pk, 32, b58, sizeof(b58));
+            if (b58_len > 0) {
+                if ((local_attempts & 0xFFF) == 0) {
+                    int expected_flag = 0;
+                    if (atomic_compare_exchange_strong(&gs->last_pk_ready,
+                                                       &expected_flag, 1)) {
+                        memcpy(gs->last_pk, b58, b58_len + 1);
+                        atomic_store_explicit(&gs->last_pk_ready, 1,
+                                              memory_order_release);
+                    }
                 }
-                local_attempts++;
-                break;
+                matched = check_match(b58, b58_len, gs->target,
+                                      gs->target_len, gs->mode,
+                                      gs->case_sensitive);
             }
         }
 
         local_attempts++;
 
-        /* Advance seed: use pk itself (already computed above).
-         * Avoids a second crypto_sign_keypair_from_seed call per iteration. */
+        if (matched) {
+            bool expected = false;
+            if (atomic_compare_exchange_strong(&gs->found, &expected, true)) {
+                memcpy(gs->result_pk, pk, 32);
+                memcpy(gs->result_sk, sk, 64);
+                memcpy(gs->result_b58, b58, sizeof(b58));
+                gs->result_attempt = global_base + local_attempts;
+            }
+            break;
+        }
+
         memcpy(seed, pk, 32);
 
         if (local_attempts >= FLUSH_INTERVAL) {
@@ -181,9 +296,8 @@ static void *grind_thread(void *arg) {
         }
     }
 
-    if (local_attempts > 0) {
+    if (local_attempts > 0)
         atomic_fetch_add(&gs->total_attempts, local_attempts);
-    }
     atomic_fetch_sub(&gs->running_threads, 1);
     return NULL;
 }
@@ -192,12 +306,7 @@ static void *grind_thread(void *arg) {
 /* Rarity tier */
 /* ------------------------------------------------------------------ */
 
-typedef enum {
-    RARITY_COMMON,
-    RARITY_RARE,
-    RARITY_LEGENDARY,
-    RARITY_MYTHIC,
-} rarity_tier_t;
+typedef enum { RARITY_COMMON, RARITY_RARE, RARITY_LEGENDARY, RARITY_MYTHIC } rarity_tier_t;
 
 static const char *rarity_name(rarity_tier_t r) {
     switch (r) {
@@ -246,13 +355,10 @@ static int get_cpu_count(void) {
     return (n > 0) ? (int)n : 4;
 }
 
-/* Base58-encode 32 bytes into a caller-provided buffer */
 static void b58_of(const uint8_t bytes[32], char out[48]) {
     base58_encode(bytes, 32, out, 48);
 }
 
-
-/* Decode hex string to bytes. Returns -1 on error. */
 static int hex_decode(const char *hex, uint8_t *out, int out_len) {
     int len = (int)strlen(hex);
     if (len != out_len * 2) return -1;
@@ -272,7 +378,6 @@ static int hex_decode(const char *hex, uint8_t *out, int out_len) {
     return 0;
 }
 
-/* Encode bytes to hex string. out must be at least len*2+1. */
 static void hex_encode(const uint8_t *in, int len, char *out) {
     for (int i = 0; i < len; i++)
         sprintf(out + i * 2, "%02x", in[i]);
@@ -342,11 +447,32 @@ int main(int argc, char **argv) {
     for (int i = 0; i < target_len; i++) prob /= 58.0;
     double expected = 1.0 / prob;
 
-    /* VRF: when a blockhash is provided, derive master_seed from a
-     * VRF proof over the blockhash using a fresh ephemeral keypair.
-     * This proves the seed was bound to a recent blockhash and not
-     * cherry-picked across many re-rolls. Otherwise, fall back to
-     * system entropy (the seed stays fully private). */
+    /* Precompute fast-match constants for suffix mode.
+     * For case-sensitive: one numeric value.  For case-insensitive:
+     * enumerate all 2^k case-variant values.  Falls back to full
+     * encode if there are too many variants (> MAX_CASE_VARIANTS). */
+    int use_fast_match = 0;
+    uint64_t fast_mod = 0;
+    int fast_num_variants = 0;
+    uint64_t fast_target_vals[MAX_CASE_VARIANTS] = {0};
+
+    if (mode == MATCH_SUFFIX && target_len <= MAX_FAST_TARGET_LEN) {
+        fast_mod = pow58(target_len);
+        if (case_sensitive) {
+            int ok = 0;
+            fast_target_vals[0] = b58_to_u64(target_str, target_len, &ok);
+            if (ok) { fast_num_variants = 1; use_fast_match = 1; }
+        } else {
+            fast_num_variants = gen_case_variants(target_str, target_len,
+                                                   fast_target_vals,
+                                                   MAX_CASE_VARIANTS);
+            if (fast_num_variants > 0) use_fast_match = 1;
+        }
+    }
+
+    /* VRF: derive master_seed from a VRF proof over the blockhash using
+     * a fresh ephemeral keypair, proving the seed was bound to a recent
+     * blockhash. Falls back to system entropy if no blockhash given. */
     uint8_t vrf_pk[VRF_PK_BYTES] = {0};
     uint8_t vrf_sk[VRF_SK_BYTES] = {0};
     uint8_t vrf_proof[VRF_PROOF_BYTES] = {0};
@@ -379,12 +505,11 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Generate master seed from system entropy */
     uint8_t master_seed[32];
     if (use_vrf) {
         memcpy(master_seed, vrf_output, 32);
     } else if (getentropy(master_seed, 32) != 0) {
-        fprintf(stderr, "Error: getentropy failed — cannot generate secure seed\n");
+        fprintf(stderr, "Error: getentropy failed -- cannot generate secure seed\n");
         return 1;
     }
 
@@ -393,8 +518,13 @@ int main(int argc, char **argv) {
                 mode == MATCH_PREFIX ? "prefix" : "suffix", target_str);
         fprintf(stderr, "  Threads: %d  Expected: 1 in 58^%d (%.0f attempts)\n",
                 thread_count, target_len, expected);
-        fprintf(stderr, "  Rarity tiers: Common ≤%.0f  Rare ≤%.0f  Legendary ≤%.0f  Mythic >%.0f\n",
+        fprintf(stderr, "  Rarity tiers: Common <=%.0f  Rare <=%.0f  Legendary <=%.0f  Mythic >%.0f\n",
                 expected, expected * 2, expected * 3, expected * 3);
+        if (use_fast_match) {
+            fprintf(stderr, "  Fast suffix check: pk %% 58^%d (%d case variant%s)\n",
+                    target_len, fast_num_variants,
+                    fast_num_variants == 1 ? "" : "s");
+        }
         fprintf(stderr, "  Grinding...\n");
     }
 
@@ -403,11 +533,15 @@ int main(int argc, char **argv) {
     atomic_init(&gs.found, false);
     atomic_init(&gs.total_attempts, 0);
     atomic_init(&gs.running_threads, thread_count);
-    gs.target         = target_str;
-    gs.target_len     = target_len;
-    gs.mode           = mode;
-    gs.case_sensitive  = case_sensitive;
+    gs.target            = target_str;
+    gs.target_len        = target_len;
+    gs.mode              = mode;
+    gs.case_sensitive    = case_sensitive;
     gs.attempts_per_thread = (uint64_t)(expected * 4.0 / (double)thread_count) + 1000000;
+    gs.use_fast_match    = use_fast_match;
+    gs.fast_mod          = fast_mod;
+    gs.fast_num_variants = fast_num_variants;
+    memcpy(gs.fast_target_vals, fast_target_vals, sizeof(fast_target_vals));
     memcpy(gs.master_seed, master_seed, 32);
 
     pthread_t *threads = (pthread_t *)calloc((size_t)thread_count, sizeof(pthread_t));
@@ -445,9 +579,8 @@ int main(int argc, char **argv) {
         double rate = (double)delta / dt;
 
         const char *pk_str = "";
-        if (atomic_exchange(&gs.last_pk_ready, 0)) {
+        if (atomic_exchange(&gs.last_pk_ready, 0))
             pk_str = gs.last_pk;
-        }
         fprintf(stderr, "\r  Attempts: %llu  Rate: %.1f K/s  Running: %d threads  Key: %s  ",
                 (unsigned long long)total, rate / 1000.0,
                 atomic_load(&gs.running_threads), pk_str);
@@ -457,9 +590,8 @@ int main(int argc, char **argv) {
         last_tv = now;
     }
 
-    for (int i = 0; i < thread_count; i++) {
+    for (int i = 0; i < thread_count; i++)
         pthread_join(threads[i], NULL);
-    }
 
     struct timeval t_end;
     gettimeofday(&t_end, NULL);
@@ -477,20 +609,16 @@ int main(int argc, char **argv) {
                 rarity_name(rarity), (double)total_attempts / expected);
     }
 
-    /* Build output JSON with full proof */
     char pk_b58_output[48];
     b58_of(gs.result_pk, pk_b58_output);
 
     char json_buf[8192];
     int off = 0;
-    off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
-        "{");
-    off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
-        "\"secretKey\":[");
-    for (int i = 0; i < 64; i++) {
+    off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "{");
+    off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "\"secretKey\":[");
+    for (int i = 0; i < 64; i++)
         off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
                         "%s%d", i > 0 ? "," : "", gs.result_sk[i]);
-    }
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
         "],\"publicKey\":\"%s\"", pk_b58_output);
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
@@ -523,8 +651,7 @@ int main(int argc, char **argv) {
         off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
             ",\"vrfBlockhash\":\"%s\"", vrf_blockhash_b58);
     }
-    off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
-        "}");
+    off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "}");
 
     if (out_path) {
         FILE *f = fopen(out_path, "w");
