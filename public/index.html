@@ -2563,7 +2563,43 @@
             50% { opacity: 0.5; }
         }
 
-    </style>
+    
+        /* ---- Launch report inline preview ---- */
+        .launch-report-preview {
+            border: 1px solid #dbdbdb;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .launch-report-preview-toggle {
+            width: 100%;
+            justify-content: flex-start;
+            padding: 8px 12px;
+            border-radius: 0;
+            background: #fafafa;
+            border-bottom: 1px solid #dbdbdb;
+        }
+        .launch-report-preview-toggle .icon {
+            transition: transform 180ms ease;
+        }
+        .launch-report-preview-toggle.is-expanded .icon {
+            transform: rotate(90deg);
+        }
+        .launch-report-preview-body {
+            background: #efe5cd;
+        }
+        .launch-report-preview-toolbar {
+            display: flex;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #f5f5f5;
+            border-bottom: 1px solid #dbdbdb;
+        }
+        .launch-report-iframe {
+            width: 100%;
+            height: 500px;
+            border: none;
+        }
+</style>
 </head>
 <body>
 
@@ -3362,6 +3398,31 @@
                                 </button>
                             </div>
                         </div>
+
+                        <!-- Inline launch report preview — collapsed by default.
+                             Expandable so the user can inspect addresses,
+                             pool IDs, and TX signatures before the final sweep.
+                             Populated by renderLaunchReportPreview() in launch-report.js. -->
+                        <div class="launch-report-preview mt-3 hidden" id="step5ReportPreview">
+                            <button class="launch-report-preview-toggle button is-small is-text" type="button" id="step5ReportToggle">
+                                <span class="icon"><i class="fas fa-chevron-right"></i></span>
+                                <span>Show launch report preview</span>
+                            </button>
+                            <div class="launch-report-preview-body hidden">
+                                <div class="launch-report-preview-toolbar">
+                                    <button class="button is-small is-text" type="button" id="step5CopyAllAddrs">
+                                        <span class="icon"><i class="fas fa-copy"></i></span>
+                                        <span>Copy all addresses</span>
+                                    </button>
+                                    <button class="button is-small is-text" type="button" id="step5CopyAllTxs">
+                                        <span class="icon"><i class="fas fa-copy"></i></span>
+                                        <span>Copy all TX signatures</span>
+                                    </button>
+                                </div>
+                                <iframe class="launch-report-iframe" id="step5ReportIframe" sandbox="allow-scripts"></iframe>
+                            </div>
+                        </div>
+
                     </div>
 
                     <div id="lpFailInfo" class="hidden mt-3">
@@ -3445,6 +3506,29 @@
                                 <span class="icon"><i class="fas fa-file-download"></i></span>
                                 <span>Download launch report</span>
                             </button>
+                            <!-- Inline launch report preview — collapsed by default.
+                                 Same pattern as step 5. Populated by
+                                 renderLaunchReportPreview() in launch-report.js. -->
+                            <div class="launch-report-preview mt-3 hidden" id="step6ReportPreview">
+                                <button class="launch-report-preview-toggle button is-small is-text" type="button" id="step6ReportToggle">
+                                    <span class="icon"><i class="fas fa-chevron-right"></i></span>
+                                    <span>Show launch report preview</span>
+                                </button>
+                                <div class="launch-report-preview-body hidden">
+                                    <div class="launch-report-preview-toolbar">
+                                        <button class="button is-small is-text" type="button" id="step6CopyAllAddrs">
+                                            <span class="icon"><i class="fas fa-copy"></i></span>
+                                            <span>Copy all addresses</span>
+                                        </button>
+                                        <button class="button is-small is-text" type="button" id="step6CopyAllTxs">
+                                            <span class="icon"><i class="fas fa-copy"></i></span>
+                                            <span>Copy all TX signatures</span>
+                                        </button>
+                                    </div>
+                                    <iframe class="launch-report-iframe" id="step6ReportIframe" sandbox="allow-scripts"></iframe>
+                                </div>
+                            </div>
+
                             <!-- Re-open the launch-success modal. The
                                  modal pops automatically on transfer
                                  success and contains the listing /
@@ -3849,7 +3933,29 @@
                             <span class="launch-success-action-desc">Spin up a hub for your project on coincommunities.org — handy starting point for routing holders to your socials, chat, and announcements.</span>
                         </span>
                     </button>
+                
+                <!-- Inline launch report preview — same pattern as step 5/6.
+                     Collapsed by default. Populated when the modal opens. -->
+                <div class="launch-report-preview mt-3 hidden" id="modalReportPreview">
+                    <button class="launch-report-preview-toggle button is-small is-text" type="button" id="modalReportToggle">
+                        <span class="icon"><i class="fas fa-chevron-right"></i></span>
+                        <span>Show launch report preview</span>
+                    </button>
+                    <div class="launch-report-preview-body hidden">
+                        <div class="launch-report-preview-toolbar">
+                            <button class="button is-small is-text" type="button" id="modalCopyAllAddrs">
+                                <span class="icon"><i class="fas fa-copy"></i></span>
+                                <span>Copy all addresses</span>
+                            </button>
+                            <button class="button is-small is-text" type="button" id="modalCopyAllTxs">
+                                <span class="icon"><i class="fas fa-copy"></i></span>
+                                <span>Copy all TX signatures</span>
+                            </button>
+                        </div>
+                        <iframe class="launch-report-iframe" id="modalReportIframe" sandbox="allow-scripts"></iframe>
+                    </div>
                 </div>
+</div>
             </section>
             <footer class="modal-card-foot">
                 <button class="button" id="launchSuccessDoneBtn">Done</button>
