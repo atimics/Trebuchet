@@ -90,7 +90,8 @@
   "devDependencies": {
     "@types/node": "^20.14.10",
     "electron": "^42.2.0",
-    "electron-builder": "^26.8.1"
+    "electron-builder": "^26.8.1",
+    "playwright": "^1.60.0"
   },
   "overrides": {
     "axios": "^1.16.1",
