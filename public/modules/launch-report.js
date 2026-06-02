@@ -1070,5 +1070,164 @@ async function downloadLaunchReport() {
 }
 
 bind('downloadReportBtnStep5', 'click', downloadLaunchReport);
+
 bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
+
+// ===========================================================================
+// Inline Launch Report Preview
+// ===========================================================================
+//
+// Renders the launch report HTML inline in a sandboxed iframe so the user
+// can inspect addresses, pool IDs, and TX signatures before the final sweep
+// (step 5) or after transfer (step 6 / success modal). Collapsed by default;
+// the toggle button expands it. The download button remains the primary action.
+
+// Memoized report HTML — build once per launch, reuse across all three
+// containers. Reset by the lpDoneInfo/transferResult hide paths.
+let _cachedReportHtml = null;
+function _resetCachedReport() { _cachedReportHtml = null; }
+
+// Build (or retrieve cached) report HTML document string.
+async function _getReportHtml() {
+  if (_cachedReportHtml) return _cachedReportHtml;
+  try {
+    const logoDataUrl = await readLogoAsDataUrl();
+    _cachedReportHtml = buildLaunchReportHtml({ logoDataUrl });
+  } catch (e) {
+    console.error('Failed to build report HTML for preview:', e);
+    _cachedReportHtml = '<html><body><p>Failed to generate preview.</p></body></html>';
+  }
+  return _cachedReportHtml;
+}
+
+// Render the launch report preview for a given container prefix.
+//   prefix: 'step5', 'step6', or 'modal'
+async function renderLaunchReportPreview(prefix) {
+  const container = document.getElementById(prefix + 'ReportPreview');
+  const toggleBtn = document.getElementById(prefix + 'ReportToggle');
+  const body = container?.querySelector('.launch-report-preview-body');
+  const iframe = document.getElementById(prefix + 'ReportIframe');
+  const copyAddrsBtn = document.getElementById(prefix + 'CopyAllAddrs');
+  const copyTxsBtn = document.getElementById(prefix + 'CopyAllTxs');
+
+  if (!container || !toggleBtn || !body || !iframe) return;
+
+  // Reveal the preview container
+  container.classList.remove('hidden');
+
+  // Load the report into the iframe (only if not already loaded)
+  if (!iframe.srcdoc) {
+    const html = await _getReportHtml();
+    iframe.srcdoc = html;
+  }
+
+  // ---- Toggle expand/collapse ----
+  // _wired guards against re-attaching listeners on repeated calls to
+  // renderLaunchReportPreview (e.g. the initial LP success + the resume
+  // path both call it). Safe because this codebase uses static HTML —
+  // no virtual DOM that would replace the element and lose the flag.
+  toggleBtn._wired = toggleBtn._wired || false;
+  if (!toggleBtn._wired) {
+    toggleBtn._wired = true;
+    toggleBtn.addEventListener('click', () => {
+      const expanded = !body.classList.contains('hidden');
+      if (expanded) {
+        body.classList.add('hidden');
+        toggleBtn.classList.remove('is-expanded');
+        toggleBtn.querySelector('span:last-child').textContent = 'Show launch report preview';
+      } else {
+        body.classList.remove('hidden');
+        toggleBtn.classList.add('is-expanded');
+        toggleBtn.querySelector('span:last-child').textContent = 'Hide launch report preview';
+        iframe.style.height = Math.max(400, Math.min(window.innerHeight * 0.6, 700)) + 'px';
+      }
+    });
+  }
+
+  // ---- Bulk-copy: all addresses ----
+  if (copyAddrsBtn && !copyAddrsBtn._wired) {
+    copyAddrsBtn._wired = true;
+    copyAddrsBtn.addEventListener('click', () => {
+      _copyFromIframe(iframe, 'addrs');
+    });
+  }
+
+  // ---- Bulk-copy: all TX signatures ----
+  if (copyTxsBtn && !copyTxsBtn._wired) {
+    copyTxsBtn._wired = true;
+    copyTxsBtn.addEventListener('click', () => {
+      _copyFromIframe(iframe, 'txs');
+    });
+  }
+}
+
+// Extract addresses or TX signatures from the iframe's rendered DOM.
+function _copyFromIframe(iframe, mode) {
+  try {
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc) {
+      log('Cannot access report preview — the iframe may not be loaded yet.', 'warning');
+      return;
+    }
+
+    const codes = doc.querySelectorAll('code.addr-value');
+    const values = [];
+    const ADDR_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+    codes.forEach((code) => {
+      const text = code.textContent.trim();
+      if (!text || text === '\u2014') return;
+
+      const row = code.closest('.addr-row');
+      const label = row ? row.querySelector('.addr-label') : null;
+      const labelText = label ? label.textContent.trim().toUpperCase() : '';
+
+      const isTx = labelText.includes('TX');
+      const isAddr = !isTx && ADDR_RE.test(text);
+
+      if (mode === 'txs' && isTx && text.length >= 85) {
+        values.push(text);
+      } else if (mode === 'addrs' && isAddr) {
+        values.push(text);
+      }
+    });
+
+    if (values.length === 0) {
+      log('No ' + (mode === 'txs' ? 'TX signatures' : 'addresses') + ' found in report.', 'warning');
+      return;
+    }
+
+    const joined = values.join('\n');
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(joined).then(() => {
+        log('Copied ' + values.length + ' ' + (mode === 'txs' ? 'TX signature(s)' : 'address(es)') + ' to clipboard.', 'success');
+      }).catch(() => {
+        _legacyCopyReport(joined, values.length, mode);
+      });
+    } else {
+      _legacyCopyReport(joined, values.length, mode);
+    }
+  } catch (e) {
+    console.error('Bulk copy failed:', e);
+    log('Failed to copy from report preview.', 'danger');
+  }
+}
+
+function _legacyCopyReport(text, count, mode) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    log('Copied ' + count + ' ' + (mode === 'txs' ? 'TX signature(s)' : 'address(es)') + ' to clipboard.', 'success');
+  } catch (e) {
+    log('Copy to clipboard failed — try selecting and copying manually.', 'warning');
+  }
+  document.body.removeChild(ta);
+}
+
+
 

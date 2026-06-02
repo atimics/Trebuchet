@@ -2428,6 +2428,7 @@ function resetForNewLaunch() {
   // 2. Wipe in-memory launch state.
   createdTokenInfo = null;
   lpResult = null;
+  if (typeof _resetCachedReport === 'function') _resetCachedReport();
   fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
   fundingWallet = null;
   lastSolBalance = 0;
