@@ -475,6 +475,58 @@ setupSplashScreen();
     document.body.classList.remove('cursor-clenched');
   });
 })();
+// ===========================================================================
+// Demo mode (renderer side)
+// ---------------------------------------------------------------------------
+// On load we ask the server whether demo mode is on (/api/demo/status). If
+// it is, we show the top-of-page banner and the Step 3 "Pretend funding
+// arrived" button, and we tick the settings checkbox. Toggling the setting
+// (or clicking the banner's Disable button) persists the new value via
+// /api/user-prefs and reloads the page, so the banner, buttons, and all
+// in-memory launch state reset cleanly to match the new mode.
+// ===========================================================================
+(function setupDemoMode() {
+  // Persist a new demoMode value, then reload so every demo-dependent bit
+  // of UI (and the server's per-request demo branching) is consistent.
+  function setDemoMode(enabled) {
+    fetch('/api/user-prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ demoMode: !!enabled }),
+    })
+      .catch((err) => console.warn('Failed to persist demo-mode preference:', err))
+      .finally(() => window.location.reload());
+  }
+
+  // Wire the settings toggle and the banner Disable button up front — they
+  // exist in the DOM regardless of the current mode.
+  bind('demoModeToggle', 'change', (e) => setDemoMode(e.target.checked));
+  bind('demoBannerDisable', 'click', () => setDemoMode(false));
+
+  // Ask the server for the current state and reflect it in the UI.
+  fetch('/api/demo/status')
+    .then((r) => r.json())
+    .then((data) => {
+      demoModeActive = !!(data && data.active);
+
+      const toggle = document.getElementById('demoModeToggle');
+      if (toggle) toggle.checked = demoModeActive;
+
+      const banner = document.getElementById('demoBanner');
+      if (banner) banner.style.display = demoModeActive ? 'flex' : 'none';
+
+      // The "Pretend funding arrived" button lives in Step 3; show its
+      // wrapper only in demo mode.
+      const fundWrap = document.getElementById('demoFundWrap');
+      if (fundWrap) fundWrap.style.display = demoModeActive ? 'block' : 'none';
+    })
+    .catch((err) => {
+      // If the status check fails, assume real mode (the safe default) and
+      // leave the banner/button hidden.
+      console.warn('Demo-mode status check failed; assuming real mode:', err);
+      demoModeActive = false;
+    });
+})();
 
 
 // Final gate evaluation. Both setupDisclaimer() and setupSplashScreen()

@@ -269,6 +269,35 @@ export function handleStatus(req, res, { active }) {
 }
 
 // ===========================================================================
+// /api/find-funder — "Possible funding wallet" detection (funding step)
+// ===========================================================================
+//
+// The real endpoint scans the wallet's on-chain transaction history to
+// guess which wallet funded it. A demo wallet has no real history, and we
+// don't want demo mode making real RPC calls, so we report "no funder
+// detected". The frontend handles a null result gracefully (it just hides
+// the detected-funder hint and stops re-polling). This keeps the funding
+// step fully self-contained in demo mode.
+
+export function handleFindFunder(req, res) {
+  res.json({ success: true, result: null });
+}
+
+// ===========================================================================
+// /api/rpc-health — the periodic RPC health dot
+// ===========================================================================
+//
+// Polled on a timer during active use. In demo mode there's no real RPC to
+// check (and we don't want demo to make real network calls), so we report a
+// healthy endpoint. This keeps the health dot green and prevents the
+// "launches may fail" warning from ever appearing during a demo. Shape
+// mirrors the real handler: { success, health, latencyMs }.
+
+export function handleRpcHealth(req, res) {
+  res.json({ success: true, health: 'good', latencyMs: 0 });
+}
+
+// ===========================================================================
 // /api/demo/inject-funds — the "Pretend funding arrived (DEMO)" button
 // ===========================================================================
 //

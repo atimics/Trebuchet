@@ -7144,6 +7144,7 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
     </div>
   </header>
 
+  ${demoBanner}
   ${statusBanner}
 
   <hr class="section-rule">
@@ -11768,7 +11769,6 @@ setupSplashScreen();
     document.body.classList.remove('cursor-clenched');
   });
 })();
-
 // ===========================================================================
 // Demo mode (renderer side)
 // ---------------------------------------------------------------------------

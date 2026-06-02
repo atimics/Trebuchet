@@ -27,6 +27,11 @@ let lpResult = null;
 let pools = [];
 let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 
+// Demo mode flag. Set once on app load from /api/demo/status (see
+// startup.js). When true, the demo banner and the "Pretend funding
+// arrived" button are shown, and the server simulates all chain calls.
+let demoModeActive = false;
+
 // ---------------------------------------------------------------------------
 // Flywheel presets
 // ---------------------------------------------------------------------------

@@ -524,6 +524,14 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
       mnemonic: null,
     };
 
+    // Demo: register the freshly-ground vanity wallet in the demo ledger so
+    // it starts as an empty, fundable launch wallet — same as the plain
+    // generate-wallet demo branch. (This stream endpoint never writes to the
+    // pending-wallet/journal recovery stores, so there's nothing to skip.)
+    if (isDemoMode()) {
+      demoChainService.registerWallet(walletInfo.publicKey);
+    }
+
     const qrCode = await getWalletQRCode(walletInfo.publicKey);
 
     res.write(`data: ${JSON.stringify({
@@ -578,8 +586,15 @@ app.post('/api/generate-vanity-wallet', async (req, res) => {
     };
 
     const qrCode = await getWalletQRCode(walletInfo.publicKey);
-    pendingWallets.add(walletInfo.publicKey, walletInfo.secretKey, null);
-    launchJournal.start({ walletPublicKey: walletInfo.publicKey });
+    if (isDemoMode()) {
+      // Demo: register an empty wallet in the demo ledger and DON'T touch the
+      // disk-backed recovery stores — mirrors the generate-wallet demo branch
+      // so synthetic demo wallets never leak into real recovery data.
+      demoChainService.registerWallet(walletInfo.publicKey);
+    } else {
+      pendingWallets.add(walletInfo.publicKey, walletInfo.secretKey, null);
+      launchJournal.start({ walletPublicKey: walletInfo.publicKey });
+    }
 
     res.json({
       success: true,
@@ -762,6 +777,7 @@ app.post('/api/rpc-config/test', async (req, res) => {
 // JSON-RPC method that returns "ok" when the node is healthy — it's
 // universally supported and costs essentially nothing.
 app.get('/api/rpc-health', async (_req, res) => {
+  if (isDemoMode()) return demoChainService.handleRpcHealth(_req, res);
   const url = getRpcConfig().active;
   try {
     const start = Date.now();
@@ -2343,6 +2359,16 @@ app.get('/api/launch-journals', (req, res) => {
 });
 
 app.post('/api/launch-journals/resume', async (req, res) => {
+  // In demo mode the journals panel still lists real, disk-backed launches.
+  // Resuming one would send real transactions — exactly what the demo banner
+  // promises won't happen. Refuse with a clear message rather than either
+  // sending real transactions or faking a success on real launch data.
+  if (isDemoMode()) {
+    return res.status(409).json({
+      success: false,
+      error: 'Demo mode is active — disable demo mode (top banner) to resume a real launch.',
+    });
+  }
   let walletPublicKey = null;
   let priorResultsForFailure = [];
   try {
@@ -2623,6 +2649,7 @@ function secretKeyToBase58(secretKeyArr) {
 // shown to the user as a SUGGESTION for the destination wallet, not a source
 // of truth — the user must always confirm the full address before transfer.
 app.post('/api/find-funder', async (req, res) => {
+  if (isDemoMode()) return demoChainService.handleFindFunder(req, res);
   try {
     const { publicKey } = req.body;
     const result = await findFundingWallet(publicKey);
