@@ -5717,6 +5717,7 @@ function resetForNewLaunch() {
   // 2. Wipe in-memory launch state.
   createdTokenInfo = null;
   lpResult = null;
+  if (typeof _resetCachedReport === 'function') _resetCachedReport();
   fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
   fundingWallet = null;
   lastSolBalance = 0;
@@ -7351,6 +7352,10 @@ async function renderLaunchReportPreview(prefix) {
   }
 
   // ---- Toggle expand/collapse ----
+  // _wired guards against re-attaching listeners on repeated calls to
+  // renderLaunchReportPreview (e.g. the initial LP success + the resume
+  // path both call it). Safe because this codebase uses static HTML —
+  // no virtual DOM that would replace the element and lose the flag.
   toggleBtn._wired = toggleBtn._wired || false;
   if (!toggleBtn._wired) {
     toggleBtn._wired = true;

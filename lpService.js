@@ -266,17 +266,7 @@ export async function getClmmFeeTiers() {
       return cachedFeeTiers;
     }
     const json = await resp.json();
-    // The endpoint wraps the array in { id, success, data } in some
-    // versions and returns the bare array in others; accept both.
-    const list = Array.isArray(json) ? json : (json.data || []);
-    if (!Array.isArray(list) || list.length === 0) {
-      console.warn(
-        'getClmmFeeTiers: Raydium API returned empty/unexpected payload, using fallback list',
-      );
-      cachedFeeTiers = normalizeFeeTierList(null);
-      return cachedFeeTiers;
-    }
-    cachedFeeTiers = normalizeFeeTierList(list);
+    cachedFeeTiers = normalizeFeeTierList(json);
     return cachedFeeTiers;
   } catch (e) {
     console.warn(`getClmmFeeTiers: ${e.message}; using fallback list`);
