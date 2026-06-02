@@ -94,6 +94,15 @@ import { getRpcUrl } from './rpcConfig.js';
 // re-export and would leave these undefined locally (which silently sent every
 // SOL price into the fallback path).
 import { getTokenMetadata, getUsdPrice } from './tokenInfoService.js';
+import { normalizeDistribution } from './lpDistribution.js';
+import {
+  FALLBACK_FEE_TIERS,
+  normalizeFeeTierList,
+} from './lpFeeTiers.js';
+import {
+  classifyToken2022Extensions,
+} from './lpMintCompat.js';
+
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -232,19 +241,6 @@ async function logWalletBalances(connection, ownerPk, tokenMint, label) {
 // indices because Raydium can add tiers; we let the API tell us.
 
 const RAYDIUM_CLMM_CONFIG_URL = 'https://api-v3.raydium.io/main/clmm-config';
-
-// Hardcoded fallback for when the Raydium API is unreachable. These are
-// the indices that have been stable since CLMM launched; the broader
-// list (including 2%) is only available via the live API. Keeping this
-// minimal means it's safer to be wrong about what's still in the live
-// set — the user's launch will fall back to a known-good tier.
-const FALLBACK_FEE_TIERS = [
-  { index: 0, tradeFeeRate:  2500, tickSpacing:  60 }, // 0.25%
-  { index: 1, tradeFeeRate:   500, tickSpacing:  10 }, // 0.05%
-  { index: 2, tradeFeeRate:   100, tickSpacing:   1 }, // 0.01%
-  { index: 3, tradeFeeRate: 10000, tickSpacing: 120 }, // 1%
-];
-
 let cachedFeeTiers = null;
 
 /**
@@ -266,7 +262,7 @@ export async function getClmmFeeTiers() {
       console.warn(
         `getClmmFeeTiers: HTTP ${resp.status} from Raydium API, using fallback list`,
       );
-      cachedFeeTiers = FALLBACK_FEE_TIERS;
+      cachedFeeTiers = normalizeFeeTierList(null);
       return cachedFeeTiers;
     }
     const json = await resp.json();
@@ -277,18 +273,10 @@ export async function getClmmFeeTiers() {
       console.warn(
         'getClmmFeeTiers: Raydium API returned empty/unexpected payload, using fallback list',
       );
-      cachedFeeTiers = FALLBACK_FEE_TIERS;
+      cachedFeeTiers = normalizeFeeTierList(null);
       return cachedFeeTiers;
     }
-    cachedFeeTiers = list
-      .map((c) => ({
-        index: c.index,
-        tradeFeeRate: c.tradeFeeRate,
-        tickSpacing: c.tickSpacing,
-      }))
-      .filter((c) => Number.isInteger(c.index) && Number.isInteger(c.tradeFeeRate))
-      // Sort by ascending fee, the most natural way to display them.
-      .sort((a, b) => a.tradeFeeRate - b.tradeFeeRate);
+    cachedFeeTiers = normalizeFeeTierList(list);
     return cachedFeeTiers;
   } catch (e) {
     console.warn(`getClmmFeeTiers: ${e.message}; using fallback list`);
@@ -407,69 +395,6 @@ export const __testHooks = {
 // TokenMetadata, all of which are in this allowlist. They should always work.
 // If pump.fun ever adds an extension to their template that isn't in this
 // allowlist, this check is the trigger that tells us — and the user — clearly.
-const RAYDIUM_CLMM_ALLOWED_TOKEN2022_EXTENSIONS = new Set([
-  ExtensionType.TransferFeeConfig,
-  ExtensionType.MetadataPointer,
-  ExtensionType.TokenMetadata,
-  ExtensionType.InterestBearingConfig,
-  // The rust source spells this ScaledUiAmount; @solana/spl-token v0.4.x
-  // exports it as ScaledUiAmountConfig. Same on-chain extension. Reference
-  // both names so the check survives an SDK rename in either direction.
-  ExtensionType.ScaledUiAmountConfig,
-  ExtensionType.ScaledUiAmount,
-].filter((v) => v !== undefined));
-
-// Raydium's hardcoded MINT_WHITELIST. These 6 specific mints (mostly
-// regulated stablecoins like PYUSD and AUSD) are accepted by the CLMM
-// program even when they carry extensions that would otherwise fail the
-// `is_supported_mint` check — Raydium specifically vetted them.
-//
-// We mirror the same whitelist here so our pre-flight doesn't falsely
-// reject these tokens. Empirically: PYUSD has 8 extensions including
-// PermanentDelegate, ConfidentialTransferMint, and TransferHook — none
-// of which are in the generic allowlist — but it works as a Raydium pool
-// quote token because it's in this list.
-//
-// Source-of-truth (kept in sync with raydium-clmm/programs/amm/src/util/token.rs):
-const RAYDIUM_CLMM_MINT_WHITELIST = new Set([
-  'HVbpJAQGNpkgBaYBZQBR1t7yFdvaYVp2vCQQfKKEN4tM',
-  'Crn4x1Y2HUKko7ox2EZMT6N2t2ZyH7eKtwkBGVnhEq1g',
-  'FrBfWJ4qE5sCzKm3k3JaAtqZcXUh4LvJygDeketsrsH4',
-  '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo', // PYUSD
-  'DAUcJBg4jSpVoEzASxYzdqHMUN8vuTpQyG2TvDcCHfZg',
-  'AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9', // AUSD
-]);
-
-// Friendly names for error messages. These get surfaced in the UI so a
-// dev/user can google the extension name and understand why their token
-// isn't compatible. Keep these aligned with the ExtensionType enum
-// labels in @solana/spl-token; missing entries fall through to "#N".
-//
-// Note on numeric keys: @solana/spl-token v0.4.x doesn't export named
-// constants for ConfidentialTransferFeeConfig (16) and
-// ConfidentialTransferFeeAmount (17), so we hard-code those numbers.
-// They were stable in the spl-token-2022 program from the start.
-const EXTENSION_DISPLAY_NAMES = {
-  [ExtensionType.TransferFeeAmount]:        'TransferFeeAmount (account-side)',
-  [ExtensionType.MintCloseAuthority]:       'MintCloseAuthority',
-  [ExtensionType.ConfidentialTransferMint]: 'ConfidentialTransferMint',
-  [ExtensionType.DefaultAccountState]:      'DefaultAccountState (e.g. frozen-by-default)',
-  [ExtensionType.ImmutableOwner]:           'ImmutableOwner',
-  [ExtensionType.MemoTransfer]:             'MemoTransfer (memo required on transfer)',
-  [ExtensionType.NonTransferable]:          'NonTransferable (soulbound)',
-  [ExtensionType.CpiGuard]:                 'CpiGuard',
-  [ExtensionType.PermanentDelegate]:        'PermanentDelegate',
-  [ExtensionType.TransferHook]:             'TransferHook',
-  16:                                       'ConfidentialTransferFeeConfig',
-  17:                                       'ConfidentialTransferFeeAmount',
-  [ExtensionType.GroupPointer]:             'GroupPointer',
-  [ExtensionType.TokenGroup]:               'TokenGroup',
-  [ExtensionType.GroupMemberPointer]:       'GroupMemberPointer',
-  [ExtensionType.TokenGroupMember]:         'TokenGroupMember',
-  [ExtensionType.PausableConfig]:           'PausableConfig',
-  [ExtensionType.PausableAccount]:          'PausableAccount',
-};
-
 /**
  * Read a mint account and determine whether it can be used as either side of
  * a Raydium CLMM pool. Returns a richly-typed result so callers can decide
@@ -492,6 +417,27 @@ const EXTENSION_DISPLAY_NAMES = {
  *   - mint is owned by a program that isn't one of the two token programs
  *   - the account data can't be parsed as a mint (corrupt / not a mint)
  */
+
+// Map a numeric ExtensionType enum value (from @solana/spl-token) to the
+// string name used by classifyToken2022Extensions in lpMintCompat.js.
+// Handles the two hard-coded numeric values (16, 17) that are stable in
+// the spl-token-2022 program but not exported as named constants in
+// @solana/spl-token v0.4.x.
+function _extensionTypeToName(type) {
+  // Build a reverse-lookup from ExtensionType the first time.
+  if (!_extensionTypeToName._map) {
+    const m = {};
+    for (const [k, v] of Object.entries(ExtensionType)) {
+      if (typeof v === 'number') m[v] = k;
+    }
+    // Hard-coded entries not in the enum export
+    m[16] = 'ConfidentialTransferFeeConfig';
+    m[17] = 'ConfidentialTransferFeeAmount';
+    _extensionTypeToName._map = m;
+  }
+  return _extensionTypeToName._map[type] || `UnknownExtension:${type}`;
+}
+
 export async function getMintCompatibilityWithRaydiumClmm(connection, mintPk) {
   const accountInfo = await connection.getAccountInfo(mintPk, 'confirmed');
   if (!accountInfo) {
@@ -527,48 +473,23 @@ export async function getMintCompatibilityWithRaydiumClmm(connection, mintPk) {
   // Token-2022 path: pull the extension list from the TLV data. Some token
   // accounts (with no extensions) have empty tlvData — getExtensionTypes
   // returns [] in that case, which is fine.
-  const extensions = getExtensionTypes(mint.tlvData || Buffer.alloc(0));
-  const disallowed = extensions.filter(
-    (e) => !RAYDIUM_CLMM_ALLOWED_TOKEN2022_EXTENSIONS.has(e),
-  );
-  const disallowedNames = disallowed.map(
-    (e) => EXTENSION_DISPLAY_NAMES[e] || `extension #${e}`,
-  );
+  const rawExtensions = getExtensionTypes(mint.tlvData || Buffer.alloc(0));
+  // Convert numeric ExtensionType values to string names so the pure
+  // classifyToken2022Extensions (in lpMintCompat.js) can process them
+  // without depending on @solana/spl-token.
+  const extensions = rawExtensions.map((e) => _extensionTypeToName(e));
 
-  // Whitelist short-circuit. Raydium's CLMM hard-codes 6 specific mints as
-  // always-compatible — they have extensions that would otherwise fail the
-  // generic check (e.g. PYUSD has PermanentDelegate, ConfidentialTransfer,
-  // TransferHook, etc.) but the protocol team specifically vetted them.
-  // We have to mirror this here, otherwise our pre-flight would falsely
-  // reject these well-known stablecoins as quote tokens.
-  const isWhitelisted = RAYDIUM_CLMM_MINT_WHITELIST.has(mintPk.toBase58());
-  if (isWhitelisted && disallowed.length > 0) {
-    return {
-      programId: owner,
-      decimals: mint.decimals,
-      isToken2022: true,
-      extensions,
-      compatible: true,
-      whitelisted: true,
-      // Surface the extensions that WOULD be a problem if not whitelisted —
-      // good for diagnostics ("yes I know PYUSD has PermanentDelegate, it's
-      // fine because Raydium whitelisted it"). Empty for whitelisted mints
-      // whose extensions happen to all be in the allowlist already.
-      whitelistedDespite: disallowedNames,
-      disallowed: [],
-      disallowedNames: [],
-    };
-  }
+  const classification = classifyToken2022Extensions(
+    extensions,
+    mintPk.toBase58(),
+  );
 
   return {
     programId: owner,
     decimals: mint.decimals,
     isToken2022: true,
     extensions,
-    compatible: disallowed.length === 0,
-    whitelisted: false,
-    disallowed,
-    disallowedNames,
+    ...classification,
   };
 }
 
@@ -644,37 +565,6 @@ async function resolveQuoteToken(connection, spec, overrides = {}) {
  * Each slice can optionally specify a `recipient` (a base58 wallet address)
  * to transfer that slice's Fee Key NFT to instead of the default sweep.
  */
-function normalizeDistribution(distribution) {
-  if (!distribution || distribution.length === 0) {
-    return [{ sharePercent: 100 }];
-  }
-  const slices = distribution.map((s) => ({
-    sharePercent: Number(s.sharePercent),
-    recipient: s.recipient || null,
-  }));
-  const total = slices.reduce((acc, s) => acc + s.sharePercent, 0);
-  // Tolerate small floating-point drift but reject anything meaningfully off
-  if (Math.abs(total - 100) > 0.01) {
-    throw new Error(
-      `Distribution shares sum to ${total}%, must sum to 100%`,
-    );
-  }
-  if (slices.some((s) => s.sharePercent <= 0)) {
-    throw new Error(`All distribution shares must be > 0%`);
-  }
-  // Validate any recipient addresses
-  for (const s of slices) {
-    if (s.recipient) {
-      try {
-        new PublicKey(s.recipient);
-      } catch (e) {
-        throw new Error(`Invalid recipient address: ${s.recipient}`);
-      }
-    }
-  }
-  return slices;
-}
-
 // ---------------------------------------------------------------------------
 // NFT transfer (used to send Fee Keys to external recipients)
 // ---------------------------------------------------------------------------
