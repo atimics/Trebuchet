@@ -62,6 +62,7 @@ async function runTransfer() {
 
       document.getElementById('transferResult').classList.remove('hidden');
       document.getElementById('tokensTransferred').textContent = data.tokensTransferred ?? '—';
+      renderLaunchReportPreview('step6');
       document.getElementById('solTransferred').textContent = data.solTransferred ?? '—';
       document.getElementById('nftsTransferred').textContent =
         data.nftSweep?.transferred?.length ?? '0';

@@ -192,6 +192,7 @@ bind('createLpBtn', 'click', async () => {
         log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
         document.getElementById('lpDoneInfo').classList.remove('hidden');
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
+        renderLaunchReportPreview('step5');
         // Hide the Create Pools button — re-clicking would attempt to create
         // duplicate pools for the same token, which is wasteful and confusing.
         document.getElementById('createLpBtn').classList.add('hidden');
@@ -902,6 +903,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
         log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
         document.getElementById('lpDoneInfo').classList.remove('hidden');
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
+        renderLaunchReportPreview('step5');
         markLaunchActiveForRpcHealth(false);
         return;
       }
