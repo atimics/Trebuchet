@@ -45,6 +45,11 @@ const DEFAULTS = Object.freeze({
   // turned off (falls back to the flat logo) for weak hardware or
   // personal preference.
   coinPreview: true,
+  // Demo mode. When true, every chain-touching API simulates its result —
+  // no transactions are sent and no SOL is spent. Intended for testing UI
+  // changes, capturing tutorial screenshots, and demonstrating the app
+  // without chain risk. Off by default; intentional opt-in only.
+  demoMode: false,
 });
 
 // Lazy-loaded in-memory cache. We refresh from disk on every get()

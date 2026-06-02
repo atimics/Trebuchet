@@ -1,5 +1,6 @@
 {
   "checkForUpdatesOnStartup": true,
   "medievalCursor": true,
-  "coinPreview": true
+  "coinPreview": true,
+  "demoMode": true
 }

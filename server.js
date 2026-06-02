@@ -46,6 +46,7 @@ import * as pendingWallets from './pendingWallets.js';
 import * as launchJournal from './launchJournal.js';
 import * as userPrefs from './userPrefs.js';
 import * as updateCheckBridge from './updateCheckBridge.js';
+import * as demoChainService from './demoChainService.js';
 import {
   Keypair,
   PublicKey,
@@ -210,6 +211,26 @@ const PORT = process.env.PORT || 3000;
 console.log(`[boot] AUTOSWAP_CONCURRENCY = ${AUTOSWAP_CONCURRENCY}`);
 console.log(`[boot] PORT = ${PORT}`);
 console.log('[boot] RPC endpoint: configured via in-app RPC settings');
+
+// ---------------------------------------------------------------------------
+// Demo mode predicate.
+//
+// When demo mode is on (a user preference, persisted in userPrefs.json),
+// every chain-touching /api/* handler below returns early by delegating to
+// demoChainService.js — no transactions are sent, no SOL is spent. The real
+// service modules are never touched, so real-mode behaviour cannot regress.
+//
+// Read fresh from userPrefs on every call (the file is tiny) so the renderer
+// toggling the setting takes effect immediately on the next request without
+// any server restart or IPC plumbing.
+// ---------------------------------------------------------------------------
+function isDemoMode() {
+  try {
+    return userPrefs.get().demoMode === true;
+  } catch (_) {
+    return false;
+  }
+}
 
 
 // ---------------------------------------------------------------------------
@@ -380,11 +401,20 @@ app.post('/api/generate-wallet', async (req, res) => {
     const walletInfo = await generateTemporaryWallet();
     const qrCode = await getWalletQRCode(walletInfo.publicKey);
 
-    // Stash the key on disk so the user can recover the wallet if the
-    // app crashes or is closed mid-launch. The entry is removed by
-    // /api/transfer-assets once the wallet is verified on-chain empty.
-    pendingWallets.add(walletInfo.publicKey, walletInfo.secretKey, walletInfo.mnemonic);
-    launchJournal.start({ walletPublicKey: walletInfo.publicKey });
+    if (isDemoMode()) {
+      // Demo: still produce a REAL keypair (the secret key is shown to the
+      // user and downstream code expects a valid signer), but register a
+      // fresh empty WalletState in the demo ledger instead of writing to
+      // the disk-backed pending-wallets cache and launch journal. This
+      // keeps the persistent recovery stores free of synthetic demo data.
+      demoChainService.registerWallet(walletInfo.publicKey);
+    } else {
+      // Stash the key on disk so the user can recover the wallet if the
+      // app crashes or is closed mid-launch. The entry is removed by
+      // /api/transfer-assets once the wallet is verified on-chain empty.
+      pendingWallets.add(walletInfo.publicKey, walletInfo.secretKey, walletInfo.mnemonic);
+      launchJournal.start({ walletPublicKey: walletInfo.publicKey });
+    }
 
     res.json({
       success: true,
@@ -572,6 +602,7 @@ app.post('/api/generate-vanity-wallet', async (req, res) => {
   }
 });
 app.post('/api/check-balance', async (req, res) => {
+  if (isDemoMode()) return demoChainService.handleCheckBalance(req, res);
   try {
     const { publicKey } = req.body;
     const balance = await checkWalletBalance(publicKey);
@@ -584,6 +615,7 @@ app.post('/api/check-balance', async (req, res) => {
 
 // Multi-token balance for the funding step (SOL + every SPL token)
 app.post('/api/check-balance-detailed', async (req, res) => {
+  if (isDemoMode()) return demoChainService.handleCheckBalanceDetailed(req, res);
   try {
     const { publicKey } = req.body;
     const balance = await checkWalletBalanceMultiToken(publicKey);
@@ -675,6 +707,29 @@ app.post('/api/user-prefs', (req, res) => {
   } catch (e) {
     res.status(400).json({ success: false, error: e.message });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Demo-mode endpoints (demo-only).
+//
+// /api/demo/status      — the frontend calls this on app load to learn
+//                         whether to show the demo banner and the "Pretend
+//                         funding arrived" button.
+// /api/demo/inject-funds — backs the "Pretend funding arrived (DEMO)"
+//                         button; writes the funding amounts the frontend
+//                         already computed into the demo ledger. Returns
+//                         403 when demo mode is off so it can never affect
+//                         a real launch.
+// ---------------------------------------------------------------------------
+app.get('/api/demo/status', (req, res) => {
+  demoChainService.handleStatus(req, res, { active: isDemoMode() });
+});
+
+app.post('/api/demo/inject-funds', (req, res) => {
+  if (!isDemoMode()) {
+    return res.status(403).json({ success: false, error: 'demo mode is not active' });
+  }
+  demoChainService.handleInjectFunds(req, res);
 });
 
 // Renderer POSTs here after its splash video and first-run disclaimer
@@ -933,6 +988,9 @@ function unsafeCreatedPoolEvents(journal, priorResults) {
 }
 
 app.post('/api/create-token', uploadLogo, async (req, res) => {
+  // uploadLogo (multer) has already parsed req.body / req.file by the time
+  // we reach here, so the demo handler can read the same fields.
+  if (isDemoMode()) return demoChainService.handleCreateToken(req, res);
   let walletPublicKey = null;
   try {
     const {
@@ -1524,6 +1582,14 @@ async function runAcquireJob(job, { ownerKeypair, autoSwapPlan }) {
  * Returns immediately with { jobId } — the frontend polls GET for status.
  */
 app.post('/api/acquire-quote-tokens', async (req, res) => {
+  if (isDemoMode()) {
+    // Hand the demo handler the shared job store + expiry so its fake jobs
+    // live in the same Map the unchanged GET/DELETE poll endpoints read.
+    return demoChainService.handleAcquireQuoteTokens(req, res, {
+      acquireJobs,
+      jobExpiryMs: JOB_EXPIRY_MS,
+    });
+  }
   try {
     const { tempWalletSecretKey, autoSwapPlan } = req.body;
     if (!Array.isArray(autoSwapPlan) || autoSwapPlan.length === 0) {
@@ -1605,6 +1671,7 @@ app.delete('/api/acquire-quote-tokens/:jobId', (req, res) => {
 // Run the full LP creation flow: createPool + main positions + bootstrap +
 // lock + (optional) recipient transfers, for every allocation.
 app.post('/api/create-lp', async (req, res) => {
+  if (isDemoMode()) return demoChainService.handleCreateLp(req, res);
   let walletPublicKey = null;
   try {
     const {
@@ -1751,6 +1818,7 @@ app.post('/api/create-lp', async (req, res) => {
 // Stateless — server can be restarted between failure and resume without
 // affecting recovery, because everything we need lives on chain.
 app.post('/api/resume-launch', async (req, res) => {
+  if (isDemoMode()) return demoChainService.handleResumeLaunch(req, res);
   let walletPublicKey = null;
   try {
     const {
@@ -2101,6 +2169,7 @@ app.get('/api/diagnose-launch', async (req, res) => {
 // doesn't abort the others. Aggregate counts are reported in the
 // response so the frontend can summarize.
 app.post('/api/transfer-assets', async (req, res) => {
+  if (isDemoMode()) return demoChainService.handleTransferAssets(req, res);
   let walletPublicKey = null;
   try {
     const {

@@ -2449,6 +2449,32 @@
         .progress-step.done { color: var(--success); }
         .progress-step.failed { color: #ff3860; }
 
+        /* Demo-mode banner (sticky, top of page) */
+        .demo-banner {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 1rem;
+            background: #fef3c7;       /* amber */
+            color: #6b4b00;            /* dark amber text */
+            border-bottom: 2px solid #f0c040;
+            padding: 0.4rem 1rem;
+            min-height: 32px;
+            font-size: 0.9rem;
+            text-align: center;
+        }
+        .demo-banner-text { line-height: 1.2; }
+        .demo-banner-btn {
+            background: #6b4b00;
+            color: #fff;
+            border: none;
+            font-weight: 600;
+        }
+        .demo-banner-btn:hover { background: #523900; color: #fff; }
+
         /* RPC settings (top of page) */
         .rpc-header {
             display: flex;
@@ -2566,6 +2592,24 @@
     </style>
 </head>
 <body>
+
+    <!-- ============================================================ -->
+    <!-- DEMO MODE banner.                                             -->
+    <!--                                                               -->
+    <!-- Shown across the very top of the page whenever demo mode is   -->
+    <!-- active. It's the failsafe against accidentally doing a real   -->
+    <!-- launch while you think you're still in demo. The Disable      -->
+    <!-- button turns demo mode off in one click (and reloads so all   -->
+    <!-- state resets cleanly). Hidden by default; shown by app.js     -->
+    <!-- once /api/demo/status reports demo mode is on. Sticky so it   -->
+    <!-- stays visible while scrolling.                                -->
+    <!-- ============================================================ -->
+    <div id="demoBanner" class="demo-banner" style="display: none;">
+        <span class="demo-banner-text">
+            <strong>DEMO MODE</strong> — No real transactions will be sent. No SOL is spent.
+        </span>
+        <button id="demoBannerDisable" class="button is-small demo-banner-btn">Disable</button>
+    </div>
 
     <!--
         Splash screen. Plays intro.mp4 once when the page loads, then
@@ -2752,6 +2796,29 @@
                         </div>
                     </div>
                     <p id="rpcTestResult" class="help"></p>
+
+                    <!-- ============================================ -->
+                    <!-- Demo mode toggle. Intentional opt-in (no      -->
+                    <!-- default-on, no first-run prompt). When on,    -->
+                    <!-- all on-chain operations are simulated.        -->
+                    <!-- ============================================ -->
+                    <hr class="my-3">
+                    <h6 class="subtitle is-6 mb-2">Demo Mode</h6>
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="demoModeToggle">
+                            <span>Enable demo mode</span>
+                        </label>
+                    </div>
+                    <p class="help mb-2">
+                        When enabled, all on-chain operations are simulated. No
+                        transactions are sent and no SOL is spent. The flow behaves
+                        identically to a real launch, for UI testing and screenshots.
+                    </p>
+                    <p class="help has-text-warning">
+                        ⚠ Use only for testing and tutorial creation. Disable before
+                        doing real launches.
+                    </p>
                 </div>
             </div>
 
@@ -3267,6 +3334,16 @@
                             <button class="button is-info is-small" id="refreshBalanceBtn">
                                 <span class="icon"><i class="fas fa-sync"></i></span>
                                 <span>Refresh balances</span>
+                            </button>
+                        </div>
+                        <!-- Demo-only: instantly satisfies the SOL + manual-prefund
+                             funding requirement so the balance checks turn green
+                             without sending real funds. Shown by app.js only when
+                             demo mode is active. -->
+                        <div class="control" id="demoFundWrap" style="display: none;">
+                            <button class="button is-warning is-small" id="demoFundBtn">
+                                <span class="icon"><i class="fas fa-hand-holding-usd"></i></span>
+                                <span>Pretend funding arrived (DEMO)</span>
                             </button>
                         </div>
                         <div class="control" id="acquireQuoteTokensWrap" style="display: none;">
