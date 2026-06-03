@@ -26,7 +26,36 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
-#include <sys/random.h>
+
+/* Cross-platform entropy source.
+ *
+ * On POSIX (macOS, Linux) we use getentropy() from <sys/random.h>.
+ * Windows MinGW doesn't ship <sys/random.h> or getentropy(), so we
+ * provide a same-shape static shim backed by BCryptGenRandom — the
+ * Windows Crypto Next Generation RNG. This is the same source
+ * randombytes.c uses for Windows, so the entropy story stays
+ * consistent across the binary. The #pragma comment(lib, ...) is the
+ * MinGW/MSVC idiom for telling the linker to pull in bcrypt.lib;
+ * mirrors what randombytes.c already does. */
+#if defined(_WIN32)
+  #include <windows.h>
+  #include <bcrypt.h>
+  #pragma comment(lib, "bcrypt.lib")
+
+  static int getentropy(void *buf, size_t n) {
+      while (n > 0) {
+          ULONG chunk = (n > 0x7fffffffULL) ? 0x7fffffff : (ULONG)n;
+          NTSTATUS s = BCryptGenRandom(NULL, (PUCHAR)buf, chunk,
+                                       BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+          if (s != 0) return -1;
+          buf = (char *)buf + chunk;
+          n -= chunk;
+      }
+      return 0;
+  }
+#else
+  #include <sys/random.h>
+#endif
 
 #include "tweetnacl.h"
 #include "base58.h"

@@ -4728,7 +4728,7 @@ function renderSimpleConfig() {
         <details id="simpleAirdropDetails"${airdrop._expanded ? ' open' : ''} class="mt-2"
                  style="${simpleConfig.preallocationEnabled ? '' : 'opacity: 0.55; pointer-events: none;'} background: var(--paper-card, #e9dcbf); border: 1px solid var(--rule, rgba(28,22,16,0.15)); border-radius: 4px; padding: 0.6rem 0.85rem;">
           <summary style="user-select: none; padding: 0.15rem 0;">
-            <label class="simple-config-toggle" style="display: inline-flex;" onclick="event.stopPropagation();">
+            <label class="simple-config-toggle" style="display: inline-flex;">
               <input type="checkbox" id="simpleAirdropToggle" ${airdropEnabled ? 'checked' : ''} ${simpleConfig.preallocationEnabled ? '' : 'disabled'}>
               <strong>Airdrop to wallet list</strong>
             </label>
@@ -5189,6 +5189,24 @@ function renderSimpleConfig() {
     airdropDetails.addEventListener('toggle', () => {
       simpleConfig.airdrop._expanded = airdropDetails.open;
     });
+  }
+
+  // The airdrop checkbox sits inside a <label> inside the <summary>.
+  // Native <summary> behavior toggles the parent <details> on any
+  // click within the summary — including clicks on the checkbox.
+  // Without intervention, clicking the checkbox would both flip the
+  // checkbox AND toggle the details panel, doing two things at once.
+  // Stop click propagation at the label so the summary's default
+  // toggle handler never sees the event.
+  //
+  // Previously achieved with an inline onclick attribute; moved here
+  // so the security-hygiene test (which forbids inline event handlers
+  // for CSP cleanliness) stays green.
+  if (airdropToggle) {
+    const wrappingLabel = airdropToggle.closest('label');
+    if (wrappingLabel) {
+      wrappingLabel.addEventListener('click', (e) => e.stopPropagation());
+    }
   }
 
   // Enable/disable the airdrop. When enabling, expand the section
