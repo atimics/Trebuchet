@@ -30,6 +30,19 @@ let lpResult = null;
 let pools = [];
 let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 
+// Demo mode flag. Set once on app load from /api/demo/status (see
+// startup.js). When true, the demo banner and the "Pretend funding
+// arrived" button are shown, and the server simulates all chain calls.
+let demoModeActive = false;
+
+// One-shot bypass for the beforeunload "launch in progress" guard. The demo
+// toggle reloads the page to reset state, but it has ALREADY warned and
+// confirmed with the user via the HTML confirm dialog. Without this flag the
+// reload would also trip Electron's native "Launch in progress" dialog (a
+// second, non-HTML prompt). setDemoMode sets this true just before reloading;
+// the beforeunload handler checks it and lets the reload through silently.
+let demoModeReloading = false;
+
 // ---------------------------------------------------------------------------
 // Flywheel presets
 // ---------------------------------------------------------------------------
@@ -6521,6 +6534,24 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
     </div>`;
   }
 
+  // ---- Demo banner (top of report) ----
+  // Detect a demo launch by its synthetic Demo-prefixed addresses rather
+  // than re-reading the live demoModeActive flag — that way the banner is
+  // correct even for a report regenerated later, and it keys off the actual
+  // content. A demo launch always has a Demo-prefixed token mint and pool
+  // ids; checking a couple of representative addresses is enough.
+  const isDemoReport =
+    (tokenInfo.mint || '').startsWith('Demo') ||
+    results.some((r) => (r.poolId || '').startsWith('Demo'));
+  const demoBanner = isDemoReport
+    ? `<div class="banner banner-demo">
+        <strong>⚠ DEMO LAUNCH REPORT</strong>
+        Synthetic addresses, no real transactions. This report was generated in
+        demo mode — the addresses below are not real and their explorer links
+        will not resolve.
+      </div>`
+    : '';
+
   // ---- Tokenomics breakdown (textual, matches the chart) ----
   let breakdownHtml = '';
   pools.forEach((pool, poolIdx) => {
@@ -6753,6 +6784,10 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
     .banner-ok::before { background: var(--ok); }
     .banner-warn { border-color: var(--warn-edge); color: var(--warn); background: var(--warn-bg); }
     .banner-warn::before { background: var(--warn); }
+    /* Demo report banner — bright amber, hard to miss, so a demo report
+       received out of context is instantly recognizable as synthetic. */
+    .banner-demo { border-color: #f0c040; color: #6b4b00; background: #fef3c7; }
+    .banner-demo::before { background: #f0c040; }
 
     /* ---------- Token summary stat-grid ---------- */
     .token-summary-grid {
@@ -7117,6 +7152,7 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
     </div>
   </header>
 
+  ${demoBanner}
   ${statusBanner}
 
   <hr class="section-rule">
@@ -8310,6 +8346,57 @@ async function detectFundingWallet() {
 }
 
 bind('refreshBalanceBtn', 'click', pollBalances);
+
+// "Pretend funding arrived (DEMO)" button. Demo mode only — the button is
+// hidden in real mode (see setupDemoMode in startup.js). Sends the funding
+// amounts the UI already computed (recommended SOL with a small buffer,
+// plus every manual-prefund token's target) to the demo ledger, then
+// refreshes balances so the green checkmarks light up. Auto-swap tokens
+// are intentionally left out — those are acquired via the demo Acquire
+// flow so that step stays demonstrable.
+bind('demoFundBtn', 'click', async () => {
+  if (!tempWallet) return;
+  const btn = document.getElementById('demoFundBtn');
+  setLoading(btn, true);
+  try {
+    // Recommended SOL (subtotal + buffer), with a little extra on top so
+    // the row lands above the recommended threshold (fully green, no
+    // "below recommended buffer" note).
+    const recommendedSol = fundingRequirement.totalSol
+      || (fundingRequirement.solLamports / 1e9)
+      || 0;
+    const sol = recommendedSol > 0 ? recommendedSol * 1.05 : 1;
+
+    // Manual-prefund token rows (Section 1) carry their mint, decimals,
+    // and whole-token target as data attributes.
+    const tokens = [];
+    document.querySelectorAll('#balanceRows .balance-row').forEach((row) => {
+      if (row.dataset.kind === 'sol') return;
+      const mint = row.dataset.mint;
+      if (!mint) return;
+      tokens.push({
+        mint,
+        amountUi: Number(row.dataset.target) || 0,
+        decimals: Number(row.dataset.decimals) || 9,
+      });
+    });
+
+    const resp = await fetch('/api/demo/inject-funds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publicKey: tempWallet.publicKey, sol, tokens }),
+    });
+    const data = await resp.json();
+    if (!data.success) throw new Error(data.error || 'inject-funds failed');
+    log('Demo funding injected — balances updated', 'success');
+    // Pick up the new balances right away.
+    pollBalances();
+  } catch (e) {
+    log(`Demo funding failed: ${e.message}`, 'danger');
+  } finally {
+    setLoading(btn, false);
+  }
+});
 
 // Acquire-quote-tokens button: triggers SOL → quote-token swaps for
 // every allocation the funding-estimate flagged as auto-swappable.
@@ -11260,6 +11347,10 @@ renderTokenPreview();
 //     need to do anything different here — same preventDefault pattern.
 //     See main.js for the dialog setup.
 window.addEventListener('beforeunload', (e) => {
+  // The demo-mode toggle reloads to reset state, but it has already shown
+  // its own HTML confirmation. Let that reload through without also firing
+  // the native "launch in progress" dialog.
+  if (demoModeReloading) return;
   if (currentStep <= 1 || currentStep >= 6) return;
   e.preventDefault();
   // Some browsers (older Chrome, Edge) still read the return value;
@@ -11690,7 +11781,133 @@ setupSplashScreen();
     document.body.classList.remove('cursor-clenched');
   });
 })();
+// ===========================================================================
+// Demo mode (renderer side)
+// ---------------------------------------------------------------------------
+// On load we ask the server whether demo mode is on (/api/demo/status) and
+// reflect that in the UI. Toggling the setting (or clicking the banner's
+// Disable button) persists the new value via /api/user-prefs, then VERIFIES
+// the change by reading /api/demo/status back before touching any demo UI.
+//
+// Why verify instead of trusting the POST: userPrefs.persist() swallows
+// disk-write errors — set() reports success even if the write never reached
+// disk (e.g. a packaged build without write access to its config folder).
+// isDemoMode() on the server reads the pref fresh per request, so if the
+// write silently failed the server would still be in REAL mode. Showing the
+// demo banner in that case would be dangerous — it would promise "no real
+// transactions" over a live server. Reading the status back closes that gap:
+// we only show demo UI once the server CONFIRMS it is in demo mode.
+//
+// Toggling always asks for confirmation first: switching mode discards any
+// current launch progress and starts over. On confirm we persist, verify
+// the server entered the new mode, then reload — the most reliable way to
+// reset every in-memory launch variable and restart the flow from the
+// beginning in the new mode.
+// ===========================================================================
+(function setupDemoMode() {
+  // Single source of truth for demo-dependent UI: the top banner, the Step 3
+  // "Pretend funding arrived" button, and the settings checkbox.
+  function applyDemoModeUi(active) {
+    demoModeActive = !!active;
+    const toggle = document.getElementById('demoModeToggle');
+    if (toggle) toggle.checked = demoModeActive;
+    const banner = document.getElementById('demoBanner');
+    if (banner) banner.style.display = demoModeActive ? 'flex' : 'none';
+    const fundWrap = document.getElementById('demoFundWrap');
+    if (fundWrap) fundWrap.style.display = demoModeActive ? 'block' : 'none';
+  }
 
+  // Persist a new demoMode value and switch the app into it. Switching mode
+  // discards the current launch and starts over, so we always confirm first.
+  async function setDemoMode(enabled) {
+    const want = !!enabled;
+
+    // If a REAL launch is mid-flight (steps 2..5, and we're currently in real
+    // mode), the ephemeral wallet has been stashed for recovery — surface that
+    // here, since this single HTML dialog now replaces the old native one.
+    const launchInProgress =
+      typeof currentStep === 'number' && currentStep > 1 && currentStep < 6;
+    const recoveryNote =
+      launchInProgress && !demoModeActive
+        ? '<p>If you already created an on-chain wallet for this launch, you ' +
+          'can still recover it from the pending-wallets panel.</p>'
+        : '';
+
+    // Always warn: changing mode resets the app to defaults and restarts the
+    // launch from the beginning, discarding anything entered so far.
+    const proceed = await confirmDialog({
+      title: want ? 'Enable demo mode?' : 'Disable demo mode?',
+      body:
+        '<p>Switching demo mode resets the app to defaults and restarts the ' +
+        'launch from the beginning, with demo mode ' +
+        (want ? '<strong>enabled</strong>' : '<strong>disabled</strong>') +
+        '.</p><p>Any wallet, token, or pool data you have entered for the ' +
+        'current launch will be lost.</p>' +
+        recoveryNote,
+      confirmLabel: want ? 'Enable & restart' : 'Disable & restart',
+      danger: true,
+    });
+    if (!proceed) {
+      // User backed out — put the checkbox back the way it was.
+      const toggle = document.getElementById('demoModeToggle');
+      if (toggle) toggle.checked = !want;
+      return;
+    }
+
+    try {
+      const postResp = await fetch('/api/user-prefs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ demoMode: want }),
+      });
+      if (!postResp.ok) throw new Error('save failed (HTTP ' + postResp.status + ')');
+
+      // Confirm the server actually entered the requested mode BEFORE we
+      // reset/restart. persist() swallows disk-write errors, so a POST can
+      // report success while the value never reached disk (e.g. a packaged
+      // build without write access to its config folder). If it didn't take,
+      // don't reload into a mismatched state — surface the reason instead.
+      const statusResp = await fetch('/api/demo/status');
+      const status = await statusResp.json();
+      if (!!(status && status.active) !== want) {
+        throw new Error(
+          'the setting did not persist — the app may not have write access to ' +
+          'its config folder. Demo mode was NOT changed.',
+        );
+      }
+
+      // Reset to defaults and restart the launch from the beginning in the new
+      // mode. A full reload is the most reliable reset: it clears every
+      // in-memory launch variable and re-runs init, and the on-load path below
+      // re-reads the (now-persisted) status to show or hide the demo banner.
+      // Set the bypass first so the reload doesn't also trip the native
+      // "launch in progress" dialog — we've already confirmed above.
+      demoModeReloading = true;
+      window.location.reload();
+    } catch (e) {
+      // Revert the checkbox to the real (unchanged) state and surface why.
+      const toggle = document.getElementById('demoModeToggle');
+      if (toggle) toggle.checked = !want;
+      console.error('Failed to change demo mode:', e);
+      log('Could not change demo mode: ' + e.message, 'danger');
+    }
+  }
+
+  // Wire the settings toggle and the banner Disable button up front — they
+  // exist in the DOM regardless of the current mode.
+  bind('demoModeToggle', 'change', (e) => setDemoMode(e.target.checked));
+  bind('demoBannerDisable', 'click', () => setDemoMode(false));
+
+  // Reflect the current server state on load.
+  fetch('/api/demo/status')
+    .then((r) => r.json())
+    .then((data) => applyDemoModeUi(data && data.active))
+    .catch((err) => {
+      // If the status check fails, assume real mode (the safe default).
+      console.warn('Demo-mode status check failed; assuming real mode:', err);
+      applyDemoModeUi(false);
+    });
+})();
 
 // Final gate evaluation. Both setupDisclaimer() and setupSplashScreen()
 // have run by this point. If either gated itself (showed a modal or

@@ -291,6 +291,24 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
     </div>`;
   }
 
+  // ---- Demo banner (top of report) ----
+  // Detect a demo launch by its synthetic Demo-prefixed addresses rather
+  // than re-reading the live demoModeActive flag — that way the banner is
+  // correct even for a report regenerated later, and it keys off the actual
+  // content. A demo launch always has a Demo-prefixed token mint and pool
+  // ids; checking a couple of representative addresses is enough.
+  const isDemoReport =
+    (tokenInfo.mint || '').startsWith('Demo') ||
+    results.some((r) => (r.poolId || '').startsWith('Demo'));
+  const demoBanner = isDemoReport
+    ? `<div class="banner banner-demo">
+        <strong>⚠ DEMO LAUNCH REPORT</strong>
+        Synthetic addresses, no real transactions. This report was generated in
+        demo mode — the addresses below are not real and their explorer links
+        will not resolve.
+      </div>`
+    : '';
+
   // ---- Tokenomics breakdown (textual, matches the chart) ----
   let breakdownHtml = '';
   pools.forEach((pool, poolIdx) => {
@@ -523,6 +541,10 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
     .banner-ok::before { background: var(--ok); }
     .banner-warn { border-color: var(--warn-edge); color: var(--warn); background: var(--warn-bg); }
     .banner-warn::before { background: var(--warn); }
+    /* Demo report banner — bright amber, hard to miss, so a demo report
+       received out of context is instantly recognizable as synthetic. */
+    .banner-demo { border-color: #f0c040; color: #6b4b00; background: #fef3c7; }
+    .banner-demo::before { background: #f0c040; }
 
     /* ---------- Token summary stat-grid ---------- */
     .token-summary-grid {
@@ -887,6 +909,7 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
     </div>
   </header>
 
+  ${demoBanner}
   ${statusBanner}
 
   <hr class="section-rule">
