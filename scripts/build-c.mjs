@@ -76,13 +76,27 @@ function build(compiler) {
   // The default tune on ARM is already "generic enough" so we just omit
   // -mtune there entirely.
   //
+  // Link libraries differ by platform:
+  //
   // -pthread vs -lpthread: -pthread is the documented portable form on
-  // Unix (also sets _REENTRANT preprocessor flag). MinGW accepts both,
-  // but the proven-working configuration on Windows uses -lpthread, so
-  // we keep that there to avoid regressing the user's working build.
+  //   Unix (also sets _REENTRANT preprocessor flag). MinGW accepts both,
+  //   but the proven-working configuration on Windows uses -lpthread, so
+  //   we keep that there to avoid regressing the user's working build.
+  //
+  // -lbcrypt: Windows ONLY. randombytes.c (BCryptGenRandom for tweetnacl's
+  //   RNG) and vanity_keygen.c's _WIN32 getentropy() shim both call
+  //   bcrypt APIs. Each source file has a `#pragma comment(lib, "bcrypt.lib")`
+  //   directive, but that's an MSVC-only convention — MinGW gcc IGNORES
+  //   it with a -Wunknown-pragmas warning, so without an explicit
+  //   -lbcrypt on the link line, the linker emits "undefined reference
+  //   to BCryptGenRandom" on every call site. The pragma stays in the
+  //   source as documentation and for any future MSVC-based build, but
+  //   the build script is what actually wires up the dependency.
   const isX86 = process.arch === 'x64' || process.arch === 'ia32';
   const archFlags = isX86 ? ['-mtune=generic'] : [];
-  const pthreadFlag = process.platform === 'win32' ? '-lpthread' : '-pthread';
+  const linkLibs = process.platform === 'win32'
+    ? ['-lpthread', '-lbcrypt']
+    : ['-pthread'];
 
   const args = [
     '-O3', '-flto',
@@ -91,7 +105,7 @@ function build(compiler) {
     ...sources,
     '-o', outPath,
     ...includes.flatMap((i) => ['-I', i]),
-    pthreadFlag,
+    ...linkLibs,
   ];
 
   console.log(`Building vanity_keygen with ${compiler}`);
