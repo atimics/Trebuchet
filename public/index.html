@@ -3341,7 +3341,23 @@
                         <p class="help is-size-7 has-text-centered mt-1" id="vanityCAProgressText">Grinding...</p>
                     </div>
                     <div id="vanityCAResult" class="hidden mt-2">
-                        <p class="help is-success is-size-7">CA found: <span class="is-family-monospace" id="vanityCAResultAddr"></span> <span id="vanityCARarity" class="tag is-info is-size-7 ml-2"></span></p>
+                        <div class="box p-2 mb-0" style="background: var(--surface-elev, rgba(0,0,0,0.04));">
+                            <div class="is-flex is-align-items-flex-start" style="gap: 8px;">
+                                <span class="icon mt-1" id="vanityCAResultIcon"><i class="fas fa-check-circle has-text-success"></i></span>
+                                <div style="flex: 1; min-width: 0;">
+                                    <p class="is-size-7 mb-1" id="vanityCAResultHeadline"><strong>Vanity CA ready</strong> <span class="has-text-grey">&mdash; will be used as the token mint address</span></p>
+                                    <p class="is-family-monospace is-size-7 mb-1" id="vanityCAResultAddr" style="word-break: break-all;"></p>
+                                    <p class="is-size-7 mb-0">
+                                        <span id="vanityCARarity" class="tag is-info is-size-7"></span>
+                                        <span class="has-text-grey ml-2" id="vanityCAResultMeta"></span>
+                                    </p>
+                                    <p class="is-size-7 mt-2 hidden" id="vanityCAResultWarning"></p>
+                                </div>
+                                <button class="button is-small is-light" id="clearVanityCAResultBtn" title="Discard and grind again">
+                                    <span class="icon is-small"><i class="fas fa-times"></i></span>
+                                </button>
+                            </div>
+                        </div>
                     </div>
 
 

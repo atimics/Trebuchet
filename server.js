@@ -37,6 +37,7 @@ import {
 
 import {
   getConfig as getRpcConfig,
+  getRpcUrl,
   setActiveRpc,
   addSavedRpc,
   removeSavedRpc,
