@@ -27,6 +27,7 @@
     "web:dev": "node --watch server.js",
     "check:syntax": "node scripts/check-syntax.mjs",
     "test": "node --test test/*.test.mjs",
+    "test:e2e": "node test/e2e/ui-flows.mjs --mobile",
     "smoke:mainnet:readonly": "node test-token2022-compat.mjs",
     "build": "electron-builder",
     "build:mac": "electron-builder --mac",

@@ -12,3 +12,5 @@ latest.yml
 /launchJournals.json
 /pendingWallets.json
 /userPrefs.json
+_tutorial/
+test/e2e/videos/
