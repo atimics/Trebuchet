@@ -15140,8 +15140,81 @@ function removeKeyDisplay() {
   if (container) container.remove();
 }
 
+// Centralized state machine for the Grind/Cancel button. Three states
+// driven by the data-mode attribute, so all transitions go through one
+// place. Production code never reads data-mode externally — it's purely
+// an internal flag the click handler reads to decide what to do.
+function setGrindButtonState(state) {
+  const btn = document.getElementById('grindCABtn');
+  if (!btn) return;
+  const icon = btn.querySelector('i');
+  const label = btn.querySelector('span:last-child');
+  const target = document.getElementById('vanityCATarget');
+  const mode = document.getElementById('vanityCAMode');
+
+  if (state === 'grind') {
+    btn.dataset.mode = 'grind';
+    btn.disabled = false;
+    btn.classList.remove('is-danger', 'is-loading');
+    btn.classList.add('is-primary');
+    if (icon) icon.className = 'fas fa-star';
+    if (label) label.textContent = 'Grind';
+    if (target) target.disabled = false;
+    if (mode) mode.disabled = false;
+  } else if (state === 'cancel') {
+    btn.dataset.mode = 'cancel';
+    btn.disabled = false;
+    btn.classList.remove('is-primary', 'is-loading');
+    btn.classList.add('is-danger');
+    if (icon) icon.className = 'fas fa-times';
+    if (label) label.textContent = 'Cancel';
+    // Lock the inputs while grinding — the prefix/suffix and mode
+    // dropdown contribute to the grind that's already underway;
+    // letting the user edit them mid-grind would create a confusing
+    // mismatch between the visible target and what's actually being
+    // ground.
+    if (target) target.disabled = true;
+    if (mode) mode.disabled = true;
+  } else if (state === 'cancelling') {
+    btn.dataset.mode = 'cancelling';
+    btn.disabled = true;
+    btn.classList.remove('is-primary');
+    btn.classList.add('is-danger', 'is-loading');
+    if (label) label.textContent = 'Cancelling...';
+    if (target) target.disabled = true;
+    if (mode) mode.disabled = true;
+  }
+}
+
 bind('grindCABtn', 'click', async () => {
   const btn = document.getElementById('grindCABtn');
+  const currentMode = btn.dataset.mode || 'grind';
+
+  // CANCEL branch: button is showing "Cancel" because a grind is in
+  // flight. POST to the cancel endpoint and transition into the
+  // "Cancelling..." state. The actual UI cleanup happens when the SSE
+  // stream emits {type:'cancelled'} — which fires once the child
+  // process actually finishes terminating (usually a few ms).
+  if (currentMode === 'cancel') {
+    setGrindButtonState('cancelling');
+    try {
+      const resp = await fetch('/api/cancel-vanity-grind', { method: 'POST' });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${resp.status}`);
+      }
+    } catch (e) {
+      // Cancel request failed (network error, server gone, etc.). Don't
+      // leave the user stuck in "Cancelling..." forever — restore the
+      // button. If the grind is still actually running we'll see its
+      // events come through the SSE stream and handle them normally.
+      log('Cancel request failed: ' + e.message, 'warn');
+      setGrindButtonState('cancel');
+    }
+    return;
+  }
+
+  // GRIND branch: standard new-grind flow.
   const target = document.getElementById('vanityCATarget').value.trim();
   if (!target) {
     log('Enter a vanity target first.', 'warn');
@@ -15149,7 +15222,7 @@ bind('grindCABtn', 'click', async () => {
   }
 
   await withRunState(async () => {
-    setLoading(btn, true);
+    setGrindButtonState('cancel');
     try {
       const mode = document.getElementById('vanityCAMode').value;
       const isSuffix = mode === 'suffix';
@@ -15207,6 +15280,19 @@ bind('grindCABtn', 'click', async () => {
             renderVanityCAList();
             log('Vanity CA: ' + data.wallet.publicKey + ' (' + data.wallet.rarity + ', ' + data.wallet.attempts.toLocaleString() + ' attempts)', 'success');
             resolve();
+          } else if (data.type === 'cancelled') {
+            // User clicked Cancel and the server confirmed the grind
+            // was terminated. Treat as a clean stop — no error log,
+            // just unwind the UI back to its idle state. The catch
+            // block below resolves on its own without throwing for
+            // this case because we resolve() here.
+            es.close();
+            removeKeyDisplay();
+            if (progressEl) progressEl.classList.add('hidden');
+            const epochBars = document.getElementById('vanityCAEpochBars');
+            if (epochBars) epochBars.remove();
+            log('Vanity grind cancelled.', 'info');
+            resolve();
           } else if (data.type === 'error') {
             es.close();
             reject(new Error(data.error));
@@ -15225,7 +15311,7 @@ bind('grindCABtn', 'click', async () => {
       const epochBars = document.getElementById('vanityCAEpochBars');
       if (epochBars) epochBars.remove();
     } finally {
-      setLoading(btn, false);
+      setGrindButtonState('grind');
     }
   });
 });

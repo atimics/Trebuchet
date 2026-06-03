@@ -612,7 +612,13 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
   // Auto-fetch a recent Solana blockhash for VRF seed binding.
   // The VRF proves the seed was bound to a known-past blockhash,
   // preventing the grinder from cherry-picking seeds across re-rolls.
+  //
+  // This is an OPTIONAL auditability feature. If we can't reach the
+  // RPC or the response is unusable, we proceed without VRF — the
+  // keypair is still cryptographically secure via the system CSPRNG;
+  // only the proof-of-non-precomputation feature is skipped.
   if (!blockhash) {
+    let fetchFailReason = null;
     try {
       const blockhashResp = await fetch(getRpcUrl(), {
         method: 'POST',
@@ -623,13 +629,34 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
           params: [{ commitment: 'confirmed' }],
         }),
       });
-      const bhJson = await blockhashResp.json();
-      if (bhJson?.result?.value?.blockhash) {
-        blockhash = Buffer.from(bs58.decode(bhJson.result.value.blockhash)).toString('hex');
+      if (!blockhashResp.ok) {
+        fetchFailReason = `RPC returned HTTP ${blockhashResp.status}`;
+      } else {
+        const bhJson = await blockhashResp.json();
+        if (bhJson?.result?.value?.blockhash) {
+          blockhash = Buffer.from(bs58.decode(bhJson.result.value.blockhash)).toString('hex');
+        } else {
+          // RPC succeeded at the HTTP level but didn't return what we
+          // expected — most often a JSON-RPC error body (rate-limit,
+          // malformed request, etc.). Previously this path was silent;
+          // the user would lose VRF with no indication.
+          fetchFailReason = bhJson?.error?.message
+            ? `RPC error: ${bhJson.error.message}`
+            : 'RPC response did not include a blockhash';
+        }
       }
-    } catch (_) {
-      // If RPC fetch fails, continue without VRF (seed stays private).
-      console.warn('[vanity] Could not fetch blockhash for VRF; grinding without seed binding');
+    } catch (e) {
+      // Network-level failure (DNS, connection refused, timeout).
+      fetchFailReason = e?.message || 'network error';
+    }
+    if (fetchFailReason) {
+      console.warn(
+        '[vanity] Skipping optional VRF audit proof — couldn\'t fetch a recent blockhash '
+        + `(${fetchFailReason}). The generated keypair is still cryptographically secure; `
+        + 'only the proof-of-non-precomputation feature is unavailable for this grind. '
+        + 'Configure a dedicated RPC endpoint in settings if you want VRF every time '
+        + '(the default public RPC frequently rate-limits this kind of request).',
+      );
     }
   }
 
@@ -644,6 +671,18 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no',
+  });
+
+  // Detect client disconnect (browser tab closed, network drop, manual
+  // EventSource.close()) and cancel the in-flight child so we don't
+  // leave a zombie vanity_keygen.exe pegging CPU on the user's machine
+  // until it stumbles into a match. cancelVanityGrind() is a no-op if
+  // the grind has already finished or never started, so this is safe
+  // to fire on every disconnect.
+  res.on('close', () => {
+    import('./vanityKeygen.js').then((mod) => {
+      mod.cancelVanityGrind();
+    }).catch(() => { /* module load shouldn't fail this late, but be quiet about it if it does */ });
   });
 
   // Send initial metadata
@@ -707,9 +746,36 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
 
     res.end();
   } catch (error) {
+    // CANCELLED is a structured error code surfaced by vanityKeygen.js
+    // when cancelVanityGrind() was called. It's an expected event — the
+    // user clicked Cancel — so emit a dedicated {type:'cancelled'}
+    // frame rather than the generic error path, and log it at info
+    // level (not error) so we don't red-flag a routine user action.
+    if (error.code === 'CANCELLED') {
+      console.log('Vanity grind cancelled by user');
+      res.write(`data: ${JSON.stringify({ type: 'cancelled' })}\n\n`);
+      res.end();
+      return;
+    }
     console.error('Error generating vanity wallet:', error);
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
     res.end();
+  }
+});
+
+// Cancel any in-flight vanity grind. POST so the apiSessionMiddleware
+// gates it (the same auth that protects other state-changing endpoints).
+// Idempotent: if nothing is running, returns success with cancelled:false
+// so the frontend can treat repeated clicks as harmless. The actual SSE
+// stream from /api/generate-vanity-wallet-stream emits a {type:'cancelled'}
+// event when the child finishes terminating — usually within milliseconds.
+app.post('/api/cancel-vanity-grind', async (req, res) => {
+  try {
+    const mod = await import('./vanityKeygen.js');
+    const cancelled = mod.cancelVanityGrind();
+    res.json({ success: true, cancelled });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

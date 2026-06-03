@@ -83,9 +83,10 @@ function getBinaryPath() {
 
   throw new Error(
     `vanity_keygen binary not found. Tried:\n  ${candidates.join('\n  ')}\n\n`
-    + `To build it: run \`npm run build:c\` (which invokes \`make -C c\`). `
-    + `Requires a C compiler (cc / gcc / clang) and make in PATH. On Windows, `
-    + `install MSYS2 or use the MinGW toolchain so make + gcc are available.`,
+    + `To build it: run \`npm run build:c\` from the repo root. `
+    + `Requires a C compiler (gcc or clang) on PATH. See the `
+    + `"Building the vanity keygen binary" section in the README for `
+    + `per-platform install instructions.`,
   );
 }
 
@@ -97,6 +98,39 @@ function getBinaryPath() {
  * The deterministic seed is NOT exposed — it equals the private key.
  */
 let _inFlight = null;
+
+// Track the currently-running child so cancelVanityGrind() can kill it,
+// plus a flag the close handler uses to distinguish "user cancelled" from
+// "binary crashed with a non-zero exit." We reset both on each new spawn
+// so a prior cancellation doesn't taint the next grind.
+let _activeChild = null;
+let _cancelled = false;
+
+/**
+ * Kill any in-flight vanity grind. Returns true if a grind was actually
+ * killed, false if there was nothing running. Safe to call when idle.
+ *
+ * The actual cleanup (clearing _inFlight, _activeChild, rejecting the
+ * caller's promise) happens in the existing child.on('close') handler
+ * once the OS finishes terminating the process — usually within a few
+ * milliseconds of this call.
+ */
+export function cancelVanityGrind() {
+  if (!_activeChild) return false;
+  _cancelled = true;
+  try {
+    // child.kill() with no signal arg sends SIGTERM on Unix and calls
+    // TerminateProcess on Windows. The vanity binary has no important
+    // state to flush — it just sits in a tight keypair-generation loop —
+    // so forceful termination is appropriate.
+    _activeChild.kill();
+  } catch (_) {
+    // Already exited / already killed. The close handler will run
+    // anyway with whatever exit code the OS reports, and the
+    // _cancelled flag will cause it to surface as a CANCELLED error.
+  }
+  return true;
+}
 
 export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onProgress } = {}) {
   // Single-flight guard: only one grind at a time.  If a grind is
@@ -160,6 +194,13 @@ export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onPr
       return;
     }
 
+    // Register this child so cancelVanityGrind() can find and kill it.
+    // Reset the cancellation flag — a stuck-true from a previous run
+    // that was already cleaned up would otherwise cause this fresh
+    // grind to surface as cancelled the moment it exits normally.
+    _activeChild = child;
+    _cancelled = false;
+
     let stdout = '';
     let stderr = '';
 
@@ -179,7 +220,24 @@ export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onPr
 
     child.on('close', (code) => {
       _inFlight = null;
+      _activeChild = null;
+      const wasCancelled = _cancelled;
+      _cancelled = false;
       if (flightResolve) flightResolve();
+
+      if (wasCancelled) {
+        // User requested cancellation via cancelVanityGrind(). Surface
+        // this as a structured error so the SSE-stream handler in
+        // server.js can emit a {type:'cancelled'} event instead of a
+        // generic error event. The exit code is whatever the OS
+        // reported when the kill landed — usually a signal-ish value
+        // on Unix or 1 on Windows; not interesting to callers.
+        const err = new Error('Vanity grind cancelled by user');
+        err.code = 'CANCELLED';
+        reject(err);
+        return;
+      }
+
       if (code !== 0) {
         reject(new Error(`Vanity keygen exited ${code}: ${stderr}`));
         return;
@@ -215,7 +273,16 @@ export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onPr
 
     child.on('error', (err) => {
       _inFlight = null;
+      _activeChild = null;
+      const wasCancelled = _cancelled;
+      _cancelled = false;
       if (flightResolve) flightResolve();
+      if (wasCancelled) {
+        const cancelErr = new Error('Vanity grind cancelled by user');
+        cancelErr.code = 'CANCELLED';
+        reject(cancelErr);
+        return;
+      }
       reject(new Error(`Spawn failed: ${err.message}`));
     });
   });
