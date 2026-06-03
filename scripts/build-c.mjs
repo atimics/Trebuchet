@@ -76,7 +76,7 @@ function build(compiler) {
   // The default tune on ARM is already "generic enough" so we just omit
   // -mtune there entirely.
   //
-  // Link libraries differ by platform:
+  // Link libraries and link mode differ by platform:
   //
   // -pthread vs -lpthread: -pthread is the documented portable form on
   //   Unix (also sets _REENTRANT preprocessor flag). MinGW accepts both,
@@ -92,10 +92,24 @@ function build(compiler) {
   //   to BCryptGenRandom" on every call site. The pragma stays in the
   //   source as documentation and for any future MSVC-based build, but
   //   the build script is what actually wires up the dependency.
+  //
+  // -static-libgcc + -Wl,-Bstatic -lpthread -Wl,-Bdynamic (Windows only):
+  //   Statically link the MinGW runtime so the resulting .exe doesn't
+  //   depend on libgcc_s_seh-1.dll or libwinpthread-1.dll being on the
+  //   end user's PATH. Those DLLs ship with MinGW but not with stock
+  //   Windows. Without static linkage, a user without MinGW installed
+  //   sees the binary die with STATUS_DLL_NOT_FOUND (0xC0000135 = decimal
+  //   3221225781) before main() runs, because the OS loader can't
+  //   resolve the runtime imports. The -Wl,-Bstatic / -Wl,-Bdynamic
+  //   bracket around -lpthread tells ld to use winpthreads' static
+  //   archive (libpthread.a) for that specific lib, then revert to
+  //   dynamic for everything else (bcrypt, kernel32, etc. — which
+  //   either don't ship a static archive or are always-present system
+  //   DLLs that don't need bundling).
   const isX86 = process.arch === 'x64' || process.arch === 'ia32';
   const archFlags = isX86 ? ['-mtune=generic'] : [];
   const linkLibs = process.platform === 'win32'
-    ? ['-lpthread', '-lbcrypt']
+    ? ['-static-libgcc', '-Wl,-Bstatic', '-lpthread', '-Wl,-Bdynamic', '-lbcrypt']
     : ['-pthread'];
 
   const args = [
