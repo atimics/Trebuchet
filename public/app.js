@@ -6253,6 +6253,13 @@ function renderPools() {
   });
   updateAllocationSummary();
   updateContinueToFundingState();
+  // Re-validate the active vanity CA against the current pool set so
+  // the warning state in the result block stays in sync when the user
+  // adds/removes pools or a quote mint resolves to a new value. Guard
+  // with typeof in case this fires before the vanity renderer is
+  // defined (function-declaration order isn't guaranteed across this
+  // long file's binding sequence).
+  if (typeof renderVanityCAList === 'function') renderVanityCAList();
 }
 
 // ---------------------------------------------------------------------------
@@ -15229,9 +15236,7 @@ bind('grindCABtn', 'click', async () => {
 
       // Show single active progress bar
       const progressEl = document.getElementById('vanityCAProgress');
-      const listContainer = document.getElementById('vanityCAListContainer');
       if (progressEl) progressEl.classList.remove('hidden');
-      if (listContainer) listContainer.classList.add('hidden');
 
       // Ensure original bar is visible, remove any old epoch bars
       const barContainer = progressEl?.querySelector('.vanity-progress-bar');
@@ -15274,9 +15279,15 @@ bind('grindCABtn', 'click', async () => {
               attempts: data.wallet.attempts,
               seed: data.wallet.seed,
             };
-            vanityCAKeypairs.push(entry);
+            // Replace any previous grind with this one and auto-select
+            // it. Without selectedVanityCA being set here, the launch
+            // flow at the "vanityCAKeypair" form-append site would
+            // silently skip the keypair and the pre-grind would be a
+            // no-op. Most-recent-successful-grind wins; the user can
+            // discard via the clear button on the result block.
+            vanityCAKeypairs = [entry];
+            selectedVanityCA = 0;
             if (progressEl) progressEl.classList.add('hidden');
-            if (listContainer) listContainer.classList.remove('hidden');
             renderVanityCAList();
             log('Vanity CA: ' + data.wallet.publicKey + ' (' + data.wallet.rarity + ', ' + data.wallet.attempts.toLocaleString() + ' attempts)', 'success');
             resolve();
@@ -15316,45 +15327,204 @@ bind('grindCABtn', 'click', async () => {
   });
 });
 
-// Render the list of collected vanity CAs
-function renderVanityCAList() {
-  const listEl = document.getElementById('vanityCAList');
-  const emptyEl = document.getElementById('vanityCAListEmpty');
-  if (!listEl) return;
+// Discard the active vanity CA (the result block's X button). Wipes
+// the array and the selection, then re-renders the block so it hides.
+// The user can then grind again from scratch. Uses the existing
+// clearVanityCAs helper defined further down so wipe logic lives in
+// one place.
+bind('clearVanityCAResultBtn', 'click', () => {
+  if (typeof clearVanityCAs === 'function') clearVanityCAs();
+  log('Vanity CA discarded.', 'info');
+});
 
-  if (vanityCAKeypairs.length === 0) {
-    listEl.innerHTML = '';
-    if (emptyEl) emptyEl.classList.remove('hidden');
+// Base58 decoder. The frontend can't import @solana/web3.js or bs58
+// (Node-only deps in this build), so we have a tiny BigInt-based
+// implementation just for the pre-flight mintA check below. Solana
+// addresses always decode to exactly 32 bytes; the BigInt path is
+// sub-millisecond per decode.
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function decodeBase58ToBytes(str) {
+  let value = 0n;
+  for (let i = 0; i < str.length; i++) {
+    const idx = BASE58_ALPHABET.indexOf(str[i]);
+    if (idx < 0) throw new Error('Invalid base58 character: ' + str[i]);
+    value = value * 58n + BigInt(idx);
+  }
+  // Convert BigInt to big-endian byte array.
+  const bytes = [];
+  while (value > 0n) {
+    bytes.unshift(Number(value & 0xffn));
+    value >>= 8n;
+  }
+  // Each leading '1' in the base58 string represents a leading 0x00
+  // byte in the decoded value. Solana mints rarely lead with 0x00 but
+  // we handle it for correctness — WSOL itself starts with 'So...' so
+  // no leading 1s, but it's not impossible for some mints.
+  for (let i = 0; i < str.length && str[i] === '1'; i++) {
+    bytes.unshift(0);
+  }
+  return new Uint8Array(bytes);
+}
+
+// Byte-by-byte pubkey comparator. Mirrors the server-side comparePubkeys
+// in tokenService.js, which itself mirrors Solana's on-chain Pubkey::cmp
+// behaviour that Raydium uses to assign mintA vs mintB. Negative if a<b,
+// positive if a>b, zero if equal.
+function comparePubkeyBytes(a, b) {
+  for (let i = 0; i < 32; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+// Pre-flight check: does the active vanity CA sort strictly smaller
+// than every configured pool's quote mint? Server-side validation at
+// tokenService.js:369-381 throws "does not sort before all quote mints"
+// when this fails, costing the user a launch attempt; this check
+// catches the same condition client-side after the grind so the user
+// can discard and re-grind before sinking more time.
+//
+// Returns { ok, failsAgainst } where failsAgainst is the list of
+// problematic pools (each with a human-readable label and the raw
+// mint address). The Ed25519 secret-key layout puts the public-key
+// bytes in the last 32 of the 64-byte array, so we extract them
+// directly — no base58 decode needed for our side of the comparison.
+function validateVanityMintAConstraint(entry) {
+  if (!entry || !entry.secretKey || entry.secretKey.length !== 64) {
+    // Can't validate; assume OK and let the server have final say.
+    return { ok: true, failsAgainst: [] };
+  }
+  const vanityBytes = entry.secretKey.slice(32, 64);
+
+  const failsAgainst = [];
+  for (const pool of pools) {
+    const mint = pool && pool.resolvedMint;
+    if (typeof mint !== 'string' || mint.length === 0) continue;
+    try {
+      const quoteBytes = decodeBase58ToBytes(mint);
+      // Not a 32-byte pubkey → not a real mint, skip rather than throw.
+      if (quoteBytes.length !== 32) continue;
+      if (comparePubkeyBytes(vanityBytes, quoteBytes) >= 0) {
+        // Vanity is NOT strictly smaller. Use the pool's symbol/label
+        // if it has one, otherwise a truncated form of the mint so the
+        // user has something to identify it by.
+        const label = pool.label
+          || pool.symbol
+          || (mint.length > 8 ? `${mint.slice(0, 4)}…${mint.slice(-4)}` : mint);
+        failsAgainst.push({ mint, label });
+      }
+    } catch (e) {
+      // Bad base58 on a pool's resolvedMint shouldn't happen, but if
+      // it does we don't want to crash the renderer. Log and skip.
+      console.warn('Pre-flight: skipping pool with unparseable mint', mint, e.message);
+    }
+  }
+  return { ok: failsAgainst.length === 0, failsAgainst };
+}
+
+// Render the active vanity CA into the result block in index.html.
+//
+// History: this used to be a multi-result list renderer, but the matching
+// list elements (vanityCAList, vanityCAListContainer) were never added to
+// the HTML — so the function ran no-ops every time and the user never saw
+// their grind result. The function now updates the single-result block
+// (vanityCAResult / vanityCAResultAddr / vanityCARarity) that DOES exist
+// in the HTML and was sitting unused. The "list" semantics are preserved
+// in the underlying array, but in practice we replace-on-success so the
+// array has at most one entry at a time.
+//
+// Also handles the mintA pre-flight: toggles between a green-success and
+// a yellow-warning visual based on whether the vanity CA will pass the
+// server-side sort check at launch time. This re-runs on every call, so
+// changes to the pools array (which happen via renderPools) get picked
+// up too — see the renderVanityCAList() call at the bottom of renderPools.
+function renderVanityCAList() {
+  const resultEl = document.getElementById('vanityCAResult');
+  const addrEl = document.getElementById('vanityCAResultAddr');
+  const rarityEl = document.getElementById('vanityCARarity');
+  const metaEl = document.getElementById('vanityCAResultMeta');
+  const iconEl = document.getElementById('vanityCAResultIcon');
+  const headlineEl = document.getElementById('vanityCAResultHeadline');
+  const warningEl = document.getElementById('vanityCAResultWarning');
+  if (!resultEl) return;
+
+  // No active CA → hide the block and we're done.
+  if (selectedVanityCA === null || !vanityCAKeypairs[selectedVanityCA]) {
+    resultEl.classList.add('hidden');
     return;
   }
 
-  if (emptyEl) emptyEl.classList.add('hidden');
+  const ca = vanityCAKeypairs[selectedVanityCA];
 
-  const tierColors = { Common: 'is-info', Rare: 'is-success', Legendary: 'is-warning', Mythic: 'is-danger' };
-  let html = '';
-  vanityCAKeypairs.forEach((ca, i) => {
-    const color = tierColors[ca.rarity] || 'is-light';
-    const selected = i === selectedVanityCA;
-    html += `<div class="vanity-ca-row ${selected ? 'vanity-ca-selected' : ''}" data-index="${i}" style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;border-bottom:1px solid var(--rule, #ddd);">
-      <span class="is-family-monospace is-size-7" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${ca.publicKey}</span>
-      <span class="tag ${color} is-size-7">${ca.rarity} (${ca.epochs.toFixed(1)}&times;)</span>
-      <span class="is-size-7 has-text-grey">${ca.attempts.toLocaleString()} tries</span>
-      ${selected ? '<span class="tag is-success is-size-7">Selected</span>' : ''}
-    </div>`;
-  });
-  listEl.innerHTML = html;
+  // Match the tier colors used elsewhere for consistency. Bulma tags
+  // don't have a "Mythic" style natively; is-danger reads close enough.
+  const tierColors = {
+    Common: 'is-info',
+    Rare: 'is-success',
+    Legendary: 'is-warning',
+    Mythic: 'is-danger',
+  };
+  const tagClass = tierColors[ca.rarity] || 'is-light';
 
-  // Bind click handlers for selection
-  listEl.querySelectorAll('.vanity-ca-row').forEach(row => {
-    row.addEventListener('click', () => {
-      const idx = parseInt(row.dataset.index, 10);
-      selectedVanityCA = idx;
-      renderVanityCAList();
-      const targetEl = document.getElementById('vanityCATarget');
-      if (targetEl) targetEl.value = '';
-      log(`Selected CA: ${vanityCAKeypairs[idx].publicKey}`, 'info');
-    });
-  });
+  if (addrEl) addrEl.textContent = ca.publicKey;
+  if (rarityEl) {
+    // Replace the tag's color class so re-renders for different tiers
+    // don't accumulate stale classes.
+    rarityEl.className = `tag is-size-7 ${tagClass}`;
+    rarityEl.textContent = ca.rarity;
+  }
+  if (metaEl) {
+    metaEl.textContent =
+      `${ca.attempts.toLocaleString()} attempts`
+      + (typeof ca.epochs === 'number' ? ` · ${ca.epochs.toFixed(1)}× epoch` : '');
+  }
+
+  // Pre-flight mintA constraint. Failing this client-side means the
+  // server-side check at tokenService.js:369-381 would throw at launch
+  // time — better to surface it here so the user can discard and try
+  // again before sinking another grind on top.
+  const validation = validateVanityMintAConstraint(ca);
+  if (validation.ok) {
+    if (iconEl) {
+      iconEl.innerHTML = '<i class="fas fa-check-circle has-text-success"></i>';
+    }
+    if (headlineEl) {
+      headlineEl.innerHTML =
+        '<strong>Vanity CA ready</strong> '
+        + '<span class="has-text-grey">&mdash; will be used as the token mint address</span>';
+    }
+    if (warningEl) {
+      warningEl.classList.add('hidden');
+      warningEl.innerHTML = '';
+    }
+  } else {
+    if (iconEl) {
+      iconEl.innerHTML = '<i class="fas fa-exclamation-triangle has-text-warning"></i>';
+    }
+    if (headlineEl) {
+      headlineEl.innerHTML =
+        '<strong>Vanity CA ground</strong> '
+        + '<span class="has-text-grey">&mdash; but it won\'t pass the mintA sort check at launch</span>';
+    }
+    if (warningEl) {
+      // HTML-escape pool labels in case a future label source includes
+      // user-controlled text. The mint itself is base58 so no escape
+      // needed, but we go through textContent on a fragment for safety.
+      const labels = validation.failsAgainst
+        .map((f) => f.label)
+        .join(', ');
+      const tmp = document.createElement('span');
+      tmp.textContent = labels;
+      warningEl.innerHTML =
+        '<span class="has-text-grey">Sorts <em>after</em> these quote mints '
+        + '(the launched token must sort <strong>before</strong> all of them to become mintA): '
+        + `<strong>${tmp.innerHTML}</strong>. `
+        + 'Discard this CA and grind again — each grind is independent so a new one has a fresh chance.</span>';
+      warningEl.classList.remove('hidden');
+    }
+  }
+
+  resultEl.classList.remove('hidden');
 }
 
 // Clear collected CAs (called on wallet regenerate / full reset)

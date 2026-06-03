@@ -861,3 +861,43 @@ app.on('window-all-closed', () => {
   // platform, quit when the last window closes.
   if (process.platform !== 'darwin') app.quit();
 });
+
+// Kill any in-flight vanity grind subprocess before the app exits.
+//
+// server.js is loaded as a dynamic ES module *into* this Electron main
+// process (see startServer above) — they share one OS process and one
+// event loop. When the user closes the window during a grind, the
+// spawned vanity_keygen.exe child is still running with open stdio
+// pipes to the parent. Node refuses to exit while those handles are
+// alive, so app.quit() initiates shutdown but the parent process
+// lingers in Task Manager indefinitely.
+//
+// 'before-quit' fires from every exit path (window close, Cmd+Q, File →
+// Quit, programmatic app.quit()) and gives us a hook to send the kill
+// signal before Electron's shutdown sequence tries to actually exit.
+//
+// We use dynamic import() rather than a static import at the top of
+// this file for two reasons:
+//   1. vanityKeygen.js is only loaded on demand by server.js when the
+//      user actually grinds. We don't want to pull it in at startup.
+//   2. By the time a grind is in flight, server.js has already imported
+//      vanityKeygen.js transitively, so this import() hits the module
+//      cache and resolves synchronously.
+//
+// If no grind is in flight (or vanityKeygen was never loaded), the
+// cancel call is a no-op and this handler costs nothing.
+app.on('before-quit', () => {
+  import('./vanityKeygen.js')
+    .then((mod) => {
+      const cancelled = mod.cancelVanityGrind();
+      if (cancelled) {
+        console.log('[shutdown] Killed in-flight vanity grind to release subprocess handles');
+      }
+    })
+    .catch((e) => {
+      // Module not loaded yet (no grind ever happened) or some other
+      // load failure. Either way there's nothing to cancel, so quiet
+      // failure is correct here.
+      console.warn('[shutdown] vanityKeygen module unavailable on quit:', e?.message);
+    });
+});
