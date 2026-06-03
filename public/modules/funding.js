@@ -847,6 +847,57 @@ async function detectFundingWallet() {
 
 bind('refreshBalanceBtn', 'click', pollBalances);
 
+// "Pretend funding arrived (DEMO)" button. Demo mode only — the button is
+// hidden in real mode (see setupDemoMode in startup.js). Sends the funding
+// amounts the UI already computed (recommended SOL with a small buffer,
+// plus every manual-prefund token's target) to the demo ledger, then
+// refreshes balances so the green checkmarks light up. Auto-swap tokens
+// are intentionally left out — those are acquired via the demo Acquire
+// flow so that step stays demonstrable.
+bind('demoFundBtn', 'click', async () => {
+  if (!tempWallet) return;
+  const btn = document.getElementById('demoFundBtn');
+  setLoading(btn, true);
+  try {
+    // Recommended SOL (subtotal + buffer), with a little extra on top so
+    // the row lands above the recommended threshold (fully green, no
+    // "below recommended buffer" note).
+    const recommendedSol = fundingRequirement.totalSol
+      || (fundingRequirement.solLamports / 1e9)
+      || 0;
+    const sol = recommendedSol > 0 ? recommendedSol * 1.05 : 1;
+
+    // Manual-prefund token rows (Section 1) carry their mint, decimals,
+    // and whole-token target as data attributes.
+    const tokens = [];
+    document.querySelectorAll('#balanceRows .balance-row').forEach((row) => {
+      if (row.dataset.kind === 'sol') return;
+      const mint = row.dataset.mint;
+      if (!mint) return;
+      tokens.push({
+        mint,
+        amountUi: Number(row.dataset.target) || 0,
+        decimals: Number(row.dataset.decimals) || 9,
+      });
+    });
+
+    const resp = await fetch('/api/demo/inject-funds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publicKey: tempWallet.publicKey, sol, tokens }),
+    });
+    const data = await resp.json();
+    if (!data.success) throw new Error(data.error || 'inject-funds failed');
+    log('Demo funding injected — balances updated', 'success');
+    // Pick up the new balances right away.
+    pollBalances();
+  } catch (e) {
+    log(`Demo funding failed: ${e.message}`, 'danger');
+  } finally {
+    setLoading(btn, false);
+  }
+});
+
 // Acquire-quote-tokens button: triggers SOL → quote-token swaps for
 // every allocation the funding-estimate flagged as auto-swappable.
 //
