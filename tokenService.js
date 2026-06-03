@@ -33,6 +33,7 @@ import QRCode from 'qrcode';
 import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
 import { getRpcUrl } from './rpcConfig.js';
+import { generateVanityKeypair } from './vanityKeygen.js';
 import {
   createTokenMetadataUmi,
   uploadTokenMetadata,
@@ -50,6 +51,29 @@ function makeConnection() {
     confirmTransactionInitialTimeout: 60000,
   });
 }
+
+// ---------------------------------------------------------------------------
+// RPC retry helper — public RPCs often return stale data after a tx confirms.
+// ---------------------------------------------------------------------------
+async function withRpcRetry(fn, { maxRetries = 5, baseDelayMs = 1000 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (err.name === 'TokenAccountNotFoundError' && attempt < maxRetries) {
+        const delay = baseDelayMs * Math.pow(2, attempt);
+        console.log(`RPC retry ${attempt + 1}/${maxRetries} after TokenAccountNotFoundError, waiting ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
+
 
 // ---------------------------------------------------------------------------
 // Dependency-injection seams (TEST-ONLY).
@@ -223,38 +247,72 @@ function comparePubkeys(a, b) {
 // Find a Keypair whose pubkey sorts strictly smaller than every quote mint
 // in `quoteMints`. Returns the Keypair on success, or null if quoteMints is
 // empty (caller should fall back to a random keypair). Throws on exhaustion.
-function findMintAKeypair(quoteMints) {
+async function findMintAKeypair(quoteMints, { vanityPrefix, vanitySuffix } = {}) {
   if (!Array.isArray(quoteMints) || quoteMints.length === 0) {
-    return null; // no constraint — caller will use a random keypair
+    // No mintA constraint. If vanity is requested, grind it.
+    if (vanityPrefix || vanitySuffix) {
+      const result = await generateVanityKeypair({ prefix: vanityPrefix, suffix: vanitySuffix });
+      console.log(`Vanity mint CA: ${result.publicKey}`);
+      return result.keypair;
+    }
+    return null; // caller will use a random keypair
   }
 
-  // Convert quote mints to raw byte arrays once, up front.
   const quoteBytes = quoteMints.map((m) => new PublicKey(m).toBytes());
 
-  for (let i = 0; i < MAX_KEYPAIR_TRIES; i++) {
-    const kp = Keypair.generate();
+  // When a vanity target is set, each grind via the C binary gives us one
+  // candidate. Check mintA constraint; re-grind if it fails. For a 4-char
+  // suffix this is ~30s per grind; ~5 attempts on average. Bounded at 50
+  // grinds (~25 min worst case for 4-char).
+  const MAX_VANITY_GRINDS = 50;
+  let grindCount = 0;
+
+  while (true) {
+    let kp;
+    if (vanityPrefix || vanitySuffix) {
+      if (grindCount >= MAX_VANITY_GRINDS) {
+        throw new Error(
+          `Vanity CA grind exhausted: ${grindCount} attempts without finding ` +
+          `a keypair that both matches "${vanityPrefix || vanitySuffix}" and ` +
+          `sorts before all ${quoteMints.length} quote mints. Try a different vanity target.`
+        );
+      }
+      grindCount++;
+      console.log(`Vanity CA grind attempt ${grindCount}/${MAX_VANITY_GRINDS}...`);
+      const result = await generateVanityKeypair({ prefix: vanityPrefix, suffix: vanitySuffix });
+      kp = result.keypair;
+    } else {
+      // Fast path: JS-native keypair generation for mintA-only search
+      for (let i = 0; i < MAX_KEYPAIR_TRIES; i++) {
+        kp = Keypair.generate();
+        const candidate = kp.publicKey.toBytes();
+        let beatsAll = true;
+        for (const qb of quoteBytes) {
+          if (comparePubkeys(candidate, qb) >= 0) { beatsAll = false; break; }
+        }
+        if (beatsAll) {
+          console.log(`findMintAKeypair: matched after ${i + 1} attempt${i === 0 ? '' : 's'}`);
+          return kp;
+        }
+      }
+      throw new Error(
+        `Could not find a launched-token keypair sorting smaller than all ` +
+          `${quoteMints.length} quote mints after ${MAX_KEYPAIR_TRIES} attempts.`
+      );
+    }
+
+    // Check mintA constraint for the vanity keypair
     const candidate = kp.publicKey.toBytes();
     let beatsAll = true;
     for (const qb of quoteBytes) {
-      if (comparePubkeys(candidate, qb) >= 0) {
-        beatsAll = false;
-        break;
-      }
+      if (comparePubkeys(candidate, qb) >= 0) { beatsAll = false; break; }
     }
     if (beatsAll) {
-      console.log(
-        `findMintAKeypair: matched after ${i + 1} attempt${i === 0 ? '' : 's'}`,
-      );
+      console.log(`Vanity CA found: ${kp.publicKey.toBase58()} (grind ${grindCount})`);
       return kp;
     }
+    console.log(`Vanity CA failed mintA check, re-grinding...`);
   }
-
-  throw new Error(
-    `Could not find a launched-token keypair sorting smaller than all ` +
-      `${quoteMints.length} quote mints after ${MAX_KEYPAIR_TRIES} attempts. ` +
-      `This usually means one of the quote mints has unusually low byte ` +
-      `order (e.g. starts with 0x00) — try removing or replacing it.`,
-  );
 }
 
 // Create token with Metaplex
@@ -267,6 +325,9 @@ export async function createTokenWithMetaplex({
   logoBase64,
   quoteMints,
   onProgress,
+  vanityPrefix,
+  vanitySuffix,
+  vanityCAKeypair,
 }) {
   try {
     const progress = (event) => {
@@ -300,10 +361,31 @@ export async function createTokenWithMetaplex({
     // Search for a keypair whose pubkey sorts smaller than every quote
     // mint, so the launched token becomes mintA in every pool. Returns
     // null if quoteMints is empty (caller falls back to random).
-    const mintKeypair = findMintAKeypair(quoteMints);
-    if (mintKeypair) {
-      console.log(`Using mintA-sorted keypair: ${mintKeypair.publicKey.toBase58()}`);
+    // If a pre-ground vanity CA keypair was provided, use it (after checking
+    // mintA constraint). Otherwise grind via findMintAKeypair.
+    let mintKeypair = null;
+    if (vanityCAKeypair) {
+      mintKeypair = Keypair.fromSecretKey(Uint8Array.from(vanityCAKeypair));
+      // Verify mintA constraint
+      if (quoteMints && quoteMints.length > 0) {
+        const quoteBytes = quoteMints.map((m) => new PublicKey(m).toBytes());
+        const candidate = mintKeypair.publicKey.toBytes();
+        for (const qb of quoteBytes) {
+          if (comparePubkeys(candidate, qb) >= 0) {
+            throw new Error(
+              `Pre-ground vanity CA ${mintKeypair.publicKey.toBase58()} does not sort ` +
+              `before all quote mints. Try grinding again or remove the vanity target.`
+            );
+          }
+        }
+      }
+      console.log(`Using pre-ground vanity CA: ${mintKeypair.publicKey.toBase58()}`);
     } else {
+      mintKeypair = await findMintAKeypair(quoteMints, { vanityPrefix, vanitySuffix });
+    }
+    if (mintKeypair && !vanityCAKeypair) {
+      console.log(`Using mintA-sorted keypair: ${mintKeypair.publicKey.toBase58()}`);
+    } else if (!mintKeypair) {
       console.log('No quote mints provided; using random mint keypair');
     }
 
@@ -346,9 +428,9 @@ export async function createTokenWithMetaplex({
     // Small delay to ensure metadata account is fully propagated
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // Create associated token account
+    // Create associated token account (with RPC retry for stale reads)
     console.log('Creating associated token account...');
-    const tokenAccount = await getOrCreateAssociatedTokenAccount(
+    const tokenAccount = await withRpcRetry(() => getOrCreateAssociatedTokenAccount(
       connection,
       tempWallet,
       mint,
@@ -358,7 +440,7 @@ export async function createTokenWithMetaplex({
       { commitment: 'finalized' },
       TOKEN_PROGRAM_ID,
       ASSOCIATED_TOKEN_PROGRAM_ID
-    );
+    ));
     console.log('Token account created:', tokenAccount.address.toString());
     
     // Mint the total supply

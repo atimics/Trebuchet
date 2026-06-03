@@ -3,6 +3,7 @@
 // ===========================================================================
 log('Trebuchet is ready. Click "Generate Wallet" to begin.');
 loadRpcConfig();
+startRpcHealthPolling();
 loadLaunchJournals();
 loadPendingWallets();
 loadFeeTiers();

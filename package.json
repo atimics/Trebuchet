@@ -23,7 +23,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "web": "node scripts/build-app-js.mjs && node server.js",
+    "web": "npm run build:c && npm run build:js && node server.js",
     "web:dev": "node --watch server.js",
     "check:syntax": "node scripts/check-syntax.mjs",
     "test": "node --test test/*.test.mjs",
@@ -32,13 +32,20 @@
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
-    "build:js": "node scripts/build-app-js.mjs"
+    "build:js": "node scripts/build-app-js.mjs",
+    "build:c": "make -C c"
   },
   "files": [
     "build/**/*",
     "docs/**/*",
+    "lpConstants.js",
+    "lpDistribution.js",
+    "lpEstimate.js",
+    "lpFeeTiers.js",
+    "lpMintCompat.js",
     "main.js",
     "server.js",
+    "serverMiddleware.js",
     "tokenService.js",
     "tokenInfoService.js",
     "tokenMetadataLayout.js",
@@ -46,6 +53,7 @@
     "lpMath.js",
     "swapService.js",
     "swapMath.js",
+    "vanityKeygen.js",
     "walletHelpers.js",
     "walletRecovery.js",
     "rpcConfig.js",
@@ -58,7 +66,8 @@
     "updateCheckBridge.js",
     "validators.js",
     "metadata.json",
-    "public/**/*"
+    "public/**/*",
+    "c/build/**/*"
   ],
   "dependencies": {
     "@metaplex-foundation/mpl-token-metadata": "^3.2.1",
@@ -84,7 +93,8 @@
   "devDependencies": {
     "@types/node": "^20.14.10",
     "electron": "^42.2.0",
-    "electron-builder": "^26.8.1"
+    "electron-builder": "^26.8.1",
+    "playwright": "^1.60.0"
   },
   "overrides": {
     "axios": "^1.16.1",
@@ -105,8 +115,14 @@
       "output": "dist"
     },
     "files": [
+      "lpConstants.js",
+      "lpDistribution.js",
+      "lpEstimate.js",
+      "lpFeeTiers.js",
+      "lpMintCompat.js",
       "main.js",
       "server.js",
+      "serverMiddleware.js",
       "tokenService.js",
       "tokenInfoService.js",
       "tokenMetadataLayout.js",
@@ -114,6 +130,7 @@
       "lpMath.js",
       "swapService.js",
       "swapMath.js",
+      "vanityKeygen.js",
       "walletHelpers.js",
       "walletRecovery.js",
       "rpcConfig.js",
@@ -128,11 +145,13 @@
       "metadata.json",
       "README.md",
       "public/**/*",
+      "c/build/**/*",
       "package.json"
     ],
     "asarUnpack": [
       "public/**/*",
-      "public/intro.mp4"
+      "public/intro.mp4",
+      "c/build/**/*"
     ],
     "mac": {
       "icon": "build/icon.icns",

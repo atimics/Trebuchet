@@ -1,5 +1,4 @@
 import express from 'express';
-import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -93,6 +92,26 @@ function markAirdropInFlight(walletPublicKey) {
 function clearAirdropInFlight(walletPublicKey) {
   airdropsInFlight.delete(walletPublicKey);
 }
+
+// Lazy import to avoid crash on startup in packaged builds
+let _generateVanityKeypair = null;
+async function getVanityKeygen() {
+  if (!_generateVanityKeypair) {
+    const mod = await import('./vanityKeygen.js');
+    _generateVanityKeypair = mod.generateVanityKeypair;
+  }
+  return _generateVanityKeypair;
+}
+
+import {
+  hostCheckMiddleware,
+  securityHeadersMiddleware,
+  apiSessionMiddleware,
+  resolvePublicDir,
+  upload,
+  API_SESSION_TOKEN,
+} from './serverMiddleware.js';
+
 
 // Configuration constants are defined below in the "Configuration" section
 // (just after __dirname is computed). Internal env vars (PORT,
@@ -216,20 +235,6 @@ const AUTOSWAP_CONCURRENCY = 1;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_SESSION_TOKEN = crypto.randomBytes(32).toString('base64url');
-const CONTENT_SECURITY_POLICY = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:",
-  "font-src 'self' data:",
-  "media-src 'self'",
-  "connect-src 'self'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-].join('; ');
 
 // Boot-time log: confirms which config values the server is actually
 // using on this launch. Streams to the in-app activity log via the
@@ -238,83 +243,25 @@ console.log(`[boot] AUTOSWAP_CONCURRENCY = ${AUTOSWAP_CONCURRENCY}`);
 console.log(`[boot] PORT = ${PORT}`);
 console.log('[boot] RPC endpoint: configured via in-app RPC settings');
 
-// Configure multer for file uploads
-const storage = multer.memoryStorage();
-const upload = multer({
-  storage,
-  limits: { fileSize: 100 * 1024 }, // 100KB Arweave free-tier limit
-  fileFilter: (_req, file, cb) => {
-    if (file.mimetype === 'image/png' || file.mimetype === 'image/jpeg') {
-      cb(null, true);
-      return;
-    }
-    cb(new Error('Logo must be a PNG or JPG image'));
-  },
-});
-
 // ---------------------------------------------------------------------------
-// Host header allowlist — DNS rebinding defense.
-//
-// The server binds to 127.0.0.1 (see app.listen at the bottom of this file)
-// so externally-routed traffic from the LAN or internet can't reach us. But
-// there's a subtler attack class that survives a loopback bind: DNS
-// rebinding. The scenario:
-//
-//   1. The user has any browser open (Chrome, Firefox, Safari, Edge) —
-//      NOT the Trebuchet Electron window, just normal web browsing.
-//   2. The user visits attacker.com, or sees a malicious iframe/ad on
-//      an otherwise innocent page.
-//   3. attacker.com's JavaScript manipulates its own DNS so that the
-//      domain resolves to 127.0.0.1 mid-session.
-//   4. The attacker's JS, still thinking it's same-origin with
-//      attacker.com, does fetch('http://attacker.com:<port>/api/...').
-//      The TCP connection lands on our server here.
-//   5. With wildcard CORS and no Host check, we'd happily serve it —
-//      including /api/pending-wallets, which returns secret keys.
-//
-// The browser's same-origin policy can't protect us, because the
-// attacker's JS thinks it really IS same-origin with attacker.com.
-// What DOES protect us: the Host header. The browser sends
-// `Host: attacker.com:<port>` (whatever domain the JS believes it's
-// talking to), not `Host: 127.0.0.1:<port>`. The Host header is one
-// of the few things the browser, not the page, controls — page JS
-// cannot forge or override it.
-//
-// So we reject any request whose Host header doesn't claim to be
-// 127.0.0.1 or localhost. Legitimate requests from the Trebuchet
-// renderer (which loads from http://127.0.0.1:<port>) always have the
-// right Host header. DNS-rebound requests never do.
-//
-// This middleware is registered first, before the body parser, so a
-// rejected request never has its body read into memory.
+// Middleware pipeline
 // ---------------------------------------------------------------------------
-const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost']);
-
-app.use((req, res, next) => {
-  const hostHeader = req.headers.host || '';
-  // Host header format is "hostname" or "hostname:port". Strip the
-  // port for the allowlist check — we don't care which port the
-  // client believes it's talking to (the connection wouldn't have
-  // reached us if it weren't on our actual port), only the hostname.
-  const hostname = hostHeader.split(':')[0];
-  if (!ALLOWED_HOSTS.has(hostname)) {
-    console.warn(
-      `Rejected request with disallowed Host header: ${hostHeader} ` +
-      `${req.method} ${req.url}`,
-    );
-    return res
-      .status(403)
-      .json({ success: false, error: 'invalid Host header' });
-  }
-  next();
-});
-
-app.use((_req, res, next) => {
-  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  next();
-});
+// The middleware functions are defined in serverMiddleware.js so they can
+// be unit-tested independently. Registration order matters:
+//   1. hostCheckMiddleware — DNS rebinding defense (before body parser so
+//      a rejected request never has its body read into memory).
+//   2. securityHeadersMiddleware — CSP + frame/type-sniff headers.
+//   3. /api/session route — hands out the session token. Registered
+//      BEFORE apiSessionMiddleware so it doesn't get gated by itself.
+//      (The middleware has a safety exemption for /session anyway, but
+//      relying on route-ordering keeps the intent clear.)
+//   4. apiSessionMiddleware — gates all /api/* mutating routes behind
+//      the session token. /proxy-image and /generate-vanity-wallet-stream
+//      are exempted inside the middleware.
+//   5. express.json — body parser. Registered AFTER the host check and
+//      session gate so we don't waste memory parsing rejected requests.
+app.use(hostCheckMiddleware);
+app.use(securityHeadersMiddleware);
 
 // CORS is intentionally not configured. The Trebuchet frontend loads from
 // http://127.0.0.1:<port> and the API serves from the same origin, so no
@@ -333,54 +280,11 @@ app.get('/api/session', (_req, res) => {
     .json({ success: true, token: API_SESSION_TOKEN });
 });
 
-app.use('/api', (req, res, next) => {
-  // /session hands out the token itself; /proxy-image is a read-only image
-  // passthrough loaded via <img>/Image (which can't attach custom headers),
-  // so both are exempt from the token gate. Everything else needs the token.
-  if (req.path === '/session' || req.path === '/proxy-image') return next();
-  const token = req.get('x-trebuchet-session');
-  if (token !== API_SESSION_TOKEN) {
-    return res
-      .status(403)
-      .json({ success: false, error: 'invalid API session' });
-  }
-  next();
-});
+app.use('/api', apiSessionMiddleware);
 
 app.use(express.json({ limit: '5mb' }));
 
-// Resolve the public/ directory's path on disk. Two cases:
-//
-//   - Dev / web mode: __dirname is just the source directory. The
-//     join below produces a regular filesystem path.
-//
-//   - Packaged Electron: server.js is bundled inside resources/app.asar.
-//     fs operations against asar-internal paths get redirected to
-//     app.asar.unpacked when the file is in our asarUnpack allow-list,
-//     but Express's static middleware uses fs.createReadStream for
-//     streaming and that doesn't reliably get the redirect — files
-//     served via streaming would 404 even though stat says they exist.
-//     Fix: rewrite the path to point at app.asar.unpacked directly.
-//     The detection finds "\app.asar" (or "/app.asar" on Unix) and
-//     verifies what follows is end-of-string or another separator
-//     (so we don't false-match a hypothetical "app.asarx" component).
-function resolvePublicDir() {
-  const marker = `${path.sep}app.asar`;
-  const idx = __dirname.indexOf(marker);
-  if (idx === -1) {
-    return path.join(__dirname, 'public');
-  }
-  const after = __dirname[idx + marker.length];
-  if (after !== undefined && after !== path.sep) {
-    return path.join(__dirname, 'public');
-  }
-  const rewritten =
-    __dirname.slice(0, idx) +
-    `${path.sep}app.asar.unpacked` +
-    __dirname.slice(idx + marker.length);
-  return path.join(rewritten, 'public');
-}
-const publicDir = resolvePublicDir();
+const publicDir = resolvePublicDir(__dirname);
 
 app.use(express.static(publicDir));
 
@@ -494,6 +398,174 @@ app.post('/api/generate-wallet', async (req, res) => {
 });
 
 // SOL-only balance (kept for backwards compatibility / Step 1 display)
+// ---------------------------------------------------------------------------
+
+// SSE streaming endpoint for vanity CA grind progress
+app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
+  let { prefix, suffix, threads, blockhash, token } = req.query;
+
+  // Validate session token inline.  This endpoint is exempt from the
+  // middleware so EventSource can connect, but we still gate on the
+  // session token delivered as a query parameter.
+  if (!token) {
+    return res.status(403).json({ success: false, error: 'session token required' });
+  }
+  const tokenBuf = Buffer.from(token);
+  const expectedBuf = Buffer.from(API_SESSION_TOKEN);
+  if (tokenBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
+    return res.status(403).json({ success: false, error: 'invalid session token' });
+  }
+
+  if (!prefix && !suffix) {
+    return res.status(400).json({ success: false, error: 'prefix or suffix required' });
+  }
+
+  // Clamp threads to a consumer-reasonable maximum
+  if (threads) {
+    threads = Math.min(Math.max(1, Number(threads)), 32);
+  }
+
+  // Auto-fetch a recent Solana blockhash for VRF seed binding.
+  // The VRF proves the seed was bound to a known-past blockhash,
+  // preventing the grinder from cherry-picking seeds across re-rolls.
+  if (!blockhash) {
+    try {
+      const blockhashResp = await fetch(getRpcUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1,
+          method: 'getLatestBlockhash',
+          params: [{ commitment: 'confirmed' }],
+        }),
+      });
+      const bhJson = await blockhashResp.json();
+      if (bhJson?.result?.value?.blockhash) {
+        blockhash = Buffer.from(bs58.decode(bhJson.result.value.blockhash)).toString('hex');
+      }
+    } catch (_) {
+      // If RPC fetch fails, continue without VRF (seed stays private).
+      console.warn('[vanity] Could not fetch blockhash for VRF; grinding without seed binding');
+    }
+  }
+
+  const target = prefix || suffix;
+  const targetLen = target.length;
+  // 58^len
+  const expected = Math.pow(58, targetLen);
+
+  // SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  // Send initial metadata
+  res.write(`data: ${JSON.stringify({ type: 'start', target, targetLen, expected })}\n\n`);
+
+  let lastAttempts = 0;
+  let lastSend = Date.now();
+
+  try {
+    const generateVanityKeypair = await getVanityKeygen();
+    const result = await generateVanityKeypair({
+      prefix, suffix, threads, blockhash,
+      onProgress: ({ attempts, key }) => {
+        // Throttle to ~4 updates/sec
+        const now = Date.now();
+        if (now - lastSend < 100) return;
+        lastSend = now;
+        lastAttempts = attempts;
+        const epoch = attempts / expected;
+        res.write(`data: ${JSON.stringify({ type: 'progress', attempts, epoch, key })}\n\n`);
+      },
+    });
+
+    const walletInfo = {
+      publicKey: result.publicKey,
+      secretKey: result.secretKey,
+      mnemonic: null,
+    };
+
+    const qrCode = await getWalletQRCode(walletInfo.publicKey);
+
+    res.write(`data: ${JSON.stringify({
+      type: 'done',
+      success: true,
+      wallet: {
+        publicKey: walletInfo.publicKey,
+        secretKey: walletInfo.secretKey,
+        secretKeyB58: secretKeyToBase58(walletInfo.secretKey),
+        mnemonic: null,
+        vanity: true,
+        qrCode,
+        attempts: result.attempts,
+        rarity: result.rarity,
+        epochs: result.epochs,
+        expectedAttempts: result.expectedAttempts,
+        ...(result.vrfProof ? {
+          vrfProof: result.vrfProof,
+          vrfPk: result.vrfPk,
+          vrfBlockhash: result.vrfBlockhash,
+        } : {}),
+      },
+    })}\n\n`);
+
+    res.end();
+  } catch (error) {
+    console.error('Error generating vanity wallet:', error);
+    res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+    res.end();
+  }
+});
+
+app.post('/api/generate-vanity-wallet', async (req, res) => {
+  try {
+    const { prefix, suffix, threads } = req.body;
+    if (!prefix && !suffix) {
+      return res.status(400).json({ success: false, error: 'prefix or suffix required' });
+    }
+    const target = prefix || suffix;
+    console.log(`Generating vanity wallet (${prefix ? 'prefix' : 'suffix'}: "${target}")...`);
+
+    const generateVanityKeypair = await getVanityKeygen();
+    const result = await generateVanityKeypair({ prefix, suffix, threads });
+
+    // Vanity keypairs don't have a BIP39 mnemonic (they're generated from
+    // random seeds, not from a mnemonic phrase). The user can still export
+    // the raw secret key.
+    const walletInfo = {
+      publicKey: result.publicKey,
+      secretKey: result.secretKey,
+      mnemonic: null, // no mnemonic for vanity keypairs
+    };
+
+    const qrCode = await getWalletQRCode(walletInfo.publicKey);
+    pendingWallets.add(walletInfo.publicKey, walletInfo.secretKey, null);
+    launchJournal.start({ walletPublicKey: walletInfo.publicKey });
+
+    res.json({
+      success: true,
+      wallet: {
+        publicKey: walletInfo.publicKey,
+        secretKey: walletInfo.secretKey,
+        secretKeyB58: secretKeyToBase58(walletInfo.secretKey),
+        mnemonic: null,
+        vanity: true,
+        qrCode,
+        attempts: result.attempts,
+        rarity: result.rarity,
+        epochs: result.epochs,
+        expectedAttempts: result.expectedAttempts,
+      },
+    });
+  } catch (error) {
+    console.error('Error generating vanity wallet:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 app.post('/api/check-balance', async (req, res) => {
   try {
     const { publicKey } = req.body;
@@ -622,6 +694,43 @@ app.post('/api/rpc-config/test', async (req, res) => {
   const result = await testRpc(req.body.url);
   res.json({ success: true, result });
 });
+
+// RPC health polling endpoint — called every 30s by the frontend to drive
+// the health indicator dot. Sends a lightweight getHealth JSON-RPC call
+// (lighter than getVersion — no blockhash fetch) against the currently
+// active RPC and reports latency + health status. getHealth is a Solana
+// JSON-RPC method that returns "ok" when the node is healthy — it's
+// universally supported and costs essentially nothing.
+app.get('/api/rpc-health', async (_req, res) => {
+  const url = getRpcConfig().active;
+  try {
+    const start = Date.now();
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getHealth', params: [] }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const latencyMs = Date.now() - start;
+    if (!resp.ok) {
+      return res.json({ success: true, health: 'error', latencyMs, error: `HTTP ${resp.status}` });
+    }
+    const json = await resp.json();
+    if (json.error) {
+      return res.json({ success: true, health: 'error', latencyMs, error: json.error.message });
+    }
+    const healthy = json.result === 'ok';
+    res.json({
+      success: true,
+      health: healthy ? (latencyMs < 400 ? 'good' : 'slow') : 'error',
+      latencyMs,
+    });
+  } catch (e) {
+    res.json({ success: true, health: 'error', latencyMs: null, error: e.message });
+  }
+});
+
+
 
 // ---------------------------------------------------------------------------
 // Token creation
@@ -828,6 +937,9 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       description,
       totalSupply,
       quoteMints: quoteMintsRaw,
+      vanityPrefix,
+      vanitySuffix,
+      vanityCAKeypair: vanityCAKeypairRaw,
     } = req.body;
     const normalizedName = normalizeTokenName(name);
     const normalizedSymbol = normalizeTokenSymbol(symbol);
@@ -889,6 +1001,9 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       totalSupply: normalizedTotalSupply,
       logoBase64,
       quoteMints,
+      vanityPrefix,
+      vanitySuffix,
+      vanityCAKeypair: vanityCAKeypairRaw ? JSON.parse(vanityCAKeypairRaw) : null,
       onProgress: (event) => recordTokenJournalProgress(walletPublicKey, event),
     });
 
@@ -2069,6 +2184,202 @@ app.post('/api/resume-launch', async (req, res) => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Launch diagnostic — paste a token address, see what's on chain
+// ---------------------------------------------------------------------------
+
+app.get('/api/diagnose-launch', async (req, res) => {
+  try {
+    const { tokenMint } = req.query;
+    if (!tokenMint) {
+      return res.status(400).json({ success: false, error: 'tokenMint query param required' });
+    }
+
+    const connection = new Connection(getRpcConfig().active, 'confirmed');
+    const CLMM_PROGRAM = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
+    const report = { tokenMint, token: {}, pools: [] };
+
+    // 1. Token info
+    try {
+      const mintPk = new PublicKey(tokenMint);
+      const mintInfo = await connection.getAccountInfo(mintPk);
+      if (!mintInfo) {
+        return res.status(404).json({ success: false, error: 'Token mint not found on chain' });
+      }
+      report.token.exists = true;
+      report.token.owner = mintInfo.owner.toBase58();
+
+      const supply = await connection.getTokenSupply(mintPk);
+      report.token.supply = supply.value.uiAmount;
+      report.token.decimals = supply.value.decimals;
+
+      if (mintInfo.data.length >= 82) {
+        const mintAuthOption = mintInfo.data.readUInt32LE(0);
+        report.token.mintAuthority = mintAuthOption === 0 ? null
+          : new PublicKey(mintInfo.data.slice(4, 36)).toBase58();
+      }
+    } catch (e) {
+      report.token.error = e.message;
+    }
+
+    // 2. Discover pools by deriving pool PDAs for this token paired with SOL.
+    //    The CLMM pool PDA seed is based on the sorted mint pair (mintA < mintB)
+    //    and the amm config. We try spawning configs that are likely used.
+    //    This is more reliable than the Raydium API for freshly-created pools.
+    const KNOWN_AMM_CONFIGS = [
+      { index: 4,  id: '9iFER3bpjf1PTTCQCfTRu17EJgvsxo9pVyA9QWwEuX4x' },  // 0.01%
+      { index: 5,  id: '3XCQJQryqpDvvZBfGxR7CLAw5dpGJ9aa7kt1jRLdyxuZ' },  // 0.05%
+      { index: 8,  id: '3h2e43PunVA5K34vwKCLHWhZF4aZpyaC9RmxvshGAQpL' },  // 0.04%
+      { index: 3,  id: 'A1BBtTYJd4i3xU8D6Tc2FzU6ZN4oXZWXKZnCxwbHXr8x' },  // 1%
+    ];
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const QUOTE_MINTS = [SOL_MINT];  // Could extend with USDC, etc.
+
+    const launchMintPk = new PublicKey(tokenMint);
+    const discoveredPools = [];
+
+    for (const quoteMintStr of QUOTE_MINTS) {
+      const quoteMintPk = new PublicKey(quoteMintStr);
+      // Determine mintA/mintB ordering (CLMM sorts mints)
+      const mintA = launchMintPk.toBase58() < quoteMintStr ? launchMintPk : quoteMintPk;
+      const mintB = launchMintPk.toBase58() < quoteMintStr ? quoteMintPk : launchMintPk;
+
+      for (const cfg of KNOWN_AMM_CONFIGS) {
+        try {
+          const ammConfigPk = new PublicKey(cfg.id);
+          const [poolPda] = PublicKey.findProgramAddressSync(
+            [
+              Buffer.from('pool'),
+              ammConfigPk.toBuffer(),
+              mintA.toBuffer(),
+              mintB.toBuffer(),
+            ],
+            CLMM_PROGRAM
+          );
+          const poolInfo = await connection.getAccountInfo(poolPda);
+          if (poolInfo && poolInfo.owner.equals(CLMM_PROGRAM)) {
+            discoveredPools.push({
+              id: poolPda.toBase58(),
+              config: cfg,
+              quoteMint: quoteMintStr,
+              quoteSymbol: quoteMintStr === SOL_MINT ? 'SOL' : quoteMintStr.slice(0, 8),
+              mintA: mintA.toBase58(),
+              mintB: mintB.toBase58(),
+            });
+            console.log(`  Found pool: ${poolPda.toBase58()} (config ${cfg.index}, quote ${quoteMintStr === SOL_MINT ? 'SOL' : quoteMintStr.slice(0,8)})`);
+          }
+        } catch {}
+      }
+    }
+
+    // 3. Per-pool diagnostics
+    for (const p of discoveredPools) {
+      try {
+        const poolId = new PublicKey(p.id);
+        const poolInfo = await connection.getAccountInfo(poolId);
+        if (!poolInfo || !poolInfo.owner.equals(CLMM_PROGRAM)) continue;
+
+        // Pool already validated during discovery
+
+        const quoteMint = p.quoteMint;
+        const quoteSymbol = p.quoteSymbol || '?';
+
+        // Discover position NFTs by scanning the pool's position PDAs.
+        // CLMM position NFTs are minted by the program; we find them by
+        // checking the user's wallet token accounts (if provided) and
+        // verifying each candidate against the CLMM program.
+        const positions = [];
+        const userWalletParam = req.query.wallet || null;
+
+        if (userWalletParam) {
+          // Fast path: scan the user's wallet for position NFTs
+          const userPk = new PublicKey(userWalletParam);
+          const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+            userPk,
+            { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
+          );
+          for (const ta of tokenAccounts.value) {
+            const info = ta.account.data.parsed.info;
+            // Position NFTs: decimals=0, amount=1
+            if (info.tokenAmount.decimals !== 0 || info.tokenAmount.uiAmount !== 1) continue;
+            const nftMint = new PublicKey(info.mint);
+            // Verify this is a CLMM position by checking if a position PDA exists
+            try {
+              const [posPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from('position'), nftMint.toBuffer()],
+                CLMM_PROGRAM
+              );
+              const posData = await connection.getAccountInfo(posPda);
+              if (!posData) continue;
+
+
+              // Extract position data
+              const tickLower = posData.data.readInt32LE(8 + 32 + 32);
+              const tickUpper = posData.data.readInt32LE(8 + 32 + 32 + 4);
+              const holder = userWalletParam;
+
+              // Check lock status
+              let locked = false;
+              try {
+                const BURN_EARN = new PublicKey('lockC9UHYmzhfPqVX7BGpNrkCWrAVBVpRhb8P6UZ6yX');
+                const [lockPda] = PublicKey.findProgramAddressSync(
+                  [Buffer.from('lock_position'), BURN_EARN.toBuffer(), nftMint.toBuffer()],
+                  BURN_EARN
+                );
+                locked = !!(await connection.getAccountInfo(lockPda));
+              } catch {}
+
+              positions.push({
+                nftMint: nftMint.toBase58(),
+                holder,
+                tickLower,
+                tickUpper,
+                locked,
+              });
+            } catch { /* not a CLMM position */ }
+          }
+        }
+
+
+
+        report.pools.push({
+          poolId: p.id,
+          quoteMint,
+          quoteSymbol,
+          feeRate: p.config?.index || '?',
+          tvl: '0',
+          totalPositions: positions.length,
+          lockedPositions: positions.filter(po => po.locked).length,
+          holders: [...new Set(positions.map(po => po.holder).filter(Boolean))],
+          positions,
+        });
+      } catch (e) {
+        console.warn(`Pool ${p.id} diagnostic failed:`, e.message);
+      }
+    }
+
+    // 4. Summary
+    report.summary = {
+      poolCount: report.pools.length,
+      totalPositions: report.pools.reduce((s, p) => s + p.totalPositions, 0),
+      lockedPositions: report.pools.reduce((s, p) => s + p.lockedPositions, 0),
+      needsBootstrap: report.pools.some(p => p.totalPositions > 0),
+      needsLock: report.pools.some(p => p.lockedPositions < p.totalPositions),
+    };
+
+    console.log(
+      `Diagnostic for ${tokenMint}: ${report.summary.poolCount} pool(s), ${report.summary.totalPositions} positions`
+    );
+
+    res.json({ success: true, report });
+  } catch (e) {
+    console.error('diagnose-launch error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+
 
 // ---------------------------------------------------------------------------
 // Final transfer / sweep

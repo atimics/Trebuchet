@@ -50,6 +50,97 @@ async function loadRpcConfig() {
   }
 }
 
+// ===========================================================================
+// RPC health polling
+// ===========================================================================
+//
+// Polls /api/rpc-health every 30s during active use and updates a small
+// coloured dot next to the RPC display. The dot is green (healthy, fast),
+// yellow (healthy but slow), red (errors), or grey (unknown / not yet
+// polled). If the RPC returns errors during an active launch flow, a
+// warning banner appears with a one-click "Open RPC settings" link.
+
+function updateRpcHealthDot(health) {
+  const dot = document.getElementById('rpcHealthDot');
+  if (!dot) return;
+  dot.className = 'rpc-health-dot health-' + health;
+  const labels = {
+    good: 'RPC healthy, low latency',
+    slow: 'RPC healthy, high latency',
+    error: 'RPC returning errors',
+    unknown: 'RPC health unknown',
+  };
+  dot.title = labels[health] || labels.unknown;
+}
+
+function showRpcHealthWarning(detail) {
+  const banner = document.getElementById('rpcHealthWarning');
+  const detailEl = document.getElementById('rpcHealthWarningDetail');
+  if (!banner || !detailEl) return;
+  detailEl.textContent = detail;
+  banner.classList.remove('hidden');
+}
+
+function hideRpcHealthWarning() {
+  const banner = document.getElementById('rpcHealthWarning');
+  if (banner) banner.classList.add('hidden');
+}
+
+async function pollRpcHealth() {
+  try {
+    const resp = await fetch('/api/rpc-health').then(r => r.json());
+    if (!resp.success) return;
+    _rpcHealthLastResult = resp;
+    updateRpcHealthDot(resp.health);
+
+    // Show warning only during active launch flow + when RPC is erroring
+    if (_rpcHealthLaunchActive && resp.health === 'error') {
+      const detail = resp.error
+        ? `The RPC returned: ${resp.error}. Launches may fail mid-flow.`
+        : 'The RPC is not responding. Launches will likely fail.';
+      showRpcHealthWarning(detail);
+    } else if (resp.health !== 'error') {
+      hideRpcHealthWarning();
+    }
+  } catch {
+    // Network error from our own server — don't spam the activity log
+    // since this runs every 30s. Just mark unknown and move on.
+    updateRpcHealthDot('unknown');
+    _rpcHealthLastResult = { health: 'unknown', latencyMs: null, error: 'Could not reach health endpoint' };
+  }
+}
+
+function startRpcHealthPolling() {
+  if (_rpcHealthPollTimer) return; // already running
+  pollRpcHealth(); // immediate first check
+  _rpcHealthPollTimer = setInterval(pollRpcHealth, RPC_HEALTH_INTERVAL_MS);
+}
+
+function stopRpcHealthPolling() {
+  if (_rpcHealthPollTimer) {
+    clearInterval(_rpcHealthPollTimer);
+    _rpcHealthPollTimer = null;
+  }
+  hideRpcHealthWarning();
+  updateRpcHealthDot('unknown');
+}
+
+function markLaunchActiveForRpcHealth(active) {
+  _rpcHealthLaunchActive = active;
+  if (!active) hideRpcHealthWarning();
+}
+
+// RPC health warning: "Open RPC settings" link handler
+bind('rpcHealthWarningSwitch', 'click', (e) => {
+  e.preventDefault();
+  const panel = document.getElementById('rpcSettingsPanel');
+  const chevron = document.getElementById('rpcSettingsChevron');
+  panel.classList.remove('hidden');
+  chevron.classList.remove('fa-chevron-down');
+  chevron.classList.add('fa-chevron-up');
+});
+
+
 // Render an RPC URL safely for display. Keeps just the scheme and host
 // — everything else (path, query string) is redacted, because that's
 // where API keys typically live. Helius URLs look like

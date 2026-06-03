@@ -150,6 +150,9 @@ async function showLaunchSuccessModal() {
       }
     }
   }
+
+  // Populate the inline launch report preview inside the modal.
+  renderLaunchReportPreview('modal');
 }
 
 // Hide the launch success modal and free the coin's WebGL context. Safe

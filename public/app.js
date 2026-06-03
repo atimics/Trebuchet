@@ -671,6 +671,149 @@ function log(message, type = 'info') {
 }
 
 // ===========================================================================
+// Structured error display — categorization and "What happened?" explainers
+// ===========================================================================
+//
+// Categorises error messages into types so the UI can show category-specific
+// recovery suggestions and plain-language explanations. Categories:
+//   rpc        — RPC endpoint errors (rate limiting, connection refused, etc.)
+//   onchain    — On-chain transaction failures (instruction errors, etc.)
+//   validation — User input / config errors (invalid addresses, bad amounts)
+//   network    — HTTP / fetch errors from our own server or third-parties
+//   unknown    — Anything that doesn\'t match a known pattern
+
+const ERROR_CATEGORIES = {
+  rpc: {
+    label: 'RPC',
+    cssClass: 'cat-rpc',
+    patterns: [
+      /rate.?limit/i, /429/i, /too many requests/i, /throttl/i,
+      /sendTransaction.*failed/i, /getHealth/i, /rpc.*error/i,
+      /Couldn\'t verify the wallet balance.*RPC/i, /RPC.*down/i,
+      /RPC.*unreachable/i, /Balance polling is failing/i,
+      /Connection.*refused/i, /ECONNREFUSED/i,
+      /getVersion.*error/i, /getBlockHeight.*error/i,
+    ],
+    suggestion: 'Try switching to a dedicated RPC endpoint (Helius, QuickNode, Triton). '
+      + 'Open the RPC settings panel above to add one — free tiers are plenty '
+      + 'for a launch. Public endpoints get rate-limited mid-flow.',
+    explainer: 'Solana RPC nodes have rate limits that can throttle or reject '
+      + 'transactions when they receive too many requests in a short window. '
+      + 'Pool creation sends dozens of transactions in rapid succession, which '
+      + 'is exactly the pattern that triggers these limits on shared/public endpoints. '
+      + 'A dedicated endpoint (even a free tier) has a much higher limit.',
+  },
+  onchain: {
+    label: 'On-chain',
+    cssClass: 'cat-onchain',
+    patterns: [
+      /instruction.?error/i, /custom.*program.*error/i, /0x[0-9a-f]{1,4}\b/i,
+      /insufficient.*lamports/i, /insufficient.*funds/i,
+      /ConstraintMintTokenProgram/i, /Token.*2022/i,
+      /Anchor.*constraint/i, /program.*failed/i,
+      /blockhash.*not found/i, /transaction.*expired/i,
+      /comput.*budget/i, /exceeded.*limit/i,
+    ],
+    suggestion: 'If this is a Token-2022 mint issue, use a standard SPL Token mint. '
+      + 'If it\'s a funds issue, your ephemeral wallet may need more SOL — add extra '
+      + 'SOL to the launch wallet and use Resume Launch. For compute-budget errors, '
+      + 'try reducing the number of pools or increasing the priority fee.',
+    explainer: 'This error means the Solana network rejected an on-chain transaction '
+      + 'during pool creation. Common causes: the token uses Token-2022 extensions that '
+      + 'Raydium CLMM pools don\'t support; the ephemeral wallet ran out of SOL for fees; '
+      + 'or the transaction hit a compute budget limit. Your assets remain safe in the '
+      + 'ephemeral wallet and can be recovered via Cancel & Refund or Resume Launch.',
+  },
+  validation: {
+    label: 'Validation',
+    cssClass: 'cat-validation',
+    patterns: [
+      /invalid.*(address|mint|token)/i, /(address|mint).*invalid/i,
+      /not.*valid/i, /must be/i, /required/i, /missing/i,
+      /unsupported.*(token|extension|program)/i,
+      /can\'t.*(be|use|create)/i, /cannot/i,
+      /token.*not found/i, /mint.*not found/i,
+      /no.*pool/i, /empty/i, /undefined/i,
+    ],
+    suggestion: 'Check your token details — the mint address, decimals, or symbol '
+      + 'may be incorrect. If you\'re using a pump.fun or other Token-2022 token, '
+      + 'those aren\'t directly supported for CLMM pools. Consider wrapping or '
+      + 'using a standard SPL Token instead.',
+    explainer: 'This error means something in your launch configuration doesn\'t '
+      + 'meet the requirements. It could be an invalid token address, unsupported '
+      + 'token format, or a missing required field. No on-chain actions have been '
+      + 'performed — you can fix the config and try again without losing any SOL.',
+  },
+  network: {
+    label: 'Network',
+    cssClass: 'cat-network',
+    patterns: [
+      /fetch.*fail/i, /network.*error/i, /timeout/i, /abort/i,
+      /ENOTFOUND/i, /EAI_AGAIN/i, /ECONNRESET/i, /ETIMEDOUT/i,
+      /Couldn\'t.*reach/i, /Couldn\'t.*connect/i, /unreachable/i,
+      /HTTP.*\d{3}/i, /response.*error/i, /server.*error/i,
+      /5\d\d/i, /internal.*server/i,
+    ],
+    suggestion: 'Check your internet connection and try again. If this persists, '
+      + 'the Trebuchet server or a third-party service (Jupiter, Raydium API) '
+      + 'may be temporarily down. Wait a minute and retry — on-chain state '
+      + 'from partial progress is preserved.',
+    explainer: 'A network request failed — either to your RPC endpoint, to the '
+      + 'Trebuchet server itself, or to an external service called during the '
+      + 'launch. Transient network issues are common on Solana mainnet. Your '
+      + 'on-chain state (created tokens, partially-created pools) is not affected '
+      + 'by network errors between requests.',
+  },
+};
+
+function categorizeError(message) {
+  if (!message || typeof message !== 'string') return 'unknown';
+  // Check categories in priority order: rpc > onchain > network > validation
+  // RPC errors should be caught first because many on-chain errors are
+  // actually downstream of RPC failures.
+  const order = ['rpc', 'onchain', 'network', 'validation'];
+  for (const cat of order) {
+    for (const pat of ERROR_CATEGORIES[cat].patterns) {
+      if (pat.test(message)) return cat;
+    }
+  }
+  return 'unknown';
+}
+
+function getErrorCategoryInfo(category) {
+  return ERROR_CATEGORIES[category] || null;
+}
+
+// Render a structured error block into a container element. Adds a category
+// badge, the error message, a "What happened?" expandable section, and a
+// recovery suggestion. Leaves existing content below the injected block
+// intact (e.g. the Resume Launch / Skip buttons in lpFailInfo).
+function renderStructuredError(container, message, category) {
+  if (!container || !message) return;
+  const cat = category || categorizeError(message);
+  const info = getErrorCategoryInfo(cat);
+
+  // Build the structured error block
+  let html = '<div class="error-banner">';
+  if (info && info.label) {
+    html += `<span class="error-banner-category ${info.cssClass}">${info.label}</span>`;
+  }
+  html += `<span class="has-text-weight-semibold">${escapeHtml(String(message))}</span>`;
+
+  if (info) {
+    html += '<details class="error-what-happened">';
+    html += '<summary>What happened?</summary>';
+    html += `<div class="what-happened-body"><p>${escapeHtml(info.explainer)}</p></div>`;
+    html += '</details>';
+    html += `<div class="error-recovery-suggestion">${escapeHtml(info.suggestion)}</div>`;
+  }
+
+  html += '</div>';
+  container.insertAdjacentHTML('afterbegin', html);
+}
+
+
+// ===========================================================================
 // Server log streaming
 // ===========================================================================
 //
@@ -802,6 +945,16 @@ async function withRunState(fn) {
     updateCancelButtonState();
   }
 }
+
+
+
+// RPC health polling state (used by rpc-panel.js)
+let _rpcHealthPollTimer = null;
+let _rpcHealthLastResult = null;
+let _rpcHealthLaunchActive = false;
+const RPC_HEALTH_INTERVAL_MS = 30000;
+const RPC_HEALTH_SLOW_THRESHOLD_MS = 400;
+
 
 // ===========================================================================
 // HTML confirm dialog
@@ -1733,8 +1886,10 @@ bind('cancelConfirmProceedBtn', 'click', async () => {
       // Refresh pending-wallets panel — server retains a recovery
       // entry in case of partial-failure or delayed deposits.
       loadPendingWallets();
+      markLaunchActiveForRpcHealth(false);
     } catch (e) {
       log(`Cancel failed: ${e.message}`, 'danger');
+      markLaunchActiveForRpcHealth(false);
     }
   });
 });
@@ -1792,6 +1947,97 @@ async function loadRpcConfig() {
     console.error('Failed to load RPC config:', e);
   }
 }
+
+// ===========================================================================
+// RPC health polling
+// ===========================================================================
+//
+// Polls /api/rpc-health every 30s during active use and updates a small
+// coloured dot next to the RPC display. The dot is green (healthy, fast),
+// yellow (healthy but slow), red (errors), or grey (unknown / not yet
+// polled). If the RPC returns errors during an active launch flow, a
+// warning banner appears with a one-click "Open RPC settings" link.
+
+function updateRpcHealthDot(health) {
+  const dot = document.getElementById('rpcHealthDot');
+  if (!dot) return;
+  dot.className = 'rpc-health-dot health-' + health;
+  const labels = {
+    good: 'RPC healthy, low latency',
+    slow: 'RPC healthy, high latency',
+    error: 'RPC returning errors',
+    unknown: 'RPC health unknown',
+  };
+  dot.title = labels[health] || labels.unknown;
+}
+
+function showRpcHealthWarning(detail) {
+  const banner = document.getElementById('rpcHealthWarning');
+  const detailEl = document.getElementById('rpcHealthWarningDetail');
+  if (!banner || !detailEl) return;
+  detailEl.textContent = detail;
+  banner.classList.remove('hidden');
+}
+
+function hideRpcHealthWarning() {
+  const banner = document.getElementById('rpcHealthWarning');
+  if (banner) banner.classList.add('hidden');
+}
+
+async function pollRpcHealth() {
+  try {
+    const resp = await fetch('/api/rpc-health').then(r => r.json());
+    if (!resp.success) return;
+    _rpcHealthLastResult = resp;
+    updateRpcHealthDot(resp.health);
+
+    // Show warning only during active launch flow + when RPC is erroring
+    if (_rpcHealthLaunchActive && resp.health === 'error') {
+      const detail = resp.error
+        ? `The RPC returned: ${resp.error}. Launches may fail mid-flow.`
+        : 'The RPC is not responding. Launches will likely fail.';
+      showRpcHealthWarning(detail);
+    } else if (resp.health !== 'error') {
+      hideRpcHealthWarning();
+    }
+  } catch {
+    // Network error from our own server — don't spam the activity log
+    // since this runs every 30s. Just mark unknown and move on.
+    updateRpcHealthDot('unknown');
+    _rpcHealthLastResult = { health: 'unknown', latencyMs: null, error: 'Could not reach health endpoint' };
+  }
+}
+
+function startRpcHealthPolling() {
+  if (_rpcHealthPollTimer) return; // already running
+  pollRpcHealth(); // immediate first check
+  _rpcHealthPollTimer = setInterval(pollRpcHealth, RPC_HEALTH_INTERVAL_MS);
+}
+
+function stopRpcHealthPolling() {
+  if (_rpcHealthPollTimer) {
+    clearInterval(_rpcHealthPollTimer);
+    _rpcHealthPollTimer = null;
+  }
+  hideRpcHealthWarning();
+  updateRpcHealthDot('unknown');
+}
+
+function markLaunchActiveForRpcHealth(active) {
+  _rpcHealthLaunchActive = active;
+  if (!active) hideRpcHealthWarning();
+}
+
+// RPC health warning: "Open RPC settings" link handler
+bind('rpcHealthWarningSwitch', 'click', (e) => {
+  e.preventDefault();
+  const panel = document.getElementById('rpcSettingsPanel');
+  const chevron = document.getElementById('rpcSettingsChevron');
+  panel.classList.remove('hidden');
+  chevron.classList.remove('fa-chevron-down');
+  chevron.classList.add('fa-chevron-up');
+});
+
 
 // Render an RPC URL safely for display. Keeps just the scheme and host
 // — everything else (path, query string) is redacted, because that's
@@ -2218,6 +2464,7 @@ bind('generateWalletBtn', 'click', async () => {
       document.body.classList.add('has-log');
 
       log(`Wallet generated: ${data.wallet.publicKey}`, 'success');
+      markLaunchActiveForRpcHealth(false);
 
       if (pools.length === 0) {
         // Build pools from simpleConfig defaults — produces 90/10
@@ -9093,6 +9340,7 @@ function resetForNewLaunch() {
   createdTokenInfo = null;
   lpResult = null;
   lastAirdropResult = null;
+  if (typeof _resetCachedReport === 'function') _resetCachedReport();
   fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
   fundingWallet = null;
   lastSolBalance = 0;
@@ -11006,7 +11254,167 @@ async function downloadLaunchReport() {
 }
 
 bind('downloadReportBtnStep5', 'click', downloadLaunchReport);
+
 bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
+
+// ===========================================================================
+// Inline Launch Report Preview
+// ===========================================================================
+//
+// Renders the launch report HTML inline in a sandboxed iframe so the user
+// can inspect addresses, pool IDs, and TX signatures before the final sweep
+// (step 5) or after transfer (step 6 / success modal). Collapsed by default;
+// the toggle button expands it. The download button remains the primary action.
+
+// Memoized report HTML — build once per launch, reuse across all three
+// containers. Reset by the lpDoneInfo/transferResult hide paths.
+let _cachedReportHtml = null;
+function _resetCachedReport() { _cachedReportHtml = null; }
+
+// Build (or retrieve cached) report HTML document string.
+async function _getReportHtml() {
+  if (_cachedReportHtml) return _cachedReportHtml;
+  try {
+    const logoDataUrl = await readLogoAsDataUrl();
+    _cachedReportHtml = buildLaunchReportHtml({ logoDataUrl });
+  } catch (e) {
+    console.error('Failed to build report HTML for preview:', e);
+    _cachedReportHtml = '<html><body><p>Failed to generate preview.</p></body></html>';
+  }
+  return _cachedReportHtml;
+}
+
+// Render the launch report preview for a given container prefix.
+//   prefix: 'step5', 'step6', or 'modal'
+async function renderLaunchReportPreview(prefix) {
+  const container = document.getElementById(prefix + 'ReportPreview');
+  const toggleBtn = document.getElementById(prefix + 'ReportToggle');
+  const body = container?.querySelector('.launch-report-preview-body');
+  const iframe = document.getElementById(prefix + 'ReportIframe');
+  const copyAddrsBtn = document.getElementById(prefix + 'CopyAllAddrs');
+  const copyTxsBtn = document.getElementById(prefix + 'CopyAllTxs');
+
+  if (!container || !toggleBtn || !body || !iframe) return;
+
+  // Reveal the preview container
+  container.classList.remove('hidden');
+
+  // Load the report into the iframe (only if not already loaded)
+  if (!iframe.srcdoc) {
+    const html = await _getReportHtml();
+    iframe.srcdoc = html;
+  }
+
+  // ---- Toggle expand/collapse ----
+  // _wired guards against re-attaching listeners on repeated calls to
+  // renderLaunchReportPreview (e.g. the initial LP success + the resume
+  // path both call it). Safe because this codebase uses static HTML —
+  // no virtual DOM that would replace the element and lose the flag.
+  toggleBtn._wired = toggleBtn._wired || false;
+  if (!toggleBtn._wired) {
+    toggleBtn._wired = true;
+    toggleBtn.addEventListener('click', () => {
+      const expanded = !body.classList.contains('hidden');
+      if (expanded) {
+        body.classList.add('hidden');
+        toggleBtn.classList.remove('is-expanded');
+        toggleBtn.querySelector('span:last-child').textContent = 'Show launch report preview';
+      } else {
+        body.classList.remove('hidden');
+        toggleBtn.classList.add('is-expanded');
+        toggleBtn.querySelector('span:last-child').textContent = 'Hide launch report preview';
+        iframe.style.height = Math.max(400, Math.min(window.innerHeight * 0.6, 700)) + 'px';
+      }
+    });
+  }
+
+  // ---- Bulk-copy: all addresses ----
+  if (copyAddrsBtn && !copyAddrsBtn._wired) {
+    copyAddrsBtn._wired = true;
+    copyAddrsBtn.addEventListener('click', () => {
+      _copyFromIframe(iframe, 'addrs');
+    });
+  }
+
+  // ---- Bulk-copy: all TX signatures ----
+  if (copyTxsBtn && !copyTxsBtn._wired) {
+    copyTxsBtn._wired = true;
+    copyTxsBtn.addEventListener('click', () => {
+      _copyFromIframe(iframe, 'txs');
+    });
+  }
+}
+
+// Extract addresses or TX signatures from the iframe's rendered DOM.
+function _copyFromIframe(iframe, mode) {
+  try {
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc) {
+      log('Cannot access report preview — the iframe may not be loaded yet.', 'warning');
+      return;
+    }
+
+    const codes = doc.querySelectorAll('code.addr-value');
+    const values = [];
+    const ADDR_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+    codes.forEach((code) => {
+      const text = code.textContent.trim();
+      if (!text || text === '\u2014') return;
+
+      const row = code.closest('.addr-row');
+      const label = row ? row.querySelector('.addr-label') : null;
+      const labelText = label ? label.textContent.trim().toUpperCase() : '';
+
+      const isTx = labelText.includes('TX');
+      const isAddr = !isTx && ADDR_RE.test(text);
+
+      if (mode === 'txs' && isTx && text.length >= 85) {
+        values.push(text);
+      } else if (mode === 'addrs' && isAddr) {
+        values.push(text);
+      }
+    });
+
+    if (values.length === 0) {
+      log('No ' + (mode === 'txs' ? 'TX signatures' : 'addresses') + ' found in report.', 'warning');
+      return;
+    }
+
+    const joined = values.join('\n');
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(joined).then(() => {
+        log('Copied ' + values.length + ' ' + (mode === 'txs' ? 'TX signature(s)' : 'address(es)') + ' to clipboard.', 'success');
+      }).catch(() => {
+        _legacyCopyReport(joined, values.length, mode);
+      });
+    } else {
+      _legacyCopyReport(joined, values.length, mode);
+    }
+  } catch (e) {
+    console.error('Bulk copy failed:', e);
+    log('Failed to copy from report preview.', 'danger');
+  }
+}
+
+function _legacyCopyReport(text, count, mode) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    log('Copied ' + count + ' ' + (mode === 'txs' ? 'TX signature(s)' : 'address(es)') + ' to clipboard.', 'success');
+  } catch (e) {
+    log('Copy to clipboard failed — try selecting and copying manually.', 'warning');
+  }
+  document.body.removeChild(ta);
+}
+
+
+
 
 // ===========================================================================
 // Launch Success Modal
@@ -11160,6 +11568,9 @@ async function showLaunchSuccessModal() {
       }
     }
   }
+
+  // Populate the inline launch report preview inside the modal.
+  renderLaunchReportPreview('modal');
 }
 
 // Hide the launch success modal and free the coin's WebGL context. Safe
@@ -12603,6 +13014,7 @@ bind('createTokenBtn', 'click', async () => {
   const btn = document.getElementById('createTokenBtn');
   await withRunState(async () => {
     setLoading(btn, true);
+    markLaunchActiveForRpcHealth(true);
     try {
       log('Creating token...');
       const formData = new FormData();
@@ -12625,6 +13037,21 @@ bind('createTokenBtn', 'click', async () => {
         .map((p) => p.resolvedMint)
         .filter((m) => typeof m === 'string' && m.length > 0);
       formData.append('quoteMints', JSON.stringify(quoteMints));
+      // Vanity CA: if we pre-ground a keypair, send it. Otherwise
+      // fall back to prefix/suffix for server-side grinding.
+      if (selectedVanityCA !== null && vanityCAKeypairs[selectedVanityCA]) {
+        formData.append('vanityCAKeypair', JSON.stringify(vanityCAKeypairs[selectedVanityCA].secretKey));
+      } else {
+        const vanityTarget = document.getElementById('vanityCATarget')?.value.trim();
+        if (vanityTarget) {
+          const vanityMode = document.getElementById('vanityCAMode')?.value || 'suffix';
+          if (vanityMode === 'prefix') {
+            formData.append('vanityPrefix', vanityTarget);
+          } else {
+            formData.append('vanitySuffix', vanityTarget);
+          }
+        }
+      }
       const logoFile = document.getElementById('tokenLogo').files[0];
       if (logoFile) formData.append('logo', logoFile);
 
@@ -12650,6 +13077,7 @@ bind('createTokenBtn', 'click', async () => {
       log(`Token created: ${data.tokenMint}`, 'success');
     } catch (e) {
       log(`Token creation failed: ${e.message}`, 'danger');
+      markLaunchActiveForRpcHealth(false);
     } finally {
       setLoading(btn, false);
     }
@@ -12998,6 +13426,7 @@ bind('createLpBtn', 'click', async () => {
   const btn = document.getElementById('createLpBtn');
   await withRunState(async () => {
     setLoading(btn, true);
+    markLaunchActiveForRpcHealth(true);
     try {
       // Hide any stale failure banner from a prior attempt. This matters
       // for the pre-flight-retry case: if the previous attempt failed in
@@ -13109,6 +13538,7 @@ bind('createLpBtn', 'click', async () => {
         log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
         document.getElementById('lpDoneInfo').classList.remove('hidden');
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
+        renderLaunchReportPreview('step5');
         // Hide the Create Pools button — re-clicking would attempt to create
         // duplicate pools for the same token, which is wasteful and confusing.
         document.getElementById('createLpBtn').classList.add('hidden');
@@ -13208,6 +13638,15 @@ bind('createLpBtn', 'click', async () => {
             'on this launch exceeded the safety buffer.';
         }
         document.getElementById('lpFailSummary').textContent = friendly;
+
+        // Render structured error with category badge + "What happened?"
+        const lpFailContainer = document.getElementById('lpFailInfo').querySelector('.notification');
+        if (lpFailContainer) {
+          // Clear any previous structured error block
+          const prevBanner = lpFailContainer.querySelector('.error-banner');
+          if (prevBanner) prevBanner.remove();
+          renderStructuredError(lpFailContainer, friendly, categorizeError(friendly));
+        }
 
         // Show counts so the user knows what state things are in. These are
         // useful for understanding what they're recovering vs what they've
@@ -13375,6 +13814,12 @@ bind('createLpBtn', 'click', async () => {
         }
       }
     } catch (e) {
+      // Mark the launch as no-longer-active for RPC health tracking,
+      // regardless of which error path we take. The price-safety
+      // pre_flight UI routing below decides how to surface the error
+      // to the user; this is bookkeeping that runs either way.
+      markLaunchActiveForRpcHealth(false);
+
       // If runPreflightAndConfirm threw a preflight-tagged error, route
       // it to the lpFailInfo panel with the standard pre_flight UI
       // treatment. Without this, preflight failures (NO_ROUTE,
@@ -13865,6 +14310,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
 
   await withRunState(async () => {
     setLoading(btn, true);
+    markLaunchActiveForRpcHealth(true);
     try {
       log(`Resuming launch (${priorResults.length} pool${priorResults.length === 1 ? '' : 's'} carried over)…`);
       // Hide the fail banner while the resume runs so the user sees a
@@ -13925,6 +14371,8 @@ bind('retryBootstrapsBtn', 'click', async () => {
         log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
         document.getElementById('lpDoneInfo').classList.remove('hidden');
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
+        renderLaunchReportPreview('step5');
+        markLaunchActiveForRpcHealth(false);
         return;
       }
 
@@ -13983,6 +14431,15 @@ bind('retryBootstrapsBtn', 'click', async () => {
       }
       document.getElementById('lpFailHeading').textContent = resumeHeading;
       document.getElementById('lpFailSummary').textContent = data.error;
+
+      // Render structured error with category badge + "What happened?"
+      const lpFailCtr = document.getElementById('lpFailInfo').querySelector('.notification');
+      if (lpFailCtr) {
+        const prevB = lpFailCtr.querySelector('.error-banner');
+        if (prevB) prevB.remove();
+        renderStructuredError(lpFailCtr, data.error, categorizeError(data.error));
+      }
+
       const successCount = (data.partialResults || []).length;
       const totalCount = allocations.length;
       document.getElementById('lpFailSucceededCount').innerHTML =
@@ -14045,6 +14502,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
       }
     } catch (e) {
       log(`Resume failed: ${e.message}`, 'danger');
+      markLaunchActiveForRpcHealth(false);
       // Show the fail banner again so the user can see what to do next.
       document.getElementById('lpFailInfo').classList.remove('hidden');
     } finally {
@@ -14064,6 +14522,291 @@ function prefillDestinationFromFunder() {
     dest.value = fundingWallet;
     log(`Pre-filled destination with detected funder. Verify before transferring.`, 'warning');
   }
+}
+
+
+// Vanity CA grind — pre-grinds the token mint address before token creation
+let vanityCAKeypairs = []; // [{ publicKey, secretKey, rarity, epochs, attempts }]
+let selectedVanityCA = null; // index into vanityCAKeypairs
+
+// ---- Vanity CA epoch tiers (authoritative from C binary) ----
+// Rarity colors: Common=blue, Rare=green, Legendary=orange, Mythic=purple
+const VANITY_TIERS = [
+  { name: 'Common',    max: 1, color: '#3e8ed0' },
+  { name: 'Rare',      max: 2, color: '#48c774' },
+  { name: 'Legendary', max: 3, color: '#f4a236' },
+  { name: 'Mythic',    max: Infinity, color: '#9b59b6' },
+];
+
+// Get the tier index for a given epoch value
+function tierForEpoch(epoch) {
+  for (let i = 0; i < VANITY_TIERS.length; i++) {
+    if (epoch <= VANITY_TIERS[i].max) return i;
+  }
+  return VANITY_TIERS.length - 1;
+}
+
+// Reset the single progress bar for a new grind
+function setupGrindBar() {
+  const bar = document.getElementById('vanityCAProgressBar');
+  const label = document.getElementById('vanityCAProgressText');
+  if (bar) {
+    bar.style.width = '0%';
+    bar.style.background = '#e0d6c2';
+  }
+  if (label) label.textContent = 'Grinding...';
+}
+
+// Update the single progress bar with epoch data
+function updateGrindBar(epoch, attempts) {
+  const bar = document.getElementById('vanityCAProgressBar');
+  const label = document.getElementById('vanityCAProgressText');
+  if (!bar || !label) return;
+
+  const tierIdx = tierForEpoch(epoch);
+  const tier = VANITY_TIERS[tierIdx];
+  const prevMax = tierIdx === 0 ? 0 : VANITY_TIERS[tierIdx - 1].max;
+  const tierPct = Math.min(100, ((epoch - prevMax) / (tier.max - prevMax)) * 100);
+  const colors = VANITY_TIERS.map(t => t.color);
+
+  // Bar width = current tier progress (0-100% within the tier)
+  bar.style.width = tierPct + '%';
+
+  // Background: completed tiers shown as gradient, current tier solid
+  if (tierIdx === 0) {
+    bar.style.background = colors[0];
+  } else {
+    // Completed tiers each get a fixed portion of the bar's background
+    let gradient = 'linear-gradient(to right';
+    const segPct = 20; // each completed tier takes 20% of the current bar
+    for (let i = 0; i < tierIdx; i++) {
+      const start = i * segPct;
+      const end = (i + 1) * segPct;
+      gradient += ', ' + colors[i] + ' ' + start + '%, ' + colors[i] + ' ' + end + '%';
+    }
+    gradient += ', ' + colors[tierIdx] + ' ' + (tierIdx * segPct) + '%, ' + colors[tierIdx] + ' 100%';
+    gradient += ')';
+    bar.style.background = gradient;
+  }
+
+  label.textContent = tier.name + ' · Epoch ' + epoch.toFixed(2) + ' · ' + attempts.toLocaleString() + ' attempts';
+}
+
+// ---- Live key display below the grind bar ----
+// Shows the most recent tested key when it has prefix/suffix matches.
+// Match chars are colored by rarity tier: blue(1) green(2) orange(3) purple(4+)
+const MATCH_COLORS = [
+  null,          // 0 matches — not shown
+  '#3e8ed0',     // 1-char: Common blue
+  '#48c774',     // 2-char: Rare green
+  '#f4a236',     // 3-char: Legendary orange
+  '#9b59b6',     // 4-char: Mythic purple
+  '#9b59b6',     // 5+
+  '#9b59b6',     // 6+
+  '#9b59b6',     // 7+
+  '#9b59b6',     // 8+
+  '#9b59b6',     // 9+
+  '#9b59b6',     // 10+
+];
+
+let _keyDisplayTarget = '';
+let _lastKeyShown = '';
+
+function countMatchChars(key, target) {
+  // Count how many distinct chars of target appear anywhere in key.
+  if (!target || !key) return 0;
+  const keySet = new Set(key);
+  let n = 0;
+  for (const ch of target) {
+    if (keySet.has(ch)) n++;
+  }
+  return n;
+}
+
+function updateKeyDisplay(key, target) {
+  if (!key || key === _lastKeyShown) return;
+  const matchCount = countMatchChars(key, target);
+  if (matchCount === 0) return;
+  _lastKeyShown = key;
+
+  const el = document.getElementById('vanityCAKeyDisplay');
+  if (!el || el.offsetParent === null) return;
+
+  const targetSet = new Set(target);
+  const color = MATCH_COLORS[Math.min(matchCount, MATCH_COLORS.length - 1)];
+  let html = '<span class="is-family-monospace is-size-7" style="line-height:1.3;">';
+  for (let i = 0; i < key.length; i++) {
+    const isMatch = targetSet.has(key[i]);
+    if (isMatch) {
+      html += '<span class="vanity-char-match" style="color:' + color + ';display:inline-block;animation:vanityCharPop 0.3s ease-out;">' + key[i] + '</span>';
+    } else {
+      html += '<span style="color:#666">' + key[i] + '</span>';
+    }
+  }
+  html += '</span>';
+  el.innerHTML = html;
+}
+
+function setupKeyDisplay(target) {
+  _keyDisplayTarget = target;
+  _lastKeyShown = '';
+
+  let container = document.getElementById('vanityCAKeyDisplay');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'vanityCAKeyDisplay';
+    container.style.cssText = 'text-align:center;padding:6px 4px 2px;overflow:hidden;';
+    const progressEl = document.getElementById('vanityCAProgress');
+    if (progressEl) {
+      const textEl = document.getElementById('vanityCAProgressText');
+      if (textEl) textEl.parentNode.insertBefore(container, textEl);
+      else progressEl.appendChild(container);
+    }
+  }
+  container.innerHTML = '<span class="is-family-monospace is-size-7" style="color:#555;">waiting for matches…</span>';
+}
+
+function removeKeyDisplay() {
+  const container = document.getElementById('vanityCAKeyDisplay');
+  if (container) container.remove();
+}
+
+bind('grindCABtn', 'click', async () => {
+  const btn = document.getElementById('grindCABtn');
+  const target = document.getElementById('vanityCATarget').value.trim();
+  if (!target) {
+    log('Enter a vanity target first.', 'warn');
+    return;
+  }
+
+  await withRunState(async () => {
+    setLoading(btn, true);
+    try {
+      const mode = document.getElementById('vanityCAMode').value;
+      const isSuffix = mode === 'suffix';
+
+      // Show single active progress bar
+      const progressEl = document.getElementById('vanityCAProgress');
+      const listContainer = document.getElementById('vanityCAListContainer');
+      if (progressEl) progressEl.classList.remove('hidden');
+      if (listContainer) listContainer.classList.add('hidden');
+
+      // Ensure original bar is visible, remove any old epoch bars
+      const barContainer = progressEl?.querySelector('.vanity-progress-bar');
+      if (barContainer) barContainer.style.display = '';
+      const oldEpochBars = document.getElementById('vanityCAEpochBars');
+      if (oldEpochBars) oldEpochBars.remove();
+      setupGrindBar();
+      setupKeyDisplay(target);
+
+      const params = new URLSearchParams();
+      if (isSuffix) params.set('suffix', target);
+      else params.set('prefix', target);
+      // Pass the session token as a query param — EventSource can't set
+      // custom headers, so the SSE endpoint validates it inline.
+      try {
+        const sessionToken = await window.getApiSessionToken();
+        if (sessionToken) params.set('token', sessionToken);
+      } catch (_) { /* proceed without token; server will reject if required */ }
+      const es = new EventSource('/api/generate-vanity-wallet-stream?' + params.toString());
+
+      es.onerror = () => { es.close(); };
+
+      await new Promise((resolve, reject) => {
+        es.addEventListener('message', (e) => {
+          let data;
+          try { data = JSON.parse(e.data); } catch { return; }
+          if (data.type === 'start') {
+            // Metadata received
+          } else if (data.type === 'progress') {
+            updateGrindBar(data.epoch, data.attempts);
+            if (data.key) updateKeyDisplay(data.key, _keyDisplayTarget);
+          } else if (data.type === 'done') {
+            es.close();
+            removeKeyDisplay();
+            const entry = {
+              publicKey: data.wallet.publicKey,
+              secretKey: data.wallet.secretKey,
+              rarity: data.wallet.rarity,
+              epochs: data.wallet.epochs,
+              attempts: data.wallet.attempts,
+              seed: data.wallet.seed,
+            };
+            vanityCAKeypairs.push(entry);
+            if (progressEl) progressEl.classList.add('hidden');
+            if (listContainer) listContainer.classList.remove('hidden');
+            renderVanityCAList();
+            log('Vanity CA: ' + data.wallet.publicKey + ' (' + data.wallet.rarity + ', ' + data.wallet.attempts.toLocaleString() + ' attempts)', 'success');
+            resolve();
+          } else if (data.type === 'error') {
+            es.close();
+            reject(new Error(data.error));
+          }
+        });
+        es.addEventListener('error', () => {
+          es.close();
+          reject(new Error('SSE connection failed'));
+        });
+      });
+    } catch (e) {
+      log('Vanity CA grind failed: ' + e.message, 'danger');
+      removeKeyDisplay();
+      document.getElementById('vanityCAProgress')?.classList.add('hidden');
+      // Clean up any extra elements
+      const epochBars = document.getElementById('vanityCAEpochBars');
+      if (epochBars) epochBars.remove();
+    } finally {
+      setLoading(btn, false);
+    }
+  });
+});
+
+// Render the list of collected vanity CAs
+function renderVanityCAList() {
+  const listEl = document.getElementById('vanityCAList');
+  const emptyEl = document.getElementById('vanityCAListEmpty');
+  if (!listEl) return;
+
+  if (vanityCAKeypairs.length === 0) {
+    listEl.innerHTML = '';
+    if (emptyEl) emptyEl.classList.remove('hidden');
+    return;
+  }
+
+  if (emptyEl) emptyEl.classList.add('hidden');
+
+  const tierColors = { Common: 'is-info', Rare: 'is-success', Legendary: 'is-warning', Mythic: 'is-danger' };
+  let html = '';
+  vanityCAKeypairs.forEach((ca, i) => {
+    const color = tierColors[ca.rarity] || 'is-light';
+    const selected = i === selectedVanityCA;
+    html += `<div class="vanity-ca-row ${selected ? 'vanity-ca-selected' : ''}" data-index="${i}" style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;border-bottom:1px solid var(--rule, #ddd);">
+      <span class="is-family-monospace is-size-7" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${ca.publicKey}</span>
+      <span class="tag ${color} is-size-7">${ca.rarity} (${ca.epochs.toFixed(1)}&times;)</span>
+      <span class="is-size-7 has-text-grey">${ca.attempts.toLocaleString()} tries</span>
+      ${selected ? '<span class="tag is-success is-size-7">Selected</span>' : ''}
+    </div>`;
+  });
+  listEl.innerHTML = html;
+
+  // Bind click handlers for selection
+  listEl.querySelectorAll('.vanity-ca-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const idx = parseInt(row.dataset.index, 10);
+      selectedVanityCA = idx;
+      renderVanityCAList();
+      const targetEl = document.getElementById('vanityCATarget');
+      if (targetEl) targetEl.value = '';
+      log(`Selected CA: ${vanityCAKeypairs[idx].publicKey}`, 'info');
+    });
+  });
+}
+
+// Clear collected CAs (called on wallet regenerate / full reset)
+function clearVanityCAs() {
+  vanityCAKeypairs = [];
+  selectedVanityCA = null;
+  renderVanityCAList();
 }
 
 // ===========================================================================
@@ -14154,6 +14897,7 @@ async function runTransfer() {
 
       document.getElementById('transferResult').classList.remove('hidden');
       document.getElementById('tokensTransferred').textContent = data.tokensTransferred ?? '—';
+      renderLaunchReportPreview('step6');
       document.getElementById('solTransferred').textContent = data.solTransferred ?? '—';
       document.getElementById('nftsTransferred').textContent =
         data.nftSweep?.transferred?.length ?? '0';
@@ -14261,6 +15005,7 @@ async function runTransfer() {
         // unhandled rejection; showLaunchSuccessModal already logs
         // its own warnings on internal failures.
         try {
+          markLaunchActiveForRpcHealth(false);
           Promise.resolve(showLaunchSuccessModal()).catch((err) => {
             console.warn('showLaunchSuccessModal rejected:', err);
           });
@@ -14893,6 +15638,14 @@ function buildLaunchJournalRow(journal, wallet) {
           </button>
         </div>
       ` : ''}
+      ${hasSecret ? `
+        <div class="control">
+          <button class="button is-small is-success" data-action="use-wallet">
+            <span class="icon is-small"><i class="fas fa-play"></i></span>
+            <span>Use wallet for new launch</span>
+          </button>
+        </div>
+      ` : ''}
       ${recoverBtnHtml}
       ${journal.token?.mint ? `
         <div class="control">
@@ -14931,6 +15684,61 @@ function buildLaunchJournalRow(journal, wallet) {
   });
   wrap.querySelector('[data-action="copy-wallet"]').addEventListener('click', async () => {
     await copyText(journal.walletPublicKey, 'Launch wallet public key');
+  });
+
+  // Use-wallet button: load this wallet as active tempWallet for a fresh launch
+  wrap.querySelector('[data-action="use-wallet"]')?.addEventListener('click', async () => {
+    if (!wallet || !wallet.secretKey) return;
+    if (tempWallet) {
+      const ok = await confirmDialog({
+        title: 'Switch wallet?',
+        body: '<p>You already have a wallet from this session. Switching will discard it.</p><p>Proceed?</p>',
+        confirmLabel: 'Switch',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    fundingWallet = null;
+    fundingDetectionExhausted = false;
+    lastSolBalance = 0;
+    createdTokenInfo = null;
+    lpResult = null;
+    fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
+    if (typeof clearVanityCAs === 'function') clearVanityCAs();
+
+    tempWallet = {
+      publicKey: wallet.publicKey,
+      secretKey: wallet.secretKey,
+      secretKeyB58: wallet.secretKeyB58,
+      mnemonic: wallet.mnemonic || null,
+    };
+
+    document.getElementById('walletInfo').classList.remove('hidden');
+    document.getElementById('walletAddress').value = wallet.publicKey;
+    document.getElementById('qrCode').src = '';
+    document.getElementById('privateKeyContainer').classList.add('hidden');
+    document.getElementById('tokenCreatedInfo').classList.add('hidden');
+    document.getElementById('createTokenBtn').classList.remove('hidden');
+    document.getElementById('createLpBtn').classList.remove('hidden');
+    document.getElementById('transferAssetsBtn').classList.remove('hidden');
+    document.getElementById('lpDoneInfo').classList.add('hidden');
+    document.getElementById('lpFailInfo').classList.add('hidden');
+    document.getElementById('lpProgress').classList.add('hidden');
+    document.getElementById('lpProgressTree').innerHTML = '';
+    document.getElementById('transferResult').classList.add('hidden');
+    document.getElementById('fundingWalletInfo').classList.add('hidden');
+    document.getElementById('destinationWallet').value = '';
+
+    for (let i = 2; i <= 6; i++) setStepSummary(i, '');
+    document.body.classList.add('has-log');
+    log('Using wallet from incomplete launch: ' + wallet.publicKey, 'success');
+    markLaunchActiveForRpcHealth(false);
+    if (typeof rebuildPoolsFromSimple === 'function' && pools.length === 0) rebuildPoolsFromSimple();
+    if (typeof applySimpleConfigMode === 'function') applySimpleConfigMode();
+    setStepSummary(1, wallet.publicKey.slice(0, 8) + '…' + wallet.publicKey.slice(-6));
+    if (typeof activateStep === 'function') activateStep(2);
+    if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+    if (typeof updateCancelButtonState === 'function') updateCancelButtonState();
   });
   wrap.querySelector('[data-action="copy-recovery"]')?.addEventListener('click', async () => {
     const text = wallet && (wallet.mnemonic || wallet.secretKeyB58);
@@ -15235,6 +16043,7 @@ function formatAge(isoString) {
 // ===========================================================================
 log('Trebuchet is ready. Click "Generate Wallet" to begin.');
 loadRpcConfig();
+startRpcHealthPolling();
 loadLaunchJournals();
 loadPendingWallets();
 loadFeeTiers();

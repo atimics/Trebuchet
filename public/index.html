@@ -2594,7 +2594,129 @@
             gap: 0.25rem;
             flex-shrink: 0;
         }
-    </style>
+    
+        /* RPC health dot */
+        .rpc-health-dot {
+            display: inline-block;
+            font-size: 0.65rem;
+            margin-left: 0.4rem;
+            vertical-align: middle;
+            transition: color 200ms ease;
+        }
+        .rpc-health-dot.health-good { color: var(--success); }
+        .rpc-health-dot.health-slow { color: #d4a017; }
+        .rpc-health-dot.health-error { color: var(--rubric); }
+        .rpc-health-dot.health-unknown { color: var(--ink-fade); }
+
+        /* Structured error display */
+        .error-banner { cursor: default; }
+        .error-banner-category {
+            display: inline-block;
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 0.1rem 0.4rem;
+            border-radius: 3px;
+            margin-right: 0.4rem;
+            vertical-align: middle;
+            background: rgba(165, 42, 42, 0.15);
+            color: var(--rubric-dark);
+        }
+        .error-banner-category.cat-rpc { background: rgba(165, 42, 42, 0.15); color: var(--rubric-dark); }
+        .error-banner-category.cat-onchain { background: rgba(184, 138, 42, 0.18); color: #8b6914; }
+        .error-banner-category.cat-validation { background: rgba(92, 122, 53, 0.15); color: #4a6429; }
+        .error-banner-category.cat-network { background: rgba(100, 100, 120, 0.15); color: #555; }
+
+        .error-what-happened {
+            margin-top: 0.5rem;
+            border-top: 1px dashed var(--rule);
+            padding-top: 0.5rem;
+        }
+        .error-what-happened summary {
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.8rem;
+            color: var(--ink-soft);
+            user-select: none;
+        }
+        .error-what-happened summary:hover { color: var(--ink); }
+        .error-what-happened .what-happened-body {
+            margin-top: 0.35rem;
+            font-size: 0.78rem;
+            line-height: 1.45;
+            color: var(--ink-soft);
+        }
+        .error-what-happened .what-happened-body p { margin-bottom: 0.3rem; }
+
+        .error-recovery-suggestion {
+            margin-top: 0.4rem;
+            font-size: 0.78rem;
+            color: var(--ink);
+            line-height: 1.4;
+            padding: 0.35rem 0.5rem;
+            background: rgba(92, 122, 53, 0.08);
+            border-left: 3px solid var(--success);
+            border-radius: 2px;
+        }
+
+
+        /* ---- Vanity progress bar ---- */
+        .vanity-progress-bar {
+            width: 100%;
+            height: 6px;
+            background: #e0d6c2;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .vanity-progress-fill {
+            height: 100%;
+            background: #c4a44a;
+            border-radius: 3px;
+                        transition: width 0.15s ease, background 0.15s ease;
+        }
+        @keyframes vanityPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+    
+        /* ---- Launch report inline preview ---- */
+        .launch-report-preview {
+            border: 1px solid #dbdbdb;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .launch-report-preview-toggle {
+            width: 100%;
+            justify-content: flex-start;
+            padding: 8px 12px;
+            border-radius: 0;
+            background: #fafafa;
+            border-bottom: 1px solid #dbdbdb;
+        }
+        .launch-report-preview-toggle .icon {
+            transition: transform 180ms ease;
+        }
+        .launch-report-preview-toggle.is-expanded .icon {
+            transform: rotate(90deg);
+        }
+        .launch-report-preview-body {
+            background: #efe5cd;
+        }
+        .launch-report-preview-toolbar {
+            display: flex;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #f5f5f5;
+            border-bottom: 1px solid #dbdbdb;
+        }
+        .launch-report-iframe {
+            width: 100%;
+            height: 500px;
+            border: none;
+        }
+</style>
 </head>
 <body>
 
@@ -2748,6 +2870,7 @@
                         <span class="icon"><i class="fas fa-server"></i></span>
                         <strong>RPC:</strong>
                         <span id="rpcCurrentDisplay" class="is-family-monospace is-size-7">loading...</span>
+                        <span class="rpc-health-dot" id="rpcHealthDot" title="RPC health unknown">&bull;</span>
                     </div>
                     <span class="icon">
                         <i class="fas fa-chevron-down" id="rpcSettingsChevron"></i>
@@ -2796,6 +2919,24 @@
             <!-- active URL — once the user adds and selects a dedicated RPC,  -->
             <!-- the banner disappears.                                        -->
             <!-- ============================================================ -->
+            
+            <!-- ============================================================ -->
+            <!-- RPC health warning banner.                                    -->
+            <!--                                                               -->
+            <!-- Shown when the active RPC starts returning errors during a    -->
+            <!-- launch flow. Polls every 30s. Includes a one-click "Switch    -->
+            <!-- RPC" suggestion via the RPC settings panel.                   -->
+            <!-- ============================================================ -->
+            <div class="notification is-warning is-light hidden mb-4" id="rpcHealthWarning">
+                <h5 class="title is-6 mb-2">
+                    <span class="icon"><i class="fas fa-exclamation-circle"></i></span>
+                    Your RPC endpoint is reporting errors.
+                </h5>
+                <p class="is-size-7 mb-2" id="rpcHealthWarningDetail"></p>
+                <p class="is-size-7">
+                    <a href="#" id="rpcHealthWarningSwitch" class="has-text-weight-semibold">Open RPC settings to switch endpoints</a>
+                </p>
+            </div>
             <div class="notification is-danger hidden mb-4" id="publicRpcWarning">
                 <h5 class="title is-6 mb-2 has-text-white">
                     <span class="icon"><i class="fas fa-exclamation-triangle"></i></span>
@@ -2894,7 +3035,7 @@
                         <span>Generate Wallet</span>
                     </button>
 
-                    <div id="walletInfo" class="hidden mt-4">
+                    <div id="walletInfo" class="hidden mt-4"> class="hidden mt-4">
                         <div class="columns is-vcentered">
                             <div class="column is-narrow">
                                 <div class="qr-code">
@@ -3009,6 +3150,38 @@
                             </div>
                         </div>
                     </div>
+                    <!-- Vanity CA: grind a custom token mint address -->
+                    <h4 class="title is-6 mt-4">Vanity CA <span class="tag is-warning is-light is-size-7" style="vertical-align: middle;">Optional</span></h4>
+                    <p class="help is-size-7 mb-2">Make your token CA start or end with a custom string. Grinds during token creation. 4 chars ~30s, 5 chars ~30min.</p>
+                    <div class="field has-addons">
+                        <p class="control">
+                            <span class="select is-small">
+                                <select id="vanityCAMode">
+                                    <option value="suffix">Ends with</option>
+                                    <option value="prefix">Starts with</option>
+                                </select>
+                            </span>
+                        </p>
+                        <p class="control is-expanded">
+                            <input class="input is-small is-family-monospace" type="text" id="vanityCATarget" placeholder="e.g. RATi" maxlength="10">
+                        </p>
+                        <p class="control">
+                            <button class="button is-primary is-small" id="grindCABtn">
+                                <span class="icon"><i class="fas fa-star"></i></span>
+                                <span>Grind</span>
+                            </button>
+                        </p>
+                    </div>
+                    <div id="vanityCAProgress" class="hidden mt-2">
+                        <div class="vanity-progress-bar">
+                            <div id="vanityCAProgressBar" class="vanity-progress-fill" style="width: 0%"></div>
+                        </div>
+                        <p class="help is-size-7 has-text-centered mt-1" id="vanityCAProgressText">Grinding...</p>
+                    </div>
+                    <div id="vanityCAResult" class="hidden mt-2">
+                        <p class="help is-success is-size-7">CA found: <span class="is-family-monospace" id="vanityCAResultAddr"></span> <span id="vanityCARarity" class="tag is-info is-size-7 ml-2"></span></p>
+                    </div>
+
 
                     <!--
                         Live preview row. Updated on every input event
@@ -3446,6 +3619,31 @@
                                 </button>
                             </div>
                         </div>
+
+                        <!-- Inline launch report preview — collapsed by default.
+                             Expandable so the user can inspect addresses,
+                             pool IDs, and TX signatures before the final sweep.
+                             Populated by renderLaunchReportPreview() in launch-report.js. -->
+                        <div class="launch-report-preview mt-3 hidden" id="step5ReportPreview">
+                            <button class="launch-report-preview-toggle button is-small is-text" type="button" id="step5ReportToggle">
+                                <span class="icon"><i class="fas fa-chevron-right"></i></span>
+                                <span>Show launch report preview</span>
+                            </button>
+                            <div class="launch-report-preview-body hidden">
+                                <div class="launch-report-preview-toolbar">
+                                    <button class="button is-small is-text" type="button" id="step5CopyAllAddrs">
+                                        <span class="icon"><i class="fas fa-copy"></i></span>
+                                        <span>Copy all addresses</span>
+                                    </button>
+                                    <button class="button is-small is-text" type="button" id="step5CopyAllTxs">
+                                        <span class="icon"><i class="fas fa-copy"></i></span>
+                                        <span>Copy all TX signatures</span>
+                                    </button>
+                                </div>
+                                <iframe class="launch-report-iframe" id="step5ReportIframe" sandbox="allow-scripts"></iframe>
+                            </div>
+                        </div>
+
                     </div>
 
                     <div id="lpFailInfo" class="hidden mt-3">
@@ -3544,6 +3742,29 @@
                                 <span class="icon"><i class="fas fa-file-download"></i></span>
                                 <span>Download launch report</span>
                             </button>
+                            <!-- Inline launch report preview — collapsed by default.
+                                 Same pattern as step 5. Populated by
+                                 renderLaunchReportPreview() in launch-report.js. -->
+                            <div class="launch-report-preview mt-3 hidden" id="step6ReportPreview">
+                                <button class="launch-report-preview-toggle button is-small is-text" type="button" id="step6ReportToggle">
+                                    <span class="icon"><i class="fas fa-chevron-right"></i></span>
+                                    <span>Show launch report preview</span>
+                                </button>
+                                <div class="launch-report-preview-body hidden">
+                                    <div class="launch-report-preview-toolbar">
+                                        <button class="button is-small is-text" type="button" id="step6CopyAllAddrs">
+                                            <span class="icon"><i class="fas fa-copy"></i></span>
+                                            <span>Copy all addresses</span>
+                                        </button>
+                                        <button class="button is-small is-text" type="button" id="step6CopyAllTxs">
+                                            <span class="icon"><i class="fas fa-copy"></i></span>
+                                            <span>Copy all TX signatures</span>
+                                        </button>
+                                    </div>
+                                    <iframe class="launch-report-iframe" id="step6ReportIframe" sandbox="allow-scripts"></iframe>
+                                </div>
+                            </div>
+
                             <!-- Re-open the launch-success modal. The
                                  modal pops automatically on transfer
                                  success and contains the listing /
@@ -3994,7 +4215,29 @@
                             <span class="launch-success-action-desc">Spin up a hub for your project on coincommunities.org — handy starting point for routing holders to your socials, chat, and announcements.</span>
                         </span>
                     </button>
+                
+                <!-- Inline launch report preview — same pattern as step 5/6.
+                     Collapsed by default. Populated when the modal opens. -->
+                <div class="launch-report-preview mt-3 hidden" id="modalReportPreview">
+                    <button class="launch-report-preview-toggle button is-small is-text" type="button" id="modalReportToggle">
+                        <span class="icon"><i class="fas fa-chevron-right"></i></span>
+                        <span>Show launch report preview</span>
+                    </button>
+                    <div class="launch-report-preview-body hidden">
+                        <div class="launch-report-preview-toolbar">
+                            <button class="button is-small is-text" type="button" id="modalCopyAllAddrs">
+                                <span class="icon"><i class="fas fa-copy"></i></span>
+                                <span>Copy all addresses</span>
+                            </button>
+                            <button class="button is-small is-text" type="button" id="modalCopyAllTxs">
+                                <span class="icon"><i class="fas fa-copy"></i></span>
+                                <span>Copy all TX signatures</span>
+                            </button>
+                        </div>
+                        <iframe class="launch-report-iframe" id="modalReportIframe" sandbox="allow-scripts"></iframe>
+                    </div>
                 </div>
+</div>
             </section>
             <footer class="modal-card-foot">
                 <button class="button" id="launchSuccessDoneBtn">Done</button>

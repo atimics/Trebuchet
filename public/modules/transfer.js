@@ -62,6 +62,7 @@ async function runTransfer() {
 
       document.getElementById('transferResult').classList.remove('hidden');
       document.getElementById('tokensTransferred').textContent = data.tokensTransferred ?? '—';
+      renderLaunchReportPreview('step6');
       document.getElementById('solTransferred').textContent = data.solTransferred ?? '—';
       document.getElementById('nftsTransferred').textContent =
         data.nftSweep?.transferred?.length ?? '0';
@@ -133,6 +134,7 @@ async function runTransfer() {
         // unhandled rejection; showLaunchSuccessModal already logs
         // its own warnings on internal failures.
         try {
+          markLaunchActiveForRpcHealth(false);
           Promise.resolve(showLaunchSuccessModal()).catch((err) => {
             console.warn('showLaunchSuccessModal rejected:', err);
           });
