@@ -40,6 +40,8 @@
 #if defined(_WIN32)
   #include <windows.h>
   #include <bcrypt.h>
+  #include <io.h>      /* _setmode, _fileno */
+  #include <fcntl.h>   /* _O_BINARY */
   #pragma comment(lib, "bcrypt.lib")
 
   static int getentropy(void *buf, size_t n) {
@@ -423,6 +425,15 @@ static void hex_encode(const uint8_t *in, int len, char *out) {
 }
 
 int main(int argc, char **argv) {
+#if defined(_WIN32)
+    /* Switch stdout to binary mode so the C runtime doesn't translate
+     * \n into \r\n. Today's JSON output is single-line, so the Node
+     * side's stdout.trim() forgives the trailing translation. But any
+     * future multi-line value embedded in the JSON would silently
+     * corrupt on Windows only — preempt that whole class of bug here. */
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+
     const char *target_str = NULL;
     const char *out_path = NULL;
     const char *vrf_blockhash_hex = NULL;

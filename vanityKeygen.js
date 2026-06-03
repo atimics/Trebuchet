@@ -83,9 +83,10 @@ function getBinaryPath() {
 
   throw new Error(
     `vanity_keygen binary not found. Tried:\n  ${candidates.join('\n  ')}\n\n`
-    + `To build it: run \`npm run build:c\` (which invokes \`make -C c\`). `
-    + `Requires a C compiler (cc / gcc / clang) and make in PATH. On Windows, `
-    + `install MSYS2 or use the MinGW toolchain so make + gcc are available.`,
+    + `To build it: run \`npm run build:c\` from the repo root. `
+    + `Requires a C compiler (gcc or clang) on PATH. See the `
+    + `"Building the vanity keygen binary" section in the README for `
+    + `per-platform install instructions.`,
   );
 }
 

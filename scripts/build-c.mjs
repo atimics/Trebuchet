@@ -108,6 +108,17 @@ function build(compiler) {
   //   DLLs that don't need bundling).
   const isX86 = process.arch === 'x64' || process.arch === 'ia32';
   const archFlags = isX86 ? ['-mtune=generic'] : [];
+
+  // Platform-specific compile flags. Windows-only: force MinGW's C99
+  // printf via __USE_MINGW_ANSI_STDIO=1. Modern MinGW-w64 defaults
+  // this on, but older toolchains fall back to MSVC's runtime printf
+  // where %llu doesn't format long long correctly — the binary would
+  // emit garbage attempt counts and Node's JSON.parse would blow up.
+  // Defensive flag; no-op on toolchains that already default it on.
+  const platformDefines = process.platform === 'win32'
+    ? ['-D__USE_MINGW_ANSI_STDIO=1']
+    : [];
+
   const linkLibs = process.platform === 'win32'
     ? ['-static-libgcc', '-Wl,-Bstatic', '-lpthread', '-Wl,-Bdynamic', '-lbcrypt']
     : ['-pthread'];
@@ -115,6 +126,7 @@ function build(compiler) {
   const args = [
     '-O3', '-flto',
     ...archFlags,
+    ...platformDefines,
     '-Wall', '-Wextra', '-Wpedantic', '-Wno-sign-compare',
     ...sources,
     '-o', outPath,
