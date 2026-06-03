@@ -25,8 +25,30 @@ int vrf_prove(uint8_t proof[VRF_PROOF_BYTES],
               uint8_t output[VRF_OUTPUT_BYTES],
               const uint8_t sk[VRF_SK_BYTES],
               const uint8_t *msg, unsigned long long mlen) {
-    unsigned long long siglen = VRF_PROOF_BYTES;
-    if (crypto_sign(proof, &siglen, msg, mlen, sk) != 0) return -1;
+    /* tweetnacl's crypto_sign writes (64 + mlen) bytes into its
+     * destination: a 64-byte signature followed by a copy of the
+     * input message (this is the "attached" sign form — the only
+     * sign API tweetnacl exposes). The caller only wants the 64-byte
+     * signature, but we still must hand crypto_sign a buffer big
+     * enough to hold the full sig+msg output or it will scribble
+     * past the end of proof[] and corrupt adjacent stack frames.
+     *
+     * On Linux/glibc the overflow tends to land in a benign next-
+     * local-variable slot and the binary "works." On Windows the
+     * MinGW stack protector / NT page guards trip and the process
+     * dies with STATUS_ACCESS_VIOLATION (exit code 0xC0000005).
+     * Either way it's a real out-of-bounds write that gcc has been
+     * flagging via -Wstringop-overflow.
+     *
+     * Use a scratch buffer here and memcpy out only the 64-byte
+     * signature. The 256-byte message cap matches vrf_verify's
+     * matching limit so the prove/verify pair agree on supported
+     * message sizes. */
+    if (mlen > 256) return -1;
+    unsigned char signed_msg[VRF_PROOF_BYTES + 256];
+    unsigned long long signed_len = sizeof(signed_msg);
+    if (crypto_sign(signed_msg, &signed_len, msg, mlen, sk) != 0) return -1;
+    memcpy(proof, signed_msg, VRF_PROOF_BYTES);
     /* proof[0..31] = R (compressed commitment point).
      * VRF output = SHA-512(R). */
     crypto_hash_sha512(output, proof, 32);
