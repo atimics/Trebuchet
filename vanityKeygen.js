@@ -9,39 +9,83 @@ const __dirname = path.dirname(__filename);
 
 let _binaryPath = null;
 
+// Check whether the vanity_keygen binary is built and available. Returns
+// { available: bool, reason?: string, path?: string }. Cheap to call —
+// getBinaryPath uses fs.existsSync probes which take microseconds, and the
+// successful result is cached in _binaryPath so repeat calls are O(1).
+//
+// Server uses this at startup to log a warning if missing, exposes the
+// flag via /api/demo/status so the frontend can disable the vanity UI,
+// and the vanity endpoints call it again at request time to short-circuit
+// with a clear error if the binary still isn't there. Dev-only friction:
+// the binary requires a C compiler to build (npm run build:c), and not
+// every contributor has one. CI handles release builds, so end-user
+// builds always include the binary.
+export function isVanityAvailable() {
+  try {
+    const path = getBinaryPath();
+    return { available: true, path };
+  } catch (err) {
+    return { available: false, reason: err.message };
+  }
+}
+
 function getBinaryPath() {
   if (_binaryPath) return _binaryPath;
 
-  // In the packaged app, the C binary is unpacked from the asar archive.
-  // __dirname ends with e.g. 'app.asar' (no trailing slash), so we
-  // replace '.asar' at the end of a path segment, not '.asar/'.
+  // Platform-aware binary name. On Windows the C build produces
+  // vanity_keygen.exe (mingw/MSVC append .exe automatically) and
+  // child_process.spawn() requires the extension to launch the file
+  // — Windows won't find a bare-named executable from a spawn call
+  // the way it would from cmd.exe via PATHEXT. We try .exe first
+  // and fall back to the bare name in case the user built with an
+  // unusual toolchain that didn't append it.
+  const binaryNames = process.platform === 'win32'
+    ? ['vanity_keygen.exe', 'vanity_keygen']
+    : ['vanity_keygen'];
+
+  // Candidate root directories.
+  //   1. unpackedDir: __dirname with '.asar' replaced by '.asar.unpacked'.
+  //      In packaged builds, the C binary is asar.unpacked'd into a
+  //      sibling folder. In dev mode this replacement is a no-op and
+  //      unpackedDir === __dirname (which is why the previous code
+  //      reported two identical paths in its error).
+  //   2. __dirname: dev mode path, where 'c/build/vanity_keygen' lives
+  //      next to this file in a regular working tree.
+  //   3. altUnpackedDir: Electron sometimes unpacks to a Resources
+  //      sibling of the asar archive rather than alongside it.
   const unpackedDir = __dirname.replace(/\.asar(\/|$)/, '.asar.unpacked$1');
-  const unpackedBin = path.join(unpackedDir, 'c', 'build', 'vanity_keygen');
-  if (fs.existsSync(unpackedBin)) {
-    _binaryPath = unpackedBin;
-    return _binaryPath;
+  const altUnpackedDir = path.join(path.dirname(__dirname), 'app.asar.unpacked');
+  const roots = [unpackedDir, __dirname, altUnpackedDir];
+
+  // Build the candidate list as roots × names, deduped. Set tracks
+  // membership; candidates preserves insertion order so the FIRST
+  // candidate to exist is the one returned (deterministic across
+  // restarts when multiple builds happen to be present).
+  const seen = new Set();
+  const candidates = [];
+  for (const root of roots) {
+    for (const name of binaryNames) {
+      const candidate = path.join(root, 'c', 'build', name);
+      if (!seen.has(candidate)) {
+        seen.add(candidate);
+        candidates.push(candidate);
+      }
+    }
   }
 
-  // Dev-mode path
-  const devBin = path.join(__dirname, 'c', 'build', 'vanity_keygen');
-  if (fs.existsSync(devBin)) {
-    _binaryPath = devBin;
-    return _binaryPath;
-  }
-
-  // Also try the unpacked path directly (Electron may unpack to a
-  // Resources sibling of the asar)
-  const altUnpacked = path.join(
-    path.dirname(__dirname),
-    'app.asar.unpacked', 'c', 'build', 'vanity_keygen'
-  );
-  if (fs.existsSync(altUnpacked)) {
-    _binaryPath = altUnpacked;
-    return _binaryPath;
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      _binaryPath = candidate;
+      return _binaryPath;
+    }
   }
 
   throw new Error(
-    `vanity_keygen binary not found. Tried:\n  ${unpackedBin}\n  ${devBin}\n  ${altUnpacked}`
+    `vanity_keygen binary not found. Tried:\n  ${candidates.join('\n  ')}\n\n`
+    + `To build it: run \`npm run build:c\` (which invokes \`make -C c\`). `
+    + `Requires a C compiler (cc / gcc / clang) and make in PATH. On Windows, `
+    + `install MSYS2 or use the MinGW toolchain so make + gcc are available.`,
   );
 }
 
@@ -66,11 +110,25 @@ export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onPr
   _inFlight = new Promise((res, rej) => { flightResolve = res; flightReject = rej; });
 
   return new Promise((resolve, reject) => {
+    // Reject + clear in-flight in one place. Without this, the early-throw
+    // paths below (binary-path resolution, prefix/suffix validation) would
+    // leak _inFlight and every subsequent grind attempt would fail with
+    // "already in progress" — recoverable only by restarting the server.
+    // The 'close' and 'error' event handlers also clear _inFlight, but
+    // they only fire if spawn() reached an event loop tick. Calling
+    // safeReject when those handlers already cleared the flag is a no-op
+    // (null = null), so it's safe to use throughout.
+    const safeReject = (err) => {
+      _inFlight = null;
+      if (flightResolve) flightResolve();
+      reject(err);
+    };
+
     let binary;
     try {
       binary = getBinaryPath();
     } catch (e) {
-      reject(e);
+      safeReject(e);
       return;
     }
 
@@ -80,7 +138,7 @@ export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onPr
     } else if (suffix) {
       args.push('--suffix', suffix);
     } else {
-      reject(new Error('Must specify either prefix or suffix'));
+      safeReject(new Error('Must specify either prefix or suffix'));
       return;
     }
 
@@ -91,7 +149,17 @@ export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onPr
       args.push('--vrf-blockhash', blockhash);
     }
 
-    const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // spawn() can throw synchronously (e.g. ENOENT before the 'error'
+    // event would fire) on some platforms. Guard with try/catch so a
+    // failed spawn also clears _inFlight.
+    let child;
+    try {
+      child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (spawnErr) {
+      safeReject(new Error(`Spawn failed: ${spawnErr.message}`));
+      return;
+    }
+
     let stdout = '';
     let stderr = '';
 

@@ -737,6 +737,19 @@
         summary.is-clickable { color: var(--ink); }
         summary.is-clickable.has-text-link { color: var(--rubric) !important; }
 
+        /* Native cursor:pointer baseline for all <summary> elements.
+           Browsers vary on whether they paint a pointer cursor over
+           <summary> by default — Firefox historically did not, Chromium
+           does. Setting it here gives a consistent baseline that the
+           medieval-cursor gauntlet-point rule can override (the
+           medieval rule has higher specificity via `body.medieval-cursor
+           summary` and image-set wins over the plain `pointer` keyword).
+           Without this, removing the inline cursor:pointer from a
+           specific <summary> would regress the native UX. */
+        summary {
+            cursor: pointer;
+        }
+
         /* ========================================================
            SUB-SURFACES — kill leftover white/grey panels
            --------------------------------------------------------
@@ -947,6 +960,29 @@
         code, pre, .is-family-monospace, .mono {
             font-family: var(--font-mono);
         }
+        /* Bulma's default <code> styling gives a stark-white background
+           with brick-red text — fine on Bulma's default white pages,
+           but it sits awkwardly on the cream parchment theme (looks
+           like a foreign pill). Override with a very subtle dark tint
+           that matches the rest of the manuscript treatment. The launch
+           report iframe is unaffected (srcdoc CSS is scoped). */
+        code {
+            background-color: var(--rule-faint);
+            color: var(--ink);
+            padding: 0.05em 0.3em;
+            border-radius: 2px;
+            font-size: 0.95em;
+        }
+        /* Bulma also has a more-specific .notification code { background: #fff }
+           rule that beats the plain `code` selector above. Override it at the
+           same specificity so the theme tint applies inside notification
+           panels too (otherwise the pre-transfer airdrop recipient list,
+           the launch-success notice, etc. all sprout stark-white pills). */
+        .notification code,
+        .notification pre {
+            background-color: var(--rule-faint);
+            color: var(--ink);
+        }
 
         /* ========================================================
            Medieval gauntlet cursor theme
@@ -979,6 +1015,23 @@
            REQUIRED fallback used when the image fails to load or is
            too large (Chromium ignores cursor images over 128x128).
            image-set() lets hi-dpi displays pick the 64px asset.
+
+           !IMPORTANT NOTE on !important:
+           Every cursor declaration in this block carries !important.
+           This is deliberate: the gauntlet theme is part of the app's
+           brand and should win unconditionally. Without !important,
+           any inline `style="cursor: pointer"` or higher-specificity
+           CSS rule elsewhere in the codebase would override the
+           gauntlet image and the user would see the OS native cursor
+           there — a small but visible theme break. The !important
+           guarantee means we never have to police inline cursor
+           styles anywhere else in app.js or index.html; the gauntlet
+           always wins. If you ever genuinely need to opt a specific
+           element OUT of the medieval cursor (highly unlikely given
+           the app's theme commitment), you'll need to either remove
+           it from the selector list above or add an even-higher-
+           specificity rule with its own !important. Don't do this
+           lightly — the consistency is the value.
            -------------------------------------------------------- */
 
         /* --- Default / idle -------------------------------------- */
@@ -988,7 +1041,7 @@
             cursor: image-set(
                 url('cursors/gauntlet.png') 1x,
                 url('cursors/gauntlet@2x.png') 2x
-            ) 7 1, auto;
+            ) 7 1, auto !important;
         }
 
         /* --- Gap / container fallback ---------------------------- */
@@ -1018,7 +1071,7 @@
             cursor: image-set(
                 url('cursors/gauntlet.png') 1x,
                 url('cursors/gauntlet@2x.png') 2x
-            ) 7 1, auto;
+            ) 7 1, auto !important;
         }
 
         /* --- Pointer / hover ------------------------------------- */
@@ -1066,7 +1119,46 @@
             cursor: image-set(
                 url('cursors/gauntlet-point.png') 1x,
                 url('cursors/gauntlet-point@2x.png') 2x
-            ) 1 7, pointer;
+            ) 1 7, pointer !important;
+        }
+
+        /* --- Customizable <select> opt-in -----------------------------
+           Native <select> elements have a long-standing limitation in
+           Chromium: the OS-rendered widget bypasses CSS cursor rules
+           entirely, even with !important. The image-set cursor above
+           silently falls back to the keyword `pointer` (native OS
+           pointing finger) rather than painting the gauntlet image.
+
+           Chrome 135+ (Electron 36+) ships `appearance: base-select`,
+           an opt-in that converts <select> from a native OS widget
+           into a CSS-styleable HTML element. With base-select active,
+           the closed select control is rendered as a button-like
+           element and the dropdown picker is rendered as an HTML
+           popover in the top-layer. Because the rendering is no
+           longer native, CSS cursor rules apply normally — the
+           gauntlet image paints over the closed control just like
+           it does over a regular button.
+
+           We apply this only under body.medieval-cursor so users
+           without the theme keep the standard native select look.
+           Both `select` and `::picker(select)` need the opt-in for
+           the picker to render correctly (per the spec).
+
+           Side effects to be aware of:
+             - The select's width no longer auto-sizes to the longest
+               option (HTML rendering doesn't measure off-screen
+               options the way the native widget does).
+             - The dropdown picker renders as HTML, so its appearance
+               will differ from the OS native popup. Default base
+               styling is minimal and inherits page fonts/colors,
+               so it integrates reasonably well with the parchment
+               theme out of the box.
+             - JavaScript interfaces (.value, change events, etc.)
+               are unchanged.
+           --------------------------------------------------------- */
+        body.medieval-cursor select,
+        body.medieval-cursor select::picker(select) {
+            appearance: base-select;
         }
 
         /* --- Active / mousedown (clenched fist) ------------------ */
@@ -1084,7 +1176,7 @@
             cursor: image-set(
                 url('cursors/gauntlet-fist.png') 1x,
                 url('cursors/gauntlet-fist@2x.png') 2x
-            ) 15 4, pointer;
+            ) 15 4, pointer !important;
         }
         /* And a global mousedown — set by app.js on body — so a click
            on EMPTY space also shows the fist. Without this the idle
@@ -1093,7 +1185,7 @@
             cursor: image-set(
                 url('cursors/gauntlet-fist.png') 1x,
                 url('cursors/gauntlet-fist@2x.png') 2x
-            ) 15 4, auto;
+            ) 15 4, auto !important;
         }
 
         /* --- Text input (quill) ---------------------------------- */
@@ -1112,7 +1204,7 @@
             cursor: image-set(
                 url('cursors/gauntlet-quill.png') 1x,
                 url('cursors/gauntlet-quill@2x.png') 2x
-            ) 3 30, text;
+            ) 3 30, text !important;
         }
 
         /* --- Number-input spinner buttons ------------------------ */
@@ -1128,7 +1220,7 @@
             cursor: image-set(
                 url('cursors/gauntlet-point.png') 1x,
                 url('cursors/gauntlet-point@2x.png') 2x
-            ) 1 7, pointer;
+            ) 1 7, pointer !important;
         }
 
         /* --- Not-allowed / disabled (hand + slash) --------------- */
@@ -1149,7 +1241,7 @@
             cursor: image-set(
                 url('cursors/gauntlet-no.png') 1x,
                 url('cursors/gauntlet-no@2x.png') 2x
-            ) 15 15, not-allowed;
+            ) 15 15, not-allowed !important;
         }
 
         /* --- Wait / progress / busy ------------------------------ */
@@ -1161,7 +1253,7 @@
             cursor: image-set(
                 url('cursors/gauntlet-wait.png') 1x,
                 url('cursors/gauntlet-wait@2x.png') 2x
-            ) 15 15, wait;
+            ) 15 15, wait !important;
         }
 
         /* --- Resize handles -------------------------------------- */
@@ -1174,25 +1266,25 @@
             cursor: image-set(
                 url('cursors/gauntlet-resize-ns.png') 1x,
                 url('cursors/gauntlet-resize-ns@2x.png') 2x
-            ) 16 16, ns-resize;
+            ) 16 16, ns-resize !important;
         }
         body.medieval-cursor .cursor-resize-ew {
             cursor: image-set(
                 url('cursors/gauntlet-resize-ew.png') 1x,
                 url('cursors/gauntlet-resize-ew@2x.png') 2x
-            ) 16 16, ew-resize;
+            ) 16 16, ew-resize !important;
         }
         body.medieval-cursor .cursor-resize-nwse {
             cursor: image-set(
                 url('cursors/gauntlet-resize-nwse.png') 1x,
                 url('cursors/gauntlet-resize-nwse@2x.png') 2x
-            ) 16 16, nwse-resize;
+            ) 16 16, nwse-resize !important;
         }
         body.medieval-cursor .cursor-resize-nesw {
             cursor: image-set(
                 url('cursors/gauntlet-resize-nesw.png') 1x,
                 url('cursors/gauntlet-resize-nesw@2x.png') 2x
-            ) 16 16, nesw-resize;
+            ) 16 16, nesw-resize !important;
         }
 
         /* --- Grab / grabbing (drag-and-drop) --------------------- */
@@ -1205,14 +1297,14 @@
             cursor: image-set(
                 url('cursors/gauntlet.png') 1x,
                 url('cursors/gauntlet@2x.png') 2x
-            ) 16 16, grab;
+            ) 16 16, grab !important;
         }
         body.medieval-cursor [draggable="true"]:active,
         body.medieval-cursor .cursor-grabbing {
             cursor: image-set(
                 url('cursors/gauntlet-fist.png') 1x,
                 url('cursors/gauntlet-fist@2x.png') 2x
-            ) 16 16, grabbing;
+            ) 16 16, grabbing !important;
         }
 
         /* ========================================================
@@ -1462,6 +1554,27 @@
         .step-card.is-peeking button:not(.peek-banner-close):not(.peek-allowed) {
             pointer-events: none;
             opacity: 0.6;
+        }
+        /* When pointer-events:none is set on a child element, the cursor
+           "leaks through" to whatever's behind in the same screen pixels
+           — which falls back to the body's idle gauntlet, NOT the
+           not-allowed pose you'd visually expect on a disabled input.
+           Paint gauntlet-no on the disabled wrappers so the leak lands on
+           a themed cursor that matches the disabled state. !important
+           outranks the default body cursor rule. The non-medieval
+           browser pose is the native not-allowed via the fallback
+           keyword. We target the *enclosing* element of the disabled
+           control because the disabled element itself can't receive
+           cursor events. */
+        body.medieval-cursor .step-card.is-peeking .control:has(input:not(.peek-allowed)),
+        body.medieval-cursor .step-card.is-peeking .control:has(select:not(.peek-allowed)),
+        body.medieval-cursor .step-card.is-peeking .control:has(textarea:not(.peek-allowed)),
+        body.medieval-cursor .step-card.is-peeking .field:has(button:not(.peek-banner-close):not(.peek-allowed)),
+        body.medieval-cursor .step-card.is-peeking .select:has(select:not(.peek-allowed)) {
+            cursor: image-set(
+                url('cursors/gauntlet-no.png') 1x,
+                url('cursors/gauntlet-no@2x.png') 2x
+            ) 15 15, not-allowed !important;
         }
 
         /*
@@ -1725,7 +1838,14 @@
         }
         .simple-config-dropdown[disabled] {
             opacity: 0.5;
-            pointer-events: none;
+            /* No pointer-events:none here — the disabled <select> inside
+               handles input blocking natively. Setting pointer-events:none
+               on the wrapper would cause the cursor to leak through to
+               whatever's behind (showing the idle gauntlet instead of the
+               gauntlet-no a user expects over a disabled control). The
+               native disabled attribute on the child <select> is enough
+               to block clicks; leaving cursor inheritance intact lets the
+               medieval-cursor :disabled rule paint gauntlet-no correctly. */
         }
         .simple-config-slider {
             display: flex;
@@ -1735,7 +1855,9 @@
         }
         .simple-config-slider[disabled] {
             opacity: 0.5;
-            pointer-events: none;
+            /* See note on .simple-config-dropdown[disabled] above —
+               pointer-events:none on the wrapper broke cursor inheritance
+               and the child inputs carry their own disabled attribute. */
         }
         .simple-config-slider input[type="range"] {
             width: 140px;
@@ -2232,6 +2354,24 @@
             box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25),
                         0 1px 3px rgba(0, 0, 0, 0.06);
         }
+
+        /* Slot wrapper on the funding stage. Sits to the right of the
+           QR inside a Bulma column. The slot is always present in the
+           DOM; the preview block (singleton) gets attached/detached
+           via relocateTokenPreview() when the user navigates between
+           step 2 and step 3.
+
+           The preview card uses its FULL size on the funding stage —
+           same dimensions, same layout, same coin scale as on the
+           config stage. The max-width cap matches the config slot's
+           600px cap so the stat-tile grid wraps identically (2 cols
+           plus a 3rd row, rather than spreading to 3 cols across a
+           wider container). Without this cap the card stretches to
+           the full column width and the stat layout drifts. */
+        .token-preview-slot-funding {
+            max-width: 600px;
+            margin-top: 0.5rem;
+        }
         /* Symbol + name header, divided from the stat grid below. */
         .token-preview-head {
             padding-bottom: 0.5rem;
@@ -2448,6 +2588,78 @@
         .progress-step.running { color: var(--rubric); font-weight: 600; }
         .progress-step.done { color: var(--success); }
         .progress-step.failed { color: #ff3860; }
+
+        /* Phase header — clickable summary row that toggles the row
+           list below. Each phase block (Phase 1..4) gets one of these.
+           Designed to match the airdrop-progress notification pattern:
+           header line with title + counter, slim bar underneath, and
+           body that defaults to collapsed so a 5-pool launch isn't a
+           wall of fifty individual rows. */
+        .phase-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            width: 100%;
+            background: transparent;
+            border: none;
+            padding: 0.25rem 0;
+            cursor: pointer;
+            color: var(--ink);
+            text-align: left;
+            font: inherit;
+        }
+        .phase-header:hover { color: var(--rubric); }
+        .phase-toggle {
+            display: inline-block;
+            font-size: 0.7em;
+            transition: transform 0.15s ease;
+            min-width: 0.8rem;
+            color: var(--ink-fade);
+        }
+        .phase-header.is-expanded .phase-toggle {
+            transform: rotate(90deg);
+        }
+        .phase-title { font-weight: 600; flex: 1; }
+        .phase-counter {
+            font-family: var(--font-mono);
+            font-size: 0.85em;
+            color: var(--ink-fade);
+        }
+        .phase-counter.is-done { color: var(--success); }
+        .phase-counter.has-failures { color: #ff3860; }
+        /* Slim progress bar under the header. Uses Bulma's <progress>
+           styling via attribute is-info but with our theme tints. The
+           bar fills as rows transition from pending → done / failed. */
+        .phase-bar {
+            width: 100%;
+            height: 4px;
+            margin: 0.15rem 0 0.25rem 0;
+            -webkit-appearance: none;
+               -moz-appearance: none;
+                    appearance: none;
+            border: none;
+            border-radius: 2px;
+            background-color: var(--rule-faint);
+            overflow: hidden;
+        }
+        .phase-bar::-webkit-progress-bar { background: var(--rule-faint); }
+        .phase-bar::-webkit-progress-value { background: var(--rubric); transition: width 0.3s ease; }
+        .phase-bar::-moz-progress-bar { background: var(--rubric); }
+        .phase-bar.is-done::-webkit-progress-value { background: var(--success); }
+        .phase-bar.is-done::-moz-progress-bar { background: var(--success); }
+        .phase-bar.has-failures::-webkit-progress-value { background: #ff3860; }
+        .phase-bar.has-failures::-moz-progress-bar { background: #ff3860; }
+        .phase-desc {
+            font-size: 0.85em;
+            color: var(--ink-fade);
+            margin: 0 0 0.35rem 1.3rem;
+        }
+        .phase-body {
+            margin-left: 1.3rem;
+            padding-left: 0.5rem;
+            border-left: 1px solid var(--rule-faint);
+        }
+        .phase-body.collapsed { display: none; }
 
         /* Demo-mode banner (sticky, top of page) */
         .demo-banner {
@@ -3143,17 +3355,25 @@
                         rectangle. The "Preview" label sits inside the
                         centered area so it aligns with the card's
                         left edge rather than being flush to the page.
+
+                        The .token-preview-block element is a SINGLETON —
+                        there's only one DOM node and only one 3D coin
+                        WebGL context. When the user advances to the
+                        funding stage, relocateTokenPreview('funding')
+                        detaches it from the slot below and attaches it
+                        next to the QR code. Going back via Edit
+                        Configuration relocates it here again. The
+                        slot wrapper id below is the anchor for that
+                        round trip.
                     -->
                     <div class="field token-preview-row">
-                        <div class="token-preview-row-inner">
+                        <div class="token-preview-row-inner" id="tokenPreviewSlotConfig">
                             <label class="label is-small">Preview</label>
                             <div class="token-preview-block" id="tokenPreviewBlock"></div>
                         </div>
                     </div>
 
                     <hr class="my-3">
-
-                    <h4 class="title is-6">Pool Configuration</h4>
 
                     <!--
                         Simple config — the default pool-configuration UI for
@@ -3162,8 +3382,15 @@
                         SOL pool. Most users only see this section.
                         renderSimpleConfig() in app.js paints the toggle row +
                         help text + customize button into #simpleConfigBody.
+
+                        In simple mode the section title is "Pool Configuration"
+                        because the preallocation UI (when used) is buried in
+                        Advanced — pools are the visible top-level concept.
+                        Customize mode below splits this into two specific
+                        sections instead.
                     -->
                     <div id="simpleConfigContainer">
+                        <h4 class="title is-6">Pool Configuration</h4>
                         <div id="simpleConfigBody"></div>
                     </div>
 
@@ -3172,15 +3399,49 @@
                         used to be the default. Hidden by default; shown when
                         the user clicks Customize. Switching back to simple
                         mode wipes pool customizations and rebuilds defaults.
+
+                        Two clearly-titled sections: "Preallocation" above
+                        and "Pool Configuration" below. Preallocation is
+                        conceptually the FIRST allocation step (supply held
+                        back from LP), so it gets the top section. Pools
+                        receive whatever supply remains after preallocation,
+                        so they get the second section. This makes the page
+                        read top-to-bottom in the same order the system
+                        actually allocates supply.
+
+                        The "Switch to simple mode" button lives in the
+                        Pool Configuration section header — that's the
+                        section customize mode actually changes (the
+                        Preallocation section is identical in both modes,
+                        it's just physically relocated). Putting the
+                        toggle next to the differentiating UI gives users
+                        a clear out from the place they actually feel
+                        customize mode.
                     -->
                     <div id="customizeConfigContainer" class="hidden">
+                        <!--
+                          Section 1: Preallocation. The actual UI lives at
+                          #preallocationBlock — a single DOM element built
+                          by renderSimpleConfig and physically moved between
+                          this slot (customize mode) and the Advanced details
+                          inside simple mode. Same relocation pattern
+                          lockPositionsField uses.
+                        -->
+                        <h4 class="title is-6 mb-2">Preallocation</h4>
+                        <div id="customizePreallocSlot" class="mb-4"></div>
+
+                        <!-- Section 2: Pool Configuration.
+                             Return-to-simple-mode button sits in this
+                             header — see container comment above for
+                             the placement rationale. -->
                         <div class="is-flex is-justify-content-space-between is-align-items-center mb-2">
-                            <label class="label is-small mb-0">Pools to Create</label>
+                            <h4 class="title is-6 mb-0">Pool Configuration</h4>
                             <button type="button" class="button is-small is-light" id="returnToSimpleBtn">
                                 <span class="icon is-small"><i class="fas fa-arrow-left"></i></span>
-                                <span>Use a preset instead</span>
+                                <span>Switch to simple mode</span>
                             </button>
                         </div>
+                        <label class="label is-small mb-2">Pools to Create</label>
                         <div id="poolList"></div>
                         <button class="button is-light is-small" id="addPoolBtn">
                             <span class="icon"><i class="fas fa-plus"></i></span>
@@ -3188,16 +3449,28 @@
                         </button>
 
                         <div class="notification is-info is-light is-size-7 my-3 py-2 px-3" id="allocationSummary">
-                            <strong>Total allocated:</strong> <span id="totalAllocPct">0</span>% &nbsp;
-                            (<span id="unallocatedPct">100</span>% will remain in your wallet)
+                            <strong>Allocated to LP:</strong> <span id="totalAllocPct">0</span>%
+                            &nbsp;&middot;&nbsp;
+                            <strong>Preallocation:</strong> <span id="unallocatedPct">100</span>% (held in launch wallet)
                         </div>
                     </div>
 
-                    <div class="field">
-                        <label class="checkbox is-size-7">
-                            <input type="checkbox" id="lockPositions" checked>
-                            &nbsp;<strong>Lock liquidity (Burn &amp; Earn)</strong> — recommended; mints transferable Fee Key NFTs that earn fees forever.
-                        </label>
+                    <!--
+                        Lock-liquidity checkbox. Lives at the page level
+                        so it's visible in customize mode. In simple mode
+                        we physically relocate it into the Advanced
+                        options details (see applySimpleConfigMode in
+                        app.js) so the simple view stays uncluttered.
+                        Single source of truth — only ONE checkbox in
+                        the DOM at any time.
+                    -->
+                    <div id="lockPositionsSlotPage">
+                      <div class="field" id="lockPositionsField">
+                          <label class="checkbox is-size-7">
+                              <input type="checkbox" id="lockPositions" checked>
+                              &nbsp;<strong>Lock liquidity (Burn &amp; Earn)</strong> — recommended; mints transferable Fee Key NFTs that earn fees forever.
+                          </label>
+                      </div>
                     </div>
 
                     <div class="notification is-warning is-light is-size-7 py-2 px-3 hidden mt-3" id="continueReasons"></div>
@@ -3295,9 +3568,16 @@
                          configured X differently" is most likely to happen
                          here. This button lets them go back to step 2
                          without canceling the wallet or losing their token
-                         config. Balance polling stops on click. -->
+                         config. Balance polling stops on click.
+
+                         Sized at default (not is-small) and styled
+                         is-warning is-light so it reads as a clear
+                         secondary action — the original is-small is-light
+                         buried it visually and users missed it. The gold
+                         tone fits the parchment palette while signalling
+                         "give this a second look" rather than alarm-red. -->
                     <div class="mb-3">
-                        <button class="button is-small is-light" id="backToConfigBtn">
+                        <button class="button is-warning is-light" id="backToConfigBtn">
                             <span class="icon"><i class="fas fa-arrow-left"></i></span>
                             <span>Edit configuration</span>
                         </button>
@@ -3309,16 +3589,59 @@
                       the QR with a mobile wallet app rather than copying
                       the address by hand. Same QR data URL we generated in
                       Step 1; just rendered into a second img element here.
+
+                      Layout: two columns. Left column stacks the QR on
+                      top with the wallet address label and monospace
+                      string below it (the user's eye flows QR → address
+                      naturally, and putting the label under the QR keeps
+                      it visually tethered to what it describes). Right
+                      column holds the relocated token preview card.
+                      relocateTokenPreview() handles attaching the
+                      singleton preview block to .token-preview-slot-
+                      funding when the user advances to step 3 and
+                      moving it back to the config slot on Edit
+                      configuration.
+
+                      On narrow screens the columns wrap to two rows
+                      (Bulma default at the tablet breakpoint).
                     -->
-                    <div class="columns is-vcentered mb-2">
-                        <div class="column is-narrow">
-                            <div class="qr-code">
-                                <img id="step3QrCode" alt="Wallet QR Code" style="max-width: 160px; display: block;" />
+                    <!--
+                      Layout: two columns.
+
+                      Left column (min-width 500px): a centered stack with
+                      the QR on top and the wallet address below. The
+                      address is is-size-6 (1rem) with bold weight so it
+                      reads as the primary action target on this step —
+                      most users scan the QR, but the address is what
+                      they copy when scanning isn't an option. A copy
+                      button sits inline next to the address.
+
+                      Wider min-width here pushes the preview card column
+                      further right, giving everything more breathing
+                      room.
+
+                      Right column: the relocated singleton preview card.
+
+                      On narrow screens the columns wrap to two rows
+                      (Bulma default at the tablet breakpoint).
+                    -->
+                    <div class="columns mb-2">
+                        <div class="column is-narrow" style="min-width: 500px;">
+                            <div style="display: flex; flex-direction: column; align-items: center; max-width: 480px;">
+                                <div class="qr-code mb-3">
+                                    <img id="step3QrCode" alt="Wallet QR Code" style="max-width: 160px; display: block;" />
+                                </div>
+                                <p class="is-size-7 mb-1 has-text-grey">Send the following to your ephemeral wallet:</p>
+                                <div style="display: flex; align-items: center; gap: 0.5rem; max-width: 100%;">
+                                    <p class="is-family-monospace is-size-6 has-text-weight-semibold mb-0" id="step3WalletAddr" style="line-height: 1.4; word-break: break-all;"></p>
+                                    <button class="button is-small" id="step3WalletAddrCopyBtn" title="Copy wallet address" style="flex-shrink: 0;">
+                                        <span class="icon is-small"><i class="fas fa-copy"></i></span>
+                                    </button>
+                                </div>
                             </div>
                         </div>
                         <div class="column">
-                            <p class="mb-2 is-size-7">Send the following to your ephemeral wallet:</p>
-                            <p class="is-family-monospace is-size-7 mb-3" id="step3WalletAddr"></p>
+                            <div class="token-preview-slot-funding" id="tokenPreviewSlotFunding"></div>
                         </div>
                     </div>
 
@@ -3562,10 +3885,84 @@
                             <p class="help">Paste the full address. Don't rely on prefix/suffix matches.</p>
                         </div>
 
+                        <!--
+                          Pre-transfer airdrop summary. Shown only when
+                          step 6 activates AND an airdrop is configured.
+                          Surfaces what's about to happen before the user
+                          clicks Transfer Assets — they shouldn't be
+                          surprised by an airdrop step running.
+
+                          Populated by renderAirdropPreTransferSummary()
+                          in app.js. Hidden by default. The <details>
+                          element lets the user expand the per-recipient
+                          list to verify wallets one last time.
+                        -->
+                        <div id="airdropPreTransferSummary" class="hidden mt-3 mb-3">
+                            <div class="notification is-info is-light is-size-7 py-2 px-3">
+                                <p class="mb-1">
+                                    <strong>Includes airdrop:</strong>
+                                    <span id="airdropPreCount">0</span>
+                                    recipient<span id="airdropPreCountS">s</span> will receive
+                                    <strong id="airdropPreTokens">0</strong>
+                                    tokens before the remaining balance sweeps to your destination wallet.
+                                </p>
+                                <details>
+                                    <summary class="is-size-7 has-text-grey" style="cursor: pointer; margin-top: 0.25rem;">Show recipient list</summary>
+                                    <div id="airdropPreRecipientList" class="mt-2"></div>
+                                </details>
+                            </div>
+                        </div>
+
                         <button class="button is-primary" id="transferAssetsBtn">
                             <span class="icon"><i class="fas fa-paper-plane"></i></span>
                             <span>Transfer Assets</span>
                         </button>
+
+                        <!--
+                          Live airdrop progress panel. Shown only while
+                          the airdrop step inside /api/transfer-assets is
+                          actively running. Polled into existence by
+                          startAirdropProgressPoll() in app.js, hidden
+                          again when the parent fetch returns and the
+                          renderAirdropTransferResult final panel takes
+                          over. Three rows:
+                            - Header with running counters (delivered/
+                              total, % done, tokens delivered/total).
+                            - Progress bar.
+                            - Most-recent recipient (truncated wallet +
+                              tokens) for "tick forward" feedback.
+                        -->
+                        <div id="airdropProgressPanel" class="hidden mt-3">
+                            <div class="notification is-info is-light py-2 px-3 is-size-7">
+                                <p class="mb-1">
+                                    <strong>Airdrop in progress:</strong>
+                                    <span id="airdropProgressCount">0 / 0</span>
+                                    recipients
+                                    <span class="has-text-grey" id="airdropProgressPct"></span>
+                                </p>
+                                <progress class="progress is-info is-small mb-1" id="airdropProgressBar" value="0" max="100" style="height: 0.5rem;"></progress>
+                                <p class="mb-1 is-size-7">
+                                    <span class="has-text-grey">Tokens delivered:</span>
+                                    <strong id="airdropProgressTokens">0</strong>
+                                </p>
+                                <p class="mb-0 is-size-7 has-text-grey" id="airdropProgressLast"></p>
+                            </div>
+                        </div>
+
+                        <!--
+                          Airdrop result block, populated by
+                          renderAirdropTransferResult() after the
+                          transfer-assets response lands. Hidden when no
+                          airdrop ran. Shows a success notice when 100%
+                          of recipients were delivered, or a warning
+                          notice with retry/CSV-download buttons when
+                          some recipients failed. Placed ABOVE the
+                          transferResult success block so the user
+                          sees the airdrop outcome (the more nuanced
+                          part of the transfer) prominently rather
+                          than as a footnote to the general sweep.
+                        -->
+                        <div id="airdropTransferResult" class="hidden mt-3"></div>
 
                         <div id="transferResult" class="hidden mt-3">
                             <div class="notification is-success is-light is-size-7 py-2 px-3">
@@ -3573,6 +3970,13 @@
                                 <p>Tokens transferred: <span id="tokensTransferred"></span></p>
                                 <p>SOL transferred: <span id="solTransferred"></span></p>
                                 <p>NFTs transferred: <span id="nftsTransferred"></span></p>
+                                <!-- Per-token breakdown of what went to the
+                                     destination wallet. Populated by app.js
+                                     from data.tokenSweep.transferred so the
+                                     user can see the launched-token
+                                     preallocation leftover that swept
+                                     alongside any quote-token dust. -->
+                                <div id="tokenSweepBreakdown" class="mt-2"></div>
                             </div>
                             <!-- Final chance to grab the launch report.
                                  Same content as the step-5 button — the
@@ -3744,13 +4148,59 @@
         </div>
     </div>
 
+    <!-- ============================================================ -->
+    <!-- Pre-commit Confirmation Modal (Milestone C)                    -->
+    <!-- ============================================================ -->
+    <!--
+      Shown before /api/create-lp runs. The preflight endpoint resolves
+      the just-in-time Raydium price for every quote token and checks
+      for drift against what the user committed to at funding time.
+      Modal shows the actual initialPrice each pool will be created
+      at; user confirms or cancels.
+      Body slot is populated dynamically by app.js from the preflight
+      response. Header/footer are static markup.
+    -->
+    <div class="modal" id="createLpConfirmModal">
+        <div class="modal-background"></div>
+        <div class="modal-card" style="max-width: 720px;">
+            <header class="modal-card-head">
+                <p class="modal-card-title">Confirm pool creation</p>
+            </header>
+            <section class="modal-card-body">
+                <p class="mb-3">
+                    Review the initial price for each pool. These are the
+                    prices Trebuchet just fetched from Raydium — the same
+                    pools your launch will be measured against. Once you
+                    confirm, pool creation is irreversible.
+                </p>
+                <div id="createLpConfirmList">
+                    <!-- Populated dynamically: one row per allocation,
+                         showing quote symbol, resolved price, source
+                         label, and any drift indicator. -->
+                </div>
+                <div class="content is-size-7 mt-3 has-text-grey">
+                    <p>If a price looks off, click Cancel and refresh the
+                    funding estimate on Step 3. If prices keep drifting,
+                    you've picked a quote token with very thin liquidity
+                    — consider a different one.</p>
+                </div>
+            </section>
+            <footer class="modal-card-foot">
+                <button class="button" id="createLpConfirmCancelBtn">Cancel</button>
+                <button class="button is-primary" id="createLpConfirmProceedBtn">
+                    <span class="icon"><i class="fas fa-check"></i></span>
+                    <span>Confirm and Create Pools</span>
+                </button>
+            </footer>
+        </div>
+    </div>
+
     <!-- three.js (vendored, r158 UMD global build) powers the 3D coin
          preview; coinRenderer.js is our self-contained coin module. Both
          load before app.js so window.coinRenderer is ready when app.js
          wires it up. Loaded from 'self' to satisfy the CSP. -->
     <script src="vendor/three/three.min.js"></script>
     <script src="coinRenderer.js"></script>
-    <script src="api.js"></script>
     <script src="app.js"></script>
     <!-- ============================================================ -->
     <!-- Generic Confirm Modal                                          -->

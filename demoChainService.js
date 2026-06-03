@@ -509,6 +509,9 @@ export async function handleCreateToken(req, res) {
       name = 'Demo Token',
       symbol = 'DEMO',
       totalSupply = 1000000000,
+      vanityCAKeypair: vanityCAKeypairRaw,
+      vanityPrefix,
+      vanitySuffix,
     } = req.body;
 
     const decimals = 9;
@@ -522,7 +525,49 @@ export async function handleCreateToken(req, res) {
     // metadata, supply mint, authority renounce). Sleep ~4s to match.
     await sleep(4000);
 
-    const mint = demoAddress();
+    // Determine the mint address. Three cases, in priority order:
+    //   1. Pre-ground vanity CA keypair — user grinded it client-side and
+    //      selected it from the list. We derive the real public key and
+    //      use that, honoring their selection exactly. The user sees the
+    //      address they chose, not a generic Demo-prefixed string.
+    //   2. Inline vanity grind (vanityPrefix/vanitySuffix) — user typed a
+    //      target but didn't pre-grind. We synthesize a base58 address
+    //      that satisfies the constraint. The 'Demo' marker is dropped
+    //      here because the whole point of grinding is that the user
+    //      chose the prefix — overriding with 'Demo' would defeat it.
+    //   3. No vanity — generic Demo-prefixed address.
+    let mint;
+    if (vanityCAKeypairRaw) {
+      try {
+        const secretKeyArr = typeof vanityCAKeypairRaw === 'string'
+          ? JSON.parse(vanityCAKeypairRaw)
+          : vanityCAKeypairRaw;
+        const kp = Keypair.fromSecretKey(Uint8Array.from(secretKeyArr));
+        mint = kp.publicKey.toBase58();
+        console.log(`[demo] honoring pre-ground vanity CA: ${mint}`);
+      } catch (e) {
+        // Malformed vanity keypair — fall back to a generic Demo address
+        // rather than crashing the launch. The user would see their
+        // vanity selection ignored, which is the same as before this
+        // fix, so we haven't regressed anything.
+        console.warn(`[demo] invalid vanityCAKeypair, falling back: ${e.message}`);
+        mint = demoAddress();
+      }
+    } else if (vanityPrefix && typeof vanityPrefix === 'string' && vanityPrefix.length > 0) {
+      // Construct a 32-char base58 string starting with the user's prefix.
+      // Clamp prefix length to 31 so we always have at least one random
+      // char — a prefix of exactly 32 would be a fully-specified address
+      // (real grinders reject this; we'd just truncate).
+      const px = vanityPrefix.slice(0, 31);
+      mint = px + randomBase58(32 - px.length);
+      console.log(`[demo] synthesizing prefix-vanity CA: ${mint}`);
+    } else if (vanitySuffix && typeof vanitySuffix === 'string' && vanitySuffix.length > 0) {
+      const sx = vanitySuffix.slice(0, 31);
+      mint = randomBase58(32 - sx.length) + sx;
+      console.log(`[demo] synthesizing suffix-vanity CA: ${mint}`);
+    } else {
+      mint = demoAddress();
+    }
     const metadataUri = `https://arweave.net/${demoAddress()}`;
 
     // Record the token and credit the full supply to the launch wallet.
@@ -569,7 +614,7 @@ export async function handleCreateToken(req, res) {
 // reads from results, so getting this shape right is what makes the rest
 // of the UI work unchanged.
 
-export async function handleCreateLp(req, res) {
+export async function handleCreateLp(req, res, opts = {}) {
   try {
     const {
       tempWalletSecretKey,
@@ -583,6 +628,19 @@ export async function handleCreateLp(req, res) {
     const doLock = lockPositions !== false;
     const publicKey = pubkeyFromSecretArray(tempWalletSecretKey);
     const st = getState(publicKey);
+
+    // Local progress emitter. The server's create-lp route wires opts.lpProgress
+    // to its in-memory tracker; emitting here is what makes the frontend's
+    // phase progress tree tick forward step-by-step instead of all-at-once
+    // when this single POST returns. Safe to call unconditionally — the
+    // hook is a no-op closure when the route didn't supply one.
+    const lpProgress = opts.lpProgress || null;
+    const emit = (event) => {
+      if (lpProgress && typeof lpProgress.event === 'function') {
+        try { lpProgress.event(event); }
+        catch (_) { /* never let a progress hook break the run */ }
+      }
+    };
 
     console.log(`\n[demo] === Creating pools and positions for ${tokenMint} ===`);
     console.log(`[demo] allocations: ${allocations.length}, lock: ${doLock}`);
@@ -598,6 +656,7 @@ export async function handleCreateLp(req, res) {
 
       console.log(`[demo] [${quote.symbol}] creating pool ${poolId}`);
       await sleep(2000);
+      emit({ stage: 'pool_create_done', allocationIndex: allocIdx });
 
       // Record the pool in the ledger.
       st.pools.push({
@@ -624,6 +683,7 @@ export async function handleCreateLp(req, res) {
           transferredTo: null,
           txIds: { open: demoSignature(), lock: null, transfer: null },
         });
+        emit({ stage: 'main_open_done', allocationIndex: allocIdx, sliceIndex: i });
       }
 
       // Ladder bands (the wire only ever sends mode 'off' or 'manual';
@@ -645,7 +705,52 @@ export async function handleCreateLp(req, res) {
             locked: false,
             txIds: { open: demoSignature(), lock: null },
           });
+          emit({ stage: 'ladder_open_done', allocationIndex: allocIdx, bandIndex: bi });
         }
+      }
+
+      // Support positions. Single-sided quote-side band below launch price
+      // that backs preallocation by providing a buy wall the preallocation
+      // holders can sell into. Modeled as an array (currently 0 or 1
+      // entry) for symmetry with the real implementation. The orchestrator
+      // signal is alloc.support === { mode: 'custom', solValue, depthPct };
+      // anything else (mode 'off', missing, etc.) skips support entirely.
+      const supportPositions = [];
+      const supportCfg = alloc.support || { mode: 'off' };
+      const supportEnabled = supportCfg.mode === 'custom'
+        && Number(supportCfg.solValue) > 0;
+      if (supportEnabled) {
+        const solValue = Number(supportCfg.solValue) || 0;
+        const depthPct = Number(supportCfg.depthPct) || 10;
+        console.log(`[demo] [${quote.symbol}] opening support position (${solValue} SOL @ -${depthPct}%)`);
+        await sleep(1500);
+        // Fake but plausible tick range below currentTick — real ranges
+        // depend on depth and spacing; the values here are illustrative.
+        const tickLower = -3000;
+        const tickUpper = -100;
+        supportPositions.push({
+          tickLower,
+          tickUpper,
+          depthPct,
+          // Synthetic raw amount, just for display. Real value would be
+          // (solValue * solUsd / quoteUsd) * 10^quoteDecimals; we don't
+          // need that precision in demo since the launch report shows
+          // the SOL-side budget which the user already knows.
+          quoteRaw: '0',
+          nftMint: demoAddress(),
+          locked: false,
+          txIds: { open: demoSignature(), lock: null },
+        });
+        // Deduct the SOL spend from the wallet. For SOL pools the support
+        // is funded directly in SOL; for non-SOL pools the SOL has already
+        // been swapped to the quote token by the acquire-quote-tokens
+        // step, so we deduct from the quote-token ledger instead. We
+        // approximate the deduction without exact USD math — the demo
+        // doesn't need to be accurate to the satoshi for screenshots.
+        if (quote.symbol === 'SOL') {
+          st.solBalance = Math.max(0, st.solBalance - solValue);
+        }
+        emit({ stage: 'support_open_done', allocationIndex: allocIdx });
       }
 
       const resultEntry = {
@@ -657,6 +762,7 @@ export async function handleCreateLp(req, res) {
         launchedSide: 'mintA',
         mainPositions,
         ladderPositions,
+        supportPositions,
         txIds: { createPool: demoSignature() },
         // Populated in Phase 2.
         bootstrap: null,
@@ -674,8 +780,30 @@ export async function handleCreateLp(req, res) {
     }
 
     // -- Phase 2: bootstrap every pool ------------------------------------
+    // SOL-paired pools are deferred to the end of the bootstrap queue,
+    // matching the real-mode lpService.js ordering. The bootstrap is the
+    // moment a pool becomes tradable at the launch price; SOL pools are
+    // indexed most aggressively by bots and aggregators, so flipping the
+    // SOL pool to tradable while flywheel pools are still being built
+    // would let the first wave of SOL-paired trades miss the flywheel.
+    // By bootstrapping every flywheel before SOL, the first SOL-paired
+    // trade activates the flywheel as intended.
+    //
+    // Stable sort: non-SOL allocations stay in user-config order, SOL
+    // allocations are appended at the end in their original relative
+    // order. results[] itself is NOT reordered — the launch report, UI,
+    // and downstream consumers all assume user-config ordering.
+    const bootstrapIterOrder = results
+      .map((_, idx) => idx)
+      .sort((a, b) => {
+        const aIsSol = results[a].quoteSymbol === 'SOL';
+        const bIsSol = results[b].quoteSymbol === 'SOL';
+        return Number(aIsSol) - Number(bIsSol);
+      });
+
     console.log('\n[demo] === Phase 2: opening bootstrap positions ===');
-    for (const r of results) {
+    for (const idx of bootstrapIterOrder) {
+      const r = results[idx];
       console.log(`[demo] [${r.quoteSymbol}] opening bootstrap position`);
       await sleep(1500);
       r.bootstrap = {
@@ -689,16 +817,25 @@ export async function handleCreateLp(req, res) {
       if (r.quoteSymbol === 'SOL') {
         st.solBalance = Math.max(0, st.solBalance - 0.001);
       }
+      emit({ stage: 'bootstrap_open_done', allocationIndex: idx });
     }
 
     // -- Phase 3: lock every position -------------------------------------
-    // Each successful lock burns the position NFT and mints a Fee Key NFT.
-    // We model that by flipping locked:true and pushing one Fee Key NFT
-    // into the ledger per locked position — those are the valuable items
-    // the Step 6 sweep moves to the destination wallet.
+    // Same SOL-last ordering as Phase 2 — see above. Locks don't change
+    // tradability (positions already hold their liquidity), but mirroring
+    // the open order here keeps the on-chain action sequence and the
+    // activity-log display coherent.
     if (doLock) {
       console.log('\n[demo] === Phase 3: locking positions ===');
-      for (const r of results) {
+      const lockIterOrder = results
+        .map((_, idx) => idx)
+        .sort((a, b) => {
+          const aIsSol = results[a].quoteSymbol === 'SOL';
+          const bIsSol = results[b].quoteSymbol === 'SOL';
+          return Number(aIsSol) - Number(bIsSol);
+        });
+      for (const idx of lockIterOrder) {
+        const r = results[idx];
         for (let i = 0; i < r.mainPositions.length; i++) {
           const pos = r.mainPositions[i];
           console.log(`[demo] [${r.quoteSymbol}] locking main slice ${i + 1}/${r.mainPositions.length}`);
@@ -711,6 +848,7 @@ export async function handleCreateLp(req, res) {
             symbol: 'FEEKEY',
             programName: 'Token Program',
           });
+          emit({ stage: 'main_lock_done', allocationIndex: idx, sliceIndex: i });
         }
         for (let bi = 0; bi < r.ladderPositions.length; bi++) {
           const lp = r.ladderPositions[bi];
@@ -724,6 +862,24 @@ export async function handleCreateLp(req, res) {
             symbol: 'FEEKEY',
             programName: 'Token Program',
           });
+          emit({ stage: 'ladder_lock_done', allocationIndex: idx, bandIndex: bi });
+        }
+        // Support positions, same lifecycle as ladder (no recipient,
+        // Fee Key stays with launch wallet for the Step 6 sweep).
+        const supportPos = Array.isArray(r.supportPositions) ? r.supportPositions : [];
+        for (let si = 0; si < supportPos.length; si++) {
+          const sp = supportPos[si];
+          console.log(`[demo] [${r.quoteSymbol}] locking support position ${si + 1}/${supportPos.length}`);
+          await sleep(1200);
+          sp.locked = true;
+          sp.txIds.lock = demoSignature();
+          st.nfts.push({
+            mint: sp.nftMint,
+            name: `Fee Key (${r.quoteSymbol} support)`,
+            symbol: 'FEEKEY',
+            programName: 'Token Program',
+          });
+          emit({ stage: 'support_lock_done', allocationIndex: idx });
         }
         if (r.bootstrap && r.bootstrap.nftMint) {
           console.log(`[demo] [${r.quoteSymbol}] locking bootstrap`);
@@ -736,6 +892,7 @@ export async function handleCreateLp(req, res) {
             symbol: 'FEEKEY',
             programName: 'Token Program',
           });
+          emit({ stage: 'bootstrap_lock_done', allocationIndex: idx });
         }
       }
     } else {
@@ -752,7 +909,7 @@ export async function handleCreateLp(req, res) {
     );
     if (hasAnyRecipient) {
       console.log('\n[demo] === Phase 4: transferring Fee Key NFTs ===');
-      for (const r of results) {
+      for (const [allocIdx, r] of results.entries()) {
         for (let i = 0; i < r.mainPositions.length; i++) {
           const pos = r.mainPositions[i];
           if (!pos.recipient || !pos.locked || pos.transferredTo) continue;
@@ -762,6 +919,7 @@ export async function handleCreateLp(req, res) {
           pos.txIds.transfer = demoSignature();
           // Remove the transferred Fee Key from the launch wallet.
           st.nfts = st.nfts.filter((n) => n.mint !== pos.nftMint);
+          emit({ stage: 'main_transfer_done', allocationIndex: allocIdx, sliceIndex: i });
         }
       }
     } else {
@@ -800,11 +958,62 @@ export function handleResumeLaunch(req, res) {
 // sweep the wallet is empty in the ledger (everything moved to the
 // destination, which we don't track).
 
-export async function handleTransferAssets(req, res) {
+// Shared airdrop simulator — used by both handleTransferAssets (the
+// in-band airdrop step that runs as part of the Step 6 sweep) and
+// handleRetryAirdrop (the "Retry failed airdrops" button). Mirrors
+// executeAirdrop's return shape: { transferred: [...], failed: [...] }
+// with the SAME per-recipient field set the real handler produces
+// (wallet, tokens, amountRaw, txId, attempts) so the frontend's
+// summary panel and per-recipient progress rendering work unchanged.
+//
+// In demo mode every recipient succeeds (happy path only — failure
+// injection isn't a goal of demo mode). The 1.5s per-recipient sleep
+// makes the progress UI light up at familiar intervals; the real
+// airdrop paces at AIRDROP_PACE_MS_DEFAULT (~600ms) but the demo
+// runs slower so each delivery is visible.
+//
+// Tokens leave the launch wallet's ledger as they "deliver." This
+// matches the real flow: airdropped tokens reduce the balance before
+// the token sweep runs, so the sweep only carries leftover
+// preallocation (if any) plus any auto-swapped quote-token residue.
+async function simulateAirdrop({ st, tokenMint, tokenDecimals, recipients, onProgress = null }) {
+  const transferred = [];
+  const failed = [];
+  for (let i = 0; i < recipients.length; i++) {
+    const r = recipients[i];
+    // Convert UI token amount to raw mint-base units. Same math the
+    // real executeAirdrop uses; Math.round absorbs frontend float noise.
+    const amountRaw = BigInt(Math.round(Number(r.tokens) * 10 ** tokenDecimals));
+    console.log(`[demo] airdrop ${i + 1}/${recipients.length} → ${r.wallet} (${r.tokens} tokens)`);
+    await sleep(1500);
+    // Deduct from launch wallet's launched-token balance so the token
+    // sweep that runs after airdrop transfers only the leftover.
+    debitToken(st, tokenMint, amountRaw, tokenDecimals);
+    transferred.push({
+      wallet: r.wallet,
+      tokens: r.tokens,
+      amountRaw: amountRaw.toString(),
+      txId: demoSignature(),
+      attempts: 1,
+    });
+    if (typeof onProgress === 'function') {
+      try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: true }); }
+      catch (_) { /* never let a progress callback break the simulation */ }
+    }
+  }
+  console.log(`[demo] airdrop complete: ${transferred.length} delivered, ${failed.length} failed`);
+  return { transferred, failed };
+}
+
+export async function handleTransferAssets(req, res, opts = {}) {
   try {
     const { tempWalletSecretKey, destinationWallet } = req.body;
     const publicKey = pubkeyFromSecretArray(tempWalletSecretKey);
     const st = getState(publicKey);
+    // Optional progress hooks: server.js passes these so the
+    // /api/airdrop-progress endpoint can show live progress while
+    // simulateAirdrop runs. No-op when not provided.
+    const progressHooks = opts.airdropProgress || null;
 
     console.log(`[demo] transferring assets to: ${destinationWallet}`);
 
@@ -821,6 +1030,43 @@ export async function handleTransferAssets(req, res) {
     }
     st.nfts = [];
     const nftSweep = { transferred: nftTransferred, errors: [] };
+
+    // 1.5. Airdrop, if configured. Matches the real handler's ordering:
+    //      airdrop runs AFTER NFT sweep but BEFORE the token sweep,
+    //      because the airdrop ships launched tokens out of the launch
+    //      wallet to recipient wallets, and we want those tokens still
+    //      present in the ledger when the airdrop runs. The token
+    //      sweep below then carries whatever the airdrop left behind
+    //      (typically the remaining preallocation supply).
+    //
+    //      Skipped silently when the airdrop payload is absent or
+    //      empty — that's the simple-mode-without-airdrop case and
+    //      the customize-mode-without-airdrop case. The frontend's
+    //      airdrop summary panel handles `airdrop: null` correctly
+    //      (just doesn't render the section).
+    let airdropResult = null;
+    if (req.body.airdrop
+        && Array.isArray(req.body.airdrop.recipients)
+        && req.body.airdrop.recipients.length > 0
+        && req.body.airdrop.tokenMint
+        && Number.isFinite(req.body.airdrop.tokenDecimals)) {
+      const recipientCount = req.body.airdrop.recipients.length;
+      console.log(`[demo] airdrop step: ${recipientCount} recipient(s)`);
+      if (progressHooks) progressHooks.begin(publicKey, recipientCount);
+      try {
+        airdropResult = await simulateAirdrop({
+          st,
+          tokenMint: req.body.airdrop.tokenMint,
+          tokenDecimals: req.body.airdrop.tokenDecimals,
+          recipients: req.body.airdrop.recipients,
+          onProgress: progressHooks
+            ? (s) => progressHooks.step(publicKey, s)
+            : null,
+        });
+      } finally {
+        if (progressHooks) progressHooks.end(publicKey);
+      }
+    }
 
     // 2. All fungible tokens (launched token + leftover quote tokens).
     const tokenTransferred = [];
@@ -856,9 +1102,72 @@ export async function handleTransferAssets(req, res) {
       nftSweep,
       tokenSweep,
       solSweepError: null,
+      // Match the real handler: airdrop is null when not configured,
+      // or { transferred: [...], failed: [...] } when run. The
+      // frontend reads response.airdrop.transferred.length and
+      // response.airdrop.failed.length to render the summary panel.
+      airdrop: airdropResult,
     });
   } catch (error) {
     console.error('[demo] transfer-assets error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+// ===========================================================================
+// /api/retry-airdrop — the "Retry failed airdrops" button
+// ===========================================================================
+//
+// Demo mode is happy-path only, so retries always succeed. The real handler
+// uses the same executeAirdrop primitive as the in-band airdrop step; we
+// reuse simulateAirdrop here for the same reason. Returns the same shape
+// the real handler does: { success, airdrop: { transferred, failed } }.
+
+export async function handleRetryAirdrop(req, res, opts = {}) {
+  try {
+    const {
+      tempWalletSecretKey,
+      tokenMint,
+      tokenDecimals,
+      recipients,
+    } = req.body;
+
+    if (!tempWalletSecretKey || !tokenMint
+        || !Number.isFinite(tokenDecimals)
+        || !Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'tempWalletSecretKey, tokenMint, tokenDecimals, and recipients are required',
+      });
+    }
+
+    const publicKey = pubkeyFromSecretArray(tempWalletSecretKey);
+    const st = getState(publicKey);
+    const progressHooks = opts.airdropProgress || null;
+
+    console.log(`[demo] retry-airdrop: ${recipients.length} recipient(s)`);
+    if (progressHooks) progressHooks.begin(publicKey, recipients.length);
+    let airdropResult;
+    try {
+      airdropResult = await simulateAirdrop({
+        st,
+        tokenMint,
+        tokenDecimals,
+        recipients,
+        onProgress: progressHooks
+          ? (s) => progressHooks.step(publicKey, s)
+          : null,
+      });
+    } finally {
+      if (progressHooks) progressHooks.end(publicKey);
+    }
+
+    res.json({
+      success: true,
+      airdrop: airdropResult,
+    });
+  } catch (error) {
+    console.error('[demo] retry-airdrop error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 }

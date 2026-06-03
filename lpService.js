@@ -5,13 +5,21 @@
 // transferTokensAndSol as a new step in the existing flow.
 //
 // Per-launch flow (orchestrated by createPoolsAndPositions):
-//   The flow is split into two phases so that no pool becomes tradable
-//   while later pools are still being built. (A pool becomes tradable
-//   only when it has in-range liquidity — the bootstrap position is what
-//   provides that. If we bootstrapped each pool immediately after its
-//   main positions, a swap on the now-live first pool could move its
-//   price while later pools — configured to launch at the same USD price
-//   — are still being built, breaking their economics.)
+//   The flow is split into four phases so (a) no pool becomes tradable
+//   while later pools are still being built, and (b) nothing is committed
+//   for life until every position has been successfully opened. A pool
+//   becomes tradable only when it has in-range liquidity — the bootstrap
+//   position is what provides that. If we bootstrapped each pool
+//   immediately after its main positions, a swap on the now-live first
+//   pool could move its price while later pools — configured to launch
+//   at the same USD price — are still being built, breaking their
+//   economics. Likewise, if we locked positions inline with opening
+//   them, a Phase-2 failure on (say) the third pool would leave the
+//   first two pools' positions already burned-and-locked, with no way
+//   to close-and-retry. Deferring all locking to Phase 3 means a
+//   failure anywhere in Phase 1 or Phase 2 leaves every position
+//   recoverable — the launch wallet can still close positions and the
+//   user can adjust config before retrying.
 //
 //   Phase 1 — for each "allocation" entry the user configures, we:
 //     1. Compute the initial pool price so the launched token's USD value
@@ -19,20 +27,63 @@
 //     2. createPool — initializes the CLMM pool at that price. No liquidity yet.
 //     3. For each "slice" of the allocation's distribution: open a main
 //        position with the slice's share of the supply, in a range that
-//        keeps the position 100% launched-token initially. Lock it via
-//        Burn & Earn. If the slice has an external recipient, transfer
-//        the resulting Fee Key NFT to that recipient. Otherwise the Fee
-//        Key stays with the ephemeral wallet for the final sweep.
+//        keeps the position 100% launched-token initially.
+//     4. If the allocation has ladder bands configured, open each band.
+//     5. If the allocation has a support position configured, open it.
+//
+//     NO LOCKING happens in Phase 1. Positions stay closeable by the
+//     launch wallet — important if a later phase fails and the user
+//     needs to recover.
 //
 //   Phase 2 — once every pool's main positions are in place:
-//     4. For each pool, open one bootstrap position straddling current
-//        tick. This makes the pool tradable. Lock it. Bootstrap is never
-//        split or transferred — its Fee Key stays with the ephemeral
-//        wallet for the final sweep.
+//     6. For each pool, open one bootstrap position straddling current
+//        tick. This makes the pool tradable. Bootstrap is never split or
+//        transferred — its Fee Key (after locking) stays with the
+//        ephemeral wallet for the final sweep.
+//
+//        Within Phase 2, SOL-paired pools are deferred to the END of the
+//        queue. Bots and aggregators index SOL pairs more aggressively
+//        than flywheel/exotic quotes, so flipping the SOL pool to
+//        tradable while flywheel pools are still being built would let
+//        the first wave of SOL-paired trades miss the cascading
+//        buy-pressure mechanism the launch was designed for. By
+//        bootstrapping every flywheel before the SOL pool, the first
+//        SOL-paired trade activates the flywheel as intended.
+//
+//        The last position opened in the entire launch is the SOL
+//        bootstrap. NO LOCKING has happened yet — every position
+//        opened in Phase 1 and Phase 2 is still closeable.
+//
+//   Phase 3 — once every position is open (lockAllPositions):
+//     7. Lock every position via Burn & Earn. Each lock burns the
+//        position NFT and mints a Fee Key NFT in its place. This is the
+//        irreversibility line — after this, the LP'd tokens are
+//        committed for life and only trading fees can be claimed.
+//
+//        Lock order mirrors the SOL-last ordering from Phase 2 (every
+//        flywheel pool's positions locked before any SOL-pool position)
+//        for visual coherence with the activity log; the lock order
+//        itself doesn't affect tradability since the liquidity is
+//        already in place from Phase 2.
+//
+//        Phase 3 is the FINAL phase that creates anything irreversible.
+//        A failure in Phases 1 or 2 can be recovered from by closing
+//        positions; a failure in Phase 3 leaves some positions locked
+//        and others not, and the user retries the locks via the resume
+//        flow.
+//
+//   Phase 4 — after Phase 3, if any slice has an external recipient
+//     (transferFeeKeys):
+//     8. For each such slice, transfer the Fee Key NFT minted by the
+//        Phase 3 lock to the configured recipient. Slices without a
+//        recipient keep their Fee Key in the ephemeral wallet for the
+//        final sweep at the end of the launch. Bootstrap Fee Keys are
+//        never transferred.
 //
 // Sequential execution within and across phases — failures are easy to
 // recover from this way. On error we throw with partialResults and a
-// failedPhase ('main_positions' or 'bootstrap') attached.
+// failedPhase ('pre_flight', 'main_positions', 'bootstrap', 'locks',
+// or 'transfers') attached.
 //
 // Mint-ordering note: Raydium pools have an internal canonical mintA/mintB
 // ordering. The launched token may end up as either side depending on the
@@ -59,32 +110,17 @@ import {
   ExtensionType,
 } from '@solana/spl-token';
 import { transferTokenWithProgram } from './walletHelpers.js';
-import { discoverRaydiumRoute } from './swapService.js';
+import { discoverRaydiumRoute, probeRaydiumPriceStrict } from './swapService.js';
 import {
   computeBootstrapTicks,
   computeLadderTicks,
   computeLadderTicksManual,
   computeMainTicks,
+  computeSupportTicks,
+  SUPPORT_DEPTH_PCT_DEFAULT,
+  driftExceedsThreshold,
+  driftPercent,
 } from './lpMath.js';
-import {
-  COST_POOL_RENT_SOL,
-  COST_TICK_ARRAY_SOL,
-  COST_POSITION_SOL,
-  COST_LOCK_SOL,
-  COST_TRANSFER_SOL,
-  COST_BS_QUOTE_SOL,
-  COST_TX_BUFFER_SOL,
-  COST_TOKEN_CREATE_SOL,
-  SAFETY_BUFFER_PCT,
-  BS_BOOTSTRAP_USD,
-  AUTOSWAP_TARGET_USD,
-  BS_FALLBACK_WHOLE,
-  AUTOSWAP_SIZING_MULTIPLIER,
-  AUTOSWAP_CUSTOM_TARGET_MULTIPLIER,
-  AUTOSWAP_CUSTOM_SIZING_MULTIPLIER,
-  FALLBACK_SOL_USD,
-  WSOL_MINT,
-} from './lpConstants.js';
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
 import { getRpcUrl } from './rpcConfig.js';
@@ -125,9 +161,49 @@ const DEFAULT_AMM_CONFIG_INDEX = 3;
 // pool tradable; intentionally negligible value.
 const BOOTSTRAP_BASE_TOKENS_WHOLE = 1;
 
+// USD price assumed per SOL when the live price oracle isn't available
+// (offline, API down, etc.). Used as a fallback for sizing the SOL
+// equivalent of an auto-swap line and for support-position quote-side
+// conversion when no live SOL price is available; the safety buffer
+// absorbs any inaccuracy. Slightly conservative on the high side so we
+// don't under-fund.
+const FALLBACK_SOL_USD = 200;
+
 // Floor on the SOL allocation when a SOL pool is included. Aggregators
 // (Jupiter, GeckoTerminal, etc.) work best with a non-trivial SOL pool.
 const MIN_SOL_ALLOCATION_PCT = 1;
+
+// SOL mint (wrapped SOL) — Raydium pools always use wSOL, not native SOL.
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+
+// Maximum allowed ratio between the user-committed quote-token USD price
+// (from funding-estimate, or from a manual override the user typed) and
+// the just-in-time Raydium swap probe at pool-creation time. If the two
+// differ by more than this ratio, we abort the pool creation with a
+// pre_flight error and ask the user to refresh funding-estimate.
+//
+// 1.25 = 25% drift. Matches the Aave Shield pre-trade impact guardrail,
+// which was independently validated after a $50M loss event. Tight
+// enough to catch the kinds of pricing bugs the user reported, loose
+// enough to absorb normal volatility on thin memecoin quotes during a
+// brief funding-to-create gap.
+//
+// Tunable via PRICE_DRIFT_THRESHOLD_PCT (in percent, e.g. "30" for 30%).
+function loadPriceDriftThreshold() {
+  const raw = process.env.PRICE_DRIFT_THRESHOLD_PCT;
+  if (raw === undefined || raw === null || raw === '') return 1.25;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(
+      `PRICE_DRIFT_THRESHOLD_PCT="${raw}" is not a positive number; ` +
+      `falling back to 25%`,
+    );
+    return 1.25;
+  }
+  // Convert percent → ratio (e.g. 25 → 1.25).
+  return 1 + parsed / 100;
+}
+const PRICE_DRIFT_THRESHOLD = loadPriceDriftThreshold();
 
 // Convenience map for well-known quote tokens. The caller can pass any SPL
 // mint as a quote — this is just to skip on-chain decimals lookup for common
@@ -166,6 +242,30 @@ export const KNOWN_QUOTES = {
       'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB/logo.svg',
   },
 };
+
+// Tokens we trust at compile time. The /api/quote-token-info endpoint
+// skips the on-chain authority audit (mint/freeze authority checks) AND
+// the Step 2 Raydium-route probe for any address in this set. These are
+// already-vetted tokens — there's no value re-checking them on every
+// keystroke as the user types/pastes a quote mint into the form.
+//
+// IMPORTANT: This is a Step 2 short-circuit only. The pool-create-time
+// just-in-time probe in createPoolsAndPositions still runs fresh for
+// every non-SOL quote regardless of this list — caching at Step 2 must
+// not bypass the safety check at the irreversible commit point.
+//
+// Members:
+//   SOL/USDC/USDT — the three KNOWN_QUOTES, classic SPL Token, vetted.
+//   XLRT          — Reserve flywheel. Vetted, on-chain authorities
+//                   confirmed renounced.
+//   Meme flywheel — Vetted, on-chain authorities confirmed renounced.
+export const KNOWN_SAFE_QUOTES = new Set([
+  WSOL_MINT,
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',          // USDC
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',          // USDT
+  'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj',          // XLRT (Reserve flywheel)
+  'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r',           // Meme flywheel
+]);
 
 // ---------------------------------------------------------------------------
 // USD price + metadata lookup
@@ -282,9 +382,21 @@ export async function getClmmFeeTiers() {
 /**
  * Build a fresh Raydium SDK instance for the given owner keypair. We don't
  * cache across calls because the owner changes per launch.
+ *
+ * Tests can short-circuit this entire function by setting an SDK factory
+ * via setSdkFactoryForTests — the override is called with the ownerKeypair
+ * and its return value is used in place of a real Raydium.load(). Tests
+ * can also override just the Connection construction (when they want the
+ * real Raydium.load with a fake RPC) via setConnectionFactoryForTests.
  */
-async function defaultInitSdk(ownerKeypair) {
-  const connection = _connectionFactory();
+async function initSdk(ownerKeypair) {
+  if (__sdkFactoryOverride) return __sdkFactoryOverride(ownerKeypair);
+  const connection = __connectionFactoryOverride
+    ? __connectionFactoryOverride()
+    : new Connection(getRpcUrl(), {
+        commitment: 'confirmed',
+        confirmTransactionInitialTimeout: 60_000,
+      });
   return Raydium.load({
     owner: ownerKeypair,
     connection,
@@ -295,57 +407,71 @@ async function defaultInitSdk(ownerKeypair) {
   });
 }
 
-function defaultConnectionFactory() {
-  return new Connection(getRpcUrl(), {
-    commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 60_000,
-  });
-}
-
 // ---------------------------------------------------------------------------
-// Dependency-injection seams (TEST-ONLY).
+// Test-only DI seams
+// ---------------------------------------------------------------------------
 //
-// Production default is unchanged: `_sdkFactory` builds a real Raydium SDK
-// over a real Connection. Tests may swap `_sdkFactory` for one that returns
-// a mock raydium object (see test/helpers/mockRaydium.mjs), and/or
-// `_connectionFactory` for a fake connection, to drive createPoolsAndPositions
-// and the phase helpers without touching mainnet. These do nothing unless a
-// test explicitly calls a setter.
-// ---------------------------------------------------------------------------
-let _connectionFactory = defaultConnectionFactory;
-let _sdkFactory = defaultInitSdk;
+// Optional overrides for two external boundaries lpService touches:
+//
+//   __sdkFactoryOverride        — replaces Raydium.load() inside initSdk.
+//                                 Called with the owner keypair; must
+//                                 return an SDK-shaped object exposing
+//                                 clmm, api, account, and a connection
+//                                 property (the shape returned by the
+//                                 real Raydium.load).
+//
+//   __connectionFactoryOverride — replaces new Connection(getRpcUrl(),...)
+//                                 in initSdk (when no SDK override is set)
+//                                 AND in the per-allocation quote-token
+//                                 lookup loop inside preflightCreate-
+//                                 PoolsAndPositions.
+//
+// Production code never sets these — they stay null and the dispatcher
+// branches in initSdk / preflightCreatePoolsAndPositions fall through to
+// the real implementations. Tests inject network-free fakes via the
+// set*ForTests exports and clear them in afterEach via resetTestFactories.
+//
+// Module-level state is fine because node:test runs tests serially by
+// default. If a test ever opted into .concurrency, we'd need AsyncLocal-
+// Storage — but no test currently does, so the simple approach wins.
+//
+// The phase helpers (createSinglePool, lockAllPositions, transferFeeKeys)
+// take `raydium` as a parameter directly, so tests usually inject their
+// fake SDK there and don't need to use these factory overrides at all.
+// The seams exist for completeness so callers of createPoolsAndPositions
+// (the full orchestrator) can also be tested if needed.
 
-// initSdk delegates to the (overridable) factory. Production code paths that
-// call initSdk are unchanged when no test factory is set.
-async function initSdk(ownerKeypair) {
-  return _sdkFactory(ownerKeypair);
+let __sdkFactoryOverride = null;
+let __connectionFactoryOverride = null;
+
+/**
+ * Replace the function used to construct the Raydium SDK inside
+ * initSdk. The override is called with the owner Keypair and must
+ * return an SDK-shaped object. Set by tests, cleared by
+ * resetTestFactories.
+ */
+export function setSdkFactoryForTests(factory) {
+  __sdkFactoryOverride = factory;
 }
 
-// TEST-ONLY: override the Raydium SDK builder (returns the mock raydium).
-export function setSdkFactoryForTests(fn) {
-  _sdkFactory = fn;
+/**
+ * Replace the function used to construct Connections. Called with no
+ * arguments; must return a @solana/web3.js Connection-shaped object.
+ * Affects initSdk and preflightCreatePoolsAndPositions's per-allocation
+ * quote-token lookups.
+ */
+export function setConnectionFactoryForTests(factory) {
+  __connectionFactoryOverride = factory;
 }
 
-// TEST-ONLY: override the Connection builder used by the default SDK factory.
-export function setConnectionFactoryForTests(fn) {
-  _connectionFactory = fn;
-}
-
-// TEST-ONLY: restore the real SDK + connection factories.
+/**
+ * Clear both test overrides — returns the module to production
+ * behavior. Always safe to call (idempotent, no-throw).
+ */
 export function resetTestFactories() {
-  _sdkFactory = defaultInitSdk;
-  _connectionFactory = defaultConnectionFactory;
+  __sdkFactoryOverride = null;
+  __connectionFactoryOverride = null;
 }
-
-// TEST-ONLY: expose the private phase helpers so integration tests can drive
-// each launch phase through a mock SDK and assert recoverable state. These are
-// not used by production code.
-export const __testHooks = {
-  get createSinglePool() { return createSinglePool; },
-  get openBootstrapPosition() { return openBootstrapPosition; },
-  get lockAllPositions() { return lockAllPositions; },
-  get transferFeeKeys() { return transferFeeKeys; },
-};
 
 // ---------------------------------------------------------------------------
 // Quote-token resolution
@@ -446,6 +572,38 @@ export async function getMintCompatibilityWithRaydiumClmm(connection, mintPk) {
   const mint = unpackMint(mintPk, accountInfo, owner);
   const isToken2022 = owner.equals(TOKEN_2022_PROGRAM_ID);
 
+  // Authority audit. The mint exposes:
+  //   mint.freezeAuthority — PublicKey if a freeze authority is set,
+  //                          null if the authority has been renounced.
+  //                          A token with active freeze authority can
+  //                          have its holders' balances frozen at any
+  //                          time. For a QUOTE TOKEN this is critical:
+  //                          the deployer could freeze the launch
+  //                          wallet's quote-token balance mid-launch
+  //                          and brick the entire process. Funds would
+  //                          become unrecoverable through normal sweep.
+  //   mint.mintAuthority   — PublicKey if mint authority is set, null
+  //                          if renounced. Active mint authority means
+  //                          supply can be inflated, which devalues
+  //                          everything in the pool but doesn't directly
+  //                          brick the launch. Soft warning, not block.
+  //
+  // For Token-2022, ALSO check the PermanentDelegate extension, which
+  // gives a delegate authority similar transfer-confiscation power.
+  // Raydium's whitelist already covers the known-safe Token-2022 cases.
+  const freezeAuthority = mint.freezeAuthority
+    ? mint.freezeAuthority.toBase58()
+    : null;
+  const mintAuthority = mint.mintAuthority
+    ? mint.mintAuthority.toBase58()
+    : null;
+  const authorityAudit = {
+    freezeAuthority,                              // base58 string or null
+    mintAuthority,                                // base58 string or null
+    freezeAuthorityDisabled: freezeAuthority === null,
+    mintAuthorityRenounced: mintAuthority === null,
+  };
+
   // Classic SPL Token mints have no extensions and are always supported.
   if (!isToken2022) {
     return {
@@ -457,6 +615,7 @@ export async function getMintCompatibilityWithRaydiumClmm(connection, mintPk) {
       whitelisted: false,
       disallowed: [],
       disallowedNames: [],
+      ...authorityAudit,
     };
   }
 
@@ -469,6 +628,11 @@ export async function getMintCompatibilityWithRaydiumClmm(connection, mintPk) {
   // without depending on @solana/spl-token.
   const extensions = rawExtensions.map((e) => _extensionTypeToName(e));
 
+  // Delegate the compatibility classification to the pure helper in
+  // lpMintCompat.js. It handles both the extension allowlist check and
+  // the Raydium CLMM mint whitelist (PYUSD, AUSD, etc. — mints with
+  // extensions that would normally fail the generic check but the
+  // protocol team specifically vetted).
   const classification = classifyToken2022Extensions(
     extensions,
     mintPk.toBase58(),
@@ -479,7 +643,14 @@ export async function getMintCompatibilityWithRaydiumClmm(connection, mintPk) {
     decimals: mint.decimals,
     isToken2022: true,
     extensions,
+    // classification provides: compatible, whitelisted, whitelistedDespite,
+    // disallowed, disallowedNames.
     ...classification,
+    // authorityAudit provides: freezeAuthority, mintAuthority,
+    // freezeAuthorityDisabled, mintAuthorityRenounced. These power the
+    // Step 2 quote-token safety warnings (price-safety plan Milestone D)
+    // and the resolved-info panel in app.js.
+    ...authorityAudit,
   };
 }
 
@@ -679,6 +850,23 @@ async function createSinglePool({
   ladderMode,
   ladderBands,
   ladderCeiling,
+  // Support position parameters.
+  //   supportEnabled: true if a custom-mode support position should be
+  //                   opened in this pool. When false, the support block
+  //                   is skipped entirely and `supportPositions` in the
+  //                   returned result is an empty array.
+  //   supportQuoteRaw: BN raw amount of QUOTE token to deposit. Computed
+  //                    by the orchestrator from the user's solValue input
+  //                    (SOL-equivalent USD value of starting support).
+  //                    Single-sided in quote — no launched-token supply
+  //                    is consumed, so this is orthogonal to wideBaseRaw,
+  //                    bootstrapBaseRaw, and ladder shares.
+  //   supportDepthPct: how far below launch price the support position
+  //                    extends, in percent. Defaults to
+  //                    SUPPORT_DEPTH_PCT_DEFAULT (10) when omitted.
+  supportEnabled,
+  supportQuoteRaw,
+  supportDepthPct,
   // NOTE: this function no longer takes lockPositions. Locking and
   // Fee Key transfers are deferred to dedicated phases in the
   // orchestrator (lockAllPositions, transferFeeKeys). The orchestrator
@@ -1050,6 +1238,118 @@ async function createSinglePool({
   }
 
   // -----------------------------------------------------------------------
+  // Open the support position (optional).
+  //
+  // The support position is single-sided in QUOTE, sitting just below
+  // current tick (for mintA-side launches; mirrored above for mintB).
+  // It backs any preallocated supply held outside LP — team tokens, VC
+  // allocations, presale tokens, staking rewards, etc. — by providing
+  // a buy wall the recipients can sell into without requiring matching
+  // token-side liquidity.
+  //
+  // Because the position is single-sided in quote, opening it does NOT
+  // consume any launched-token supply. The quote-side amount comes from
+  // the user's funding wallet — already present at this point (SOL for
+  // SOL pools, auto-swapped quote tokens for non-SOL pools). The actual
+  // raw quote amount is computed by the orchestrator from the user's
+  // solValue input and passed in as supportQuoteRaw.
+  //
+  // We open it AFTER the ladder bands but BEFORE the bootstrap deferral.
+  // The pool is not yet tradable (no in-range liquidity until bootstrap
+  // lands), so a support position sitting below currentTick is dormant
+  // — exactly what we want. Once the bootstrap opens, support becomes
+  // the implicit buy wall for sellers (preallocation holders) cashing
+  // out below launch price.
+  //
+  // Modeled as an array (currently 0 or 1 entry) for symmetry with
+  // mainPositions/ladderPositions. Future iterations could open multiple
+  // support bands at different depths without changing the result shape.
+  // -----------------------------------------------------------------------
+  const supportPositions = [];
+  if (supportEnabled && supportQuoteRaw && supportQuoteRaw.gt(new BN(0))) {
+    const depthPct = Number.isFinite(Number(supportDepthPct))
+      ? Number(supportDepthPct)
+      : SUPPORT_DEPTH_PCT_DEFAULT;
+    const supportTicks = computeSupportTicks({
+      currentTick,
+      tickSpacing,
+      launchedIsMintA,
+      depthPct,
+    });
+    console.log(
+      `  support: ticks=[${supportTicks.tickLower}, ${supportTicks.tickUpper}] ` +
+        `(depth=-${depthPct}%, quoteRaw=${supportQuoteRaw.toString()})`,
+    );
+    // Sanity-check the range is on the correct side of currentTick to
+    // be single-sided in quote. mintA: quote = mintB, position must be
+    // below currentTick. mintB: quote = mintA, position must be above.
+    if (launchedIsMintA && currentTick < supportTicks.tickUpper) {
+      throw new Error(
+        `Support range mispositioned for launched=mintA: tickUpper ` +
+          `(${supportTicks.tickUpper}) must be <= currentTick (${currentTick}) ` +
+          `so the position is single-sided in the quote (mintB).`,
+      );
+    }
+    if (!launchedIsMintA && currentTick >= supportTicks.tickLower) {
+      throw new Error(
+        `Support range mispositioned for launched=mintB: tickLower ` +
+          `(${supportTicks.tickLower}) must be > currentTick (${currentTick}) ` +
+          `so the position is single-sided in the quote (mintA).`,
+      );
+    }
+    progress({ stage: 'support_open_start' });
+
+    // Base side for the support position is the QUOTE side (opposite of
+    // launched). For launchedIsMintA: launched is MintA, so quote is
+    // MintB → base = 'MintB'. For launchedIsMintB: launched is MintB,
+    // so quote is MintA → base = 'MintA'.
+    //
+    // The position is fully single-sided in quote, so otherAmountMax = 0
+    // is exact (same pattern as ladder bands, just in the opposite
+    // direction). useSOLBalance:true lets the SDK auto-wrap native SOL
+    // for SOL-pool support positions without us having to pre-fund the
+    // wSOL ATA manually.
+    const supportRes = await raydium.clmm.openPositionFromBase({
+      poolInfo,
+      poolKeys,
+      tickLower: supportTicks.tickLower,
+      tickUpper: supportTicks.tickUpper,
+      base: launchedIsMintA ? 'MintB' : 'MintA',
+      baseAmount: supportQuoteRaw,
+      otherAmountMax: new BN(0),
+      ownerInfo: { useSOLBalance: true },
+      txVersion: TxVersion.V0,
+      computeBudgetConfig: { units: 600_000, microLamports: 50_000 },
+    });
+    const supportTx = await supportRes.execute({ sendAndConfirm: true });
+    const supportNftMint = supportRes.extInfo?.nftMint?.toBase58();
+    console.log(`  support opened: nft=${supportNftMint}, tx=${supportTx.txId}`);
+    progress({
+      stage: 'support_open_done',
+      nftMint: supportNftMint,
+      txId: supportTx.txId,
+    });
+
+    supportPositions.push({
+      tickLower: supportTicks.tickLower,
+      tickUpper: supportTicks.tickUpper,
+      depthPct,
+      // Raw quote amount deposited. Useful for the journal and the user-
+      // facing summary at the end of the launch.
+      quoteRaw: supportQuoteRaw.toString(),
+      nftMint: supportNftMint,
+      // Phase 3 will flip this to true. Support positions never have
+      // recipients (Fee Keys stay with the launch wallet and sweep
+      // back) — same lifecycle as ladder bands and the bootstrap.
+      locked: false,
+      txIds: {
+        open: supportTx.txId,
+        lock: null,
+      },
+    });
+  }
+
+  // -----------------------------------------------------------------------
   // NOTE: the bootstrap position is intentionally NOT opened here.
   //
   // The bootstrap is the position that makes the pool tradable (it's the
@@ -1075,6 +1375,7 @@ async function createSinglePool({
     launchedSide: launchedIsMintA ? 'mintA' : 'mintB',
     mainPositions,
     ladderPositions,
+    supportPositions,
     txIds: { createPool: createTx.txId },
     // Context the deferred bootstrap step needs. Not part of the user-facing
     // result shape — caller strips this before returning.
@@ -1296,9 +1597,39 @@ async function openBootstrapPosition({
 // and most reliable lock target, so locking mains first surfaces the more
 // likely failure cases earlier.
 //
+// Between pools, SOL-paired allocations are processed LAST — matching
+// the Phase 2 bootstrap-open order. Locks don't change tradability (the
+// positions already hold their liquidity), but mirroring the open order
+// here keeps the on-chain action sequence and the activity-log display
+// coherent: every flywheel/exotic pool's work finishes before the SOL
+// pool's final lock. Stable sort preserves user-config order within
+// each group, so results[] stays in user-config order for downstream
+// consumers (launch report, UI) while iteration goes SOL-last.
+//
 // Mutates the results in place: each `mainPositions[i].locked` and
 // `mainPositions[i].txIds.lock` get set, same for the bootstrap.
 // ---------------------------------------------------------------------------
+// Inter-tx pacing for Phase 3 (locks) and Phase 4 (transfers).
+//
+// sendAndConfirm is the natural floor between transactions because it
+// blocks until the tx is finalized, which takes a couple of seconds at
+// minimum. But on fast paid RPCs (Helius, Triton) confirmations can come
+// back in <1s and back-to-back tx submissions can burst above per-second
+// rate limits. A small explicit sleep between txs evens out the cadence
+// and keeps us comfortably under most free-tier 429 thresholds without
+// materially slowing real launches.
+//
+// 250ms = ~4 TPS, matching the airdrop's conservative-by-default
+// philosophy. Same logic as walletHelpers.js: going at 75% speed is
+// better than hitting a rate limit mid-launch and losing more time
+// recovering than the slow pace would have cost.
+const LOCK_TX_PACING_MS = 250;
+const TRANSFER_TX_PACING_MS = 250;
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function lockAllPositions({ raydium, results, onProgress }) {
   const progress = (event) => onProgress && onProgress(event);
   const lockFailures = [];
@@ -1306,7 +1637,18 @@ async function lockAllPositions({ raydium, results, onProgress }) {
   console.log('\n=== Phase 3: Locking positions ===');
   progress({ stage: 'phase3_start' });
 
-  for (let allocIdx = 0; allocIdx < results.length; allocIdx++) {
+  // Build iteration order: non-SOL allocations first (in user-config order),
+  // then SOL allocations last (in their original relative order). results[]
+  // itself is NOT reordered — downstream consumers depend on that ordering.
+  const iterOrder = results
+    .map((_, idx) => idx)
+    .sort((a, b) => {
+      const aIsSol = results[a].quoteAddress === WSOL_MINT;
+      const bIsSol = results[b].quoteAddress === WSOL_MINT;
+      return Number(aIsSol) - Number(bIsSol);
+    });
+
+  for (const allocIdx of iterOrder) {
     const r = results[allocIdx];
     const symbol = r.quoteSymbol || '(?)';
 
@@ -1365,6 +1707,10 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           error: e.message,
         });
       }
+      // Inter-tx pacing — see LOCK_TX_PACING_MS rationale above.
+      // Applies whether the lock succeeded or failed; the next lock
+      // is going to hit the RPC regardless.
+      await sleepMs(LOCK_TX_PACING_MS);
     }
 
     // 3b. Lock each ladder band in order. Ladder bands are independent
@@ -1418,9 +1764,69 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           error: e.message,
         });
       }
+      // Inter-tx pacing — same rationale as the main-slice loop above.
+      await sleepMs(LOCK_TX_PACING_MS);
     }
 
-    // 3c. Lock the bootstrap for this pool.
+    // 3c. Lock each support position in order. Same lifecycle as ladder
+    //     bands — independent positions, fee key stays with the launch
+    //     wallet, no recipient. We lock them after main/ladder but
+    //     before bootstrap so the on-chain ordering matches the open
+    //     order from Phase 1.
+    for (let si = 0; si < (r.supportPositions || []).length; si++) {
+      const sp = r.supportPositions[si];
+      if (sp.locked) {
+        console.log(`[${symbol}] support position ${si + 1}: already locked (skip)`);
+        continue;
+      }
+      if (!sp.nftMint) {
+        console.log(`[${symbol}] support position ${si + 1}: no nftMint — skip`);
+        lockFailures.push({
+          allocationIndex: allocIdx,
+          positionType: 'support',
+          sliceIndex: si,
+          nftMint: null,
+          error: 'no nftMint on support result entry',
+        });
+        continue;
+      }
+      console.log(`[${symbol}] locking support position ${si + 1}/${r.supportPositions.length}: nft=${sp.nftMint}`);
+      try {
+        const lockRes = await raydium.clmm.lockPosition({
+          ownerPosition: { nftMint: new PublicKey(sp.nftMint) },
+          txVersion: TxVersion.V0,
+        });
+        const lockTx = await lockRes.execute({ sendAndConfirm: true });
+        sp.locked = true;
+        sp.txIds.lock = lockTx.txId;
+        console.log(`  locked: tx=${lockTx.txId}`);
+        progress({
+          stage: 'support_lock_done',
+          allocationIndex: allocIdx,
+          supportIndex: si,
+          txId: lockTx.txId,
+        });
+      } catch (e) {
+        console.error(`  lock FAILED: ${e.message}`);
+        lockFailures.push({
+          allocationIndex: allocIdx,
+          positionType: 'support',
+          sliceIndex: si,
+          nftMint: sp.nftMint,
+          error: e.message,
+        });
+        progress({
+          stage: 'support_lock_failed',
+          allocationIndex: allocIdx,
+          supportIndex: si,
+          error: e.message,
+        });
+      }
+      // Inter-tx pacing — same rationale as the main-slice loop above.
+      await sleepMs(LOCK_TX_PACING_MS);
+    }
+
+    // 3d. Lock the bootstrap for this pool.
     const bs = r.bootstrap;
     if (bs && bs.nftMint && !bs.locked) {
       console.log(`[${symbol}] locking bootstrap: nft=${bs.nftMint}`);
@@ -1453,6 +1859,10 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           error: e.message,
         });
       }
+      // Inter-tx pacing — same rationale as the main-slice loop above.
+      // This is also the last lock in this pool's iteration, so it paces
+      // the transition into the next pool's main locks.
+      await sleepMs(LOCK_TX_PACING_MS);
     } else if (bs && bs.locked) {
       console.log(`[${symbol}] bootstrap: already locked (skip)`);
     } else if (!bs || !bs.nftMint) {
@@ -1563,6 +1973,10 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
           error: e.message,
         });
       }
+      // Inter-tx pacing — same rationale as Phase 3 locks. Phase 4 txs
+      // are simpler (single SPL transfer, no Raydium SDK path) so the
+      // pacing constant is separate for independent tuning later.
+      await sleepMs(TRANSFER_TX_PACING_MS);
     }
   }
 
@@ -1574,6 +1988,352 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
+
+// Shared helper: resolve the canonical quote-USD price for one
+// allocation, enforcing the Milestone A rules from the price-safety
+// plan. Called from both createPoolsAndPositions (the actual launch)
+// and preflightCreatePoolsAndPositions (the pre-commit dry run that
+// powers the Milestone C confirmation modal).
+//
+// Throws on any failure (no Raydium route, network error, drift >25%,
+// non-positive price). Callers attach allocation context (index,
+// failedAllocation, partialResults) and the pre_flight phase tag
+// before propagating.
+//
+// On success returns { quoteUsd: Decimal, source: string, driftPct: number | null }
+//   - quoteUsd: the price to use for initialPrice math
+//   - source:   provenance label ('sol' | 'raydium-probe')
+//   - driftPct: when an override was present, the measured drift between
+//               probe and override (signed; positive means probe > override).
+//               null when no override was set.
+//
+// `quoteToken` shape:  { address: base58, symbol: string, decimals: number }
+// `alloc` shape:       { quoteUsdOverride?: number | string | null, ... }
+async function resolveQuoteUsdForCreate({
+  quoteToken,
+  alloc,
+  solUsd,
+}) {
+  let quoteUsd;
+  let source;
+
+  if (quoteToken.address === WSOL_MINT) {
+    // SOL pool: caller already resolved (and validated) SOL/USD.
+    quoteUsd = solUsd;
+    source = 'sol';
+  } else {
+    // Non-SOL: probe Raydium fresh. The strict probe throws on any
+    // failure with err.code; translate to a user-facing message.
+    //
+    // Policy on probe failures:
+    //   - NO_ROUTE: Raydium has no pool for this token. Fall through
+    //     to the aggregator price (Gecko → DexScreener via getUsdPrice).
+    //     The aggregators index Meteora/Orca/other DEXes and produce
+    //     a real market price; we trust them when Raydium itself has
+    //     nothing to offer.
+    //   - NETWORK_ERROR / HTTP_ERROR / BAD_RESPONSE: TRANSIENT Raydium
+    //     issue. Don't silently fall back — the user should retry once
+    //     Raydium recovers. Otherwise we'd be downgrading from the
+    //     canonical source to a slower mirror on every Raydium hiccup,
+    //     and the user wouldn't know.
+    //   - Other / unknown: refuse, same reasoning.
+    let probeResult;
+    let probeFailedNoRoute = false;
+    try {
+      probeResult = await probeRaydiumPriceStrict({
+        quoteMint: quoteToken.address,
+        quoteDecimals: quoteToken.decimals,
+        solUsd,
+      });
+    } catch (probeErr) {
+      const code = probeErr.code || 'UNKNOWN';
+      if (code === 'NO_ROUTE') {
+        // Fall through to aggregator. We'll resolve price below.
+        probeFailedNoRoute = true;
+      } else {
+        // Transient or unexpected — refuse with a user-facing message.
+        const symbolHint =
+          quoteToken.symbol && quoteToken.symbol !== quoteToken.address
+            ? `${quoteToken.symbol} (${quoteToken.address})`
+            : quoteToken.address;
+        let userMsg;
+        if (code === 'NETWORK_ERROR') {
+          userMsg =
+            `Couldn't reach the Raydium Trade API to verify the current ` +
+            `price of ${symbolHint}. This is a temporary issue; please ` +
+            `wait a moment and try again. No SOL was spent.`;
+        } else if (code === 'HTTP_ERROR') {
+          userMsg =
+            `The Raydium Trade API returned an error (HTTP ${probeErr.status}) ` +
+            `when verifying the price of ${symbolHint}. This is a temporary ` +
+            `issue; please wait a moment and try again. No SOL was spent.`;
+        } else if (code === 'BAD_RESPONSE') {
+          userMsg =
+            `The Raydium Trade API returned an unexpected response when ` +
+            `verifying the price of ${symbolHint}. Please try again. If the ` +
+            `problem persists, the API may be experiencing issues. No SOL ` +
+            `was spent.`;
+        } else {
+          userMsg =
+            `Couldn't verify the current Raydium price of ${symbolHint}: ` +
+            `${probeErr.message}. No SOL was spent.`;
+        }
+        const userErr = new Error(userMsg);
+        userErr.cause = probeErr;
+        userErr.probeCode = code;
+        throw userErr;
+      }
+    }
+
+    if (probeFailedNoRoute) {
+      // No Raydium route — fall back to the aggregator chain.
+      // getUsdPrice cascades through Jupiter → Gecko → DexScreener,
+      // which is the same chain that powered the price the user saw
+      // at Step 2. If THIS fails too (all aggregators down or token
+      // not indexed anywhere), we refuse — no price means no safe
+      // launch. The user can still proceed via an explicit
+      // quoteUsdOverride if they really want to, which the override
+      // branch above handles.
+      let aggregatorPrice = null;
+      try {
+        aggregatorPrice = await getUsdPrice(quoteToken.address);
+      } catch (_) { /* handled below */ }
+      if (!aggregatorPrice || !aggregatorPrice.gt(0)) {
+        const symbolHint =
+          quoteToken.symbol && quoteToken.symbol !== quoteToken.address
+            ? `${quoteToken.symbol} (${quoteToken.address})`
+            : quoteToken.address;
+        throw new Error(
+          `Raydium has no route for ${symbolHint}, and no aggregator ` +
+          `(GeckoTerminal, DexScreener) could price it either. We can't ` +
+          `safely set the initial pool price without a current market ` +
+          `reference. Either set a price manually in the Advanced ` +
+          `override field, or pick a different quote token. No SOL was spent.`,
+        );
+      }
+      quoteUsd = aggregatorPrice;
+      source = 'oracle';
+    } else {
+      quoteUsd = probeResult.effectiveQuoteUsd;
+      source = 'raydium-probe';
+    }
+  }
+
+  // Sanity floor BEFORE the drift check — a non-positive value never
+  // passes the drift check anyway, but we want a specific error msg.
+  if (!quoteUsd || !quoteUsd.isFinite() || !quoteUsd.gt(0)) {
+    throw new Error(
+      `Resolved quote USD price for ${quoteToken.symbol} is invalid ` +
+      `(${quoteUsd?.toString() || 'null'}). This shouldn't happen — ` +
+      `please report this as a bug. No SOL was spent.`,
+    );
+  }
+
+  // Drift guard against the override (if any). The override carries the
+  // price the user committed to at funding-estimate time, or what they
+  // typed manually in customize mode. If it diverges from the live
+  // probe by more than the configured threshold, abort. The drift
+  // check itself is in lpMath.driftExceedsThreshold — pure, no SDK
+  // dependencies, unit-tested. Decimal arithmetic stays for the
+  // display percentage so the user sees precise numbers.
+  let driftPct = null;
+  if (
+    alloc.quoteUsdOverride !== undefined &&
+    alloc.quoteUsdOverride !== null
+  ) {
+    const override = new Decimal(alloc.quoteUsdOverride);
+    if (override.gt(0)) {
+      const probeNum = quoteUsd.toNumber();
+      const overrideNum = override.toNumber();
+      // Signed drift: positive when current Raydium price is higher
+      // than the override (funding-estimate or user-typed value),
+      // negative when lower. The modal uses this to render "X% higher"
+      // or "X% lower" so the user knows which direction the price
+      // moved. (The drift-exceeds-threshold check itself is symmetric
+      // and uses driftExceedsThreshold separately.)
+      driftPct = Number(driftPercent(probeNum, overrideNum).toFixed(2));
+      // Coerce NaN to null so callers can do a clean nullish check.
+      // (Shouldn't happen in practice — we guarded override.gt(0) and
+      // the sanity floor on quoteUsd, but defense in depth.)
+      if (!Number.isFinite(driftPct)) driftPct = null;
+      if (driftExceedsThreshold(probeNum, overrideNum, PRICE_DRIFT_THRESHOLD)) {
+        const symbolHint =
+          quoteToken.symbol && quoteToken.symbol !== quoteToken.address
+            ? quoteToken.symbol
+            : quoteToken.address;
+        // Display the absolute drift magnitude in the error message —
+        // "27.3% difference" reads naturally regardless of direction,
+        // and the over/under details are visible in the price values.
+        throw new Error(
+          `Price drift detected for ${symbolHint}: ` +
+          `funding-estimate showed $${override.toString()} but current ` +
+          `Raydium price is $${quoteUsd.toString()} (${Math.abs(driftPct).toFixed(2)}% ` +
+          `difference, threshold is ` +
+          `${((PRICE_DRIFT_THRESHOLD - 1) * 100).toFixed(0)}%). ` +
+          `Refresh the funding estimate on Step 3 to recompute, then ` +
+          `try Create Pools again. No SOL was spent.`,
+        );
+      }
+    }
+  }
+
+  return { quoteUsd, source, driftPct };
+}
+
+/**
+ * Pre-commit dry run: resolve quote-token prices for all allocations
+ * and run drift checks WITHOUT touching chain. Powers the Milestone C
+ * confirmation modal — the frontend calls this before /api/create-lp
+ * so the user sees what initialPrice each pool will be created at and
+ * can abort if anything looks wrong.
+ *
+ * Note: the resulting prices are NOT a guarantee of what the actual
+ * launch will use. Pool creation re-runs the SAME helper (via
+ * createPoolsAndPositions), getting a fresh probe at that moment. If
+ * the price moves in the seconds between preflight and create-lp,
+ * Milestone A's drift guard catches it on the second probe.
+ *
+ * Why the second probe still matters even after preflight: the modal
+ * could sit open for tens of seconds while the user reads it. A thin
+ * pool can move noticeably in that window. The drift guard on the
+ * actual create-lp call uses the prices we returned here as the
+ * override reference, so it measures movement during the confirmation
+ * window. Tight window, tight tolerance — the 25% threshold catches
+ * extreme moves but absorbs normal volatility.
+ *
+ * Inputs: same as createPoolsAndPositions (subset).
+ *   - tokenMint, tokenTotalSupply, targetMarketCapUsd (for math context)
+ *   - allocations (the user's pool config + any overrides)
+ *
+ * Returns:
+ *   {
+ *     resolvedPrices: [
+ *       {
+ *         allocationIndex, quoteMint, quoteSymbol,
+ *         quoteUsd: string, source: string, driftPct: number | null,
+ *         initialPrice: string,  // launched-token-USD / quoteUsd
+ *       },
+ *       ...
+ *     ],
+ *     solUsd: string,
+ *   }
+ *
+ * Throws on any pre_flight failure with err.failedPhase='pre_flight'
+ * and err.failedAllocationIndex set, same as createPoolsAndPositions.
+ */
+export async function preflightCreatePoolsAndPositions({
+  tokenTotalSupply,
+  targetMarketCapUsd,
+  allocations,
+}) {
+  if (!Array.isArray(allocations) || allocations.length === 0) {
+    const e = new Error('No allocations provided');
+    e.failedPhase = 'pre_flight';
+    throw e;
+  }
+  // Numeric inputs: must be positive finite numbers (or strings that
+  // parse to positive finite numbers). Frontend gates this already in
+  // updateContinueToFundingState, but defense in depth produces a
+  // clear error here rather than letting Decimal math run with absurd
+  // inputs and surfacing a confusing downstream failure.
+  const supplyNum = Number(tokenTotalSupply);
+  const mcapNum = Number(targetMarketCapUsd);
+  if (!isFinite(supplyNum) || supplyNum <= 0) {
+    const e = new Error(
+      `tokenTotalSupply must be a positive number (got ${JSON.stringify(tokenTotalSupply)})`,
+    );
+    e.failedPhase = 'pre_flight';
+    throw e;
+  }
+  if (!isFinite(mcapNum) || mcapNum <= 0) {
+    const e = new Error(
+      `targetMarketCapUsd must be a positive number (got ${JSON.stringify(targetMarketCapUsd)})`,
+    );
+    e.failedPhase = 'pre_flight';
+    throw e;
+  }
+
+  // SOL/USD lookup — same hard-stop rule as createPoolsAndPositions.
+  let solUsd = null;
+  try {
+    solUsd = await getUsdPrice(WSOL_MINT);
+  } catch (e) {
+    const err = new Error(
+      `Couldn't resolve SOL/USD price (${e.message}). Check your network ` +
+      `connection and try again. No SOL was spent.`,
+    );
+    err.failedPhase = 'pre_flight';
+    err.cause = e;
+    throw err;
+  }
+  if (!solUsd || !solUsd.gt(0)) {
+    const err = new Error(
+      `Couldn't resolve SOL/USD price. Check your network connection and ` +
+      `try again. No SOL was spent.`,
+    );
+    err.failedPhase = 'pre_flight';
+    throw err;
+  }
+
+  // Launched-token USD value at target market cap. Same formula the
+  // actual launch uses to compute initialPrice.
+  const launchedTokenUsd = new Decimal(targetMarketCapUsd).div(
+    new Decimal(tokenTotalSupply),
+  );
+
+  // Open one RPC connection for any per-allocation quote-token lookups
+  // resolveQuoteToken might need. Cheap — only used for fetching
+  // decimals/symbol when the allocation didn't provide overrides.
+  // Honors the test override so this preflight code path stays mockable
+  // alongside initSdk.
+  const { Connection } = await import('@solana/web3.js');
+  const connection = __connectionFactoryOverride
+    ? __connectionFactoryOverride()
+    : new Connection(getRpcUrl(), 'confirmed');
+
+  const resolvedPrices = [];
+  for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
+    const alloc = allocations[allocIdx];
+    try {
+      const quoteToken = await resolveQuoteToken(connection, alloc.quoteToken, {
+        decimals: alloc.quoteDecimalsOverride,
+        symbol: alloc.quoteSymbolOverride,
+      });
+
+      const { quoteUsd, source, driftPct } = await resolveQuoteUsdForCreate({
+        quoteToken,
+        alloc,
+        solUsd,
+      });
+
+      // initialPrice = launched_per_quote = launchedTokenUsd / quoteUsd.
+      // Same formula createPoolsAndPositions uses; we precompute it so
+      // the modal can show what the actual pool ratio will be.
+      const initialPrice = launchedTokenUsd.div(quoteUsd);
+
+      resolvedPrices.push({
+        allocationIndex: allocIdx,
+        quoteMint: quoteToken.address,
+        quoteSymbol: quoteToken.symbol,
+        quoteUsd: quoteUsd.toString(),
+        source,
+        driftPct,
+        initialPrice: initialPrice.toString(),
+      });
+    } catch (err) {
+      // Attach allocation context same way createPoolsAndPositions does.
+      err.failedPhase = 'pre_flight';
+      err.failedAllocationIndex = allocIdx;
+      err.failedAllocation = alloc;
+      throw err;
+    }
+  }
+
+  return {
+    resolvedPrices,
+    solUsd: solUsd.toString(),
+  };
+}
 
 /**
  * Top-level orchestrator. Creates one pool + all main positions (one per
@@ -1594,7 +2354,7 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
  *   quoteToken:    'SOL' | 'USDC' | 'USDT' | <mint address>,
  *   supplyPercent: number (0-100),
  *   ammConfigIndex?:        number (default DEFAULT_AMM_CONFIG_INDEX),
- *   quoteUsdOverride?:      number (skip GeckoTerminal lookup if set),
+ *   quoteUsdOverride?:      number (drift-guard reference, NOT a bypass),
  *   quoteDecimalsOverride?: number (skip RPC mint lookup if set),
  *   quoteSymbolOverride?:   string (display only),
  *   distribution?: [
@@ -1907,6 +2667,79 @@ export async function createPoolsAndPositions({
   }
 
   // -----------------------------------------------------------------------
+  // 3.7. Validate per-allocation support configuration.
+  //
+  // The support block (optional) opens a single-sided QUOTE position
+  // adjacent to launch price, providing buy-side liquidity that any
+  // preallocated supply (held outside LP, e.g. team/VC/presale tokens)
+  // can sell into without needing token-side liquidity to back it.
+  //
+  // Shape:
+  //   support: { mode: 'off' }                          // default
+  //   support: { mode: 'custom', solValue: number }     // user-funded
+  //
+  // The position covers [launch - 10%, launch - 1 tickSpacing] for
+  // mintA-side launches, mirrored above currentTick for mintB. Single-
+  // sided in the quote — no launched-token supply is required, so
+  // support is orthogonal to the pool's supplyPercent budget.
+  //
+  // We only validate the shape here; the per-pool quote-side funding
+  // requirement is sized by estimateRequiredFunding and rolled into the
+  // same SOL bucket (SOL pools) or auto-swap target (non-SOL pools) as
+  // the bootstrap's quote-side cost.
+  // -----------------------------------------------------------------------
+  for (let i = 0; i < allocations.length; i++) {
+    const a = allocations[i];
+    const sp = a.support;
+    if (!sp) continue; // absent → treated as off, no further checks
+    if (sp.mode !== 'off' && sp.mode !== 'custom') {
+      const err = new Error(
+        `Allocation ${i + 1}: support.mode must be 'off' or 'custom' ` +
+          `(got '${sp.mode}')`,
+      );
+      err.failedPhase = 'pre_flight';
+      err.failedAllocationIndex = i;
+      err.failedAllocation = a;
+      err.partialResults = priorResults;
+      throw err;
+    }
+    if (sp.mode !== 'custom') continue;
+    const sv = Number(sp.solValue);
+    if (!Number.isFinite(sv) || sv <= 0) {
+      const err = new Error(
+        `Allocation ${i + 1}: custom-mode support requires a positive ` +
+          `solValue (got ${sp.solValue})`,
+      );
+      err.failedPhase = 'pre_flight';
+      err.failedAllocationIndex = i;
+      err.failedAllocation = a;
+      err.partialResults = priorResults;
+      throw err;
+    }
+    // depthPct is optional. Falls back to SUPPORT_DEPTH_PCT_DEFAULT
+    // when absent — that's the historical hardcoded value. Bounds chosen
+    // to keep the position useful: too small (below 1%) collapses on
+    // high-tickSpacing fee tiers (computeSupportTicks has a guard, but
+    // a position spanning just one tickSpacing is so thin it's almost
+    // pointless). Too large (above 50%) covers so much price territory
+    // that the per-tick liquidity density gets diluted to nothing.
+    if (sp.depthPct !== undefined && sp.depthPct !== null) {
+      const dp = Number(sp.depthPct);
+      if (!Number.isFinite(dp) || dp < 1 || dp > 50) {
+        const err = new Error(
+          `Allocation ${i + 1}: support.depthPct must be in [1, 50] ` +
+            `(got ${sp.depthPct})`,
+        );
+        err.failedPhase = 'pre_flight';
+        err.failedAllocationIndex = i;
+        err.failedAllocation = a;
+        err.partialResults = priorResults;
+        throw err;
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // 4. Fetch CLMM AmmConfigs once (used per-pool)
   // -----------------------------------------------------------------------
   const allConfigs = await raydium.api.getClmmConfigs();
@@ -1979,6 +2812,50 @@ export async function createPoolsAndPositions({
   // -----------------------------------------------------------------------
   const results = [];
   const bootstrapQueue = [];
+
+  // SOL USD price — looked up once for the whole launch and used to:
+  //   (1) Convert per-allocation support.solValue (denominated in SOL)
+  //       into the equivalent USD value, which then gets converted to
+  //       raw quote units inside each per-allocation loop iteration.
+  //   (2) Provide the `solUsd` term for the just-in-time Raydium swap
+  //       probe — the probe computes `effectiveQuoteUsd = (SOL spent
+  //       in USD) / (tokens received)`, so a wrong SOL/USD propagates
+  //       to every quote-token price we derive.
+  //   (3) Compute initialPrice for any SOL-quote pool, since SOL itself
+  //       can't be probed against itself.
+  //
+  // Failure here is a hard pre_flight abort, NOT a fallback-to-constant
+  // (as it was previously). A launch that proceeds with a stale or
+  // approximate SOL/USD will silently miss-size every downstream
+  // calculation, and the user has no way to know they got a bad number.
+  // SOL/USD is the easiest price to get — every aggregator covers it
+  // and they all agree to within a fraction of a percent. If we can't
+  // get it at all, something is fundamentally broken (network, all
+  // aggregators down) and a launch shouldn't proceed.
+  let solUsdForSupport = null;
+  try {
+    solUsdForSupport = await getUsdPrice(WSOL_MINT);
+  } catch (e) {
+    const err = new Error(
+      `Couldn't resolve SOL/USD price (${e.message}). This is unusual — ` +
+      `every price source we consult covers SOL. Check your network ` +
+      `connection and try again. No SOL was spent.`,
+    );
+    err.failedPhase = 'pre_flight';
+    err.partialResults = priorResults;
+    err.cause = e;
+    throw err;
+  }
+  if (!solUsdForSupport || !solUsdForSupport.gt(0)) {
+    const err = new Error(
+      `Couldn't resolve SOL/USD price (no price source returned a valid value). ` +
+      `Check your network connection and try again. No SOL was spent.`,
+    );
+    err.failedPhase = 'pre_flight';
+    err.partialResults = priorResults;
+    throw err;
+  }
+  console.log(`SOL/USD used for support sizing: $${solUsdForSupport.toString()}`);
 
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
     const alloc = allocations[allocIdx];
@@ -2082,19 +2959,45 @@ export async function createPoolsAndPositions({
       //     only Raydium-supported Token-2022 extensions if any.)
       const quoteToken = resolvedAllocs[allocIdx].quoteToken;
 
-      // 6b. Determine USD price for the quote
+      // 6b. Determine USD price for the quote token via the shared
+      // resolveQuoteUsdForCreate helper. The helper enforces the
+      // Milestone A safety rules: probe is hard-required for non-SOL
+      // quotes (no aggregator fallback), drift guard against override
+      // at the configured threshold, sanity floor at the end.
+      //
+      // We wrap the call in a try/catch so we can attach the
+      // failedPhase='pre_flight' tag. This is critical: at this point
+      // NO on-chain action has been taken yet, so any failure should
+      // route the frontend to the "fix config and retry" path rather
+      // than the sweep path. The outer per-allocation try/catch
+      // (around the rest of the pool-creation sequence below) would
+      // otherwise tag the error as 'main_positions', which would be
+      // wrong.
       let quoteUsd;
-      if (alloc.quoteUsdOverride !== undefined && alloc.quoteUsdOverride !== null) {
-        quoteUsd = new Decimal(alloc.quoteUsdOverride);
-      } else {
-        quoteUsd = await getUsdPrice(quoteToken.address);
-        if (!quoteUsd) {
-          throw new Error(
-            `Couldn't resolve USD price for ${quoteToken.symbol} (${quoteToken.address}). ` +
-              `Set quoteUsdOverride in the allocation to provide it manually.`,
-          );
+      let quoteUsdSource = null;
+      try {
+        const resolved = await resolveQuoteUsdForCreate({
+          quoteToken,
+          alloc,
+          solUsd: solUsdForSupport,
+        });
+        quoteUsd = resolved.quoteUsd;
+        quoteUsdSource = resolved.source;
+      } catch (priceErr) {
+        if (!priceErr.failedPhase) {
+          priceErr.failedPhase = 'pre_flight';
+          priceErr.failedAllocationIndex = allocIdx;
+          priceErr.failedAllocation = alloc;
+          priceErr.partialResults =
+            priorResults && priorResults.length > 0 ? priorResults : results;
         }
+        throw priceErr;
       }
+
+      console.log(
+        `pool-create: ${quoteToken.symbol} quote USD = $${quoteUsd.toString()} ` +
+        `(source: ${quoteUsdSource})`,
+      );
 
       // 6c. Validate distribution (defaults to single 100% slice)
       const distribution = normalizeDistribution(alloc.distribution);
@@ -2248,6 +3151,48 @@ export async function createPoolsAndPositions({
             : ''),
       );
 
+      // 6e.5. Resolve support config and compute the raw quote amount.
+      //
+      // Support is single-sided in quote, so it doesn't consume any
+      // launched-token supply — the math here is purely quote-side. The
+      // user enters a SOL value (canonical UI input), and we convert
+      // through USD into raw units of THIS pool's quote token:
+      //
+      //   supportUsd     = solValue × solUsd
+      //   supportWhole   = supportUsd / quoteUsd   (whole quote tokens)
+      //   supportQuoteRaw = floor(supportWhole × 10^quoteDecimals)
+      //
+      // For SOL pools, quoteUsd === solUsd, so the formula collapses
+      // cleanly to (solValue × LAMPORTS_PER_SOL). For non-SOL pools, the
+      // user's intent ("X SOL of starting support") translates to the
+      // equivalent USD value at current prices, then to that many quote
+      // tokens — same conversion the funding estimator does to size the
+      // auto-swap target.
+      //
+      // When support is off (or absent), we pass false/zero through to
+      // createSinglePool which short-circuits the open call.
+      const supportCfg = alloc.support || { mode: 'off' };
+      const supportEnabled = supportCfg.mode === 'custom'
+        && Number(supportCfg.solValue) > 0;
+      let supportQuoteRaw = new BN(0);
+      if (supportEnabled) {
+        const solValueDec = new Decimal(Number(supportCfg.solValue));
+        const supportUsdDec = solValueDec.mul(solUsdForSupport);
+        const supportWholeDec = supportUsdDec.div(quoteUsd);
+        // Floor to raw units — over-depositing isn't a concern, the
+        // single-sided position math caps at the user's intended amount.
+        const supportQuoteRawStr = supportWholeDec
+          .mul(new Decimal(10).pow(quoteToken.decimals))
+          .toFixed(0, Decimal.ROUND_FLOOR);
+        supportQuoteRaw = new BN(supportQuoteRawStr);
+        console.log(
+          `  support: solValue=${solValueDec.toString()} SOL ` +
+            `→ ~$${supportUsdDec.toFixed(2)} ` +
+            `→ ${supportWholeDec.toFixed(6)} ${quoteToken.symbol} ` +
+            `(${supportQuoteRaw.toString()} raw)`,
+        );
+      }
+
       // 6f. Pick the AmmConfig
       const cfgIdx = alloc.ammConfigIndex ?? DEFAULT_AMM_CONFIG_INDEX;
       const baseCfg = allConfigs.find((c) => c.index === cfgIdx);
@@ -2293,6 +3238,15 @@ export async function createPoolsAndPositions({
         ladderMode,
         ladderBands,
         ladderCeiling: ladderMode === 'simple' ? Number(ladderCfg.ceilingMultiplier) : 0,
+        supportEnabled,
+        supportQuoteRaw,
+        // Per-allocation depth, with a defensive fallback to the module
+        // default. The pre-flight check above has already bounds-validated
+        // any user-supplied value, so anything still on the supportCfg
+        // here is safe to pass through.
+        supportDepthPct: supportEnabled && Number.isFinite(Number(supportCfg.depthPct))
+          ? Number(supportCfg.depthPct)
+          : SUPPORT_DEPTH_PCT_DEFAULT,
         onProgress: (event) =>
           onProgress && onProgress({ allocationIndex: allocIdx, ...event }),
       });
@@ -2324,11 +3278,26 @@ export async function createPoolsAndPositions({
       });
     } catch (err) {
       // Attach partial results to the error so the caller knows what
-      // got created before the failure
-      err.partialResults = results;
-      err.failedAllocationIndex = allocIdx;
-      err.failedAllocation = alloc;
-      err.failedPhase = 'main_positions';
+      // got created before the failure.
+      //
+      // Respect any pre-set failedPhase: an inner try/catch (e.g. the
+      // price-resolution block above) may have already tagged the
+      // error correctly as 'pre_flight' because the failure happened
+      // before any on-chain action was taken. Overwriting it to
+      // 'main_positions' here would route the user to the sweep
+      // recovery path when they actually need the fix-and-retry path.
+      if (!err.failedPhase) {
+        err.failedPhase = 'main_positions';
+      }
+      if (err.partialResults === undefined) {
+        err.partialResults = results;
+      }
+      if (err.failedAllocationIndex === undefined) {
+        err.failedAllocationIndex = allocIdx;
+      }
+      if (err.failedAllocation === undefined) {
+        err.failedAllocation = alloc;
+      }
       throw err;
     }
   }
@@ -2341,7 +3310,22 @@ export async function createPoolsAndPositions({
   // a bootstrap position in each pool. Once a bootstrap lands, that pool
   // becomes tradable — but every other pool's main positions are already
   // in their final ranges, so any subsequent swaps can't disturb them.
+  //
+  // Ordering within the queue: SOL-paired pools go LAST. Bots,
+  // aggregators, and trade routers index SOL pairs more aggressively
+  // than flywheel/exotic quotes, so flipping the SOL pool to tradable
+  // before the flywheels are also tradable would let the first wave of
+  // SOL-paired trades miss the cascading buy-pressure mechanism the
+  // launch was designed for. Stable sort preserves user-config order
+  // within each group; SOL items keep their relative order among
+  // themselves, non-SOL items keep theirs.
   // -------------------------------------------------------------------------
+  bootstrapQueue.sort((a, b) => {
+    const aIsSol = a.ctx?.quoteToken?.address === WSOL_MINT;
+    const bIsSol = b.ctx?.quoteToken?.address === WSOL_MINT;
+    return Number(aIsSol) - Number(bIsSol);
+  });
+
   console.log(`\n=== Phase 2: opening bootstrap positions for ${bootstrapQueue.length} pool(s) ===`);
 
   // Phase 1 ran many transactions that changed the wallet's token balances
@@ -2354,17 +3338,22 @@ export async function createPoolsAndPositions({
   } catch (e) {
     console.warn('  cache refresh failed (non-fatal):', e.message);
   }
-  // Brief settle so the last lock tx is fully visible to the RPC.
+  // Brief settle so the last open tx from Phase 1 is fully visible to
+  // the RPC before Phase 2 starts querying pool state for bootstrap
+  // building. (Phase 1 no longer locks anything — locking is deferred
+  // to Phase 3.)
   await new Promise((r) => setTimeout(r, 1500));
 
   // Phase 2 runs every bootstrap independently — a single failure does
-  // not abort the remaining attempts. The premise is that a freshly-locked
-  // main position whose pool just couldn't get a bootstrap is still better
+  // not abort the remaining attempts. The premise is that an OPEN main
+  // position whose pool just couldn't get a bootstrap is still better
   // off than a main position whose pool was never even attempted because
-  // an earlier pool's bootstrap had a transient RPC error. The caller
-  // reports per-pool success/failure to the user so they can retry the
-  // failed ones (or manually open a Raydium position to make them
-  // tradable) without losing the successful pools.
+  // an earlier pool's bootstrap had a transient RPC error. (Mains are
+  // still unlocked at this point — locking is Phase 3 — so a recovery
+  // could even close-and-redo failed pools without burning anything.)
+  // The caller reports per-pool success/failure to the user so they can
+  // retry the failed ones (or manually open a Raydium position to make
+  // them tradable) without losing the successful pools.
   const bootstrapFailures = [];
 
   for (const item of bootstrapQueue) {
@@ -2544,6 +3533,77 @@ export async function createPoolsAndPositions({
   return { results };
 }
 
+// ---------------------------------------------------------------------------
+// Funding estimator (used by the funding step UI)
+// ---------------------------------------------------------------------------
+
+// Per-account rent costs (in SOL). These are reasonably stable on-chain rents
+// for the account types involved. They're approximate but in the right
+// ballpark — Solana account rent depends on size, which doesn't change often.
+const COST_POOL_RENT_SOL    = 0.062;  // pool state account
+const COST_TICK_ARRAY_SOL   = 0.072;  // each tick array account; typically 2 minimum
+const COST_POSITION_SOL     = 0.022;  // position NFT mint + state per position
+const COST_LOCK_SOL         = 0.005;  // Burn & Earn lock call (mints Fee Key NFT)
+const COST_TRANSFER_SOL     = 0.005;  // NFT transfer (creates recipient ATA + transfer)
+const COST_BS_QUOTE_SOL     = 0.001;  // bootstrap quote-side, when quote is SOL (auto-wrapped, dust)
+const COST_TX_BUFFER_SOL    = 0.001;  // priority/network fees per pool
+const COST_TOKEN_CREATE_SOL = 0.05;   // SPL mint + Metaplex metadata + Arweave fee
+const SAFETY_BUFFER_PCT     = 0.20;   // overall safety margin
+
+// Budget for the bootstrap quote-side when quote is NOT SOL: ~$1 worth
+// of the quote token (in USD value). Real on-chain consumption at our
+// launch prices is far less, this is just generous slack so the wallet
+// definitely has enough to cover it. USD-denominated so the requirement
+// stays the same regardless of whether the quote token is worth $0.0001
+// or $100 each.
+//
+// This is the amount the MANUAL PREFUND branch shows — what the user
+// has to send themselves if Raydium can't route their quote token.
+const BS_BOOTSTRAP_USD = 1;
+
+// Target USD value when ACQUIRING via auto-swap. Larger than the actual
+// bootstrap need because swaps are subject to slippage and price drift
+// between estimate and acquire time — if we aim for $1 and the swap
+// fills at 95%, we end up with $0.95 of tokens and the row never goes
+// "met". By aiming for $2 we have a fat buffer: even a 50% partial fill
+// still leaves us with the $1 the bootstrap actually needs. The extra
+// tokens get swept back to the user's destination wallet at the end of
+// the launch by sweepAllTokensToDestination, so nothing is wasted.
+const AUTOSWAP_TARGET_USD = 2;
+
+// Fallback whole-unit amount used in the manual-prefund branch when we
+// can't determine the quote token's USD price (oracle has no data and
+// no Raydium route either). Same value as the old behavior — keeps the
+// edge case predictable for tokens we know nothing about.
+const BS_FALLBACK_WHOLE = 0.01;
+
+// Multiplier on the SOL spend for an auto-swap. With the $2 acquire
+// target, 2x means we spend ~$4 of SOL per swap. That covers pool fees
+// + up to ~50% adverse slippage with margin. Leftover dust gets swept
+// to the destination wallet at the end of the launch.
+const AUTOSWAP_SIZING_MULTIPLIER = 2;
+
+// For CUSTOM-MODE bootstraps, the acquire target and SOL-spend
+// multipliers are dialed way back from the minimal-mode constants
+// above. Why: the minimal-mode 2× target × 2× spend = 4× of actual
+// need was sensible when "actual need" was $1 (a 50% slippage event
+// on a $1 swap is realistic on thin pools, and over-budgeting by $3
+// of SOL is trivial). For user-funded bootstraps measured in the
+// hundreds or thousands of dollars, that same compound 4× becomes
+// hundreds or thousands of dollars of over-budget — which the user
+// has to hold in the launch wallet for the duration of the launch
+// even though the bulk sweeps back at the end. That's a poor UX
+// (asks the user to fund 4× what they're committing to LP).
+//
+// At larger swap sizes, real Raydium slippage on a healthy pair is
+// fractions of a percent, not double-digit percents. 15% acquire
+// oversize + 10% SOL spend overhead = ~27% combined buffer, which
+// is generous for any swap in the $100+ range. For pathological
+// thin-liquidity pairs the swap would fail anyway and fall through
+// to the manual-prefund branch.
+const AUTOSWAP_CUSTOM_TARGET_MULTIPLIER = 1.15;  // 15% oversize on acquire
+const AUTOSWAP_CUSTOM_SIZING_MULTIPLIER = 1.10;  // 10% extra SOL on top
+
 /**
  * Estimate funding required for the configured pools, with a per-line
  * breakdown the UI can render so the user can see exactly what each cost
@@ -2577,4 +3637,572 @@ export async function createPoolsAndPositions({
  *     }, ... ]
  *   }
  */
-export { estimateRequiredFunding } from "./lpEstimate.js";
+export async function estimateRequiredFunding({
+  allocations,
+  // Required when any allocation has bootstrap.mode === 'custom'. The
+  // estimator uses it to compute that allocation's bootstrap quote-side
+  // USD value (= bootstrap.supplyPercent × targetMarketCapUsd / 100).
+  // When omitted, custom-mode allocations fall back to the minimal-mode
+  // budget — which is wrong if the user actually opted in to custom, but
+  // safe (under-budgets so the launch flow surfaces an error rather than
+  // proceeding with a half-funded bootstrap).
+  targetMarketCapUsd,
+}) {
+  const solBreakdown = [];
+  const quoteBreakdown = [];
+  const byQuote = {};
+  const autoSwapPlan = [];
+  // Per-allocation resolved USD prices. Tracks the canonical quote-token
+  // USD value that funding-estimate sized everything against. Exposed
+  // back to the frontend so the user sees the SAME price everywhere
+  // (Step 2 display, Step 3 cost preview, Step 5 pool creation),
+  // rather than seeing one number in Step 2 and another at create-pool.
+  //
+  // Entry shape:
+  //   { allocationIndex, quoteMint, quoteUsd, source }
+  // where source is one of:
+  //   'sol'           — SOL pool, used the SOL/USD oracle
+  //   'user-override' — user typed a value in customize mode
+  //   'raydium-probe' — Trade API gave us an effective price
+  //   'oracle'        — aggregator (Gecko/DexScreener) priced it
+  //   'unresolved'    — funding-estimate couldn't get a price
+  //                     (rare; would error out at funding-estimate
+  //                     time too for non-SOL non-override cases)
+  const resolvedPrices = [];
+  // Buffered vs unbuffered cost tracking. The 10% safety buffer is there
+  // to cover the things that can fluctuate between estimate time and
+  // launch time:
+  //   - swap slippage when buying quote tokens via auto-swap (price
+  //     drift, partial fills, route changes)
+  //   - on-chain fee variance (compute unit price changes, signature
+  //     fees, rent for unexpected new accounts)
+  //   - small rebalances during pool creation as ticks snap
+  // Things that are EXACT deposits with no swap and no fee variance
+  // don't need buffer padding — most importantly the support-position
+  // SOL deposit on SOL pools (a precise transfer of a known amount to
+  // a single-sided position). Non-SOL support also gets excluded since
+  // its auto-swap branch already builds in a 1.5x spend multiplier to
+  // cover slippage; layering another 10% on top is double-counting.
+  let bufferedSubtotal = 0;
+  let unbufferedSubtotal = 0;
+
+  // Helper to add a SOL line to the breakdown and running total. The
+  // optional `buffered` arg defaults to true (most costs) — passing
+  // false routes the amount into the unbuffered bucket so the safety
+  // buffer math skips it.
+  const addSol = (label, sol, buffered = true) => {
+    solBreakdown.push({ label, sol });
+    if (buffered) bufferedSubtotal += sol;
+    else unbufferedSubtotal += sol;
+  };
+
+  // Look up SOL price once. We use it for sizing the SOL equivalent of
+  // every auto-swap line; one lookup per estimate call rather than per
+  // allocation. Fallback constant if the price service is unavailable.
+  let solUsd;
+  try {
+    // getUsdPrice returns a Decimal or null
+    const p = await getUsdPrice(WSOL_MINT);
+    solUsd = p || new Decimal(FALLBACK_SOL_USD);
+  } catch (e) {
+    console.warn(`estimateRequiredFunding: SOL price fallback (${e.message})`);
+    solUsd = new Decimal(FALLBACK_SOL_USD);
+  }
+
+  for (const [poolIdx, a] of allocations.entries()) {
+    const slices = (a.distribution && a.distribution.length > 0)
+      ? a.distribution
+      : [{ sharePercent: 100 }];
+
+    // Resolve the quote token's basics (used for the SOL-vs-non-SOL branch)
+    const qSym = (a.quoteToken || '').toUpperCase();
+    const known = KNOWN_QUOTES[qSym];
+    const isSol = (known && known.address === WSOL_MINT) || qSym === 'SOL';
+    const quoteSymbol = known
+      ? known.symbol
+      : (a.quoteSymbolOverride || (a.quoteToken || '').slice(0, 6));
+    const quoteAddr = known ? known.address : a.quoteToken;
+    const quoteDecimals = known
+      ? known.decimals
+      : (a.quoteDecimalsOverride !== undefined && a.quoteDecimalsOverride !== null
+          ? Number(a.quoteDecimalsOverride)
+          : 6);
+
+    const poolLabel = `Pool ${poolIdx + 1} (${quoteSymbol})`;
+
+    // Pool creation: state account + 2 tick arrays (the minimum)
+    addSol(`${poolLabel}: pool creation`, COST_POOL_RENT_SOL);
+    addSol(`${poolLabel}: tick arrays (×2)`, 2 * COST_TICK_ARRAY_SOL);
+
+    // Per-slice costs
+    for (let s = 0; s < slices.length; s++) {
+      addSol(
+        `${poolLabel}: main slice ${s + 1}/${slices.length} (NFT mint + lock)`,
+        COST_POSITION_SOL + COST_LOCK_SOL,
+      );
+      if (slices[s].recipient) {
+        addSol(
+          `${poolLabel}: slice ${s + 1} transfer to recipient`,
+          COST_TRANSFER_SOL,
+        );
+      }
+    }
+
+    // Bootstrap position (always one per pool — NFT mint + lock)
+    addSol(
+      `${poolLabel}: bootstrap position (NFT mint + lock)`,
+      COST_POSITION_SOL + COST_LOCK_SOL,
+    );
+
+    // Ladder bands. Each band is its own position (NFT mint + lock,
+    // no Fee Key transfer since ladder positions don't take recipients).
+    // The launched-side supply for ladder bands comes out of the same
+    // pool allocation as the wide main; it doesn't need any additional
+    // funding from the user. Just the per-position SOL rent and lock fees.
+    //
+    // Both simple and manual modes contribute the same per-band cost.
+    // Simple-mode count comes from ladderCfg.bandCount; manual-mode
+    // count comes from the bands array length. Off contributes zero.
+    const ladderCfg = a.ladder || { mode: 'off' };
+    let ladderBandCount = 0;
+    if (ladderCfg.mode === 'simple') {
+      ladderBandCount = Number(ladderCfg.bandCount) || 0;
+    } else if (ladderCfg.mode === 'manual') {
+      ladderBandCount = Array.isArray(ladderCfg.bands) ? ladderCfg.bands.length : 0;
+    }
+    for (let b = 0; b < ladderBandCount; b++) {
+      addSol(
+        `${poolLabel}: ladder band ${b + 1}/${ladderBandCount} (NFT mint + lock)`,
+        COST_POSITION_SOL + COST_LOCK_SOL,
+      );
+    }
+
+    // Support position cost — only the NFT mint + lock fee. The
+    // quote-side deposit itself is added later (it's either rolled into
+    // the SOL bucket for SOL pools or added to the bootstrap auto-swap
+    // target for non-SOL pools, both handled in the bootstrap-cost
+    // section below).
+    const supportCfg = a.support || { mode: 'off' };
+    const supportEnabled = supportCfg.mode === 'custom'
+      && Number(supportCfg.solValue) > 0;
+    if (supportEnabled) {
+      addSol(
+        `${poolLabel}: support position (NFT mint + lock)`,
+        COST_POSITION_SOL + COST_LOCK_SOL,
+      );
+    }
+
+    // Determine the bootstrap mode and USD budget for the quote-side.
+    //
+    // Minimal mode: budget is the historical $1 (manual prefund) / $2
+    //   (auto-swap acquire target). These are constants; the per-allocation
+    //   need is dust regardless of pool size.
+    //
+    // Custom mode: budget is bootstrap.supplyPercent × targetMarketCapUsd / 100,
+    //   the launched-side USD value the user is committing as starting
+    //   liquidity. The quote-side need is ≈ equal in USD (1:1 ratio at
+    //   current tick), so this same USD value gets converted to SOL,
+    //   quote tokens, or auto-swap target depending on the pool.
+    //
+    // targetMarketCapUsd may be missing if the caller forgot to supply it
+    // when a custom-mode allocation exists. We fall back to the minimal
+    // budget so the user sees an undersized estimate rather than a server
+    // error — but the launch itself will fail at deposit time with a
+    // clearer SDK error, which is the better surface for "you didn't
+    // fund enough".
+    const bsCfg = a.bootstrap || { mode: 'minimal' };
+    const bsIsCustom = bsCfg.mode === 'custom';
+    let bsActualUsd; // the actual USD value the bootstrap quote-side needs
+    if (bsIsCustom && Number(targetMarketCapUsd) > 0 && Number(bsCfg.supplyPercent) > 0) {
+      bsActualUsd = (Number(bsCfg.supplyPercent) * Number(targetMarketCapUsd)) / 100;
+    } else {
+      // Minimal mode (or custom mode with missing inputs — defensive fallback)
+      bsActualUsd = BS_BOOTSTRAP_USD; // $1
+    }
+
+    // Compute the support's USD-equivalent quote-side need. Support is
+    // single-sided in quote and the user enters a SOL value; convert
+    // through current SOL/USD to USD. Same path as the bootstrap-custom
+    // quote-side, just routed through a different input. Zero when
+    // support is disabled (mode='off' or absent).
+    const supportActualUsd = supportEnabled
+      ? Number(supportCfg.solValue) * Number(solUsd.toString())
+      : 0;
+
+    // Bootstrap quote-side requirement: three branches.
+    //   (1) SOL pool       → SOL deposited directly (auto-wrapped at deposit).
+    //   (2) Trade API can route SOL→quoteMint (typical case)
+    //                      → roll cost into SOL bucket; we'll swap during funding.
+    //   (3) No route from Trade API
+    //                      → fall back to manual pre-fund.
+    //
+    // In minimal mode the USD value is dust ($1); in custom mode it's the
+    // user's chosen support amount. The branch logic is identical otherwise.
+    //
+    // When a support position is also configured, its quote-side need
+    // adds to the same bucket — it's just more of the same quote token
+    // sitting in the same wallet at LP-creation time. We surface support
+    // as its own breakdown line so the user sees what each piece costs.
+    if (isSol) {
+      // SOL pool: the canonical quote-USD is just the SOL/USD price we
+      // resolved at the top of the function. Record it now so the
+      // frontend has a complete picture regardless of pool composition.
+      resolvedPrices.push({
+        allocationIndex: poolIdx,
+        quoteMint: WSOL_MINT,
+        quoteUsd: solUsd.toString(),
+        source: 'sol',
+      });
+
+      // (1) SOL pool — quote-side is just SOL.
+      // For minimal mode we keep the historical dust constant (0.001 SOL,
+      // which comfortably covers the 1-whole-token bootstrap's actual need).
+      // For custom mode, we deposit the actual USD value worth of SOL.
+      let solCost;
+      let label;
+      if (bsIsCustom) {
+        solCost = bsActualUsd / Number(solUsd.toString());
+        label = `${poolLabel}: bootstrap support (~$${bsActualUsd.toFixed(2)} as SOL)`;
+      } else {
+        solCost = COST_BS_QUOTE_SOL;
+        label = `${poolLabel}: bootstrap quote-side (SOL, dust)`;
+      }
+      addSol(label, solCost);
+
+      // Support deposit (only emitted when enabled). Its own line so the
+      // user can see the support cost broken out — the SOL amount is
+      // exactly solValue, no conversion math needed for a SOL pool.
+      //
+      // Marked unbuffered: this is an exact deposit of a known SOL
+      // amount into a single-sided position, no swap involved, no fee
+      // variance to insulate against. The 10% safety buffer would just
+      // pad the user's funding requirement without serving any real
+      // protective purpose.
+      if (supportEnabled) {
+        addSol(
+          `${poolLabel}: support position (~$${supportActualUsd.toFixed(2)} as SOL)`,
+          Number(supportCfg.solValue),
+          false,
+        );
+      }
+    } else {
+      // Try Raydium Trade API for route discovery. The probe quote also
+      // gives us the effective price (USD per whole quote token), which
+      // matters for low-volume tokens whose USD oracles often have no
+      // data. If the Trade API can route the swap at all, the route is
+      // viable and we get a usable price in the same call.
+      let route = null;
+      try {
+        route = await discoverRaydiumRoute({
+          quoteMint: quoteAddr,
+          quoteDecimals,
+          solUsd,
+        });
+      } catch (e) {
+        console.warn(
+          `estimateRequiredFunding: route discovery failed for ${quoteAddr}: ${e.message}`,
+        );
+      }
+
+      // Resolve a USD price for the quote token. Priority:
+      //   1. Explicit override on the allocation config
+      //   2. Effective price from Trade API probe (covers low-volume tokens)
+      //   3. Standard USD oracle fallback (Coingecko/Jupiter)
+      // Used for sizing both the auto-swap and manual-prefund branches.
+      let quoteUsd = null;
+      let quoteUsdSource = null;
+      if (a.quoteUsdOverride !== undefined && a.quoteUsdOverride !== null) {
+        quoteUsd = new Decimal(a.quoteUsdOverride);
+        quoteUsdSource = 'user-override';
+      } else if (route && route.effectiveQuoteUsd && route.effectiveQuoteUsd.gt(0)) {
+        quoteUsd = route.effectiveQuoteUsd;
+        quoteUsdSource = 'raydium-probe';
+      } else {
+        try {
+          quoteUsd = await getUsdPrice(quoteAddr);
+          if (quoteUsd && quoteUsd.gt(0)) {
+            quoteUsdSource = 'oracle';
+          } else {
+            quoteUsd = null;
+            quoteUsdSource = 'unresolved';
+          }
+        } catch (e) {
+          quoteUsd = null;
+          quoteUsdSource = 'unresolved';
+        }
+      }
+
+      // Record the canonical quote-USD for this allocation so the
+      // frontend can show the same number everywhere (Step 2 display,
+      // Step 3 cost preview, Step 5 pool creation).
+      resolvedPrices.push({
+        allocationIndex: poolIdx,
+        quoteMint: quoteAddr,
+        quoteUsd: quoteUsd ? quoteUsd.toString() : null,
+        source: quoteUsdSource,
+      });
+
+      // Pick the acquire/prefund target USD. For minimal mode:
+      //   auto-swap target = $2 (oversize the $1 actual need by 2x so a
+      //                          partial fill still meets the need)
+      //   manual prefund   = $1 (user can send the exact amount; no slippage)
+      // For custom mode:
+      //   auto-swap target = bsActualUsd × 1.15 (15% partial-fill buffer)
+      //   manual prefund   = bsActualUsd × 1.0  (user can send exact)
+      //
+      // Custom-mode multipliers are dialed back from the minimal-mode
+      // constants because the compound minimal-mode buffer (2× target ×
+      // 2× SOL spend = 4× over need) was sized for $1 dust where $3
+      // over-budget is irrelevant. For a user-funded $2000 bootstrap,
+      // the same compound 4× becomes $8000 of SOL spend budgeted for
+      // a swap that should land within a few percent of $2000 — that
+      // asks the user to fund 4× what they're committing to LP, with
+      // the bulk sweeping back at the end. See the multiplier-constant
+      // comments above for the reasoning behind the chosen values.
+      const isAutoSwap = !!(route && route.available);
+      let targetUsd;
+      if (bsIsCustom) {
+        targetUsd = isAutoSwap
+          ? bsActualUsd * AUTOSWAP_CUSTOM_TARGET_MULTIPLIER
+          : bsActualUsd;
+      } else {
+        targetUsd = isAutoSwap ? AUTOSWAP_TARGET_USD : BS_BOOTSTRAP_USD;
+      }
+
+      // Support's contribution to the same quote-token target. Support
+      // uses the custom-mode multiplier since it's also user-funded at
+      // a meaningful scale (vs the minimal-mode dust target). When
+      // support is disabled this is zero.
+      const supportTargetUsd = supportEnabled
+        ? (isAutoSwap
+            ? supportActualUsd * AUTOSWAP_CUSTOM_TARGET_MULTIPLIER
+            : supportActualUsd)
+        : 0;
+
+      // Compute the target raw amount: targetUsd worth of quote token if
+      // we know the price, else fixed fallback. ceil() ensures we don't
+      // round down below the requirement.
+      let targetWhole;
+      if (quoteUsd && quoteUsd.gt(0)) {
+        targetWhole = new Decimal(targetUsd).div(quoteUsd).toNumber();
+      } else {
+        // Fallback: scale the fixed amount up for auto-swap to keep the
+        // same 2x relative buffer. The fallback path is rare (no price
+        // data anywhere); this keeps the behaviour proportional.
+        targetWhole = isAutoSwap ? BS_FALLBACK_WHOLE * 2 : BS_FALLBACK_WHOLE;
+      }
+      const rawAmt = Math.ceil(targetWhole * Math.pow(10, quoteDecimals));
+
+      // Support whole/raw for this quote, computed against the same
+      // quoteUsd so the unit conversion is consistent with bootstrap.
+      let supportWhole = 0;
+      let supportRaw = 0;
+      if (supportEnabled) {
+        if (quoteUsd && quoteUsd.gt(0)) {
+          supportWhole = new Decimal(supportTargetUsd).div(quoteUsd).toNumber();
+        } else {
+          // No price oracle data — fall back to a multiple of the
+          // bootstrap fallback. Custom-scale launches without any price
+          // data are an edge case the user must address by setting
+          // quoteUsdOverride; this keeps the numbers proportional.
+          supportWhole = BS_FALLBACK_WHOLE *
+            Math.max(1, Math.ceil(supportTargetUsd / BS_BOOTSTRAP_USD));
+        }
+        supportRaw = Math.ceil(supportWhole * Math.pow(10, quoteDecimals));
+      }
+
+      if (isAutoSwap) {
+        // (2) Auto-swap branch.
+        // SOL spend scales with the acquire target × the sizing multiplier.
+        // Minimal mode: $2 target × 2 = $4 spent for $2 acquired.
+        // Custom mode: bsActualUsd × 1.15 target × 1.10 = ~27% over actual
+        // need (compound 1.265× of bsActualUsd) spent for ~15% over need
+        // acquired. Most of the buffer absorbs swap slippage; the small
+        // acquire-side buffer absorbs partial fills.
+        const spendMultiplier = (bsIsCustom || supportEnabled)
+          ? AUTOSWAP_CUSTOM_SIZING_MULTIPLIER
+          : AUTOSWAP_SIZING_MULTIPLIER;
+        const estSolSpend = new Decimal(targetUsd)
+          .mul(spendMultiplier)
+          .div(solUsd)
+          .toNumber();
+        const label = bsIsCustom
+          ? `${poolLabel}: bootstrap support (auto-swap → ~$${bsActualUsd.toFixed(2)} ${quoteSymbol})`
+          : `${poolLabel}: bootstrap quote-side (auto-swap → ~$${targetUsd} ${quoteSymbol})`;
+        addSol(label, estSolSpend);
+
+        // Support's auto-swap spend, emitted as its own line. The
+        // acquire job will pick up the per-mint cumulative target from
+        // the per-mint plan items below — we don't need to sum here.
+        //
+        // Marked unbuffered: the spendMultiplier (1.5x) already pads the
+        // SOL spend to cover swap slippage on the SOL→quote conversion.
+        // Adding the 10% safety buffer on top would double-count
+        // slippage protection. The bootstrap auto-swap line above stays
+        // buffered because its multiplier is smaller and the bootstrap
+        // amount is a hard floor (under-bootstrapping fails the launch).
+        let supportSolSpend = 0;
+        if (supportEnabled) {
+          supportSolSpend = new Decimal(supportTargetUsd)
+            .mul(spendMultiplier)
+            .div(solUsd)
+            .toNumber();
+          addSol(
+            `${poolLabel}: support position (auto-swap → ~$${supportActualUsd.toFixed(2)} ${quoteSymbol})`,
+            supportSolSpend,
+            false,
+          );
+        }
+        // Compute the actual bootstrap need (vs the ambitious acquire
+        // target) so the frontend can mark a row "met" once we have
+        // ENOUGH for the bootstrap, even if the swap underperformed
+        // (e.g. 50% partial fill of a $2 target still leaves $1 — the
+        // actual on-chain need). Without this, partial fills would
+        // leave the row blocked even though the launch would succeed.
+        let minWhole;
+        if (quoteUsd && quoteUsd.gt(0)) {
+          minWhole = new Decimal(bsActualUsd).div(quoteUsd).toNumber();
+        } else {
+          minWhole = BS_FALLBACK_WHOLE;
+        }
+        const minRaw = Math.ceil(minWhole * Math.pow(10, quoteDecimals));
+
+        // The acquire-job expects a single target per (allocationIndex,
+        // quoteMint) pair. Combine bootstrap + support raw amounts and
+        // their min equivalents so a single swap call acquires both
+        // pieces in one go.
+        const combinedTargetRaw = rawAmt + supportRaw;
+        const combinedMinRaw = minRaw + (supportEnabled
+          ? Math.ceil(
+              (quoteUsd && quoteUsd.gt(0)
+                ? new Decimal(supportActualUsd).div(quoteUsd).toNumber()
+                : BS_FALLBACK_WHOLE)
+              * Math.pow(10, quoteDecimals),
+            )
+          : 0);
+        autoSwapPlan.push({
+          allocationIndex: poolIdx,
+          quoteMint: quoteAddr,
+          quoteSymbol,
+          quoteDecimals,
+          // targetRaw is what swapSolForQuote tries to acquire
+          // (oversize for slippage buffer). minRaw is the actual
+          // bootstrap requirement on-chain. Frontend uses minRaw for
+          // the "met" check, targetRaw for the display "≈ N" amount.
+          // Both now sum bootstrap + support so a single swap satisfies
+          // both per-pool quote-side needs.
+          targetRaw: String(combinedTargetRaw),
+          minRaw: String(combinedMinRaw),
+          // quoteUsd here is what swapSolForQuote uses to size the SOL
+          // spend at swap time (re-computes the same formula). Pass the
+          // effective price we used for the estimate so the budgets
+          // stay consistent between estimate and swap.
+          quoteUsd: quoteUsd.toString(),
+          solUsd: solUsd.toString(),
+          // poolId is informational only; the Trade API picks pools
+          // internally (potentially multi-hop). 'trade-api' sentinel
+          // makes that explicit in any logs the value flows into.
+          poolId: 'trade-api',
+          poolKind: 'route',
+          estSolSpend: estSolSpend + supportSolSpend,
+          // sizingMultiplier and bootstrapMode propagate the estimator's
+          // mode-aware budget choices down to the actual swap execution.
+          // The swap function (swapService.js) has its own slippage
+          // oversize math and a hard MAX_SPEND cap that was sized for
+          // dust targets. Without these fields, a custom-mode bootstrap
+          // would get budgeted correctly by the estimator but then have
+          // its actual swap silently floored to ~0.05 SOL by the cap,
+          // delivering almost no quote tokens and failing the bootstrap.
+          // server.js threads these through to swapSolForQuote.
+          sizingMultiplier: (bsIsCustom || supportEnabled)
+            ? AUTOSWAP_CUSTOM_SIZING_MULTIPLIER
+            : AUTOSWAP_SIZING_MULTIPLIER,
+          bootstrapMode: (bsIsCustom || supportEnabled) ? 'custom' : 'minimal',
+        });
+      } else {
+        // (3) Manual pre-fund branch.
+        byQuote[quoteAddr] = (byQuote[quoteAddr] || 0) + rawAmt;
+        const label = bsIsCustom
+          ? `${poolLabel}: bootstrap support (~$${bsActualUsd.toFixed(2)})`
+          : `${poolLabel}: bootstrap quote-side`;
+        quoteBreakdown.push({
+          label,
+          symbol: quoteSymbol,
+          // Display-friendly: trim long decimals while keeping enough
+          // precision to be unambiguous (e.g. 33333.3 not 33333.333334).
+          // targetWhole is a JS Number; toPrecision returns a string.
+          amount: Number(Number(targetWhole).toPrecision(6)),
+          mint: quoteAddr,
+        });
+
+        // Support's contribution to manual prefund — emitted as its
+        // own breakdown line so the user can see what each piece is.
+        if (supportEnabled) {
+          byQuote[quoteAddr] = (byQuote[quoteAddr] || 0) + supportRaw;
+          quoteBreakdown.push({
+            label: `${poolLabel}: support position (~$${supportActualUsd.toFixed(2)})`,
+            symbol: quoteSymbol,
+            amount: Number(Number(supportWhole).toPrecision(6)),
+            mint: quoteAddr,
+          });
+        }
+      }
+    }
+
+    // Per-pool transaction buffer (priority fees, retries, etc.)
+    addSol(`${poolLabel}: network/priority fees`, COST_TX_BUFFER_SOL);
+  }
+
+  // Token creation cost (was previously added by the frontend; now part of
+  // the breakdown so the user sees it).
+  addSol('Token creation (mint + metadata)', COST_TOKEN_CREATE_SOL);
+
+  // Safety buffer applies only to the buffered subtotal — exact deposits
+  // (support positions) live in the unbuffered subtotal and pass through
+  // to the total without padding. See the bufferedSubtotal /
+  // unbufferedSubtotal comment up top for the why.
+  const buffer = bufferedSubtotal * SAFETY_BUFFER_PCT;
+  solBreakdown.push({
+    label: `Safety buffer (${(SAFETY_BUFFER_PCT * 100).toFixed(0)}% on slippage/fee variance)`,
+    sol: buffer,
+  });
+  const subtotal = bufferedSubtotal + unbufferedSubtotal;
+  const total = subtotal + buffer;
+
+  return {
+    solLamports: Math.ceil(total * LAMPORTS_PER_SOL),
+    byQuote,
+    totalSol: total,
+    subtotalSol: subtotal,
+    bufferSol: buffer,
+    solBreakdown,
+    quoteBreakdown,
+    autoSwapPlan,
+    resolvedPrices,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Test-only export of internal phase helpers
+// ---------------------------------------------------------------------------
+//
+// Exposes the per-phase building blocks of the launch flow so the
+// integration tests in test/launch-lifecycle.test.mjs can drive them
+// directly with a mock Raydium SDK, without going through the full
+// createPoolsAndPositions orchestrator (which interleaves tick math,
+// USD price resolution, and quote-token lookups that aren't part of
+// the phase being tested).
+//
+// Production code never reads from __testHooks. It always calls the
+// public createPoolsAndPositions entry point above, which composes
+// these helpers internally. The export exists solely so tests can
+// reach in and exercise each phase in isolation.
+//
+// Function declarations are hoisted within the module, so it's fine
+// for this object literal to reference functions that appear earlier
+// in the file.
+export const __testHooks = {
+  createSinglePool,
+  lockAllPositions,
+  transferFeeKeys,
+};

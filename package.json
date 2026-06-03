@@ -33,7 +33,7 @@
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
     "build:js": "node scripts/build-app-js.mjs",
-    "build:c": "make -C c"
+    "build:c": "node scripts/build-c.mjs"
   },
   "files": [
     "build/**/*",

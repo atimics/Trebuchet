@@ -1,9 +1,7 @@
 import express from 'express';
-import crypto from 'crypto';
-
 import path from 'path';
 import fs from 'fs';
-
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 import {
@@ -17,21 +15,24 @@ import {
 
 import {
   createPoolsAndPositions,
+  preflightCreatePoolsAndPositions,
   estimateRequiredFunding,
   getUsdPrice,
   getTokenMetadata,
   getClmmFeeTiers,
   getMintCompatibilityWithRaydiumClmm,
   KNOWN_QUOTES,
+  KNOWN_SAFE_QUOTES,
 } from './lpService.js';
 
-import { swapSolForQuote } from './swapService.js';
+import { swapSolForQuote, probeRaydiumPriceStrict } from './swapService.js';
 
 import {
   checkWalletBalanceMultiToken,
   sweepNftsToDestination,
   sweepAllTokensToDestination,
   sweepSolToDestination,
+  executeAirdrop,
 } from './walletHelpers.js';
 
 import {
@@ -63,6 +64,155 @@ import {
 } from './validators.js';
 import { isWalletEffectivelyEmpty } from './walletRecovery.js';
 
+// In-flight airdrop guard. Maps wallet public key → boolean (currently
+// running). Used to reject concurrent /api/transfer-assets and
+// /api/retry-airdrop calls against the same launch wallet — a second
+// concurrent call would re-send transactions while the first is still
+// running, risking double-payment to recipients whose first-pass tx
+// already landed.
+//
+// This is an in-memory guard. It does NOT survive a server restart
+// (intentionally — if the server crashed mid-airdrop, the in-flight
+// run is no longer in flight; the user should be able to retry the
+// failed recipients without artificial blocking). It DOES protect
+// against the much-more-common case of: user clicks button, network
+// is slow, user clicks again thinking nothing happened.
+//
+// The Map approach scales to many concurrent launches (different
+// wallets); each wallet's airdrop is independent. Entries are added
+// when an airdrop step begins and deleted on completion (success or
+// failure) in a try/finally to guarantee cleanup even on uncaught
+// throws.
+const airdropsInFlight = new Map();
+function airdropInFlight(walletPublicKey) {
+  return airdropsInFlight.get(walletPublicKey) === true;
+}
+function markAirdropInFlight(walletPublicKey) {
+  airdropsInFlight.set(walletPublicKey, true);
+}
+function clearAirdropInFlight(walletPublicKey) {
+  airdropsInFlight.delete(walletPublicKey);
+}
+
+// Live progress tracker for airdrops. Both the real executeAirdrop (in
+// walletHelpers.js) and the demo simulateAirdrop (in demoChainService.js)
+// write into this Map as they process recipients, one entry per launch
+// wallet. The frontend polls /api/airdrop-progress every ~500ms during a
+// transfer that includes an airdrop, so the user sees the progress bar
+// tick forward in real time instead of staring at an unmoving spinner
+// for 20-30 seconds.
+//
+// Shape:
+//   {
+//     total:       number      // total recipient count
+//     completed:   number      // delivered so far (success only)
+//     failedCount: number      // failed so far
+//     lastWallet:  string|null // most recently processed recipient address
+//     lastTokens:  number|null // tokens sent to that recipient
+//     totalTokens: number      // sum of tokens across recipients (running)
+//     status:      'running' | 'done'
+//     startedAt:   number      // epoch ms when the airdrop started
+//   }
+//
+// In-memory only — same lifecycle reasoning as airdropsInFlight. After
+// status='done' is written we keep the entry for ~10 seconds so the
+// frontend's last poll picks up the final state, then auto-clear it.
+const airdropProgress = new Map();
+function airdropProgressBegin(walletPublicKey, total) {
+  airdropProgress.set(walletPublicKey, {
+    total: Number(total) || 0,
+    completed: 0,
+    failedCount: 0,
+    lastWallet: null,
+    lastTokens: null,
+    totalTokens: 0,
+    status: 'running',
+    startedAt: Date.now(),
+  });
+}
+// Record one recipient's outcome. `success` flips the right counter and,
+// on success, accumulates the token total. Cheap to call per recipient.
+function airdropProgressStep(walletPublicKey, { recipient, tokens, success }) {
+  const st = airdropProgress.get(walletPublicKey);
+  if (!st) return;
+  if (success) {
+    st.completed += 1;
+    st.totalTokens += Number(tokens) || 0;
+  } else {
+    st.failedCount += 1;
+  }
+  st.lastWallet = recipient || null;
+  st.lastTokens = Number.isFinite(Number(tokens)) ? Number(tokens) : null;
+}
+// Mark done and schedule cleanup. The 10s delay gives the frontend one
+// final poll to see the terminal state before the entry disappears.
+function airdropProgressEnd(walletPublicKey) {
+  const st = airdropProgress.get(walletPublicKey);
+  if (!st) return;
+  st.status = 'done';
+  setTimeout(() => {
+    const cur = airdropProgress.get(walletPublicKey);
+    if (cur && cur.status === 'done') {
+      airdropProgress.delete(walletPublicKey);
+    }
+  }, 10_000);
+}
+function airdropProgressGet(walletPublicKey) {
+  return airdropProgress.get(walletPublicKey) || null;
+}
+
+// Per-launch LP progress event log. Demo mode and (eventually) real mode
+// write into this Map as each step of pool/position creation completes;
+// the frontend polls /api/lp-progress with a `since` cursor to learn
+// about new events without re-streaming the whole log. Translates to row
+// markings on the frontend's phase progress tree so individual rows
+// tick from pending → done as the work progresses (instead of all
+// flipping at once when the /api/create-lp response lands).
+//
+// Shape per wallet:
+//   {
+//     events: [{ stage, allocationIndex, sliceIndex?, bandIndex?, ... }, ...]
+//     status: 'running' | 'done'
+//     startedAt: epoch ms
+//   }
+//
+// Same lifecycle as airdropProgress — in-memory, auto-cleared 30s after
+// the run finishes so a slow last poll still picks up the terminal state.
+const lpProgress = new Map();
+function lpProgressBegin(walletPublicKey) {
+  lpProgress.set(walletPublicKey, {
+    events: [],
+    status: 'running',
+    startedAt: Date.now(),
+  });
+}
+function lpProgressEvent(walletPublicKey, event) {
+  const state = lpProgress.get(walletPublicKey);
+  if (!state) return;
+  state.events.push(event);
+}
+function lpProgressEnd(walletPublicKey) {
+  const state = lpProgress.get(walletPublicKey);
+  if (!state) return;
+  state.status = 'done';
+  setTimeout(() => {
+    const cur = lpProgress.get(walletPublicKey);
+    if (cur && cur.status === 'done') {
+      lpProgress.delete(walletPublicKey);
+    }
+  }, 30_000);
+}
+function lpProgressGet(walletPublicKey, sinceIdx = 0) {
+  const state = lpProgress.get(walletPublicKey);
+  if (!state) return null;
+  return {
+    status: state.status,
+    totalEvents: state.events.length,
+    // Slice from `since` so a polling client only sees what it hasn't yet.
+    events: state.events.slice(sinceIdx),
+  };
+}
+
 // Lazy import to avoid crash on startup in packaged builds
 let _generateVanityKeypair = null;
 async function getVanityKeygen() {
@@ -73,6 +223,26 @@ async function getVanityKeygen() {
   return _generateVanityKeypair;
 }
 
+// Cached vanity availability. Computed once at startup (see the log below
+// the route table) and read by /api/demo/status + the vanity endpoints to
+// short-circuit with a clean error when the binary isn't built. A Promise
+// instead of a value because the import is async and we want a single
+// settled result that everything can await.
+let _vanityAvailabilityPromise = null;
+function vanityAvailability() {
+  if (!_vanityAvailabilityPromise) {
+    _vanityAvailabilityPromise = import('./vanityKeygen.js').then(
+      (mod) => mod.isVanityAvailable(),
+      // If the import itself fails (file moved, syntax error, etc.) treat
+      // vanity as unavailable rather than letting that error propagate
+      // unrelated requests. The reason string surfaces in the UI so the
+      // operator can see what's wrong.
+      (err) => ({ available: false, reason: `vanity module load failed: ${err.message}` }),
+    );
+  }
+  return _vanityAvailabilityPromise;
+}
+
 import {
   hostCheckMiddleware,
   securityHeadersMiddleware,
@@ -81,6 +251,7 @@ import {
   upload,
   API_SESSION_TOKEN,
 } from './serverMiddleware.js';
+
 
 // Configuration constants are defined below in the "Configuration" section
 // (just after __dirname is computed). Internal env vars (PORT,
@@ -233,45 +404,25 @@ function isDemoMode() {
 }
 
 
-// ---------------------------------------------------------------------------
-// Host header allowlist — DNS rebinding defense.
-//
-// The server binds to 127.0.0.1 (see app.listen at the bottom of this file)
-// so externally-routed traffic from the LAN or internet can't reach us. But
-// there's a subtler attack class that survives a loopback bind: DNS
-// rebinding. The scenario:
-//
-//   1. The user has any browser open (Chrome, Firefox, Safari, Edge) —
-//      NOT the Trebuchet Electron window, just normal web browsing.
-//   2. The user visits attacker.com, or sees a malicious iframe/ad on
-//      an otherwise innocent page.
-//   3. attacker.com's JavaScript manipulates its own DNS so that the
-//      domain resolves to 127.0.0.1 mid-session.
-//   4. The attacker's JS, still thinking it's same-origin with
-//      attacker.com, does fetch('http://attacker.com:<port>/api/...').
-//      The TCP connection lands on our server here.
-//   5. With wildcard CORS and no Host check, we'd happily serve it —
-//      including /api/pending-wallets, which returns secret keys.
-//
-// The browser's same-origin policy can't protect us, because the
-// attacker's JS thinks it really IS same-origin with attacker.com.
-// What DOES protect us: the Host header. The browser sends
-// `Host: attacker.com:<port>` (whatever domain the JS believes it's
-// talking to), not `Host: 127.0.0.1:<port>`. The Host header is one
-// of the few things the browser, not the page, controls — page JS
-// cannot forge or override it.
-//
-// So we reject any request whose Host header doesn't claim to be
-// 127.0.0.1 or localhost. Legitimate requests from the Trebuchet
-// renderer (which loads from http://127.0.0.1:<port>) always have the
-// right Host header. DNS-rebound requests never do.
-//
-// This middleware is registered first, before the body parser, so a
-// rejected request never has its body read into memory.
-// ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Middleware pipeline
+// ---------------------------------------------------------------------------
+// The middleware functions are defined in serverMiddleware.js so they can
+// be unit-tested independently. Registration order matters:
+//   1. hostCheckMiddleware — DNS rebinding defense (before body parser so
+//      a rejected request never has its body read into memory).
+//   2. securityHeadersMiddleware — CSP + frame/type-sniff headers.
+//   3. /api/session route — hands out the session token. Registered
+//      BEFORE apiSessionMiddleware so it doesn't get gated by itself.
+//      (The middleware has a safety exemption for /session anyway, but
+//      relying on route-ordering keeps the intent clear.)
+//   4. apiSessionMiddleware — gates all /api/* mutating routes behind
+//      the session token. /proxy-image and /generate-vanity-wallet-stream
+//      are exempted inside the middleware.
+//   5. express.json — body parser. Registered AFTER the host check and
+//      session gate so we don't waste memory parsing rejected requests.
 app.use(hostCheckMiddleware);
-
 app.use(securityHeadersMiddleware);
 
 // CORS is intentionally not configured. The Trebuchet frontend loads from
@@ -291,25 +442,10 @@ app.get('/api/session', (_req, res) => {
     .json({ success: true, token: API_SESSION_TOKEN });
 });
 
-app.use("/api", apiSessionMiddleware);
+app.use('/api', apiSessionMiddleware);
 
 app.use(express.json({ limit: '5mb' }));
 
-// Resolve the public/ directory's path on disk. Two cases:
-//
-//   - Dev / web mode: __dirname is just the source directory. The
-//     join below produces a regular filesystem path.
-//
-//   - Packaged Electron: server.js is bundled inside resources/app.asar.
-//     fs operations against asar-internal paths get redirected to
-//     app.asar.unpacked when the file is in our asarUnpack allow-list,
-//     but Express's static middleware uses fs.createReadStream for
-//     streaming and that doesn't reliably get the redirect — files
-//     served via streaming would 404 even though stat says they exist.
-//     Fix: rewrite the path to point at app.asar.unpacked directly.
-//     The detection finds "\app.asar" (or "/app.asar" on Unix) and
-//     verifies what follows is end-of-string or another separator
-//     (so we don't false-match a hypothetical "app.asarx" component).
 const publicDir = resolvePublicDir(__dirname);
 
 app.use(express.static(publicDir));
@@ -455,6 +591,19 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
     return res.status(400).json({ success: false, error: 'prefix or suffix required' });
   }
 
+  // Refuse cleanly if the binary isn't available. The frontend disables
+  // the UI based on /api/demo/status, but a stale frontend or direct
+  // API call still gets a clear 503 instead of crashing mid-spawn.
+  const vanity = await vanityAvailability();
+  if (!vanity.available) {
+    return res.status(503).json({
+      success: false,
+      error: 'Vanity address generation is not available in this build. '
+        + 'The vanity_keygen binary is not built — run `npm run build:c` '
+        + '(requires gcc or clang). End-user release builds include the binary.',
+    });
+  }
+
   // Clamp threads to a consumer-reasonable maximum
   if (threads) {
     threads = Math.min(Math.max(1, Number(threads)), 32);
@@ -570,6 +719,19 @@ app.post('/api/generate-vanity-wallet', async (req, res) => {
     if (!prefix && !suffix) {
       return res.status(400).json({ success: false, error: 'prefix or suffix required' });
     }
+
+    // Mirror the stream endpoint's availability gate so both vanity routes
+    // fail with the same shape and message when the binary isn't built.
+    const vanity = await vanityAvailability();
+    if (!vanity.available) {
+      return res.status(503).json({
+        success: false,
+        error: 'Vanity address generation is not available in this build. '
+          + 'The vanity_keygen binary is not built — run `npm run build:c` '
+          + '(requires gcc or clang). End-user release builds include the binary.',
+      });
+    }
+
     const target = prefix || suffix;
     console.log(`Generating vanity wallet (${prefix ? 'prefix' : 'suffix'}: "${target}")...`);
 
@@ -729,15 +891,36 @@ app.post('/api/user-prefs', (req, res) => {
 //
 // /api/demo/status      — the frontend calls this on app load to learn
 //                         whether to show the demo banner and the "Pretend
-//                         funding arrived" button.
+//                         funding arrived" button. Also reports
+//                         vanity-binary availability so the UI can disable
+//                         the Vanity CA section gracefully on dev
+//                         environments without a C toolchain (CI handles
+//                         release builds, so end-user installs always
+//                         include the binary).
 // /api/demo/inject-funds — backs the "Pretend funding arrived (DEMO)"
 //                         button; writes the funding amounts the frontend
 //                         already computed into the demo ledger. Returns
 //                         403 when demo mode is off so it can never affect
 //                         a real launch.
 // ---------------------------------------------------------------------------
-app.get('/api/demo/status', (req, res) => {
-  demoChainService.handleStatus(req, res, { active: isDemoMode() });
+app.get('/api/demo/status', async (req, res) => {
+  // Vanity availability is computed once at startup (cached) and read
+  // here on every status call. Cheap; never blocks the demo response.
+  const vanity = await vanityAvailability();
+  res.json({
+    success: true,
+    active: isDemoMode(),
+    vanity: {
+      available: vanity.available,
+      // Trim the reason to a single line for the wire — the full multi-line
+      // install instructions live in the server log and the binary-not-found
+      // throw text. The UI only needs enough to render an explanatory
+      // tooltip; users who need the full instructions check the server log.
+      reason: vanity.available
+        ? null
+        : 'vanity_keygen binary not built. Run `npm run build:c` to enable (requires gcc or clang).',
+    },
+  });
 });
 
 app.post('/api/demo/inject-funds', (req, res) => {
@@ -760,6 +943,44 @@ app.post('/api/demo/inject-funds', (req, res) => {
 app.post('/api/trigger-startup-update-check', (_req, res) => {
   const result = updateCheckBridge.trigger();
   res.json({ success: true, ...result });
+});
+
+// Live airdrop progress poll. Returns the current { total, completed,
+// failedCount, lastWallet, lastTokens, totalTokens, status, startedAt }
+// for the given launch wallet, or null when nothing is tracked. The
+// frontend polls this every ~500ms during a transfer that includes an
+// airdrop so the user sees the progress bar tick forward in real time.
+//
+// Read-only and cheap — pure in-memory Map lookup. Same in demo and real
+// mode (both code paths write into airdropProgress as they process
+// recipients).
+app.get('/api/airdrop-progress', (req, res) => {
+  const wallet = req.query.wallet;
+  if (!wallet || typeof wallet !== 'string') {
+    return res.status(400).json({ success: false, error: 'wallet query param required' });
+  }
+  const state = airdropProgressGet(wallet);
+  res.json({ success: true, state });
+});
+
+// Live LP progress poll. Returns events that have occurred since the
+// client-provided cursor index, plus the current run status. The frontend
+// polls this during /api/create-lp and translates each event into a row
+// marking on the phase progress tree so rows transition pending → done
+// one at a time instead of all flipping when the response lands.
+//
+// Read-only. Pure in-memory lookup. Currently driven by demo mode (the
+// only code path that writes lp progress events) — real mode could plug
+// into the same infrastructure later by wiring its onProgress callback
+// through.
+app.get('/api/lp-progress', (req, res) => {
+  const wallet = req.query.wallet;
+  if (!wallet || typeof wallet !== 'string') {
+    return res.status(400).json({ success: false, error: 'wallet query param required' });
+  }
+  const since = Number.isFinite(Number(req.query.since)) ? Number(req.query.since) : 0;
+  const state = lpProgressGet(wallet, since);
+  res.json({ success: true, state });
 });
 
 // Lightweight RPC health check — sends a getVersion JSON-RPC call and
@@ -1020,6 +1241,24 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       vanitySuffix,
       vanityCAKeypair: vanityCAKeypairRaw,
     } = req.body;
+
+    // If the caller asked for a fresh vanity grind (prefix/suffix) but the
+    // binary isn't built, reject up front with the same 503 the dedicated
+    // vanity endpoints use. Pre-ground vanity keypairs (vanityCAKeypair)
+    // are fine without the binary — they were ground elsewhere and we're
+    // just consuming the keypair, not running the grinder again here.
+    if (vanityPrefix || vanitySuffix) {
+      const vanity = await vanityAvailability();
+      if (!vanity.available) {
+        return res.status(503).json({
+          success: false,
+          error: 'Vanity address generation is not available in this build. '
+            + 'The vanity_keygen binary is not built — run `npm run build:c` '
+            + '(requires gcc or clang). End-user release builds include the binary.',
+        });
+      }
+    }
+
     const normalizedName = normalizeTokenName(name);
     const normalizedSymbol = normalizeTokenSymbol(symbol);
     const normalizedDescription = normalizeTokenDescription(description);
@@ -1227,6 +1466,48 @@ app.get('/api/proxy-image', async (req, res) => {
   }
 });
 
+// Mint-compatibility cache. The Raydium CLMM compat check (program
+// ownership, Token-2022 extensions, whitelist status) reads on-chain
+// data that NEVER changes for a given mint — a token's program owner
+// and Token-2022 extensions are baked at mint creation and immutable.
+// Once we've successfully checked a mint, the result is permanent for
+// the lifetime of the server process.
+//
+// This cache exists because /api/quote-token-info is called frequently
+// by the frontend (every quote-token input/change), and each compat
+// check costs one Solana RPC call (getAccountInfo). For the meme
+// flywheel mint specifically, repeated calls during a single launch
+// configuration session would generate enough RPC traffic to trigger
+// rate limiting. The cache turns those into zero-cost lookups.
+//
+// We cache the SUCCESS path only — failures (RPC down, mint not on
+// chain) are left uncached so the user can retry without waiting for
+// the cache to clear.
+const compatCache = new Map();
+
+// Step 2 swap-probe cache. Stores the verdict of probeRaydiumPriceStrict
+// for arbitrary (non-known-safe) quote tokens. The /api/quote-token-info
+// endpoint runs the probe to tell the user whether their chosen quote
+// token is Raydium-tradeable BEFORE they commit time to funding.
+//
+// Why cache: the frontend re-resolves quote-token info on every input
+// change as the user types/pastes a mint, which would hammer the
+// Raydium Trade API without caching. The 3-minute TTL is the plan's
+// resolved decision (long enough to absorb keystroke storms, short
+// enough that the cached "tradeable" claim doesn't drift far from
+// reality if Raydium's pools change).
+//
+// Cache entry shape:
+//   { verdict: 'tradeable' | 'no-route' | 'unreachable',
+//     priceUsd: Decimal | null,   // only set when verdict='tradeable'
+//     expiresAt: ms-epoch }
+//
+// IMPORTANT: This is a Step 2 short-circuit. The pool-create-time
+// just-in-time probe in createPoolsAndPositions still runs fresh
+// for every non-SOL quote regardless of this cache.
+const step2ProbeCache = new Map();
+const STEP2_PROBE_TTL_MS = 3 * 60 * 1000;  // 3 minutes
+
 // Quote-token info: when the user picks/enters a quote token in the UI,
 // we look up its symbol/decimals/USD price for inline display. For known
 // quote tokens (SOL/USDC/USDT) we use built-in constants. For arbitrary
@@ -1254,19 +1535,36 @@ app.post('/api/quote-token-info', async (req, res) => {
       // and only hit external indexers for the live price.
       const info = { ...KNOWN_QUOTES[upper] };
       const priceUsd = await getUsdPrice(info.address);
+      // priceSource label: SOL uses the dedicated 'sol' label (matches
+      // what funding-estimate emits for SOL pools); USDC/USDT come from
+      // the aggregator chain (no Step 2 probe since they're in
+      // KNOWN_SAFE_QUOTES) so they get 'oracle'.
+      const priceSource = upper === 'SOL' ? 'sol' : 'oracle';
       infoOut = {
         ...info,
         priceUsd: priceUsd ? priceUsd.toString() : null,
+        priceSource,
         // Known quotes are all classic SPL Token and definitionally compatible.
         compatible: true,
         isToken2022: false,
         extensions: [],
         disallowedNames: [],
+        // Known quotes are in KNOWN_SAFE_QUOTES — authority audit is
+        // pre-vetted. Surface the fields explicitly so the UI doesn't
+        // need a special case for known vs arbitrary.
+        freezeAuthorityDisabled: true,
+        mintAuthorityRenounced: true,
+        freezeAuthorityBlock: false,
+        mintAuthorityWarning: false,
+        // Known quotes have well-established Raydium liquidity. Skip
+        // the Step 2 probe — pool-create time still runs a fresh probe
+        // so we can't silently use stale data here.
+        raydiumTradeable: 'yes',
       };
     } else {
       // Arbitrary mint address. tokenInfoService reads decimals + symbol
       // on-chain (always works for any real mint), then tries GeckoTerminal
-      // first then Jupiter as a price fallback. priceUsd may still come
+      // first then DexScreener as a price fallback. priceUsd may still come
       // back null if both indexers fail; the frontend handles that by
       // surfacing the Advanced overrides as the recommended next step.
       // imageUrl/name come from Gecko or DexScreener and may also be null
@@ -1278,6 +1576,12 @@ app.post('/api/quote-token-info', async (req, res) => {
           symbol: meta.symbol,
           decimals: meta.decimals,
           priceUsd: meta.priceUsd ? meta.priceUsd.toString() : null,
+          // Baseline priceSource: the aggregator chain (Gecko →
+          // DexScreener via tokenInfoService) is what produced this
+          // price. If a Raydium probe succeeds below, it'll overwrite
+          // both priceUsd and priceSource with the probe-derived
+          // values.
+          priceSource: meta.priceUsd ? 'oracle' : null,
           name: meta.name ?? null,
           imageUrl: meta.imageUrl ?? null,
         };
@@ -1295,30 +1599,226 @@ app.post('/api/quote-token-info', async (req, res) => {
         };
       }
 
-      // Try the Raydium CLMM compatibility check. If the mint doesn't
-      // exist on-chain (or RPC is down) this will throw — in that case
-      // we still return what we found from indexers, but mark compat as
-      // unknown so the UI doesn't silently let the user pick a token
-      // we couldn't verify.
-      try {
-        const connection = new Connection(getRpcConfig().active, 'confirmed');
-        const compat = await getMintCompatibilityWithRaydiumClmm(
-          connection,
-          new PublicKey(quoteToken),
-        );
-        infoOut.compatible = compat.compatible;
-        infoOut.isToken2022 = compat.isToken2022;
-        infoOut.extensions = compat.extensions;
-        infoOut.disallowedNames = compat.disallowedNames;
-        // If we read decimals from chain and indexers gave us a different
-        // number, trust the chain (the chain is the source of truth).
-        if (compat.decimals != null) {
-          infoOut.decimals = compat.decimals;
+      // Try the Raydium CLMM compatibility check + authority audit. If the
+      // mint doesn't exist on-chain (or RPC is down) this will throw — in
+      // that case we still return what we found from indexers, but mark
+      // compat as unknown so the UI doesn't silently let the user pick a
+      // token we couldn't verify.
+      //
+      // Cache hit short-circuit: a mint's compat profile (program owner,
+      // Token-2022 extensions, whitelist status, freeze/mint authorities)
+      // is immutable-ish on-chain. Authorities CAN be revoked but never
+      // re-added, and a token that has had its authorities revoked at
+      // some point won't suddenly have them again. So caching is safe.
+      const cachedCompat = compatCache.get(quoteToken);
+      if (cachedCompat) {
+        infoOut.compatible = cachedCompat.compatible;
+        infoOut.isToken2022 = cachedCompat.isToken2022;
+        infoOut.extensions = cachedCompat.extensions;
+        infoOut.disallowedNames = cachedCompat.disallowedNames;
+        if (cachedCompat.decimals != null) {
+          infoOut.decimals = cachedCompat.decimals;
         }
-      } catch (e) {
-        console.warn('Compat check failed:', e.message);
-        infoOut.compatible = null; // null = "unknown", distinct from false
-        infoOut.compatError = e.message;
+        // Old cache entries (written by a previous code version that
+        // didn't include the authority audit) lack these fields. Treat
+        // undefined as "not audited" — same as a fresh-fetch RPC
+        // failure — rather than letting the downstream derivation
+        // produce !undefined === true (false positive block/warning).
+        infoOut.freezeAuthorityDisabled =
+          cachedCompat.freezeAuthorityDisabled ?? null;
+        infoOut.mintAuthorityRenounced =
+          cachedCompat.mintAuthorityRenounced ?? null;
+      } else {
+        try {
+          const connection = new Connection(getRpcConfig().active, 'confirmed');
+          const compat = await getMintCompatibilityWithRaydiumClmm(
+            connection,
+            new PublicKey(quoteToken),
+          );
+          infoOut.compatible = compat.compatible;
+          infoOut.isToken2022 = compat.isToken2022;
+          infoOut.extensions = compat.extensions;
+          infoOut.disallowedNames = compat.disallowedNames;
+          infoOut.freezeAuthorityDisabled = compat.freezeAuthorityDisabled;
+          infoOut.mintAuthorityRenounced = compat.mintAuthorityRenounced;
+          // If we read decimals from chain and indexers gave us a different
+          // number, trust the chain (the chain is the source of truth).
+          if (compat.decimals != null) {
+            infoOut.decimals = compat.decimals;
+          }
+          // Cache the success. We only cache successful checks because a
+          // failure mode (RPC down, mint not yet on chain) is transient —
+          // the user could retry seconds later with a healthy RPC. Caching
+          // failures would force users to wait out a TTL after recovery.
+          compatCache.set(quoteToken, {
+            compatible: compat.compatible,
+            isToken2022: compat.isToken2022,
+            extensions: compat.extensions,
+            disallowedNames: compat.disallowedNames,
+            decimals: compat.decimals,
+            freezeAuthorityDisabled: compat.freezeAuthorityDisabled,
+            mintAuthorityRenounced: compat.mintAuthorityRenounced,
+          });
+        } catch (e) {
+          console.warn('Compat check failed:', e.message);
+          infoOut.compatible = null; // null = "unknown", distinct from false
+          infoOut.compatError = e.message;
+          // We couldn't verify authorities. Don't claim they're safe.
+          infoOut.freezeAuthorityDisabled = null;
+          infoOut.mintAuthorityRenounced = null;
+        }
+      }
+
+      // Step 2 Raydium-route probe.
+      //
+      // Per the price-safety plan's Milestone D: tell the user EARLY
+      // (while they're still picking a quote token) whether Raydium can
+      // actually route a swap against their choice. If it can't, they
+      // should pick a different token — pool creation at Step 5 will
+      // hard-fail with a pre_flight error otherwise, but only after
+      // they've already invested time and SOL in Steps 3-4.
+      //
+      // Three possible outcomes, mirrored in the response's
+      // raydiumTradeable field:
+      //   'yes'      — probe succeeded, route exists. Use the probe-
+      //                derived price for display (more truthful than
+      //                the aggregator's number).
+      //   'no'       — Trade API was reached but returned no route.
+      //                Block the user from continuing with this quote.
+      //   'unknown'  — couldn't reach Trade API right now. Allow
+      //                continuation but warn the user; we'll catch it
+      //                again at Step 5.
+      //
+      // The 3-minute cache absorbs keystroke storms (this endpoint
+      // hits per keystroke in the frontend) without disturbing the
+      // pool-create-time probe, which always runs fresh regardless.
+      const isSafeQuote =
+        infoOut.address && KNOWN_SAFE_QUOTES.has(infoOut.address);
+      const needsProbe =
+        !isSafeQuote &&
+        infoOut.address &&
+        typeof infoOut.decimals === 'number' &&
+        infoOut.decimals >= 0 &&
+        infoOut.compatible !== false; // skip if we already know it's not raydium-compatible
+
+      if (isSafeQuote) {
+        infoOut.raydiumTradeable = 'yes';
+      } else if (needsProbe) {
+        // Cache lookup with TTL check.
+        const cachedProbe = step2ProbeCache.get(infoOut.address);
+        const now = Date.now();
+        if (cachedProbe && cachedProbe.expiresAt > now) {
+          // Translate the cache verdict ('tradeable' | 'no-route') into
+          // the API contract value ('yes' | 'no' | 'unknown').
+          if (cachedProbe.verdict === 'tradeable') {
+            infoOut.raydiumTradeable = 'yes';
+            if (cachedProbe.priceUsd) {
+              // Prefer the probe-derived price over the aggregator price.
+              // The probe IS the price the pool will be created at later;
+              // showing it here means the user sees the same number
+              // throughout the flow.
+              infoOut.priceUsd = cachedProbe.priceUsd;
+              infoOut.priceSource = 'raydium-probe (cached)';
+            }
+          } else if (cachedProbe.verdict === 'no-route') {
+            infoOut.raydiumTradeable = 'no';
+          } else {
+            // Future-proof: unknown verdict in cache → treat as unknown
+            // and force a fresh probe by not short-circuiting.
+            infoOut.raydiumTradeable = 'unknown';
+          }
+        } else {
+          // Run the probe. We need SOL/USD to convert the probe's
+          // SOL→token rate into USD.
+          let solUsdForProbe = null;
+          try {
+            solUsdForProbe = await getUsdPrice(KNOWN_QUOTES.SOL.address);
+          } catch (_) { /* silent — handled below */ }
+
+          if (!solUsdForProbe || !solUsdForProbe.gt(0)) {
+            // Can't probe without SOL/USD. Mark as unknown but don't
+            // cache — the user retrying in a moment may succeed.
+            infoOut.raydiumTradeable = 'unknown';
+            infoOut.raydiumProbeError =
+              'Could not resolve SOL/USD to run the probe';
+          } else {
+            try {
+              const probeResult = await probeRaydiumPriceStrict({
+                quoteMint: infoOut.address,
+                quoteDecimals: infoOut.decimals,
+                solUsd: solUsdForProbe,
+              });
+              // Probe succeeded. Cache and update infoOut.
+              const priceStr = probeResult.effectiveQuoteUsd.toString();
+              step2ProbeCache.set(infoOut.address, {
+                verdict: 'tradeable',
+                priceUsd: priceStr,
+                expiresAt: now + STEP2_PROBE_TTL_MS,
+              });
+              infoOut.raydiumTradeable = 'yes';
+              infoOut.priceUsd = priceStr;
+              infoOut.priceSource = 'raydium-probe';
+            } catch (probeErr) {
+              const code = probeErr.code || 'UNKNOWN';
+              if (code === 'NO_ROUTE') {
+                // Cache the verdict — the user typing the same mint
+                // 10 times in a row shouldn't probe 10 times.
+                step2ProbeCache.set(infoOut.address, {
+                  verdict: 'no-route',
+                  priceUsd: null,
+                  expiresAt: now + STEP2_PROBE_TTL_MS,
+                });
+                infoOut.raydiumTradeable = 'no';
+                // Raydium has no pool, but we may already have an
+                // aggregator price from getTokenMetadata earlier in
+                // this function. Label its source so the frontend
+                // techLine renders correctly. If priceUsd is null
+                // here (no aggregator either), the frontend's
+                // no-price warning takes over.
+                if (infoOut.priceUsd != null) {
+                  infoOut.priceSource = 'oracle';
+                }
+              } else {
+                // Network/HTTP/bad-response errors are transient.
+                // Don't cache the failure — let the user retry by
+                // re-typing or by refreshing.
+                infoOut.raydiumTradeable = 'unknown';
+                infoOut.raydiumProbeError = probeErr.message;
+              }
+            }
+          }
+        }
+      } else {
+        // Couldn't determine decimals or compatibility — can't probe.
+        infoOut.raydiumTradeable = 'unknown';
+      }
+
+      // Derive the user-facing block / warning flags from the authority
+      // audit, so the frontend can just check one boolean each.
+      //
+      // freezeAuthorityBlock: a non-null freeze authority on a non-known
+      // quote token is a hard block. The deployer can freeze the launch
+      // wallet's quote-token balance mid-launch and brick the entire
+      // process. Funds would become unrecoverable through normal sweep.
+      //
+      // mintAuthorityWarning: a non-null mint authority is a soft warning.
+      // Supply can be inflated (devaluing pool contents), but the launch
+      // itself can still proceed. User should be cautious.
+      //
+      // For known-safe quotes, both flags are false. For tokens where the
+      // authority audit didn't run (RPC down, mint not on-chain), both
+      // flags are null — the UI should show "couldn't verify" rather
+      // than green-lighting them.
+      if (isSafeQuote) {
+        infoOut.freezeAuthorityBlock = false;
+        infoOut.mintAuthorityWarning = false;
+      } else if (infoOut.freezeAuthorityDisabled === null) {
+        // Audit didn't run successfully — surface as unknown.
+        infoOut.freezeAuthorityBlock = null;
+        infoOut.mintAuthorityWarning = null;
+      } else {
+        infoOut.freezeAuthorityBlock = !infoOut.freezeAuthorityDisabled;
+        infoOut.mintAuthorityWarning = !infoOut.mintAuthorityRenounced;
       }
     }
 
@@ -1682,12 +2182,83 @@ app.delete('/api/acquire-quote-tokens/:jobId', (req, res) => {
   const existed = acquireJobs.delete(req.params.jobId);
   res.json({ deleted: existed });
 });
+// Pre-commit dry run of pool creation. Resolves prices, runs the
+// just-in-time Raydium probe, applies the drift guard — but does NO
+// on-chain action. Powers the Milestone C confirmation modal in the
+// frontend: the user sees the actual initialPrice each pool will be
+// created at and confirms before the irreversible /api/create-lp call.
+//
+// Error shape matches /api/create-lp's pre_flight branch so the
+// frontend can handle both with the same code path.
+app.post('/api/preflight-create-lp', async (req, res) => {
+  try {
+    const {
+      tokenTotalSupply,
+      targetMarketCapUsd,
+      allocations,
+    } = req.body;
+
+    if (!Array.isArray(allocations) || allocations.length === 0) {
+      throw new Error('allocations must be a non-empty array');
+    }
+    if (!tokenTotalSupply || !targetMarketCapUsd) {
+      throw new Error('tokenTotalSupply and targetMarketCapUsd required');
+    }
+
+    const result = await preflightCreatePoolsAndPositions({
+      tokenTotalSupply,
+      targetMarketCapUsd,
+      allocations,
+    });
+
+    res.json({
+      success: true,
+      preflight: result,
+    });
+  } catch (error) {
+    // Preflight failures are always pre_flight by definition. Surface
+    // them in the same envelope shape that /api/create-lp uses on
+    // failure so the frontend's error handler treats both identically.
+    console.error('Preflight failed:', error.message);
+    res.status(400).json({
+      success: false,
+      error: error.message,
+      failedPhase: error.failedPhase || 'pre_flight',
+      failedAllocationIndex: error.failedAllocationIndex ?? null,
+      failedAllocation: error.failedAllocation ?? null,
+      probeCode: error.probeCode || null,
+    });
+  }
+});
 
 
 // Run the full LP creation flow: createPool + main positions + bootstrap +
 // lock + (optional) recipient transfers, for every allocation.
 app.post('/api/create-lp', async (req, res) => {
-  if (isDemoMode()) return demoChainService.handleCreateLp(req, res);
+  if (isDemoMode()) {
+    // Derive wallet pubkey here (mirrors what handleCreateLp does
+    // internally) so we can scope the progress events to this launch.
+    // Safe to swallow errors — if pubkey derivation fails the handler
+    // itself will report the same error; the progress just won't track.
+    let demoWpk = null;
+    try {
+      const sk = typeof req.body.tempWalletSecretKey === 'string'
+        ? JSON.parse(req.body.tempWalletSecretKey)
+        : req.body.tempWalletSecretKey;
+      demoWpk = walletPubkeyFromSecretArray(sk);
+    } catch (_) { /* leave demoWpk null, hooks become no-ops */ }
+    if (demoWpk) lpProgressBegin(demoWpk);
+    const hooks = demoWpk
+      ? { event: (e) => lpProgressEvent(demoWpk, e) }
+      : { event: () => {} };
+    try {
+      return await demoChainService.handleCreateLp(req, res, {
+        lpProgress: hooks,
+      });
+    } finally {
+      if (demoWpk) lpProgressEnd(demoWpk);
+    }
+  }
   let walletPublicKey = null;
   try {
     const {
@@ -1726,6 +2297,14 @@ app.post('/api/create-lp', async (req, res) => {
       { stage: 'lp_create_started', tokenMint, allocationCount: allocations?.length || 0 },
     );
 
+    // Begin live LP progress tracking. Same in-memory Map the demo uses;
+    // the frontend polls /api/lp-progress during the create-lp call and
+    // ticks rows from pending → done as events arrive. Real-mode events
+    // already have the stage names the frontend translator expects
+    // (pool_create_done, main_open_done, etc.) so no shape conversion
+    // is needed. End in finally below.
+    lpProgressBegin(walletPublicKey);
+
     const result = await createPoolsAndPositions({
       tempWalletSecretKey: secretKeyArr,
       tokenMint,
@@ -1735,7 +2314,12 @@ app.post('/api/create-lp', async (req, res) => {
       allocations,
       lockPositions: lockPositions !== false,
       onProgress: (event) => {
-        recordLpJournalProgress(walletPublicKey, event);
+        // Journal: durable record for recovery if the launch dies.
+        try { recordLpJournalProgress(walletPublicKey, event); }
+        catch (_) { /* never let a progress write break the launch */ }
+        // Live progress tracker: drives the frontend's per-row updates.
+        try { lpProgressEvent(walletPublicKey, event); }
+        catch (_) { /* same — progress is best-effort */ }
       },
     });
 
@@ -1818,6 +2402,14 @@ app.post('/api/create-lp', async (req, res) => {
       lockFailures: error.lockFailures || null,
       transferFailures: error.transferFailures || null,
     });
+  } finally {
+    // Always end the live LP progress tracker so the frontend's poll
+    // sees status='done' and stops. The tracker auto-cleans 30 seconds
+    // later, leaving time for any in-flight poll to see the final state.
+    if (walletPublicKey) {
+      try { lpProgressEnd(walletPublicKey); }
+      catch (_) { /* end is a best-effort cleanup */ }
+    }
   }
 });
 
@@ -1890,6 +2482,11 @@ app.post('/api/resume-launch', async (req, res) => {
       },
     );
 
+    // Begin live LP progress tracking for the resume too. The frontend
+    // polls /api/lp-progress identically whether this is a fresh launch
+    // or a resume, so the events surface as live row updates.
+    lpProgressBegin(walletPublicKey);
+
     const result = await createPoolsAndPositions({
       tempWalletSecretKey: secretKeyArr,
       tokenMint,
@@ -1900,7 +2497,10 @@ app.post('/api/resume-launch', async (req, res) => {
       lockPositions: lockPositions !== false,
       priorResults,
       onProgress: (event) => {
-        recordLpJournalProgress(walletPublicKey, event);
+        try { recordLpJournalProgress(walletPublicKey, event); }
+        catch (_) { /* never let a progress write break the launch */ }
+        try { lpProgressEvent(walletPublicKey, event); }
+        catch (_) { /* same — progress is best-effort */ }
       },
     });
 
@@ -1962,6 +2562,15 @@ app.post('/api/resume-launch', async (req, res) => {
       lockFailures: error.lockFailures || null,
       transferFailures: error.transferFailures || null,
     });
+  } finally {
+    // Same end-the-tracker pattern as /api/create-lp above. Resumes use
+    // the same lpProgress Map keyed by wallet pubkey, so a resume that
+    // succeeds (or fails) cleanly tears down the tracker without
+    // requiring the frontend to know which endpoint fired the work.
+    if (walletPublicKey) {
+      try { lpProgressEnd(walletPublicKey); }
+      catch (_) { /* end is a best-effort cleanup */ }
+    }
   }
 });
 
@@ -2185,7 +2794,15 @@ app.get('/api/diagnose-launch', async (req, res) => {
 // doesn't abort the others. Aggregate counts are reported in the
 // response so the frontend can summarize.
 app.post('/api/transfer-assets', async (req, res) => {
-  if (isDemoMode()) return demoChainService.handleTransferAssets(req, res);
+  if (isDemoMode()) {
+    return demoChainService.handleTransferAssets(req, res, {
+      airdropProgress: {
+        begin: airdropProgressBegin,
+        step: airdropProgressStep,
+        end: airdropProgressEnd,
+      },
+    });
+  }
   let walletPublicKey = null;
   try {
     const {
@@ -2219,6 +2836,112 @@ app.post('/api/transfer-assets', async (req, res) => {
       tempWalletSecretKey: secretKeyArr,
       destinationWallet,
     });
+
+    // 1.5. Airdrop, if configured. Inserted BEFORE the token sweep
+    //      because the airdrop sends the launched token to the recipient
+    //      wallets from the ephemeral wallet's balance — those tokens
+    //      must still be present. The optional `airdrop` payload carries
+    //      the token mint, decimals, program info, and recipient list;
+    //      when absent (no airdrop configured / simple mode without
+    //      airdrop / customize mode) this step is a clean no-op.
+    //
+    //      Partial failures don't abort the transfer. Failed recipients
+    //      are returned in `airdropResult.failed` so the frontend can
+    //      offer a retry. Un-airdropped tokens stay in the launch wallet
+    //      and get picked up by the token sweep below, so even if the
+    //      user gives up on retrying, the funds aren't stranded — they
+    //      reach the destination wallet via the standard sweep path.
+    let airdropResult = null;
+    if (req.body.airdrop
+        && Array.isArray(req.body.airdrop.recipients)
+        && req.body.airdrop.recipients.length > 0
+        && req.body.airdrop.tokenMint
+        && Number.isFinite(req.body.airdrop.tokenDecimals)) {
+      // Concurrency guard: reject if another airdrop is currently
+      // running for this same launch wallet. Without this, a user
+      // clicking Transfer Assets twice (or a slow network triggering
+      // a double-submit) could send overlapping airdrops and
+      // double-pay recipients whose first-pass tx already landed.
+      if (airdropInFlight(walletPublicKey)) {
+        console.warn(
+          `Rejecting concurrent airdrop request for wallet ${walletPublicKey} `
+          + `— another airdrop is already in flight.`,
+        );
+        airdropResult = {
+          transferred: [],
+          failed: req.body.airdrop.recipients.map((r) => ({
+            wallet: r.wallet,
+            tokens: r.tokens,
+            amountRaw: null,
+            error: 'Another airdrop is already running for this launch wallet. '
+              + 'Wait for it to complete before retrying.',
+          })),
+        };
+      } else {
+        // Record airdrop start in the journal so a crashed-mid-airdrop
+        // case is debuggable from the journal alone. recordEvent appends
+        // to the wallet's event stream without mutating the top-level
+        // status (the transfer is still active overall).
+        launchJournal.recordEvent(walletPublicKey, {
+          stage: 'airdrop_started',
+          recipients: req.body.airdrop.recipients.length,
+          tokenMint: req.body.airdrop.tokenMint,
+        });
+        markAirdropInFlight(walletPublicKey);
+        airdropProgressBegin(walletPublicKey, req.body.airdrop.recipients.length);
+        try {
+          airdropResult = await executeAirdrop({
+            tempWalletSecretKey: secretKeyArr,
+            tokenMint: req.body.airdrop.tokenMint,
+            tokenDecimals: req.body.airdrop.tokenDecimals,
+            isToken2022: !!req.body.airdrop.isToken2022,
+            recipients: req.body.airdrop.recipients,
+            onProgress: (s) => airdropProgressStep(walletPublicKey, s),
+          });
+          console.log(
+            `Airdrop summary: ${airdropResult.transferred.length} delivered, `
+            + `${airdropResult.failed.length} failed`,
+          );
+          // Record completion. Includes a partial flag so the journal
+          // viewer can distinguish a fully-clean airdrop from one that
+          // had per-recipient failures.
+          launchJournal.recordEvent(walletPublicKey, {
+            stage: 'airdrop_completed',
+            delivered: airdropResult.transferred.length,
+            failed: airdropResult.failed.length,
+            partial: airdropResult.failed.length > 0,
+          });
+        } catch (e) {
+          // An UNEXPECTED airdrop failure (one that bypassed per-recipient
+          // try/catch — likely a bad mint or connection init failure)
+          // shouldn't abort the rest of the sweep. We log it and mark
+          // every recipient as failed so the user sees what happened.
+          console.error('Airdrop step failed unexpectedly:', e.message);
+          launchJournal.recordEvent(walletPublicKey, {
+            stage: 'airdrop_crashed',
+            error: e.message,
+          });
+          airdropResult = {
+            transferred: [],
+            failed: req.body.airdrop.recipients.map((r) => ({
+              wallet: r.wallet,
+              tokens: r.tokens,
+              amountRaw: null,
+              error: `Airdrop step crashed: ${e.message}`,
+            })),
+          };
+        } finally {
+          // ALWAYS clear the in-flight flag so a future retry isn't
+          // blocked. The flag's purpose is to serialize concurrent
+          // attempts, not to prevent legitimate re-runs.
+          clearAirdropInFlight(walletPublicKey);
+          // Flip the progress tracker to 'done' so the frontend's
+          // poller sees the terminal state on its next call. The
+          // tracker auto-clears itself after ~10s of being done.
+          airdropProgressEnd(walletPublicKey);
+        }
+      }
+    }
 
     // 2. All fungible tokens — launched token + any auto-swapped quote
     //    tokens that weren't fully consumed by the bootstrap positions.
@@ -2271,10 +2994,12 @@ app.post('/api/transfer-assets', async (req, res) => {
     // future UI iterations can show per-token results.
     const tokensTransferred = tokenSweep.transferred.length;
     const solTransferred = solSweep.solTransferred;
+    const airdropFailedCount = airdropResult ? airdropResult.failed.length : 0;
     const hasPartialFailure =
       !!solSweepError ||
       (tokenSweep.errors || []).length > 0 ||
       (nftSweep.errors || []).length > 0 ||
+      airdropFailedCount > 0 ||
       !walletEmpty;
     launchJournal.upsertForWallet(
       walletPublicKey,
@@ -2309,6 +3034,7 @@ app.post('/api/transfer-assets', async (req, res) => {
       nftSweep,
       tokenSweep,
       solSweepError,
+      airdrop: airdropResult,
     });
   } catch (error) {
     console.error('Error transferring assets:', error);
@@ -2323,6 +3049,127 @@ app.post('/api/transfer-assets', async (req, res) => {
         { stage: 'transfer_failed', error: error.message },
       );
     }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Airdrop retry — used when /api/transfer-assets returns partial airdrop
+// failures and the user clicks the "Retry failed airdrops" button. Takes
+// just the failed recipients and re-attempts them.
+//
+// IMPORTANT timing window: this endpoint is most useful while the
+// ephemeral wallet still holds the un-airdropped tokens — that means
+// BEFORE the user clicks Transfer Assets a second time (which would
+// sweep everything to the destination). The frontend wires the retry
+// button to fire before the partial-failure transfer is re-run, and
+// the docs in the UI warn that retrying after sweep won't work.
+//
+// If retry is called after the tokens have been swept, executeAirdrop
+// fails with insufficient-balance for every recipient. The response
+// makes that condition obvious so the frontend can show a "tokens
+// have moved to your destination wallet — distribute manually from
+// there" message.
+// ---------------------------------------------------------------------------
+app.post('/api/retry-airdrop', async (req, res) => {
+  if (isDemoMode()) {
+    return demoChainService.handleRetryAirdrop(req, res, {
+      airdropProgress: {
+        begin: airdropProgressBegin,
+        step: airdropProgressStep,
+        end: airdropProgressEnd,
+      },
+    });
+  }
+  let walletPublicKey = null;
+  try {
+    const {
+      tempWalletSecretKey,
+      tokenMint,
+      tokenDecimals,
+      isToken2022 = false,
+      recipients,
+    } = req.body;
+
+    if (!tempWalletSecretKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'tempWalletSecretKey required',
+      });
+    }
+    if (!tokenMint || !Number.isFinite(tokenDecimals)) {
+      return res.status(400).json({
+        success: false,
+        error: 'tokenMint and tokenDecimals required',
+      });
+    }
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'recipients must be a non-empty array',
+      });
+    }
+
+    const secretKeyArr = typeof tempWalletSecretKey === 'string'
+      ? JSON.parse(tempWalletSecretKey)
+      : tempWalletSecretKey;
+    walletPublicKey = walletPubkeyFromSecretArray(secretKeyArr);
+
+    // Concurrency guard. Same reasoning as in /api/transfer-assets: a
+    // second concurrent airdrop run could double-pay recipients whose
+    // first-pass tx already landed. The retry path is especially
+    // vulnerable because the user is more likely to click the retry
+    // button impatiently than the main Transfer button.
+    if (airdropInFlight(walletPublicKey)) {
+      console.warn(
+        `Rejecting concurrent airdrop retry for wallet ${walletPublicKey} `
+        + `— another airdrop is already in flight.`,
+      );
+      return res.status(409).json({
+        success: false,
+        error: 'Another airdrop is already running for this launch wallet. '
+          + 'Wait for it to complete before retrying.',
+      });
+    }
+    markAirdropInFlight(walletPublicKey);
+    airdropProgressBegin(walletPublicKey, recipients.length);
+
+    console.log(`Retrying airdrop to ${recipients.length} recipient(s)`);
+    let airdropResult;
+    try {
+      airdropResult = await executeAirdrop({
+        tempWalletSecretKey: secretKeyArr,
+        tokenMint,
+        tokenDecimals,
+        isToken2022,
+        recipients,
+        onProgress: (s) => airdropProgressStep(walletPublicKey, s),
+      });
+    } finally {
+      clearAirdropInFlight(walletPublicKey);
+      airdropProgressEnd(walletPublicKey);
+    }
+    console.log(
+      `Retry summary: ${airdropResult.transferred.length} delivered, `
+      + `${airdropResult.failed.length} still failed`,
+    );
+
+    // Record a retry event in the journal so the launch history shows
+    // the recovery attempt. We don't change the launch's overall status
+    // here — the journal entry is informational.
+    launchJournal.recordEvent(walletPublicKey, {
+      stage: 'airdrop_retry',
+      retried: recipients.length,
+      delivered: airdropResult.transferred.length,
+      stillFailed: airdropResult.failed.length,
+    });
+
+    res.json({
+      success: true,
+      airdrop: airdropResult,
+    });
+  } catch (error) {
+    console.error('Airdrop retry failed:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -2474,6 +3321,12 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       },
     );
 
+    // Journal-resume needs its own progress tracker init too. Even though
+    // the recovery panel triggered this (not the active create-lp UI),
+    // the frontend phase progress tree is rebuilt on resume and will
+    // poll for events the same way.
+    lpProgressBegin(walletPublicKey);
+
     const result = await createPoolsAndPositions({
       tempWalletSecretKey: wallet.secretKey,
       tokenMint,
@@ -2484,7 +3337,10 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       lockPositions,
       priorResults,
       onProgress: (event) => {
-        recordLpJournalProgress(walletPublicKey, event);
+        try { recordLpJournalProgress(walletPublicKey, event); }
+        catch (_) { /* never let a progress write break the launch */ }
+        try { lpProgressEvent(walletPublicKey, event); }
+        catch (_) { /* same — progress is best-effort */ }
       },
     });
 
@@ -2550,6 +3406,12 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       lockFailures: error.lockFailures || null,
       transferFailures: error.transferFailures || null,
     });
+  } finally {
+    // Mirror the create-lp / resume-launch cleanup pattern.
+    if (walletPublicKey) {
+      try { lpProgressEnd(walletPublicKey); }
+      catch (_) { /* end is a best-effort cleanup */ }
+    }
   }
 });
 
@@ -2682,4 +3544,19 @@ app.listen(PORT, '127.0.0.1', () => {
   console.log(`Saved RPCs: ${cfg.saved.length} (manage in the UI)`);
   console.log('\nIMPORTANT: For pool creation, use a dedicated RPC (Helius, Triton, QuickNode — free tier is plenty).');
   console.log('Free public RPC endpoints will rate-limit you out of CLMM creation.\n');
+
+  // Probe vanity availability and warm the cache so the first
+  // /api/demo/status call doesn't pay the cold-import latency. Async
+  // because the module import is dynamic; logs land a few ms after
+  // the startup banner above.
+  vanityAvailability().then((v) => {
+    if (v.available) {
+      console.log(`Vanity address generation: available (${v.path})`);
+    } else {
+      console.log('Vanity address generation: DISABLED');
+      console.log('  Reason: vanity_keygen binary not built.');
+      console.log('  To enable: run `npm run build:c` (requires gcc or clang).');
+      console.log('  End-user release builds include this binary; this only affects dev environments.\n');
+    }
+  });
 });

@@ -107,6 +107,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build vanity keygen binary
+        # The C binary is what backs the Vanity CA feature. c/build/ is
+        # gitignored and package.json's asarUnpack pattern packages
+        # whatever's in c/build/, so this step has to run before
+        # electron-builder or the release will ship without vanity
+        # support. GitHub Actions runners have gcc/clang available by
+        # default on all three platforms (Strawberry Perl on Windows,
+        # Xcode CLI tools on macOS, build-essential pre-installed on
+        # Ubuntu), so build-c.mjs finds a compiler without extra
+        # setup. If a runner image ever drops the toolchain, this step
+        # fails loudly rather than silently shipping a broken release.
+        shell: bash
+        run: npm run build:c
+
       - name: Build release assets
         run: node scripts/release-build.mjs
 

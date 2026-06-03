@@ -80,5 +80,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build vanity keygen binary
+        # Same rationale as release.yml: c/build/ is gitignored, the
+        # asarUnpack pattern packages whatever's in it, so the smoke
+        # build needs the binary present or it silently produces a
+        # vanity-less package. Catching that here prevents a regression
+        # from sliding all the way to a release.
+        shell: bash
+        run: npm run build:c
+
       - name: Build package smoke
         run: ${{ matrix.smoke_command }}
