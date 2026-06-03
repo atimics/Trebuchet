@@ -960,6 +960,29 @@
         code, pre, .is-family-monospace, .mono {
             font-family: var(--font-mono);
         }
+        /* Bulma's default <code> styling gives a stark-white background
+           with brick-red text — fine on Bulma's default white pages,
+           but it sits awkwardly on the cream parchment theme (looks
+           like a foreign pill). Override with a very subtle dark tint
+           that matches the rest of the manuscript treatment. The launch
+           report iframe is unaffected (srcdoc CSS is scoped). */
+        code {
+            background-color: var(--rule-faint);
+            color: var(--ink);
+            padding: 0.05em 0.3em;
+            border-radius: 2px;
+            font-size: 0.95em;
+        }
+        /* Bulma also has a more-specific .notification code { background: #fff }
+           rule that beats the plain `code` selector above. Override it at the
+           same specificity so the theme tint applies inside notification
+           panels too (otherwise the pre-transfer airdrop recipient list,
+           the launch-success notice, etc. all sprout stark-white pills). */
+        .notification code,
+        .notification pre {
+            background-color: var(--rule-faint);
+            color: var(--ink);
+        }
 
         /* ========================================================
            Medieval gauntlet cursor theme
@@ -2566,6 +2589,78 @@
         .progress-step.done { color: var(--success); }
         .progress-step.failed { color: #ff3860; }
 
+        /* Phase header — clickable summary row that toggles the row
+           list below. Each phase block (Phase 1..4) gets one of these.
+           Designed to match the airdrop-progress notification pattern:
+           header line with title + counter, slim bar underneath, and
+           body that defaults to collapsed so a 5-pool launch isn't a
+           wall of fifty individual rows. */
+        .phase-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            width: 100%;
+            background: transparent;
+            border: none;
+            padding: 0.25rem 0;
+            cursor: pointer;
+            color: var(--ink);
+            text-align: left;
+            font: inherit;
+        }
+        .phase-header:hover { color: var(--rubric); }
+        .phase-toggle {
+            display: inline-block;
+            font-size: 0.7em;
+            transition: transform 0.15s ease;
+            min-width: 0.8rem;
+            color: var(--ink-fade);
+        }
+        .phase-header.is-expanded .phase-toggle {
+            transform: rotate(90deg);
+        }
+        .phase-title { font-weight: 600; flex: 1; }
+        .phase-counter {
+            font-family: var(--font-mono);
+            font-size: 0.85em;
+            color: var(--ink-fade);
+        }
+        .phase-counter.is-done { color: var(--success); }
+        .phase-counter.has-failures { color: #ff3860; }
+        /* Slim progress bar under the header. Uses Bulma's <progress>
+           styling via attribute is-info but with our theme tints. The
+           bar fills as rows transition from pending → done / failed. */
+        .phase-bar {
+            width: 100%;
+            height: 4px;
+            margin: 0.15rem 0 0.25rem 0;
+            -webkit-appearance: none;
+               -moz-appearance: none;
+                    appearance: none;
+            border: none;
+            border-radius: 2px;
+            background-color: var(--rule-faint);
+            overflow: hidden;
+        }
+        .phase-bar::-webkit-progress-bar { background: var(--rule-faint); }
+        .phase-bar::-webkit-progress-value { background: var(--rubric); transition: width 0.3s ease; }
+        .phase-bar::-moz-progress-bar { background: var(--rubric); }
+        .phase-bar.is-done::-webkit-progress-value { background: var(--success); }
+        .phase-bar.is-done::-moz-progress-bar { background: var(--success); }
+        .phase-bar.has-failures::-webkit-progress-value { background: #ff3860; }
+        .phase-bar.has-failures::-moz-progress-bar { background: #ff3860; }
+        .phase-desc {
+            font-size: 0.85em;
+            color: var(--ink-fade);
+            margin: 0 0 0.35rem 1.3rem;
+        }
+        .phase-body {
+            margin-left: 1.3rem;
+            padding-left: 0.5rem;
+            border-left: 1px solid var(--rule-faint);
+        }
+        .phase-body.collapsed { display: none; }
+
         /* Demo-mode banner (sticky, top of page) */
         .demo-banner {
             position: sticky;
@@ -3314,10 +3409,14 @@
                         read top-to-bottom in the same order the system
                         actually allocates supply.
 
-                        The "Use a preset instead" button lives in the
-                        Preallocation section header (topmost interactive
-                        element) so users can return to simple mode from the
-                        first thing they see, without scrolling.
+                        The "Switch to simple mode" button lives in the
+                        Pool Configuration section header — that's the
+                        section customize mode actually changes (the
+                        Preallocation section is identical in both modes,
+                        it's just physically relocated). Putting the
+                        toggle next to the differentiating UI gives users
+                        a clear out from the place they actually feel
+                        customize mode.
                     -->
                     <div id="customizeConfigContainer" class="hidden">
                         <!--
@@ -3328,17 +3427,20 @@
                           inside simple mode. Same relocation pattern
                           lockPositionsField uses.
                         -->
-                        <div class="is-flex is-justify-content-space-between is-align-items-center mb-2">
-                            <h4 class="title is-6 mb-0">Preallocation</h4>
-                            <button type="button" class="button is-small is-light" id="returnToSimpleBtn">
-                                <span class="icon is-small"><i class="fas fa-arrow-left"></i></span>
-                                <span>Use a preset instead</span>
-                            </button>
-                        </div>
+                        <h4 class="title is-6 mb-2">Preallocation</h4>
                         <div id="customizePreallocSlot" class="mb-4"></div>
 
-                        <!-- Section 2: Pool Configuration. -->
-                        <h4 class="title is-6">Pool Configuration</h4>
+                        <!-- Section 2: Pool Configuration.
+                             Return-to-simple-mode button sits in this
+                             header — see container comment above for
+                             the placement rationale. -->
+                        <div class="is-flex is-justify-content-space-between is-align-items-center mb-2">
+                            <h4 class="title is-6 mb-0">Pool Configuration</h4>
+                            <button type="button" class="button is-small is-light" id="returnToSimpleBtn">
+                                <span class="icon is-small"><i class="fas fa-arrow-left"></i></span>
+                                <span>Switch to simple mode</span>
+                            </button>
+                        </div>
                         <label class="label is-small mb-2">Pools to Create</label>
                         <div id="poolList"></div>
                         <button class="button is-light is-small" id="addPoolBtn">
@@ -3783,10 +3885,69 @@
                             <p class="help">Paste the full address. Don't rely on prefix/suffix matches.</p>
                         </div>
 
+                        <!--
+                          Pre-transfer airdrop summary. Shown only when
+                          step 6 activates AND an airdrop is configured.
+                          Surfaces what's about to happen before the user
+                          clicks Transfer Assets — they shouldn't be
+                          surprised by an airdrop step running.
+
+                          Populated by renderAirdropPreTransferSummary()
+                          in app.js. Hidden by default. The <details>
+                          element lets the user expand the per-recipient
+                          list to verify wallets one last time.
+                        -->
+                        <div id="airdropPreTransferSummary" class="hidden mt-3 mb-3">
+                            <div class="notification is-info is-light is-size-7 py-2 px-3">
+                                <p class="mb-1">
+                                    <strong>Includes airdrop:</strong>
+                                    <span id="airdropPreCount">0</span>
+                                    recipient<span id="airdropPreCountS">s</span> will receive
+                                    <strong id="airdropPreTokens">0</strong>
+                                    tokens before the remaining balance sweeps to your destination wallet.
+                                </p>
+                                <details>
+                                    <summary class="is-size-7 has-text-grey" style="cursor: pointer; margin-top: 0.25rem;">Show recipient list</summary>
+                                    <div id="airdropPreRecipientList" class="mt-2"></div>
+                                </details>
+                            </div>
+                        </div>
+
                         <button class="button is-primary" id="transferAssetsBtn">
                             <span class="icon"><i class="fas fa-paper-plane"></i></span>
                             <span>Transfer Assets</span>
                         </button>
+
+                        <!--
+                          Live airdrop progress panel. Shown only while
+                          the airdrop step inside /api/transfer-assets is
+                          actively running. Polled into existence by
+                          startAirdropProgressPoll() in app.js, hidden
+                          again when the parent fetch returns and the
+                          renderAirdropTransferResult final panel takes
+                          over. Three rows:
+                            - Header with running counters (delivered/
+                              total, % done, tokens delivered/total).
+                            - Progress bar.
+                            - Most-recent recipient (truncated wallet +
+                              tokens) for "tick forward" feedback.
+                        -->
+                        <div id="airdropProgressPanel" class="hidden mt-3">
+                            <div class="notification is-info is-light py-2 px-3 is-size-7">
+                                <p class="mb-1">
+                                    <strong>Airdrop in progress:</strong>
+                                    <span id="airdropProgressCount">0 / 0</span>
+                                    recipients
+                                    <span class="has-text-grey" id="airdropProgressPct"></span>
+                                </p>
+                                <progress class="progress is-info is-small mb-1" id="airdropProgressBar" value="0" max="100" style="height: 0.5rem;"></progress>
+                                <p class="mb-1 is-size-7">
+                                    <span class="has-text-grey">Tokens delivered:</span>
+                                    <strong id="airdropProgressTokens">0</strong>
+                                </p>
+                                <p class="mb-0 is-size-7 has-text-grey" id="airdropProgressLast"></p>
+                            </div>
+                        </div>
 
                         <!--
                           Airdrop result block, populated by
@@ -3809,6 +3970,13 @@
                                 <p>Tokens transferred: <span id="tokensTransferred"></span></p>
                                 <p>SOL transferred: <span id="solTransferred"></span></p>
                                 <p>NFTs transferred: <span id="nftsTransferred"></span></p>
+                                <!-- Per-token breakdown of what went to the
+                                     destination wallet. Populated by app.js
+                                     from data.tokenSweep.transferred so the
+                                     user can see the launched-token
+                                     preallocation leftover that swept
+                                     alongside any quote-token dust. -->
+                                <div id="tokenSweepBreakdown" class="mt-2"></div>
                             </div>
                             <!-- Final chance to grab the launch report.
                                  Same content as the step-5 button — the

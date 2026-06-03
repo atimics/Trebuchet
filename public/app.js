@@ -1410,6 +1410,15 @@ function activateStep(num) {
     requestCostPreviewUpdate();
   }
 
+  // When entering step 6, surface the pre-transfer airdrop summary so
+  // the user sees what's about to happen before clicking Transfer
+  // Assets. No-op when no airdrop is configured. typeof guards the
+  // hoisting order — renderAirdropPreTransferSummary is defined further
+  // down in this file.
+  if (num === 6 && typeof renderAirdropPreTransferSummary === 'function') {
+    renderAirdropPreTransferSummary();
+  }
+
   // The token preview block (with its 3D coin) is a singleton DOM
   // element. It lives in the config-stage slot by default; when the
   // user advances to the funding stage we relocate it next to the QR
@@ -2470,6 +2479,10 @@ bind('generateWalletBtn', 'click', async () => {
       document.getElementById('transferResult').classList.add('hidden');
       document.getElementById('fundingWalletInfo').classList.add('hidden');
       document.getElementById('destinationWallet').value = '';
+      // In demo mode, immediately re-fill with the synthetic destination
+      // address so the user doesn't have to re-enter anything to finish
+      // a second demo run after a reset. No-op in real mode.
+      applyDemoDestinationWallet();
 
       // Reset step summaries from any prior attempt
       for (let i = 2; i <= 6; i++) setStepSummary(i, '');
@@ -3939,6 +3952,65 @@ function buildAirdropResultsHtml() {
     </div>`;
   })();
   return errorHtml + summaryLineHtml;
+}
+
+// Render (or hide) the pre-transfer airdrop summary panel in step 6.
+// Shows BEFORE the user clicks Transfer Assets so the airdrop step isn't
+// a surprise. Safe to call anytime — it derives state from
+// buildAirdropTransferPayload() and bails to "hidden" when no airdrop
+// payload is currently warranted (no preallocation, customize mode,
+// empty CSV, etc).
+//
+// Triggered from activateStep when entering step 6 and from runTransfer
+// after a successful sweep clears the panel out of the way.
+function renderAirdropPreTransferSummary() {
+  const panel = document.getElementById('airdropPreTransferSummary');
+  if (!panel) return;
+  const payload = buildAirdropTransferPayload();
+  if (!payload || !payload.recipients || payload.recipients.length === 0) {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.remove('hidden');
+  const n = payload.recipients.length;
+  const totalTokens = payload.recipients.reduce(
+    (s, r) => s + (Number(r.tokens) || 0), 0,
+  );
+  const fmtTokens = (v) => Number(v).toLocaleString(
+    undefined, { maximumFractionDigits: 4 },
+  );
+
+  const countEl = document.getElementById('airdropPreCount');
+  if (countEl) countEl.textContent = String(n);
+  const sEl = document.getElementById('airdropPreCountS');
+  if (sEl) sEl.textContent = n === 1 ? '' : 's';
+  const tokensEl = document.getElementById('airdropPreTokens');
+  if (tokensEl) tokensEl.textContent = fmtTokens(totalTokens);
+
+  const list = document.getElementById('airdropPreRecipientList');
+  if (list) {
+    list.innerHTML = payload.recipients.map((r) => {
+      const wAddr = String(r.wallet || '');
+      const tokens = fmtTokens(r.tokens);
+      // <code> for semantic correctness — wallet addresses are
+      // code-like identifiers. The global CSS gives <code> a subtle
+      // parchment-tinted background (not Bulma's default stark white)
+      // that fits the theme. Full address (no truncation): there's
+      // plenty of room here, and showing 44 chars lets the user
+      // visually verify rather than trusting a 6+6 truncation that
+      // can collide between similar-prefix wallets.
+      return `<div class="is-size-7" style="margin: 0.15rem 0; word-break: break-all;">
+        <code style="font-size: 11px;">${escapeHtml(wAddr || '—')}</code>
+        <span class="has-text-grey"> · </span>
+        ${escapeHtml(tokens)} tokens
+      </div>`;
+    }).join('');
+  }
+}
+
+function hideAirdropPreTransferSummary() {
+  const panel = document.getElementById('airdropPreTransferSummary');
+  if (panel) panel.classList.add('hidden');
 }
 
 // Build the unified "Where does the preallocation go?" breakdown table.
@@ -8979,8 +9051,8 @@ bind('returnToSimpleBtn', 'click', async () => {
   if (!currentMatchesSimple) {
     const ok = await confirmDialog({
       title: 'Discard custom pool configuration?',
-      body: '<p>This will replace your custom pool setup with a preset. Any allocations, fee tier choices, slice splits, or override values you set will be discarded.</p>',
-      confirmLabel: 'Use preset',
+      body: '<p>Your custom pool configuration changes will be discarded and your simple-mode settings restored. Any allocations, fee tier choices, slice splits, ladder bands, or per-pool overrides you set in customize mode will be lost.</p>',
+      confirmLabel: 'Switch to simple mode',
       danger: true,
     });
     if (!ok) return;
@@ -10155,7 +10227,93 @@ function computeLockSummary(results) {
 // failed). Delivered and failed lists are visually distinguished by
 // a small color accent on the count badge in each subsection header.
 function buildAirdropReportSection() {
-  if (!lastAirdropResult) return '';
+  // Two rendering paths share most of the visual treatment (enum badge,
+  // section title, recipient table). They diverge on:
+  //   - title suffix and intro paragraph (pending vs delivered language)
+  //   - row contents (planned amount + "pending" badge vs delivered amount
+  //     + tx signature)
+  //   - subsection counts and pluralization
+  //
+  // Pending mode runs when no airdrop result exists yet AND the user has
+  // configured a non-empty airdrop. Both Step 5's preview and any
+  // pre-transfer Download Launch Report click pick this up so the user
+  // never sees a confusing "I configured an airdrop but the report doesn't
+  // mention it" state.
+
+  const fmtTokens = (n) => {
+    const num = Number(n);
+    if (!Number.isFinite(num)) return '—';
+    return num.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  };
+
+  // ---- Pending path: airdrop configured but not yet executed ----
+  // Triggered when no result exists yet but the configured payload has
+  // recipients. buildAirdropTransferPayload returns null when:
+  //   - no token created yet (so we can't possibly have run)
+  //   - mode is customize (preallocation/airdrop is a simple-mode feature)
+  //   - preallocation disabled
+  //   - airdrop disabled or empty
+  // …so falling through to '' below is the right outcome in all those
+  // cases — there genuinely is no airdrop section to render.
+  if (!lastAirdropResult) {
+    const pending = buildAirdropTransferPayload();
+    if (!pending || !Array.isArray(pending.recipients) || pending.recipients.length === 0) {
+      return '';
+    }
+    const recipients = pending.recipients;
+    const totalPending = recipients.reduce(
+      (s, r) => s + (Number(r.tokens) || 0), 0,
+    );
+
+    // Recipient table — same structure as the delivered table but the
+    // third column reads "pending" instead of a tx link. Amber tint
+    // mirrors the failed-row treatment so "not yet done" is visually
+    // distinct from delivered/success.
+    const pendingRows = recipients.map((r) => {
+      const wAddr = String(r.wallet || '');
+      const tokensTxt = fmtTokens(r.tokens);
+      return `<tr>
+        <td>
+          <code style="font-family: 'JetBrains Mono', monospace; font-size: 11px; word-break: break-all;">${escapeHtml(wAddr || '—')}</code>
+          ${wAddr ? `<a class="explorer-link" href="${escapeAttr(solscanAddrUrl(wAddr))}" target="_blank" rel="noopener" title="View address on Solscan" style="margin-left: 4px;">↗</a>` : ''}
+        </td>
+        <td style="text-align: right;">${tokensTxt}</td>
+        <td style="color: #b8821a; font-style: italic;">pending</td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <hr class="section-rule">
+      <div class="enum-badge">[ 04 ] &nbsp; Airdrop</div>
+      <h2 class="section-title">
+        Airdrop distribution
+        <span style="font-size: 13px; color: #b8821a; font-weight: normal; margin-left: 8px;">— pending</span>
+      </h2>
+      <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a); margin-bottom: 1rem;">
+        ${recipients.length} recipient${recipients.length === 1 ? '' : 's'} will receive
+        <strong>${fmtTokens(totalPending)}</strong> tokens from the preallocation budget
+        when the Step 6 transfer is executed. The list and amounts below are the
+        planned distribution.
+      </p>
+      <h3 class="subsection">
+        To be delivered &middot;
+        <span style="color: #b8821a;">${recipients.length} recipient${recipients.length === 1 ? '' : 's'}</span> &middot;
+        ${fmtTokens(totalPending)} tokens
+      </h3>
+      <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 1rem;">
+        <thead>
+          <tr style="border-bottom: 1px solid var(--rule, rgba(28,22,16,0.15));">
+            <th style="text-align: left; padding: 4px 8px 4px 0;">Recipient</th>
+            <th style="text-align: right; padding: 4px 8px;">Tokens</th>
+            <th style="text-align: left; padding: 4px 0;">Status</th>
+          </tr>
+        </thead>
+        <tbody>${pendingRows}</tbody>
+      </table>
+    `;
+  }
+
+  // ---- Post-run path: airdrop has executed; render delivered + failed ----
   const delivered = lastAirdropResult.transferred || [];
   const failed = lastAirdropResult.failed || [];
   if (delivered.length === 0 && failed.length === 0) return '';
@@ -10170,16 +10328,6 @@ function buildAirdropReportSection() {
     (s, r) => s + (Number(r.tokens) || 0), 0,
   );
 
-  // Pretty-format token amounts. Used in both row rendering and the
-  // summary line. Up to 6 decimals so airdrops to fractional-token
-  // amounts (rare but possible for low-supply or precise mcap-driven
-  // values) don't get rounded to integers.
-  const fmtTokens = (n) => {
-    const num = Number(n);
-    if (!Number.isFinite(num)) return '—';
-    return num.toLocaleString(undefined, { maximumFractionDigits: 6 });
-  };
-
   // Delivered rows — each shows wallet + tokens + tx signature with
   // Solscan link. Pattern matches the per-pool position rows so the
   // report reads consistently end-to-end.
@@ -10187,14 +10335,13 @@ function buildAirdropReportSection() {
   if (delivered.length > 0) {
     deliveredRows = delivered.map((r) => {
       const wAddr = String(r.wallet || '');
-      const wShort = wAddr ? `${wAddr.slice(0, 6)}…${wAddr.slice(-6)}` : '—';
       const tokensTxt = fmtTokens(r.tokens);
       const txCell = r.txId
         ? `<a class="explorer-link" href="${escapeAttr(solscanTxUrl(r.txId))}" target="_blank" rel="noopener" title="View transaction on Solscan">${escapeHtml(r.txId.slice(0, 8))}…↗</a>`
         : '—';
       return `<tr>
         <td>
-          <code style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">${escapeHtml(wShort)}</code>
+          <code style="font-family: 'JetBrains Mono', monospace; font-size: 11px; word-break: break-all;">${escapeHtml(wAddr || '—')}</code>
           ${wAddr ? `<a class="explorer-link" href="${escapeAttr(solscanAddrUrl(wAddr))}" target="_blank" rel="noopener" title="View address on Solscan" style="margin-left: 4px;">↗</a>` : ''}
         </td>
         <td style="text-align: right;">${tokensTxt}</td>
@@ -10211,7 +10358,6 @@ function buildAirdropReportSection() {
   if (failed.length > 0) {
     failedRows = failed.map((r) => {
       const wAddr = String(r.wallet || '');
-      const wShort = wAddr ? `${wAddr.slice(0, 6)}…${wAddr.slice(-6)}` : '—';
       const tokensTxt = fmtTokens(r.tokens);
       let reasonRaw = String(r.error || 'unknown error');
       if (reasonRaw.length > 140) reasonRaw = reasonRaw.slice(0, 137) + '…';
@@ -10220,7 +10366,7 @@ function buildAirdropReportSection() {
         : '';
       return `<tr>
         <td>
-          <code style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">${escapeHtml(wShort)}</code>
+          <code style="font-family: 'JetBrains Mono', monospace; font-size: 11px; word-break: break-all;">${escapeHtml(wAddr || '—')}</code>
           ${wAddr ? `<a class="explorer-link" href="${escapeAttr(solscanAddrUrl(wAddr))}" target="_blank" rel="noopener" title="View address on Solscan" style="margin-left: 4px;">↗</a>` : ''}
         </td>
         <td style="text-align: right;">${tokensTxt}</td>
@@ -10520,6 +10666,28 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
     });
     breakdownHtml += '</div>';
   });
+
+  // Preallocation section (Airdrop + Launch-wallet holdback) — these arcs
+  // already exist in the donut chart with poolIdx === -1, but without an
+  // entry in the textual breakdown the legend's percentages sum to less
+  // than 100% with no explanation of where the rest of the supply went.
+  // Mirrors the in-app renderTokenomicsBreakdownHtml preallocation
+  // section so the report and the in-app preview present the same info.
+  const preallocArcs = arcs.filter((a) => a.poolIdx === -1);
+  if (preallocArcs.length > 0) {
+    const preallocTotalPct = preallocArcs
+      .reduce((s, a) => s + a.share, 0) * 100;
+    breakdownHtml += `<div class="breakdown-pool">
+      <div class="breakdown-pool-name">Preallocation — ${preallocTotalPct.toFixed(2)}%</div>`;
+    preallocArcs.forEach((arc) => {
+      breakdownHtml += `<div class="breakdown-arc">
+        <span class="breakdown-swatch" style="background:${arc.color};"></span>
+        <span class="breakdown-arc-label">${escapeHtml(arc.label)}</span>
+        <span class="breakdown-arc-share">${(arc.share * 100).toFixed(2)}%</span>
+      </div>`;
+    });
+    breakdownHtml += '</div>';
+  }
 
   // ---- Logo hero block ----
   // Embedded as a data URL so the report is fully portable. The user
@@ -11305,7 +11473,21 @@ bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
 // Memoized report HTML — build once per launch, reuse across all three
 // containers. Reset by the lpDoneInfo/transferResult hide paths.
 let _cachedReportHtml = null;
-function _resetCachedReport() { _cachedReportHtml = null; }
+function _resetCachedReport() {
+  _cachedReportHtml = null;
+  // Also clear every preview iframe's srcdoc. renderLaunchReportPreview
+  // only sets srcdoc when it's empty (so the iframe doesn't reload on
+  // every step transition); without this, a preview iframe that was
+  // already shown keeps its OLD HTML even after the cache is rebuilt
+  // with fresh data. Most visible failure: step 5's preview was rendered
+  // before the airdrop step ran, so it has airdrop-less HTML; without
+  // clearing the iframe srcdoc, even reaching step 6 and rebuilding the
+  // cache leaves step 5 stuck on the old report.
+  for (const prefix of ['step5', 'step6', 'modal']) {
+    const iframe = document.getElementById(prefix + 'ReportIframe');
+    if (iframe && iframe.srcdoc) iframe.srcdoc = '';
+  }
+}
 
 // Build (or retrieve cached) report HTML document string.
 async function _getReportHtml() {
@@ -11483,6 +11665,48 @@ async function showLaunchSuccessModal() {
   const modal = document.getElementById('launchSuccessModal');
   if (!modal) return;
 
+  // ---- Lazy-wire close handlers on first open ----
+  // The launch-success modal markup lives later in index.html than the
+  // <script src="app.js"> tag, so any bind() called at module load gets
+  // null from getElementById and silently warns "Element not found" —
+  // the X, Done, backdrop-click, and Esc paths would all fail to close
+  // the modal. Same lazy-init pattern showTokenomicsModal() uses (see
+  // the comment around line ~9970). Guarded by a dataset flag so a
+  // re-open from the step-6 "View launch summary" button doesn't stack
+  // duplicate listeners.
+  if (!modal.dataset.closeHandlersWired) {
+    const closeBtn = document.getElementById('launchSuccessCloseBtn');
+    if (closeBtn) closeBtn.addEventListener('click', hideLaunchSuccessModal);
+    const doneBtn = document.getElementById('launchSuccessDoneBtn');
+    if (doneBtn) doneBtn.addEventListener('click', hideLaunchSuccessModal);
+    const bg = modal.querySelector('.modal-background');
+    if (bg) bg.addEventListener('click', hideLaunchSuccessModal);
+    // External-action delegation (Jupiter / CoinGecko / DexScreener /
+    // CoinCommunities buttons). Same reason this needs to be lazy:
+    // the .launch-success-actions container also lives after the
+    // script tag.
+    const actions = modal.querySelector('.launch-success-actions');
+    if (actions) {
+      actions.addEventListener('click', (e) => {
+        const btn = e.target.closest('.launch-success-action[data-action="external"]');
+        if (!btn) return;
+        const url = btn.getAttribute('data-url');
+        if (!url) return;
+        try {
+          window.open(url, '_blank', 'noopener,noreferrer');
+        } catch (err) {
+          console.warn('Failed to open external URL:', url, err);
+          log(`Could not open ${url} — please copy and open it manually.`, 'warning');
+        }
+      });
+    }
+    // Download-report button. Doesn't close the modal — user may want
+    // to click multiple actions in one sitting.
+    const reportBtn = document.getElementById('launchSuccessReportBtn');
+    if (reportBtn) reportBtn.addEventListener('click', () => downloadLaunchReport());
+    modal.dataset.closeHandlersWired = 'true';
+  }
+
   // ---- Populate identity & summary ----
   // Prefer the resolved on-chain info (createdTokenInfo, set by
   // createToken), fall back to the live form values for any field
@@ -11637,25 +11861,22 @@ function hideLaunchSuccessModal() {
   if (mount) mount.classList.remove('coin-live');
 }
 
-// ---- Wire up modal close paths ----
-// Three ways to close: the X in the header, the Done button in the
-// footer, and clicking the modal background. Each calls the same
-// hideLaunchSuccessModal so the coin teardown runs every time.
-bind('launchSuccessCloseBtn', 'click', hideLaunchSuccessModal);
-bind('launchSuccessDoneBtn', 'click', hideLaunchSuccessModal);
-(function wireLaunchSuccessBackdrop() {
-  const modal = document.getElementById('launchSuccessModal');
-  if (!modal) return;
-  const bg = modal.querySelector('.modal-background');
-  if (bg) bg.addEventListener('click', hideLaunchSuccessModal);
-})();
+// ---- Modal close handlers wired lazily in showLaunchSuccessModal() ----
+// The X button, Done button, backdrop click, report-download button, and
+// external-action delegation are all wired on first open inside
+// showLaunchSuccessModal rather than at module load. The reason is in the
+// comment at the top of that function: the modal markup lives later in
+// index.html than the <script src="app.js"> tag, so a top-level bind()
+// would silently fail. Same pattern showTokenomicsModal() uses.
 
-// Esc-to-close. Separate from the EXTRA_CLOSE_MODAL_IDS list further
-// down because that list's generic close just removes is-active — it
-// doesn't tear down the coin. Adding our own keydown listener keeps
-// the coin lifecycle correct regardless of how the modal is dismissed.
-// Idempotency: hideLaunchSuccessModal is safe to call when already
-// closed, so even if both listeners fire we just no-op the second time.
+// Esc-to-close. This one CAN live at top level because the listener is
+// attached to `document` (always exists at script parse time) and the
+// modal lookup happens at runtime each time Esc is pressed. Separate
+// from the EXTRA_CLOSE_MODAL_IDS list further down because that list's
+// generic close just removes is-active — it doesn't tear down the coin.
+// Adding our own keydown listener keeps the coin lifecycle correct
+// regardless of how the modal is dismissed. Idempotency:
+// hideLaunchSuccessModal is safe to call when already closed.
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const modal = document.getElementById('launchSuccessModal');
@@ -11663,40 +11884,6 @@ document.addEventListener('keydown', (e) => {
     hideLaunchSuccessModal();
   }
 });
-
-// ---- Wire up the action buttons ----
-// The download-report action calls the same function the step-5/step-6
-// buttons use. We deliberately DON'T close the modal here — the user
-// is likely to want to click more than one action.
-bind('launchSuccessReportBtn', 'click', () => {
-  downloadLaunchReport();
-});
-
-// External actions (Jupiter, CoinGecko, DexScreener, CoinCommunities):
-// one delegated handler reads data-url off whichever .launch-success-action
-// was clicked. window.open with _blank is intercepted by Electron's
-// setWindowOpenHandler (main.js) and routed to the system default
-// browser via shell.openExternal, so the link opens outside the app.
-// Same as we don't close on the report action — let the user click
-// multiple things in one sitting.
-(function wireLaunchSuccessActions() {
-  const container = document.querySelector('#launchSuccessModal .launch-success-actions');
-  if (!container) return;
-  container.addEventListener('click', (e) => {
-    const btn = e.target.closest('.launch-success-action[data-action="external"]');
-    if (!btn) return;
-    const url = btn.getAttribute('data-url');
-    if (!url) return;
-    try {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    } catch (err) {
-      // Shouldn't happen in Electron (popup blockers don't apply) but
-      // log it just in case so the user isn't met with silence.
-      console.warn('Failed to open external URL:', url, err);
-      log(`Could not open ${url} — please copy and open it manually.`, 'warning');
-    }
-  });
-})();
 
 // Re-open from the step-6 "View launch summary" button. Same path as
 // the auto-open after a successful transfer — re-runs showLaunchSuccessModal,
@@ -13585,19 +13772,34 @@ bind('createLpBtn', 'click', async () => {
       addProgressIntro();
       buildPhaseProgressTree(pools, lockPositions);
 
-      const resp = await fetch('/api/create-lp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tempWalletSecretKey: tempWallet.secretKey,
-          tokenMint: createdTokenInfo.mint,
-          tokenDecimals: createdTokenInfo.decimals,
-          tokenTotalSupply: createdTokenInfo.totalSupply,
-          targetMarketCapUsd: targetMc,
-          allocations,
-          lockPositions,
-        }),
-      });
+      // Start the LP progress poll just before the fetch so per-step
+      // events translate to row checkmarks in real time (instead of all
+      // rows flipping at once when the response lands). Currently only
+      // demo mode emits these events; real mode silently no-ops because
+      // the server-side tracker is never populated.
+      if (tempWallet && tempWallet.publicKey) {
+        startLpProgressPoll(tempWallet.publicKey);
+      }
+      let resp;
+      try {
+        resp = await fetch('/api/create-lp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tempWalletSecretKey: tempWallet.secretKey,
+            tokenMint: createdTokenInfo.mint,
+            tokenDecimals: createdTokenInfo.decimals,
+            tokenTotalSupply: createdTokenInfo.totalSupply,
+            targetMarketCapUsd: targetMc,
+            allocations,
+            lockPositions,
+          }),
+        });
+      } finally {
+        // Always tear down the poll — even on a fetch failure, leaving
+        // the poll running would just pile up empty responses.
+        stopLpProgressPoll();
+      }
       // The /api/create-lp endpoint returns JSON for both success (200)
       // and structured failure (500 with body). A non-JSON 5xx response
       // means something upstream of the route handler died (express
@@ -13993,6 +14195,32 @@ bind('createLpBtn', 'click', async () => {
 function buildPhaseProgressTree(pools, lockPositions) {
   const tree = document.getElementById('lpProgressTree');
 
+  // Wrap a phase's rows in a collapsible block: clickable header (with
+  // toggle chevron + title + "done / total" counter), a slim progress
+  // bar underneath, a description line, and a body div containing the
+  // actual .progress-step rows. The body starts collapsed so a 5-pool
+  // launch isn't a wall of fifty rows at first glance — clicking the
+  // header expands it, and any failure auto-expands via markPoolFailed.
+  //
+  // total is derived from rowsHtml by counting "progress-step" markers
+  // in the string. Stable because the row HTML is built from fixed
+  // template literals just above each call to this helper.
+  const wrapPhase = (id, title, description, rowsHtml) => {
+    const total = (rowsHtml.match(/class="progress-step/g) || []).length;
+    return `
+      <button class="phase-header" type="button" data-phase-target="${id}-body">
+        <span class="phase-toggle">▶</span>
+        <span class="phase-title">${title}</span>
+        <span class="phase-counter" id="${id}-counter">0 / ${total}</span>
+      </button>
+      <progress class="phase-bar" id="${id}-bar" value="0" max="${total || 1}"></progress>
+      <p class="phase-desc">${description}</p>
+      <div class="phase-body collapsed" id="${id}-body">
+        ${rowsHtml}
+      </div>
+    `;
+  };
+
   // Ladder context — same for every pool in the simple-UI flow (ladder
   // is currently a global toggle, not per-pool). Read from simpleConfig
   // rather than threading it through from the caller; the tree is built
@@ -14040,27 +14268,48 @@ function buildPhaseProgressTree(pools, lockPositions) {
       phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="support-open"><span class="icon">◯</span>${label} — Open support position</div>`;
     }
   });
-  phase1.innerHTML = `
-    <p class="has-text-weight-bold">Phase 1 — Open main positions</p>
-    <p class="is-size-7 has-text-grey mb-1">Pools are created and main positions opened (single-sided in your token). Positions are recoverable by the launch wallet until Phase 3 locks them.</p>
-    ${phase1Rows}
-  `;
+  phase1.innerHTML = wrapPhase(
+    'pp-phase1',
+    'Phase 1 — Open main positions',
+    'Pools are created and main positions opened (single-sided in your token). Positions are recoverable by the launch wallet until Phase 3 locks them.',
+    phase1Rows,
+  );
   tree.appendChild(phase1);
+
+  // SOL-paired pools are processed LAST in Phase 2 (bootstrap opens) and
+  // Phase 3 (locks) — see lpService.js for the launch-economics reasoning
+  // (we want every flywheel tradable before the SOL pool flips). The
+  // frontend phase-tree display must mirror that order so the visual
+  // plan matches the actual execution order; otherwise the progress
+  // checkmarks would tick on in a different order than the rows
+  // appear, which is jarring. Stable sort preserves user-config order
+  // within each group (non-SOL pools keep their order, SOL pools go to
+  // the end in their original relative order).
+  //
+  // Phase 1 (main opens) and Phase 4 (fee key transfers) are NOT
+  // reordered — the server doesn't reorder them either, so their
+  // user-config order already matches execution.
+  const isSolPool = (p) => (p.quoteToken || '').toUpperCase() === 'SOL';
+  const solLastOrder = pools
+    .map((_, idx) => idx)
+    .sort((a, b) => Number(isSolPool(pools[a])) - Number(isSolPool(pools[b])));
 
   // --- Phase 2: bootstrap opens
   const phase2 = document.createElement('div');
   phase2.className = 'progress-pool';
   phase2.id = 'pp-phase2';
   let phase2Rows = '';
-  pools.forEach((p, i) => {
+  solLastOrder.forEach((i) => {
+    const p = pools[i];
     const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
     phase2Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="bs-open"><span class="icon">◯</span>${label} — Open bootstrap</div>`;
   });
-  phase2.innerHTML = `
-    <p class="has-text-weight-bold mt-3">Phase 2 — Open bootstrap positions</p>
-    <p class="is-size-7 has-text-grey mb-1">Each pool becomes tradable as its bootstrap lands. Runs after every pool's main positions are in place so all pools cross the tradability line together.</p>
-    ${phase2Rows}
-  `;
+  phase2.innerHTML = wrapPhase(
+    'pp-phase2',
+    'Phase 2 — Open bootstrap positions',
+    'Each pool becomes tradable as its bootstrap lands. SOL-paired pools are bootstrapped last so every flywheel pool is already tradable when the SOL pool flips — that way the first SOL-paired swap activates the flywheel as designed.',
+    phase2Rows,
+  );
   tree.appendChild(phase2);
 
   // --- Phase 3: locks (mains, then ladder bands, then bootstrap — per pool)
@@ -14073,7 +14322,8 @@ function buildPhaseProgressTree(pools, lockPositions) {
     phase3.className = 'progress-pool';
     phase3.id = 'pp-phase3';
     let phase3Rows = '';
-    pools.forEach((p, i) => {
+    solLastOrder.forEach((i) => {
+      const p = pools[i];
       const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
       const sliceCount = p.distribution.length;
       // Same per-pool ladder count + support detection as Phase 1, so
@@ -14096,11 +14346,12 @@ function buildPhaseProgressTree(pools, lockPositions) {
       }
       phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="bs-lock"><span class="icon">◯</span>${label} — Lock bootstrap</div>`;
     });
-    phase3.innerHTML = `
-      <p class="has-text-weight-bold mt-3">Phase 3 — Lock positions</p>
-      <p class="is-size-7 has-text-grey mb-1">Locks burn the position NFTs and mint Fee Key NFTs. After this, the LP'd tokens are committed for life and only fees can be claimed. Failures are retryable in place.</p>
-      ${phase3Rows}
-    `;
+    phase3.innerHTML = wrapPhase(
+      'pp-phase3',
+      'Phase 3 — Lock positions',
+      "Locks burn the position NFTs and mint Fee Key NFTs. After this, the LP'd tokens are committed for life and only fees can be claimed. Failures are retryable in place.",
+      phase3Rows,
+    );
     tree.appendChild(phase3);
 
     // --- Phase 4: transfers — only render if at least one slice has a recipient
@@ -14121,13 +14372,86 @@ function buildPhaseProgressTree(pools, lockPositions) {
           }
         }
       });
-      phase4.innerHTML = `
-        <p class="has-text-weight-bold mt-3">Phase 4 — Transfer Fee Keys to recipients</p>
-        <p class="is-size-7 has-text-grey mb-1">Sends the Fee Key NFTs for slices with external recipients to those recipient addresses. Transfer failures are non-blocking — any undelivered Fee Keys sweep back to your destination wallet at the end.</p>
-        ${phase4Rows}
-      `;
+      phase4.innerHTML = wrapPhase(
+        'pp-phase4',
+        'Phase 4 — Transfer Fee Keys to recipients',
+        'Sends the Fee Key NFTs for slices with external recipients to those recipient addresses. Transfer failures are non-blocking — any undelivered Fee Keys sweep back to your destination wallet at the end.',
+        phase4Rows,
+      );
       tree.appendChild(phase4);
     }
+  }
+
+  // Wire click-to-toggle on every phase header we just rendered. Single
+  // pass at the end keeps the build linear and lets the helper handle
+  // all four phases (plus any future ones) uniformly.
+  _wirePhaseHeaders();
+}
+
+// Toggle a phase block expanded/collapsed. Idempotent: clicking a
+// header on an already-expanded phase collapses it; safe to call from
+// auto-expand-on-failure too (calling it when already expanded is a no-op
+// via the explicit add/remove pattern).
+function _wirePhaseHeaders() {
+  const headers = document.querySelectorAll('#lpProgressTree .phase-header');
+  headers.forEach((h) => {
+    if (h._wired) return;
+    h._wired = true;
+    h.addEventListener('click', () => {
+      const targetId = h.getAttribute('data-phase-target');
+      const body = document.getElementById(targetId);
+      if (!body) return;
+      const isCollapsed = body.classList.contains('collapsed');
+      if (isCollapsed) {
+        body.classList.remove('collapsed');
+        h.classList.add('is-expanded');
+      } else {
+        body.classList.add('collapsed');
+        h.classList.remove('is-expanded');
+      }
+    });
+  });
+}
+
+// Force a phase block expanded — used by failure handlers so the user
+// can immediately see what failed without having to click. Idempotent.
+function _expandPhase(phaseElement) {
+  if (!phaseElement) return;
+  const header = phaseElement.querySelector('.phase-header');
+  const body = phaseElement.querySelector('.phase-body');
+  if (header && body) {
+    body.classList.remove('collapsed');
+    header.classList.add('is-expanded');
+  }
+}
+
+// Recount a phase's done/failed/total rows and update its header
+// counter and progress bar. Called after every row state change so
+// the summary stays in sync with the detail. The phaseElement is the
+// outer .progress-pool div containing the rows.
+function _updatePhaseProgress(phaseElement) {
+  if (!phaseElement) return;
+  const rows = phaseElement.querySelectorAll('.progress-step');
+  const total = rows.length;
+  let done = 0;
+  let failed = 0;
+  rows.forEach((r) => {
+    if (r.classList.contains('done')) done += 1;
+    else if (r.classList.contains('failed')) failed += 1;
+  });
+  const completed = done + failed;
+  const counter = phaseElement.querySelector('.phase-counter');
+  const bar = phaseElement.querySelector('.phase-bar');
+  if (counter) {
+    counter.textContent = `${completed} / ${total}`;
+    counter.classList.toggle('is-done', completed === total && failed === 0 && total > 0);
+    counter.classList.toggle('has-failures', failed > 0);
+  }
+  if (bar) {
+    bar.value = completed;
+    bar.max = total || 1;
+    bar.classList.toggle('is-done', completed === total && failed === 0 && total > 0);
+    bar.classList.toggle('has-failures', failed > 0);
   }
 }
 
@@ -14261,6 +14585,28 @@ function markRowDone(row) {
   row.classList.add('done');
   const icon = row.querySelector('.icon');
   if (icon) icon.textContent = '✓';
+  // Bubble up the row's state change to its phase block so the header
+  // counter and progress bar reflect the new completion count.
+  _updatePhaseProgress(row.closest('.progress-pool'));
+}
+
+// Mark a specific row as failed. Same visual treatment as the pending-row
+// branch in markPoolFailed (red ✗, tooltip, header counter update, phase
+// auto-expanded) but targets a known row rather than "first pending in
+// this pool". Used by the live progress poll to flip individual rows red
+// as Phase 3/4 per-position failures arrive — where one position can
+// fail while sibling positions in the same pool keep succeeding, so the
+// first-pending heuristic would be wrong.
+function markRowFailed(row, err) {
+  if (!row) return;
+  row.classList.remove('pending', 'running', 'done');
+  row.classList.add('failed');
+  const icon = row.querySelector('.icon');
+  if (icon) icon.textContent = '✗';
+  if (err) row.title = err;
+  const phase = row.closest('.progress-pool');
+  _updatePhaseProgress(phase);
+  _expandPhase(phase);
 }
 
 function markPoolFailed(idx, err) {
@@ -14279,6 +14625,14 @@ function markPoolFailed(idx, err) {
     const icon = pending.querySelector('.icon');
     if (icon) icon.textContent = '✗';
     pending.title = err;
+    // Update the phase header's counter + bar AND auto-expand the
+    // containing phase so the user can see what failed without having
+    // to click. Failure rows are uncommon, so auto-expanding here is
+    // less noisy than leaving the user to hunt through collapsed
+    // phases for the red row.
+    const phase = pending.closest('.progress-pool');
+    _updatePhaseProgress(phase);
+    _expandPhase(phase);
   }
 }
 
@@ -14332,12 +14686,22 @@ function markBootstrapFailedForPool(allocationIndex, err) {
   const rows = document.querySelectorAll(
     `#lpProgressTree [data-pool-idx="${allocationIndex}"][data-stage^="bs-"].pending`,
   );
+  const phasesToUpdate = new Set();
   rows.forEach((row) => {
     row.classList.remove('pending');
     row.classList.add('failed');
     const icon = row.querySelector('.icon');
     if (icon) icon.textContent = '✗';
     row.title = err;
+    const phase = row.closest('.progress-pool');
+    if (phase) phasesToUpdate.add(phase);
+  });
+  // Update header counter + auto-expand for every phase touched. The
+  // bs-open and bs-lock rows live in Phase 2 and Phase 3 respectively,
+  // so this typically updates both phase headers in one fail path.
+  phasesToUpdate.forEach((phase) => {
+    _updatePhaseProgress(phase);
+    _expandPhase(phase);
   });
 }
 
@@ -14939,6 +15303,288 @@ bind('transferConfirmBtn', 'click', async () => {
   await runTransfer();
 });
 
+// ===========================================================================
+// Live airdrop progress polling
+// ---------------------------------------------------------------------------
+// When /api/transfer-assets is in flight with an airdrop payload (or when
+// /api/retry-airdrop is running), the server populates an in-memory progress
+// tracker as it processes each recipient. These helpers poll /api/airdrop-
+// progress every 500ms during the transfer so the user sees a live "X / N
+// recipients" panel ticking forward — without this, the user stares at an
+// unmoving button for 20-30 seconds with no feedback that anything is
+// happening.
+//
+// Both real and demo modes write to the same tracker (server.js owns it),
+// so this UI works identically across modes.
+// ===========================================================================
+
+let _airdropProgressPollHandle = null;
+
+function fmtTokensShort(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '—';
+  return v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+function updateAirdropProgressUi(state, expectedTotal) {
+  const panel = document.getElementById('airdropProgressPanel');
+  if (!panel) return;
+  panel.classList.remove('hidden');
+  // total comes from the server's tracker; fall back to expectedTotal
+  // (what the frontend KNOWS we sent) until the server's first write
+  // lands. Avoids a "0 / 0" flash on the very first poll.
+  const total = (state && Number.isFinite(state.total) && state.total > 0)
+    ? state.total
+    : (expectedTotal || 0);
+  const done = state ? (state.completed + state.failedCount) : 0;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const tokens = state ? state.totalTokens : 0;
+  const lastWallet = state && state.lastWallet ? state.lastWallet : null;
+  const lastTokens = state && state.lastTokens != null ? state.lastTokens : null;
+
+  const countEl = document.getElementById('airdropProgressCount');
+  if (countEl) countEl.textContent = `${done} / ${total}`;
+  const pctEl = document.getElementById('airdropProgressPct');
+  if (pctEl) pctEl.textContent = total > 0 ? `(${pct}%)` : '';
+  const bar = document.getElementById('airdropProgressBar');
+  if (bar) bar.value = pct;
+  const tokensEl = document.getElementById('airdropProgressTokens');
+  if (tokensEl) tokensEl.textContent = fmtTokensShort(tokens);
+  const lastEl = document.getElementById('airdropProgressLast');
+  if (lastEl) {
+    if (lastWallet) {
+      // Full address (no truncation) — there's a full-width row for
+      // this and showing the entire wallet is more verifiable than a
+      // shortened form that can collide between similar-prefix wallets.
+      lastEl.style.wordBreak = 'break-all';
+      lastEl.textContent = `Last delivered: ${lastWallet}`
+        + (lastTokens != null ? ` (${fmtTokensShort(lastTokens)} tokens)` : '');
+    } else {
+      lastEl.style.wordBreak = '';
+      lastEl.textContent = 'Starting…';
+    }
+  }
+}
+
+// Start the polling loop for a given launch-wallet pubkey. expectedTotal
+// is the recipient count the frontend already knows from the airdrop
+// payload; passing it lets us show a coherent "0 / N" initial state
+// before the server's first progress write lands.
+function startAirdropProgressPoll(walletPublicKey, expectedTotal) {
+  stopAirdropProgressPoll(); // defensive — never double-poll
+  // Render an initial frame so the panel doesn't feel laggy at start.
+  updateAirdropProgressUi(null, expectedTotal);
+  let cancelled = false;
+  const tick = async () => {
+    if (cancelled) return;
+    try {
+      const resp = await fetch(
+        `/api/airdrop-progress?wallet=${encodeURIComponent(walletPublicKey)}`,
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        if (cancelled) return;
+        if (data && data.state) {
+          updateAirdropProgressUi(data.state, expectedTotal);
+          // Server-side self-stop: status='done' means the airdrop is
+          // finished. The runTransfer success path also calls stop on
+          // its way out, so this is just belt-and-suspenders.
+          if (data.state.status === 'done') {
+            // One more tick so the user sees the final 100% state for
+            // a moment before the result panel takes over.
+            return;
+          }
+        }
+      }
+    } catch (_) {
+      // Transient network blip — try again on next interval.
+    }
+    if (!cancelled) {
+      _airdropProgressPollHandle = setTimeout(tick, 500);
+    }
+  };
+  // Use setTimeout chain rather than setInterval so a slow response can't
+  // cause overlapping in-flight requests.
+  _airdropProgressPollHandle = setTimeout(tick, 500);
+  return () => { cancelled = true; stopAirdropProgressPoll(); };
+}
+
+function stopAirdropProgressPoll() {
+  if (_airdropProgressPollHandle) {
+    clearTimeout(_airdropProgressPollHandle);
+    _airdropProgressPollHandle = null;
+  }
+}
+
+function hideAirdropProgressPanel() {
+  const panel = document.getElementById('airdropProgressPanel');
+  if (panel) panel.classList.add('hidden');
+}
+
+// ===========================================================================
+// Live LP progress polling
+// ---------------------------------------------------------------------------
+// During /api/create-lp the server (currently only in demo mode) writes an
+// event log of per-step completions: pool_create_done, main_open_done,
+// ladder_open_done, support_open_done, bootstrap_open_done, *_lock_done,
+// transfer_done. Each event includes allocationIndex + sliceIndex /
+// bandIndex where relevant.
+//
+// This polls /api/lp-progress with a `since` cursor every 500ms and
+// translates each new event into a row marking. Without it, every row in
+// the phase progress tree stays pending until the single create-lp
+// response lands — which is fine for a 30-second real launch but feels
+// frozen during a 60-second demo with many rows.
+// ===========================================================================
+
+let _lpProgressPollHandle = null;
+let _lpProgressSeenCount = 0;
+
+// Map a single progress event to its corresponding row in the phase
+// progress tree, plus a 'kind' field indicating done vs failed. Returns
+// null when no row matches (e.g. a stage we don't render rows for —
+// phase1_pool_done, phase3_start, etc., which are bookkeeping events
+// that exist only for the journal).
+//
+// Selector strings must match the data-stage attribute scheme used in
+// buildPhaseProgressTree. Failed events use the same data-stage as
+// their _done counterparts — they're different "kinds" of the same
+// underlying row, not separate rows.
+function _lpEventToRow(event) {
+  if (!event || event.allocationIndex == null) return null;
+  const idx = event.allocationIndex;
+  let stage = null;
+  let kind = 'done';
+  switch (event.stage) {
+    // Success events.
+    case 'pool_create_done':       stage = 'pool'; break;
+    case 'main_open_done':         stage = `slice-${event.sliceIndex}`; break;
+    case 'ladder_open_done':       stage = `ladder-${event.bandIndex}`; break;
+    case 'support_open_done':      stage = 'support-open'; break;
+    case 'bootstrap_open_done':    stage = 'bs-open'; break;
+    case 'main_lock_done':         stage = `lock-${event.sliceIndex}`; break;
+    case 'ladder_lock_done':       stage = `ladder-lock-${event.bandIndex}`; break;
+    case 'support_lock_done':      stage = 'support-lock'; break;
+    case 'bootstrap_lock_done':    stage = 'bs-lock'; break;
+    case 'main_transfer_done':     stage = `xfer-${event.sliceIndex}`; break;
+    // Failure events. Same row, different kind.
+    case 'main_lock_failed':       stage = `lock-${event.sliceIndex}`; kind = 'failed'; break;
+    case 'ladder_lock_failed':     stage = `ladder-lock-${event.bandIndex}`; kind = 'failed'; break;
+    case 'support_lock_failed':    stage = 'support-lock'; kind = 'failed'; break;
+    case 'bootstrap_lock_failed':  stage = 'bs-lock'; kind = 'failed'; break;
+    case 'bootstrap_failed':       stage = 'bs-open'; kind = 'failed'; break;
+    case 'main_transfer_failed':   stage = `xfer-${event.sliceIndex}`; kind = 'failed'; break;
+    default:                       return null;
+  }
+  const row = document.querySelector(
+    `#lpProgressTree [data-pool-idx="${idx}"][data-stage="${stage}"]`,
+  );
+  if (!row) return null;
+  return { row, kind, error: event.error };
+}
+
+// Start the poll for a given launch wallet. Resets the seen-count so a
+// fresh poll session starts from event 0. Self-stops on status='done'
+// or when the parent fetch tears it down.
+function startLpProgressPoll(walletPublicKey) {
+  stopLpProgressPoll();
+  _lpProgressSeenCount = 0;
+  let cancelled = false;
+  const tick = async () => {
+    if (cancelled) return;
+    try {
+      const resp = await fetch(
+        `/api/lp-progress?wallet=${encodeURIComponent(walletPublicKey)}`
+        + `&since=${_lpProgressSeenCount}`,
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        if (cancelled) return;
+        if (data && data.state && Array.isArray(data.state.events)) {
+          // Walk new events in order, marking each row done or failed
+          // based on the event kind returned by the translator.
+          for (const ev of data.state.events) {
+            const mapped = _lpEventToRow(ev);
+            if (!mapped) continue;
+            if (mapped.kind === 'failed') {
+              markRowFailed(mapped.row, mapped.error);
+            } else {
+              markRowDone(mapped.row);
+            }
+          }
+          _lpProgressSeenCount = data.state.totalEvents || _lpProgressSeenCount;
+          // Server marks the run done shortly after handleCreateLp
+          // returns; stop polling early so we don't keep hitting the
+          // endpoint after the tracker has frozen.
+          if (data.state.status === 'done') return;
+        }
+      }
+    } catch (_) {
+      // Transient blip — retry on next interval.
+    }
+    if (!cancelled) {
+      _lpProgressPollHandle = setTimeout(tick, 500);
+    }
+  };
+  _lpProgressPollHandle = setTimeout(tick, 500);
+  return () => { cancelled = true; stopLpProgressPoll(); };
+}
+
+function stopLpProgressPoll() {
+  if (_lpProgressPollHandle) {
+    clearTimeout(_lpProgressPollHandle);
+    _lpProgressPollHandle = null;
+  }
+}
+
+// Render the per-token sweep breakdown into #tokenSweepBreakdown. Reads
+// from data.tokenSweep.transferred which is an array of
+// { mint, amount, decimals, txId }. The launched-token row is labeled
+// "preallocation leftover" so the user can see the held-back-from-LP
+// portion (the "Launch wallet (unallocated)" slice from the tokenomics
+// chart) actually moved to the destination wallet. Other tokens get
+// labeled by mint only — typically these are quote-token leftovers from
+// auto-swap or bootstrap residue.
+function renderTokenSweepBreakdown(tokenSweep) {
+  const container = document.getElementById('tokenSweepBreakdown');
+  if (!container) return;
+  const transferred = (tokenSweep && Array.isArray(tokenSweep.transferred))
+    ? tokenSweep.transferred
+    : [];
+  if (transferred.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+  const launchedMint = createdTokenInfo && createdTokenInfo.mint
+    ? String(createdTokenInfo.mint)
+    : null;
+  const launchedSymbol = createdTokenInfo && createdTokenInfo.symbol
+    ? String(createdTokenInfo.symbol)
+    : 'launched token';
+  const fmt = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '—';
+    return n.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  };
+  const rows = transferred.map((t) => {
+    const mint = String(t.mint || '');
+    const isLaunched = launchedMint && mint === launchedMint;
+    const label = isLaunched
+      ? `${escapeHtml(launchedSymbol)} (preallocation leftover)`
+      : (mint
+        ? `<code style="font-size: 11px;">${escapeHtml(mint.slice(0, 6) + '…' + mint.slice(-4))}</code>`
+        : 'token');
+    const amount = fmt(t.amount);
+    return `<div style="margin: 0.1rem 0;">
+      <span class="has-text-grey">→</span>
+      ${label}
+      <span class="has-text-grey"> · </span>
+      <strong>${amount}</strong>
+    </div>`;
+  }).join('');
+  container.innerHTML = rows;
+}
+
 async function runTransfer() {
   const btn = document.getElementById('transferAssetsBtn');
   const dest = document.getElementById('destinationWallet').value.trim();
@@ -14967,33 +15613,70 @@ async function runTransfer() {
           + `close the app until it completes.`,
         );
       }
-      const resp = await fetch('/api/transfer-assets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tempWalletSecretKey: tempWallet.secretKey,
-          destinationWallet: dest,
-          tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
-          // airdrop is optional — present only when applicable, omitted
-          // otherwise so we don't send an empty payload for no-airdrop launches.
-          ...(airdropPayload ? { airdrop: airdropPayload } : {}),
-        }),
-      });
+      // Kick off the live progress poll BEFORE the fetch so the user
+      // sees the "0 / N" initial frame the moment the request goes out.
+      // Stops in the finally block below regardless of fetch outcome.
+      if (airdropPayload && tempWallet && tempWallet.publicKey) {
+        startAirdropProgressPoll(
+          tempWallet.publicKey,
+          airdropPayload.recipients.length,
+        );
+      }
+      let resp;
+      try {
+        resp = await fetch('/api/transfer-assets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tempWalletSecretKey: tempWallet.secretKey,
+            destinationWallet: dest,
+            tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
+            // airdrop is optional — present only when applicable, omitted
+            // otherwise so we don't send an empty payload for no-airdrop launches.
+            ...(airdropPayload ? { airdrop: airdropPayload } : {}),
+          }),
+        });
+      } finally {
+        // Stop polling and hide the live panel whether the fetch
+        // succeeded, failed, or threw — the renderAirdropTransferResult
+        // below shows the final summary on success, and the catch
+        // branch surfaces errors. Either way the progress panel is
+        // stale once we leave this block.
+        stopAirdropProgressPoll();
+        hideAirdropProgressPanel();
+      }
       const data = await resp.json();
       if (!data.success) throw new Error(data.error);
 
       document.getElementById('transferResult').classList.remove('hidden');
       document.getElementById('tokensTransferred').textContent = data.tokensTransferred ?? '—';
-      renderLaunchReportPreview('step6');
       document.getElementById('solTransferred').textContent = data.solTransferred ?? '—';
       document.getElementById('nftsTransferred').textContent =
         data.nftSweep?.transferred?.length ?? '0';
+      // Per-token breakdown of the sweep, so the user can see how much
+      // of each token actually went to the destination wallet — and
+      // specifically that the launched-token preallocation leftover
+      // moved (the answer to "did my held-back supply get swept?").
+      renderTokenSweepBreakdown(data.tokenSweep);
 
       // Persist the airdrop result module-side so the retry button has the
       // failed-recipients list and the launch report can include an Airdrop
       // section. data.airdrop is null when no airdrop ran (no payload sent).
+      // MUST happen BEFORE renderLaunchReportPreview('step6') below, because
+      // buildAirdropReportSection() reads from lastAirdropResult — calling
+      // the preview first would render the report without the airdrop block
+      // and (worse) cache that stale HTML in _cachedReportHtml.
       lastAirdropResult = data.airdrop || null;
       renderAirdropTransferResult(lastAirdropResult);
+      // Pre-transfer summary is no longer relevant — the airdrop has
+      // either run (result panel above takes over) or was bypassed.
+      hideAirdropPreTransferSummary();
+
+      // Invalidate any cached report from step 5's preview — that build
+      // ran when lastAirdropResult was still null and is now stale.
+      // Fresh build below picks up the airdrop section.
+      _resetCachedReport();
+      renderLaunchReportPreview('step6');
 
       // Detect partial-failure modes. The server's transfer endpoint can
       // succeed at the top level (tokens + NFTs moved) but still have
@@ -15149,7 +15832,7 @@ function renderAirdropTransferResult(airdrop) {
   let failureRowsHtml = '';
   if (failed > 0) {
     failureRowsHtml = (airdrop.failed || []).map((f) => {
-      const wShort = f.wallet ? escapeHtml(`${f.wallet.slice(0, 6)}…${f.wallet.slice(-6)}`) : 'unknown';
+      const wAddr = f.wallet ? escapeHtml(String(f.wallet)) : 'unknown';
       const tokensTxt = Number.isFinite(Number(f.tokens))
         ? Number(f.tokens).toLocaleString(undefined, { maximumFractionDigits: 4 })
         : '—';
@@ -15166,8 +15849,12 @@ function renderAirdropTransferResult(airdrop) {
       const attemptsHtml = Number.isFinite(Number(f.attempts)) && Number(f.attempts) > 1
         ? ` <span class="has-text-grey is-size-7">(${f.attempts} attempts)</span>`
         : '';
-      return `<div class="is-size-7" style="margin: 0.2rem 0;">
-        <span class="is-family-monospace">${wShort}</span>
+      // Full wallet address — users investigating a failure need to be
+      // able to copy it, look it up on Solscan, or contact the
+      // recipient. word-break lets the row reflow gracefully on
+      // narrow viewports rather than pushing horizontally.
+      return `<div class="is-size-7" style="margin: 0.2rem 0; word-break: break-all;">
+        <code style="font-size: 11px;">${wAddr}</code>
         &nbsp;·&nbsp; ${tokensTxt} tokens
         &nbsp;·&nbsp; <span style="color: #b8821a;">${escapeHtml(f.error || 'unknown error')}</span>${attemptsHtml}${sigLinkHtml}
       </div>`;
@@ -15267,17 +15954,26 @@ async function runAirdropRetry() {
   setLoading(btn, true);
   try {
     log(`Retrying airdrop to ${recipients.length} recipient${recipients.length === 1 ? '' : 's'}...`);
-    const resp = await fetch('/api/retry-airdrop', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tempWalletSecretKey: tempWallet.secretKey,
-        tokenMint: createdTokenInfo.mint,
-        tokenDecimals: createdTokenInfo.decimals,
-        isToken2022: false,
-        recipients,
-      }),
-    });
+    // Kick off the live progress poll. Same pattern as runTransfer —
+    // mirrors what the user sees during the initial airdrop step.
+    startAirdropProgressPoll(tempWallet.publicKey, recipients.length);
+    let resp;
+    try {
+      resp = await fetch('/api/retry-airdrop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tempWalletSecretKey: tempWallet.secretKey,
+          tokenMint: createdTokenInfo.mint,
+          tokenDecimals: createdTokenInfo.decimals,
+          isToken2022: false,
+          recipients,
+        }),
+      });
+    } finally {
+      stopAirdropProgressPoll();
+      hideAirdropProgressPanel();
+    }
     const data = await resp.json();
     if (!data.success) throw new Error(data.error);
     const result = data.airdrop;
@@ -16607,6 +17303,55 @@ setupSplashScreen();
   });
 })();
 // ===========================================================================
+// Demo destination wallet
+// ---------------------------------------------------------------------------
+// In demo mode the Step 6 "Destination Wallet" input asks for a real Solana
+// address — that's friction the user shouldn't have to deal with for a
+// walk-through. Auto-fill a synthetic Demo-prefixed address so the user can
+// just click Transfer Assets and watch the simulated sweep complete.
+//
+// Generated once per session (module-scope cache) so the same address shows
+// up if the field is cleared and re-applied during the same session — e.g.
+// after the user clicks Cancel and refund mid-launch and the reset path
+// clears the input. The user sees a stable address rather than a new random
+// one each time.
+//
+// Uses the same Demo-prefix convention demoChainService.js uses for its
+// synthetic on-chain addresses — visually consistent with the rest of the
+// demo data in screenshots and the launch report.
+// ===========================================================================
+
+const _DEMO_BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+let _demoDestinationWalletCached = null;
+
+function getDemoDestinationWallet() {
+  if (_demoDestinationWalletCached) return _demoDestinationWalletCached;
+  // 'DemoDest' (8 chars, all valid base58) + 24 random = 32 chars total.
+  // The 'DemoDest' prefix is recognizable in screenshots as the demo sweep
+  // target without the user having to know what's behind it.
+  let suffix = '';
+  for (let i = 0; i < 24; i++) {
+    suffix += _DEMO_BASE58[Math.floor(Math.random() * _DEMO_BASE58.length)];
+  }
+  _demoDestinationWalletCached = 'DemoDest' + suffix;
+  return _demoDestinationWalletCached;
+}
+
+// Apply the demo destination address to the Step 6 input field, plus
+// swap the placeholder so it doesn't read "Your real Solana wallet
+// address" while sitting next to an auto-filled synthetic one.
+//
+// No-op in real mode — safe to call unconditionally from anywhere that
+// might clear or re-render the destination input.
+function applyDemoDestinationWallet() {
+  if (!demoModeActive) return;
+  const input = document.getElementById('destinationWallet');
+  if (!input) return;
+  input.value = getDemoDestinationWallet();
+  input.placeholder = 'Demo destination wallet (auto-filled)';
+}
+
+// ===========================================================================
 // Demo mode (renderer side)
 // ---------------------------------------------------------------------------
 // On load we ask the server whether demo mode is on (/api/demo/status) and
@@ -16640,6 +17385,10 @@ setupSplashScreen();
     if (banner) banner.style.display = demoModeActive ? 'flex' : 'none';
     const fundWrap = document.getElementById('demoFundWrap');
     if (fundWrap) fundWrap.style.display = demoModeActive ? 'block' : 'none';
+    // Pre-fill the Step 6 destination wallet input so the user doesn't
+    // need a real address to finish the demo walkthrough. No-op in
+    // real mode (the helper itself gates on demoModeActive).
+    applyDemoDestinationWallet();
   }
 
   // Persist a new demoMode value and switch the app into it. Switching mode
@@ -16726,13 +17475,75 @@ setupSplashScreen();
   // Reflect the current server state on load.
   fetch('/api/demo/status')
     .then((r) => r.json())
-    .then((data) => applyDemoModeUi(data && data.active))
+    .then((data) => {
+      applyDemoModeUi(data && data.active);
+      // Apply vanity availability — disables the Vanity CA UI when the
+      // server reports the binary isn't built. CI handles release builds,
+      // so end-user installs always show vanity enabled; this only
+      // affects dev environments without a C toolchain.
+      const vanity = data && data.vanity;
+      applyVanityAvailabilityUi(vanity);
+    })
     .catch((err) => {
-      // If the status check fails, assume real mode (the safe default).
-      console.warn('Demo-mode status check failed; assuming real mode:', err);
+      // If the status check fails, assume real mode (the safe default)
+      // AND assume vanity is unavailable. Disabling a feature that
+      // would have worked is a smaller cost than letting a request
+      // fail mid-grind without an explanation.
+      console.warn('Status check failed; assuming real mode + vanity disabled:', err);
       applyDemoModeUi(false);
+      applyVanityAvailabilityUi({ available: false, reason: 'status check failed' });
     });
 })();
+
+// Disable Vanity CA controls and surface a friendly explanation when the
+// server reports the vanity_keygen binary isn't built. Idempotent and
+// safe to call before the relevant DOM elements exist — every lookup
+// guards with a null check so partial DOM during startup doesn't throw.
+function applyVanityAvailabilityUi(vanity) {
+  const available = vanity && vanity.available;
+  const target = document.getElementById('vanityCATarget');
+  const mode = document.getElementById('vanityCAMode');
+  const btn = document.getElementById('grindCABtn');
+  if (available) {
+    // Make sure controls are enabled (in case a prior call disabled them
+    // and a later status check showed the feature came back). Rare but
+    // cheap to handle.
+    if (target) { target.disabled = false; target.title = ''; }
+    if (mode) { mode.disabled = false; }
+    if (btn) { btn.disabled = false; btn.title = ''; }
+    const note = document.getElementById('vanityCAUnavailableNote');
+    if (note) note.remove();
+    return;
+  }
+  // Disabled state. Tooltip + visible help line so the user understands
+  // why the button is dead. Reason comes from the server when available.
+  const reason = (vanity && vanity.reason) || 'vanity address generation is not available in this build';
+  if (target) { target.disabled = true; target.title = reason; }
+  if (mode) { mode.disabled = true; }
+  if (btn) { btn.disabled = true; btn.title = reason; }
+  // Insert a help line below the existing description, so the user sees
+  // an explanation in context rather than only when they hover the
+  // greyed-out button. Idempotent: skip if already present.
+  if (btn && !document.getElementById('vanityCAUnavailableNote')) {
+    const note = document.createElement('p');
+    note.id = 'vanityCAUnavailableNote';
+    // Use the theme's rubric red (--rubric, #9a2424). Bulma's is-warning
+    // would be yellow on the parchment background and basically illegible;
+    // is-danger would work but the theme reserves stronger red for errors.
+    // Rubric is the manuscript red used for accents and links throughout
+    // the app, which is the right "needs attention but not catastrophic"
+    // tone for a feature toggle.
+    note.className = 'help is-size-7 mt-1';
+    note.style.color = 'var(--rubric, #9a2424)';
+    note.textContent = `Unavailable: ${reason}`;
+    // Insert after the field container (the has-addons div that contains
+    // the mode select, target input, and Grind button).
+    const field = btn.closest('.field');
+    if (field && field.parentNode) {
+      field.parentNode.insertBefore(note, field.nextSibling);
+    }
+  }
+}
 
 // Final gate evaluation. Both setupDisclaimer() and setupSplashScreen()
 // have run by this point. If either gated itself (showed a modal or

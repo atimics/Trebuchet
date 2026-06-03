@@ -5,13 +5,21 @@
 // transferTokensAndSol as a new step in the existing flow.
 //
 // Per-launch flow (orchestrated by createPoolsAndPositions):
-//   The flow is split into two phases so that no pool becomes tradable
-//   while later pools are still being built. (A pool becomes tradable
-//   only when it has in-range liquidity — the bootstrap position is what
-//   provides that. If we bootstrapped each pool immediately after its
-//   main positions, a swap on the now-live first pool could move its
-//   price while later pools — configured to launch at the same USD price
-//   — are still being built, breaking their economics.)
+//   The flow is split into four phases so (a) no pool becomes tradable
+//   while later pools are still being built, and (b) nothing is committed
+//   for life until every position has been successfully opened. A pool
+//   becomes tradable only when it has in-range liquidity — the bootstrap
+//   position is what provides that. If we bootstrapped each pool
+//   immediately after its main positions, a swap on the now-live first
+//   pool could move its price while later pools — configured to launch
+//   at the same USD price — are still being built, breaking their
+//   economics. Likewise, if we locked positions inline with opening
+//   them, a Phase-2 failure on (say) the third pool would leave the
+//   first two pools' positions already burned-and-locked, with no way
+//   to close-and-retry. Deferring all locking to Phase 3 means a
+//   failure anywhere in Phase 1 or Phase 2 leaves every position
+//   recoverable — the launch wallet can still close positions and the
+//   user can adjust config before retrying.
 //
 //   Phase 1 — for each "allocation" entry the user configures, we:
 //     1. Compute the initial pool price so the launched token's USD value
@@ -19,20 +27,63 @@
 //     2. createPool — initializes the CLMM pool at that price. No liquidity yet.
 //     3. For each "slice" of the allocation's distribution: open a main
 //        position with the slice's share of the supply, in a range that
-//        keeps the position 100% launched-token initially. Lock it via
-//        Burn & Earn. If the slice has an external recipient, transfer
-//        the resulting Fee Key NFT to that recipient. Otherwise the Fee
-//        Key stays with the ephemeral wallet for the final sweep.
+//        keeps the position 100% launched-token initially.
+//     4. If the allocation has ladder bands configured, open each band.
+//     5. If the allocation has a support position configured, open it.
+//
+//     NO LOCKING happens in Phase 1. Positions stay closeable by the
+//     launch wallet — important if a later phase fails and the user
+//     needs to recover.
 //
 //   Phase 2 — once every pool's main positions are in place:
-//     4. For each pool, open one bootstrap position straddling current
-//        tick. This makes the pool tradable. Lock it. Bootstrap is never
-//        split or transferred — its Fee Key stays with the ephemeral
-//        wallet for the final sweep.
+//     6. For each pool, open one bootstrap position straddling current
+//        tick. This makes the pool tradable. Bootstrap is never split or
+//        transferred — its Fee Key (after locking) stays with the
+//        ephemeral wallet for the final sweep.
+//
+//        Within Phase 2, SOL-paired pools are deferred to the END of the
+//        queue. Bots and aggregators index SOL pairs more aggressively
+//        than flywheel/exotic quotes, so flipping the SOL pool to
+//        tradable while flywheel pools are still being built would let
+//        the first wave of SOL-paired trades miss the cascading
+//        buy-pressure mechanism the launch was designed for. By
+//        bootstrapping every flywheel before the SOL pool, the first
+//        SOL-paired trade activates the flywheel as intended.
+//
+//        The last position opened in the entire launch is the SOL
+//        bootstrap. NO LOCKING has happened yet — every position
+//        opened in Phase 1 and Phase 2 is still closeable.
+//
+//   Phase 3 — once every position is open (lockAllPositions):
+//     7. Lock every position via Burn & Earn. Each lock burns the
+//        position NFT and mints a Fee Key NFT in its place. This is the
+//        irreversibility line — after this, the LP'd tokens are
+//        committed for life and only trading fees can be claimed.
+//
+//        Lock order mirrors the SOL-last ordering from Phase 2 (every
+//        flywheel pool's positions locked before any SOL-pool position)
+//        for visual coherence with the activity log; the lock order
+//        itself doesn't affect tradability since the liquidity is
+//        already in place from Phase 2.
+//
+//        Phase 3 is the FINAL phase that creates anything irreversible.
+//        A failure in Phases 1 or 2 can be recovered from by closing
+//        positions; a failure in Phase 3 leaves some positions locked
+//        and others not, and the user retries the locks via the resume
+//        flow.
+//
+//   Phase 4 — after Phase 3, if any slice has an external recipient
+//     (transferFeeKeys):
+//     8. For each such slice, transfer the Fee Key NFT minted by the
+//        Phase 3 lock to the configured recipient. Slices without a
+//        recipient keep their Fee Key in the ephemeral wallet for the
+//        final sweep at the end of the launch. Bootstrap Fee Keys are
+//        never transferred.
 //
 // Sequential execution within and across phases — failures are easy to
 // recover from this way. On error we throw with partialResults and a
-// failedPhase ('main_positions' or 'bootstrap') attached.
+// failedPhase ('pre_flight', 'main_positions', 'bootstrap', 'locks',
+// or 'transfers') attached.
 //
 // Mint-ordering note: Raydium pools have an internal canonical mintA/mintB
 // ordering. The launched token may end up as either side depending on the
@@ -1471,9 +1522,39 @@ async function openBootstrapPosition({
 // and most reliable lock target, so locking mains first surfaces the more
 // likely failure cases earlier.
 //
+// Between pools, SOL-paired allocations are processed LAST — matching
+// the Phase 2 bootstrap-open order. Locks don't change tradability (the
+// positions already hold their liquidity), but mirroring the open order
+// here keeps the on-chain action sequence and the activity-log display
+// coherent: every flywheel/exotic pool's work finishes before the SOL
+// pool's final lock. Stable sort preserves user-config order within
+// each group, so results[] stays in user-config order for downstream
+// consumers (launch report, UI) while iteration goes SOL-last.
+//
 // Mutates the results in place: each `mainPositions[i].locked` and
 // `mainPositions[i].txIds.lock` get set, same for the bootstrap.
 // ---------------------------------------------------------------------------
+// Inter-tx pacing for Phase 3 (locks) and Phase 4 (transfers).
+//
+// sendAndConfirm is the natural floor between transactions because it
+// blocks until the tx is finalized, which takes a couple of seconds at
+// minimum. But on fast paid RPCs (Helius, Triton) confirmations can come
+// back in <1s and back-to-back tx submissions can burst above per-second
+// rate limits. A small explicit sleep between txs evens out the cadence
+// and keeps us comfortably under most free-tier 429 thresholds without
+// materially slowing real launches.
+//
+// 250ms = ~4 TPS, matching the airdrop's conservative-by-default
+// philosophy. Same logic as walletHelpers.js: going at 75% speed is
+// better than hitting a rate limit mid-launch and losing more time
+// recovering than the slow pace would have cost.
+const LOCK_TX_PACING_MS = 250;
+const TRANSFER_TX_PACING_MS = 250;
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function lockAllPositions({ raydium, results, onProgress }) {
   const progress = (event) => onProgress && onProgress(event);
   const lockFailures = [];
@@ -1481,7 +1562,18 @@ async function lockAllPositions({ raydium, results, onProgress }) {
   console.log('\n=== Phase 3: Locking positions ===');
   progress({ stage: 'phase3_start' });
 
-  for (let allocIdx = 0; allocIdx < results.length; allocIdx++) {
+  // Build iteration order: non-SOL allocations first (in user-config order),
+  // then SOL allocations last (in their original relative order). results[]
+  // itself is NOT reordered — downstream consumers depend on that ordering.
+  const iterOrder = results
+    .map((_, idx) => idx)
+    .sort((a, b) => {
+      const aIsSol = results[a].quoteAddress === WSOL_MINT;
+      const bIsSol = results[b].quoteAddress === WSOL_MINT;
+      return Number(aIsSol) - Number(bIsSol);
+    });
+
+  for (const allocIdx of iterOrder) {
     const r = results[allocIdx];
     const symbol = r.quoteSymbol || '(?)';
 
@@ -1540,6 +1632,10 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           error: e.message,
         });
       }
+      // Inter-tx pacing — see LOCK_TX_PACING_MS rationale above.
+      // Applies whether the lock succeeded or failed; the next lock
+      // is going to hit the RPC regardless.
+      await sleepMs(LOCK_TX_PACING_MS);
     }
 
     // 3b. Lock each ladder band in order. Ladder bands are independent
@@ -1593,6 +1689,8 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           error: e.message,
         });
       }
+      // Inter-tx pacing — same rationale as the main-slice loop above.
+      await sleepMs(LOCK_TX_PACING_MS);
     }
 
     // 3c. Lock each support position in order. Same lifecycle as ladder
@@ -1649,6 +1747,8 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           error: e.message,
         });
       }
+      // Inter-tx pacing — same rationale as the main-slice loop above.
+      await sleepMs(LOCK_TX_PACING_MS);
     }
 
     // 3d. Lock the bootstrap for this pool.
@@ -1684,6 +1784,10 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           error: e.message,
         });
       }
+      // Inter-tx pacing — same rationale as the main-slice loop above.
+      // This is also the last lock in this pool's iteration, so it paces
+      // the transition into the next pool's main locks.
+      await sleepMs(LOCK_TX_PACING_MS);
     } else if (bs && bs.locked) {
       console.log(`[${symbol}] bootstrap: already locked (skip)`);
     } else if (!bs || !bs.nftMint) {
@@ -1794,6 +1898,10 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
           error: e.message,
         });
       }
+      // Inter-tx pacing — same rationale as Phase 3 locks. Phase 4 txs
+      // are simpler (single SPL transfer, no Raydium SDK path) so the
+      // pacing constant is separate for independent tuning later.
+      await sleepMs(TRANSFER_TX_PACING_MS);
     }
   }
 
@@ -2102,7 +2210,7 @@ export async function preflightCreatePoolsAndPositions({
   // resolveQuoteToken might need. Cheap — only used for fetching
   // decimals/symbol when the allocation didn't provide overrides.
   const { Connection } = await import('@solana/web3.js');
-  const connection = new Connection(getRpcConfig().active, 'confirmed');
+  const connection = new Connection(getRpcUrl(), 'confirmed');
 
   const resolvedPrices = [];
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
@@ -3123,7 +3231,22 @@ export async function createPoolsAndPositions({
   // a bootstrap position in each pool. Once a bootstrap lands, that pool
   // becomes tradable — but every other pool's main positions are already
   // in their final ranges, so any subsequent swaps can't disturb them.
+  //
+  // Ordering within the queue: SOL-paired pools go LAST. Bots,
+  // aggregators, and trade routers index SOL pairs more aggressively
+  // than flywheel/exotic quotes, so flipping the SOL pool to tradable
+  // before the flywheels are also tradable would let the first wave of
+  // SOL-paired trades miss the cascading buy-pressure mechanism the
+  // launch was designed for. Stable sort preserves user-config order
+  // within each group; SOL items keep their relative order among
+  // themselves, non-SOL items keep theirs.
   // -------------------------------------------------------------------------
+  bootstrapQueue.sort((a, b) => {
+    const aIsSol = a.ctx?.quoteToken?.address === WSOL_MINT;
+    const bIsSol = b.ctx?.quoteToken?.address === WSOL_MINT;
+    return Number(aIsSol) - Number(bIsSol);
+  });
+
   console.log(`\n=== Phase 2: opening bootstrap positions for ${bootstrapQueue.length} pool(s) ===`);
 
   // Phase 1 ran many transactions that changed the wallet's token balances
@@ -3136,17 +3259,22 @@ export async function createPoolsAndPositions({
   } catch (e) {
     console.warn('  cache refresh failed (non-fatal):', e.message);
   }
-  // Brief settle so the last lock tx is fully visible to the RPC.
+  // Brief settle so the last open tx from Phase 1 is fully visible to
+  // the RPC before Phase 2 starts querying pool state for bootstrap
+  // building. (Phase 1 no longer locks anything — locking is deferred
+  // to Phase 3.)
   await new Promise((r) => setTimeout(r, 1500));
 
   // Phase 2 runs every bootstrap independently — a single failure does
-  // not abort the remaining attempts. The premise is that a freshly-locked
-  // main position whose pool just couldn't get a bootstrap is still better
+  // not abort the remaining attempts. The premise is that an OPEN main
+  // position whose pool just couldn't get a bootstrap is still better
   // off than a main position whose pool was never even attempted because
-  // an earlier pool's bootstrap had a transient RPC error. The caller
-  // reports per-pool success/failure to the user so they can retry the
-  // failed ones (or manually open a Raydium position to make them
-  // tradable) without losing the successful pools.
+  // an earlier pool's bootstrap had a transient RPC error. (Mains are
+  // still unlocked at this point — locking is Phase 3 — so a recovery
+  // could even close-and-redo failed pools without burning anything.)
+  // The caller reports per-pool success/failure to the user so they can
+  // retry the failed ones (or manually open a Raydium position to make
+  // them tradable) without losing the successful pools.
   const bootstrapFailures = [];
 
   for (const item of bootstrapQueue) {

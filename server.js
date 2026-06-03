@@ -94,6 +94,125 @@ function clearAirdropInFlight(walletPublicKey) {
   airdropsInFlight.delete(walletPublicKey);
 }
 
+// Live progress tracker for airdrops. Both the real executeAirdrop (in
+// walletHelpers.js) and the demo simulateAirdrop (in demoChainService.js)
+// write into this Map as they process recipients, one entry per launch
+// wallet. The frontend polls /api/airdrop-progress every ~500ms during a
+// transfer that includes an airdrop, so the user sees the progress bar
+// tick forward in real time instead of staring at an unmoving spinner
+// for 20-30 seconds.
+//
+// Shape:
+//   {
+//     total:       number      // total recipient count
+//     completed:   number      // delivered so far (success only)
+//     failedCount: number      // failed so far
+//     lastWallet:  string|null // most recently processed recipient address
+//     lastTokens:  number|null // tokens sent to that recipient
+//     totalTokens: number      // sum of tokens across recipients (running)
+//     status:      'running' | 'done'
+//     startedAt:   number      // epoch ms when the airdrop started
+//   }
+//
+// In-memory only — same lifecycle reasoning as airdropsInFlight. After
+// status='done' is written we keep the entry for ~10 seconds so the
+// frontend's last poll picks up the final state, then auto-clear it.
+const airdropProgress = new Map();
+function airdropProgressBegin(walletPublicKey, total) {
+  airdropProgress.set(walletPublicKey, {
+    total: Number(total) || 0,
+    completed: 0,
+    failedCount: 0,
+    lastWallet: null,
+    lastTokens: null,
+    totalTokens: 0,
+    status: 'running',
+    startedAt: Date.now(),
+  });
+}
+// Record one recipient's outcome. `success` flips the right counter and,
+// on success, accumulates the token total. Cheap to call per recipient.
+function airdropProgressStep(walletPublicKey, { recipient, tokens, success }) {
+  const st = airdropProgress.get(walletPublicKey);
+  if (!st) return;
+  if (success) {
+    st.completed += 1;
+    st.totalTokens += Number(tokens) || 0;
+  } else {
+    st.failedCount += 1;
+  }
+  st.lastWallet = recipient || null;
+  st.lastTokens = Number.isFinite(Number(tokens)) ? Number(tokens) : null;
+}
+// Mark done and schedule cleanup. The 10s delay gives the frontend one
+// final poll to see the terminal state before the entry disappears.
+function airdropProgressEnd(walletPublicKey) {
+  const st = airdropProgress.get(walletPublicKey);
+  if (!st) return;
+  st.status = 'done';
+  setTimeout(() => {
+    const cur = airdropProgress.get(walletPublicKey);
+    if (cur && cur.status === 'done') {
+      airdropProgress.delete(walletPublicKey);
+    }
+  }, 10_000);
+}
+function airdropProgressGet(walletPublicKey) {
+  return airdropProgress.get(walletPublicKey) || null;
+}
+
+// Per-launch LP progress event log. Demo mode and (eventually) real mode
+// write into this Map as each step of pool/position creation completes;
+// the frontend polls /api/lp-progress with a `since` cursor to learn
+// about new events without re-streaming the whole log. Translates to row
+// markings on the frontend's phase progress tree so individual rows
+// tick from pending → done as the work progresses (instead of all
+// flipping at once when the /api/create-lp response lands).
+//
+// Shape per wallet:
+//   {
+//     events: [{ stage, allocationIndex, sliceIndex?, bandIndex?, ... }, ...]
+//     status: 'running' | 'done'
+//     startedAt: epoch ms
+//   }
+//
+// Same lifecycle as airdropProgress — in-memory, auto-cleared 30s after
+// the run finishes so a slow last poll still picks up the terminal state.
+const lpProgress = new Map();
+function lpProgressBegin(walletPublicKey) {
+  lpProgress.set(walletPublicKey, {
+    events: [],
+    status: 'running',
+    startedAt: Date.now(),
+  });
+}
+function lpProgressEvent(walletPublicKey, event) {
+  const state = lpProgress.get(walletPublicKey);
+  if (!state) return;
+  state.events.push(event);
+}
+function lpProgressEnd(walletPublicKey) {
+  const state = lpProgress.get(walletPublicKey);
+  if (!state) return;
+  state.status = 'done';
+  setTimeout(() => {
+    const cur = lpProgress.get(walletPublicKey);
+    if (cur && cur.status === 'done') {
+      lpProgress.delete(walletPublicKey);
+    }
+  }, 30_000);
+}
+function lpProgressGet(walletPublicKey, sinceIdx = 0) {
+  const state = lpProgress.get(walletPublicKey);
+  if (!state) return null;
+  return {
+    status: state.status,
+    totalEvents: state.events.length,
+    // Slice from `since` so a polling client only sees what it hasn't yet.
+    events: state.events.slice(sinceIdx),
+  };
+}
+
 // Lazy import to avoid crash on startup in packaged builds
 let _generateVanityKeypair = null;
 async function getVanityKeygen() {
@@ -102,6 +221,26 @@ async function getVanityKeygen() {
     _generateVanityKeypair = mod.generateVanityKeypair;
   }
   return _generateVanityKeypair;
+}
+
+// Cached vanity availability. Computed once at startup (see the log below
+// the route table) and read by /api/demo/status + the vanity endpoints to
+// short-circuit with a clean error when the binary isn't built. A Promise
+// instead of a value because the import is async and we want a single
+// settled result that everything can await.
+let _vanityAvailabilityPromise = null;
+function vanityAvailability() {
+  if (!_vanityAvailabilityPromise) {
+    _vanityAvailabilityPromise = import('./vanityKeygen.js').then(
+      (mod) => mod.isVanityAvailable(),
+      // If the import itself fails (file moved, syntax error, etc.) treat
+      // vanity as unavailable rather than letting that error propagate
+      // unrelated requests. The reason string surfaces in the UI so the
+      // operator can see what's wrong.
+      (err) => ({ available: false, reason: `vanity module load failed: ${err.message}` }),
+    );
+  }
+  return _vanityAvailabilityPromise;
 }
 
 import {
@@ -452,6 +591,19 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
     return res.status(400).json({ success: false, error: 'prefix or suffix required' });
   }
 
+  // Refuse cleanly if the binary isn't available. The frontend disables
+  // the UI based on /api/demo/status, but a stale frontend or direct
+  // API call still gets a clear 503 instead of crashing mid-spawn.
+  const vanity = await vanityAvailability();
+  if (!vanity.available) {
+    return res.status(503).json({
+      success: false,
+      error: 'Vanity address generation is not available in this build. '
+        + 'The vanity_keygen binary is not built — run `npm run build:c` '
+        + '(requires gcc or clang). End-user release builds include the binary.',
+    });
+  }
+
   // Clamp threads to a consumer-reasonable maximum
   if (threads) {
     threads = Math.min(Math.max(1, Number(threads)), 32);
@@ -567,6 +719,19 @@ app.post('/api/generate-vanity-wallet', async (req, res) => {
     if (!prefix && !suffix) {
       return res.status(400).json({ success: false, error: 'prefix or suffix required' });
     }
+
+    // Mirror the stream endpoint's availability gate so both vanity routes
+    // fail with the same shape and message when the binary isn't built.
+    const vanity = await vanityAvailability();
+    if (!vanity.available) {
+      return res.status(503).json({
+        success: false,
+        error: 'Vanity address generation is not available in this build. '
+          + 'The vanity_keygen binary is not built — run `npm run build:c` '
+          + '(requires gcc or clang). End-user release builds include the binary.',
+      });
+    }
+
     const target = prefix || suffix;
     console.log(`Generating vanity wallet (${prefix ? 'prefix' : 'suffix'}: "${target}")...`);
 
@@ -726,15 +891,36 @@ app.post('/api/user-prefs', (req, res) => {
 //
 // /api/demo/status      — the frontend calls this on app load to learn
 //                         whether to show the demo banner and the "Pretend
-//                         funding arrived" button.
+//                         funding arrived" button. Also reports
+//                         vanity-binary availability so the UI can disable
+//                         the Vanity CA section gracefully on dev
+//                         environments without a C toolchain (CI handles
+//                         release builds, so end-user installs always
+//                         include the binary).
 // /api/demo/inject-funds — backs the "Pretend funding arrived (DEMO)"
 //                         button; writes the funding amounts the frontend
 //                         already computed into the demo ledger. Returns
 //                         403 when demo mode is off so it can never affect
 //                         a real launch.
 // ---------------------------------------------------------------------------
-app.get('/api/demo/status', (req, res) => {
-  demoChainService.handleStatus(req, res, { active: isDemoMode() });
+app.get('/api/demo/status', async (req, res) => {
+  // Vanity availability is computed once at startup (cached) and read
+  // here on every status call. Cheap; never blocks the demo response.
+  const vanity = await vanityAvailability();
+  res.json({
+    success: true,
+    active: isDemoMode(),
+    vanity: {
+      available: vanity.available,
+      // Trim the reason to a single line for the wire — the full multi-line
+      // install instructions live in the server log and the binary-not-found
+      // throw text. The UI only needs enough to render an explanatory
+      // tooltip; users who need the full instructions check the server log.
+      reason: vanity.available
+        ? null
+        : 'vanity_keygen binary not built. Run `npm run build:c` to enable (requires gcc or clang).',
+    },
+  });
 });
 
 app.post('/api/demo/inject-funds', (req, res) => {
@@ -757,6 +943,44 @@ app.post('/api/demo/inject-funds', (req, res) => {
 app.post('/api/trigger-startup-update-check', (_req, res) => {
   const result = updateCheckBridge.trigger();
   res.json({ success: true, ...result });
+});
+
+// Live airdrop progress poll. Returns the current { total, completed,
+// failedCount, lastWallet, lastTokens, totalTokens, status, startedAt }
+// for the given launch wallet, or null when nothing is tracked. The
+// frontend polls this every ~500ms during a transfer that includes an
+// airdrop so the user sees the progress bar tick forward in real time.
+//
+// Read-only and cheap — pure in-memory Map lookup. Same in demo and real
+// mode (both code paths write into airdropProgress as they process
+// recipients).
+app.get('/api/airdrop-progress', (req, res) => {
+  const wallet = req.query.wallet;
+  if (!wallet || typeof wallet !== 'string') {
+    return res.status(400).json({ success: false, error: 'wallet query param required' });
+  }
+  const state = airdropProgressGet(wallet);
+  res.json({ success: true, state });
+});
+
+// Live LP progress poll. Returns events that have occurred since the
+// client-provided cursor index, plus the current run status. The frontend
+// polls this during /api/create-lp and translates each event into a row
+// marking on the phase progress tree so rows transition pending → done
+// one at a time instead of all flipping when the response lands.
+//
+// Read-only. Pure in-memory lookup. Currently driven by demo mode (the
+// only code path that writes lp progress events) — real mode could plug
+// into the same infrastructure later by wiring its onProgress callback
+// through.
+app.get('/api/lp-progress', (req, res) => {
+  const wallet = req.query.wallet;
+  if (!wallet || typeof wallet !== 'string') {
+    return res.status(400).json({ success: false, error: 'wallet query param required' });
+  }
+  const since = Number.isFinite(Number(req.query.since)) ? Number(req.query.since) : 0;
+  const state = lpProgressGet(wallet, since);
+  res.json({ success: true, state });
 });
 
 // Lightweight RPC health check — sends a getVersion JSON-RPC call and
@@ -1017,6 +1241,24 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       vanitySuffix,
       vanityCAKeypair: vanityCAKeypairRaw,
     } = req.body;
+
+    // If the caller asked for a fresh vanity grind (prefix/suffix) but the
+    // binary isn't built, reject up front with the same 503 the dedicated
+    // vanity endpoints use. Pre-ground vanity keypairs (vanityCAKeypair)
+    // are fine without the binary — they were ground elsewhere and we're
+    // just consuming the keypair, not running the grinder again here.
+    if (vanityPrefix || vanitySuffix) {
+      const vanity = await vanityAvailability();
+      if (!vanity.available) {
+        return res.status(503).json({
+          success: false,
+          error: 'Vanity address generation is not available in this build. '
+            + 'The vanity_keygen binary is not built — run `npm run build:c` '
+            + '(requires gcc or clang). End-user release builds include the binary.',
+        });
+      }
+    }
+
     const normalizedName = normalizeTokenName(name);
     const normalizedSymbol = normalizeTokenSymbol(symbol);
     const normalizedDescription = normalizeTokenDescription(description);
@@ -1993,7 +2235,30 @@ app.post('/api/preflight-create-lp', async (req, res) => {
 // Run the full LP creation flow: createPool + main positions + bootstrap +
 // lock + (optional) recipient transfers, for every allocation.
 app.post('/api/create-lp', async (req, res) => {
-  if (isDemoMode()) return demoChainService.handleCreateLp(req, res);
+  if (isDemoMode()) {
+    // Derive wallet pubkey here (mirrors what handleCreateLp does
+    // internally) so we can scope the progress events to this launch.
+    // Safe to swallow errors — if pubkey derivation fails the handler
+    // itself will report the same error; the progress just won't track.
+    let demoWpk = null;
+    try {
+      const sk = typeof req.body.tempWalletSecretKey === 'string'
+        ? JSON.parse(req.body.tempWalletSecretKey)
+        : req.body.tempWalletSecretKey;
+      demoWpk = walletPubkeyFromSecretArray(sk);
+    } catch (_) { /* leave demoWpk null, hooks become no-ops */ }
+    if (demoWpk) lpProgressBegin(demoWpk);
+    const hooks = demoWpk
+      ? { event: (e) => lpProgressEvent(demoWpk, e) }
+      : { event: () => {} };
+    try {
+      return await demoChainService.handleCreateLp(req, res, {
+        lpProgress: hooks,
+      });
+    } finally {
+      if (demoWpk) lpProgressEnd(demoWpk);
+    }
+  }
   let walletPublicKey = null;
   try {
     const {
@@ -2032,6 +2297,14 @@ app.post('/api/create-lp', async (req, res) => {
       { stage: 'lp_create_started', tokenMint, allocationCount: allocations?.length || 0 },
     );
 
+    // Begin live LP progress tracking. Same in-memory Map the demo uses;
+    // the frontend polls /api/lp-progress during the create-lp call and
+    // ticks rows from pending → done as events arrive. Real-mode events
+    // already have the stage names the frontend translator expects
+    // (pool_create_done, main_open_done, etc.) so no shape conversion
+    // is needed. End in finally below.
+    lpProgressBegin(walletPublicKey);
+
     const result = await createPoolsAndPositions({
       tempWalletSecretKey: secretKeyArr,
       tokenMint,
@@ -2041,7 +2314,12 @@ app.post('/api/create-lp', async (req, res) => {
       allocations,
       lockPositions: lockPositions !== false,
       onProgress: (event) => {
-        recordLpJournalProgress(walletPublicKey, event);
+        // Journal: durable record for recovery if the launch dies.
+        try { recordLpJournalProgress(walletPublicKey, event); }
+        catch (_) { /* never let a progress write break the launch */ }
+        // Live progress tracker: drives the frontend's per-row updates.
+        try { lpProgressEvent(walletPublicKey, event); }
+        catch (_) { /* same — progress is best-effort */ }
       },
     });
 
@@ -2124,6 +2402,14 @@ app.post('/api/create-lp', async (req, res) => {
       lockFailures: error.lockFailures || null,
       transferFailures: error.transferFailures || null,
     });
+  } finally {
+    // Always end the live LP progress tracker so the frontend's poll
+    // sees status='done' and stops. The tracker auto-cleans 30 seconds
+    // later, leaving time for any in-flight poll to see the final state.
+    if (walletPublicKey) {
+      try { lpProgressEnd(walletPublicKey); }
+      catch (_) { /* end is a best-effort cleanup */ }
+    }
   }
 });
 
@@ -2196,6 +2482,11 @@ app.post('/api/resume-launch', async (req, res) => {
       },
     );
 
+    // Begin live LP progress tracking for the resume too. The frontend
+    // polls /api/lp-progress identically whether this is a fresh launch
+    // or a resume, so the events surface as live row updates.
+    lpProgressBegin(walletPublicKey);
+
     const result = await createPoolsAndPositions({
       tempWalletSecretKey: secretKeyArr,
       tokenMint,
@@ -2206,7 +2497,10 @@ app.post('/api/resume-launch', async (req, res) => {
       lockPositions: lockPositions !== false,
       priorResults,
       onProgress: (event) => {
-        recordLpJournalProgress(walletPublicKey, event);
+        try { recordLpJournalProgress(walletPublicKey, event); }
+        catch (_) { /* never let a progress write break the launch */ }
+        try { lpProgressEvent(walletPublicKey, event); }
+        catch (_) { /* same — progress is best-effort */ }
       },
     });
 
@@ -2268,6 +2562,15 @@ app.post('/api/resume-launch', async (req, res) => {
       lockFailures: error.lockFailures || null,
       transferFailures: error.transferFailures || null,
     });
+  } finally {
+    // Same end-the-tracker pattern as /api/create-lp above. Resumes use
+    // the same lpProgress Map keyed by wallet pubkey, so a resume that
+    // succeeds (or fails) cleanly tears down the tracker without
+    // requiring the frontend to know which endpoint fired the work.
+    if (walletPublicKey) {
+      try { lpProgressEnd(walletPublicKey); }
+      catch (_) { /* end is a best-effort cleanup */ }
+    }
   }
 });
 
@@ -2491,7 +2794,15 @@ app.get('/api/diagnose-launch', async (req, res) => {
 // doesn't abort the others. Aggregate counts are reported in the
 // response so the frontend can summarize.
 app.post('/api/transfer-assets', async (req, res) => {
-  if (isDemoMode()) return demoChainService.handleTransferAssets(req, res);
+  if (isDemoMode()) {
+    return demoChainService.handleTransferAssets(req, res, {
+      airdropProgress: {
+        begin: airdropProgressBegin,
+        step: airdropProgressStep,
+        end: airdropProgressEnd,
+      },
+    });
+  }
   let walletPublicKey = null;
   try {
     const {
@@ -2577,6 +2888,7 @@ app.post('/api/transfer-assets', async (req, res) => {
           tokenMint: req.body.airdrop.tokenMint,
         });
         markAirdropInFlight(walletPublicKey);
+        airdropProgressBegin(walletPublicKey, req.body.airdrop.recipients.length);
         try {
           airdropResult = await executeAirdrop({
             tempWalletSecretKey: secretKeyArr,
@@ -2584,6 +2896,7 @@ app.post('/api/transfer-assets', async (req, res) => {
             tokenDecimals: req.body.airdrop.tokenDecimals,
             isToken2022: !!req.body.airdrop.isToken2022,
             recipients: req.body.airdrop.recipients,
+            onProgress: (s) => airdropProgressStep(walletPublicKey, s),
           });
           console.log(
             `Airdrop summary: ${airdropResult.transferred.length} delivered, `
@@ -2622,6 +2935,10 @@ app.post('/api/transfer-assets', async (req, res) => {
           // blocked. The flag's purpose is to serialize concurrent
           // attempts, not to prevent legitimate re-runs.
           clearAirdropInFlight(walletPublicKey);
+          // Flip the progress tracker to 'done' so the frontend's
+          // poller sees the terminal state on its next call. The
+          // tracker auto-clears itself after ~10s of being done.
+          airdropProgressEnd(walletPublicKey);
         }
       }
     }
@@ -2755,7 +3072,15 @@ app.post('/api/transfer-assets', async (req, res) => {
 // there" message.
 // ---------------------------------------------------------------------------
 app.post('/api/retry-airdrop', async (req, res) => {
-  if (isDemoMode()) return demoChainService.handleRetryAirdrop(req, res);
+  if (isDemoMode()) {
+    return demoChainService.handleRetryAirdrop(req, res, {
+      airdropProgress: {
+        begin: airdropProgressBegin,
+        step: airdropProgressStep,
+        end: airdropProgressEnd,
+      },
+    });
+  }
   let walletPublicKey = null;
   try {
     const {
@@ -2807,6 +3132,7 @@ app.post('/api/retry-airdrop', async (req, res) => {
       });
     }
     markAirdropInFlight(walletPublicKey);
+    airdropProgressBegin(walletPublicKey, recipients.length);
 
     console.log(`Retrying airdrop to ${recipients.length} recipient(s)`);
     let airdropResult;
@@ -2817,9 +3143,11 @@ app.post('/api/retry-airdrop', async (req, res) => {
         tokenDecimals,
         isToken2022,
         recipients,
+        onProgress: (s) => airdropProgressStep(walletPublicKey, s),
       });
     } finally {
       clearAirdropInFlight(walletPublicKey);
+      airdropProgressEnd(walletPublicKey);
     }
     console.log(
       `Retry summary: ${airdropResult.transferred.length} delivered, `
@@ -2993,6 +3321,12 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       },
     );
 
+    // Journal-resume needs its own progress tracker init too. Even though
+    // the recovery panel triggered this (not the active create-lp UI),
+    // the frontend phase progress tree is rebuilt on resume and will
+    // poll for events the same way.
+    lpProgressBegin(walletPublicKey);
+
     const result = await createPoolsAndPositions({
       tempWalletSecretKey: wallet.secretKey,
       tokenMint,
@@ -3003,7 +3337,10 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       lockPositions,
       priorResults,
       onProgress: (event) => {
-        recordLpJournalProgress(walletPublicKey, event);
+        try { recordLpJournalProgress(walletPublicKey, event); }
+        catch (_) { /* never let a progress write break the launch */ }
+        try { lpProgressEvent(walletPublicKey, event); }
+        catch (_) { /* same — progress is best-effort */ }
       },
     });
 
@@ -3069,6 +3406,12 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       lockFailures: error.lockFailures || null,
       transferFailures: error.transferFailures || null,
     });
+  } finally {
+    // Mirror the create-lp / resume-launch cleanup pattern.
+    if (walletPublicKey) {
+      try { lpProgressEnd(walletPublicKey); }
+      catch (_) { /* end is a best-effort cleanup */ }
+    }
   }
 });
 
@@ -3201,4 +3544,19 @@ app.listen(PORT, '127.0.0.1', () => {
   console.log(`Saved RPCs: ${cfg.saved.length} (manage in the UI)`);
   console.log('\nIMPORTANT: For pool creation, use a dedicated RPC (Helius, Triton, QuickNode — free tier is plenty).');
   console.log('Free public RPC endpoints will rate-limit you out of CLMM creation.\n');
+
+  // Probe vanity availability and warm the cache so the first
+  // /api/demo/status call doesn't pay the cold-import latency. Async
+  // because the module import is dynamic; logs land a few ms after
+  // the startup banner above.
+  vanityAvailability().then((v) => {
+    if (v.available) {
+      console.log(`Vanity address generation: available (${v.path})`);
+    } else {
+      console.log('Vanity address generation: DISABLED');
+      console.log('  Reason: vanity_keygen binary not built.');
+      console.log('  To enable: run `npm run build:c` (requires gcc or clang).');
+      console.log('  End-user release builds include this binary; this only affects dev environments.\n');
+    }
+  });
 });

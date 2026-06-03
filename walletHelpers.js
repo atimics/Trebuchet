@@ -179,6 +179,65 @@ export async function findOwnedNfts(publicKey, excludeMints = []) {
   return nfts;
 }
 
+// ---------------------------------------------------------------------------
+// Sweep retry infrastructure (used by both NFT sweep and fungible sweep)
+// ---------------------------------------------------------------------------
+//
+// The per-item transfer calls inside the sweep loops could previously fail on
+// a transient RPC blip — 429, gateway timeout, expired blockhash — and the
+// user had to re-click Transfer to retry. With multi-pool launches that
+// produce 15+ Fee Key NFTs, hitting a single transient error mid-sweep was
+// likely enough to be annoying. These helpers wrap each transfer with the
+// same bounded-retry + exponential-backoff pattern the airdrop uses, against
+// the same generic transient-RPC classifier (isTransientAirdropError is a
+// historical name; it's a pure RPC-transient check).
+//
+// The constants intentionally match the airdrop's tunables so a launch
+// hitting flaky RPC sees consistent behaviour across the airdrop and the
+// sweep — no surprising "the airdrop is patient but the sweep gives up
+// after one try" pattern.
+const SWEEP_MAX_ATTEMPTS = 3;
+const SWEEP_BACKOFF_MS = [1000, 3000, 7000];
+const SWEEP_TX_PACING_MS = 250;
+
+// Wraps a single transfer call with bounded retries. Returns the txId on
+// success; throws the last error (with .attempts attached) when every
+// attempt fails. Only retries transient errors — a permanent error
+// (insufficient funds, mismatched program ID, etc.) fails fast on the
+// first attempt so we don't waste 11 seconds discovering the same thing
+// 3 times. `label` is logged for traceability.
+async function withSweepRetries(label, fn) {
+  let lastErr;
+  for (let attempt = 1; attempt <= SWEEP_MAX_ATTEMPTS; attempt++) {
+    try {
+      const result = await fn();
+      if (attempt > 1) {
+        console.log(`  ${label}: succeeded on attempt ${attempt}`);
+      }
+      return result;
+    } catch (err) {
+      lastErr = err;
+      const transient = isTransientAirdropError(err);
+      if (!transient || attempt === SWEEP_MAX_ATTEMPTS) {
+        // Either a permanent error (fail fast) or we've exhausted
+        // attempts. Attach attempts count for the caller's diagnostic.
+        if (lastErr && typeof lastErr === 'object') lastErr.attempts = attempt;
+        throw lastErr;
+      }
+      const backoff = SWEEP_BACKOFF_MS[attempt - 1] || 7000;
+      console.warn(
+        `  ${label}: transient error on attempt ${attempt}/${SWEEP_MAX_ATTEMPTS} `
+        + `(${err.message || err}); retrying in ${backoff}ms`,
+      );
+      await sleep(backoff);
+    }
+  }
+  // Defensive — the loop body always either returns or throws, but a
+  // bare `throw lastErr` here keeps TypeScript happy and protects
+  // against future refactors.
+  throw lastErr;
+}
+
 /**
  * Transfer every NFT owned by the ephemeral wallet to the destination
  * wallet. Handles both classic SPL and Token-2022 NFTs correctly by using
@@ -210,21 +269,29 @@ export async function sweepNftsToDestination({
 
   for (const nft of nfts) {
     try {
-      const txId = await transferTokenWithProgram({
-        connection,
-        ownerKeypair,
-        mint: new PublicKey(nft.mint),
-        destination: destPk,
-        amount: 1n,        // NFTs always have amount=1
-        decimals: 0,       // NFTs always have decimals=0
-        programId: nft.programId,
-      });
+      const txId = await withSweepRetries(
+        `nft ${nft.mint}`,
+        () => transferTokenWithProgram({
+          connection,
+          ownerKeypair,
+          mint: new PublicKey(nft.mint),
+          destination: destPk,
+          amount: 1n,        // NFTs always have amount=1
+          decimals: 0,       // NFTs always have decimals=0
+          programId: nft.programId,
+        }),
+      );
       console.log(`  swept ${nft.mint} (${nft.programName}): ${txId}`);
       transferred.push({ mint: nft.mint, txId, programName: nft.programName });
     } catch (err) {
       console.error(`  failed to sweep ${nft.mint}:`, err.message);
       errors.push({ mint: nft.mint, error: err.message });
     }
+    // Inter-item pacing. Matches the lock/transfer phase pacing in
+    // lpService.js — the natural per-tx wait keeps us safe on most
+    // endpoints, but bursts of consecutive successes can still hit
+    // per-second caps on free-tier RPCs.
+    await sleep(SWEEP_TX_PACING_MS);
   }
 
   return { transferred, errors };
@@ -294,15 +361,18 @@ export async function sweepAllTokensToDestination({
       const programId = t.programId === TOKEN_2022_PROGRAM_ID.toBase58()
         ? TOKEN_2022_PROGRAM_ID
         : TOKEN_PROGRAM_ID;
-      const txId = await transferTokenWithProgram({
-        connection,
-        ownerKeypair,
-        mint: new PublicKey(t.mint),
-        destination: destPk,
-        amount: BigInt(t.amountRaw),
-        decimals: t.decimals,
-        programId,
-      });
+      const txId = await withSweepRetries(
+        `token ${t.mint}`,
+        () => transferTokenWithProgram({
+          connection,
+          ownerKeypair,
+          mint: new PublicKey(t.mint),
+          destination: destPk,
+          amount: BigInt(t.amountRaw),
+          decimals: t.decimals,
+          programId,
+        }),
+      );
       console.log(`  swept ${t.mint} (${t.amountUi}): ${txId}`);
       transferred.push({
         mint: t.mint,
@@ -314,6 +384,8 @@ export async function sweepAllTokensToDestination({
       console.error(`  failed to sweep ${t.mint}:`, err.message);
       errors.push({ mint: t.mint, error: err.message });
     }
+    // Inter-item pacing — same rationale as the NFT sweep loop above.
+    await sleep(SWEEP_TX_PACING_MS);
   }
 
   return { transferred, errors };
@@ -821,6 +893,12 @@ export async function executeAirdrop({
   tokenDecimals,
   isToken2022 = false,
   recipients, // [{ wallet: 'addressStr', tokens: 12345 }, ...]
+  // Optional progress callback. Invoked after each recipient as
+  // onProgress({ recipient, tokens, success }). server.js passes a
+  // callback that writes to the in-memory airdropProgress Map; the
+  // frontend polls /api/airdrop-progress to render a live progress UI.
+  // Backwards-compatible default — when not passed, no callback runs.
+  onProgress = null,
 }) {
   const connection = makeConnection();
   const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
@@ -878,6 +956,10 @@ export async function executeAirdrop({
         error: `Invalid Solana address: ${e.message}`,
         attempts: 0,
       });
+      if (typeof onProgress === 'function') {
+        try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: false }); }
+        catch (_) { /* never let a progress callback break the airdrop */ }
+      }
       // Invalid-address failures don't count toward the circuit
       // breaker — they're client-data problems, not RPC problems.
       continue;
@@ -893,6 +975,10 @@ export async function executeAirdrop({
         error: 'Recipient amount rounds to zero',
         attempts: 0,
       });
+      if (typeof onProgress === 'function') {
+        try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: false }); }
+        catch (_) { /* never let a progress callback break the airdrop */ }
+      }
       continue;
     }
 
@@ -912,6 +998,10 @@ export async function executeAirdrop({
           + `Use the Retry failed button after the connection recovers.`,
         attempts: 0,
       });
+      if (typeof onProgress === 'function') {
+        try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: false }); }
+        catch (_) { /* never let a progress callback break the airdrop */ }
+      }
       continue;
     }
 
@@ -951,6 +1041,10 @@ export async function executeAirdrop({
         txId: result.txId,
         attempts: result.attempts,
       });
+      if (typeof onProgress === 'function') {
+        try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: true }); }
+        catch (_) { /* never let a progress callback break the airdrop */ }
+      }
       consecutiveFailures = 0;
       // If we needed >1 attempt for THIS recipient, bump pacing to
       // slow for the rest. Even though this one succeeded, the retry
@@ -977,6 +1071,10 @@ export async function executeAirdrop({
         ...(result.signature ? { signature: result.signature } : {}),
         attempts: result.attempts,
       });
+      if (typeof onProgress === 'function') {
+        try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: false }); }
+        catch (_) { /* never let a progress callback break the airdrop */ }
+      }
       consecutiveFailures += 1;
       // Bump pace too — a failed recipient is strongly suggestive of
       // RPC trouble.
