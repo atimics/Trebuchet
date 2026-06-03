@@ -27,8 +27,21 @@ const __dirname = path.dirname(__filename);
 // sets this to app.getPath('userData') in the Electron build; left
 // unset by the web build (npm run web) so writes land alongside the
 // source. Either way the file is small and safe to manage.
-const CONFIG_DIR = process.env.TREBUCHET_CONFIG_DIR || __dirname;
-const CONFIG_FILE = path.join(CONFIG_DIR, 'userPrefs.json');
+//
+// IMPORTANT: resolve the directory LAZILY on every call, not once at
+// module-import time. main.js imports this module at startup, which is
+// BEFORE it sets TREBUCHET_CONFIG_DIR = app.getPath('userData') inside
+// startServer(). If we froze the path at import we'd capture __dirname,
+// which in a packaged build lives inside the read-only asar archive —
+// every write would then silently fail (persist() swallows the error) and
+// no preference would ever stick. Reading process.env on each call means
+// get()/set() — which only run well after startup — always see userData.
+function configDir() {
+  return process.env.TREBUCHET_CONFIG_DIR || __dirname;
+}
+function configFile() {
+  return path.join(configDir(), 'userPrefs.json');
+}
 
 // Defaults — also the schema for what fields exist. Anything not
 // listed here is silently dropped on set(); anything missing from
@@ -67,8 +80,8 @@ const DEFAULTS = Object.freeze({
 
 function loadFromDisk() {
   try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
+    if (fs.existsSync(configFile())) {
+      const raw = fs.readFileSync(configFile(), 'utf8');
       const parsed = JSON.parse(raw);
       // Merge over defaults so missing fields take their default and
       // unknown fields are ignored (next persist() will drop them).
@@ -90,10 +103,10 @@ function persist(state) {
   try {
     // mkdirSync recursive is a no-op if the directory already exists,
     // so this is safe to call on every save. Necessary on first run
-    // when CONFIG_DIR may be a userData path that hasn't been created
+    // when the config dir may be a userData path that hasn't been created
     // yet.
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(state, null, 2) + '\n');
+    fs.mkdirSync(configDir(), { recursive: true });
+    fs.writeFileSync(configFile(), JSON.stringify(state, null, 2) + '\n');
   } catch (e) {
     console.error('userPrefs: failed to save:', e.message);
   }

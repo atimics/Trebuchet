@@ -32,6 +32,14 @@ let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 // arrived" button are shown, and the server simulates all chain calls.
 let demoModeActive = false;
 
+// One-shot bypass for the beforeunload "launch in progress" guard. The demo
+// toggle reloads the page to reset state, but it has ALREADY warned and
+// confirmed with the user via the HTML confirm dialog. Without this flag the
+// reload would also trip Electron's native "Launch in progress" dialog (a
+// second, non-HTML prompt). setDemoMode sets this true just before reloading;
+// the beforeunload handler checks it and lets the reload through silently.
+let demoModeReloading = false;
+
 // ---------------------------------------------------------------------------
 // Flywheel presets
 // ---------------------------------------------------------------------------
