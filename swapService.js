@@ -132,6 +132,118 @@ const CONFIRM_TIMEOUT_MS = 60_000;
 const routeDiscoveryCache = new Map();
 
 // ---------------------------------------------------------------------------
+// Test-only DI seams
+// ---------------------------------------------------------------------------
+//
+// Optional overrides for the external boundaries swapService touches:
+//   - the Connection factory (RPC client construction)
+//   - the Trade API client (Raydium quote / transaction endpoints)
+//   - the balance reader (SPL token + native SOL balance lookups)
+//
+// Production code uses the real implementations when these are null,
+// which is the default and the only state at app start. Tests inject
+// network-free fakes via the set*ForTests exports and clear them in
+// afterEach() via resetTestFactories() / resetBalanceReaderForTests().
+//
+// Module-level state is fine here because the node:test runner runs
+// tests serially by default. If a test ever turned on concurrency via
+// test.concurrency, we'd need to move this into AsyncLocalStorage so
+// concurrent tests don't trample each other's overrides — but no test
+// currently uses concurrency, so the simple module-let approach is
+// adequate and keeps the override-check fast (single null comparison).
+
+let __connectionFactoryOverride = null;
+let __tradeApiOverride = null;
+let __balanceReaderOverride = null;
+
+/**
+ * Replace the function used to construct the Connection inside
+ * swapSolForQuote. The override is called with no arguments and must
+ * return a Connection-shaped object (sendTransaction, confirmTransaction,
+ * getLatestBlockhash, etc.).
+ */
+export function setConnectionFactoryForTests(factory) {
+  __connectionFactoryOverride = factory;
+}
+
+/**
+ * Replace the Trade API client used inside swapSolForQuote. The
+ * override must expose two methods matching the real call shape:
+ *   fetchQuote({ inputMint, outputMint, amountLamports, slippageBps })
+ *   fetchTransactions({ swapResponse, walletPubkey, priorityFeeMicroLamports })
+ */
+export function setTradeApiForTests(api) {
+  __tradeApiOverride = api;
+}
+
+/**
+ * Replace the token / SOL balance reader used inside swapSolForQuote.
+ * The override must expose two methods:
+ *   readTokenBalanceRaw(connection, ownerPk, mintPk) -> BN
+ *   readSolBalanceLamports(connection, ownerPk) -> BN
+ */
+export function setBalanceReaderForTests(reader) {
+  __balanceReaderOverride = reader;
+}
+
+/**
+ * Clear all test overrides — returns the module to its production
+ * behavior. Always safe to call (idempotent, no-throw).
+ */
+export function resetTestFactories() {
+  __connectionFactoryOverride = null;
+  __tradeApiOverride = null;
+  __balanceReaderOverride = null;
+}
+
+/**
+ * Clear ONLY the balance-reader override. Exists for tests that want
+ * to keep a fake connection / trade API but swap balance behaviors
+ * between sub-cases. Called as `swapService.resetBalanceReaderForTests?.()`
+ * by the existing afterEach hook in test/swap-lifecycle.test.mjs.
+ */
+export function resetBalanceReaderForTests() {
+  __balanceReaderOverride = null;
+}
+
+// Dispatcher helpers — return the override's result when one is set,
+// otherwise call the real implementation. Kept as separate functions
+// so swapSolForQuote stays readable: every override-aware call site
+// reads as one of these obtain*() calls rather than an inline ternary.
+
+function obtainConnection() {
+  if (__connectionFactoryOverride) return __connectionFactoryOverride();
+  return new Connection(getRpcUrl(), {
+    commitment: 'confirmed',
+    confirmTransactionInitialTimeout: 60_000,
+  });
+}
+
+function obtainTokenBalance(connection, ownerPk, mintPk) {
+  if (__balanceReaderOverride) {
+    return __balanceReaderOverride.readTokenBalanceRaw(connection, ownerPk, mintPk);
+  }
+  return readTokenBalanceRaw(connection, ownerPk, mintPk);
+}
+
+function obtainSolBalance(connection, ownerPk) {
+  if (__balanceReaderOverride) {
+    return __balanceReaderOverride.readSolBalanceLamports(connection, ownerPk);
+  }
+  return readSolBalanceLamports(connection, ownerPk);
+}
+
+function obtainTradeApiQuote(args) {
+  if (__tradeApiOverride) return __tradeApiOverride.fetchQuote(args);
+  return fetchTradeApiQuote(args);
+}
+
+function obtainTradeApiTransactions(args) {
+  if (__tradeApiOverride) return __tradeApiOverride.fetchTransactions(args);
+  return fetchTradeApiTransactions(args);
+}
+
+// ---------------------------------------------------------------------------
 // Route discovery (used at funding-estimate time)
 // ---------------------------------------------------------------------------
 //
@@ -625,17 +737,16 @@ export async function swapSolForQuote({
   //    rather than reusing one from elsewhere — the launch flow may
   //    take long enough that a stale connection's TCP socket has
   //    timed out, and the cost of opening a new one is negligible.
-  const connection = new Connection(getRpcUrl(), {
-    commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 60_000,
-  });
+  //    Tests can inject a fake Connection via setConnectionFactoryForTests;
+  //    obtainConnection() handles the override / production split.
+  const connection = obtainConnection();
 
   // 3. Idempotent fast-path: if already satisfied, return cleanly.
   //    Uses effectiveMinRaw (the on-chain bootstrap need), not targetRaw
   //    (the oversize swap ambition). A previous partial-fill swap that
   //    delivered enough to satisfy the bootstrap should NOT trigger
   //    another swap on a re-call.
-  const initialQuoteRaw = await readTokenBalanceRaw(connection, ownerPk, mintPk);
+  const initialQuoteRaw = await obtainTokenBalance(connection, ownerPk, mintPk);
   if (initialQuoteRaw.gte(effectiveMinRaw)) {
     console.log(
       `  already satisfied (${initialQuoteRaw.toString()} ≥ ${effectiveMinRaw.toString()})`,
@@ -672,7 +783,7 @@ export async function swapSolForQuote({
   // 5. Pre-flight: wallet must have spend + tx-fee headroom. Fail fast
   //    if not, so we surface the actionable error to the user instead
   //    of burning retry budget.
-  const walletSol = await readSolBalanceLamports(connection, ownerPk);
+  const walletSol = await obtainSolBalance(connection, ownerPk);
   if (walletSol.lt(required)) {
     throw new Error(
       `INSUFFICIENT_SOL: wallet has ${(walletSol.toNumber() / LAMPORTS_PER_SOL).toFixed(6)} SOL, ` +
@@ -704,7 +815,7 @@ export async function swapSolForQuote({
     // need (e.g. $1), there's no point retrying just to hit the
     // bigger acquire target (e.g. $2). The bigger target exists as a
     // slippage buffer, not a hard requirement.
-    const currentRaw = await readTokenBalanceRaw(connection, ownerPk, mintPk);
+    const currentRaw = await obtainTokenBalance(connection, ownerPk, mintPk);
     if (currentRaw.gte(effectiveMinRaw)) {
       console.log(
         `    balance now satisfies bootstrap need (${currentRaw.toString()} ≥ ${effectiveMinRaw.toString()}); finishing`,
@@ -726,7 +837,7 @@ export async function swapSolForQuote({
       );
 
       // 6a. Fetch quote.
-      const swapResponse = await fetchTradeApiQuote({
+      const swapResponse = await obtainTradeApiQuote({
         inputMint: WSOL_MINT,
         outputMint: quoteMint,
         amountLamports: spendLamports,
@@ -734,7 +845,7 @@ export async function swapSolForQuote({
       });
 
       // 6b. Build serialized transaction(s).
-      const txs = await fetchTradeApiTransactions({
+      const txs = await obtainTradeApiTransactions({
         swapResponse,
         walletPubkey: ownerPk.toBase58(),
         priorityFeeMicroLamports: rung.priorityFeeMicroLamports,
@@ -755,7 +866,7 @@ export async function swapSolForQuote({
       //     covers minRaw is a SUCCESS — no need to retry. Only flag
       //     as partial-fill-retry when even the minimum wasn't met.
       await new Promise((r) => setTimeout(r, POST_SWAP_SETTLE_MS));
-      const finalRaw = await readTokenBalanceRaw(connection, ownerPk, mintPk);
+      const finalRaw = await obtainTokenBalance(connection, ownerPk, mintPk);
       const swappedRaw = finalRaw.sub(initialQuoteRaw);
       if (finalRaw.lt(effectiveMinRaw)) {
         // Even the bootstrap minimum wasn't covered. This is a real

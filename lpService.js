@@ -382,12 +382,21 @@ export async function getClmmFeeTiers() {
 /**
  * Build a fresh Raydium SDK instance for the given owner keypair. We don't
  * cache across calls because the owner changes per launch.
+ *
+ * Tests can short-circuit this entire function by setting an SDK factory
+ * via setSdkFactoryForTests — the override is called with the ownerKeypair
+ * and its return value is used in place of a real Raydium.load(). Tests
+ * can also override just the Connection construction (when they want the
+ * real Raydium.load with a fake RPC) via setConnectionFactoryForTests.
  */
 async function initSdk(ownerKeypair) {
-  const connection = new Connection(getRpcUrl(), {
-    commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 60_000,
-  });
+  if (__sdkFactoryOverride) return __sdkFactoryOverride(ownerKeypair);
+  const connection = __connectionFactoryOverride
+    ? __connectionFactoryOverride()
+    : new Connection(getRpcUrl(), {
+        commitment: 'confirmed',
+        confirmTransactionInitialTimeout: 60_000,
+      });
   return Raydium.load({
     owner: ownerKeypair,
     connection,
@@ -396,6 +405,72 @@ async function initSdk(ownerKeypair) {
     disableLoadToken: true, // skip the multi-MB token-list fetch
     blockhashCommitment: 'finalized',
   });
+}
+
+// ---------------------------------------------------------------------------
+// Test-only DI seams
+// ---------------------------------------------------------------------------
+//
+// Optional overrides for two external boundaries lpService touches:
+//
+//   __sdkFactoryOverride        — replaces Raydium.load() inside initSdk.
+//                                 Called with the owner keypair; must
+//                                 return an SDK-shaped object exposing
+//                                 clmm, api, account, and a connection
+//                                 property (the shape returned by the
+//                                 real Raydium.load).
+//
+//   __connectionFactoryOverride — replaces new Connection(getRpcUrl(),...)
+//                                 in initSdk (when no SDK override is set)
+//                                 AND in the per-allocation quote-token
+//                                 lookup loop inside preflightCreate-
+//                                 PoolsAndPositions.
+//
+// Production code never sets these — they stay null and the dispatcher
+// branches in initSdk / preflightCreatePoolsAndPositions fall through to
+// the real implementations. Tests inject network-free fakes via the
+// set*ForTests exports and clear them in afterEach via resetTestFactories.
+//
+// Module-level state is fine because node:test runs tests serially by
+// default. If a test ever opted into .concurrency, we'd need AsyncLocal-
+// Storage — but no test currently does, so the simple approach wins.
+//
+// The phase helpers (createSinglePool, lockAllPositions, transferFeeKeys)
+// take `raydium` as a parameter directly, so tests usually inject their
+// fake SDK there and don't need to use these factory overrides at all.
+// The seams exist for completeness so callers of createPoolsAndPositions
+// (the full orchestrator) can also be tested if needed.
+
+let __sdkFactoryOverride = null;
+let __connectionFactoryOverride = null;
+
+/**
+ * Replace the function used to construct the Raydium SDK inside
+ * initSdk. The override is called with the owner Keypair and must
+ * return an SDK-shaped object. Set by tests, cleared by
+ * resetTestFactories.
+ */
+export function setSdkFactoryForTests(factory) {
+  __sdkFactoryOverride = factory;
+}
+
+/**
+ * Replace the function used to construct Connections. Called with no
+ * arguments; must return a @solana/web3.js Connection-shaped object.
+ * Affects initSdk and preflightCreatePoolsAndPositions's per-allocation
+ * quote-token lookups.
+ */
+export function setConnectionFactoryForTests(factory) {
+  __connectionFactoryOverride = factory;
+}
+
+/**
+ * Clear both test overrides — returns the module to production
+ * behavior. Always safe to call (idempotent, no-throw).
+ */
+export function resetTestFactories() {
+  __sdkFactoryOverride = null;
+  __connectionFactoryOverride = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -2209,8 +2284,12 @@ export async function preflightCreatePoolsAndPositions({
   // Open one RPC connection for any per-allocation quote-token lookups
   // resolveQuoteToken might need. Cheap — only used for fetching
   // decimals/symbol when the allocation didn't provide overrides.
+  // Honors the test override so this preflight code path stays mockable
+  // alongside initSdk.
   const { Connection } = await import('@solana/web3.js');
-  const connection = new Connection(getRpcUrl(), 'confirmed');
+  const connection = __connectionFactoryOverride
+    ? __connectionFactoryOverride()
+    : new Connection(getRpcUrl(), 'confirmed');
 
   const resolvedPrices = [];
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
@@ -4102,3 +4181,28 @@ export async function estimateRequiredFunding({
     resolvedPrices,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Test-only export of internal phase helpers
+// ---------------------------------------------------------------------------
+//
+// Exposes the per-phase building blocks of the launch flow so the
+// integration tests in test/launch-lifecycle.test.mjs can drive them
+// directly with a mock Raydium SDK, without going through the full
+// createPoolsAndPositions orchestrator (which interleaves tick math,
+// USD price resolution, and quote-token lookups that aren't part of
+// the phase being tested).
+//
+// Production code never reads from __testHooks. It always calls the
+// public createPoolsAndPositions entry point above, which composes
+// these helpers internally. The export exists solely so tests can
+// reach in and exercise each phase in isolation.
+//
+// Function declarations are hoisted within the module, so it's fine
+// for this object literal to reference functions that appear earlier
+// in the file.
+export const __testHooks = {
+  createSinglePool,
+  lockAllPositions,
+  transferFeeKeys,
+};

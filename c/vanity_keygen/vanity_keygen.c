@@ -380,8 +380,17 @@ static void print_usage(const char *prog) {
 }
 
 static int get_cpu_count(void) {
+#if defined(_WIN32)
+    /* Windows: <windows.h> is already included in the platform block
+     * at the top of the file. GetSystemInfo reports the number of
+     * logical processors, the same semantic sysconf returns on POSIX. */
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (si.dwNumberOfProcessors > 0) ? (int)si.dwNumberOfProcessors : 4;
+#else
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return (n > 0) ? (int)n : 4;
+#endif
 }
 
 static void b58_of(const uint8_t bytes[32], char out[48]) {
