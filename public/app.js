@@ -6253,13 +6253,6 @@ function renderPools() {
   });
   updateAllocationSummary();
   updateContinueToFundingState();
-  // Re-validate the active vanity CA against the current pool set so
-  // the warning state in the result block stays in sync when the user
-  // adds/removes pools or a quote mint resolves to a new value. Guard
-  // with typeof in case this fires before the vanity renderer is
-  // defined (function-declaration order isn't guaranteed across this
-  // long file's binding sequence).
-  if (typeof renderVanityCAList === 'function') renderVanityCAList();
 }
 
 // ---------------------------------------------------------------------------
@@ -8128,11 +8121,9 @@ function applyResolvedInfoToPool(pool, info) {
   setIfPresent('resolvedSymbol', info.symbol);
   setIfPresent('resolvedDecimals', info.decimals);
   setIfPresent('resolvedPriceUsd', info.priceUsd);
-  // Save the resolved on-chain mint too. We need it at token-creation
-  // time to seed the keypair search that ensures the launched token
-  // sorts as mintA in every pool (which puts the launched token in
-  // the *denominator* of the displayed Raydium price, matching user
-  // expectations of "launch price up to infinity").
+  // Save the resolved on-chain mint too. Used as a display/link fallback
+  // (e.g. when building Solscan or Birdeye URLs in the pool header) —
+  // see the `pool.resolvedMint || pool.quoteToken` pattern elsewhere.
   setIfPresent('resolvedMint', info.address);
   // Display-only fields. Either may be null if no indexer had the
   // token; the UI handles that by hiding the logo and falling back
@@ -8661,11 +8652,54 @@ function updateContinueToFundingState() {
     // buildAllocationsForApi filters those out automatically (they
     // contribute nothing to the pool's allocation). A slice with an
     // external recipient configured but no address is still a real
-    // mistake — flag it.
+    // mistake — flag it. An address that's filled in but doesn't even
+    // look like base58 is also flagged here so the user sees the
+    // problem on the same screen they entered it (without this check
+    // the server's `normalizeDistribution` rejects with "Invalid
+    // recipient address" only AFTER funding is committed).
     for (const [si, slice] of p.distribution.entries()) {
       if (slice.useExternalRecipient && !slice.recipient) {
         reasons.push(`Pool ${i + 1} slice ${si + 1}: recipient address required`);
+      } else if (
+        slice.useExternalRecipient &&
+        slice.recipient &&
+        !isPlausibleSolAddress(slice.recipient)
+      ) {
+        reasons.push(
+          `Pool ${i + 1} slice ${si + 1}: recipient doesn't look like a valid ` +
+            `Solana address`,
+        );
       }
+    }
+  }
+
+  // Duplicate-pool detection. Raydium derives the CLMM pool PDA from
+  // (ammConfig, mintA, mintB), so two pools with the same quote token
+  // AND the same fee tier collide at the on-chain account address. The
+  // first createPool succeeds; the second fails at simulation with an
+  // opaque "account already in use" error. No SOL is lost, but the
+  // user gets a mid-launch failure with a confusing diagnostic.
+  // Catching it here keeps the failure local to the form.
+  //
+  // Distinct fee tiers on the same quote are legitimately separate
+  // pools — keyed by (normalized quote, ammConfigIndex) so they don't
+  // collide here.
+  const seenPoolKeys = new Map();
+  for (const [i, p] of pools.entries()) {
+    if (!p.quoteToken) continue;
+    const quoteKey =
+      (p.quoteToken || '').toUpperCase() === 'SOL' ? 'SOL' : p.quoteToken;
+    const key = `${quoteKey}|${p.ammConfigIndex}`;
+    if (seenPoolKeys.has(key)) {
+      const firstIdx = seenPoolKeys.get(key);
+      const label = p.resolvedSymbol || p.quoteToken;
+      reasons.push(
+        `Pool ${i + 1} duplicates Pool ${firstIdx + 1} (same ${label} ` +
+          `quote at the same fee tier). Pick a different quote or a ` +
+          `different fee tier — Raydium uses both to identify a pool.`,
+      );
+    } else {
+      seenPoolKeys.set(key, i);
     }
   }
 
@@ -13326,16 +13360,6 @@ bind('createTokenBtn', 'click', async () => {
       // in JavaScript before the server converts to BigInt.
       const totalSupplyRaw = getIntegerInputString(document.getElementById('tokenSupply'));
       formData.append('totalSupply', totalSupplyRaw);
-      // Quote mints from every configured pool. The server uses these to
-      // search for a launched-token keypair that sorts smaller than all
-      // of them, so the launched token is mintA in every pool. Filter out
-      // pools whose mint hasn't resolved yet (e.g. user is mid-typing) —
-      // the server will validate and either succeed with whatever's
-      // present or fail loud.
-      const quoteMints = pools
-        .map((p) => p.resolvedMint)
-        .filter((m) => typeof m === 'string' && m.length > 0);
-      formData.append('quoteMints', JSON.stringify(quoteMints));
       // Vanity CA: if we pre-ground a keypair, send it. Otherwise
       // fall back to prefix/suffix for server-side grinding.
       if (selectedVanityCA !== null && vanityCAKeypairs[selectedVanityCA]) {
@@ -13517,18 +13541,19 @@ function showPreflightModal(resolvedPrices) {
 }
 
 // Render the body of the pre-commit confirmation modal. One row per
-// allocation, showing quote symbol, resolved initialPrice (launched
-// token per quote token), source label, and drift indicator when the
-// price moved noticeably from the user's funding-estimate value.
+// allocation, showing quote symbol, resolved initialPrice (quote token
+// per launched token, e.g. "5e-6 SOL per FROG"), source label, and
+// drift indicator when the price moved noticeably from the user's
+// funding-estimate value.
 function renderPreflightModalBody(resolvedPrices) {
   const list = document.getElementById('createLpConfirmList');
   if (!list) return;
 
   // Find the user-typed targetMarketCap and total supply to compute
   // the launched-token USD value (same as renderLpSummary). We render
-  // the initial price as launched-USD-per-quote-token to match how
-  // Raydium presents prices (the user's "I'm launching at $X" mental
-  // model).
+  // the initial price as quote-per-launched-token to match how
+  // Raydium presents prices (the user's "1 of my tokens costs X SOL"
+  // mental model).
   const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
   const totalSupply = Number(createdTokenInfo?.totalSupply || 0);
   const launchedTokenUsd =
@@ -13599,14 +13624,18 @@ function renderPreflightModalBody(resolvedPrices) {
 
     // Drift indicator. driftPct is signed (positive = probe higher
     // than what the user committed at funding). >5% absolute is
-    // worth showing; small movements aren't.
+    // worth showing; small movements aren't. Wording names the quote
+    // symbol explicitly because "Price" alone is ambiguous: the
+    // launched token's USD-denominated price is invariant to quote
+    // drift (we adjust the pool ratio accordingly), so the only
+    // thing actually drifting here is the quote token's USD value.
     let driftLine = '';
     if (rp.driftPct !== null && rp.driftPct !== undefined && Math.abs(rp.driftPct) >= 5) {
       const direction = rp.driftPct > 0 ? 'higher' : 'lower';
       driftLine =
         `<div class="is-size-7 has-text-warning-dark mt-1">` +
           `<i class="fas fa-exclamation-circle"></i> ` +
-          `Price is ${Math.abs(rp.driftPct).toFixed(1)}% ${direction} than ` +
+          `${symbol} price is ${Math.abs(rp.driftPct).toFixed(1)}% ${direction} than ` +
           `the funding estimate — within tolerance, but worth a glance.` +
         `</div>`;
     }
@@ -13621,7 +13650,7 @@ function renderPreflightModalBody(resolvedPrices) {
           <div class="has-text-right">
             <div class="is-size-7 has-text-grey">Initial price</div>
             <div><strong>${fmtRatio(initialPriceNum)}</strong>
-              <span class="has-text-grey is-size-7"> token per ${symbol}</span></div>
+              <span class="has-text-grey is-size-7"> ${symbol} per token</span></div>
             <div class="is-size-7 has-text-grey">
               ${symbol} ≈ ${fmtUsd(quoteUsdNum)}${
                 launchedTokenUsd
@@ -15238,6 +15267,16 @@ bind('grindCABtn', 'click', async () => {
       const progressEl = document.getElementById('vanityCAProgress');
       if (progressEl) progressEl.classList.remove('hidden');
 
+      // Hide any previously-displayed result card while the new grind
+      // runs. The card re-appears via renderVanityCAList from either the
+      // done handler (with the new CA's data) or the finally block
+      // (restoring the previous CA if cancel/error left selection
+      // intact). Avoids the confusing "old result + new progress bar
+      // visible at the same time" state, especially when the previous
+      // result was in the yellow warning state.
+      const resultEl = document.getElementById('vanityCAResult');
+      if (resultEl) resultEl.classList.add('hidden');
+
       // Ensure original bar is visible, remove any old epoch bars
       const barContainer = progressEl?.querySelector('.vanity-progress-bar');
       if (barContainer) barContainer.style.display = '';
@@ -15323,6 +15362,14 @@ bind('grindCABtn', 'click', async () => {
       if (epochBars) epochBars.remove();
     } finally {
       setGrindButtonState('grind');
+      // Re-render the result card after every grind exit path so it
+      // reflects the current state: the new CA on success (harmless
+      // double-call after the done handler), the previously-selected
+      // CA restored after cancel/error (if any), or stays hidden if no
+      // selection persists. Without this the card stays hidden after
+      // cancel even when there's a previous result the user expects
+      // to see again.
+      renderVanityCAList();
     }
   });
 });
@@ -15337,91 +15384,6 @@ bind('clearVanityCAResultBtn', 'click', () => {
   log('Vanity CA discarded.', 'info');
 });
 
-// Base58 decoder. The frontend can't import @solana/web3.js or bs58
-// (Node-only deps in this build), so we have a tiny BigInt-based
-// implementation just for the pre-flight mintA check below. Solana
-// addresses always decode to exactly 32 bytes; the BigInt path is
-// sub-millisecond per decode.
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-function decodeBase58ToBytes(str) {
-  let value = 0n;
-  for (let i = 0; i < str.length; i++) {
-    const idx = BASE58_ALPHABET.indexOf(str[i]);
-    if (idx < 0) throw new Error('Invalid base58 character: ' + str[i]);
-    value = value * 58n + BigInt(idx);
-  }
-  // Convert BigInt to big-endian byte array.
-  const bytes = [];
-  while (value > 0n) {
-    bytes.unshift(Number(value & 0xffn));
-    value >>= 8n;
-  }
-  // Each leading '1' in the base58 string represents a leading 0x00
-  // byte in the decoded value. Solana mints rarely lead with 0x00 but
-  // we handle it for correctness — WSOL itself starts with 'So...' so
-  // no leading 1s, but it's not impossible for some mints.
-  for (let i = 0; i < str.length && str[i] === '1'; i++) {
-    bytes.unshift(0);
-  }
-  return new Uint8Array(bytes);
-}
-
-// Byte-by-byte pubkey comparator. Mirrors the server-side comparePubkeys
-// in tokenService.js, which itself mirrors Solana's on-chain Pubkey::cmp
-// behaviour that Raydium uses to assign mintA vs mintB. Negative if a<b,
-// positive if a>b, zero if equal.
-function comparePubkeyBytes(a, b) {
-  for (let i = 0; i < 32; i++) {
-    if (a[i] !== b[i]) return a[i] - b[i];
-  }
-  return 0;
-}
-
-// Pre-flight check: does the active vanity CA sort strictly smaller
-// than every configured pool's quote mint? Server-side validation at
-// tokenService.js:369-381 throws "does not sort before all quote mints"
-// when this fails, costing the user a launch attempt; this check
-// catches the same condition client-side after the grind so the user
-// can discard and re-grind before sinking more time.
-//
-// Returns { ok, failsAgainst } where failsAgainst is the list of
-// problematic pools (each with a human-readable label and the raw
-// mint address). The Ed25519 secret-key layout puts the public-key
-// bytes in the last 32 of the 64-byte array, so we extract them
-// directly — no base58 decode needed for our side of the comparison.
-function validateVanityMintAConstraint(entry) {
-  if (!entry || !entry.secretKey || entry.secretKey.length !== 64) {
-    // Can't validate; assume OK and let the server have final say.
-    return { ok: true, failsAgainst: [] };
-  }
-  const vanityBytes = entry.secretKey.slice(32, 64);
-
-  const failsAgainst = [];
-  for (const pool of pools) {
-    const mint = pool && pool.resolvedMint;
-    if (typeof mint !== 'string' || mint.length === 0) continue;
-    try {
-      const quoteBytes = decodeBase58ToBytes(mint);
-      // Not a 32-byte pubkey → not a real mint, skip rather than throw.
-      if (quoteBytes.length !== 32) continue;
-      if (comparePubkeyBytes(vanityBytes, quoteBytes) >= 0) {
-        // Vanity is NOT strictly smaller. Use the pool's symbol/label
-        // if it has one, otherwise a truncated form of the mint so the
-        // user has something to identify it by.
-        const label = pool.label
-          || pool.symbol
-          || (mint.length > 8 ? `${mint.slice(0, 4)}…${mint.slice(-4)}` : mint);
-        failsAgainst.push({ mint, label });
-      }
-    } catch (e) {
-      // Bad base58 on a pool's resolvedMint shouldn't happen, but if
-      // it does we don't want to crash the renderer. Log and skip.
-      console.warn('Pre-flight: skipping pool with unparseable mint', mint, e.message);
-    }
-  }
-  return { ok: failsAgainst.length === 0, failsAgainst };
-}
-
 // Render the active vanity CA into the result block in index.html.
 //
 // History: this used to be a multi-result list renderer, but the matching
@@ -15432,12 +15394,6 @@ function validateVanityMintAConstraint(entry) {
 // in the HTML and was sitting unused. The "list" semantics are preserved
 // in the underlying array, but in practice we replace-on-success so the
 // array has at most one entry at a time.
-//
-// Also handles the mintA pre-flight: toggles between a green-success and
-// a yellow-warning visual based on whether the vanity CA will pass the
-// server-side sort check at launch time. This re-runs on every call, so
-// changes to the pools array (which happen via renderPools) get picked
-// up too — see the renderVanityCAList() call at the bottom of renderPools.
 function renderVanityCAList() {
   const resultEl = document.getElementById('vanityCAResult');
   const addrEl = document.getElementById('vanityCAResultAddr');
@@ -15445,7 +15401,6 @@ function renderVanityCAList() {
   const metaEl = document.getElementById('vanityCAResultMeta');
   const iconEl = document.getElementById('vanityCAResultIcon');
   const headlineEl = document.getElementById('vanityCAResultHeadline');
-  const warningEl = document.getElementById('vanityCAResultWarning');
   if (!resultEl) return;
 
   // No active CA → hide the block and we're done.
@@ -15479,49 +15434,16 @@ function renderVanityCAList() {
       + (typeof ca.epochs === 'number' ? ` · ${ca.epochs.toFixed(1)}× epoch` : '');
   }
 
-  // Pre-flight mintA constraint. Failing this client-side means the
-  // server-side check at tokenService.js:369-381 would throw at launch
-  // time — better to surface it here so the user can discard and try
-  // again before sinking another grind on top.
-  const validation = validateVanityMintAConstraint(ca);
-  if (validation.ok) {
-    if (iconEl) {
-      iconEl.innerHTML = '<i class="fas fa-check-circle has-text-success"></i>';
-    }
-    if (headlineEl) {
-      headlineEl.innerHTML =
-        '<strong>Vanity CA ready</strong> '
-        + '<span class="has-text-grey">&mdash; will be used as the token mint address</span>';
-    }
-    if (warningEl) {
-      warningEl.classList.add('hidden');
-      warningEl.innerHTML = '';
-    }
-  } else {
-    if (iconEl) {
-      iconEl.innerHTML = '<i class="fas fa-exclamation-triangle has-text-warning"></i>';
-    }
-    if (headlineEl) {
-      headlineEl.innerHTML =
-        '<strong>Vanity CA ground</strong> '
-        + '<span class="has-text-grey">&mdash; but it won\'t pass the mintA sort check at launch</span>';
-    }
-    if (warningEl) {
-      // HTML-escape pool labels in case a future label source includes
-      // user-controlled text. The mint itself is base58 so no escape
-      // needed, but we go through textContent on a fragment for safety.
-      const labels = validation.failsAgainst
-        .map((f) => f.label)
-        .join(', ');
-      const tmp = document.createElement('span');
-      tmp.textContent = labels;
-      warningEl.innerHTML =
-        '<span class="has-text-grey">Sorts <em>after</em> these quote mints '
-        + '(the launched token must sort <strong>before</strong> all of them to become mintA): '
-        + `<strong>${tmp.innerHTML}</strong>. `
-        + 'Discard this CA and grind again — each grind is independent so a new one has a fresh chance.</span>';
-      warningEl.classList.remove('hidden');
-    }
+  // The vanity CA is always usable — there is no pre-flight constraint
+  // anymore. The launch pipeline accepts whichever mintA/mintB ordering
+  // Raydium picks and branches every downstream calculation accordingly.
+  if (iconEl) {
+    iconEl.innerHTML = '<i class="fas fa-check-circle has-text-success"></i>';
+  }
+  if (headlineEl) {
+    headlineEl.innerHTML =
+      '<strong>Vanity CA ready</strong> '
+      + '<span class="has-text-grey">&mdash; will be used as the token mint address</span>';
   }
 
   resultEl.classList.remove('hidden');

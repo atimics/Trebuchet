@@ -753,13 +753,29 @@ export async function handleCreateLp(req, res, opts = {}) {
         emit({ stage: 'support_open_done', allocationIndex: allocIdx });
       }
 
+      // Mirror Raydium's mintA/mintB assignment: the pubkey with the
+      // smaller byte-wise representation becomes mintA. This is what real
+      // lpService detects post-creation via `poolInfo.mintA.address ===
+      // launchedToken.address`; doing the equivalent here keeps demo
+      // launch reports and journal entries representative of either
+      // outcome the user might see in production.
+      const launchedBytes = new PublicKey(tokenMint).toBytes();
+      const quoteBytes = new PublicKey(quote.address).toBytes();
+      let launchedSide = 'mintB';
+      for (let b = 0; b < 32; b++) {
+        if (launchedBytes[b] !== quoteBytes[b]) {
+          launchedSide = launchedBytes[b] < quoteBytes[b] ? 'mintA' : 'mintB';
+          break;
+        }
+      }
+
       const resultEntry = {
         allocationIndex: allocIdx,
         quoteSymbol: quote.symbol,
         quoteAddress: quote.address,
         supplyPercent: alloc.supplyPercent,
         poolId,
-        launchedSide: 'mintA',
+        launchedSide,
         mainPositions,
         ladderPositions,
         supportPositions,

@@ -19,16 +19,6 @@ bind('createTokenBtn', 'click', async () => {
       // in JavaScript before the server converts to BigInt.
       const totalSupplyRaw = getIntegerInputString(document.getElementById('tokenSupply'));
       formData.append('totalSupply', totalSupplyRaw);
-      // Quote mints from every configured pool. The server uses these to
-      // search for a launched-token keypair that sorts smaller than all
-      // of them, so the launched token is mintA in every pool. Filter out
-      // pools whose mint hasn't resolved yet (e.g. user is mid-typing) —
-      // the server will validate and either succeed with whatever's
-      // present or fail loud.
-      const quoteMints = pools
-        .map((p) => p.resolvedMint)
-        .filter((m) => typeof m === 'string' && m.length > 0);
-      formData.append('quoteMints', JSON.stringify(quoteMints));
       // Vanity CA: if we pre-ground a keypair, send it. Otherwise
       // fall back to prefix/suffix for server-side grinding.
       if (selectedVanityCA !== null && vanityCAKeypairs[selectedVanityCA]) {

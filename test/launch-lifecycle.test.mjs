@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import BN from 'bn.js';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'treb-launch-'));
 process.env.TREBUCHET_CONFIG_DIR = TMP;
@@ -140,6 +141,97 @@ test('createSinglePool create-step happy path: returns a pool id and create tx',
   assert.ok(createPoolEvent, 'pool_create_done emitted');
   assert.ok(createPoolEvent.poolId, 'poolId returned from createPool');
   assert.ok(createPoolEvent.txId, 'createPool tx id returned');
+});
+
+// ---------------------------------------------------------------------------
+// Phase 1 (createSinglePool) — mintB-path happy case
+//
+// When the launched token's pubkey sorts LARGER than the quote mint's,
+// Raydium assigns it to mintB instead of mintA. lpService is supposed
+// to detect this via `poolInfo.mintA.address === launchedToken.address`
+// and branch every downstream math/SDK call accordingly. This test
+// exercises that path by configuring the mock to return mintA=SOL,
+// mintB=launched (the realistic ~97% case without a sort constraint).
+//
+// We verify two things concretely:
+//   1. The pool create step still lands the same way.
+//   2. The openPositionFromBase call lpService makes for the launched-
+//      side position carries `base: 'MintB'` — proving lpService picked
+//      the correct branch given the layout the mock reported.
+//
+// If this test fails after a change, the bidirectional code in
+// lpService is broken for real mintB launches and must be fixed before
+// removing the mintA-only enforcement gate in tokenService.js.
+// ---------------------------------------------------------------------------
+test('createSinglePool create-step mintB path: launched-as-mintB detected and base:"MintB" used on position open', async () => {
+  const raydium = makeMockRaydium({ launchedAsMintB: true });
+  const launchedToken = { address: '__LAUNCHED__', decimals: 9, programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' };
+  const quoteToken = { address: 'So11111111111111111111111111111111111111112', decimals: 9, programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' };
+
+  const stages = [];
+  let createPoolEvent = null;
+  try {
+    await hooks.createSinglePool({
+      raydium,
+      ownerKeypair: { publicKey: { toBase58: () => 'owner' } },
+      ammConfig: { id: 'mock-config', tickSpacing: 60 },
+      launchedToken,
+      quoteToken,
+      initialPrice: 0.0001,
+      // wideBaseRaw needs to be big enough that the per-slice slack reserve
+      // (1 whole token × distribution.length = 1e9 raw for 9-decimal tokens)
+      // still leaves something to slice. With 1 slice that's 1e9 reserved;
+      // pass 2e9 raw so slicableRaw is 1e9 and the slice loop actually runs.
+      wideBaseRaw: new BN('2000000000'),
+      bootstrapBaseRaw: 1n,
+      bootstrapMode: 'minimal',
+      // The lpService code expects each slice to be an object with a
+      // numeric sharePercent — `slice.sharePercent` on a bare integer
+      // yields undefined, which becomes NaN through Math.round and
+      // explodes the BN constructor. This is the canonical shape every
+      // real caller uses (see lpService.js:3715 and line 723).
+      distribution: [{ sharePercent: 100 }],
+      ladderMode: 'off',
+      ladderBands: [],
+      ladderCeiling: 1,
+      onProgress: (e) => {
+        stages.push(e.stage);
+        if (e.stage === 'pool_create_done') createPoolEvent = e;
+      },
+    });
+  } catch (e) {
+    // Same caveat as the mintA happy-path test: simplified mock can't
+    // complete deep tick math, but the bidirectional branching happens
+    // BEFORE that — we still get the openPositionFromBase recorded
+    // calls we need to assert on.
+    void e;
+  }
+
+  // Same baseline assertions as the mintA happy path.
+  assert.ok(stages.includes('pool_create_start'), 'pool create started');
+  assert.ok(createPoolEvent, 'pool_create_done emitted');
+  assert.ok(createPoolEvent.poolId, 'poolId returned from createPool');
+  assert.ok(createPoolEvent.txId, 'createPool tx id returned');
+
+  // The critical bidirectional-correctness assertion: at least one
+  // openPositionFromBase call must have used base:'MintB' (the launched
+  // side), and NONE should have used base:'MintA' (the quote side, since
+  // we never deposit launched tokens on the quote side).
+  const opens = raydium.recordedCalls.openPositionFromBase;
+  assert.ok(opens.length > 0, 'at least one openPositionFromBase call recorded');
+  const mintBOpens = opens.filter((c) => c.base === 'MintB');
+  const mintAOpens = opens.filter((c) => c.base === 'MintA');
+  assert.ok(
+    mintBOpens.length > 0,
+    `expected at least one base:'MintB' open (launched is mintB), got ${mintBOpens.length}; ` +
+    `all bases: ${JSON.stringify(opens.map((c) => c.base))}`,
+  );
+  assert.equal(
+    mintAOpens.length,
+    0,
+    `expected zero base:'MintA' opens (launched is mintB, not mintA), got ${mintAOpens.length}; ` +
+    `all bases: ${JSON.stringify(opens.map((c) => c.base))}`,
+  );
 });
 
 // ---------------------------------------------------------------------------

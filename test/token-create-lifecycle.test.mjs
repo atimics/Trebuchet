@@ -83,7 +83,6 @@ test('createTokenWithMetaplex: partial failure (metadata upload throws) is recov
       description: 'desc',
       totalSupply: '1000000',
       logoBase64: 'data:image/png;base64,aGk=',
-      quoteMints: [],
       onProgress: (e) => {
         events.push(e);
         // Mirror how server.js records token progress into the journal.
@@ -146,7 +145,6 @@ test('createTokenWithMetaplex: supply math + renounce reporting via injected upl
     description: 'a token',
     totalSupply,
     logoBase64: 'data:image/png;base64,aGk=',
-    quoteMints: [],
   }), /stop-after-upload/);
 
   assert.ok(captured, 'uploader was invoked');
