@@ -1304,7 +1304,6 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       symbol,
       description,
       totalSupply,
-      quoteMints: quoteMintsRaw,
       vanityPrefix,
       vanitySuffix,
       vanityCAKeypair: vanityCAKeypairRaw,
@@ -1336,20 +1335,6 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       symbol: normalizedSymbol,
       totalSupply: normalizedTotalSupply,
     });
-
-    // Quote mints come over as a JSON-encoded string in the FormData. Parse
-    // and validate them before they influence the mintA keypair search.
-    let quoteMints = [];
-    try {
-      const parsed = quoteMintsRaw ? JSON.parse(quoteMintsRaw) : [];
-      if (Array.isArray(parsed)) {
-        quoteMints = parsed
-          .filter((m) => typeof m === 'string' && m.length > 0)
-          .map((m) => new PublicKey(m).toBase58());
-      }
-    } catch {
-      throw new Error('quoteMints must be a JSON array of valid mint addresses');
-    }
 
     let logoBase64 = null;
     if (req.file) {
@@ -1387,7 +1372,6 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       description: normalizedDescription,
       totalSupply: normalizedTotalSupply,
       logoBase64,
-      quoteMints,
       vanityPrefix,
       vanitySuffix,
       vanityCAKeypair: vanityCAKeypairRaw ? JSON.parse(vanityCAKeypairRaw) : null,
