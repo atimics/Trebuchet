@@ -314,28 +314,61 @@ function setupSplashScreen() {
 
   let dismissed = false;
   let started = false;
+  // Whether the intro-video preference allows playback. null = not yet
+  // known (still reading the pref); true = allowed. We never set it false —
+  // "disabled" takes the dismiss path below instead. tryStartPlayback() holds
+  // off until this is true, so a disabled intro never flashes a frame.
+  let playAllowed = null;
 
-  function dismiss(reason) {
+  function dismiss(reason, instant) {
     if (dismissed) return;
     dismissed = true;
     console.log('[splash] dismiss:', reason || 'unknown');
-    splash.classList.add('is-dismissing');
     document.body.classList.remove('has-splash');
-    // Pause the video so audio stops immediately on dismiss; then
-    // remove the node after the fade finishes so it isn't lingering
-    // in the DOM as invisible chrome. The 500ms cushion is slightly
-    // longer than the 0.4s CSS transition.
+    // Pause the video so audio stops immediately on dismiss.
     if (video) {
       try { video.pause(); } catch {}
     }
-    setTimeout(() => {
+    if (instant) {
+      // No fade — used when the intro is disabled in settings, so the
+      // splash is removed before it ever really registers as visible.
       if (splash.parentNode) splash.parentNode.removeChild(splash);
-    }, 500);
+    } else {
+      splash.classList.add('is-dismissing');
+      // Remove the node after the fade finishes so it isn't lingering in
+      // the DOM as invisible chrome. The 500ms cushion is slightly longer
+      // than the 0.4s CSS transition.
+      setTimeout(() => {
+        if (splash.parentNode) splash.parentNode.removeChild(splash);
+      }, 500);
+    }
     // Splash is dismissed — release the startup gate. If the
     // disclaimer gate is also clear, this fires the silent update
     // check.
     _releaseStartupGate('splash');
   }
+
+  // Honour the "play intro video" preference. We optimise for the default
+  // (on): the splash markup is already on screen, so we only need to bail
+  // out when it's off. The read is a localhost round-trip; until it returns,
+  // tryStartPlayback() holds (playAllowed === null) so the video can't start
+  // under a splash we're about to remove. If it comes back disabled we
+  // dismiss instantly (no fade); on any read error we fall through to
+  // playing — failing toward the original behaviour.
+  fetch('/api/user-prefs')
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.prefs && data.prefs.playIntroVideo === false) {
+        dismiss('intro video disabled in settings', true);
+      } else {
+        playAllowed = true;
+        tryStartPlayback();
+      }
+    })
+    .catch(() => {
+      playAllowed = true;
+      tryStartPlayback();
+    });
 
   // Conditions for starting playback. Both must be true:
   //   - document.hasFocus() — without focus, browsers reliably block
@@ -350,6 +383,12 @@ function setupSplashScreen() {
   // one-shot click handler that retries play() instead.
   function tryStartPlayback() {
     if (started || dismissed || !video) return;
+    if (playAllowed !== true) {
+      // Still confirming the intro-video preference (or it's disabled and
+      // a dismiss is already in flight) — don't start playback yet.
+      console.log('[splash] waiting for intro-video preference');
+      return;
+    }
     if (!document.hasFocus()) {
       console.log('[splash] waiting for focus');
       return;
@@ -479,6 +518,94 @@ setupSplashScreen();
     document.body.classList.remove('cursor-clenched');
   });
 })();
+
+// ===========================================================================
+// Intro-video preference (renderer side)
+// ---------------------------------------------------------------------------
+// The startup splash plays by default; the "Play the intro video on startup"
+// checkbox in the settings panel lets the user turn it off. We reflect the
+// persisted value into the checkbox on load and write changes back via
+// /api/user-prefs. The change takes effect on the NEXT launch — the splash
+// for the current session has already been decided by setupSplashScreen().
+// ===========================================================================
+(function setupIntroVideoPref() {
+  const toggle = document.getElementById('introVideoToggle');
+  if (!toggle) return;
+
+  // Reflect the stored value. Default is on, so we only uncheck when the
+  // pref is explicitly false; any read error leaves the checkbox at its
+  // default-checked markup state, matching the default-on behaviour.
+  fetch('/api/user-prefs')
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.prefs) toggle.checked = data.prefs.playIntroVideo !== false;
+    })
+    .catch((err) => {
+      console.warn('Failed to read intro-video preference:', err);
+    });
+
+  // Persist on change, fire-and-forget — same pattern as the update-check
+  // preference. If the write fails the toggle still moved visually; the
+  // user can toggle again. We don't touch the current session's splash.
+  toggle.addEventListener('change', () => {
+    fetch('/api/user-prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playIntroVideo: toggle.checked }),
+    }).catch((err) => {
+      console.warn('Failed to persist intro-video preference:', err);
+    });
+  });
+})();
+// ===========================================================================
+// Demo destination wallet
+// ---------------------------------------------------------------------------
+// In demo mode the Step 6 "Destination Wallet" input asks for a real Solana
+// address — that's friction the user shouldn't have to deal with for a
+// walk-through. Auto-fill a synthetic Demo-prefixed address so the user can
+// just click Transfer Assets and watch the simulated sweep complete.
+//
+// Generated once per session (module-scope cache) so the same address shows
+// up if the field is cleared and re-applied during the same session — e.g.
+// after the user clicks Cancel and refund mid-launch and the reset path
+// clears the input. The user sees a stable address rather than a new random
+// one each time.
+//
+// Uses the same Demo-prefix convention demoChainService.js uses for its
+// synthetic on-chain addresses — visually consistent with the rest of the
+// demo data in screenshots and the launch report.
+// ===========================================================================
+
+const _DEMO_BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+let _demoDestinationWalletCached = null;
+
+function getDemoDestinationWallet() {
+  if (_demoDestinationWalletCached) return _demoDestinationWalletCached;
+  // 'DemoDest' (8 chars, all valid base58) + 24 random = 32 chars total.
+  // The 'DemoDest' prefix is recognizable in screenshots as the demo sweep
+  // target without the user having to know what's behind it.
+  let suffix = '';
+  for (let i = 0; i < 24; i++) {
+    suffix += _DEMO_BASE58[Math.floor(Math.random() * _DEMO_BASE58.length)];
+  }
+  _demoDestinationWalletCached = 'DemoDest' + suffix;
+  return _demoDestinationWalletCached;
+}
+
+// Apply the demo destination address to the Step 6 input field, plus
+// swap the placeholder so it doesn't read "Your real Solana wallet
+// address" while sitting next to an auto-filled synthetic one.
+//
+// No-op in real mode — safe to call unconditionally from anywhere that
+// might clear or re-render the destination input.
+function applyDemoDestinationWallet() {
+  if (!demoModeActive) return;
+  const input = document.getElementById('destinationWallet');
+  if (!input) return;
+  input.value = getDemoDestinationWallet();
+  input.placeholder = 'Demo destination wallet (auto-filled)';
+}
+
 // ===========================================================================
 // Demo mode (renderer side)
 // ---------------------------------------------------------------------------
@@ -502,6 +629,40 @@ setupSplashScreen();
 // reset every in-memory launch variable and restart the flow from the
 // beginning in the new mode.
 // ===========================================================================
+// ===========================================================================
+// Demo chrome: fold the demo indicator into the sticky bar when both are up.
+// ---------------------------------------------------------------------------
+// The demo banner and the sticky progress bar are both position:sticky at
+// top:0, so during a demo launch they fight for the same spot and the higher-
+// z banner hides the step/cost/cancel controls. Instead of stacking two bars,
+// fold the demo badge + Disable button INTO the sticky bar whenever the bar is
+// visible, and fall back to the standalone top banner only when there is no
+// sticky bar to fold into (e.g. before the flow starts). Top-level (not inside
+// the IIFE) so step-orchestrator.js can call it the moment the bar appears.
+// ===========================================================================
+function syncDemoChrome() {
+  const sticky = document.getElementById('stickyBar');
+  const banner = document.getElementById('demoBanner');
+  const badge = document.getElementById('stickyDemoBadge');
+  const disableBtn = document.getElementById('stickyDemoDisable');
+  const stickyVisible = !!(sticky && sticky.classList.contains('is-visible'));
+  // Fold into the sticky bar only when demo is on AND a sticky bar is showing.
+  const folded = demoModeActive && stickyVisible;
+
+  // Standalone banner only when demo is on but there's no sticky bar yet.
+  if (banner) banner.style.display = (demoModeActive && !stickyVisible) ? 'flex' : 'none';
+  // Sticky bar adopts the amber demo treatment and reveals its in-bar controls.
+  if (sticky) sticky.classList.toggle('demo-active', folded);
+  if (badge) badge.style.display = folded ? 'inline-flex' : 'none';
+  if (disableBtn) disableBtn.style.display = folded ? 'inline-flex' : 'none';
+
+  // Modal offset (--demo-banner-height) only needs to clear the STANDALONE
+  // banner (z-index 100). When folded, the demo lives in the sticky bar
+  // (z-index 30, below the modal layer), so the offset collapses to 0.
+  const px = (banner && banner.style.display !== 'none') ? banner.offsetHeight : 0;
+  document.documentElement.style.setProperty('--demo-banner-height', px + 'px');
+}
+
 (function setupDemoMode() {
   // Single source of truth for demo-dependent UI: the top banner, the Step 3
   // "Pretend funding arrived" button, and the settings checkbox.
@@ -509,11 +670,35 @@ setupSplashScreen();
     demoModeActive = !!active;
     const toggle = document.getElementById('demoModeToggle');
     if (toggle) toggle.checked = demoModeActive;
-    const banner = document.getElementById('demoBanner');
-    if (banner) banner.style.display = demoModeActive ? 'flex' : 'none';
     const fundWrap = document.getElementById('demoFundWrap');
     if (fundWrap) fundWrap.style.display = demoModeActive ? 'block' : 'none';
+    // Publish the banner's height so modals can stay clear of it. The
+    // banner we just toggled above is measured here; see the CSS rules
+    // on .modal / .modal-card (keyed off --demo-banner-height) for why.
+    syncDemoBannerHeight();
+    // Pre-fill the Step 6 destination wallet input so the user doesn't
+    // need a real address to finish the demo walkthrough. No-op in
+    // real mode (the helper itself gates on demoModeActive).
+    applyDemoDestinationWallet();
   }
+
+  // Republish --demo-banner-height with the banner's live pixel height so
+  // the modal layer can subtract it from its max-height and shift its
+  // centred card down past the banner (otherwise a tall dialog like the
+  // launch-complete one runs off the bottom of the screen in demo mode).
+  // Reading offsetHeight forces a synchronous layout pass, so the value
+  // reflects the banner exactly as it now renders — including the taller
+  // two-line state it wraps into on narrow windows. When demo mode is off
+  // we publish 0px, which collapses the modal rules back to Bulma defaults.
+  // Superseded by the top-level syncDemoChrome(), which also decides whether
+  // the demo shows as the standalone banner or folded into the sticky bar.
+  // Kept as a thin delegator so the resize listener and callers stay valid.
+  function syncDemoBannerHeight() { syncDemoChrome(); }
+
+  // The banner can wrap to a second line as the window narrows, which
+  // changes its height — re-measure on resize so the modal offset tracks
+  // it. Harmless while demo mode is off (resolves to 0px).
+  window.addEventListener('resize', syncDemoBannerHeight);
 
   // Persist a new demoMode value and switch the app into it. Switching mode
   // discards the current launch and starts over, so we always confirm first.
@@ -595,17 +780,80 @@ setupSplashScreen();
   // exist in the DOM regardless of the current mode.
   bind('demoModeToggle', 'change', (e) => setDemoMode(e.target.checked));
   bind('demoBannerDisable', 'click', () => setDemoMode(false));
+  bind('stickyDemoDisable', 'click', () => setDemoMode(false));
 
   // Reflect the current server state on load.
   fetch('/api/demo/status')
     .then((r) => r.json())
-    .then((data) => applyDemoModeUi(data && data.active))
+    .then((data) => {
+      applyDemoModeUi(data && data.active);
+      // Apply vanity availability — disables the Vanity CA UI when the
+      // server reports the binary isn't built. CI handles release builds,
+      // so end-user installs always show vanity enabled; this only
+      // affects dev environments without a C toolchain.
+      const vanity = data && data.vanity;
+      applyVanityAvailabilityUi(vanity);
+    })
     .catch((err) => {
-      // If the status check fails, assume real mode (the safe default).
-      console.warn('Demo-mode status check failed; assuming real mode:', err);
+      // If the status check fails, assume real mode (the safe default)
+      // AND assume vanity is unavailable. Disabling a feature that
+      // would have worked is a smaller cost than letting a request
+      // fail mid-grind without an explanation.
+      console.warn('Status check failed; assuming real mode + vanity disabled:', err);
       applyDemoModeUi(false);
+      applyVanityAvailabilityUi({ available: false, reason: 'status check failed' });
     });
 })();
+
+// Disable Vanity CA controls and surface a friendly explanation when the
+// server reports the vanity_keygen binary isn't built. Idempotent and
+// safe to call before the relevant DOM elements exist — every lookup
+// guards with a null check so partial DOM during startup doesn't throw.
+function applyVanityAvailabilityUi(vanity) {
+  const available = vanity && vanity.available;
+  const target = document.getElementById('vanityCATarget');
+  const mode = document.getElementById('vanityCAMode');
+  const btn = document.getElementById('grindCABtn');
+  if (available) {
+    // Make sure controls are enabled (in case a prior call disabled them
+    // and a later status check showed the feature came back). Rare but
+    // cheap to handle.
+    if (target) { target.disabled = false; target.title = ''; }
+    if (mode) { mode.disabled = false; }
+    if (btn) { btn.disabled = false; btn.title = ''; }
+    const note = document.getElementById('vanityCAUnavailableNote');
+    if (note) note.remove();
+    return;
+  }
+  // Disabled state. Tooltip + visible help line so the user understands
+  // why the button is dead. Reason comes from the server when available.
+  const reason = (vanity && vanity.reason) || 'vanity address generation is not available in this build';
+  if (target) { target.disabled = true; target.title = reason; }
+  if (mode) { mode.disabled = true; }
+  if (btn) { btn.disabled = true; btn.title = reason; }
+  // Insert a help line below the existing description, so the user sees
+  // an explanation in context rather than only when they hover the
+  // greyed-out button. Idempotent: skip if already present.
+  if (btn && !document.getElementById('vanityCAUnavailableNote')) {
+    const note = document.createElement('p');
+    note.id = 'vanityCAUnavailableNote';
+    // Use the theme's rubric red (--rubric, #9a2424). Bulma's is-warning
+    // would be yellow on the parchment background and basically illegible;
+    // is-danger would work but the theme reserves stronger red for errors.
+    // Rubric is the manuscript red used for accents and links throughout
+    // the app, which is the right "needs attention but not catastrophic"
+    // tone for a feature toggle.
+    note.className = 'help is-size-7 mt-1';
+    note.style.color = 'var(--rubric, #9a2424)';
+    note.textContent = `Unavailable: ${reason}`;
+    // Insert after the field container (the has-addons div that contains
+    // the mode select, target input, and Grind button).
+    const field = btn.closest('.field');
+    if (field && field.parentNode) {
+      field.parentNode.insertBefore(note, field.nextSibling);
+    }
+  }
+}
 
 // Final gate evaluation. Both setupDisclaimer() and setupSplashScreen()
 // have run by this point. If either gated itself (showed a modal or

@@ -1353,11 +1353,13 @@ function injectPeekBanner(card, stepNum) {
   // is-completed class — so we don't need to do anything else here.
   closeBtn.addEventListener('click', () => {
     setStepState(stepNum, 'completed');
-    // Mirror the header-collapse path: free the coin's WebGL context when
-    // leaving a peeked step 2 (it was rebuilt on peek-open).
-    if (stepNum === 2 && currentStep !== 2 &&
-        typeof destroyCoinPreview === 'function') {
-      destroyCoinPreview();
+    // Closing a peek of step 2: the card was moved into the config slot for
+    // the peek, so move it back to wherever the active step keeps it. The
+    // coin now travels through steps 2–6, so we relocate rather than tear it
+    // down.
+    if (stepNum === 2 && currentStep !== 2) {
+      relocateTokenPreview(slotKeyForStep(currentStep));
+      if (typeof renderTokenPreview === 'function') renderTokenPreview();
     }
   });
   banner.appendChild(closeBtn);
@@ -1389,8 +1391,26 @@ function activateStep(num) {
 
   // Update sticky bar
   document.getElementById('stickyStepNum').textContent = String(num);
+  // #8: total step count, derived from STEP_TITLES so the "/ N" stays
+  // correct on its own if the flow ever gains or loses a step.
+  const stepTotalEl = document.getElementById('stickyStepTotal');
+  if (stepTotalEl) stepTotalEl.textContent = String(Object.keys(STEP_TITLES).length);
   document.getElementById('stickyStepTitle').textContent = STEP_TITLES[num];
   document.getElementById('stickyBar').classList.add('is-visible');
+
+  // Demo mode folds its badge + Disable into the sticky bar (rather than a
+  // second fixed banner that would cover it). Now that the bar is visible,
+  // sync that chrome. Guarded for load-order safety.
+  if (typeof syncDemoChrome === 'function') syncDemoChrome();
+
+  // #9: the cost echo belongs only on step 2 (the config stage). The cost
+  // preview already hides itself off step 2, but clear the echo explicitly
+  // here too so it can never linger if a step change races the preview's
+  // own update.
+  if (num !== 2) {
+    const stickyCost = document.getElementById('stickyCost');
+    if (stickyCost) stickyCost.classList.add('hidden');
+  }
 
   // Scroll the active card into view (with a small delay to let CSS settle)
   setTimeout(() => {
@@ -1419,33 +1439,28 @@ function activateStep(num) {
     renderAirdropPreTransferSummary();
   }
 
-  // The token preview block (with its 3D coin) is a singleton DOM
-  // element. It lives in the config-stage slot by default; when the
-  // user advances to the funding stage we relocate it next to the QR
-  // code for visual continuity. Returning to step 2 (via Edit
-  // Configuration, or peeking step 2 while on a later step) moves it
-  // back. The 3D WebGL context survives the relocation since we're
-  // moving the same DOM node — appendChild() doesn't destroy children.
+  // The token preview block (with its 3D coin) is a singleton DOM element
+  // that travels with the active step. It lives in the config slot on step 2,
+  // moves beside the QR on step 3, and now follows through steps 4–6 into
+  // their per-step slots so the coin and the launch-progress bar stay visible
+  // for the whole flow. The WebGL context survives each relocation because
+  // we move the same DOM node — appendChild() doesn't destroy its canvas.
   //
-  // For all OTHER steps (1, 4, 5, 6) the preview belongs back in the
-  // config slot AND the 3D coin is torn down to free its WebGL context
-  // — it serves no purpose past the funding stage and there's no
-  // reason to keep an idle context around.
-  if (num === 2) {
-    relocateTokenPreview('config');
-    if (typeof renderTokenPreview === 'function') renderTokenPreview();
-  } else if (num === 3) {
-    relocateTokenPreview('funding');
-    // No destroy: the coin is still useful as a visual anchor on the
-    // funding stage. The block (and its canvas) was already initialised
-    // on step 2, so no re-render is needed — appendChild preserves it.
-    // We do call renderTokenPreview once to ensure the stat tiles reflect
-    // any last-moment changes the user made before clicking Continue.
+  // Only step 1 (the wallet-generation stage, before a token is configured)
+  // and a reset tear the coin down to free its WebGL context.
+  if (num >= 2 && num <= 6) {
+    relocateTokenPreview(slotKeyForStep(num));
+    // Re-render so the card reflects the current config and its stat tiles
+    // re-layout in the new slot. updateCoinPreview() (called from within)
+    // reattaches the live canvas rather than spinning up a second context.
     if (typeof renderTokenPreview === 'function') renderTokenPreview();
   } else {
     relocateTokenPreview('config');
     if (typeof destroyCoinPreview === 'function') destroyCoinPreview();
   }
+
+  // Refresh the overall launch-progress bar for the new step position.
+  if (typeof updateLaunchProgress === 'function') updateLaunchProgress();
 }
 
 // Move the singleton #tokenPreviewBlock between its config-stage slot
@@ -1459,22 +1474,63 @@ function activateStep(num) {
 // during early init) — querySelector returns null and the function
 // bails. Idempotent: calling with the same destination twice is a
 // no-op (appendChild a node already in the target is harmless).
+// Slot-id map for the singleton preview card. Steps 4–6 each have their own
+// slot so the card (and its 3D coin) travels with the active step.
+const TOKEN_PREVIEW_SLOTS = {
+  config:  'tokenPreviewSlotConfig',
+  funding: 'tokenPreviewSlotFunding',
+  step4:   'tokenPreviewSlotStep4',
+  step5:   'tokenPreviewSlotStep5',
+  step6:   'tokenPreviewSlotStep6',
+};
+
+// Which slot the preview card belongs in for a given step: step 2 → config,
+// step 3 → funding (beside the QR), steps 4–6 → their own per-step slot.
+// Anything outside 2–6 has no card and defaults to config.
+function slotKeyForStep(num) {
+  if (num === 2) return 'config';
+  if (num === 3) return 'funding';
+  if (num >= 4 && num <= 6) return 'step' + num;
+  return 'config';
+}
+
 function relocateTokenPreview(where) {
   const block = document.getElementById('tokenPreviewBlock');
   if (!block) return;
-  const configSlot = document.getElementById('tokenPreviewSlotConfig');
-  const fundingSlot = document.getElementById('tokenPreviewSlotFunding');
-  if (where === 'funding') {
-    if (!fundingSlot) return;
-    fundingSlot.appendChild(block);
+  const slotId = TOKEN_PREVIEW_SLOTS[where] || TOKEN_PREVIEW_SLOTS.config;
+  const slot = document.getElementById(slotId);
+  if (!slot) return;
+  // appendChild moves the same DOM node (and the live coin canvas inside it)
+  // without destroying it — the WebGL context survives the relocation.
+  slot.appendChild(block);
+}
+
+// ---------------------------------------------------------------------------
+// Overall launch progress
+// ---------------------------------------------------------------------------
+// The preview card carries a progress bar that fills as the launch advances
+// through its six steps and reaches 100% when the final transfer completes.
+// We base the in-flight percentage on currentStep (stable across "peeking" a
+// completed step, which momentarily toggles the is-completed classes) rather
+// than counting completed-step classes. The transfer-complete flag forces the
+// bar to 100% on the final sweep, since step 6 isn't marked is-completed.
+let _launchTransferComplete = false;
+
+function updateLaunchProgress() {
+  const fill = document.getElementById('tokenPreviewProgressFill');
+  const label = document.getElementById('tokenPreviewProgressLabel');
+  if (!fill || !label) return;
+  let pct;
+  if (_launchTransferComplete) {
+    pct = 100;
   } else {
-    if (!configSlot) return;
-    // Re-insert at the end of the config slot. The slot also contains a
-    // <label>Preview</label> sibling that should stay on top, so append
-    // (not insert) places the block below the label as the original
-    // markup had it.
-    configSlot.appendChild(block);
+    const step = (typeof currentStep === 'number') ? currentStep : 1;
+    // Steps before the active one are done; six steps total.
+    pct = Math.max(0, Math.min(100, Math.round(((step - 1) / 6) * 100)));
   }
+  fill.style.width = pct + '%';
+  fill.classList.toggle('is-complete', pct >= 100);
+  label.textContent = pct >= 100 ? 'Launch complete' : `Launch progress · ${pct}%`;
 }
 
 // Set a step's completion summary (one-line text shown next to the title
@@ -1511,20 +1567,13 @@ function bindStepHeaders() {
         setStepState(i, 'completed');
         card.classList.remove('is-peeking');
         // If we just closed a peek of step 2, the preview block is
-        // currently in step 2's config slot (we moved it there when
-        // the peek opened — see below). Move it back to the slot that
-        // matches the actual current step: funding if currentStep is 3,
-        // otherwise stay in config and tear down the coin.
+        // currently in step 2's config slot (we moved it there when the
+        // peek opened — see below). Move it back to the slot that matches
+        // the actual current step (funding on step 3, the per-step slot on
+        // steps 4–6). The coin travels with it; no teardown.
         if (i === 2 && currentStep !== 2) {
-          if (currentStep === 3) {
-            relocateTokenPreview('funding');
-            // Re-render so the now-compact card's stat tiles re-layout.
-            if (typeof renderTokenPreview === 'function') renderTokenPreview();
-          } else {
-            // Past funding: free the WebGL context since the user isn't
-            // looking at the preview anymore.
-            if (typeof destroyCoinPreview === 'function') destroyCoinPreview();
-          }
+          relocateTokenPreview(slotKeyForStep(currentStep));
+          if (typeof renderTokenPreview === 'function') renderTokenPreview();
         }
         return;
       }
@@ -1840,7 +1889,11 @@ bind('cancelConfirmProceedBtn', 'click', async () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tempWalletSecretKey: tempWallet.secretKey,
+          walletPublicKey: tempWallet.publicKey,
+          // F5: the server resolves the secret from its encrypted store using
+          // the public key for real launches; only demo mode (in-memory
+          // ledger, no server-side secret) still sends the key inline.
+          ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
           destinationWallet: dest,
           tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
         }),
@@ -2338,12 +2391,29 @@ async function removeRpc(url) {
   }
 }
 
-bind('rpcSettingsToggle', 'click', () => {
+function toggleSettingsPanel() {
+  const toggle = document.getElementById('rpcSettingsToggle');
   const panel = document.getElementById('rpcSettingsPanel');
   const chevron = document.getElementById('rpcSettingsChevron');
-  panel.classList.toggle('hidden');
-  chevron.classList.toggle('fa-chevron-down');
-  chevron.classList.toggle('fa-chevron-up');
+  if (!panel) return;
+  // classList.toggle returns true when the class is now present, i.e. the
+  // panel is now hidden — so aria-expanded is the negation.
+  const nowHidden = panel.classList.toggle('hidden');
+  if (chevron) {
+    chevron.classList.toggle('fa-chevron-down');
+    chevron.classList.toggle('fa-chevron-up');
+  }
+  if (toggle) toggle.setAttribute('aria-expanded', String(!nowHidden));
+}
+bind('rpcSettingsToggle', 'click', toggleSettingsPanel);
+// The header is role="button" with tabindex=0, so support keyboard
+// activation the way a native button would: Enter and Space toggle it
+// (Space is prevented from scrolling the page).
+bind('rpcSettingsToggle', 'keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    toggleSettingsPanel();
+  }
 });
 
 bind('testRpcBtn', 'click', async () => {
@@ -2472,7 +2542,7 @@ bind('generateWalletBtn', 'click', async () => {
       document.getElementById('createTokenBtn').classList.remove('hidden');
       document.getElementById('createLpBtn').classList.remove('hidden');
       document.getElementById('transferAssetsBtn').classList.remove('hidden');
-      document.getElementById('lpDoneInfo').classList.add('hidden');
+      setLpDoneVisible(false);
       document.getElementById('lpFailInfo').classList.add('hidden');
       document.getElementById('lpProgress').classList.add('hidden');
       document.getElementById('lpProgressTree').innerHTML = '';
@@ -4371,6 +4441,18 @@ function renderSimpleConfig() {
   const body = document.getElementById('simpleConfigBody');
   if (!body) return;
 
+  // Preserve the page scroll position across the full innerHTML rebuild
+  // below. This section is wiped and rebuilt on every toggle; while
+  // body.innerHTML is momentarily empty the page collapses to a shorter
+  // height, the browser clamps the scroll offset to the new (smaller)
+  // maximum, and it is not restored when the content re-expands — so the
+  // page lurches. It's most visible with a tall section (preallocation +
+  // airdrop loaded) and a control toggled near the bottom (ladder, split).
+  // Capturing the offset here and restoring it at the end of this function
+  // pins the view so the control the user just clicked stays put.
+  const _scroller = document.scrollingElement || document.documentElement;
+  const _savedScrollTop = _scroller.scrollTop;
+
   // Detach the Lock-liquidity field (if it's currently inside body
   // from a prior render) before we wipe body.innerHTML. The field is
   // a single canonical DOM element that lives at #lockPositionsField,
@@ -5629,6 +5711,12 @@ function renderSimpleConfig() {
   // handlers wired by the prealloc/airdrop setup above are attached
   // directly to the block's children, so they survive the move.
   relocatePreallocationBlock();
+
+  // Restore the scroll offset captured at the top, now that every DOM
+  // mutation (the innerHTML rebuild plus the relocate moves above) has
+  // settled. Done synchronously inside the change handler, so the view is
+  // pinned before the browser paints — no visible jump.
+  _scroller.scrollTop = _savedScrollTop;
 }
 
 // Move the #preallocationBlock element between its two homes:
@@ -6147,29 +6235,52 @@ function renderTokenPreview() {
     `</div>`;
 
   // Structure-preserving update. The card holds a persistent coin mount
-  // (.token-preview-coin) plus a text stack. We must NOT blow away the
-  // coin mount on every render — its <canvas> holds a live WebGL context,
-  // and recreating it per keystroke would thrash GL contexts (and hit the
-  // browser's context cap). So: build the mount + fallback logo once, and
-  // thereafter only replace the fallback-logo letter and the text stack.
+  // (.token-preview-coin) and a persistent progress bar
+  // (.token-preview-progress), plus a text stack that gets swapped. We must
+  // NOT blow away the coin mount on every render — its <canvas> holds a live
+  // WebGL context, and recreating it per keystroke would thrash GL contexts
+  // (and hit the browser's context cap). So: build the mount + progress bar
+  // once, and thereafter only replace the fallback-logo letter and the stack.
+  const progressHtml =
+    `<div class="token-preview-progress" id="tokenPreviewProgress">` +
+      `<div class="tpp-track"><div class="tpp-fill" id="tokenPreviewProgressFill"></div></div>` +
+      `<div class="tpp-label" id="tokenPreviewProgressLabel">Launch progress</div>` +
+    `</div>`;
+
   let coinMount = block.querySelector('.token-preview-coin');
   if (!coinMount) {
-    // First render: lay out [coin mount][text stack]. The fallback flat
-    // logo lives inside the mount, under where the canvas will attach.
+    // First render: [main row: coin mount + text stack][progress bar]. The
+    // fallback flat logo lives inside the mount, under where the canvas
+    // attaches; the progress bar spans the full card width below the row.
     block.innerHTML =
-      `<div class="token-preview-coin" id="tokenPreviewCoin">${logoHtml}</div>` +
-      stackHtml;
+      `<div class="token-preview-main">` +
+        `<div class="token-preview-coin" id="tokenPreviewCoin">${logoHtml}</div>` +
+        stackHtml +
+      `</div>` +
+      progressHtml;
     coinMount = block.querySelector('.token-preview-coin');
   } else {
     // Subsequent renders: update the fallback logo (preserving any canvas
-    // the coin renderer attached) and swap the text stack.
+    // the coin renderer attached) and swap the text stack. The coin mount
+    // and progress bar persist.
     const existingCanvas = coinMount.querySelector('canvas');
     coinMount.innerHTML = logoHtml;
     if (existingCanvas) coinMount.appendChild(existingCanvas);
     const oldStack = block.querySelector('.token-preview-stack');
-    if (oldStack) oldStack.outerHTML = stackHtml;
-    else block.insertAdjacentHTML('beforeend', stackHtml);
+    if (oldStack) {
+      oldStack.outerHTML = stackHtml;
+    } else {
+      const main = block.querySelector('.token-preview-main') || block;
+      main.insertAdjacentHTML('beforeend', stackHtml);
+    }
+    // Guard for older markup that predates the progress bar.
+    if (!block.querySelector('.token-preview-progress')) {
+      block.insertAdjacentHTML('beforeend', progressHtml);
+    }
   }
+
+  // Reflect the current overall launch progress into the (re)built bar.
+  if (typeof updateLaunchProgress === 'function') updateLaunchProgress();
 
   // Pool-chip logos can fail to load (dead/blocked URL). Image 'error' events
   // don't bubble, so we listen in the capture phase on the stable block — once
@@ -8767,8 +8878,15 @@ function setCostPreviewState(state, value) {
   const hintEl = document.getElementById('costPreviewHint');
   if (!valueEl || !labelEl || !hintEl) return;
 
+  // #9: the sticky-bar cost echo mirrors this card's value so the running
+  // estimate stays visible after the user scrolls the inline preview away.
+  // These may be absent in some embeds, so every write below is guarded.
+  const stickyCost = document.getElementById('stickyCost');
+  const stickyCostValue = document.getElementById('stickyCostValue');
+
   if (state === 'hidden') {
     card.classList.add('hidden');
+    if (stickyCost) stickyCost.classList.add('hidden');
     return;
   }
   card.classList.remove('hidden');
@@ -8801,12 +8919,19 @@ function setCostPreviewState(state, value) {
     // server may pick up fresher SOL/quote-token prices in the interim.
     valueEl.textContent = `≈ ${Number(value).toFixed(3)} SOL`;
     hintEl.textContent = '(approximate; full breakdown shows on next step)';
+    // Mirror the same value into the sticky echo and reveal it. Identical
+    // formatting so the two displays never appear to disagree.
+    if (stickyCostValue) stickyCostValue.textContent = `≈ ${Number(value).toFixed(3)} SOL`;
+    if (stickyCost) stickyCost.classList.remove('hidden');
     return;
   }
   if (state === 'error') {
     labelEl.textContent = '';
     valueEl.textContent = "Couldn't compute preview";
     hintEl.textContent = '(full estimate will run when you click Continue)';
+    // No valid number to echo — hide the sticky copy rather than leave a
+    // stale value next to the step label.
+    if (stickyCost) stickyCost.classList.add('hidden');
     return;
   }
 }
@@ -9560,6 +9685,10 @@ function resetForNewLaunch() {
   // Tear down the 3D coin's WebGL context. renderTokenPreview() will
   // re-init it lazily if the user returns to the create-token screen.
   destroyCoinPreview();
+  // Reset the overall launch-progress flag so the preview card's bar starts
+  // fresh for the new launch (it repaints when the card next renders).
+  _launchTransferComplete = false;
+  if (typeof updateLaunchProgress === 'function') updateLaunchProgress();
   const logoThumb = document.getElementById('tokenLogoThumb');
   if (logoThumb) logoThumb.classList.add('hidden');
   // Clear any stale logo validation error from a previous launch. The
@@ -9586,7 +9715,7 @@ function resetForNewLaunch() {
   document.getElementById('createTokenBtn')?.classList.remove('hidden');
   document.getElementById('createLpBtn')?.classList.remove('hidden');
   document.getElementById('transferAssetsBtn')?.classList.remove('hidden');
-  document.getElementById('lpDoneInfo')?.classList.add('hidden');
+  setLpDoneVisible(false);
   document.getElementById('lpFailInfo')?.classList.add('hidden');
   document.getElementById('lpProgress')?.classList.add('hidden');
   const lpTree = document.getElementById('lpProgressTree');
@@ -11482,8 +11611,6 @@ async function downloadLaunchReport() {
   }
 }
 
-bind('downloadReportBtnStep5', 'click', downloadLaunchReport);
-
 bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
 
 // ===========================================================================
@@ -12875,7 +13002,11 @@ async function runAcquireFlow(planSubset, btn) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        tempWalletSecretKey: tempWallet.secretKey,
+        walletPublicKey: tempWallet.publicKey,
+        // F5: the server resolves the secret from its encrypted store using
+        // the public key for real launches; only demo mode (in-memory
+        // ledger, no server-side secret) still sends the key inline.
+        ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
         autoSwapPlan: planSubset,
       }),
     });
@@ -13317,7 +13448,13 @@ bind('createTokenBtn', 'click', async () => {
     try {
       log('Creating token...');
       const formData = new FormData();
-      formData.append('tempWalletSecretKey', JSON.stringify(tempWallet.secretKey));
+      // F5: send the public key; the server resolves the secret from its
+      // encrypted store for real launches. Demo has no server-side secret,
+      // so it still appends the throwaway secret inline.
+      formData.append('walletPublicKey', tempWallet.publicKey);
+      if (demoModeActive) {
+        formData.append('tempWalletSecretKey', JSON.stringify(tempWallet.secretKey));
+      }
       formData.append('name', document.getElementById('tokenName').value.trim());
       formData.append('symbol', document.getElementById('tokenSymbol').value.trim());
       formData.append('description', document.getElementById('tokenDescription').value.trim());
@@ -13811,7 +13948,11 @@ bind('createLpBtn', 'click', async () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            tempWalletSecretKey: tempWallet.secretKey,
+            walletPublicKey: tempWallet.publicKey,
+            // F5: the server resolves the secret from its encrypted store using
+            // the public key for real launches; only demo mode (in-memory
+            // ledger, no server-side secret) still sends the key inline.
+            ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
             tokenMint: createdTokenInfo.mint,
             tokenDecimals: createdTokenInfo.decimals,
             tokenTotalSupply: createdTokenInfo.totalSupply,
@@ -13850,7 +13991,7 @@ bind('createLpBtn', 'click', async () => {
         data.results.forEach((r, i) => markPoolDone(i, r));
         markAllBootstrapsDone();
         log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
-        document.getElementById('lpDoneInfo').classList.remove('hidden');
+        setLpDoneVisible(true);
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
         renderLaunchReportPreview('step5');
         // Hide the Create Pools button — re-clicking would attempt to create
@@ -14217,15 +14358,30 @@ bind('createLpBtn', 'click', async () => {
 // Rows are uniquely identified by data-pool-idx + data-stage attributes
 // rather than per-pool container IDs, so marker functions can query each
 // row independently regardless of which phase block it lives in.
+// Step 5's "pools created" UI is split across the two columns: the result
+// summary notification sits under the preview card on the right, while the
+// action buttons (Continue to Final Transfer, report preview) live in the
+// left column where the primary action sits on every other step. They must
+// appear and disappear together, so every show/hide goes through here.
+function setLpDoneVisible(visible) {
+  document.getElementById('lpDoneInfo')?.classList.toggle('hidden', !visible);
+  document.getElementById('lpDoneActions')?.classList.toggle('hidden', !visible);
+  // The report preview now lives full-width below the two-column layout
+  // (outside #lpDoneActions), so include it here to hide on reset.
+  document.getElementById('step5ReportPreview')?.classList.toggle('hidden', !visible);
+}
+
 function buildPhaseProgressTree(pools, lockPositions) {
   const tree = document.getElementById('lpProgressTree');
 
   // Wrap a phase's rows in a collapsible block: clickable header (with
-  // toggle chevron + title + "done / total" counter), a slim progress
-  // bar underneath, a description line, and a body div containing the
-  // actual .progress-step rows. The body starts collapsed so a 5-pool
-  // launch isn't a wall of fifty rows at first glance — clicking the
-  // header expands it, and any failure auto-expands via markPoolFailed.
+  // toggle chevron + title + "done / total" counter) and a slim progress
+  // bar that stay visible, plus a body div — holding the description line
+  // and the actual .progress-step rows — that starts collapsed. Keeping
+  // the description inside the collapsed body (rather than always-on)
+  // keeps the at-a-glance view to just headers + bars, so a multi-pool
+  // launch isn't a tall wall of prose and rows before anything happens.
+  // Clicking the header expands it; any failure auto-expands via markPoolFailed.
   //
   // total is derived from rowsHtml by counting "progress-step" markers
   // in the string. Stable because the row HTML is built from fixed
@@ -14239,8 +14395,8 @@ function buildPhaseProgressTree(pools, lockPositions) {
         <span class="phase-counter" id="${id}-counter">0 / ${total}</span>
       </button>
       <progress class="phase-bar" id="${id}-bar" value="0" max="${total || 1}"></progress>
-      <p class="phase-desc">${description}</p>
       <div class="phase-body collapsed" id="${id}-body">
+        <p class="phase-desc">${description}</p>
         ${rowsHtml}
       </div>
     `;
@@ -14812,7 +14968,11 @@ bind('retryBootstrapsBtn', 'click', async () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tempWalletSecretKey: tempWallet.secretKey,
+          walletPublicKey: tempWallet.publicKey,
+          // F5: the server resolves the secret from its encrypted store using
+          // the public key for real launches; only demo mode (in-memory
+          // ledger, no server-side secret) still sends the key inline.
+          ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
           tokenMint: createdTokenInfo.mint,
           tokenDecimals: createdTokenInfo.decimals,
           tokenTotalSupply: createdTokenInfo.totalSupply,
@@ -14845,7 +15005,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
           markBootstrapDoneForPool(r.allocationIndex, r.bootstrap);
         });
         log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
-        document.getElementById('lpDoneInfo').classList.remove('hidden');
+        setLpDoneVisible(true);
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
         renderLaunchReportPreview('step5');
         markLaunchActiveForRpcHealth(false);
@@ -15902,7 +16062,11 @@ async function runTransfer() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            tempWalletSecretKey: tempWallet.secretKey,
+            walletPublicKey: tempWallet.publicKey,
+            // F5: the server resolves the secret from its encrypted store using
+            // the public key for real launches; only demo mode (in-memory
+            // ledger, no server-side secret) still sends the key inline.
+            ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
             destinationWallet: dest,
             tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
             // airdrop is optional — present only when applicable, omitted
@@ -16060,6 +16224,14 @@ async function runTransfer() {
         log('Transfer partially complete — see warnings above', 'warning');
         setStepSummary(6, 'partial — see warnings');
       }
+
+      // The transfer (final sweep) has run — mark the overall launch
+      // progress complete so the preview card's bar reaches 100%. Applies to
+      // both the clean and partial paths: the sweep to the destination
+      // completed in both; partial only means some Fee Key NFTs need manual
+      // forwarding, which is surfaced separately in the warnings above.
+      _launchTransferComplete = true;
+      if (typeof updateLaunchProgress === 'function') updateLaunchProgress();
       // The server has already removed this wallet from the recovery
       // cache (provided the on-chain balance check confirmed it's empty).
       // Refresh the panel so it reflects the new state.
@@ -16237,7 +16409,11 @@ async function runAirdropRetry() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tempWalletSecretKey: tempWallet.secretKey,
+          walletPublicKey: tempWallet.publicKey,
+          // F5: the server resolves the secret from its encrypted store using
+          // the public key for real launches; only demo mode (in-memory
+          // ledger, no server-side secret) still sends the key inline.
+          ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
           tokenMint: createdTokenInfo.mint,
           tokenDecimals: createdTokenInfo.decimals,
           isToken2022: false,
@@ -16778,7 +16954,7 @@ function buildLaunchJournalRow(journal, wallet) {
     document.getElementById('createTokenBtn').classList.remove('hidden');
     document.getElementById('createLpBtn').classList.remove('hidden');
     document.getElementById('transferAssetsBtn').classList.remove('hidden');
-    document.getElementById('lpDoneInfo').classList.add('hidden');
+    setLpDoneVisible(false);
     document.getElementById('lpFailInfo').classList.add('hidden');
     document.getElementById('lpProgress').classList.add('hidden');
     document.getElementById('lpProgressTree').innerHTML = '';
@@ -17411,28 +17587,61 @@ function setupSplashScreen() {
 
   let dismissed = false;
   let started = false;
+  // Whether the intro-video preference allows playback. null = not yet
+  // known (still reading the pref); true = allowed. We never set it false —
+  // "disabled" takes the dismiss path below instead. tryStartPlayback() holds
+  // off until this is true, so a disabled intro never flashes a frame.
+  let playAllowed = null;
 
-  function dismiss(reason) {
+  function dismiss(reason, instant) {
     if (dismissed) return;
     dismissed = true;
     console.log('[splash] dismiss:', reason || 'unknown');
-    splash.classList.add('is-dismissing');
     document.body.classList.remove('has-splash');
-    // Pause the video so audio stops immediately on dismiss; then
-    // remove the node after the fade finishes so it isn't lingering
-    // in the DOM as invisible chrome. The 500ms cushion is slightly
-    // longer than the 0.4s CSS transition.
+    // Pause the video so audio stops immediately on dismiss.
     if (video) {
       try { video.pause(); } catch {}
     }
-    setTimeout(() => {
+    if (instant) {
+      // No fade — used when the intro is disabled in settings, so the
+      // splash is removed before it ever really registers as visible.
       if (splash.parentNode) splash.parentNode.removeChild(splash);
-    }, 500);
+    } else {
+      splash.classList.add('is-dismissing');
+      // Remove the node after the fade finishes so it isn't lingering in
+      // the DOM as invisible chrome. The 500ms cushion is slightly longer
+      // than the 0.4s CSS transition.
+      setTimeout(() => {
+        if (splash.parentNode) splash.parentNode.removeChild(splash);
+      }, 500);
+    }
     // Splash is dismissed — release the startup gate. If the
     // disclaimer gate is also clear, this fires the silent update
     // check.
     _releaseStartupGate('splash');
   }
+
+  // Honour the "play intro video" preference. We optimise for the default
+  // (on): the splash markup is already on screen, so we only need to bail
+  // out when it's off. The read is a localhost round-trip; until it returns,
+  // tryStartPlayback() holds (playAllowed === null) so the video can't start
+  // under a splash we're about to remove. If it comes back disabled we
+  // dismiss instantly (no fade); on any read error we fall through to
+  // playing — failing toward the original behaviour.
+  fetch('/api/user-prefs')
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.prefs && data.prefs.playIntroVideo === false) {
+        dismiss('intro video disabled in settings', true);
+      } else {
+        playAllowed = true;
+        tryStartPlayback();
+      }
+    })
+    .catch(() => {
+      playAllowed = true;
+      tryStartPlayback();
+    });
 
   // Conditions for starting playback. Both must be true:
   //   - document.hasFocus() — without focus, browsers reliably block
@@ -17447,6 +17656,12 @@ function setupSplashScreen() {
   // one-shot click handler that retries play() instead.
   function tryStartPlayback() {
     if (started || dismissed || !video) return;
+    if (playAllowed !== true) {
+      // Still confirming the intro-video preference (or it's disabled and
+      // a dismiss is already in flight) — don't start playback yet.
+      console.log('[splash] waiting for intro-video preference');
+      return;
+    }
     if (!document.hasFocus()) {
       console.log('[splash] waiting for focus');
       return;
@@ -17576,6 +17791,45 @@ setupSplashScreen();
     document.body.classList.remove('cursor-clenched');
   });
 })();
+
+// ===========================================================================
+// Intro-video preference (renderer side)
+// ---------------------------------------------------------------------------
+// The startup splash plays by default; the "Play the intro video on startup"
+// checkbox in the settings panel lets the user turn it off. We reflect the
+// persisted value into the checkbox on load and write changes back via
+// /api/user-prefs. The change takes effect on the NEXT launch — the splash
+// for the current session has already been decided by setupSplashScreen().
+// ===========================================================================
+(function setupIntroVideoPref() {
+  const toggle = document.getElementById('introVideoToggle');
+  if (!toggle) return;
+
+  // Reflect the stored value. Default is on, so we only uncheck when the
+  // pref is explicitly false; any read error leaves the checkbox at its
+  // default-checked markup state, matching the default-on behaviour.
+  fetch('/api/user-prefs')
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.prefs) toggle.checked = data.prefs.playIntroVideo !== false;
+    })
+    .catch((err) => {
+      console.warn('Failed to read intro-video preference:', err);
+    });
+
+  // Persist on change, fire-and-forget — same pattern as the update-check
+  // preference. If the write fails the toggle still moved visually; the
+  // user can toggle again. We don't touch the current session's splash.
+  toggle.addEventListener('change', () => {
+    fetch('/api/user-prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playIntroVideo: toggle.checked }),
+    }).catch((err) => {
+      console.warn('Failed to persist intro-video preference:', err);
+    });
+  });
+})();
 // ===========================================================================
 // Demo destination wallet
 // ---------------------------------------------------------------------------
@@ -17648,6 +17902,40 @@ function applyDemoDestinationWallet() {
 // reset every in-memory launch variable and restart the flow from the
 // beginning in the new mode.
 // ===========================================================================
+// ===========================================================================
+// Demo chrome: fold the demo indicator into the sticky bar when both are up.
+// ---------------------------------------------------------------------------
+// The demo banner and the sticky progress bar are both position:sticky at
+// top:0, so during a demo launch they fight for the same spot and the higher-
+// z banner hides the step/cost/cancel controls. Instead of stacking two bars,
+// fold the demo badge + Disable button INTO the sticky bar whenever the bar is
+// visible, and fall back to the standalone top banner only when there is no
+// sticky bar to fold into (e.g. before the flow starts). Top-level (not inside
+// the IIFE) so step-orchestrator.js can call it the moment the bar appears.
+// ===========================================================================
+function syncDemoChrome() {
+  const sticky = document.getElementById('stickyBar');
+  const banner = document.getElementById('demoBanner');
+  const badge = document.getElementById('stickyDemoBadge');
+  const disableBtn = document.getElementById('stickyDemoDisable');
+  const stickyVisible = !!(sticky && sticky.classList.contains('is-visible'));
+  // Fold into the sticky bar only when demo is on AND a sticky bar is showing.
+  const folded = demoModeActive && stickyVisible;
+
+  // Standalone banner only when demo is on but there's no sticky bar yet.
+  if (banner) banner.style.display = (demoModeActive && !stickyVisible) ? 'flex' : 'none';
+  // Sticky bar adopts the amber demo treatment and reveals its in-bar controls.
+  if (sticky) sticky.classList.toggle('demo-active', folded);
+  if (badge) badge.style.display = folded ? 'inline-flex' : 'none';
+  if (disableBtn) disableBtn.style.display = folded ? 'inline-flex' : 'none';
+
+  // Modal offset (--demo-banner-height) only needs to clear the STANDALONE
+  // banner (z-index 100). When folded, the demo lives in the sticky bar
+  // (z-index 30, below the modal layer), so the offset collapses to 0.
+  const px = (banner && banner.style.display !== 'none') ? banner.offsetHeight : 0;
+  document.documentElement.style.setProperty('--demo-banner-height', px + 'px');
+}
+
 (function setupDemoMode() {
   // Single source of truth for demo-dependent UI: the top banner, the Step 3
   // "Pretend funding arrived" button, and the settings checkbox.
@@ -17655,15 +17943,35 @@ function applyDemoDestinationWallet() {
     demoModeActive = !!active;
     const toggle = document.getElementById('demoModeToggle');
     if (toggle) toggle.checked = demoModeActive;
-    const banner = document.getElementById('demoBanner');
-    if (banner) banner.style.display = demoModeActive ? 'flex' : 'none';
     const fundWrap = document.getElementById('demoFundWrap');
     if (fundWrap) fundWrap.style.display = demoModeActive ? 'block' : 'none';
+    // Publish the banner's height so modals can stay clear of it. The
+    // banner we just toggled above is measured here; see the CSS rules
+    // on .modal / .modal-card (keyed off --demo-banner-height) for why.
+    syncDemoBannerHeight();
     // Pre-fill the Step 6 destination wallet input so the user doesn't
     // need a real address to finish the demo walkthrough. No-op in
     // real mode (the helper itself gates on demoModeActive).
     applyDemoDestinationWallet();
   }
+
+  // Republish --demo-banner-height with the banner's live pixel height so
+  // the modal layer can subtract it from its max-height and shift its
+  // centred card down past the banner (otherwise a tall dialog like the
+  // launch-complete one runs off the bottom of the screen in demo mode).
+  // Reading offsetHeight forces a synchronous layout pass, so the value
+  // reflects the banner exactly as it now renders — including the taller
+  // two-line state it wraps into on narrow windows. When demo mode is off
+  // we publish 0px, which collapses the modal rules back to Bulma defaults.
+  // Superseded by the top-level syncDemoChrome(), which also decides whether
+  // the demo shows as the standalone banner or folded into the sticky bar.
+  // Kept as a thin delegator so the resize listener and callers stay valid.
+  function syncDemoBannerHeight() { syncDemoChrome(); }
+
+  // The banner can wrap to a second line as the window narrows, which
+  // changes its height — re-measure on resize so the modal offset tracks
+  // it. Harmless while demo mode is off (resolves to 0px).
+  window.addEventListener('resize', syncDemoBannerHeight);
 
   // Persist a new demoMode value and switch the app into it. Switching mode
   // discards the current launch and starts over, so we always confirm first.
@@ -17745,6 +18053,7 @@ function applyDemoDestinationWallet() {
   // exist in the DOM regardless of the current mode.
   bind('demoModeToggle', 'change', (e) => setDemoMode(e.target.checked));
   bind('demoBannerDisable', 'click', () => setDemoMode(false));
+  bind('stickyDemoDisable', 'click', () => setDemoMode(false));
 
   // Reflect the current server state on load.
   fetch('/api/demo/status')

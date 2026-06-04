@@ -28,11 +28,41 @@ jobs:
       - name: Syntax check
         run: npm run check:syntax
 
+      # public/app.js is a generated artifact: build-app-js.mjs concatenates
+      # public/modules/* (the modules now tile app.js exactly). Rebuild it and
+      # fail if the committed copy differs from a fresh build. Catches editing
+      # app.js directly (lost on next build) and editing a module without
+      # rebuilding (a stale bundle would ship).
+      - name: Verify app.js is in sync with modules
+        run: |
+          npm run build:js
+          git diff --exit-code -- public/app.js \
+            || (echo '::error::public/app.js is out of sync with public/modules/*. Run "npm run build:js" and commit the result.' && exit 1)
+
+      # Guards against the recurring bug where a new module is imported but
+      # not added to package.json's "files"/"build.files". It works in dev
+      # (runs from source) but is silently missing from the packaged Electron
+      # app. The script computes the runtime import closure from main.js and
+      # fails if any reachable file isn't listed in both arrays.
+      - name: Verify package.json file lists cover all runtime modules
+        run: npm run check:package
+
       - name: Unit tests
         run: npm test
 
+      # F17: critical issues block the build outright.
       - name: Critical audit gate
         run: npm audit --audit-level=critical
+
+      # F17: high-severity issues are reported on every PR but do NOT block
+      # yet — there is a known high-severity chain (bigint-buffer, pulled in
+      # transitively by @solana/spl-token and the Raydium SDK) that can only
+      # be cleared by a dependency bump (see F6/F17). Once that bump lands and
+      # this step passes, remove continue-on-error to make high severity
+      # blocking like critical.
+      - name: High audit report (non-blocking until dep bump)
+        continue-on-error: true
+        run: npm audit --audit-level=high
 
   build:
     name: Build ${{ matrix.name }}

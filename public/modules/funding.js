@@ -1088,7 +1088,11 @@ async function runAcquireFlow(planSubset, btn) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        tempWalletSecretKey: tempWallet.secretKey,
+        walletPublicKey: tempWallet.publicKey,
+        // F5: the server resolves the secret from its encrypted store using
+        // the public key for real launches; only demo mode (in-memory
+        // ledger, no server-side secret) still sends the key inline.
+        ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
         autoSwapPlan: planSubset,
       }),
     });

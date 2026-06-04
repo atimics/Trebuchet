@@ -10,7 +10,13 @@ bind('createTokenBtn', 'click', async () => {
     try {
       log('Creating token...');
       const formData = new FormData();
-      formData.append('tempWalletSecretKey', JSON.stringify(tempWallet.secretKey));
+      // F5: send the public key; the server resolves the secret from its
+      // encrypted store for real launches. Demo has no server-side secret,
+      // so it still appends the throwaway secret inline.
+      formData.append('walletPublicKey', tempWallet.publicKey);
+      if (demoModeActive) {
+        formData.append('tempWalletSecretKey', JSON.stringify(tempWallet.secretKey));
+      }
       formData.append('name', document.getElementById('tokenName').value.trim());
       formData.append('symbol', document.getElementById('tokenSymbol').value.trim());
       formData.append('description', document.getElementById('tokenDescription').value.trim());
@@ -129,14 +135,297 @@ function renderLpSummary() {
   summary.innerHTML = html;
 }
 
+// ---------------------------------------------------------------------------
+// Pre-commit confirmation flow (Milestone C from the price-safety plan)
+// ---------------------------------------------------------------------------
+//
+// Before /api/create-lp runs, we call /api/preflight-create-lp which
+// resolves the just-in-time Raydium price for every quote token and
+// applies the drift guard against what the user committed to at
+// funding time. The user sees the actual initialPrice each pool will
+// be created at, and either confirms or cancels.
+//
+// Two things this gives us beyond Milestone A's server-side safety
+// net:
+//
+//   1. Visibility. The user gets to look at the price before the
+//      irreversible click, not just trust that Trebuchet is using
+//      the right number.
+//
+//   2. Tight drift window. The actual /api/create-lp re-probes
+//      Raydium (Milestone A), and uses the prices we resolved here
+//      as the override reference for its drift guard. So the
+//      guard measures movement during the confirmation window
+//      (seconds, not minutes), not movement since funding-estimate
+//      (which could be hours stale). That's how the drift guard
+//      becomes useful for both the long-funding-gap case AND the
+//      modal-was-open-too-long case.
+
+// Show the pre-commit confirmation modal. Returns a Promise that
+// resolves to the confirmed resolved-prices array (proceed) or null
+// (cancel). The body argument is the per-pool list rendered into the
+// modal body.
+//
+// Modal is shown and torn down here; on Confirm we resolve with the
+// passed-in prices unchanged (the modal doesn't modify them), on
+// Cancel we resolve null.
+function showPreflightModal(resolvedPrices) {
+  const modal = document.getElementById('createLpConfirmModal');
+  const proceedBtn = document.getElementById('createLpConfirmProceedBtn');
+  const cancelBtn = document.getElementById('createLpConfirmCancelBtn');
+  if (!modal || !proceedBtn || !cancelBtn) {
+    // Modal markup missing. The plan's safety-first principle is: when
+    // in doubt, REFUSE to launch — silently bypassing the confirmation
+    // step would defeat the whole purpose of Milestone C. Resolve null
+    // (same as user-cancel) so the launch aborts cleanly without
+    // touching chain. The user can fix or reload and retry.
+    console.error(
+      'createLpConfirmModal markup missing — aborting launch as a safety ' +
+      'precaution. This is a bug; please report.',
+    );
+    log(
+      'Cannot launch: confirmation modal is missing. This is a bug ' +
+      '— please report it. No SOL was spent.',
+      'danger',
+    );
+    return Promise.resolve(null);
+  }
+
+  renderPreflightModalBody(resolvedPrices);
+
+  return new Promise((resolve) => {
+    let resolved = false;
+    const finish = (val) => {
+      if (resolved) return;
+      resolved = true;
+      modal.classList.remove('is-active');
+      proceedBtn.removeEventListener('click', onProceed);
+      cancelBtn.removeEventListener('click', onCancel);
+      const bg = modal.querySelector('.modal-background');
+      if (bg) bg.removeEventListener('click', onCancel);
+      resolve(val);
+    };
+    const onProceed = () => finish(resolvedPrices);
+    const onCancel = () => finish(null);
+    proceedBtn.addEventListener('click', onProceed);
+    cancelBtn.addEventListener('click', onCancel);
+    const bg = modal.querySelector('.modal-background');
+    if (bg) bg.addEventListener('click', onCancel);
+    modal.classList.add('is-active');
+  });
+}
+
+// Render the body of the pre-commit confirmation modal. One row per
+// allocation, showing quote symbol, resolved initialPrice (launched
+// token per quote token), source label, and drift indicator when the
+// price moved noticeably from the user's funding-estimate value.
+function renderPreflightModalBody(resolvedPrices) {
+  const list = document.getElementById('createLpConfirmList');
+  if (!list) return;
+
+  // Find the user-typed targetMarketCap and total supply to compute
+  // the launched-token USD value (same as renderLpSummary). We render
+  // the initial price as launched-USD-per-quote-token to match how
+  // Raydium presents prices (the user's "I'm launching at $X" mental
+  // model).
+  const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+  const totalSupply = Number(createdTokenInfo?.totalSupply || 0);
+  const launchedTokenUsd =
+    isFinite(totalSupply) && totalSupply > 0 && isFinite(targetMc)
+      ? targetMc / totalSupply
+      : null;
+
+  let html = '';
+  for (const rp of resolvedPrices) {
+    const symbol = escapeHtml(rp.quoteSymbol || rp.quoteMint || '?');
+    const quoteUsdNum = Number(rp.quoteUsd);
+    const initialPriceNum = Number(rp.initialPrice);
+
+    // Format both prices reasonably — too many digits is noise, too
+    // few hides meaningful precision for low-priced tokens.
+    const fmtUsd = (n) =>
+      isFinite(n) && n > 0
+        ? '$' + n.toLocaleString(undefined, { maximumSignificantDigits: 6 })
+        : '—';
+    const fmtRatio = (n) =>
+      isFinite(n) && n > 0
+        ? n.toLocaleString(undefined, { maximumSignificantDigits: 6 })
+        : '—';
+
+    // Source label, in plain English. Source vocabulary (matches the
+    // funding-estimate + Step-2-cache convention):
+    //   'sol'           → SOL/USD oracle
+    //   'raydium-probe' → live Raydium swap probe (the canonical answer)
+    //   'oracle'        → aggregator (gecko/dexscreener). Several causes
+    //                      lead here (probe skipped for known-safe quotes,
+    //                      Raydium genuinely has no pool, transient probe
+    //                      failure). The honest advice for the user is the
+    //                      same in all cases: verify the price. We render
+    //                      this as a clickable GeckoTerminal link so the
+    //                      user can verify in one click.
+    //   'user-override' → user typed a value in customize mode
+    //   'unresolved'    → couldn't get any price (shouldn't reach modal)
+    //
+    // sourceHtml is interpolated raw (not via escapeHtml) so the link can
+    // render — non-link branches escape their own content where needed.
+    let sourceHtml;
+    if (rp.source === 'raydium-probe') {
+      sourceHtml = 'verified from Raydium';
+    } else if (rp.source === 'sol') {
+      sourceHtml = 'SOL/USD oracle';
+    } else if (rp.source === 'user-override') {
+      sourceHtml = 'user-set price';
+    } else if (rp.source === 'oracle') {
+      // Render as a clickable GeckoTerminal link. Use the quoteMint
+      // from the preflight response (always set for non-SOL pools
+      // that reach this branch).
+      const mint = rp.quoteMint || '';
+      if (mint) {
+        const safeMint = encodeURIComponent(mint);
+        sourceHtml =
+          '<a href="https://www.geckoterminal.com/solana/tokens/' +
+          safeMint +
+          '" target="_blank" rel="noopener noreferrer" ' +
+          'title="Open this token\'s GeckoTerminal page in a new tab">' +
+          'verify price ' +
+          '<i class="fas fa-external-link-alt is-size-7"></i></a>';
+      } else {
+        sourceHtml = 'verify price';
+      }
+    } else {
+      sourceHtml = escapeHtml(rp.source || 'unknown source');
+    }
+
+    // Drift indicator. driftPct is signed (positive = probe higher
+    // than what the user committed at funding). >5% absolute is
+    // worth showing; small movements aren't.
+    let driftLine = '';
+    if (rp.driftPct !== null && rp.driftPct !== undefined && Math.abs(rp.driftPct) >= 5) {
+      const direction = rp.driftPct > 0 ? 'higher' : 'lower';
+      driftLine =
+        `<div class="is-size-7 has-text-warning-dark mt-1">` +
+          `<i class="fas fa-exclamation-circle"></i> ` +
+          `Price is ${Math.abs(rp.driftPct).toFixed(1)}% ${direction} than ` +
+          `the funding estimate — within tolerance, but worth a glance.` +
+        `</div>`;
+    }
+
+    html += `
+      <div class="box p-3 mb-2">
+        <div class="is-flex is-justify-content-space-between is-align-items-center">
+          <div>
+            <strong>${symbol} pool</strong>
+            <span class="has-text-grey is-size-7"> · ${sourceHtml}</span>
+          </div>
+          <div class="has-text-right">
+            <div class="is-size-7 has-text-grey">Initial price</div>
+            <div><strong>${fmtRatio(initialPriceNum)}</strong>
+              <span class="has-text-grey is-size-7"> token per ${symbol}</span></div>
+            <div class="is-size-7 has-text-grey">
+              ${symbol} ≈ ${fmtUsd(quoteUsdNum)}${
+                launchedTokenUsd
+                  ? ` · launch ≈ $${launchedTokenUsd.toLocaleString(undefined, { maximumSignificantDigits: 4 })}`
+                  : ''
+              }
+            </div>
+          </div>
+        </div>
+        ${driftLine}
+      </div>
+    `;
+  }
+  list.innerHTML = html;
+}
+
+// Run /api/preflight-create-lp and show the confirmation modal on
+// success. Returns the resolved prices on user-confirm, null on
+// user-cancel, or throws on preflight failure (network / pre_flight
+// validation / drift guard / no Raydium route / etc).
+//
+// The caller wraps this in the same withRunState + try/catch as the
+// actual create-lp call, so preflight failures route to the same
+// failure-rendering code that handles pre_flight from /api/create-lp.
+async function runPreflightAndConfirm(allocations, targetMc) {
+  log('Verifying current prices…', 'info');
+  let resp;
+  try {
+    resp = await fetch('/api/preflight-create-lp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tokenTotalSupply: createdTokenInfo.totalSupply,
+        targetMarketCapUsd: targetMc,
+        allocations,
+      }),
+    });
+  } catch (fetchErr) {
+    // Network failure (offline, DNS, etc.). Tag as pre_flight so the
+    // caller routes us through the proper failure UI, not log-only.
+    const err = new Error(
+      `Could not reach the Trebuchet server (${fetchErr.message}). ` +
+      `Check your internet connection and try again. No SOL was spent.`,
+    );
+    err.failedPhase = 'pre_flight';
+    err.cause = fetchErr;
+    throw err;
+  }
+  let data;
+  try {
+    data = await resp.json();
+  } catch (parseErr) {
+    const err = new Error(
+      `Preflight returned a non-JSON response (HTTP ${resp.status}). ` +
+      `This usually means the server is having trouble. Try again in ` +
+      `a moment. No SOL was spent.`,
+    );
+    err.failedPhase = 'pre_flight';
+    err.cause = parseErr;
+    throw err;
+  }
+  if (!data.success) {
+    // The server already tagged this as pre_flight. Throw with the
+    // same shape so the caller's existing failure-rendering code
+    // surfaces it correctly.
+    const err = new Error(data.error || 'Preflight failed');
+    err.failedPhase = data.failedPhase || 'pre_flight';
+    err.failedAllocationIndex = data.failedAllocationIndex;
+    err.failedAllocation = data.failedAllocation;
+    err.probeCode = data.probeCode;
+    throw err;
+  }
+
+  if (!data.preflight || !Array.isArray(data.preflight.resolvedPrices)) {
+    // Server returned success:true but a malformed payload. Shouldn't
+    // happen, but guard against it cleanly so the user gets a tagged
+    // error and proper UI rather than a TypeError dropped into log.
+    const err = new Error(
+      'Preflight returned an unexpected response shape. This is a bug; ' +
+      'please report it. No SOL was spent.',
+    );
+    err.failedPhase = 'pre_flight';
+    throw err;
+  }
+  if (data.preflight.resolvedPrices.length === 0) {
+    // Empty resolvedPrices means there were no allocations. The
+    // frontend gates against this in updateContinueToFundingState
+    // already (Continue button is disabled with no pools), so this
+    // shouldn't be reachable — but guard against it anyway.
+    const err = new Error(
+      'No pools to confirm. Add at least one pool and try again.',
+    );
+    err.failedPhase = 'pre_flight';
+    throw err;
+  }
+
+  return await showPreflightModal(data.preflight.resolvedPrices);
+}
+
 bind('createLpBtn', 'click', async () => {
   const btn = document.getElementById('createLpBtn');
   await withRunState(async () => {
     setLoading(btn, true);
     markLaunchActiveForRpcHealth(true);
     try {
-      document.getElementById('lpProgress').classList.remove('hidden');
-      document.getElementById('lpProgressTree').innerHTML = '';
       // Hide any stale failure banner from a prior attempt. This matters
       // for the pre-flight-retry case: if the previous attempt failed in
       // pre-flight and the user fixed their allocation, the failure
@@ -148,23 +437,97 @@ bind('createLpBtn', 'click', async () => {
       const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
       const lockPositions = document.getElementById('lockPositions').checked;
 
+      // Pre-commit confirmation flow (Milestone C). Runs the just-in-time
+      // Raydium probe + drift guard on the server, shows the user the
+      // resolved initialPrice for each pool, and asks them to confirm.
+      // The preflight throws on any pre_flight failure (no route, network,
+      // drift > threshold), which the outer catch handles the same way
+      // it handles pre_flight failures from /api/create-lp.
+      //
+      // We DON'T reveal lpProgress until after the user confirms — showing
+      // an empty progress panel beneath the modal while they're reading
+      // prices is confusing. If the user cancels or preflight throws, we
+      // never reveal it.
+      let confirmedPrices;
+      try {
+        confirmedPrices = await runPreflightAndConfirm(allocations, targetMc);
+      } catch (preflightErr) {
+        // Re-throw so the outer catch in this handler routes the
+        // failure to the pre_flight UI branch. The preflightErr
+        // already has failedPhase='pre_flight'.
+        throw preflightErr;
+      }
+
+      if (confirmedPrices === null) {
+        // User clicked Cancel. lpProgress was never revealed (we wait
+        // until after confirmation to show it), so there's nothing to
+        // clean up — just log and return.
+        log('Pool creation cancelled — no SOL spent.', 'info');
+        return;
+      }
+
+      // Override each allocation's quoteUsdOverride with the exact
+      // price the user just confirmed in the modal. This pins what
+      // the user saw to what the launch will use, and means the
+      // create-lp probe's drift guard measures movement during the
+      // confirmation window (seconds), not since funding-estimate
+      // (potentially hours).
+      for (const cp of confirmedPrices) {
+        // Validate allocationIndex strictly — Number.isInteger rejects
+        // undefined/null/NaN/strings, which would otherwise slip through
+        // the bounds check (NaN comparisons return false in both
+        // directions) and crash on the property write below.
+        if (!Number.isInteger(cp.allocationIndex)) continue;
+        if (cp.allocationIndex < 0 || cp.allocationIndex >= allocations.length) continue;
+        // Only overwrite if the preflight successfully resolved a
+        // price for this allocation. (It should — preflight throws
+        // otherwise.)
+        if (cp.quoteUsd !== null && cp.quoteUsd !== undefined) {
+          allocations[cp.allocationIndex].quoteUsdOverride = Number(cp.quoteUsd);
+        }
+      }
+
+      // User confirmed — reveal the progress panel and clear any stale
+      // tree content from a prior attempt.
+      document.getElementById('lpProgress').classList.remove('hidden');
+      document.getElementById('lpProgressTree').innerHTML = '';
+
       log(`Starting pool creation for ${pools.length} pool(s)...`);
       addProgressIntro();
       buildPhaseProgressTree(pools, lockPositions);
 
-      const resp = await fetch('/api/create-lp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tempWalletSecretKey: tempWallet.secretKey,
-          tokenMint: createdTokenInfo.mint,
-          tokenDecimals: createdTokenInfo.decimals,
-          tokenTotalSupply: createdTokenInfo.totalSupply,
-          targetMarketCapUsd: targetMc,
-          allocations,
-          lockPositions,
-        }),
-      });
+      // Start the LP progress poll just before the fetch so per-step
+      // events translate to row checkmarks in real time (instead of all
+      // rows flipping at once when the response lands). Currently only
+      // demo mode emits these events; real mode silently no-ops because
+      // the server-side tracker is never populated.
+      if (tempWallet && tempWallet.publicKey) {
+        startLpProgressPoll(tempWallet.publicKey);
+      }
+      let resp;
+      try {
+        resp = await fetch('/api/create-lp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            walletPublicKey: tempWallet.publicKey,
+            // F5: the server resolves the secret from its encrypted store using
+            // the public key for real launches; only demo mode (in-memory
+            // ledger, no server-side secret) still sends the key inline.
+            ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+            tokenMint: createdTokenInfo.mint,
+            tokenDecimals: createdTokenInfo.decimals,
+            tokenTotalSupply: createdTokenInfo.totalSupply,
+            targetMarketCapUsd: targetMc,
+            allocations,
+            lockPositions,
+          }),
+        });
+      } finally {
+        // Always tear down the poll — even on a fetch failure, leaving
+        // the poll running would just pile up empty responses.
+        stopLpProgressPoll();
+      }
       // The /api/create-lp endpoint returns JSON for both success (200)
       // and structured failure (500 with body). A non-JSON 5xx response
       // means something upstream of the route handler died (express
@@ -190,7 +553,7 @@ bind('createLpBtn', 'click', async () => {
         data.results.forEach((r, i) => markPoolDone(i, r));
         markAllBootstrapsDone();
         log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
-        document.getElementById('lpDoneInfo').classList.remove('hidden');
+        setLpDoneVisible(true);
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
         renderLaunchReportPreview('step5');
         // Hide the Create Pools button — re-clicking would attempt to create
@@ -468,8 +831,71 @@ bind('createLpBtn', 'click', async () => {
         }
       }
     } catch (e) {
-      log(`LP creation failed: ${e.message}`, 'danger');
+      // Mark the launch as no-longer-active for RPC health tracking,
+      // regardless of which error path we take. The price-safety
+      // pre_flight UI routing below decides how to surface the error
+      // to the user; this is bookkeeping that runs either way.
       markLaunchActiveForRpcHealth(false);
+
+      // If runPreflightAndConfirm threw a preflight-tagged error, route
+      // it to the lpFailInfo panel with the standard pre_flight UI
+      // treatment. Without this, preflight failures (NO_ROUTE,
+      // NETWORK_ERROR, drift > 25%) would only surface as a log line —
+      // losing the "no SOL spent, fix and retry" guidance and leaving
+      // the progress UI in a half-rendered state.
+      //
+      // We detect the case via e.failedPhase, which only the preflight
+      // throw sets (a generic JS throw won't have it). All preflight
+      // throws are 'pre_flight' by definition (no on-chain action has
+      // happened yet), so the rendering is much simpler than the
+      // /api/create-lp branch which handles many phases.
+      if (e && e.failedPhase === 'pre_flight') {
+        // lpProgress was never revealed (we wait until after user
+        // confirms), so there's nothing to hide.
+
+        // Mark the offending allocation as failed in the pool list.
+        // Other allocations stay in their pre-launch state since they
+        // were never attempted.
+        if (e.failedAllocationIndex != null) {
+          markPoolFailed(e.failedAllocationIndex, e.message);
+        }
+
+        // Populate the lpFailInfo panel with the same messaging the
+        // /api/create-lp pre_flight branch uses, then reveal it.
+        const failedSymbol =
+          e.failedAllocation?.quoteSymbolOverride
+          || e.failedAllocation?.quoteToken
+          || (e.failedAllocationIndex != null
+              ? `allocation ${e.failedAllocationIndex + 1}`
+              : 'an allocation');
+
+        document.getElementById('lpFailSummary').textContent = e.message;
+        document.getElementById('lpFailHeading').textContent =
+          'Validation failed before pool creation started.';
+        document.getElementById('lpFailSucceededCount').innerHTML =
+          `Nothing has been created on-chain yet — the failure is in ` +
+          `the pre-launch validation of <strong>${escapeHtml(failedSymbol)}</strong>. ` +
+          `Fix or remove this allocation and click Create Pools again; no SOL was spent.`;
+        // The reassurance block normally explains sweep / recovery. For
+        // pre_flight there's nothing to sweep — surface that explicitly.
+        const reassuranceEl = document.getElementById('lpFailReassurance');
+        if (reassuranceEl) {
+          reassuranceEl.innerHTML =
+            '<strong>No SOL was spent.</strong> The ephemeral wallet has not been touched. ' +
+            'Edit the pool configuration above and try again.';
+        }
+        document.getElementById('lpFailInfo').classList.remove('hidden');
+
+        // Keep the Create Pools button visible. The user just needs to
+        // fix the allocation (refresh funding estimate, pick a different
+        // quote token, retry on transient network) and re-click. Hiding
+        // it would force them into "Skip to Transfer Assets," which is
+        // the wrong recovery for a failure that didn't touch chain.
+
+        log(`Pre-flight check failed: ${e.message}`, 'danger');
+      } else {
+        log(`LP creation failed: ${e.message}`, 'danger');
+      }
     } finally {
       setLoading(btn, false);
     }
@@ -494,8 +920,49 @@ bind('createLpBtn', 'click', async () => {
 // Rows are uniquely identified by data-pool-idx + data-stage attributes
 // rather than per-pool container IDs, so marker functions can query each
 // row independently regardless of which phase block it lives in.
+// Step 5's "pools created" UI is split across the two columns: the result
+// summary notification sits under the preview card on the right, while the
+// action buttons (Continue to Final Transfer, report preview) live in the
+// left column where the primary action sits on every other step. They must
+// appear and disappear together, so every show/hide goes through here.
+function setLpDoneVisible(visible) {
+  document.getElementById('lpDoneInfo')?.classList.toggle('hidden', !visible);
+  document.getElementById('lpDoneActions')?.classList.toggle('hidden', !visible);
+  // The report preview now lives full-width below the two-column layout
+  // (outside #lpDoneActions), so include it here to hide on reset.
+  document.getElementById('step5ReportPreview')?.classList.toggle('hidden', !visible);
+}
+
 function buildPhaseProgressTree(pools, lockPositions) {
   const tree = document.getElementById('lpProgressTree');
+
+  // Wrap a phase's rows in a collapsible block: clickable header (with
+  // toggle chevron + title + "done / total" counter) and a slim progress
+  // bar that stay visible, plus a body div — holding the description line
+  // and the actual .progress-step rows — that starts collapsed. Keeping
+  // the description inside the collapsed body (rather than always-on)
+  // keeps the at-a-glance view to just headers + bars, so a multi-pool
+  // launch isn't a tall wall of prose and rows before anything happens.
+  // Clicking the header expands it; any failure auto-expands via markPoolFailed.
+  //
+  // total is derived from rowsHtml by counting "progress-step" markers
+  // in the string. Stable because the row HTML is built from fixed
+  // template literals just above each call to this helper.
+  const wrapPhase = (id, title, description, rowsHtml) => {
+    const total = (rowsHtml.match(/class="progress-step/g) || []).length;
+    return `
+      <button class="phase-header" type="button" data-phase-target="${id}-body">
+        <span class="phase-toggle">▶</span>
+        <span class="phase-title">${title}</span>
+        <span class="phase-counter" id="${id}-counter">0 / ${total}</span>
+      </button>
+      <progress class="phase-bar" id="${id}-bar" value="0" max="${total || 1}"></progress>
+      <div class="phase-body collapsed" id="${id}-body">
+        <p class="phase-desc">${description}</p>
+        ${rowsHtml}
+      </div>
+    `;
+  };
 
   // Ladder context — same for every pool in the simple-UI flow (ladder
   // is currently a global toggle, not per-pool). Read from simpleConfig
@@ -508,7 +975,7 @@ function buildPhaseProgressTree(pools, lockPositions) {
     ? Number(simpleConfig.ladderBandCount) || LADDER_DEFAULT_BANDS
     : 0;
 
-  // --- Phase 1: pool creates + main opens + ladder opens
+  // --- Phase 1: pool creates + main opens + ladder opens + support opens
   const phase1 = document.createElement('div');
   phase1.className = 'progress-pool';
   phase1.id = 'pp-phase1';
@@ -516,36 +983,76 @@ function buildPhaseProgressTree(pools, lockPositions) {
   pools.forEach((p, i) => {
     const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
     const sliceCount = p.distribution.length;
+    // Per-pool ladder band count: in customize mode each pool has its
+    // own ladder config; in simple mode the simpleConfig values apply
+    // uniformly. The progress tree always uses the per-pool value so
+    // it matches what createSinglePool will actually do.
+    const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
+      && Array.isArray(p.ladderConfig.bands))
+      ? p.ladderConfig.bands.length
+      : ladderBandCount;
+    // Per-pool support presence: support adds one progress row per
+    // pool that has it configured. In simple mode the user's launch-
+    // level total SOL is split equally across pools (same pattern as
+    // bootstrap) so every pool typically gets a row. In customize
+    // mode the user controls support per-pool. Either way, we read
+    // each pool's supportConfig and add the row when needed.
+    const poolHasSupport = p.supportConfig?.mode === 'custom'
+      && Number(p.supportConfig.solValue) > 0;
     phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="pool"><span class="icon">◯</span>${label} — Create pool</div>`;
     for (let s = 0; s < sliceCount; s++) {
       phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="slice-${s}"><span class="icon">◯</span>${label} — Open slice ${s + 1} of ${sliceCount}</div>`;
     }
     // Ladder bands per pool, ordered low-to-high (band 1 = closest to launch)
-    for (let b = 0; b < ladderBandCount; b++) {
-      phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="ladder-${b}"><span class="icon">◯</span>${label} — Open ladder band ${b + 1} of ${ladderBandCount}</div>`;
+    for (let b = 0; b < poolLadderBandCount; b++) {
+      phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="ladder-${b}"><span class="icon">◯</span>${label} — Open ladder band ${b + 1} of ${poolLadderBandCount}</div>`;
+    }
+    if (poolHasSupport) {
+      phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="support-open"><span class="icon">◯</span>${label} — Open support position</div>`;
     }
   });
-  phase1.innerHTML = `
-    <p class="has-text-weight-bold">Phase 1 — Open main positions</p>
-    <p class="is-size-7 has-text-grey mb-1">Pools are created and main positions opened (single-sided in your token). Positions are recoverable by the launch wallet until Phase 3 locks them.</p>
-    ${phase1Rows}
-  `;
+  phase1.innerHTML = wrapPhase(
+    'pp-phase1',
+    'Phase 1 — Open main positions',
+    'Pools are created and main positions opened (single-sided in your token). Positions are recoverable by the launch wallet until Phase 3 locks them.',
+    phase1Rows,
+  );
   tree.appendChild(phase1);
+
+  // SOL-paired pools are processed LAST in Phase 2 (bootstrap opens) and
+  // Phase 3 (locks) — see lpService.js for the launch-economics reasoning
+  // (we want every flywheel tradable before the SOL pool flips). The
+  // frontend phase-tree display must mirror that order so the visual
+  // plan matches the actual execution order; otherwise the progress
+  // checkmarks would tick on in a different order than the rows
+  // appear, which is jarring. Stable sort preserves user-config order
+  // within each group (non-SOL pools keep their order, SOL pools go to
+  // the end in their original relative order).
+  //
+  // Phase 1 (main opens) and Phase 4 (fee key transfers) are NOT
+  // reordered — the server doesn't reorder them either, so their
+  // user-config order already matches execution.
+  const isSolPool = (p) => (p.quoteToken || '').toUpperCase() === 'SOL';
+  const solLastOrder = pools
+    .map((_, idx) => idx)
+    .sort((a, b) => Number(isSolPool(pools[a])) - Number(isSolPool(pools[b])));
 
   // --- Phase 2: bootstrap opens
   const phase2 = document.createElement('div');
   phase2.className = 'progress-pool';
   phase2.id = 'pp-phase2';
   let phase2Rows = '';
-  pools.forEach((p, i) => {
+  solLastOrder.forEach((i) => {
+    const p = pools[i];
     const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
     phase2Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="bs-open"><span class="icon">◯</span>${label} — Open bootstrap</div>`;
   });
-  phase2.innerHTML = `
-    <p class="has-text-weight-bold mt-3">Phase 2 — Open bootstrap positions</p>
-    <p class="is-size-7 has-text-grey mb-1">Each pool becomes tradable as its bootstrap lands. Runs after every pool's main positions are in place so all pools cross the tradability line together.</p>
-    ${phase2Rows}
-  `;
+  phase2.innerHTML = wrapPhase(
+    'pp-phase2',
+    'Phase 2 — Open bootstrap positions',
+    'Each pool becomes tradable as its bootstrap lands. SOL-paired pools are bootstrapped last so every flywheel pool is already tradable when the SOL pool flips — that way the first SOL-paired swap activates the flywheel as designed.',
+    phase2Rows,
+  );
   tree.appendChild(phase2);
 
   // --- Phase 3: locks (mains, then ladder bands, then bootstrap — per pool)
@@ -558,22 +1065,36 @@ function buildPhaseProgressTree(pools, lockPositions) {
     phase3.className = 'progress-pool';
     phase3.id = 'pp-phase3';
     let phase3Rows = '';
-    pools.forEach((p, i) => {
+    solLastOrder.forEach((i) => {
+      const p = pools[i];
       const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
       const sliceCount = p.distribution.length;
+      // Same per-pool ladder count + support detection as Phase 1, so
+      // the phase rows are perfectly symmetric and the lock progress
+      // matches what got opened.
+      const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
+        && Array.isArray(p.ladderConfig.bands))
+        ? p.ladderConfig.bands.length
+        : ladderBandCount;
+      const poolHasSupport = p.supportConfig?.mode === 'custom'
+        && Number(p.supportConfig.solValue) > 0;
       for (let s = 0; s < sliceCount; s++) {
         phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="lock-${s}"><span class="icon">◯</span>${label} — Lock slice ${s + 1}</div>`;
       }
-      for (let b = 0; b < ladderBandCount; b++) {
+      for (let b = 0; b < poolLadderBandCount; b++) {
         phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="ladder-lock-${b}"><span class="icon">◯</span>${label} — Lock ladder band ${b + 1}</div>`;
+      }
+      if (poolHasSupport) {
+        phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="support-lock"><span class="icon">◯</span>${label} — Lock support position</div>`;
       }
       phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="bs-lock"><span class="icon">◯</span>${label} — Lock bootstrap</div>`;
     });
-    phase3.innerHTML = `
-      <p class="has-text-weight-bold mt-3">Phase 3 — Lock positions</p>
-      <p class="is-size-7 has-text-grey mb-1">Locks burn the position NFTs and mint Fee Key NFTs. After this, the LP'd tokens are committed for life and only fees can be claimed. Failures are retryable in place.</p>
-      ${phase3Rows}
-    `;
+    phase3.innerHTML = wrapPhase(
+      'pp-phase3',
+      'Phase 3 — Lock positions',
+      "Locks burn the position NFTs and mint Fee Key NFTs. After this, the LP'd tokens are committed for life and only fees can be claimed. Failures are retryable in place.",
+      phase3Rows,
+    );
     tree.appendChild(phase3);
 
     // --- Phase 4: transfers — only render if at least one slice has a recipient
@@ -594,13 +1115,86 @@ function buildPhaseProgressTree(pools, lockPositions) {
           }
         }
       });
-      phase4.innerHTML = `
-        <p class="has-text-weight-bold mt-3">Phase 4 — Transfer Fee Keys to recipients</p>
-        <p class="is-size-7 has-text-grey mb-1">Sends the Fee Key NFTs for slices with external recipients to those recipient addresses. Transfer failures are non-blocking — any undelivered Fee Keys sweep back to your destination wallet at the end.</p>
-        ${phase4Rows}
-      `;
+      phase4.innerHTML = wrapPhase(
+        'pp-phase4',
+        'Phase 4 — Transfer Fee Keys to recipients',
+        'Sends the Fee Key NFTs for slices with external recipients to those recipient addresses. Transfer failures are non-blocking — any undelivered Fee Keys sweep back to your destination wallet at the end.',
+        phase4Rows,
+      );
       tree.appendChild(phase4);
     }
+  }
+
+  // Wire click-to-toggle on every phase header we just rendered. Single
+  // pass at the end keeps the build linear and lets the helper handle
+  // all four phases (plus any future ones) uniformly.
+  _wirePhaseHeaders();
+}
+
+// Toggle a phase block expanded/collapsed. Idempotent: clicking a
+// header on an already-expanded phase collapses it; safe to call from
+// auto-expand-on-failure too (calling it when already expanded is a no-op
+// via the explicit add/remove pattern).
+function _wirePhaseHeaders() {
+  const headers = document.querySelectorAll('#lpProgressTree .phase-header');
+  headers.forEach((h) => {
+    if (h._wired) return;
+    h._wired = true;
+    h.addEventListener('click', () => {
+      const targetId = h.getAttribute('data-phase-target');
+      const body = document.getElementById(targetId);
+      if (!body) return;
+      const isCollapsed = body.classList.contains('collapsed');
+      if (isCollapsed) {
+        body.classList.remove('collapsed');
+        h.classList.add('is-expanded');
+      } else {
+        body.classList.add('collapsed');
+        h.classList.remove('is-expanded');
+      }
+    });
+  });
+}
+
+// Force a phase block expanded — used by failure handlers so the user
+// can immediately see what failed without having to click. Idempotent.
+function _expandPhase(phaseElement) {
+  if (!phaseElement) return;
+  const header = phaseElement.querySelector('.phase-header');
+  const body = phaseElement.querySelector('.phase-body');
+  if (header && body) {
+    body.classList.remove('collapsed');
+    header.classList.add('is-expanded');
+  }
+}
+
+// Recount a phase's done/failed/total rows and update its header
+// counter and progress bar. Called after every row state change so
+// the summary stays in sync with the detail. The phaseElement is the
+// outer .progress-pool div containing the rows.
+function _updatePhaseProgress(phaseElement) {
+  if (!phaseElement) return;
+  const rows = phaseElement.querySelectorAll('.progress-step');
+  const total = rows.length;
+  let done = 0;
+  let failed = 0;
+  rows.forEach((r) => {
+    if (r.classList.contains('done')) done += 1;
+    else if (r.classList.contains('failed')) failed += 1;
+  });
+  const completed = done + failed;
+  const counter = phaseElement.querySelector('.phase-counter');
+  const bar = phaseElement.querySelector('.phase-bar');
+  if (counter) {
+    counter.textContent = `${completed} / ${total}`;
+    counter.classList.toggle('is-done', completed === total && failed === 0 && total > 0);
+    counter.classList.toggle('has-failures', failed > 0);
+  }
+  if (bar) {
+    bar.value = completed;
+    bar.max = total || 1;
+    bar.classList.toggle('is-done', completed === total && failed === 0 && total > 0);
+    bar.classList.toggle('has-failures', failed > 0);
   }
 }
 
@@ -698,6 +1292,34 @@ function markPoolDone(idx, poolResult) {
       if (lockRow) markRowDone(lockRow);
     }
   }
+
+  // Support position rows. Same shape as ladder bands but currently
+  // capped at one support per pool, so the progress tree only has one
+  // "support-open" and one "support-lock" row per pool. If a pool
+  // has multiple support positions in the future, this would need
+  // per-index data-stage attributes ("support-open-0" etc) like ladder
+  // — for now the one-position case keeps the row IDs simpler.
+  const sp = Array.isArray(poolResult && poolResult.supportPositions)
+    ? poolResult.supportPositions
+    : [];
+  // We mark the row done as soon as ANY support position has the field
+  // populated. With more than one support position this would mismark,
+  // but the current data model has 0 or 1. The defensive `.some` form
+  // makes adding multi-band support later just a matter of extending
+  // the row builder; this check would still flip when the first one
+  // lands.
+  if (sp.some((pos) => pos && pos.nftMint)) {
+    const openRow = document.querySelector(
+      `#lpProgressTree [data-pool-idx="${idx}"][data-stage="support-open"]`,
+    );
+    if (openRow) markRowDone(openRow);
+  }
+  if (sp.some((pos) => pos && pos.locked)) {
+    const lockRow = document.querySelector(
+      `#lpProgressTree [data-pool-idx="${idx}"][data-stage="support-lock"]`,
+    );
+    if (lockRow) markRowDone(lockRow);
+  }
 }
 
 // Helper: flip a single row from pending/running to done.
@@ -706,6 +1328,28 @@ function markRowDone(row) {
   row.classList.add('done');
   const icon = row.querySelector('.icon');
   if (icon) icon.textContent = '✓';
+  // Bubble up the row's state change to its phase block so the header
+  // counter and progress bar reflect the new completion count.
+  _updatePhaseProgress(row.closest('.progress-pool'));
+}
+
+// Mark a specific row as failed. Same visual treatment as the pending-row
+// branch in markPoolFailed (red ✗, tooltip, header counter update, phase
+// auto-expanded) but targets a known row rather than "first pending in
+// this pool". Used by the live progress poll to flip individual rows red
+// as Phase 3/4 per-position failures arrive — where one position can
+// fail while sibling positions in the same pool keep succeeding, so the
+// first-pending heuristic would be wrong.
+function markRowFailed(row, err) {
+  if (!row) return;
+  row.classList.remove('pending', 'running', 'done');
+  row.classList.add('failed');
+  const icon = row.querySelector('.icon');
+  if (icon) icon.textContent = '✗';
+  if (err) row.title = err;
+  const phase = row.closest('.progress-pool');
+  _updatePhaseProgress(phase);
+  _expandPhase(phase);
 }
 
 function markPoolFailed(idx, err) {
@@ -724,6 +1368,14 @@ function markPoolFailed(idx, err) {
     const icon = pending.querySelector('.icon');
     if (icon) icon.textContent = '✗';
     pending.title = err;
+    // Update the phase header's counter + bar AND auto-expand the
+    // containing phase so the user can see what failed without having
+    // to click. Failure rows are uncommon, so auto-expanding here is
+    // less noisy than leaving the user to hunt through collapsed
+    // phases for the red row.
+    const phase = pending.closest('.progress-pool');
+    _updatePhaseProgress(phase);
+    _expandPhase(phase);
   }
 }
 
@@ -777,12 +1429,22 @@ function markBootstrapFailedForPool(allocationIndex, err) {
   const rows = document.querySelectorAll(
     `#lpProgressTree [data-pool-idx="${allocationIndex}"][data-stage^="bs-"].pending`,
   );
+  const phasesToUpdate = new Set();
   rows.forEach((row) => {
     row.classList.remove('pending');
     row.classList.add('failed');
     const icon = row.querySelector('.icon');
     if (icon) icon.textContent = '✗';
     row.title = err;
+    const phase = row.closest('.progress-pool');
+    if (phase) phasesToUpdate.add(phase);
+  });
+  // Update header counter + auto-expand for every phase touched. The
+  // bs-open and bs-lock rows live in Phase 2 and Phase 3 respectively,
+  // so this typically updates both phase headers in one fail path.
+  phasesToUpdate.forEach((phase) => {
+    _updatePhaseProgress(phase);
+    _expandPhase(phase);
   });
 }
 
@@ -868,7 +1530,11 @@ bind('retryBootstrapsBtn', 'click', async () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tempWalletSecretKey: tempWallet.secretKey,
+          walletPublicKey: tempWallet.publicKey,
+          // F5: the server resolves the secret from its encrypted store using
+          // the public key for real launches; only demo mode (in-memory
+          // ledger, no server-side secret) still sends the key inline.
+          ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
           tokenMint: createdTokenInfo.mint,
           tokenDecimals: createdTokenInfo.decimals,
           tokenTotalSupply: createdTokenInfo.totalSupply,
@@ -901,7 +1567,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
           markBootstrapDoneForPool(r.allocationIndex, r.bootstrap);
         });
         log(`All ${data.results.length} pool(s) created and bootstrapped`, 'success');
-        document.getElementById('lpDoneInfo').classList.remove('hidden');
+        setLpDoneVisible(true);
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
         renderLaunchReportPreview('step5');
         markLaunchActiveForRpcHealth(false);
@@ -1203,8 +1869,81 @@ function removeKeyDisplay() {
   if (container) container.remove();
 }
 
+// Centralized state machine for the Grind/Cancel button. Three states
+// driven by the data-mode attribute, so all transitions go through one
+// place. Production code never reads data-mode externally — it's purely
+// an internal flag the click handler reads to decide what to do.
+function setGrindButtonState(state) {
+  const btn = document.getElementById('grindCABtn');
+  if (!btn) return;
+  const icon = btn.querySelector('i');
+  const label = btn.querySelector('span:last-child');
+  const target = document.getElementById('vanityCATarget');
+  const mode = document.getElementById('vanityCAMode');
+
+  if (state === 'grind') {
+    btn.dataset.mode = 'grind';
+    btn.disabled = false;
+    btn.classList.remove('is-danger', 'is-loading');
+    btn.classList.add('is-primary');
+    if (icon) icon.className = 'fas fa-star';
+    if (label) label.textContent = 'Grind';
+    if (target) target.disabled = false;
+    if (mode) mode.disabled = false;
+  } else if (state === 'cancel') {
+    btn.dataset.mode = 'cancel';
+    btn.disabled = false;
+    btn.classList.remove('is-primary', 'is-loading');
+    btn.classList.add('is-danger');
+    if (icon) icon.className = 'fas fa-times';
+    if (label) label.textContent = 'Cancel';
+    // Lock the inputs while grinding — the prefix/suffix and mode
+    // dropdown contribute to the grind that's already underway;
+    // letting the user edit them mid-grind would create a confusing
+    // mismatch between the visible target and what's actually being
+    // ground.
+    if (target) target.disabled = true;
+    if (mode) mode.disabled = true;
+  } else if (state === 'cancelling') {
+    btn.dataset.mode = 'cancelling';
+    btn.disabled = true;
+    btn.classList.remove('is-primary');
+    btn.classList.add('is-danger', 'is-loading');
+    if (label) label.textContent = 'Cancelling...';
+    if (target) target.disabled = true;
+    if (mode) mode.disabled = true;
+  }
+}
+
 bind('grindCABtn', 'click', async () => {
   const btn = document.getElementById('grindCABtn');
+  const currentMode = btn.dataset.mode || 'grind';
+
+  // CANCEL branch: button is showing "Cancel" because a grind is in
+  // flight. POST to the cancel endpoint and transition into the
+  // "Cancelling..." state. The actual UI cleanup happens when the SSE
+  // stream emits {type:'cancelled'} — which fires once the child
+  // process actually finishes terminating (usually a few ms).
+  if (currentMode === 'cancel') {
+    setGrindButtonState('cancelling');
+    try {
+      const resp = await fetch('/api/cancel-vanity-grind', { method: 'POST' });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${resp.status}`);
+      }
+    } catch (e) {
+      // Cancel request failed (network error, server gone, etc.). Don't
+      // leave the user stuck in "Cancelling..." forever — restore the
+      // button. If the grind is still actually running we'll see its
+      // events come through the SSE stream and handle them normally.
+      log('Cancel request failed: ' + e.message, 'warn');
+      setGrindButtonState('cancel');
+    }
+    return;
+  }
+
+  // GRIND branch: standard new-grind flow.
   const target = document.getElementById('vanityCATarget').value.trim();
   if (!target) {
     log('Enter a vanity target first.', 'warn');
@@ -1212,16 +1951,14 @@ bind('grindCABtn', 'click', async () => {
   }
 
   await withRunState(async () => {
-    setLoading(btn, true);
+    setGrindButtonState('cancel');
     try {
       const mode = document.getElementById('vanityCAMode').value;
       const isSuffix = mode === 'suffix';
 
       // Show single active progress bar
       const progressEl = document.getElementById('vanityCAProgress');
-      const listContainer = document.getElementById('vanityCAListContainer');
       if (progressEl) progressEl.classList.remove('hidden');
-      if (listContainer) listContainer.classList.add('hidden');
 
       // Ensure original bar is visible, remove any old epoch bars
       const barContainer = progressEl?.querySelector('.vanity-progress-bar');
@@ -1264,11 +2001,30 @@ bind('grindCABtn', 'click', async () => {
               attempts: data.wallet.attempts,
               seed: data.wallet.seed,
             };
-            vanityCAKeypairs.push(entry);
+            // Replace any previous grind with this one and auto-select
+            // it. Without selectedVanityCA being set here, the launch
+            // flow at the "vanityCAKeypair" form-append site would
+            // silently skip the keypair and the pre-grind would be a
+            // no-op. Most-recent-successful-grind wins; the user can
+            // discard via the clear button on the result block.
+            vanityCAKeypairs = [entry];
+            selectedVanityCA = 0;
             if (progressEl) progressEl.classList.add('hidden');
-            if (listContainer) listContainer.classList.remove('hidden');
             renderVanityCAList();
             log('Vanity CA: ' + data.wallet.publicKey + ' (' + data.wallet.rarity + ', ' + data.wallet.attempts.toLocaleString() + ' attempts)', 'success');
+            resolve();
+          } else if (data.type === 'cancelled') {
+            // User clicked Cancel and the server confirmed the grind
+            // was terminated. Treat as a clean stop — no error log,
+            // just unwind the UI back to its idle state. The catch
+            // block below resolves on its own without throwing for
+            // this case because we resolve() here.
+            es.close();
+            removeKeyDisplay();
+            if (progressEl) progressEl.classList.add('hidden');
+            const epochBars = document.getElementById('vanityCAEpochBars');
+            if (epochBars) epochBars.remove();
+            log('Vanity grind cancelled.', 'info');
             resolve();
           } else if (data.type === 'error') {
             es.close();
@@ -1288,50 +2044,209 @@ bind('grindCABtn', 'click', async () => {
       const epochBars = document.getElementById('vanityCAEpochBars');
       if (epochBars) epochBars.remove();
     } finally {
-      setLoading(btn, false);
+      setGrindButtonState('grind');
     }
   });
 });
 
-// Render the list of collected vanity CAs
-function renderVanityCAList() {
-  const listEl = document.getElementById('vanityCAList');
-  const emptyEl = document.getElementById('vanityCAListEmpty');
-  if (!listEl) return;
+// Discard the active vanity CA (the result block's X button). Wipes
+// the array and the selection, then re-renders the block so it hides.
+// The user can then grind again from scratch. Uses the existing
+// clearVanityCAs helper defined further down so wipe logic lives in
+// one place.
+bind('clearVanityCAResultBtn', 'click', () => {
+  if (typeof clearVanityCAs === 'function') clearVanityCAs();
+  log('Vanity CA discarded.', 'info');
+});
 
-  if (vanityCAKeypairs.length === 0) {
-    listEl.innerHTML = '';
-    if (emptyEl) emptyEl.classList.remove('hidden');
+// Base58 decoder. The frontend can't import @solana/web3.js or bs58
+// (Node-only deps in this build), so we have a tiny BigInt-based
+// implementation just for the pre-flight mintA check below. Solana
+// addresses always decode to exactly 32 bytes; the BigInt path is
+// sub-millisecond per decode.
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function decodeBase58ToBytes(str) {
+  let value = 0n;
+  for (let i = 0; i < str.length; i++) {
+    const idx = BASE58_ALPHABET.indexOf(str[i]);
+    if (idx < 0) throw new Error('Invalid base58 character: ' + str[i]);
+    value = value * 58n + BigInt(idx);
+  }
+  // Convert BigInt to big-endian byte array.
+  const bytes = [];
+  while (value > 0n) {
+    bytes.unshift(Number(value & 0xffn));
+    value >>= 8n;
+  }
+  // Each leading '1' in the base58 string represents a leading 0x00
+  // byte in the decoded value. Solana mints rarely lead with 0x00 but
+  // we handle it for correctness — WSOL itself starts with 'So...' so
+  // no leading 1s, but it's not impossible for some mints.
+  for (let i = 0; i < str.length && str[i] === '1'; i++) {
+    bytes.unshift(0);
+  }
+  return new Uint8Array(bytes);
+}
+
+// Byte-by-byte pubkey comparator. Mirrors the server-side comparePubkeys
+// in tokenService.js, which itself mirrors Solana's on-chain Pubkey::cmp
+// behaviour that Raydium uses to assign mintA vs mintB. Negative if a<b,
+// positive if a>b, zero if equal.
+function comparePubkeyBytes(a, b) {
+  for (let i = 0; i < 32; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+// Pre-flight check: does the active vanity CA sort strictly smaller
+// than every configured pool's quote mint? Server-side validation at
+// tokenService.js:369-381 throws "does not sort before all quote mints"
+// when this fails, costing the user a launch attempt; this check
+// catches the same condition client-side after the grind so the user
+// can discard and re-grind before sinking more time.
+//
+// Returns { ok, failsAgainst } where failsAgainst is the list of
+// problematic pools (each with a human-readable label and the raw
+// mint address). The Ed25519 secret-key layout puts the public-key
+// bytes in the last 32 of the 64-byte array, so we extract them
+// directly — no base58 decode needed for our side of the comparison.
+function validateVanityMintAConstraint(entry) {
+  if (!entry || !entry.secretKey || entry.secretKey.length !== 64) {
+    // Can't validate; assume OK and let the server have final say.
+    return { ok: true, failsAgainst: [] };
+  }
+  const vanityBytes = entry.secretKey.slice(32, 64);
+
+  const failsAgainst = [];
+  for (const pool of pools) {
+    const mint = pool && pool.resolvedMint;
+    if (typeof mint !== 'string' || mint.length === 0) continue;
+    try {
+      const quoteBytes = decodeBase58ToBytes(mint);
+      // Not a 32-byte pubkey → not a real mint, skip rather than throw.
+      if (quoteBytes.length !== 32) continue;
+      if (comparePubkeyBytes(vanityBytes, quoteBytes) >= 0) {
+        // Vanity is NOT strictly smaller. Use the pool's symbol/label
+        // if it has one, otherwise a truncated form of the mint so the
+        // user has something to identify it by.
+        const label = pool.label
+          || pool.symbol
+          || (mint.length > 8 ? `${mint.slice(0, 4)}…${mint.slice(-4)}` : mint);
+        failsAgainst.push({ mint, label });
+      }
+    } catch (e) {
+      // Bad base58 on a pool's resolvedMint shouldn't happen, but if
+      // it does we don't want to crash the renderer. Log and skip.
+      console.warn('Pre-flight: skipping pool with unparseable mint', mint, e.message);
+    }
+  }
+  return { ok: failsAgainst.length === 0, failsAgainst };
+}
+
+// Render the active vanity CA into the result block in index.html.
+//
+// History: this used to be a multi-result list renderer, but the matching
+// list elements (vanityCAList, vanityCAListContainer) were never added to
+// the HTML — so the function ran no-ops every time and the user never saw
+// their grind result. The function now updates the single-result block
+// (vanityCAResult / vanityCAResultAddr / vanityCARarity) that DOES exist
+// in the HTML and was sitting unused. The "list" semantics are preserved
+// in the underlying array, but in practice we replace-on-success so the
+// array has at most one entry at a time.
+//
+// Also handles the mintA pre-flight: toggles between a green-success and
+// a yellow-warning visual based on whether the vanity CA will pass the
+// server-side sort check at launch time. This re-runs on every call, so
+// changes to the pools array (which happen via renderPools) get picked
+// up too — see the renderVanityCAList() call at the bottom of renderPools.
+function renderVanityCAList() {
+  const resultEl = document.getElementById('vanityCAResult');
+  const addrEl = document.getElementById('vanityCAResultAddr');
+  const rarityEl = document.getElementById('vanityCARarity');
+  const metaEl = document.getElementById('vanityCAResultMeta');
+  const iconEl = document.getElementById('vanityCAResultIcon');
+  const headlineEl = document.getElementById('vanityCAResultHeadline');
+  const warningEl = document.getElementById('vanityCAResultWarning');
+  if (!resultEl) return;
+
+  // No active CA → hide the block and we're done.
+  if (selectedVanityCA === null || !vanityCAKeypairs[selectedVanityCA]) {
+    resultEl.classList.add('hidden');
     return;
   }
 
-  if (emptyEl) emptyEl.classList.add('hidden');
+  const ca = vanityCAKeypairs[selectedVanityCA];
 
-  const tierColors = { Common: 'is-info', Rare: 'is-success', Legendary: 'is-warning', Mythic: 'is-danger' };
-  let html = '';
-  vanityCAKeypairs.forEach((ca, i) => {
-    const color = tierColors[ca.rarity] || 'is-light';
-    const selected = i === selectedVanityCA;
-    html += `<div class="vanity-ca-row ${selected ? 'vanity-ca-selected' : ''}" data-index="${i}" style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;border-bottom:1px solid var(--rule, #ddd);">
-      <span class="is-family-monospace is-size-7" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${ca.publicKey}</span>
-      <span class="tag ${color} is-size-7">${ca.rarity} (${ca.epochs.toFixed(1)}&times;)</span>
-      <span class="is-size-7 has-text-grey">${ca.attempts.toLocaleString()} tries</span>
-      ${selected ? '<span class="tag is-success is-size-7">Selected</span>' : ''}
-    </div>`;
-  });
-  listEl.innerHTML = html;
+  // Match the tier colors used elsewhere for consistency. Bulma tags
+  // don't have a "Mythic" style natively; is-danger reads close enough.
+  const tierColors = {
+    Common: 'is-info',
+    Rare: 'is-success',
+    Legendary: 'is-warning',
+    Mythic: 'is-danger',
+  };
+  const tagClass = tierColors[ca.rarity] || 'is-light';
 
-  // Bind click handlers for selection
-  listEl.querySelectorAll('.vanity-ca-row').forEach(row => {
-    row.addEventListener('click', () => {
-      const idx = parseInt(row.dataset.index, 10);
-      selectedVanityCA = idx;
-      renderVanityCAList();
-      const targetEl = document.getElementById('vanityCATarget');
-      if (targetEl) targetEl.value = '';
-      log(`Selected CA: ${vanityCAKeypairs[idx].publicKey}`, 'info');
-    });
-  });
+  if (addrEl) addrEl.textContent = ca.publicKey;
+  if (rarityEl) {
+    // Replace the tag's color class so re-renders for different tiers
+    // don't accumulate stale classes.
+    rarityEl.className = `tag is-size-7 ${tagClass}`;
+    rarityEl.textContent = ca.rarity;
+  }
+  if (metaEl) {
+    metaEl.textContent =
+      `${ca.attempts.toLocaleString()} attempts`
+      + (typeof ca.epochs === 'number' ? ` · ${ca.epochs.toFixed(1)}× epoch` : '');
+  }
+
+  // Pre-flight mintA constraint. Failing this client-side means the
+  // server-side check at tokenService.js:369-381 would throw at launch
+  // time — better to surface it here so the user can discard and try
+  // again before sinking another grind on top.
+  const validation = validateVanityMintAConstraint(ca);
+  if (validation.ok) {
+    if (iconEl) {
+      iconEl.innerHTML = '<i class="fas fa-check-circle has-text-success"></i>';
+    }
+    if (headlineEl) {
+      headlineEl.innerHTML =
+        '<strong>Vanity CA ready</strong> '
+        + '<span class="has-text-grey">&mdash; will be used as the token mint address</span>';
+    }
+    if (warningEl) {
+      warningEl.classList.add('hidden');
+      warningEl.innerHTML = '';
+    }
+  } else {
+    if (iconEl) {
+      iconEl.innerHTML = '<i class="fas fa-exclamation-triangle has-text-warning"></i>';
+    }
+    if (headlineEl) {
+      headlineEl.innerHTML =
+        '<strong>Vanity CA ground</strong> '
+        + '<span class="has-text-grey">&mdash; but it won\'t pass the mintA sort check at launch</span>';
+    }
+    if (warningEl) {
+      // HTML-escape pool labels in case a future label source includes
+      // user-controlled text. The mint itself is base58 so no escape
+      // needed, but we go through textContent on a fragment for safety.
+      const labels = validation.failsAgainst
+        .map((f) => f.label)
+        .join(', ');
+      const tmp = document.createElement('span');
+      tmp.textContent = labels;
+      warningEl.innerHTML =
+        '<span class="has-text-grey">Sorts <em>after</em> these quote mints '
+        + '(the launched token must sort <strong>before</strong> all of them to become mintA): '
+        + `<strong>${tmp.innerHTML}</strong>. `
+        + 'Discard this CA and grind again — each grind is independent so a new one has a fresh chance.</span>';
+      warningEl.classList.remove('hidden');
+    }
+  }
+
+  resultEl.classList.remove('hidden');
 }
 
 // Clear collected CAs (called on wallet regenerate / full reset)
@@ -1340,3 +2255,4 @@ function clearVanityCAs() {
   selectedVanityCA = null;
   renderVanityCAList();
 }
+

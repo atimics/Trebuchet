@@ -329,14 +329,14 @@ export async function discoverRaydiumRoute({
         // Trade API said no route. Surface the message in logs to help
         // diagnose if a token we expected to be routable isn't.
         console.log(
-          `discoverRaydiumRoute: ${quoteMint} → no route (${json?.msg || 'unknown'})`,
+          `discoverRaydiumRoute: ${quoteMint} -> no route (${json?.msg || 'unknown'})`,
         );
       }
     } else {
-      console.warn(`discoverRaydiumRoute: ${quoteMint} → HTTP ${resp.status}`);
+      console.warn(`discoverRaydiumRoute: ${quoteMint} -> HTTP ${resp.status}`);
     }
   } catch (e) {
-    console.warn(`discoverRaydiumRoute: ${quoteMint} →`, e.message);
+    console.warn(`discoverRaydiumRoute: ${quoteMint} ->`, e.message);
   }
 
   // Only persist when not a forceFresh call. A forceFresh probe is a
@@ -749,7 +749,7 @@ export async function swapSolForQuote({
   const initialQuoteRaw = await obtainTokenBalance(connection, ownerPk, mintPk);
   if (initialQuoteRaw.gte(effectiveMinRaw)) {
     console.log(
-      `  already satisfied (${initialQuoteRaw.toString()} ≥ ${effectiveMinRaw.toString()})`,
+      `  already satisfied (${initialQuoteRaw.toString()} >= ${effectiveMinRaw.toString()})`,
     );
     return {
       txId: null,
@@ -795,7 +795,7 @@ export async function swapSolForQuote({
 
   console.log(
     `  spending up to ${(spendLamports.toNumber() / LAMPORTS_PER_SOL).toFixed(6)} SOL ` +
-      `to acquire ~${missingWhole.toFixed(6)} ${quoteMint.slice(0, 6)}…`,
+      `to acquire ~${missingWhole.toFixed(6)} ${quoteMint.slice(0, 6)}...`,
   );
 
   // 6. Retry ladder against the Trade API.
@@ -818,7 +818,7 @@ export async function swapSolForQuote({
     const currentRaw = await obtainTokenBalance(connection, ownerPk, mintPk);
     if (currentRaw.gte(effectiveMinRaw)) {
       console.log(
-        `    balance now satisfies bootstrap need (${currentRaw.toString()} ≥ ${effectiveMinRaw.toString()}); finishing`,
+        `    balance now satisfies bootstrap need (${currentRaw.toString()} >= ${effectiveMinRaw.toString()}); finishing`,
       );
       return {
         txId: null,
@@ -833,7 +833,7 @@ export async function swapSolForQuote({
     try {
       console.log(
         `    attempt ${attemptsTried}: slip=${rung.slippageBps}bps ` +
-          `prio=${rung.priorityFeeMicroLamports}μL`,
+          `prio=${rung.priorityFeeMicroLamports}uL`,
       );
 
       // 6a. Fetch quote.
@@ -889,7 +889,7 @@ export async function swapSolForQuote({
       if (finalRaw.lt(targetRaw)) {
         console.log(
           `    landed below ambition target (${finalRaw.toString()} < ${targetRaw.toString()}) ` +
-            `but ≥ bootstrap min ${effectiveMinRaw.toString()} — accepting`,
+            `but >= bootstrap min ${effectiveMinRaw.toString()} - accepting`,
         );
       }
       return {
@@ -914,7 +914,7 @@ export async function swapSolForQuote({
         // Trade API said it can't route this. Climbing the slippage
         // ladder won't change that. Bail to manual fallback.
         throw new Error(
-          `NO_USABLE_POOL: Raydium can't route SOL→${quoteMint.slice(0, 8)}… (${e.message})`,
+          `NO_USABLE_POOL: Raydium can't route SOL->${quoteMint.slice(0, 8)}... (${e.message})`,
         );
       }
       // 'transient' or 'unknown' — climb the retry ladder.

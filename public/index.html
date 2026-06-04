@@ -112,7 +112,7 @@
             --paper-shadow:    #d9c79a;   /* deeper crease for contrast */
             --ink:             #1c1610;   /* near-black warm */
             --ink-soft:        #4a3b27;   /* secondary text, faded ink */
-            --ink-fade:        #7a6a4f;   /* tertiary, captions */
+            --ink-fade:        #6b5c43;   /* tertiary, captions — darkened from #7a6a4f so it clears WCAG AA (4.5:1) for small text on every parchment surface (paper / paper-card / field); the old value measured 3.9–4.4:1 and fell just under the floor at is-size-7 */
             --rubric:          #9a2424;   /* manuscript red — accent, links */
             --rubric-dark:     #6e1818;   /* hover state */
             --gold:            #b88a2a;   /* sparingly, for highlights */
@@ -133,10 +133,80 @@
 
             /* Semantic state colors, tuned to sit on parchment without
                looking like default Bulma. Success is an olive-forest
-               green (reads as "good" but warm, not neon); danger reuses
-               the manuscript rubric since red already means "stop". */
+               green (reads as "good" but warm, not neon); danger is a
+               brick red one step off the rubric so "stop" reads distinct
+               from a plain link. Each accent has a -dark partner used for
+               the :hover state of the matching solid button. */
             --success:         #5c7a35;
-            --danger:          var(--rubric);
+            --success-dark:    #4a6429;
+            --danger:          #a52a2a;   /* was an orphaned alias of --rubric; now the real brick the danger buttons paint */
+            --danger-dark:     #841f1f;
+            --gold-dark:       #a5781f;   /* hover partner for the gold "info" affordance */
+            --gold-deep:       #8a6518;   /* deep gold for TEXT sitting on a light gold tint (legible where --gold-dark is too pale) */
+            --gold-bright:     #d4a82e;   /* brighter gold for status indicators and focus outlines that need to pop */
+
+            /* The single "on accent" foreground: a warm cream used for
+               text/icons sitting on a filled accent (rubric, danger,
+               success). One token instead of the literal that was copied
+               into ~18 component rules. NOTE: deliberately NOT used on the
+               gold affordance — cream on gold falls below the WCAG AA
+               contrast floor, so gold uses --ink instead (see Components). */
+            --on-accent:       #fdf6e3;
+
+            /* Neutral backing for remote token-logo chips. Uploaded logos
+               are arbitrary images that often have transparent areas; like
+               the QR quiet zone, they need a true-neutral backing so they
+               render correctly rather than blending into the parchment.
+               This is a deliberate functional exception to "no white", not
+               a stray literal — hence its own named token. */
+            --logo-backing:    #fff;
+
+            /* Demo / "pretend" warning amber. A deliberately separate
+               family from the parchment palette — amber means "this is a
+               rehearsal, not a real on-chain action" and must not blend
+               into the page. Named here so the banner and any future
+               demo affordance share one source of truth. */
+            --warn-amber-bg:       #fef3c7;
+            --warn-amber-border:   #f0c040;
+            --warn-amber-ink:      #6b4b00;
+            --warn-amber-ink-dark: #523900;
+
+            /* Corner-radius scale. The app had grown a spread of one-off
+               radii (2/3/4/6/7/8px); these name the rungs it actually
+               uses so new work can pick a step instead of a magic number.
+               --sm (4px) is the default for panels, fields, and buttons. */
+            --radius-xs:       2px;
+            --radius-sm:       4px;
+            --radius-md:       6px;
+            --radius-lg:       8px;
+            --radius-circle:   50%;
+
+            /* Elevation. Every shadow in the app is warm (brown-black, not
+               neutral black) so it reads as ink-on-parchment rather than a
+               cold drop shadow. These name the four rungs already in use
+               plus the rubric focus ring, so depth stays consistent. */
+            --elev-card:       0 1px 0 rgba(60, 44, 22, 0.05);          /* resting card lift */
+            --elev-card-hover: 0 .25em .6em -.1em rgba(60, 44, 22, 0.18); /* hovered card */
+            --elev-pop:        0 .4em .9em -.2em rgba(60, 44, 22, 0.18);  /* dropdowns / popovers */
+            --elev-inset:      inset 0 1px 2px rgba(60, 44, 22, 0.15);    /* pressed / active */
+            --focus-ring:      0 0 0 0.125em rgba(154, 36, 36, 0.2);      /* rubric focus halo */
+
+            /* Console surface. The activity log is a deliberate dark
+               terminal panel — its own small, self-consistent palette that
+               does NOT follow the parchment system. Tokenizing it here
+               keeps that exception explicit and in one place rather than as
+               scattered magic hexes, and pins exactly which colors are
+               allowed to be "off system". */
+            --console-bg:           #1a1a1a;
+            --console-bg-head:      #222;
+            --console-bg-head-hover:#2a2a2a;
+            --console-ink:          #ccc;   /* body text */
+            --console-ink-dim:      #aaa;   /* header text */
+            --console-rule:         #333;
+            --console-meta:         #666;   /* timestamps */
+            --console-info:         #00ff88;
+            --console-danger:       #ff5266;
+            --console-warn:         #ffdd57;
 
             /* Typography */
             --font-display:    'IM Fell DW Pica', 'EB Garamond', Georgia, serif;
@@ -147,6 +217,14 @@
                crispness at small sizes; the serif faces are reserved
                for headings and prose. */
             --font-ui:         -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+
+            /* Runtime layout variable, not a design token. Published from
+               JS (applyDemoModeUi / syncDemoBannerHeight in app.js) with the
+               live pixel height of the sticky demo-mode banner, or 0px when
+               demo mode is off. The modal rules below read it so dialogs
+               stay clear of the banner. Kept here so the default (0px) is
+               defined even before any script runs. */
+            --demo-banner-height: 0px;
         }
 
         /* ---- Bulma 0.9.4 component overrides ----
@@ -180,6 +258,30 @@
         .input.is-focused, .textarea.is-focused {
             border-color: var(--rubric);
             box-shadow: 0 0 0 0.125em rgba(154, 36, 36, 0.2);
+        }
+
+        /* ---- Global keyboard-focus ring ----
+           Every button/link/control was recolored away from Bulma's
+           defaults (rubric, gold, brick, olive), but the focus ring was
+           never re-specified to match — so keyboard focus fell back to
+           Bulma's default halo, which is faint and inconsistent against
+           the new fills. This applies one visible, on-palette ring to
+           anything focused via the keyboard. We use :focus-visible (not
+           :focus) so the ring only shows for keyboard/AT users — mouse
+           users don't see a ring on click, so there's no visual cost to
+           the pointer-driven majority. --gold-bright was reserved in the
+           token block precisely for "focus outlines that need to pop". */
+        :focus-visible {
+            outline: 2px solid var(--gold-bright);
+            outline-offset: 2px;
+        }
+        /* Inputs already carry their own rubric focus halo (above) and a
+           border-color shift, so an extra outline on top would double up.
+           Keep their existing treatment and suppress the global outline
+           specifically for text controls. */
+        .input:focus-visible, .textarea:focus-visible,
+        .select select:focus-visible {
+            outline: none;
         }
 
         .label { color: var(--ink-soft); }
@@ -226,12 +328,12 @@
         .button.is-primary {
             background-color: var(--rubric);
             border-color: transparent;
-            color: #fdf6e3;
+            color: var(--on-accent);
         }
         .button.is-primary:hover,
         .button.is-primary.is-hovered {
             background-color: var(--rubric-dark);
-            color: #fdf6e3;
+            color: var(--on-accent);
         }
 
         /* Link button / link-styled → also rubric, since the website
@@ -239,39 +341,43 @@
         .button.is-link {
             background-color: var(--rubric);
             border-color: transparent;
-            color: #fdf6e3;
+            color: var(--on-accent);
         }
         .button.is-link:hover {
             background-color: var(--rubric-dark);
-            color: #fdf6e3;
+            color: var(--on-accent);
         }
 
-        /* Info button → gold, used for secondary/affordance actions. */
+        /* Info button → gold, used for secondary/affordance actions.
+           Text is --ink, not --on-accent: cream on gold measures ~2.9:1,
+           below the WCAG AA 4.5:1 floor, whereas dark ink on gold clears
+           it comfortably and still reads as the warm "gold" affordance. */
         .button.is-info {
             background-color: var(--gold);
             border-color: transparent;
-            color: #fdf6e3;
+            color: var(--ink);
         }
         .button.is-info:hover {
-            background-color: #a5781f;
-            color: #fdf6e3;
+            background-color: var(--gold-dark);
+            color: var(--ink);
         }
 
         /* Success → the olive-green semantic token (was Bulma green). */
         .button.is-success {
             background-color: var(--success);
             border-color: transparent;
-            color: #fdf6e3;
+            color: var(--on-accent);
         }
-        .button.is-success:hover { background-color: #4a6429; color: #fdf6e3; }
+        .button.is-success:hover { background-color: var(--success-dark); color: var(--on-accent); }
 
-        /* Danger keeps a true red but tuned to the rubric family. */
+        /* Danger → brick red, a step off the rubric so "stop" is distinct
+           from an ordinary link. Both shades now come from tokens. */
         .button.is-danger {
-            background-color: #a52a2a;
+            background-color: var(--danger);
             border-color: transparent;
-            color: #fdf6e3;
+            color: var(--on-accent);
         }
-        .button.is-danger:hover { background-color: #841f1f; color: #fdf6e3; }
+        .button.is-danger:hover { background-color: var(--danger-dark); color: var(--on-accent); }
 
         /* Text-link color (anchor tags and Bulma .has-text-link). */
         a, .has-text-link { color: var(--rubric); }
@@ -282,9 +388,9 @@
             background-color: var(--paper-deep);
             color: var(--ink-soft);
         }
-        .tag.is-primary { background-color: var(--rubric); color: #fdf6e3; }
-        .tag.is-success { background-color: var(--success); color: #fdf6e3; }
-        .tag.is-info    { background-color: var(--gold); color: #fdf6e3; }
+        .tag.is-primary { background-color: var(--rubric); color: var(--on-accent); }
+        .tag.is-success { background-color: var(--success); color: var(--on-accent); }
+        .tag.is-info    { background-color: var(--gold); color: var(--ink); }
 
         /* Notifications → tinted parchment rather than pastel Bulma. */
         .notification { background-color: var(--paper-deep); color: var(--ink); }
@@ -400,6 +506,12 @@
             margin: 0;
             line-height: 1.4;
         }
+        /* Launch-progress bar inside the success modal — sits below the hero
+           row, full modal width, always at 100%. Reuses .token-preview-progress
+           for the track/fill/label; this just spaces it from the hero. */
+        .launch-success-progress {
+            margin-top: 1.1rem;
+        }
         .launch-success-divider {
             border: none;
             border-top: 1px solid var(--rule);
@@ -432,7 +544,7 @@
             background-color: var(--paper-deep);
             color: var(--ink);
             border: 1px solid var(--rule);
-            border-radius: 4px;
+            border-radius: var(--radius-sm);
             cursor: pointer;
             text-align: left;
             font-family: var(--font-ui);
@@ -440,17 +552,17 @@
                         border-color 120ms ease,
                         transform 120ms ease,
                         box-shadow 120ms ease;
-            box-shadow: 0 1px 0 rgba(60, 44, 22, 0.05);
+            box-shadow: var(--elev-card);
         }
         .launch-success-action:hover {
             background-color: var(--paper-shadow);
             border-color: var(--gold);
             transform: translateY(-1px);
-            box-shadow: 0 .25em .6em -.1em rgba(60, 44, 22, 0.18);
+            box-shadow: var(--elev-card-hover);
         }
         .launch-success-action:active {
             transform: translateY(0);
-            box-shadow: inset 0 1px 2px rgba(60, 44, 22, 0.15);
+            box-shadow: var(--elev-inset);
         }
         .launch-success-action:focus {
             outline: 2px solid var(--gold);
@@ -558,7 +670,7 @@
         /* Warning notification (recovery panels) — title in gold-dark,
            body in ink/soft so it's legible on the warm tint. */
         .notification.is-warning .title {
-            color: #8a6518 !important;
+            color: var(--gold-deep) !important;
         }
         .notification.is-warning,
         .notification.is-warning p,
@@ -649,15 +761,27 @@
         }
         .button.is-success.is-light {
             background-color: rgba(92, 122, 53, 0.12);
-            color: #4a6429;
+            color: var(--success-dark);
         }
         .button.is-danger.is-light {
             background-color: rgba(165, 42, 42, 0.10);
-            color: #841f1f;
+            color: var(--danger-dark);
         }
 
         .has-text-info, .has-text-primary { color: var(--rubric) !important; }
         .has-text-success { color: var(--success) !important; }
+        /* Warning text → readable warm amber. Bulma's warning helpers are
+           pale yellows (#ffe08a / #ffdd57) meant for dark backgrounds; on
+           parchment they sit at ~1:1 and vanish — which is the yellow text
+           that was showing up unreadably. The info/primary/success helpers
+           above were already re-skinned; warning was the one that slipped
+           through. Map every warning-text helper to the warning-amber ink,
+           which clears WCAG AA (~6:1) on both the page and field tones.
+           (The dark console's warning lines use --console-warn, a separate
+           selector, so they keep their terminal yellow.) */
+        .has-text-warning,
+        .has-text-warning-dark { color: var(--warn-amber-ink) !important; }
+        .help.is-warning { color: var(--warn-amber-ink); }
 
         /* ---- Disabled-state button colors ----
            Bulma defines `.button.is-primary[disabled]` (and the same for
@@ -673,25 +797,25 @@
         fieldset[disabled] .button.is-primary {
             background-color: var(--rubric);
             border-color: transparent;
-            color: #fdf6e3;
+            color: var(--on-accent);
         }
         .button.is-link[disabled],
         fieldset[disabled] .button.is-link {
             background-color: var(--rubric);
             border-color: transparent;
-            color: #fdf6e3;
+            color: var(--on-accent);
         }
         .button.is-info[disabled],
         fieldset[disabled] .button.is-info {
             background-color: var(--gold);
             border-color: transparent;
-            color: #fdf6e3;
+            color: var(--on-accent);
         }
         .button.is-success[disabled],
         fieldset[disabled] .button.is-success {
             background-color: var(--success);
             border-color: transparent;
-            color: #fdf6e3;
+            color: var(--on-accent);
         }
         /* Plain disabled button → parchment, not Bulma white. */
         .button[disabled],
@@ -718,7 +842,7 @@
             background-color: rgba(92, 122, 53, 0.13);
             color: var(--ink);
         }
-        .notification.is-success.is-light .title { color: #4a6429 !important; }
+        .notification.is-success.is-light .title { color: var(--success-dark) !important; }
 
         /* is-danger is-light → faint rose tint (distinct from the solid
            is-danger warning panel). */
@@ -970,7 +1094,7 @@
             background-color: var(--rule-faint);
             color: var(--ink);
             padding: 0.05em 0.3em;
-            border-radius: 2px;
+            border-radius: var(--radius-xs);
             font-size: 0.95em;
         }
         /* Bulma also has a more-specific .notification code { background: #fff }
@@ -1385,7 +1509,7 @@
         .disclaimer-agree-field {
             background: var(--paper-deep);
             border: 1px solid var(--rule);
-            border-radius: 4px;
+            border-radius: var(--radius-sm);
             padding: 0.75rem 1rem;
             margin-top: 1rem;
             margin-bottom: 0;
@@ -1477,6 +1601,89 @@
         #stickyBar .status-text strong {
             color: var(--ink);
         }
+        /* Left group: the step status text plus the optional cost echo,
+           kept together on the left while the cancel button stays right
+           (the parent #stickyBar uses space-between). min-width:0 lets the
+           status text keep its ellipsis behaviour when space is tight. */
+        #stickyBar .sticky-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            min-width: 0;
+        }
+        /* #9: live cost echo. Reads as a quiet companion to the step label
+           — monospace number, gold coin glyph, a faint separator dot — not
+           a second call to action. flex-shrink:0 so it isn't the thing that
+           collapses when the bar is narrow (the step title ellipsis absorbs
+           that instead). */
+        #stickyBar .sticky-cost {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            font-size: 0.85em;
+            color: var(--ink-soft);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        #stickyBar .sticky-cost.hidden { display: none; }
+        #stickyBar .sticky-cost .sticky-cost-sep {
+            color: var(--ink-fade);
+            margin-right: 0.15rem;
+        }
+        #stickyBar .sticky-cost .icon { color: var(--gold-deep); }
+        #stickyBar .sticky-cost #stickyCostValue {
+            font-family: var(--font-mono);
+            font-weight: 500;
+            color: var(--ink);
+        }
+        /* On a genuinely narrow window the cost echo is the first thing to
+           go — the step label and cancel control matter more. */
+        @media (max-width: 560px) {
+            #stickyBar .sticky-cost { display: none !important; }
+        }
+
+        /* Demo mode folded into the sticky bar. The demo banner and the
+           sticky bar are both position:sticky at top:0; rather than let the
+           higher-z banner cover the progress controls, syncDemoChrome() adds
+           .demo-active here and reveals the in-bar badge + Disable button,
+           tinting the whole bar amber so it still reads as a demo warning. */
+        #stickyBar.demo-active {
+            background: var(--warn-amber-bg);
+            border-bottom: 2px solid var(--warn-amber-border);
+        }
+        #stickyBar.demo-active .status-text,
+        #stickyBar.demo-active .status-text strong,
+        #stickyBar.demo-active .sticky-cost,
+        #stickyBar.demo-active .sticky-cost #stickyCostValue {
+            color: var(--warn-amber-ink);
+        }
+        .sticky-demo-badge {
+            display: none;            /* shown by syncDemoChrome() when folded */
+            align-items: center;
+            font-family: var(--font-mono);
+            font-size: 0.7em;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            color: #fff;
+            background: var(--warn-amber-ink);
+            border-radius: 3px;
+            padding: 0.1rem 0.4rem;
+            flex-shrink: 0;
+        }
+        .sticky-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-shrink: 0;
+        }
+        .sticky-demo-disable {
+            display: none;            /* shown by syncDemoChrome() when folded */
+            background: var(--warn-amber-ink);
+            color: #fff;
+            border: none;
+            font-weight: 600;
+        }
+        .sticky-demo-disable:hover { background: var(--warn-amber-ink-dark); color: #fff; }
 
         /* ========================================================
            Collapsible step cards
@@ -1590,11 +1797,11 @@
             gap: 0.75rem;
             background: rgba(184, 138, 42, 0.14);
             border: 1px solid rgba(184, 138, 42, 0.4);
-            border-radius: 4px;
+            border-radius: var(--radius-sm);
             padding: 0.4rem 0.75rem;
             margin: 0 0 0.75rem 0;
             font-size: 0.78rem;
-            color: #6e5618;
+            color: var(--gold-deep);
         }
         .peek-banner-text {
             flex: 1;
@@ -1603,9 +1810,9 @@
             flex-shrink: 0;
             background: var(--gold-soft);
             border: 1px solid var(--gold);
-            color: #fdf6e3;
+            color: var(--on-accent);
             padding: 0.2rem 0.7rem;
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             font-size: 0.78rem;
             font-family: inherit;
             cursor: pointer;
@@ -1614,7 +1821,7 @@
             background: var(--gold);
         }
         .peek-banner-close:focus {
-            outline: 2px solid #d4a82e;
+            outline: 2px solid var(--gold-bright);
             outline-offset: 1px;
         }
 
@@ -1629,7 +1836,7 @@
             cursor: pointer;
         }
         .step-card.is-completed .step-header:hover {
-            background: #fafbfc;
+            background: var(--paper-deep);
         }
         .step-header .step-num {
             display: inline-flex;
@@ -1637,7 +1844,7 @@
             justify-content: center;
             width: 1.75rem;
             height: 1.75rem;
-            border-radius: 50%;
+            border-radius: var(--radius-circle);
             background: var(--rule);
             color: white;
             font-weight: 600;
@@ -1649,6 +1856,7 @@
         }
         .step-card.is-completed .step-header .step-num {
             background: var(--gold);
+            color: var(--ink);
         }
         .step-header .step-title {
             font-weight: 600;
@@ -1674,7 +1882,7 @@
         }
         .step-body {
             padding: 0 1.25rem 1.25rem;
-            border-top: 1px solid #f0f0f0;
+            border-top: 1px solid var(--rule);
             padding-top: 1rem;
             /*
               Establish a positioning context so any absolute-positioned
@@ -1715,11 +1923,11 @@
             bottom: 0;
             right: 0;
             left: 0;
-            background: #1a1a1a;
-            color: #ccc;
+            background: var(--console-bg);
+            color: var(--console-ink);
             font-family: monospace;
             font-size: 0.8em;
-            border-top: 1px solid #333;
+            border-top: 1px solid var(--console-rule);
             z-index: 25;
             transition: max-height 0.25s ease;
             max-height: 32px;
@@ -1735,11 +1943,11 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            background: #222;
-            color: #aaa;
+            background: var(--console-bg-head);
+            color: var(--console-ink-dim);
         }
         #activityLogHeader:hover {
-            background: #2a2a2a;
+            background: var(--console-bg-head-hover);
         }
         #activityLog {
             padding: 0.5rem 1rem;
@@ -1747,11 +1955,11 @@
             max-height: 240px;
         }
         .log-entry { margin-bottom: 2px; line-height: 1.4; }
-        .log-entry .timestamp { color: #666; margin-right: 8px; }
-        .log-entry.info span:not(.timestamp) { color: #00ff88; }
+        .log-entry .timestamp { color: var(--console-meta); margin-right: 8px; }
+        .log-entry.info span:not(.timestamp) { color: var(--console-info); }
         .log-entry.success span:not(.timestamp) { color: var(--success); }
-        .log-entry.danger span:not(.timestamp) { color: #ff5266; }
-        .log-entry.warning span:not(.timestamp) { color: #ffdd57; }
+        .log-entry.danger span:not(.timestamp) { color: var(--console-danger); }
+        .log-entry.warning span:not(.timestamp) { color: var(--console-warn); }
         /* Server-streamed log lines: slightly dimmed so they don't
            visually compete with user-action feedback. The [server]
            prefix and any error/warning coloring are still readable. */
@@ -1769,18 +1977,20 @@
            Misc components (carried over from previous design)
            ======================================================== */
         .qr-code {
+            /* White stays — a QR needs a true-white quiet zone to scan
+               reliably — but the drop shadow joins the warm system. */
             background: white;
             padding: 12px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--elev-card-hover);
             display: inline-block;
         }
         .secret-key-container {
             word-break: break-all;
             font-family: monospace;
-            background: #f5f5f5;
+            background: var(--paper-deep);   /* was cold #f5f5f5; matches the .mnemonic-grid sibling below */
             padding: 10px;
-            border-radius: 4px;
+            border-radius: var(--radius-sm);
             margin: 10px 0;
             font-size: 0.85em;
         }
@@ -1791,7 +2001,7 @@
             gap: 6px 12px;
             background: var(--paper-deep);
             padding: 10px;
-            border-radius: 4px;
+            border-radius: var(--radius-sm);
             margin: 10px 0;
             font-family: monospace;
             font-size: 0.85em;
@@ -1823,7 +2033,7 @@
             padding: 0.75rem 1rem;
             background: var(--paper-card);
             border: 1px solid var(--rule);
-            border-radius: 6px;
+            border-radius: var(--radius-md);
         }
         .simple-config-toggle {
             display: flex;
@@ -1890,7 +2100,7 @@
         .pool-row {
             background: var(--paper-card);
             border: 1px solid var(--rule);
-            border-radius: 6px;
+            border-radius: var(--radius-md);
             margin-bottom: 1rem;
             overflow: hidden;
         }
@@ -1922,11 +2132,11 @@
         .pool-row-logo {
             width: 22px;
             height: 22px;
-            border-radius: 50%;
+            border-radius: var(--radius-circle);
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            background: #fff;
+            background: var(--logo-backing);
             flex-shrink: 0;
             overflow: hidden;
         }
@@ -1947,7 +2157,7 @@
             user-select: none;
         }
         .pool-row-affordance.pool-row-affordance-warn {
-            color: #cc8800;
+            color: var(--gold-deep);
             font-weight: 500;
         }
         .pool-row .pool-row-body {
@@ -1958,7 +2168,7 @@
         .slice-row {
             background: var(--paper);
             border: 1px solid var(--rule);
-            border-radius: 4px;
+            border-radius: var(--radius-sm);
             padding: 0.5rem 0.75rem;
             margin-bottom: 0.4rem;
             display: flex;
@@ -2001,8 +2211,8 @@
             display: flex;
             gap: 0.7rem;
             padding: 0.55rem 0.75rem;
-            background: #f0f0f0;
-            border-radius: 4px;
+            background: var(--paper-deep);
+            border-radius: var(--radius-sm);
             margin-bottom: 0.75rem;
             font-size: 0.85em;
         }
@@ -2022,7 +2232,7 @@
             margin-top: 0.5rem;
             padding: 0.75rem;
             background: var(--paper-deep);
-            border-radius: 4px;
+            border-radius: var(--radius-sm);
             font-size: 0.9em;
         }
 
@@ -2072,9 +2282,9 @@
         .resolved-logo {
             width: 36px;
             height: 36px;
-            border-radius: 50%;
+            border-radius: var(--radius-circle);
             overflow: hidden;
-            background: #fff;
+            background: var(--logo-backing);
             flex-shrink: 0;
             display: inline-flex;
             align-items: center;
@@ -2179,13 +2389,20 @@
         }
         .token-preview-block {
             display: flex;
-            align-items: center;
-            gap: 1.25rem;
+            flex-direction: column;
+            gap: 0.9rem;
             padding: 1.25rem 1.4rem;
-            background: #f0f0f0;
-            border-radius: 6px;
+            background: var(--paper-card);
+            border-radius: var(--radius-md);
             font-size: 0.85em;
             min-height: 200px;
+        }
+        /* The coin + text-stack row. Sits above the full-width launch
+           progress bar inside the card. */
+        .token-preview-main {
+            display: flex;
+            align-items: center;
+            gap: 1.25rem;
         }
         /* The 3D coin mount replaces the old flat logo circle. It's a square
            box the WebGL canvas fills; coinRenderer sizes the canvas to this
@@ -2215,9 +2432,9 @@
         .token-preview-logo {
             width: 48px;
             height: 48px;
-            border-radius: 50%;
+            border-radius: var(--radius-circle);
             overflow: hidden;
-            background: #fff;
+            background: var(--logo-backing);
             flex-shrink: 0;
             display: inline-flex;
             align-items: center;
@@ -2233,7 +2450,7 @@
         }
         .token-preview-logo-fallback {
             background: var(--rule);
-            color: #555;
+            color: var(--ink-soft);
             font-weight: 600;
             font-size: 18px;
         }
@@ -2270,9 +2487,9 @@
         .logo-thumb {
             width: 56px;
             height: 56px;
-            border-radius: 50%;
+            border-radius: var(--radius-circle);
             overflow: hidden;
-            background: #fff;
+            background: var(--logo-backing);
             flex-shrink: 0;
             display: inline-flex;
             align-items: center;
@@ -2372,6 +2589,67 @@
             max-width: 600px;
             margin-top: 0.5rem;
         }
+        /* Per-step preview slots (steps 4–6). The singleton card relocates
+           here while the matching step is active. A dashed top rule + space
+           separates it from the step's action area above. */
+        /* Steps 4–6: the step's text/actions and the preview card share a
+           row when there's room, and the card wraps to its own row beneath
+           when there isn't. flex-wrap does the "if there's room" decision
+           automatically — once the content (min ~340px) and the card
+           (basis 600px) plus the gap no longer fit side by side, the card
+           drops below. Top-aligned so the card sits level with the step's
+           opening text rather than floating mid-height. */
+        .step-preview-layout {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1.5rem;
+            align-items: flex-start;
+        }
+        .step-preview-content {
+            flex: 1 1 340px;
+            min-width: 0;
+        }
+        .step-preview-aside {
+            flex: 0 1 600px;
+            min-width: 0;
+        }
+        /* While peeking a non-active step, its card lives in the active
+           step's slot, leaving this slot empty. For asides that hold ONLY
+           the card (steps 4 and 6), collapse the column so the content uses
+           the full width instead of leaving a gap. Step 5's aside also holds
+           the result panels, so it is NOT marked is-card-only and stays
+           visible (showing the result) even when the card is elsewhere. */
+        .step-preview-aside.is-card-only:has(> .token-preview-row-inner:empty) {
+            display: none;
+        }
+        /* Overall launch progress. Spans the full width of the card under
+           the coin + stats; fills as the launch advances through its six
+           steps and turns green at 100% when the final transfer completes. */
+        .token-preview-progress .tpp-track {
+            height: 6px;
+            background: var(--rule-faint);
+            border: 1px solid var(--rule);
+            border-radius: var(--radius-xs);
+            overflow: hidden;
+        }
+        .token-preview-progress .tpp-fill {
+            height: 100%;
+            width: 0%;
+            background: var(--gold);
+            transition: width 0.4s ease, background 0.3s ease;
+        }
+        .token-preview-progress .tpp-fill.is-complete {
+            background: var(--success);
+        }
+        .token-preview-progress .tpp-label {
+            margin-top: 0.3rem;
+            color: var(--ink-fade);
+            font-family: var(--font-mono);
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+        }
         /* Symbol + name header, divided from the stat grid below. */
         .token-preview-head {
             padding-bottom: 0.5rem;
@@ -2396,7 +2674,7 @@
             padding: 0.45rem 0.6rem;
             background: var(--paper-card);
             border: 1px solid var(--rule);
-            border-radius: 7px;
+            border-radius: var(--radius-lg);
         }
         .token-preview-stats .tps-tile-label {
             color: var(--ink-fade);
@@ -2443,11 +2721,11 @@
         .token-preview-stats .tps-pool-logo {
             width: 26px;
             height: 26px;
-            border-radius: 50%;
+            border-radius: var(--radius-circle);
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            background: #fff;
+            background: var(--logo-backing);
             flex-shrink: 0;
             overflow: hidden;
             border: 1px solid var(--rule);
@@ -2475,9 +2753,9 @@
         .token-info-logo {
             width: 56px;
             height: 56px;
-            border-radius: 50%;
+            border-radius: var(--radius-circle);
             object-fit: cover;
-            background: #fff;
+            background: var(--logo-backing);
             border: 1px solid var(--rule);
             flex-shrink: 0;
         }
@@ -2500,7 +2778,7 @@
         }
         .token-info-symbol {
             font-size: 0.9rem;
-            color: #7a7a7a;
+            color: var(--ink-fade);
             line-height: 1.3;
             margin-top: 0.1rem;
         }
@@ -2518,17 +2796,17 @@
             display: inline-block;
             width: 10px;
             height: 10px;
-            border-radius: 50%;
+            border-radius: var(--radius-circle);
             margin-right: 0.5rem;
-            background: #b5b5b5;
+            background: var(--ink-fade);
         }
         .balance-row.met .status-dot { background: var(--success); }
         .balance-row .row-logo {
             width: 20px;
             height: 20px;
-            border-radius: 50%;
+            border-radius: var(--radius-circle);
             object-fit: cover;
-            background: #fff;
+            background: var(--logo-backing);
             border: 1px solid var(--rule);
             margin-right: 0.4rem;
             vertical-align: middle;
@@ -2537,7 +2815,7 @@
             display: inline-block;
             width: 20px;
             height: 20px;
-            border-radius: 50%;
+            border-radius: var(--radius-circle);
             background: var(--paper-deep);
             border: 1px dashed var(--rule);
             margin-right: 0.4rem;
@@ -2555,7 +2833,7 @@
             display: none;
             background: transparent;
             border: 1px solid var(--rule);
-            border-radius: 4px;
+            border-radius: var(--radius-sm);
             cursor: pointer;
             padding: 0.15rem 0.4rem;
             color: var(--rubric);
@@ -2587,7 +2865,7 @@
         .progress-step.pending { color: var(--ink-fade); }
         .progress-step.running { color: var(--rubric); font-weight: 600; }
         .progress-step.done { color: var(--success); }
-        .progress-step.failed { color: #ff3860; }
+        .progress-step.failed { color: var(--danger); }
 
         /* Phase header — clickable summary row that toggles the row
            list below. Each phase block (Phase 1..4) gets one of these.
@@ -2626,7 +2904,7 @@
             color: var(--ink-fade);
         }
         .phase-counter.is-done { color: var(--success); }
-        .phase-counter.has-failures { color: #ff3860; }
+        .phase-counter.has-failures { color: var(--danger); }
         /* Slim progress bar under the header. Uses Bulma's <progress>
            styling via attribute is-info but with our theme tints. The
            bar fills as rows transition from pending → done / failed. */
@@ -2638,7 +2916,7 @@
                -moz-appearance: none;
                     appearance: none;
             border: none;
-            border-radius: 2px;
+            border-radius: var(--radius-xs);
             background-color: var(--rule-faint);
             overflow: hidden;
         }
@@ -2647,12 +2925,16 @@
         .phase-bar::-moz-progress-bar { background: var(--rubric); }
         .phase-bar.is-done::-webkit-progress-value { background: var(--success); }
         .phase-bar.is-done::-moz-progress-bar { background: var(--success); }
-        .phase-bar.has-failures::-webkit-progress-value { background: #ff3860; }
-        .phase-bar.has-failures::-moz-progress-bar { background: #ff3860; }
+        .phase-bar.has-failures::-webkit-progress-value { background: var(--danger); }
+        .phase-bar.has-failures::-moz-progress-bar { background: var(--danger); }
+        /* Sits at the top of the (collapsed-by-default) phase body, above
+           the step rows. The body already provides the left indent + rule,
+           so no extra left margin here — just a little space below it before
+           the rows begin. */
         .phase-desc {
             font-size: 0.85em;
             color: var(--ink-fade);
-            margin: 0 0 0.35rem 1.3rem;
+            margin: 0 0 0.5rem 0;
         }
         .phase-body {
             margin-left: 1.3rem;
@@ -2670,9 +2952,9 @@
             align-items: center;
             justify-content: center;
             gap: 1rem;
-            background: #fef3c7;       /* amber */
-            color: #6b4b00;            /* dark amber text */
-            border-bottom: 2px solid #f0c040;
+            background: var(--warn-amber-bg);
+            color: var(--warn-amber-ink);
+            border-bottom: 2px solid var(--warn-amber-border);
             padding: 0.4rem 1rem;
             min-height: 32px;
             font-size: 0.9rem;
@@ -2680,12 +2962,37 @@
         }
         .demo-banner-text { line-height: 1.2; }
         .demo-banner-btn {
-            background: #6b4b00;
+            background: var(--warn-amber-ink);
             color: #fff;
             border: none;
             font-weight: 600;
         }
-        .demo-banner-btn:hover { background: #523900; color: #fff; }
+        .demo-banner-btn:hover { background: var(--warn-amber-ink-dark); color: #fff; }
+
+        /* Keep modals clear of the sticky demo banner.
+
+           Bulma modals are fixed, full-viewport, and centre their card
+           against the whole window with a max-height of calc(100vh - 40px).
+           The demo banner, however, is a sticky bar across the very top of
+           the page that the modal layer knows nothing about — so a tall
+           dialog (the launch-complete one in particular) sizes and centres
+           as if the banner weren't there, and its top slides up behind the
+           banner while its bottom runs off the screen.
+
+           --demo-banner-height carries the banner's live height (or 0px when
+           demo mode is off), so these two rules adjust every modal at once:
+             - padding-top pushes the modal's centring box down past the
+               banner, so the card centres in the visible area below it;
+             - the reduced max-height shrinks the card by the same amount so
+               it still fits on screen instead of overflowing the bottom.
+           With the variable at 0px (demo off) both expressions collapse to
+           Bulma's original behaviour, so normal mode is untouched. */
+        .modal {
+            padding-top: var(--demo-banner-height);
+        }
+        .modal-card {
+            max-height: calc(100vh - 40px - var(--demo-banner-height));
+        }
 
         /* RPC settings (top of page) */
         .rpc-header {
@@ -2694,6 +3001,53 @@
             align-items: center;
             cursor: pointer;
             user-select: none;
+        }
+        .rpc-header:focus-visible {
+            outline: none;
+            box-shadow: var(--focus-ring);
+            border-radius: var(--radius-sm);
+        }
+        /* Left side of the collapsed bar. Leads with a gear + "Settings"
+           so the panel reads as a settings entry point, not just an RPC
+           readout; the current endpoint trails as muted secondary context.
+           min-width:0 lets the endpoint truncate instead of shoving the
+           chevron off the edge. */
+        .settings-header-main {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            min-width: 0;
+        }
+        .settings-header-main .settings-gear { color: var(--ink-soft); }
+        .settings-header-label {
+            font-family: var(--font-display);
+            font-weight: 600;
+            font-size: 1.15rem;
+            color: var(--ink);
+        }
+        .settings-header-sep { color: var(--ink-fade); }
+        .settings-header-rpc {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            min-width: 0;
+            color: var(--ink-fade);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .settings-header-rpc strong { color: var(--ink-soft); font-weight: 600; }
+        .settings-header-rpc .icon { color: var(--ink-fade); }
+        .settings-header-rpc #rpcCurrentDisplay {
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        /* On narrow windows the endpoint summary would crowd the label,
+           so drop it — the gear + "Settings" is enough, and the full
+           endpoint is one click away in the panel. */
+        @media (max-width: 560px) {
+            .settings-header-sep,
+            .settings-header-rpc { display: none; }
         }
         .rpc-row {
             display: flex;
@@ -2725,7 +3079,7 @@
             transition: color 200ms ease;
         }
         .rpc-health-dot.health-good { color: var(--success); }
-        .rpc-health-dot.health-slow { color: #d4a017; }
+        .rpc-health-dot.health-slow { color: var(--gold-bright); }
         .rpc-health-dot.health-error { color: var(--rubric); }
         .rpc-health-dot.health-unknown { color: var(--ink-fade); }
 
@@ -2738,16 +3092,16 @@
             text-transform: uppercase;
             letter-spacing: 0.05em;
             padding: 0.1rem 0.4rem;
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             margin-right: 0.4rem;
             vertical-align: middle;
             background: rgba(165, 42, 42, 0.15);
             color: var(--rubric-dark);
         }
         .error-banner-category.cat-rpc { background: rgba(165, 42, 42, 0.15); color: var(--rubric-dark); }
-        .error-banner-category.cat-onchain { background: rgba(184, 138, 42, 0.18); color: #8b6914; }
-        .error-banner-category.cat-validation { background: rgba(92, 122, 53, 0.15); color: #4a6429; }
-        .error-banner-category.cat-network { background: rgba(100, 100, 120, 0.15); color: #555; }
+        .error-banner-category.cat-onchain { background: rgba(184, 138, 42, 0.18); color: var(--gold-deep); }
+        .error-banner-category.cat-validation { background: rgba(92, 122, 53, 0.15); color: var(--success-dark); }
+        .error-banner-category.cat-network { background: rgba(74, 59, 39, 0.10); color: var(--ink-soft); }
 
         .error-what-happened {
             margin-top: 0.5rem;
@@ -2778,7 +3132,7 @@
             padding: 0.35rem 0.5rem;
             background: rgba(92, 122, 53, 0.08);
             border-left: 3px solid var(--success);
-            border-radius: 2px;
+            border-radius: var(--radius-xs);
         }
 
 
@@ -2786,14 +3140,14 @@
         .vanity-progress-bar {
             width: 100%;
             height: 6px;
-            background: #e0d6c2;
-            border-radius: 3px;
+            background: var(--paper-deep);
+            border-radius: var(--radius-sm);
             overflow: hidden;
         }
         .vanity-progress-fill {
             height: 100%;
-            background: #c4a44a;
-            border-radius: 3px;
+            background: var(--gold-soft);
+            border-radius: var(--radius-sm);
                         transition: width 0.15s ease, background 0.15s ease;
         }
         @keyframes vanityPulse {
@@ -2804,17 +3158,24 @@
     
         /* ---- Launch report inline preview ---- */
         .launch-report-preview {
-            border: 1px solid #dbdbdb;
-            border-radius: 4px;
+            border: 1px solid var(--rule);
+            border-radius: var(--radius-sm);
             overflow: hidden;
+        }
+        /* The step-5 preview is full width and its toggle lives elsewhere
+           (the left-column action row). When collapsed, the container would
+           otherwise render as an empty bordered strip below the layout, so
+           drop the border until the body (the report) is expanded. */
+        .report-preview-fullwidth:has(> .launch-report-preview-body.hidden) {
+            border: none;
         }
         .launch-report-preview-toggle {
             width: 100%;
             justify-content: flex-start;
             padding: 8px 12px;
             border-radius: 0;
-            background: #fafafa;
-            border-bottom: 1px solid #dbdbdb;
+            background: var(--paper-deep);
+            border-bottom: 1px solid var(--rule);
         }
         .launch-report-preview-toggle .icon {
             transition: transform 180ms ease;
@@ -2823,14 +3184,14 @@
             transform: rotate(90deg);
         }
         .launch-report-preview-body {
-            background: #efe5cd;
+            background: var(--paper);
         }
         .launch-report-preview-toolbar {
             display: flex;
             gap: 8px;
             padding: 8px 12px;
-            background: #f5f5f5;
-            border-bottom: 1px solid #dbdbdb;
+            background: var(--paper-deep);
+            border-bottom: 1px solid var(--rule);
         }
         .launch-report-iframe {
             width: 100%;
@@ -2989,14 +3350,42 @@
 
     <!-- Sticky bar: status + cancel -->
     <div id="stickyBar">
-        <div class="status-text">
-            <strong>Step <span id="stickyStepNum">1</span>:</strong>
-            <span id="stickyStepTitle">Generate Wallet</span>
+        <div class="sticky-left">
+            <!-- Demo badge: revealed by syncDemoChrome() when demo mode is
+                 active AND this bar is visible, so the demo state rides in the
+                 sticky bar instead of a second fixed banner that would cover it. -->
+            <span class="sticky-demo-badge" id="stickyDemoBadge" title="Demo mode - no real transactions are sent and no SOL is spent">DEMO</span>
+            <div class="status-text">
+                <!-- #8: show position as "Step N / total" so the user knows
+                     how far through the flow they are once the numbered cards
+                     have scrolled out of view. The total is filled from
+                     STEP_TITLES in activateStep() so it stays a single source
+                     of truth if the step count ever changes. -->
+                <strong>Step <span id="stickyStepNum">1</span> / <span id="stickyStepTotal">6</span>:</strong>
+                <span id="stickyStepTitle">Generate Wallet</span>
+            </div>
+            <!-- #9: live cost echo. The inline cost preview on step 2 reacts to
+                 config changes, but it sits near the bottom of a tall form — so
+                 when the user scrolls up to adjust supply or pools, the number
+                 responding to their edits is off-screen. This mirrors
+                 #costPreviewValue into the always-visible sticky bar while
+                 step 2 is active, tightening the change→cost feedback loop.
+                 Hidden on every other step (setCostPreviewState / activateStep
+                 manage visibility). -->
+            <span class="sticky-cost hidden" id="stickyCost" title="Estimated launch cost (updates as you change the configuration)">
+                <span class="sticky-cost-sep" aria-hidden="true">&middot;</span>
+                <span class="icon is-small"><i class="fas fa-coins"></i></span>
+                <span id="stickyCostValue">&mdash;</span>
+            </span>
         </div>
-        <button class="button is-danger is-small" id="cancelBtn">
-            <span class="icon"><i class="fas fa-times"></i></span>
-            <span>Cancel &amp; Refund</span>
-        </button>
+        <div class="sticky-actions">
+            <!-- Folded-in demo Disable; same action as the standalone banner button. -->
+            <button class="button is-small sticky-demo-disable" id="stickyDemoDisable" title="Turn off demo mode and restart the launch">Disable demo</button>
+            <button class="button is-danger is-small" id="cancelBtn">
+                <span class="icon"><i class="fas fa-times"></i></span>
+                <span>Cancel &amp; Refund</span>
+            </button>
+        </div>
     </div>
 
     <section class="section pt-4">
@@ -3004,12 +3393,19 @@
 
             <!-- RPC Settings (collapsible, click to expand) -->
             <div class="box mb-4 p-4">
-                <div class="rpc-header" id="rpcSettingsToggle">
-                    <div>
-                        <span class="icon"><i class="fas fa-server"></i></span>
-                        <strong>RPC:</strong>
-                        <span id="rpcCurrentDisplay" class="is-family-monospace is-size-7">loading...</span>
-                        <span class="rpc-health-dot" id="rpcHealthDot" title="RPC health unknown">&bull;</span>
+                <div class="rpc-header" id="rpcSettingsToggle" role="button" tabindex="0"
+                     aria-expanded="false" aria-controls="rpcSettingsPanel"
+                     title="Settings — RPC endpoint, demo mode, and startup options">
+                    <div class="settings-header-main">
+                        <span class="icon settings-gear"><i class="fas fa-gear"></i></span>
+                        <span class="settings-header-label">Settings</span>
+                        <span class="settings-header-sep" aria-hidden="true">·</span>
+                        <span class="settings-header-rpc">
+                            <span class="icon"><i class="fas fa-server"></i></span>
+                            <strong>RPC:</strong>
+                            <span id="rpcCurrentDisplay" class="is-family-monospace is-size-7">loading...</span>
+                            <span class="rpc-health-dot" id="rpcHealthDot" title="RPC health unknown">&bull;</span>
+                        </span>
                     </div>
                     <span class="icon">
                         <i class="fas fa-chevron-down" id="rpcSettingsChevron"></i>
@@ -3066,6 +3462,25 @@
                     <p class="help has-text-warning">
                         ⚠ Use only for testing and tutorial creation. Disable before
                         doing real launches.
+                    </p>
+
+                    <!-- ============================================ -->
+                    <!-- Startup options. The intro video plays on     -->
+                    <!-- launch by default; it can be turned off here   -->
+                    <!-- (persisted to userPrefs.json as playIntroVideo -->
+                    <!-- and read by setupSplashScreen on next load).   -->
+                    <!-- ============================================ -->
+                    <hr class="my-3">
+                    <h6 class="subtitle is-6 mb-2">Startup</h6>
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="introVideoToggle" checked>
+                            <span>Play the intro video on startup</span>
+                        </label>
+                    </div>
+                    <p class="help mb-2">
+                        The short animation that plays when Trebuchet opens. Turn it
+                        off to go straight to the app on launch.
                     </p>
                 </div>
             </div>
@@ -3197,7 +3612,7 @@
                         <span>Generate Wallet</span>
                     </button>
 
-                    <div id="walletInfo" class="hidden mt-4"> class="hidden mt-4">
+                    <div id="walletInfo" class="hidden mt-4">
                         <div class="columns is-vcentered">
                             <div class="column is-narrow">
                                 <div class="qr-code">
@@ -3249,20 +3664,20 @@
                         <div class="column is-narrow">
                             <div class="field">
                                 <label class="label is-small">Symbol</label>
-                                <input class="input is-small" type="text" id="tokenSymbol" required maxlength="10" placeholder="MTK" style="width: 120px;">
+                                <input class="input is-small" type="text" id="tokenSymbol" required maxlength="10" placeholder="MTK" style="max-width: 120px;">
                             </div>
                         </div>
                         <div class="column is-narrow">
                             <div class="field">
                                 <label class="label is-small">Total Supply</label>
-                                <input class="input is-small" type="text" inputmode="numeric" id="tokenSupply" required value="1,000,000,000" style="width: 170px;">
+                                <input class="input is-small" type="text" inputmode="numeric" id="tokenSupply" required value="1,000,000,000" style="max-width: 170px;">
                             </div>
                         </div>
                         <div class="column is-narrow">
                             <div class="field">
                                 <label class="label is-small">Market Cap (USD)</label>
                                 <div class="control has-icons-left">
-                                    <input class="input is-small" type="text" inputmode="numeric" id="targetMarketCap" required value="100,000" style="width: 160px;">
+                                    <input class="input is-small" type="text" inputmode="numeric" id="targetMarketCap" required value="100,000" style="max-width: 160px;">
                                     <span class="icon is-small is-left"><i class="fas fa-dollar-sign"></i></span>
                                 </div>
                             </div>
@@ -3642,7 +4057,7 @@
                       (Bulma default at the tablet breakpoint).
                     -->
                     <div class="columns mb-2">
-                        <div class="column is-narrow" style="min-width: 500px;">
+                        <div class="column is-narrow" style="min-width: min(500px, 100%);">
                             <div style="display: flex; flex-direction: column; align-items: center; max-width: 480px;">
                                 <div class="qr-code mb-3">
                                     <img id="step3QrCode" alt="Wallet QR Code" style="max-width: 160px; display: block;" />
@@ -3747,22 +4162,34 @@
                     <span class="icon step-chevron"><i class="fas fa-chevron-down"></i></span>
                 </div>
                 <div class="step-body">
-                    <p class="is-size-7 mb-3">Mints the SPL token with Metaplex metadata, transfers the supply to the ephemeral wallet, and renounces all authorities (mint, freeze, metadata-update).</p>
-                    <button class="button is-primary" id="createTokenBtn">
-                        <span class="icon"><i class="fas fa-coins"></i></span>
-                        <span>Create Token</span>
-                    </button>
+                    <!-- Two-column layout: the step's text/actions on the left,
+                         the token preview card on the right. They share a row
+                         when there's room and the card wraps below when not. -->
+                    <div class="step-preview-layout">
+                        <div class="step-preview-content">
+                            <p class="is-size-7 mb-3">Mints the SPL token with Metaplex metadata, transfers the supply to the ephemeral wallet, and renounces all authorities (mint, freeze, metadata-update).</p>
+                            <button class="button is-primary" id="createTokenBtn">
+                                <span class="icon"><i class="fas fa-coins"></i></span>
+                                <span>Create Token</span>
+                            </button>
 
-                    <div id="tokenCreatedInfo" class="hidden mt-3">
-                        <div class="notification is-success is-light is-size-7 py-2 px-3">
-                            <p><strong>Token created.</strong></p>
-                            <p>Mint address: <span class="is-family-monospace" id="tokenMintAddress"></span></p>
-                            <a href="#" id="tokenSolscanLink" target="_blank">View on Solscan</a>
+                            <div id="tokenCreatedInfo" class="hidden mt-3">
+                                <div class="notification is-success is-light is-size-7 py-2 px-3">
+                                    <p><strong>Token created.</strong></p>
+                                    <p>Mint address: <span class="is-family-monospace" id="tokenMintAddress"></span></p>
+                                    <a href="#" id="tokenSolscanLink" target="_blank">View on Solscan</a>
+                                </div>
+                                <button class="button is-primary mt-2" id="continueToLpBtn">
+                                    <span>Continue to Pool Creation</span>
+                                    <span class="icon"><i class="fas fa-arrow-right"></i></span>
+                                </button>
+                            </div>
                         </div>
-                        <button class="button is-primary mt-2" id="continueToLpBtn">
-                            <span>Continue to Pool Creation</span>
-                            <span class="icon"><i class="fas fa-arrow-right"></i></span>
-                        </button>
+                        <!-- The singleton #tokenPreviewBlock relocates into this
+                             slot while step 4 is active. -->
+                        <div class="step-preview-aside is-card-only">
+                            <div class="token-preview-row-inner" id="tokenPreviewSlotStep4"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -3777,6 +4204,10 @@
                     <span class="icon step-chevron"><i class="fas fa-chevron-down"></i></span>
                 </div>
                 <div class="step-body">
+                    <!-- Two-column layout: step text/actions left, preview card
+                         right; wraps to stacked when the row gets too narrow. -->
+                    <div class="step-preview-layout">
+                        <div class="step-preview-content">
                     <div id="lpSummary" class="content is-small mb-3"></div>
 
                     <button class="button is-primary" id="createLpBtn">
@@ -3789,12 +4220,15 @@
                         <div id="lpProgressTree"></div>
                     </div>
 
-                    <div id="lpDoneInfo" class="hidden mt-3">
-                        <div class="notification is-success is-light is-size-7 py-2 px-3">
-                            <p><strong>All pools created.</strong></p>
-                            <p id="lpDoneSummary"></p>
-                        </div>
-                        <div class="field is-grouped mt-2">
+                    <!-- Post-creation actions live in the LEFT column, where the
+                         primary "continue" action sits on every other step.
+                         Shown in sync with the result summary on the right via
+                         setLpDoneVisible() in app.js. There's deliberately no
+                         "Download launch report" here — the launch isn't fully
+                         done until the transfer in step 6 (which re-offers the
+                         download); only a collapsible preview is offered now. -->
+                    <div id="lpDoneActions" class="hidden mt-3">
+                        <div class="field is-grouped">
                             <div class="control">
                                 <button class="button is-primary" id="continueToTransferBtn">
                                     <span>Continue to Final Transfer</span>
@@ -3802,45 +4236,17 @@
                                 </button>
                             </div>
                             <div class="control">
-                                <!-- Launch report: addresses, lock proofs,
-                                     position breakdown. Available from
-                                     here on (also re-offered at step 6
-                                     after transfer completes) so the user
-                                     can grab it before they hand off the
-                                     destination wallet. -->
-                                <button class="button is-link is-light" id="downloadReportBtnStep5">
-                                    <span class="icon"><i class="fas fa-file-download"></i></span>
-                                    <span>Download launch report</span>
+                                <button class="launch-report-preview-toggle button is-small is-text" type="button" id="step5ReportToggle">
+                                    <span class="icon"><i class="fas fa-chevron-right"></i></span>
+                                    <span>Show launch report preview</span>
                                 </button>
                             </div>
                         </div>
-
-                        <!-- Inline launch report preview — collapsed by default.
-                             Expandable so the user can inspect addresses,
-                             pool IDs, and TX signatures before the final sweep.
-                             Populated by renderLaunchReportPreview() in launch-report.js. -->
-                        <div class="launch-report-preview mt-3 hidden" id="step5ReportPreview">
-                            <button class="launch-report-preview-toggle button is-small is-text" type="button" id="step5ReportToggle">
-                                <span class="icon"><i class="fas fa-chevron-right"></i></span>
-                                <span>Show launch report preview</span>
-                            </button>
-                            <div class="launch-report-preview-body hidden">
-                                <div class="launch-report-preview-toolbar">
-                                    <button class="button is-small is-text" type="button" id="step5CopyAllAddrs">
-                                        <span class="icon"><i class="fas fa-copy"></i></span>
-                                        <span>Copy all addresses</span>
-                                    </button>
-                                    <button class="button is-small is-text" type="button" id="step5CopyAllTxs">
-                                        <span class="icon"><i class="fas fa-copy"></i></span>
-                                        <span>Copy all TX signatures</span>
-                                    </button>
-                                </div>
-                                <iframe class="launch-report-iframe" id="step5ReportIframe" sandbox="allow-scripts"></iframe>
-                            </div>
-                        </div>
-
                     </div>
 
+                    <!-- Failure panel (alternative to the success actions above).
+                         Kept in the left column too so its buttons sit on the
+                         left like every other action. -->
                     <div id="lpFailInfo" class="hidden mt-3">
                         <div class="notification is-warning is-light is-size-7 py-2 px-3">
                             <p><strong id="lpFailHeading">Pool creation failed partway through.</strong></p>
@@ -3871,6 +4277,50 @@
                             <span class="icon"><i class="fas fa-arrow-right"></i></span>
                         </button>
                     </div>
+                        </div><!-- /.step-preview-content -->
+                        <!-- Right column: the preview card plus the result
+                             summary, which sits under the card to fill the space
+                             beside the progress tree. The action buttons live in
+                             the left column (#lpDoneActions). NOT card-only, so the
+                             summary still shows when step 5 is peeked and the card
+                             is parked in the active step's slot. -->
+                        <div class="step-preview-aside">
+                            <div class="token-preview-row-inner" id="tokenPreviewSlotStep5"></div>
+
+                            <!-- Result summary only — the Continue / report-preview
+                                 actions live in the left column (see #lpDoneActions).
+                                 Toggled together with them via setLpDoneVisible(). -->
+                            <div id="lpDoneInfo" class="hidden mt-3">
+                                <div class="notification is-success is-light is-size-7 py-2 px-3">
+                                    <p><strong>All pools created.</strong></p>
+                                    <p id="lpDoneSummary"></p>
+                                </div>
+                            </div>
+                        </div><!-- /.step-preview-aside -->
+                    </div><!-- /.step-preview-layout -->
+
+                    <!-- Launch report preview — full width, below the two-column
+                         layout, so the rendered report has the whole step width
+                         to itself rather than being squeezed into the left
+                         column. Collapsed by default; the toggle up in the
+                         left-column action row (found by id) expands the body.
+                         Shown/hidden together with the done UI via
+                         setLpDoneVisible(). -->
+                    <div class="launch-report-preview report-preview-fullwidth mt-3 hidden" id="step5ReportPreview">
+                        <div class="launch-report-preview-body hidden">
+                            <div class="launch-report-preview-toolbar">
+                                <button class="button is-small is-text" type="button" id="step5CopyAllAddrs">
+                                    <span class="icon"><i class="fas fa-copy"></i></span>
+                                    <span>Copy all addresses</span>
+                                </button>
+                                <button class="button is-small is-text" type="button" id="step5CopyAllTxs">
+                                    <span class="icon"><i class="fas fa-copy"></i></span>
+                                    <span>Copy all TX signatures</span>
+                                </button>
+                            </div>
+                            <iframe class="launch-report-iframe" id="step5ReportIframe" sandbox="allow-scripts"></iframe>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -3884,6 +4334,10 @@
                     <span class="icon step-chevron"><i class="fas fa-chevron-down"></i></span>
                 </div>
                 <div class="step-body">
+                    <!-- Two-column layout: step text/actions left, preview card
+                         right; wraps to stacked when the row gets too narrow. -->
+                    <div class="step-preview-layout">
+                        <div class="step-preview-content">
                     <!--
                       Normal Step 6 content — destination wallet entry and
                       transfer button. Shown by default. Hidden when the
@@ -4075,6 +4529,14 @@
                             <p class="mb-0" id="step6CancelledCloseHint">To start a new launch, close and reopen the app.</p>
                         </div>
                     </div>
+                        </div><!-- /.step-preview-content -->
+                        <!-- #tokenPreviewBlock relocates here while step 6 is
+                             active; its progress bar reaches 100% once the
+                             transfer (final sweep) completes. -->
+                        <div class="step-preview-aside is-card-only">
+                            <div class="token-preview-row-inner" id="tokenPreviewSlotStep6"></div>
+                        </div>
+                    </div><!-- /.step-preview-layout -->
                 </div>
             </div>
 
@@ -4415,6 +4877,15 @@
                         <p class="launch-success-mint is-family-monospace" id="launchSuccessMint"></p>
                         <p class="launch-success-summary" id="launchSuccessSummary"></p>
                     </div>
+                </div>
+
+                <!-- Launch progress — always complete here, since this modal
+                     only opens once the launch is committed on-chain. Mirrors
+                     the preview card's bar (same .token-preview-progress
+                     styling); static at 100% rather than JS-driven. -->
+                <div class="token-preview-progress launch-success-progress">
+                    <div class="tpp-track"><div class="tpp-fill is-complete" style="width: 100%;"></div></div>
+                    <div class="tpp-label">Launch complete</div>
                 </div>
 
                 <hr class="launch-success-divider">

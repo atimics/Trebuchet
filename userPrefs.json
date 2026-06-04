@@ -2,5 +2,6 @@
   "checkForUpdatesOnStartup": true,
   "medievalCursor": true,
   "coinPreview": true,
-  "demoMode": false
+  "demoMode": false,
+  "playIntroVideo": true
 }

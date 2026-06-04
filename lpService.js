@@ -176,6 +176,18 @@ const MIN_SOL_ALLOCATION_PCT = 1;
 // SOL mint (wrapped SOL) — Raydium pools always use wSOL, not native SOL.
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
+// F3: LP-path compute budget. The launch transactions used to hardcode a
+// flat { units: 600_000, microLamports: 50_000 } in five places. A fixed
+// priority fee under-pays during congestion (transactions expire — Raydium's
+// own SDK guidance is to raise computeBudgetConfig when that happens) and
+// over-pays when the chain is calm. These name the CU limit plus a floor and
+// ceiling; lpComputeBudgetConfig() below samples recent on-chain fees and
+// clamps into [floor, ceil]. The floor equals the old constant, so the calm-
+// case fee never drops below previous behavior — it only rises under load.
+const LP_COMPUTE_UNIT_LIMIT = 600_000;
+const LP_PRIORITY_FEE_FLOOR_MICROLAMPORTS = 50_000;
+const LP_PRIORITY_FEE_CEIL_MICROLAMPORTS = 1_000_000;
+
 // Maximum allowed ratio between the user-committed quote-token USD price
 // (from funding-estimate, or from a manual override the user typed) and
 // the just-in-time Raydium swap probe at pool-creation time. If the two
@@ -471,6 +483,10 @@ export function setConnectionFactoryForTests(factory) {
 export function resetTestFactories() {
   __sdkFactoryOverride = null;
   __connectionFactoryOverride = null;
+  // Estimator seams (declared near estimateRequiredFunding) are cleared here
+  // too so one reset returns the entire module to production behavior.
+  __estPriceOracleForTests = null;
+  __estRouteDiscoveryForTests = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +579,7 @@ export async function getMintCompatibilityWithRaydiumClmm(connection, mintPk) {
   if (!owner.equals(TOKEN_PROGRAM_ID) && !owner.equals(TOKEN_2022_PROGRAM_ID)) {
     throw new Error(
       `${mintPk.toBase58()} is owned by ${owner.toBase58()}, not a recognized ` +
-        `token program — this isn't a token mint at all.`,
+        `token program - this isn't a token mint at all.`,
     );
   }
 
@@ -808,6 +824,45 @@ async function transferNftToRecipient({
  *                          initialPrice, quoteToken },
  *   }
  */
+// F3: dynamic priority fee for the LP path. Samples recent on-chain
+// prioritization fees and clamps to [floor, ceil]. Uses the 75th percentile
+// so we bias slightly above the median — enough to land during mild
+// congestion without overpaying. Any RPC failure falls back to the floor so
+// a fee lookup can never block a launch. getRecentPrioritizationFees returns
+// [{ slot, prioritizationFee }, ...] over a recent window.
+async function lpPriorityFeeMicroLamports(connection) {
+  try {
+    const recent = await connection.getRecentPrioritizationFees();
+    if (Array.isArray(recent) && recent.length > 0) {
+      const fees = recent
+        .map((r) => Number(r.prioritizationFee) || 0)
+        .sort((a, b) => a - b);
+      const idx = Math.min(fees.length - 1, Math.floor(fees.length * 0.75));
+      const p75 = fees[idx];
+      return Math.max(
+        LP_PRIORITY_FEE_FLOOR_MICROLAMPORTS,
+        Math.min(LP_PRIORITY_FEE_CEIL_MICROLAMPORTS, p75),
+      );
+    }
+  } catch (e) {
+    console.warn(
+      `lpPriorityFeeMicroLamports: fee lookup failed, using floor (${e.message})`,
+    );
+  }
+  return LP_PRIORITY_FEE_FLOOR_MICROLAMPORTS;
+}
+
+// Build the computeBudgetConfig the Raydium SDK expects, with a CU limit and
+// a freshly-sampled dynamic priority fee. Pass the raydium instance; we read
+// its connection. Awaited at each SDK call site (createPool / openPosition /
+// lockPosition) so the fee reflects conditions at build time.
+async function lpComputeBudgetConfig(raydium) {
+  return {
+    units: LP_COMPUTE_UNIT_LIMIT,
+    microLamports: await lpPriorityFeeMicroLamports(raydium.connection),
+  };
+}
+
 async function createSinglePool({
   raydium,
   ownerKeypair,
@@ -890,7 +945,7 @@ async function createSinglePool({
     ammConfig,
     initialPrice,
     txVersion: TxVersion.V0,
-    computeBudgetConfig: { units: 600_000, microLamports: 50_000 },
+    computeBudgetConfig: await lpComputeBudgetConfig(raydium),
   });
 
   const createTx = await createRes.execute({ sendAndConfirm: true });
@@ -942,14 +997,14 @@ async function createSinglePool({
     throw new Error(
       `Main range mispositioned for launched=mintA: tickLower (${mainTicks.tickLower}) ` +
         `must be > currentTick (${currentTick}) so the position is single-sided in the launched ` +
-        `token. This shouldn't happen with the current tick logic — please report this.`,
+        `token. This shouldn't happen with the current tick logic - please report this.`,
     );
   }
   if (!launchedIsMintA && currentTick < mainTicks.tickUpper) {
     throw new Error(
       `Main range mispositioned for launched=mintB: tickUpper (${mainTicks.tickUpper}) ` +
         `must be <= currentTick (${currentTick}) so the position is single-sided in the launched ` +
-        `token. This shouldn't happen with the current tick logic — please report this.`,
+        `token. This shouldn't happen with the current tick logic - please report this.`,
     );
   }
   console.log(
@@ -1002,7 +1057,7 @@ async function createSinglePool({
   if (!hasMainSupply) {
     console.log(
       `  no wide main positions to open: wideBaseRaw=${wideBaseRaw.toString()} ` +
-        `≤ sliceSlackRaw=${sliceSlackRaw.toString()}. ` +
+        `<= sliceSlackRaw=${sliceSlackRaw.toString()}. ` +
         `Bootstrap + any ladder bands will provide all liquidity for this pool.`,
     );
   } else {
@@ -1012,7 +1067,7 @@ async function createSinglePool({
         `bootstrapBaseRaw=${bootstrapBaseRaw.toString()} ` +
         `(${bootstrapMode || 'minimal'} mode)` +
         (ladderMode === 'simple'
-          ? `, ladder=${ladderBandCount} bands × ${ladderPerBandRaw.toString()} each`
+          ? `, ladder=${ladderBandCount} bands x ${ladderPerBandRaw.toString()} each`
           : ''),
     );
   }
@@ -1069,7 +1124,7 @@ async function createSinglePool({
       // the ATA.)
       otherAmountMax: new BN(0),
       txVersion: TxVersion.V0,
-      computeBudgetConfig: { units: 600_000, microLamports: 50_000 },
+      computeBudgetConfig: await lpComputeBudgetConfig(raydium),
     });
     const openTx = await openRes.execute({ sendAndConfirm: true });
     const nftMint = openRes.extInfo?.nftMint?.toBase58();
@@ -1156,7 +1211,7 @@ async function createSinglePool({
     }
 
     const ceilingLabel = ladderMode === 'simple'
-      ? `ceiling ${ladderCeiling}×`
+      ? `ceiling ${ladderCeiling}x`
       : 'manual band ranges';
     console.log(`  opening ${ladderBands.length} ladder bands (${ceilingLabel}):`);
 
@@ -1207,7 +1262,7 @@ async function createSinglePool({
         otherAmountMax: new BN(0),
         ownerInfo: { useSOLBalance: false },
         txVersion: TxVersion.V0,
-        computeBudgetConfig: { units: 600_000, microLamports: 50_000 },
+        computeBudgetConfig: await lpComputeBudgetConfig(raydium),
       });
       const ladderTx = await ladderRes.execute({ sendAndConfirm: true });
       const ladderNftMint = ladderRes.extInfo?.nftMint?.toBase58();
@@ -1319,7 +1374,7 @@ async function createSinglePool({
       otherAmountMax: new BN(0),
       ownerInfo: { useSOLBalance: true },
       txVersion: TxVersion.V0,
-      computeBudgetConfig: { units: 600_000, microLamports: 50_000 },
+      computeBudgetConfig: await lpComputeBudgetConfig(raydium),
     });
     const supportTx = await supportRes.execute({ sendAndConfirm: true });
     const supportNftMint = supportRes.extInfo?.nftMint?.toBase58();
@@ -1450,7 +1505,7 @@ async function openBootstrapPosition({
   const currentTick = fresh.tickCurrent;
   if (currentTick !== currentTickAtCreation) {
     console.log(
-      `  bootstrap: tick drifted ${currentTickAtCreation} → ${currentTick} ` +
+      `  bootstrap: tick drifted ${currentTickAtCreation} -> ${currentTick} ` +
         `between phases; using fresh value`,
     );
   }
@@ -1556,7 +1611,7 @@ async function openBootstrapPosition({
     baseAmount: bootstrapBaseRaw,
     otherAmountMax: bsOtherMax,
     txVersion: TxVersion.V0,
-    computeBudgetConfig: { units: 600_000, microLamports: 50_000 },
+    computeBudgetConfig: await lpComputeBudgetConfig(raydium),
   });
   const bsTx = await bsRes.execute({ sendAndConfirm: true });
   const bsNftMint = bsRes.extInfo?.nftMint?.toBase58();
@@ -1665,7 +1720,7 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         // but if a result entry somehow lacks an nftMint, skip rather
         // than crash. The fail-soft collector picks this up as a
         // failure with a clear message.
-        console.log(`[${symbol}] main slice ${i + 1}: no nftMint — skip`);
+        console.log(`[${symbol}] main slice ${i + 1}: no nftMint - skip`);
         lockFailures.push({
           allocationIndex: allocIdx,
           positionType: 'main',
@@ -1722,7 +1777,7 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         continue;
       }
       if (!lp.nftMint) {
-        console.log(`[${symbol}] ladder band ${bi + 1}: no nftMint — skip`);
+        console.log(`[${symbol}] ladder band ${bi + 1}: no nftMint - skip`);
         lockFailures.push({
           allocationIndex: allocIdx,
           positionType: 'ladder',
@@ -1780,7 +1835,7 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         continue;
       }
       if (!sp.nftMint) {
-        console.log(`[${symbol}] support position ${si + 1}: no nftMint — skip`);
+        console.log(`[${symbol}] support position ${si + 1}: no nftMint - skip`);
         lockFailures.push({
           allocationIndex: allocIdx,
           positionType: 'support',
@@ -1935,7 +1990,7 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
           sliceIndex: i,
           nftMint: pos.nftMint,
           recipient: pos.recipient,
-          error: 'position not locked — no Fee Key NFT exists',
+          error: 'position not locked - no Fee Key NFT exists',
         });
         continue;
       }
@@ -2124,7 +2179,7 @@ async function resolveQuoteUsdForCreate({
   if (!quoteUsd || !quoteUsd.isFinite() || !quoteUsd.gt(0)) {
     throw new Error(
       `Resolved quote USD price for ${quoteToken.symbol} is invalid ` +
-      `(${quoteUsd?.toString() || 'null'}). This shouldn't happen — ` +
+      `(${quoteUsd?.toString() || 'null'}). This shouldn't happen - ` +
       `please report this as a bug. No SOL was spent.`,
     );
   }
@@ -2414,7 +2469,7 @@ export async function createPoolsAndPositions({
     // and retry without sweeping. Without this tag the frontend's
     // failedPhase fallback defaults to 'main_positions' and incorrectly
     // tells the user that pools may have been created.
-    const err = new Error(`Allocations sum to ${totalPct}% — must be <= 100%`);
+    const err = new Error(`Allocations sum to ${totalPct}% - must be <= 100%`);
     err.failedPhase = 'pre_flight';
     err.partialResults = priorResults;
     throw err;
@@ -2489,7 +2544,7 @@ export async function createPoolsAndPositions({
       const err = new Error(
         `Allocation ${i + 1}: bootstrap supplyPercent (${bsPct}%) exceeds ` +
           `pool's main supplyPercent (${a.supplyPercent}%). The bootstrap ` +
-          `carves out of the pool's allocation — either reduce the bootstrap ` +
+          `carves out of the pool's allocation - either reduce the bootstrap ` +
           `support or increase this pool's allocation.`,
       );
       err.failedPhase = 'pre_flight';
@@ -2654,8 +2709,8 @@ export async function createPoolsAndPositions({
         // tiny FP slack: 100% exactly is allowed; floating-point summing
         // of 5 × 20.0 entries can drift to 100.00000001 or similar.
         const err = new Error(
-          `Allocation ${i + 1}: ladder bands sum to ${total.toFixed(2)}% — ` +
-            `must be ≤ 100%`,
+          `Allocation ${i + 1}: ladder bands sum to ${total.toFixed(2)}% - ` +
+            `must be <= 100%`,
         );
         err.failedPhase = 'pre_flight';
         err.failedAllocationIndex = i;
@@ -2785,7 +2840,7 @@ export async function createPoolsAndPositions({
         ? ` (extensions: ${quoteToken.extensions.length === 0 ? 'none' : quoteToken.extensions.join(',')})`
         : '';
       console.log(
-        `  [${i}] ${quoteToken.symbol} → ${programLabel}${extLabel} ✓`,
+        `  [${i}] ${quoteToken.symbol} -> ${programLabel}${extLabel} [ok]`,
       );
       resolvedAllocs.push({ alloc, quoteToken });
     } catch (err) {
@@ -2837,7 +2892,7 @@ export async function createPoolsAndPositions({
     solUsdForSupport = await getUsdPrice(WSOL_MINT);
   } catch (e) {
     const err = new Error(
-      `Couldn't resolve SOL/USD price (${e.message}). This is unusual — ` +
+      `Couldn't resolve SOL/USD price (${e.message}). This is unusual - ` +
       `every price source we consult covers SOL. Check your network ` +
       `connection and try again. No SOL was spent.`,
     );
@@ -3187,8 +3242,8 @@ export async function createPoolsAndPositions({
         supportQuoteRaw = new BN(supportQuoteRawStr);
         console.log(
           `  support: solValue=${solValueDec.toString()} SOL ` +
-            `→ ~$${supportUsdDec.toFixed(2)} ` +
-            `→ ${supportWholeDec.toFixed(6)} ${quoteToken.symbol} ` +
+            `-> ~$${supportUsdDec.toFixed(2)} ` +
+            `-> ${supportWholeDec.toFixed(6)} ${quoteToken.symbol} ` +
             `(${supportQuoteRaw.toString()} raw)`,
         );
       }
@@ -3513,7 +3568,7 @@ export async function createPoolsAndPositions({
       // so the user knows which recipients didn't get their NFTs and
       // can manually re-send them if they want.
       const summary = transferFailures
-        .map((f) => `slice ${(f.sliceIndex ?? 0) + 1} → ${f.recipient} (${f.error})`)
+        .map((f) => `slice ${(f.sliceIndex ?? 0) + 1} -> ${f.recipient} (${f.error})`)
         .join('; ');
       const err = new Error(
         `${transferFailures.length} Fee Key transfer(s) failed: ${summary}. ` +
@@ -3637,6 +3692,43 @@ const AUTOSWAP_CUSTOM_SIZING_MULTIPLIER = 1.10;  // 10% extra SOL on top
  *     }, ... ]
  *   }
  */
+// ---------------------------------------------------------------------------
+// Estimator test seams (F15 de-fork)
+// ---------------------------------------------------------------------------
+//
+// estimateRequiredFunding is the single, canonical funding estimator. It used
+// to have a forked twin in lpEstimate.js that the tests pointed at while
+// production called this one — the two had diverged (this version has the
+// support-position handling, the buffered/unbuffered subtotal split, and the
+// resolvedPrices output that the twin lacked). lpEstimate.js has been removed
+// and test/lp-estimate.test.mjs now imports from here, so the tests exercise
+// the code production actually runs.
+//
+// To keep the table-driven tests free of network/RPC, the estimator routes its
+// two external lookups — the USD price oracle and Raydium route discovery —
+// through these overridable seams. Production leaves the overrides null and the
+// real implementations (getUsdPrice, discoverRaydiumRoute) are used; tests set
+// them via the exported setters and clear them with resetTestFactories().
+let __estPriceOracleForTests = null;
+let __estRouteDiscoveryForTests = null;
+
+export function setPriceOracleForTests(fn) { __estPriceOracleForTests = fn; }
+export function setRouteDiscoveryForTests(fn) { __estRouteDiscoveryForTests = fn; }
+// NOTE: these two overrides are also cleared by the shared resetTestFactories()
+// defined near the SDK/connection seams above, so a single reset in afterEach
+// returns the whole module to production behavior.
+
+// Indirection used ONLY inside estimateRequiredFunding. Falls through to the
+// real implementation unless a test has installed an override. Separate from
+// the bare getUsdPrice/discoverRaydiumRoute so other callers in this module
+// are unaffected by the test seams.
+function _estGetUsdPrice(mint) {
+  return __estPriceOracleForTests ? __estPriceOracleForTests(mint) : getUsdPrice(mint);
+}
+function _estDiscoverRaydiumRoute(opts) {
+  return __estRouteDiscoveryForTests ? __estRouteDiscoveryForTests(opts) : discoverRaydiumRoute(opts);
+}
+
 export async function estimateRequiredFunding({
   allocations,
   // Required when any allocation has bootstrap.mode === 'custom'. The
@@ -3702,7 +3794,7 @@ export async function estimateRequiredFunding({
   let solUsd;
   try {
     // getUsdPrice returns a Decimal or null
-    const p = await getUsdPrice(WSOL_MINT);
+    const p = await _estGetUsdPrice(WSOL_MINT);
     solUsd = p || new Decimal(FALLBACK_SOL_USD);
   } catch (e) {
     console.warn(`estimateRequiredFunding: SOL price fallback (${e.message})`);
@@ -3732,7 +3824,7 @@ export async function estimateRequiredFunding({
 
     // Pool creation: state account + 2 tick arrays (the minimum)
     addSol(`${poolLabel}: pool creation`, COST_POOL_RENT_SOL);
-    addSol(`${poolLabel}: tick arrays (×2)`, 2 * COST_TICK_ARRAY_SOL);
+    addSol(`${poolLabel}: tick arrays (x2)`, 2 * COST_TICK_ARRAY_SOL);
 
     // Per-slice costs
     for (let s = 0; s < slices.length; s++) {
@@ -3893,7 +3985,7 @@ export async function estimateRequiredFunding({
       // viable and we get a usable price in the same call.
       let route = null;
       try {
-        route = await discoverRaydiumRoute({
+        route = await _estDiscoverRaydiumRoute({
           quoteMint: quoteAddr,
           quoteDecimals,
           solUsd,
@@ -3919,7 +4011,7 @@ export async function estimateRequiredFunding({
         quoteUsdSource = 'raydium-probe';
       } else {
         try {
-          quoteUsd = await getUsdPrice(quoteAddr);
+          quoteUsd = await _estGetUsdPrice(quoteAddr);
           if (quoteUsd && quoteUsd.gt(0)) {
             quoteUsdSource = 'oracle';
           } else {
@@ -4027,8 +4119,8 @@ export async function estimateRequiredFunding({
           .div(solUsd)
           .toNumber();
         const label = bsIsCustom
-          ? `${poolLabel}: bootstrap support (auto-swap → ~$${bsActualUsd.toFixed(2)} ${quoteSymbol})`
-          : `${poolLabel}: bootstrap quote-side (auto-swap → ~$${targetUsd} ${quoteSymbol})`;
+          ? `${poolLabel}: bootstrap support (auto-swap -> ~$${bsActualUsd.toFixed(2)} ${quoteSymbol})`
+          : `${poolLabel}: bootstrap quote-side (auto-swap -> ~$${targetUsd} ${quoteSymbol})`;
         addSol(label, estSolSpend);
 
         // Support's auto-swap spend, emitted as its own line. The
@@ -4048,7 +4140,7 @@ export async function estimateRequiredFunding({
             .div(solUsd)
             .toNumber();
           addSol(
-            `${poolLabel}: support position (auto-swap → ~$${supportActualUsd.toFixed(2)} ${quoteSymbol})`,
+            `${poolLabel}: support position (auto-swap -> ~$${supportActualUsd.toFixed(2)} ${quoteSymbol})`,
             supportSolSpend,
             false,
           );

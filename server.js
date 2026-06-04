@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import dnsPromises from 'node:dns/promises';
 
 import {
   createTokenWithMetaplex,
@@ -1356,8 +1357,9 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       logoBase64 = `data:${logoMime};base64,${req.file.buffer.toString('base64')}`;
     }
 
-    const tempWalletSecretKeyArr = JSON.parse(tempWalletSecretKey);
-    walletPublicKey = walletPubkeyFromSecretArray(tempWalletSecretKeyArr);
+    const { secretKeyArr: tempWalletSecretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
+      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
+    walletPublicKey = resolvedWalletPublicKey;
     launchJournal.upsertForWallet(
       walletPublicKey,
       {
@@ -1468,6 +1470,72 @@ app.get('/api/clmm-fee-tiers', async (_req, res) => {
 // This is a read-only passthrough, but we still guard it like a proxy: https
 // only, block loopback/private/link-local hosts (SSRF), enforce a timeout, only
 // pass through real image content-types, and cap the response size.
+// SSRF defense for /api/proxy-image (F8).
+//
+// A literal-hostname denylist is not enough on its own: a public DNS name can
+// resolve to a private IP (e.g. an attacker's domain pointing at 169.254.169.254
+// cloud metadata or an RFC1918 address), and a permitted host can 30x-redirect
+// to an internal one. So this proxy now (a) resolves the hostname and rejects
+// if ANY resolved address is private/loopback/link-local, and (b) follows
+// redirects MANUALLY, re-validating every hop. The trigger here is a token logo
+// URL, which is fully attacker-controlled, so this endpoint is the obvious SSRF
+// surface in the app.
+//
+// Residual caveat: a TOCTOU DNS-rebinding window remains — the address could
+// change between our resolve and fetch's own resolve. Fully closing it needs a
+// pinned-IP custom dispatcher, which is heavier than warranted for a logo
+// proxy; the checks below close the realistic vectors.
+function isPrivateIp(ip) {
+  const a = String(ip).toLowerCase();
+  if (a === '::1' || a === '::') return true;             // IPv6 loopback / unspecified
+  if (a.startsWith('fe80:')) return true;                 // IPv6 link-local
+  if (a.startsWith('fc') || a.startsWith('fd')) return true; // IPv6 unique-local fc00::/7
+  // IPv4-mapped IPv6 (::ffff:a.b.c.d) — validate the embedded IPv4
+  const mapped = a.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  const v4 = mapped ? mapped[1] : a;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(v4)) {
+    const o = v4.split('.').map(Number);
+    if (o[0] === 0 || o[0] === 127) return true;          // 0.0.0.0/8, loopback
+    if (o[0] === 10) return true;                          // 10/8
+    if (o[0] === 169 && o[1] === 254) return true;         // link-local / cloud metadata
+    if (o[0] === 192 && o[1] === 168) return true;         // 192.168/16
+    if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true; // 172.16/12
+    if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return true; // CGNAT 100.64/10
+  }
+  return false;
+}
+
+// Reject obviously-private literals fast (covers IP-literal hostnames before
+// any DNS work). Hostnames are resolved-and-checked separately.
+function assertAllowedProxyUrl(parsed) {
+  if (parsed.protocol !== 'https:') throw new Error('only https urls allowed');
+  const host = parsed.hostname.toLowerCase();
+  const literalPrivate =
+    host === 'localhost' ||
+    host === '0.0.0.0' ||
+    host.endsWith('.local') ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host);
+  if (literalPrivate) throw new Error('host not allowed');
+}
+
+// Resolve a hostname and throw if any resolved address is private.
+async function assertHostResolvesPublic(hostname) {
+  let addrs;
+  try {
+    addrs = await dnsPromises.lookup(hostname, { all: true });
+  } catch (e) {
+    throw new Error('host not resolvable');
+  }
+  if (!addrs || addrs.length === 0) throw new Error('host not resolvable');
+  for (const { address } of addrs) {
+    if (isPrivateIp(address)) throw new Error('host resolves to a private address');
+  }
+}
+
 app.get('/api/proxy-image', async (req, res) => {
   try {
     const raw = req.query.url;
@@ -1480,33 +1548,37 @@ app.get('/api/proxy-image', async (req, res) => {
       throw new Error('invalid url');
     }
 
-    // https only — keeps file:, data:, and plain-http SSRF vectors out.
-    if (parsed.protocol !== 'https:') throw new Error('only https urls allowed');
-
-    // Block hosts that resolve (or obviously point) inside the local network,
-    // so the proxy can't be turned into a probe for internal services.
-    const host = parsed.hostname.toLowerCase();
-    const isPrivate =
-      host === 'localhost' ||
-      host === '0.0.0.0' ||
-      host.endsWith('.local') ||
-      /^127\./.test(host) ||
-      /^10\./.test(host) ||
-      /^192\.168\./.test(host) ||
-      /^169\.254\./.test(host) ||
-      /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host);
-    if (isPrivate) throw new Error('host not allowed');
-
-    // Time-box the upstream fetch so a slow/hung host can't pin the request.
+    // Time-box the whole fetch (including redirect chain) so a slow/hung host
+    // can't pin the request.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
+
+    // Follow redirects manually so each hop is re-validated. fetch with
+    // redirect:'manual' returns the 3xx response instead of chasing it for us.
+    const MAX_HOPS = 4;
+    let currentUrl = parsed;
     let upstream;
     try {
-      upstream = await fetch(parsed.toString(), {
-        signal: controller.signal,
-        headers: { Accept: 'image/*' },
-        redirect: 'follow',
-      });
+      for (let hop = 0; ; hop++) {
+        assertAllowedProxyUrl(currentUrl);
+        await assertHostResolvesPublic(currentUrl.hostname);
+        const resp = await fetch(currentUrl.toString(), {
+          signal: controller.signal,
+          headers: { Accept: 'image/*' },
+          redirect: 'manual',
+        });
+        if (resp.status >= 300 && resp.status < 400) {
+          if (hop >= MAX_HOPS) throw new Error('too many redirects');
+          const loc = resp.headers.get('location');
+          if (!loc) throw new Error('redirect without location');
+          // Resolve relative redirects against the current URL; the next loop
+          // iteration re-runs the full protocol + host + IP validation on it.
+          currentUrl = new URL(loc, currentUrl);
+          continue;
+        }
+        upstream = resp;
+        break;
+      }
     } finally {
       clearTimeout(timer);
     }
@@ -2193,11 +2265,8 @@ app.post('/api/acquire-quote-tokens', async (req, res) => {
       });
       return res.json({ jobId });
     }
-    const secretKeyArr =
-      typeof tempWalletSecretKey === 'string'
-        ? JSON.parse(tempWalletSecretKey)
-        : tempWalletSecretKey;
-    const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(secretKeyArr));
+    const { secretKeyArr, keypair: ownerKeypair } =
+      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
 
     const jobId = startAcquireJob({ ownerKeypair, autoSwapPlan });
     res.json({ jobId });
@@ -2341,10 +2410,9 @@ app.post('/api/create-lp', async (req, res) => {
     console.log('Creating LP for token:', tokenMint);
     console.log('Allocations:', JSON.stringify(allocations, null, 2));
 
-    const secretKeyArr = typeof tempWalletSecretKey === 'string'
-      ? JSON.parse(tempWalletSecretKey)
-      : tempWalletSecretKey;
-    walletPublicKey = walletPubkeyFromSecretArray(secretKeyArr);
+    const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
+      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
+    walletPublicKey = resolvedWalletPublicKey;
     const poolPlan = {
       tokenMint,
       tokenDecimals: tokenDecimals || 9,
@@ -2519,10 +2587,9 @@ app.post('/api/resume-launch', async (req, res) => {
         `allocation(s) carried over from prior attempt`,
     );
 
-    const secretKeyArr = typeof tempWalletSecretKey === 'string'
-      ? JSON.parse(tempWalletSecretKey)
-      : tempWalletSecretKey;
-    walletPublicKey = walletPubkeyFromSecretArray(secretKeyArr);
+    const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
+      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
+    walletPublicKey = resolvedWalletPublicKey;
     launchJournal.upsertForWallet(
       walletPublicKey,
       {
@@ -2883,10 +2950,9 @@ app.post('/api/transfer-assets', async (req, res) => {
 
     console.log('Transferring assets to:', destinationWallet);
 
-    const secretKeyArr = typeof tempWalletSecretKey === 'string'
-      ? JSON.parse(tempWalletSecretKey)
-      : tempWalletSecretKey;
-    walletPublicKey = walletPubkeyFromSecretArray(secretKeyArr);
+    const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
+      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
+    walletPublicKey = resolvedWalletPublicKey;
     launchJournal.upsertForWallet(
       walletPublicKey,
       {
@@ -3158,10 +3224,10 @@ app.post('/api/retry-airdrop', async (req, res) => {
       recipients,
     } = req.body;
 
-    if (!tempWalletSecretKey) {
+    if (!tempWalletSecretKey && !req.body.walletPublicKey) {
       return res.status(400).json({
         success: false,
-        error: 'tempWalletSecretKey required',
+        error: 'walletPublicKey or tempWalletSecretKey required',
       });
     }
     if (!tokenMint || !Number.isFinite(tokenDecimals)) {
@@ -3177,10 +3243,9 @@ app.post('/api/retry-airdrop', async (req, res) => {
       });
     }
 
-    const secretKeyArr = typeof tempWalletSecretKey === 'string'
-      ? JSON.parse(tempWalletSecretKey)
-      : tempWalletSecretKey;
-    walletPublicKey = walletPubkeyFromSecretArray(secretKeyArr);
+    const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
+      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
+    walletPublicKey = resolvedWalletPublicKey;
 
     // Concurrency guard. Same reasoning as in /api/transfer-assets: a
     // second concurrent airdrop run could double-pay recipients whose
@@ -3303,7 +3368,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
     }
 
     walletPublicKey = journal.walletPublicKey;
-    const wallet = pendingWallets.list().find((w) => w.publicKey === walletPublicKey);
+    const wallet = pendingWallets.get(walletPublicKey);
     if (!wallet || !Array.isArray(wallet.secretKey)) {
       return res.status(409).json({
         success: false,
@@ -3557,6 +3622,83 @@ app.post('/api/pending-wallets/dismiss', (req, res) => {
 // wrong recovery entry.
 function walletPubkeyFromSecretArray(secretKeyArr) {
   return Keypair.fromSecretKey(Uint8Array.from(secretKeyArr)).publicKey.toBase58();
+}
+
+// F7/F5: single, validated entry point for turning a request into a signer.
+// Replaces five hand-rolled copies of the secret-key parse (F7) and is the
+// place F5 lands: prefer resolving the wallet's secret SERVER-SIDE from its
+// public key, so the ephemeral secret no longer has to round-trip back
+// through the renderer on every launch step.
+//
+// Resolution order:
+//   1. walletPublicKey present and found in pendingWallets → use the stored
+//      (encrypted-at-rest) secret. This is the real-launch path: the secret
+//      was persisted at /api/generate-wallet and never leaves the server.
+//   2. otherwise, a secret supplied inline in the request body. This is the
+//      demo path: demo wallets live on an in-memory ledger and are
+//      deliberately NOT written to the disk-backed recovery store, so the
+//      demo client still sends its throwaway secret inline. It's also a
+//      back-compat fallback for any caller that hasn't migrated.
+//
+// A malformed input yields a clear Error (caught by the route try/catch).
+// When both a public key and an inline secret arrive, the derived public key
+// must match the claimed one — a mismatch means a confused or tampered
+// request, so we refuse rather than sign with the wrong key.
+function resolveSigner({ tempWalletSecretKey, walletPublicKey } = {}) {
+  let secretKeyArr = null;
+  let source = null;
+
+  // (1) Prefer the server-side stored secret, keyed by public key.
+  if (walletPublicKey) {
+    const stored = pendingWallets.get(walletPublicKey);
+    if (stored && Array.isArray(stored.secretKey)) {
+      secretKeyArr = stored.secretKey;
+      source = 'store';
+    }
+  }
+
+  // (2) Fall back to an inline secret (demo / unmigrated caller).
+  if (!secretKeyArr && tempWalletSecretKey != null) {
+    try {
+      secretKeyArr = typeof tempWalletSecretKey === 'string'
+        ? JSON.parse(tempWalletSecretKey)
+        : tempWalletSecretKey;
+      source = 'body';
+    } catch (e) {
+      throw new Error('tempWalletSecretKey is not valid JSON');
+    }
+  }
+
+  if (!secretKeyArr) {
+    throw new Error(
+      'could not resolve a signer: send walletPublicKey for a recoverable '
+      + 'wallet, or tempWalletSecretKey inline',
+    );
+  }
+  if (!Array.isArray(secretKeyArr) || secretKeyArr.length !== 64) {
+    throw new Error('resolved secret key must be a 64-byte array');
+  }
+  let keypair;
+  try {
+    keypair = Keypair.fromSecretKey(Uint8Array.from(secretKeyArr));
+  } catch (e) {
+    throw new Error('resolved secret key is not a valid ed25519 secret key');
+  }
+  const derivedPubkey = keypair.publicKey.toBase58();
+  if (walletPublicKey && derivedPubkey !== walletPublicKey) {
+    throw new Error('walletPublicKey does not match the resolved signer');
+  }
+  // Surface a one-line warning if a real (store-backed) launch still sent an
+  // inline secret — that means a client path hasn't been migrated off the
+  // round-trip yet. Demo wallets won't be in the store, so they stay quiet.
+  if (source === 'body' && tempWalletSecretKey != null && walletPublicKey
+      && pendingWallets.get(walletPublicKey)) {
+    console.warn(
+      'resolveSigner: inline secret received for a stored wallet; '
+      + 'a client path may not be migrated off the secret round-trip (F5).',
+    );
+  }
+  return { secretKeyArr, walletPublicKey: derivedPubkey, keypair };
 }
 
 // Encode a secret-key byte array as a base58 string — the format wallet
