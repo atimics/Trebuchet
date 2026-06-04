@@ -71,11 +71,39 @@ function makeExecute(failMap, key) {
   };
 }
 
-export function makeMockRaydium({ fail = {}, connection } = {}) {
+export function makeMockRaydium({ fail = {}, connection, launchedAsMintB = false } = {}) {
   const conn = connection || makeFakeConnection();
 
+  // Record SDK calls so tests can assert which code path lpService took.
+  // openPositionFromBase is the most informative — its `base` arg directly
+  // reflects the launchedIsMintA branch lpService picked. createPool and
+  // lockPosition are recorded too for completeness.
+  const recordedCalls = {
+    createPool: [],
+    openPositionFromBase: [],
+    lockPosition: [],
+  };
+
+  // When launchedAsMintB is true the mock simulates the case where the
+  // launched token's pubkey sorted LARGER than its quote mint's pubkey, so
+  // Raydium assigned the launched token to mintB and the quote to mintA.
+  // This is the realistic outcome ~97% of the time without a vanity-grind
+  // sort constraint, and exercising it in tests prevents regressions in
+  // the bidirectional code paths in lpService.js (computeMainTicks branch,
+  // base:'MintB' on openPositionFromBase, etc.).
+  const LAUNCHED_ADDR = '__LAUNCHED__';
+  const QUOTE_ADDR = 'So11111111111111111111111111111111111111112';
+  const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+  const mintASide = launchedAsMintB
+    ? { address: QUOTE_ADDR, decimals: 9, programId: TOKEN_PROGRAM }
+    : { address: LAUNCHED_ADDR, decimals: 9, programId: TOKEN_PROGRAM };
+  const mintBSide = launchedAsMintB
+    ? { address: LAUNCHED_ADDR, decimals: 9, programId: TOKEN_PROGRAM }
+    : { address: QUOTE_ADDR, decimals: 9, programId: TOKEN_PROGRAM };
+
   const clmm = {
-    async createPool() {
+    async createPool(args) {
+      recordedCalls.createPool.push(args);
       if (shouldFail(fail, 'createPool')) throw failError(fail, 'createPool', 'createPool failed');
       const id = freshPubkey().toBase58();
       poolCounter += 1;
@@ -90,8 +118,8 @@ export function makeMockRaydium({ fail = {}, connection } = {}) {
       return {
         poolInfo: {
           id: poolId,
-          mintA: { address: '__LAUNCHED__', decimals: 9, programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
-          mintB: { address: 'So11111111111111111111111111111111111111112', decimals: 9, programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+          mintA: mintASide,
+          mintB: mintBSide,
           config: { tickSpacing: 60, id: 'mock-config' },
         },
         poolKeys: { id: poolId },
@@ -107,7 +135,8 @@ export function makeMockRaydium({ fail = {}, connection } = {}) {
       };
     },
 
-    async openPositionFromBase() {
+    async openPositionFromBase(args) {
+      recordedCalls.openPositionFromBase.push(args);
       if (shouldFail(fail, 'openPosition')) throw failError(fail, 'openPosition', 'openPositionFromBase failed');
       const nftMint = freshPubkey();
       return {
@@ -116,7 +145,8 @@ export function makeMockRaydium({ fail = {}, connection } = {}) {
       };
     },
 
-    async lockPosition() {
+    async lockPosition(args) {
+      recordedCalls.lockPosition.push(args);
       if (shouldFail(fail, 'lockPosition')) throw failError(fail, 'lockPosition', 'lockPosition failed');
       const nftMint = freshPubkey();
       return {
@@ -144,7 +174,7 @@ export function makeMockRaydium({ fail = {}, connection } = {}) {
     },
   };
 
-  return { connection: conn, clmm, api, account, __fail: fail };
+  return { connection: conn, clmm, api, account, __fail: fail, recordedCalls };
 }
 
 // Build a single `results` entry shaped exactly like what createSinglePool /

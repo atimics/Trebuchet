@@ -262,10 +262,94 @@ async function readOnChainBasics(mintAddress) {
 // attributes include base_token_price_usd or quote_token_price_usd
 // directly. Picking the first pool gives us the price Gecko's own UI
 // would display.
+// Pure helper: given a parsed GeckoTerminal /tokens/{mint}/pools
+// response body and the mint address we asked about, return the USD
+// price of that mint or null if we can't safely derive one.
+//
+// Exposed as a named export so the disambiguation logic can be unit
+// tested with synthetic fixtures (no network), AND so anyone debugging
+// a future "wrong price" report can paste the raw API response and
+// call this helper directly to see what it returns.
+//
+// Decision tree per pool, walking pools in liquidity order (Gecko
+// already orders the response that way):
+//   1. Read relationships.base_token.data.id and
+//      relationships.quote_token.data.id. Both have format
+//      `solana_<MINT>`. Match against `solana_${mintAddress}` to
+//      decide which side we're on.
+//   2. If neither side matches our mint, SKIP this pool. (Malformed
+//      response; arbitrary guessing was the historical bug.)
+//   3. Read our-side's direct USD price. If present and positive,
+//      return it.
+//   4. Otherwise, derive from the other side: our_usd = other_usd *
+//      (our per other ratio). Both base_token_price_quote_token and
+//      quote_token_price_base_token are present in the response with
+//      complementary semantics.
+//   5. If all pools fail, return null.
+export function extractPriceFromGeckoPools(mintAddress, responseJson) {
+  const pools = Array.isArray(responseJson?.data) ? responseJson.data : [];
+  const expectedId = `solana_${mintAddress}`;
+
+  for (const pool of pools) {
+    const a = pool?.attributes;
+    const rels = pool?.relationships;
+    if (!a) continue;
+
+    const baseId = rels?.base_token?.data?.id;
+    const quoteId = rels?.quote_token?.data?.id;
+    let isBase;
+    if (baseId === expectedId) {
+      isBase = true;
+    } else if (quoteId === expectedId) {
+      isBase = false;
+    } else {
+      // Neither side matches — skip rather than guess.
+      continue;
+    }
+
+    // Direct USD price for our side.
+    const priceStr = isBase ? a.base_token_price_usd : a.quote_token_price_usd;
+    if (priceStr) {
+      try {
+        const price = new Decimal(priceStr);
+        if (price.gt(0)) return price;
+      } catch (_) {}
+    }
+
+    // Derived USD price via the other side's USD + the per-other ratio.
+    // ratio interpretation:
+    //   base_token_price_quote_token: how many quote tokens per 1 base token
+    //   quote_token_price_base_token: how many base tokens per 1 quote token
+    // For our-token-is-base:  ratio = base/quote → our_usd = quote_usd * ratio
+    //                                              (units check: quote_per_base × usd_per_quote = usd_per_base) ✓
+    // For our-token-is-quote: ratio = quote/base → our_usd = base_usd * ratio
+    //                                              (units check: base_per_quote × usd_per_base = usd_per_quote) ✓
+    const otherPriceStr = isBase ? a.quote_token_price_usd : a.base_token_price_usd;
+    const ratioStr = isBase ? a.base_token_price_quote_token : a.quote_token_price_base_token;
+    if (otherPriceStr && ratioStr) {
+      try {
+        const otherPrice = new Decimal(otherPriceStr);
+        const ratio = new Decimal(ratioStr);
+        if (otherPrice.gt(0) && ratio.gt(0)) {
+          const derived = otherPrice.mul(ratio);
+          if (derived.gt(0)) return derived;
+        }
+      } catch (_) {}
+    }
+    // Neither direct nor derived worked — try the next pool.
+  }
+  return null;
+}
+
 async function fetchPriceFromGecko(mintAddress) {
   // Step 1: direct token endpoint. Returns price + name + symbol but
   // NOT image_url — that's on the separate /tokens/{addr}/info endpoint
   // (see fetchDisplayMetaFromGecko) which getTokenInfo handles.
+  //
+  // For this endpoint, attributes.price_usd is defined by Gecko docs
+  // as "the USD price of the token in the first pool listed under
+  // top_pools" — i.e., it's unambiguous about WHICH token it refers
+  // to (the one we asked about). No disambiguation needed here.
   try {
     const resp = await fetch(`${GECKO_BASE}/tokens/${mintAddress}`, {
       headers: { Accept: 'application/json' },
@@ -290,9 +374,9 @@ async function fetchPriceFromGecko(mintAddress) {
     return null;
   }
 
-  // Step 2: pools endpoint. Each entry has base_token / quote_token
-  // info plus price_usd-flavoured fields. Whichever side of the pool
-  // is the mint we asked about, that side's price is what we want.
+  // Step 2: pools endpoint, with relationships-based disambiguation.
+  // The pure logic lives in extractPriceFromGeckoPools (exported so it
+  // can be unit-tested with synthetic fixtures).
   try {
     const resp = await fetch(`${GECKO_BASE}/tokens/${mintAddress}/pools`, {
       headers: { Accept: 'application/json' },
@@ -306,23 +390,7 @@ async function fetchPriceFromGecko(mintAddress) {
       return null;
     }
     const json = await resp.json();
-    const pools = Array.isArray(json?.data) ? json.data : [];
-    for (const pool of pools) {
-      const a = pool?.attributes;
-      if (!a) continue;
-      // Pool names are formatted "<BASE_SYM> / <QUOTE_SYM>", and the
-      // _price_usd fields are keyed by base/quote rather than by mint.
-      // Without resolving the relationship to base_token/quote_token
-      // we can't be 100% sure which side matches. But: top pools are
-      // ordered by liquidity, so we just pick the first valid price
-      // we can find. For a token with any reasonable indexed pool,
-      // this lands on the right answer. (We err toward base because
-      // /tokens/{mint}/pools returns pools where the requested token
-      // is the base side.)
-      if (a.base_token_price_usd) return new Decimal(a.base_token_price_usd);
-      if (a.quote_token_price_usd) return new Decimal(a.quote_token_price_usd);
-    }
-    return null;
+    return extractPriceFromGeckoPools(mintAddress, json);
   } catch (e) {
     console.warn(`tokenInfoService: GeckoTerminal /pools error for ${mintAddress}:`, e.message);
     return null;
@@ -381,6 +449,65 @@ async function fetchPriceFromJupiter(mintAddress) {
 // need to disambiguate base vs quote ourselves.
 //
 // Rate limit: 60 req/min, no API key required.
+// Pure helper: given the parsed DexScreener /tokens/v1/solana/{addr}
+// response (an array of pair objects) and the mint we asked about,
+// return our token's USD price or null if we can't safely derive one.
+//
+// Two-pass scan:
+//   Pass 1: prefer pairs where our token is the BASE — priceUsd is
+//           directly correct.
+//   Pass 2: pairs where our token is the QUOTE — derive our price
+//           from the base's priceUsd and the priceNative ratio.
+//
+// We never fall back to "take any pair's priceUsd" — that was the
+// historical bug. Returning the wrong token's price is worse than
+// returning null and letting the next source try, because pool
+// creation on a wrong price silently creates the pool at the wrong
+// ratio (no error surface), whereas null surfaces cleanly.
+//
+// Exported for the same reasons as extractPriceFromGeckoPools.
+export function extractPriceFromDexScreenerPairs(mintAddress, pairs) {
+  if (!Array.isArray(pairs)) return null;
+
+  // Pass 1: our token as base.
+  for (const pair of pairs) {
+    if (pair?.baseToken?.address === mintAddress && pair.priceUsd) {
+      try {
+        const price = new Decimal(pair.priceUsd);
+        if (price.gt(0)) return price;
+      } catch (_) {}
+    }
+  }
+
+  // Pass 2: our token as quote — derive from base's priceUsd / priceNative.
+  // priceNative on DexScreener is "how many quote tokens you'd get for 1
+  // base token" (the pool's native rate). For a SOL/USDC pair that's
+  // ~150 (150 USDC per SOL). So if we want our quote-side token's USD
+  // price:
+  //   one_base_usd       = priceUsd
+  //   one_base_in_quote  = priceNative
+  //   one_quote_usd      = priceUsd / priceNative
+  for (const pair of pairs) {
+    if (
+      pair?.quoteToken?.address === mintAddress &&
+      pair?.baseToken?.address &&
+      pair.priceUsd &&
+      pair.priceNative
+    ) {
+      try {
+        const basePriceUsd = new Decimal(pair.priceUsd);
+        const baseInQuoteUnits = new Decimal(pair.priceNative);
+        if (basePriceUsd.gt(0) && baseInQuoteUnits.gt(0)) {
+          const derived = basePriceUsd.div(baseInQuoteUnits);
+          if (derived.gt(0)) return derived;
+        }
+      } catch (_) {}
+    }
+  }
+
+  return null;
+}
+
 async function fetchPriceFromDexScreener(mintAddress) {
   try {
     const resp = await fetch(`${DEXSCREENER_BASE}/${mintAddress}`, {
@@ -395,27 +522,8 @@ async function fetchPriceFromDexScreener(mintAddress) {
       return null;
     }
     const json = await resp.json();
-    // The response is the array directly (not wrapped in a {data} object).
     const pairs = Array.isArray(json) ? json : [];
-
-    for (const pair of pairs) {
-      // Prefer a pair where the requested mint is the base token; that
-      // gives us the price of the token directly. If only quote-side
-      // matches are available (uncommon) we still take it.
-      if (pair?.baseToken?.address === mintAddress && pair.priceUsd) {
-        return new Decimal(pair.priceUsd);
-      }
-    }
-    // Fallback: take any pair's priceUsd. DexScreener's priceUsd field
-    // is always denominated in USD per *base* token — so if our token
-    // appears only as a quote in the pairs returned, we'd need to
-    // invert. But /tokens/v1/{address} only returns pairs where the
-    // token is one of the two sides, and DexScreener's normalization
-    // means the listed `priceUsd` is already that side's USD price.
-    for (const pair of pairs) {
-      if (pair?.priceUsd) return new Decimal(pair.priceUsd);
-    }
-    return null;
+    return extractPriceFromDexScreenerPairs(mintAddress, pairs);
   } catch (e) {
     console.warn(`tokenInfoService: DexScreener error for ${mintAddress}:`, e.message);
     return null;
@@ -577,28 +685,84 @@ async function fetchDisplayMetaFromGecko(mintAddress) {
 
 // Resolve just the USD price, going through Gecko → Jupiter → DexScreener.
 // Returns a Decimal or null. Honours the cache.
+// Resolve a token's USD price from external aggregators.
+//
+// IMPORTANT context: aggregators are NOT the source of truth. The LP
+// (the on-chain pool) is. GeckoTerminal, Jupiter, and DexScreener all
+// read pool state and republish it with different aggregation methods.
+// When two of them disagree, it's because they aggregate across
+// different pool sets or apply different liquidity filters — not
+// because one of them has "the right answer." Treating them as
+// independent oracles to cross-check would be a category error.
+//
+// For pool CREATION specifically, the caller in lpService.js bypasses
+// this whole function and queries Raydium's swap quote directly. That
+// IS the source of truth for the pool we're about to create (same
+// liquidity universe). The aggregators here are used only for:
+//   - The UI's quote-token info display (the "this token costs $X"
+//     hint shown in Step 2 when the user picks a quote token)
+//   - The funding-estimate cost preview before the user funds
+//   - Fallback when Raydium has no route at all
+//
+// Priority order:
+//   1. Jupiter Price V3 — uses Jupiter's router under the hood,
+//      which routes the same pool universe Raydium does. Closest
+//      proxy to "the price our pool will be measured against."
+//   2. GeckoTerminal — alternative when Jupiter has no entry.
+//   3. DexScreener — last resort for long-tail tokens.
+//
+// We try sequentially (not in parallel) because the chained-fallback
+// pattern means we only need later sources when earlier ones fail.
+// A successful Jupiter response saves the Gecko round-trip entirely.
 async function resolvePriceUsd(mintAddress) {
   const cached = readCache(mintAddress);
   if (cached?.priceUsd !== undefined) {
     return cached.priceUsd; // may be a Decimal or null (cached negative)
   }
 
-  let price = await fetchPriceFromGecko(mintAddress);
-  if (price == null) {
+  let price = null;
+  let source = null;
+
+  try {
     price = await fetchPriceFromJupiter(mintAddress);
+    if (price != null) source = 'jupiter';
+  } catch (e) {
+    console.warn(`tokenInfoService: Jupiter threw for ${mintAddress}:`, e.message);
   }
+
   if (price == null) {
-    price = await fetchPriceFromDexScreener(mintAddress);
+    try {
+      price = await fetchPriceFromGecko(mintAddress);
+      if (price != null) source = 'gecko';
+    } catch (e) {
+      console.warn(`tokenInfoService: Gecko threw for ${mintAddress}:`, e.message);
+    }
   }
+
+  if (price == null) {
+    try {
+      price = await fetchPriceFromDexScreener(mintAddress);
+      if (price != null) source = 'dexscreener';
+    } catch (e) {
+      console.warn(`tokenInfoService: DexScreener threw for ${mintAddress}:`, e.message);
+    }
+  }
+
   if (price == null) {
     console.warn(
-      `tokenInfoService: no USD price for ${mintAddress} from Gecko, Jupiter, or DexScreener`,
+      `tokenInfoService: no USD price for ${mintAddress} from Jupiter, Gecko, or DexScreener`,
+    );
+  } else {
+    // Log every successful price resolution with the source. Invaluable
+    // for debugging "wrong price" reports — the launch journal captures
+    // these via stdout, and the source tag tells us instantly whether
+    // an aggregator was off (different from "the pool we'll create
+    // against has a different price than the aggregators report").
+    console.log(
+      `tokenInfoService: ${mintAddress} → $${price.toString()} (source: ${source})`,
     );
   }
 
-  // Cache the result either way — including null. Caching null prevents
-  // us from hitting all three APIs again immediately if the user toggles
-  // back to a known-unindexed token.
   writeCachePrice(mintAddress, price);
   return price;
 }

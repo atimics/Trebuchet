@@ -205,114 +205,38 @@ export async function checkWalletBalance(publicKey) {
 }
 
 // ---------------------------------------------------------------------------
-// Token-mint keypair search.
+// Token-mint keypair selection.
 //
 // Solana CLMM pools order their mintA / mintB by raw byte comparison of the
 // 32-byte pubkey, with the smaller-byte-ordered key taking the mintA slot.
-// Raydium then displays the pool's price as `mintB per mintA` — i.e. mintA
-// in the denominator.
+// Raydium's UI then displays the pool's price as `mintB per mintA`. For a
+// random launched-token keypair paired with WSOL (first byte 0x06) and a
+// typical flywheel mint (first byte 0x04), the launched key lands as mintB
+// roughly 97% of the time — which used to flip the Raydium price display
+// upside-down and confuse users.
 //
-// For a token launch this matters because users expect to see a price like
-// "X SOL per <launched>" trending upward as their token appreciates. That
-// only happens if the launched token is mintA. If it lands as mintB by the
-// luck of the keypair byte-order draw, Raydium displays "<launched> per SOL"
-// instead, the displayed price runs *downward* as the token appreciates,
-// and the position bounds get inverted ("0 — small" rather than "current —
-// infinity"). All of that is just display; the math underneath is
-// equivalent. But the visual result on Raydium looks wrong to anyone not
-// holding the inversion in their head.
+// Historically we tried to force the launched token to mintA by grinding
+// keypairs until one sorted smaller than every quote mint. That worked
+// but constrained the vanity-grind search space and added a launch-time
+// gate that could fail for users with pre-ground keypairs. The whole rest
+// of the launch pipeline (tick math, position opening, bootstrap, locks,
+// fee-key transfers) is already side-agnostic — it detects mintA vs
+// mintB after pool creation and branches every subsequent calculation
+// accordingly. So we accept whichever ordering Raydium picks. Modern
+// aggregator UIs (Jupiter, DexScreener, Birdeye) normalize the display
+// regardless; Raydium itself shows the launched token correctly when
+// users click into its detail view.
 //
-// Fix: generate keypairs in a loop until we find one whose pubkey sorts
-// strictly smaller than every quote mint we'll be paired with. Solana's
-// Ed25519 keygen is fast — even with 4 quotes to beat, this typically
-// completes in well under a second. The constraint is fine-grained
-// (compare 32 bytes, not just first byte), so each candidate has roughly
-// a (1/(N+1))-th chance of beating N quotes when the quotes are spread
-// uniformly across the keyspace; in practice quotes cluster non-uniformly
-// and the rate varies, but the search is bounded by MAX_KEYPAIR_TRIES
-// regardless and we throw with a clear error if we exhaust it.
+// The only special case left: if a vanity prefix/suffix is requested
+// without a pre-ground keypair, we still need to invoke the C grinder
+// to find a matching pubkey. That's what the small helper below does —
+// no sort constraint, no retry loop, just one grind per request.
 // ---------------------------------------------------------------------------
-const MAX_KEYPAIR_TRIES = 200_000;
 
-// Compare two 32-byte pubkeys lexicographically. Returns negative if a<b,
-// positive if a>b, zero if equal. Matches the on-chain `Pubkey::cmp`
-// behaviour Raydium uses to assign mintA / mintB.
-function comparePubkeys(a, b) {
-  for (let i = 0; i < 32; i++) {
-    if (a[i] !== b[i]) return a[i] - b[i];
-  }
-  return 0;
-}
-
-// Find a Keypair whose pubkey sorts strictly smaller than every quote mint
-// in `quoteMints`. Returns the Keypair on success, or null if quoteMints is
-// empty (caller should fall back to a random keypair). Throws on exhaustion.
-async function findMintAKeypair(quoteMints, { vanityPrefix, vanitySuffix } = {}) {
-  if (!Array.isArray(quoteMints) || quoteMints.length === 0) {
-    // No mintA constraint. If vanity is requested, grind it.
-    if (vanityPrefix || vanitySuffix) {
-      const result = await generateVanityKeypair({ prefix: vanityPrefix, suffix: vanitySuffix });
-      console.log(`Vanity mint CA: ${result.publicKey}`);
-      return result.keypair;
-    }
-    return null; // caller will use a random keypair
-  }
-
-  const quoteBytes = quoteMints.map((m) => new PublicKey(m).toBytes());
-
-  // When a vanity target is set, each grind via the C binary gives us one
-  // candidate. Check mintA constraint; re-grind if it fails. For a 4-char
-  // suffix this is ~30s per grind; ~5 attempts on average. Bounded at 50
-  // grinds (~25 min worst case for 4-char).
-  const MAX_VANITY_GRINDS = 50;
-  let grindCount = 0;
-
-  while (true) {
-    let kp;
-    if (vanityPrefix || vanitySuffix) {
-      if (grindCount >= MAX_VANITY_GRINDS) {
-        throw new Error(
-          `Vanity CA grind exhausted: ${grindCount} attempts without finding ` +
-          `a keypair that both matches "${vanityPrefix || vanitySuffix}" and ` +
-          `sorts before all ${quoteMints.length} quote mints. Try a different vanity target.`
-        );
-      }
-      grindCount++;
-      console.log(`Vanity CA grind attempt ${grindCount}/${MAX_VANITY_GRINDS}...`);
-      const result = await generateVanityKeypair({ prefix: vanityPrefix, suffix: vanitySuffix });
-      kp = result.keypair;
-    } else {
-      // Fast path: JS-native keypair generation for mintA-only search
-      for (let i = 0; i < MAX_KEYPAIR_TRIES; i++) {
-        kp = Keypair.generate();
-        const candidate = kp.publicKey.toBytes();
-        let beatsAll = true;
-        for (const qb of quoteBytes) {
-          if (comparePubkeys(candidate, qb) >= 0) { beatsAll = false; break; }
-        }
-        if (beatsAll) {
-          console.log(`findMintAKeypair: matched after ${i + 1} attempt${i === 0 ? '' : 's'}`);
-          return kp;
-        }
-      }
-      throw new Error(
-        `Could not find a launched-token keypair sorting smaller than all ` +
-          `${quoteMints.length} quote mints after ${MAX_KEYPAIR_TRIES} attempts.`
-      );
-    }
-
-    // Check mintA constraint for the vanity keypair
-    const candidate = kp.publicKey.toBytes();
-    let beatsAll = true;
-    for (const qb of quoteBytes) {
-      if (comparePubkeys(candidate, qb) >= 0) { beatsAll = false; break; }
-    }
-    if (beatsAll) {
-      console.log(`Vanity CA found: ${kp.publicKey.toBase58()} (grind ${grindCount})`);
-      return kp;
-    }
-    console.log(`Vanity CA failed mintA check, re-grinding...`);
-  }
+async function grindVanityKeypair({ vanityPrefix, vanitySuffix }) {
+  const result = await generateVanityKeypair({ prefix: vanityPrefix, suffix: vanitySuffix });
+  console.log(`Vanity mint CA: ${result.publicKey}`);
+  return result.keypair;
 }
 
 // Create token with Metaplex
@@ -323,7 +247,6 @@ export async function createTokenWithMetaplex({
   description,
   totalSupply,
   logoBase64,
-  quoteMints,
   onProgress,
   vanityPrefix,
   vanitySuffix,
@@ -358,35 +281,24 @@ export async function createTokenWithMetaplex({
       onProgress: progress,
     });
     
-    // Search for a keypair whose pubkey sorts smaller than every quote
-    // mint, so the launched token becomes mintA in every pool. Returns
-    // null if quoteMints is empty (caller falls back to random).
-    // If a pre-ground vanity CA keypair was provided, use it (after checking
-    // mintA constraint). Otherwise grind via findMintAKeypair.
+    // Select the mint keypair.
+    //
+    // - vanityCAKeypair (pre-ground via the web UI): use it as-is.
+    // - vanityPrefix/vanitySuffix (live grind request from server): invoke
+    //   the C grinder.
+    // - Neither: leave mintKeypair null so createMint generates a random one.
+    //
+    // No mintA-sort constraint is applied. The lpService launch pipeline
+    // detects which side the launched token lands on after pool creation
+    // and branches every downstream calculation accordingly.
     let mintKeypair = null;
     if (vanityCAKeypair) {
       mintKeypair = Keypair.fromSecretKey(Uint8Array.from(vanityCAKeypair));
-      // Verify mintA constraint
-      if (quoteMints && quoteMints.length > 0) {
-        const quoteBytes = quoteMints.map((m) => new PublicKey(m).toBytes());
-        const candidate = mintKeypair.publicKey.toBytes();
-        for (const qb of quoteBytes) {
-          if (comparePubkeys(candidate, qb) >= 0) {
-            throw new Error(
-              `Pre-ground vanity CA ${mintKeypair.publicKey.toBase58()} does not sort ` +
-              `before all quote mints. Try grinding again or remove the vanity target.`
-            );
-          }
-        }
-      }
       console.log(`Using pre-ground vanity CA: ${mintKeypair.publicKey.toBase58()}`);
+    } else if (vanityPrefix || vanitySuffix) {
+      mintKeypair = await grindVanityKeypair({ vanityPrefix, vanitySuffix });
     } else {
-      mintKeypair = await findMintAKeypair(quoteMints, { vanityPrefix, vanitySuffix });
-    }
-    if (mintKeypair && !vanityCAKeypair) {
-      console.log(`Using mintA-sorted keypair: ${mintKeypair.publicKey.toBase58()}`);
-    } else if (!mintKeypair) {
-      console.log('No quote mints provided; using random mint keypair');
+      console.log('Using random mint keypair');
     }
 
     // Create mint using standard SPL token first

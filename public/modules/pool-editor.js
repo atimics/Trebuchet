@@ -1714,11 +1714,10 @@ async function resolvePoolQuote(idx) {
       pool.resolvedSymbol = data.info.symbol;
       pool.resolvedDecimals = data.info.decimals ?? null;
       pool.resolvedPriceUsd = data.info.priceUsd;
-      // Save the resolved on-chain mint too. We need it at token-creation
-      // time to seed the keypair search that ensures the launched token
-      // sorts as mintA in every pool (which puts the launched token in
-      // the *denominator* of the displayed Raydium price, matching user
-      // expectations of "launch price up to infinity").
+      // Save the resolved on-chain mint too. Used as a display/link
+      // fallback (e.g. when building Solscan or Birdeye URLs in the pool
+      // header) — see the `pool.resolvedMint || pool.quoteToken` pattern
+      // elsewhere in this module.
       pool.resolvedMint = data.info.address;
       // Display-only fields. Either may be null if no indexer had the
       // token; the UI handles that by hiding the logo and falling back

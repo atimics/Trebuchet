@@ -553,6 +553,77 @@ Source files of interest:
 - `main.js` — Electron entry point, menu definition, BrowserWindow
   lifecycle
 
+### Building the vanity keygen binary
+
+The "Vanity CA" feature in Step 1 grinds Solana addresses with a
+chosen prefix or suffix using a multithreaded C program. That program
+is a separate native binary shipped alongside the Electron app —
+`c/build/vanity_keygen` on Unix, `c/build/vanity_keygen.exe` on
+Windows. It lives outside the JS so it can use all available cores
+without blocking the Node event loop.
+
+**You can run Trebuchet without it.** If the binary isn't present,
+the vanity input field and Grind button in Step 1 are disabled with a
+clear "Unavailable — binary not built" note next to them. Every
+other launch path — generating a normal random wallet, the full
+launch flow, the sweep — works unchanged. So if you just want to try
+the app or contribute changes to the JS/UI layer, you can skip this
+section.
+
+**When you need to build it:**
+
+- After a fresh clone, if you want to test or use vanity grinding
+  locally during development
+- After modifying anything in `c/`
+- Release builds: handled automatically by GitHub Actions. You only
+  need to build manually for local development
+
+**Requirements — a C compiler on PATH:**
+
+- **Linux:** install `build-essential` on Debian/Ubuntu
+  (`sudo apt install build-essential`) or the Development Tools group
+  on RHEL/Fedora (`sudo dnf groupinstall "Development Tools"`).
+  Provides `gcc`.
+- **macOS:** install the Xcode Command Line Tools
+  (`xcode-select --install`). Provides `clang`, with `gcc` as an
+  alias to it.
+- **Windows:** install MSYS2 (https://www.msys2.org) and then run
+  `pacman -S mingw-w64-x86_64-gcc` from the MSYS2 shell, OR install
+  Strawberry Perl (https://strawberryperl.com) which bundles MinGW
+  gcc. Make sure the `bin` directory containing `gcc.exe` is on your
+  Windows PATH so `npm run build:c` can find it.
+
+The build script (`scripts/build-c.mjs`) auto-detects whichever
+compiler is available and picks platform-appropriate flags (skips
+`-mtune=generic` on ARM, links `bcrypt` on Windows for the CNG-backed
+RNG, etc.). You don't need to configure anything manually.
+
+**Build command:**
+
+```bash
+npm run build:c
+```
+
+The output binary lands in `c/build/`. On macOS/Linux the executable
+bit is set automatically by the build script.
+
+**Verifying the build:**
+
+```bash
+./c/build/vanity_keygen --prefix A --threads 4
+```
+
+Should grind for a fraction of a second and print a Solana public
+key starting with "A". A single-character prefix is trivial to find;
+production usage in the app typically grinds 3-5 character targets
+which take seconds to minutes depending on core count.
+
+If you see "command not found" or "permission denied," re-run
+`npm run build:c` and check the script's output for compiler errors.
+The most common cause is `gcc` not being on PATH yet — particularly
+on Windows after a fresh MSYS2 install, where you may need to open a
+new terminal so PATH updates take effect.
+
 ### Merge requirements
 
 Pull requests must pass the **Test** job before merging. The Test job

@@ -26,7 +26,38 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
-#include <sys/random.h>
+
+/* Cross-platform entropy source.
+ *
+ * On POSIX (macOS, Linux) we use getentropy() from <sys/random.h>.
+ * Windows MinGW doesn't ship <sys/random.h> or getentropy(), so we
+ * provide a same-shape static shim backed by BCryptGenRandom — the
+ * Windows Crypto Next Generation RNG. This is the same source
+ * randombytes.c uses for Windows, so the entropy story stays
+ * consistent across the binary. The #pragma comment(lib, ...) is the
+ * MinGW/MSVC idiom for telling the linker to pull in bcrypt.lib;
+ * mirrors what randombytes.c already does. */
+#if defined(_WIN32)
+  #include <windows.h>
+  #include <bcrypt.h>
+  #include <io.h>      /* _setmode, _fileno */
+  #include <fcntl.h>   /* _O_BINARY */
+  #pragma comment(lib, "bcrypt.lib")
+
+  static int getentropy(void *buf, size_t n) {
+      while (n > 0) {
+          ULONG chunk = (n > 0x7fffffffULL) ? 0x7fffffff : (ULONG)n;
+          NTSTATUS s = BCryptGenRandom(NULL, (PUCHAR)buf, chunk,
+                                       BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+          if (s != 0) return -1;
+          buf = (char *)buf + chunk;
+          n -= chunk;
+      }
+      return 0;
+  }
+#else
+  #include <sys/random.h>
+#endif
 
 #include "tweetnacl.h"
 #include "base58.h"
@@ -351,8 +382,17 @@ static void print_usage(const char *prog) {
 }
 
 static int get_cpu_count(void) {
+#if defined(_WIN32)
+    /* Windows: <windows.h> is already included in the platform block
+     * at the top of the file. GetSystemInfo reports the number of
+     * logical processors, the same semantic sysconf returns on POSIX. */
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (si.dwNumberOfProcessors > 0) ? (int)si.dwNumberOfProcessors : 4;
+#else
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return (n > 0) ? (int)n : 4;
+#endif
 }
 
 static void b58_of(const uint8_t bytes[32], char out[48]) {
@@ -385,6 +425,15 @@ static void hex_encode(const uint8_t *in, int len, char *out) {
 }
 
 int main(int argc, char **argv) {
+#if defined(_WIN32)
+    /* Switch stdout to binary mode so the C runtime doesn't translate
+     * \n into \r\n. Today's JSON output is single-line, so the Node
+     * side's stdout.trim() forgives the trailing translation. But any
+     * future multi-line value embedded in the JSON would silently
+     * corrupt on Windows only — preempt that whole class of bug here. */
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+
     const char *target_str = NULL;
     const char *out_path = NULL;
     const char *vrf_blockhash_hex = NULL;
