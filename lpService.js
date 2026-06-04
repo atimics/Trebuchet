@@ -138,6 +138,35 @@ import {
 import {
   classifyToken2022Extensions,
 } from './lpMintCompat.js';
+// Constants live in lpConstants.js as the single source of truth. We
+// import rather than redefine so an update there can never silently
+// diverge from a stale copy here.
+//
+// Note: the estimateRequiredFunding implementation in this file has
+// substantially diverged from the parallel one in lpEstimate.js
+// (different feature set, different math — production uses this one,
+// the lpEstimate.js version has its own test suite). Unifying the
+// functions is a larger refactor; consolidating just the constants is
+// safe because the values currently agree byte-for-byte.
+import {
+  WSOL_MINT,
+  FALLBACK_SOL_USD,
+  COST_POOL_RENT_SOL,
+  COST_TICK_ARRAY_SOL,
+  COST_POSITION_SOL,
+  COST_LOCK_SOL,
+  COST_TRANSFER_SOL,
+  COST_BS_QUOTE_SOL,
+  COST_TX_BUFFER_SOL,
+  COST_TOKEN_CREATE_SOL,
+  SAFETY_BUFFER_PCT,
+  BS_BOOTSTRAP_USD,
+  AUTOSWAP_TARGET_USD,
+  BS_FALLBACK_WHOLE,
+  AUTOSWAP_SIZING_MULTIPLIER,
+  AUTOSWAP_CUSTOM_TARGET_MULTIPLIER,
+  AUTOSWAP_CUSTOM_SIZING_MULTIPLIER,
+} from './lpConstants.js';
 
 
 // ---------------------------------------------------------------------------
@@ -161,20 +190,9 @@ const DEFAULT_AMM_CONFIG_INDEX = 3;
 // pool tradable; intentionally negligible value.
 const BOOTSTRAP_BASE_TOKENS_WHOLE = 1;
 
-// USD price assumed per SOL when the live price oracle isn't available
-// (offline, API down, etc.). Used as a fallback for sizing the SOL
-// equivalent of an auto-swap line and for support-position quote-side
-// conversion when no live SOL price is available; the safety buffer
-// absorbs any inaccuracy. Slightly conservative on the high side so we
-// don't under-fund.
-const FALLBACK_SOL_USD = 200;
-
 // Floor on the SOL allocation when a SOL pool is included. Aggregators
 // (Jupiter, GeckoTerminal, etc.) work best with a non-trivial SOL pool.
 const MIN_SOL_ALLOCATION_PCT = 1;
-
-// SOL mint (wrapped SOL) — Raydium pools always use wSOL, not native SOL.
-const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // Maximum allowed ratio between the user-committed quote-token USD price
 // (from funding-estimate, or from a manual override the user typed) and
@@ -2306,9 +2324,13 @@ export async function preflightCreatePoolsAndPositions({
         solUsd,
       });
 
-      // initialPrice = launched_per_quote = launchedTokenUsd / quoteUsd.
-      // Same formula createPoolsAndPositions uses; we precompute it so
-      // the modal can show what the actual pool ratio will be.
+      // initialPrice = quote-per-launched = launchedTokenUsd / quoteUsd.
+      // (Despite the look of the division: dividing the launched's USD
+      // value by the quote's USD value yields how many WHOLE quote tokens
+      // equal 1 launched. For a $0.001 launched paired with $200 SOL the
+      // ratio is 5e-6, meaning 1 launched = 5e-6 SOL = $0.001 in SOL
+      // terms.) Same formula createPoolsAndPositions uses; we precompute
+      // it so the modal can show what the actual pool ratio will be.
       const initialPrice = launchedTokenUsd.div(quoteUsd);
 
       resolvedPrices.push({
@@ -3536,73 +3558,10 @@ export async function createPoolsAndPositions({
 // ---------------------------------------------------------------------------
 // Funding estimator (used by the funding step UI)
 // ---------------------------------------------------------------------------
-
-// Per-account rent costs (in SOL). These are reasonably stable on-chain rents
-// for the account types involved. They're approximate but in the right
-// ballpark — Solana account rent depends on size, which doesn't change often.
-const COST_POOL_RENT_SOL    = 0.062;  // pool state account
-const COST_TICK_ARRAY_SOL   = 0.072;  // each tick array account; typically 2 minimum
-const COST_POSITION_SOL     = 0.022;  // position NFT mint + state per position
-const COST_LOCK_SOL         = 0.005;  // Burn & Earn lock call (mints Fee Key NFT)
-const COST_TRANSFER_SOL     = 0.005;  // NFT transfer (creates recipient ATA + transfer)
-const COST_BS_QUOTE_SOL     = 0.001;  // bootstrap quote-side, when quote is SOL (auto-wrapped, dust)
-const COST_TX_BUFFER_SOL    = 0.001;  // priority/network fees per pool
-const COST_TOKEN_CREATE_SOL = 0.05;   // SPL mint + Metaplex metadata + Arweave fee
-const SAFETY_BUFFER_PCT     = 0.20;   // overall safety margin
-
-// Budget for the bootstrap quote-side when quote is NOT SOL: ~$1 worth
-// of the quote token (in USD value). Real on-chain consumption at our
-// launch prices is far less, this is just generous slack so the wallet
-// definitely has enough to cover it. USD-denominated so the requirement
-// stays the same regardless of whether the quote token is worth $0.0001
-// or $100 each.
 //
-// This is the amount the MANUAL PREFUND branch shows — what the user
-// has to send themselves if Raydium can't route their quote token.
-const BS_BOOTSTRAP_USD = 1;
-
-// Target USD value when ACQUIRING via auto-swap. Larger than the actual
-// bootstrap need because swaps are subject to slippage and price drift
-// between estimate and acquire time — if we aim for $1 and the swap
-// fills at 95%, we end up with $0.95 of tokens and the row never goes
-// "met". By aiming for $2 we have a fat buffer: even a 50% partial fill
-// still leaves us with the $1 the bootstrap actually needs. The extra
-// tokens get swept back to the user's destination wallet at the end of
-// the launch by sweepAllTokensToDestination, so nothing is wasted.
-const AUTOSWAP_TARGET_USD = 2;
-
-// Fallback whole-unit amount used in the manual-prefund branch when we
-// can't determine the quote token's USD price (oracle has no data and
-// no Raydium route either). Same value as the old behavior — keeps the
-// edge case predictable for tokens we know nothing about.
-const BS_FALLBACK_WHOLE = 0.01;
-
-// Multiplier on the SOL spend for an auto-swap. With the $2 acquire
-// target, 2x means we spend ~$4 of SOL per swap. That covers pool fees
-// + up to ~50% adverse slippage with margin. Leftover dust gets swept
-// to the destination wallet at the end of the launch.
-const AUTOSWAP_SIZING_MULTIPLIER = 2;
-
-// For CUSTOM-MODE bootstraps, the acquire target and SOL-spend
-// multipliers are dialed way back from the minimal-mode constants
-// above. Why: the minimal-mode 2× target × 2× spend = 4× of actual
-// need was sensible when "actual need" was $1 (a 50% slippage event
-// on a $1 swap is realistic on thin pools, and over-budgeting by $3
-// of SOL is trivial). For user-funded bootstraps measured in the
-// hundreds or thousands of dollars, that same compound 4× becomes
-// hundreds or thousands of dollars of over-budget — which the user
-// has to hold in the launch wallet for the duration of the launch
-// even though the bulk sweeps back at the end. That's a poor UX
-// (asks the user to fund 4× what they're committing to LP).
-//
-// At larger swap sizes, real Raydium slippage on a healthy pair is
-// fractions of a percent, not double-digit percents. 15% acquire
-// oversize + 10% SOL spend overhead = ~27% combined buffer, which
-// is generous for any swap in the $100+ range. For pathological
-// thin-liquidity pairs the swap would fail anyway and fall through
-// to the manual-prefund branch.
-const AUTOSWAP_CUSTOM_TARGET_MULTIPLIER = 1.15;  // 15% oversize on acquire
-const AUTOSWAP_CUSTOM_SIZING_MULTIPLIER = 1.10;  // 10% extra SOL on top
+// Cost and sizing constants used below (COST_POOL_RENT_SOL, BS_BOOTSTRAP_USD,
+// AUTOSWAP_*_MULTIPLIER, SAFETY_BUFFER_PCT, etc.) are imported from
+// lpConstants.js. See that file for the rationale behind each value.
 
 /**
  * Estimate funding required for the configured pools, with a per-line

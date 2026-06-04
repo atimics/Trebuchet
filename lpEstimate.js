@@ -1,9 +1,23 @@
 // lpEstimate.js
 //
-// Funding estimator for Trebuchet launches. Given a set of pool allocations,
-// computes the SOL and quote-token funding needed to execute the launch.
-// Extracted from lpService.js so the estimation math can be tested in
-// isolation (table-driven) without dragging in the Raydium SDK.
+// IMPORTANT — this is NOT the production funding estimator. Production
+// uses the `estimateRequiredFunding` exported from lpService.js, which
+// is what server.js imports and what the UI actually hits. The two
+// implementations were once a single extracted module, but lpService's
+// version has substantially evolved (resolvedPrices output, buffered
+// vs. unbuffered subtotal split, support-position cost handling) while
+// this one stayed pinned to the earlier shape. Unifying them is a
+// separate refactor — both are reasonable, but they're not equivalent
+// and you can't just swap one for the other.
+//
+// This file is kept because the table-driven tests in
+// test/lp-estimate.test.mjs cover the core allocation math in
+// isolation (no Raydium SDK, no network) and that coverage is still
+// useful for the math even if the production estimator has a richer
+// surface around it. If you change cost or sizing constants in
+// lpConstants.js, the lpService.js production estimator picks them up
+// automatically via its imports; THIS file picks them up too (same
+// imports below) so behaviour stays aligned on the shared subset.
 //
 // Public API:
 //   estimateRequiredFunding(opts) → { solLamports, byQuote, ... }
