@@ -95,7 +95,13 @@ function computeLockSummary(results) {
   for (const r of results) {
     const mains = Array.isArray(r.mainPositions) ? r.mainPositions : [];
     const ladder = Array.isArray(r.ladderPositions) ? r.ladderPositions : [];
-    const all = [...mains, ...ladder, ...(r.bootstrap ? [r.bootstrap] : [])];
+    // Support positions carry the same locked-or-not lifecycle as
+    // ladder bands. They never have recipients (Fee Keys stay with
+    // the launch wallet), so they only contribute to total + locked
+    // counts, never to totalRecipient/transferred. Defensive against
+    // older result entries that pre-date the field.
+    const support = Array.isArray(r.supportPositions) ? r.supportPositions : [];
+    const all = [...mains, ...ladder, ...support, ...(r.bootstrap ? [r.bootstrap] : [])];
     for (const p of all) {
       total++;
       if (p.locked) locked++;
@@ -125,6 +131,234 @@ function computeLockSummary(results) {
 // Optional `logoDataUrl` parameter: if provided, embedded as the report's
 // hero image. The downloadLaunchReport caller reads the user's selected
 // logo file and converts it to a data URL before calling this.
+// Build the Airdrop section of the launch report. Returns an empty
+// string when no airdrop ran (lastAirdropResult is null) so the call
+// site can render unconditionally — the section just disappears in
+// the no-airdrop case. Called from buildLaunchReportHtml.
+//
+// The section follows the same visual treatment as the other
+// numbered sections: [ NN ] enum-badge, section-title, content. Each
+// recipient row shows the wallet (with copy + Solscan link via the
+// existing addr-row pattern), the tokens delivered, and either the
+// transaction signature (for delivered) or the failure reason (for
+// failed). Delivered and failed lists are visually distinguished by
+// a small color accent on the count badge in each subsection header.
+function buildAirdropReportSection() {
+  // Two rendering paths share most of the visual treatment (enum badge,
+  // section title, recipient table). They diverge on:
+  //   - title suffix and intro paragraph (pending vs delivered language)
+  //   - row contents (planned amount + "pending" badge vs delivered amount
+  //     + tx signature)
+  //   - subsection counts and pluralization
+  //
+  // Pending mode runs when no airdrop result exists yet AND the user has
+  // configured a non-empty airdrop. Both Step 5's preview and any
+  // pre-transfer Download Launch Report click pick this up so the user
+  // never sees a confusing "I configured an airdrop but the report doesn't
+  // mention it" state.
+
+  const fmtTokens = (n) => {
+    const num = Number(n);
+    if (!Number.isFinite(num)) return '—';
+    return num.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  };
+
+  // ---- Pending path: airdrop configured but not yet executed ----
+  // Triggered when no result exists yet but the configured payload has
+  // recipients. buildAirdropTransferPayload returns null when:
+  //   - no token created yet (so we can't possibly have run)
+  //   - mode is customize (preallocation/airdrop is a simple-mode feature)
+  //   - preallocation disabled
+  //   - airdrop disabled or empty
+  // …so falling through to '' below is the right outcome in all those
+  // cases — there genuinely is no airdrop section to render.
+  if (!lastAirdropResult) {
+    const pending = buildAirdropTransferPayload();
+    if (!pending || !Array.isArray(pending.recipients) || pending.recipients.length === 0) {
+      return '';
+    }
+    const recipients = pending.recipients;
+    const totalPending = recipients.reduce(
+      (s, r) => s + (Number(r.tokens) || 0), 0,
+    );
+
+    // Recipient table — same structure as the delivered table but the
+    // third column reads "pending" instead of a tx link. Amber tint
+    // mirrors the failed-row treatment so "not yet done" is visually
+    // distinct from delivered/success.
+    const pendingRows = recipients.map((r) => {
+      const wAddr = String(r.wallet || '');
+      const tokensTxt = fmtTokens(r.tokens);
+      return `<tr>
+        <td>
+          <code style="font-family: 'JetBrains Mono', monospace; font-size: 11px; word-break: break-all;">${escapeHtml(wAddr || '—')}</code>
+          ${wAddr ? `<a class="explorer-link" href="${escapeAttr(solscanAddrUrl(wAddr))}" target="_blank" rel="noopener" title="View address on Solscan" style="margin-left: 4px;">↗</a>` : ''}
+        </td>
+        <td style="text-align: right;">${tokensTxt}</td>
+        <td style="color: #b8821a; font-style: italic;">pending</td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <hr class="section-rule">
+      <div class="enum-badge">[ 04 ] &nbsp; Airdrop</div>
+      <h2 class="section-title">
+        Airdrop distribution
+        <span style="font-size: 13px; color: #b8821a; font-weight: normal; margin-left: 8px;">— pending</span>
+      </h2>
+      <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a); margin-bottom: 1rem;">
+        ${recipients.length} recipient${recipients.length === 1 ? '' : 's'} will receive
+        <strong>${fmtTokens(totalPending)}</strong> tokens from the preallocation budget
+        when the Step 6 transfer is executed. The list and amounts below are the
+        planned distribution.
+      </p>
+      <h3 class="subsection">
+        To be delivered &middot;
+        <span style="color: #b8821a;">${recipients.length} recipient${recipients.length === 1 ? '' : 's'}</span> &middot;
+        ${fmtTokens(totalPending)} tokens
+      </h3>
+      <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 1rem;">
+        <thead>
+          <tr style="border-bottom: 1px solid var(--rule, rgba(28,22,16,0.15));">
+            <th style="text-align: left; padding: 4px 8px 4px 0;">Recipient</th>
+            <th style="text-align: right; padding: 4px 8px;">Tokens</th>
+            <th style="text-align: left; padding: 4px 0;">Status</th>
+          </tr>
+        </thead>
+        <tbody>${pendingRows}</tbody>
+      </table>
+    `;
+  }
+
+  // ---- Post-run path: airdrop has executed; render delivered + failed ----
+  const delivered = lastAirdropResult.transferred || [];
+  const failed = lastAirdropResult.failed || [];
+  if (delivered.length === 0 && failed.length === 0) return '';
+
+  // Total tokens delivered — sum across the transferred list. Useful
+  // summary stat at the top so the user has a single number for "how
+  // much actually went out" without scanning every row.
+  const totalDelivered = delivered.reduce(
+    (s, r) => s + (Number(r.tokens) || 0), 0,
+  );
+  const totalFailed = failed.reduce(
+    (s, r) => s + (Number(r.tokens) || 0), 0,
+  );
+
+  // Delivered rows — each shows wallet + tokens + tx signature with
+  // Solscan link. Pattern matches the per-pool position rows so the
+  // report reads consistently end-to-end.
+  let deliveredRows = '';
+  if (delivered.length > 0) {
+    deliveredRows = delivered.map((r) => {
+      const wAddr = String(r.wallet || '');
+      const tokensTxt = fmtTokens(r.tokens);
+      const txCell = r.txId
+        ? `<a class="explorer-link" href="${escapeAttr(solscanTxUrl(r.txId))}" target="_blank" rel="noopener" title="View transaction on Solscan">${escapeHtml(r.txId.slice(0, 8))}…↗</a>`
+        : '—';
+      return `<tr>
+        <td>
+          <code style="font-family: 'JetBrains Mono', monospace; font-size: 11px; word-break: break-all;">${escapeHtml(wAddr || '—')}</code>
+          ${wAddr ? `<a class="explorer-link" href="${escapeAttr(solscanAddrUrl(wAddr))}" target="_blank" rel="noopener" title="View address on Solscan" style="margin-left: 4px;">↗</a>` : ''}
+        </td>
+        <td style="text-align: right;">${tokensTxt}</td>
+        <td>${txCell}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Failed rows — each shows wallet + tokens + the failure reason
+  // (truncated if very long; the on-screen result panel and the
+  // downloadable CSV both have the full text). Color-tinted in muted
+  // amber to distinguish from delivered rows at a glance.
+  let failedRows = '';
+  if (failed.length > 0) {
+    failedRows = failed.map((r) => {
+      const wAddr = String(r.wallet || '');
+      const tokensTxt = fmtTokens(r.tokens);
+      let reasonRaw = String(r.error || 'unknown error');
+      if (reasonRaw.length > 140) reasonRaw = reasonRaw.slice(0, 137) + '…';
+      const verifyLinkHtml = r.signature
+        ? ` <a class="explorer-link" href="${escapeAttr(solscanTxUrl(r.signature))}" target="_blank" rel="noopener" title="View transaction on Solscan to verify whether it landed">verify ↗</a>`
+        : '';
+      return `<tr>
+        <td>
+          <code style="font-family: 'JetBrains Mono', monospace; font-size: 11px; word-break: break-all;">${escapeHtml(wAddr || '—')}</code>
+          ${wAddr ? `<a class="explorer-link" href="${escapeAttr(solscanAddrUrl(wAddr))}" target="_blank" rel="noopener" title="View address on Solscan" style="margin-left: 4px;">↗</a>` : ''}
+        </td>
+        <td style="text-align: right;">${tokensTxt}</td>
+        <td style="color: #b8821a;">${escapeHtml(reasonRaw)}${verifyLinkHtml}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Compose the two subsections. We only render a subsection when
+  // there's something to put in it, so a clean airdrop produces just
+  // the "Delivered" subsection and a fully-failed airdrop (rare)
+  // produces just the "Failed" subsection.
+  let deliveredBlock = '';
+  if (delivered.length > 0) {
+    deliveredBlock = `
+      <h3 class="subsection">
+        Delivered &middot;
+        <span style="color: #2c8a52;">${delivered.length} recipient${delivered.length === 1 ? '' : 's'}</span> &middot;
+        ${fmtTokens(totalDelivered)} tokens
+      </h3>
+      <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 1rem;">
+        <thead>
+          <tr style="border-bottom: 1px solid var(--rule, rgba(28,22,16,0.15));">
+            <th style="text-align: left; padding: 4px 8px 4px 0;">Recipient</th>
+            <th style="text-align: right; padding: 4px 8px;">Tokens</th>
+            <th style="text-align: left; padding: 4px 0;">Transaction</th>
+          </tr>
+        </thead>
+        <tbody>${deliveredRows}</tbody>
+      </table>
+    `;
+  }
+  let failedBlock = '';
+  if (failed.length > 0) {
+    failedBlock = `
+      <h3 class="subsection">
+        Failed &middot;
+        <span style="color: #b8821a;">${failed.length} recipient${failed.length === 1 ? '' : 's'}</span> &middot;
+        ${fmtTokens(totalFailed)} tokens un-delivered
+      </h3>
+      <p style="font-size: 12px; color: var(--ink-muted, #6a4f2a); margin-bottom: 0.5rem;">
+        These recipients did not receive their share during the launch.
+        Their portion of the supply remained in the ephemeral wallet and
+        was swept to the destination wallet alongside the rest. To
+        distribute manually, use the recipient list below or the
+        downloadable CSV from the Step 6 result panel.
+      </p>
+      <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 1rem;">
+        <thead>
+          <tr style="border-bottom: 1px solid var(--rule, rgba(28,22,16,0.15));">
+            <th style="text-align: left; padding: 4px 8px 4px 0;">Recipient</th>
+            <th style="text-align: right; padding: 4px 8px;">Tokens</th>
+            <th style="text-align: left; padding: 4px 0;">Reason</th>
+          </tr>
+        </thead>
+        <tbody>${failedRows}</tbody>
+      </table>
+    `;
+  }
+
+  return `
+    <hr class="section-rule">
+    <div class="enum-badge">[ 04 ] &nbsp; Airdrop</div>
+    <h2 class="section-title">Airdrop distribution</h2>
+    <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a); margin-bottom: 1rem;">
+      The launched token was distributed to ${delivered.length + failed.length}
+      recipient${(delivered.length + failed.length) === 1 ? '' : 's'} from the
+      preallocation budget as part of the Step 6 transfer.
+      ${failed.length > 0 ? `<strong style="color: #b8821a;">${failed.length} did not deliver successfully.</strong>` : ''}
+    </p>
+    ${deliveredBlock}
+    ${failedBlock}
+  `;
+}
+
 function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
   const now = new Date();
   const tokenInfo = createdTokenInfo || {};
@@ -238,6 +472,30 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
         </div>`;
     });
 
+    // Support positions. Single-sided quote position(s) sitting below
+    // launch price (above for mintB-side launches). Backs preallocated
+    // supply with a quote-side buy wall. No recipient — Fee Keys stay
+    // with the launch wallet. Currently always 0 or 1 entries per pool,
+    // but rendered as a loop in case future iterations open multiple
+    // support bands at different depths.
+    const support = Array.isArray(r.supportPositions) ? r.supportPositions : [];
+    support.forEach((pos, si) => {
+      const depthLabel = pos.depthPct != null
+        ? `launch price down to -${Number(pos.depthPct).toFixed(0)}% (single-sided quote)`
+        : `tick ${pos.tickLower} → ${pos.tickUpper}`;
+      positionsHtml += `
+        <div class="position-card">
+          <div class="position-header">
+            <span class="position-kind">Support position${support.length > 1 ? ` ${si + 1}/${support.length}` : ''}</span>
+            ${renderLockBadge(pos.locked)}
+          </div>
+          ${renderFactRow('Range', depthLabel)}
+          ${renderAddressRow('Position NFT', pos.nftMint)}
+          ${renderAddressRow('Open TX', pos.txIds?.open, 'tx')}
+          ${renderAddressRow('Lock TX', pos.txIds?.lock, 'tx')}
+        </div>`;
+    });
+
     const poolEnum = String(idx + 1).padStart(2, '0');
     poolSections += `
       <section class="pool-section">
@@ -325,6 +583,28 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
     });
     breakdownHtml += '</div>';
   });
+
+  // Preallocation section (Airdrop + Launch-wallet holdback) — these arcs
+  // already exist in the donut chart with poolIdx === -1, but without an
+  // entry in the textual breakdown the legend's percentages sum to less
+  // than 100% with no explanation of where the rest of the supply went.
+  // Mirrors the in-app renderTokenomicsBreakdownHtml preallocation
+  // section so the report and the in-app preview present the same info.
+  const preallocArcs = arcs.filter((a) => a.poolIdx === -1);
+  if (preallocArcs.length > 0) {
+    const preallocTotalPct = preallocArcs
+      .reduce((s, a) => s + a.share, 0) * 100;
+    breakdownHtml += `<div class="breakdown-pool">
+      <div class="breakdown-pool-name">Preallocation — ${preallocTotalPct.toFixed(2)}%</div>`;
+    preallocArcs.forEach((arc) => {
+      breakdownHtml += `<div class="breakdown-arc">
+        <span class="breakdown-swatch" style="background:${arc.color};"></span>
+        <span class="breakdown-arc-label">${escapeHtml(arc.label)}</span>
+        <span class="breakdown-arc-share">${(arc.share * 100).toFixed(2)}%</span>
+      </div>`;
+    });
+    breakdownHtml += '</div>';
+  }
 
   // ---- Logo hero block ----
   // Embedded as a data URL so the report is fully portable. The user
@@ -957,6 +1237,8 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
 
   ${poolSections}
 
+  ${buildAirdropReportSection()}
+
   <footer class="doc-footer">
     <div>
       <div>Trebuchet — launch Solana tokens, no middleman.</div>
@@ -1092,8 +1374,6 @@ async function downloadLaunchReport() {
   }
 }
 
-bind('downloadReportBtnStep5', 'click', downloadLaunchReport);
-
 bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
 
 // ===========================================================================
@@ -1108,7 +1388,21 @@ bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
 // Memoized report HTML — build once per launch, reuse across all three
 // containers. Reset by the lpDoneInfo/transferResult hide paths.
 let _cachedReportHtml = null;
-function _resetCachedReport() { _cachedReportHtml = null; }
+function _resetCachedReport() {
+  _cachedReportHtml = null;
+  // Also clear every preview iframe's srcdoc. renderLaunchReportPreview
+  // only sets srcdoc when it's empty (so the iframe doesn't reload on
+  // every step transition); without this, a preview iframe that was
+  // already shown keeps its OLD HTML even after the cache is rebuilt
+  // with fresh data. Most visible failure: step 5's preview was rendered
+  // before the airdrop step ran, so it has airdrop-less HTML; without
+  // clearing the iframe srcdoc, even reaching step 6 and rebuilding the
+  // cache leaves step 5 stuck on the old report.
+  for (const prefix of ['step5', 'step6', 'modal']) {
+    const iframe = document.getElementById(prefix + 'ReportIframe');
+    if (iframe && iframe.srcdoc) iframe.srcdoc = '';
+  }
+}
 
 // Build (or retrieve cached) report HTML document string.
 async function _getReportHtml() {
@@ -1251,6 +1545,7 @@ function _legacyCopyReport(text, count, mode) {
   }
   document.body.removeChild(ta);
 }
+
 
 
 

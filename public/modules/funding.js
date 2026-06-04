@@ -29,6 +29,48 @@ async function showLaunchSuccessModal() {
   const modal = document.getElementById('launchSuccessModal');
   if (!modal) return;
 
+  // ---- Lazy-wire close handlers on first open ----
+  // The launch-success modal markup lives later in index.html than the
+  // <script src="app.js"> tag, so any bind() called at module load gets
+  // null from getElementById and silently warns "Element not found" —
+  // the X, Done, backdrop-click, and Esc paths would all fail to close
+  // the modal. Same lazy-init pattern showTokenomicsModal() uses (see
+  // the comment around line ~9970). Guarded by a dataset flag so a
+  // re-open from the step-6 "View launch summary" button doesn't stack
+  // duplicate listeners.
+  if (!modal.dataset.closeHandlersWired) {
+    const closeBtn = document.getElementById('launchSuccessCloseBtn');
+    if (closeBtn) closeBtn.addEventListener('click', hideLaunchSuccessModal);
+    const doneBtn = document.getElementById('launchSuccessDoneBtn');
+    if (doneBtn) doneBtn.addEventListener('click', hideLaunchSuccessModal);
+    const bg = modal.querySelector('.modal-background');
+    if (bg) bg.addEventListener('click', hideLaunchSuccessModal);
+    // External-action delegation (Jupiter / CoinGecko / DexScreener /
+    // CoinCommunities buttons). Same reason this needs to be lazy:
+    // the .launch-success-actions container also lives after the
+    // script tag.
+    const actions = modal.querySelector('.launch-success-actions');
+    if (actions) {
+      actions.addEventListener('click', (e) => {
+        const btn = e.target.closest('.launch-success-action[data-action="external"]');
+        if (!btn) return;
+        const url = btn.getAttribute('data-url');
+        if (!url) return;
+        try {
+          window.open(url, '_blank', 'noopener,noreferrer');
+        } catch (err) {
+          console.warn('Failed to open external URL:', url, err);
+          log(`Could not open ${url} — please copy and open it manually.`, 'warning');
+        }
+      });
+    }
+    // Download-report button. Doesn't close the modal — user may want
+    // to click multiple actions in one sitting.
+    const reportBtn = document.getElementById('launchSuccessReportBtn');
+    if (reportBtn) reportBtn.addEventListener('click', () => downloadLaunchReport());
+    modal.dataset.closeHandlersWired = 'true';
+  }
+
   // ---- Populate identity & summary ----
   // Prefer the resolved on-chain info (createdTokenInfo, set by
   // createToken), fall back to the live form values for any field
@@ -183,25 +225,22 @@ function hideLaunchSuccessModal() {
   if (mount) mount.classList.remove('coin-live');
 }
 
-// ---- Wire up modal close paths ----
-// Three ways to close: the X in the header, the Done button in the
-// footer, and clicking the modal background. Each calls the same
-// hideLaunchSuccessModal so the coin teardown runs every time.
-bind('launchSuccessCloseBtn', 'click', hideLaunchSuccessModal);
-bind('launchSuccessDoneBtn', 'click', hideLaunchSuccessModal);
-(function wireLaunchSuccessBackdrop() {
-  const modal = document.getElementById('launchSuccessModal');
-  if (!modal) return;
-  const bg = modal.querySelector('.modal-background');
-  if (bg) bg.addEventListener('click', hideLaunchSuccessModal);
-})();
+// ---- Modal close handlers wired lazily in showLaunchSuccessModal() ----
+// The X button, Done button, backdrop click, report-download button, and
+// external-action delegation are all wired on first open inside
+// showLaunchSuccessModal rather than at module load. The reason is in the
+// comment at the top of that function: the modal markup lives later in
+// index.html than the <script src="app.js"> tag, so a top-level bind()
+// would silently fail. Same pattern showTokenomicsModal() uses.
 
-// Esc-to-close. Separate from the EXTRA_CLOSE_MODAL_IDS list further
-// down because that list's generic close just removes is-active — it
-// doesn't tear down the coin. Adding our own keydown listener keeps
-// the coin lifecycle correct regardless of how the modal is dismissed.
-// Idempotency: hideLaunchSuccessModal is safe to call when already
-// closed, so even if both listeners fire we just no-op the second time.
+// Esc-to-close. This one CAN live at top level because the listener is
+// attached to `document` (always exists at script parse time) and the
+// modal lookup happens at runtime each time Esc is pressed. Separate
+// from the EXTRA_CLOSE_MODAL_IDS list further down because that list's
+// generic close just removes is-active — it doesn't tear down the coin.
+// Adding our own keydown listener keeps the coin lifecycle correct
+// regardless of how the modal is dismissed. Idempotency:
+// hideLaunchSuccessModal is safe to call when already closed.
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const modal = document.getElementById('launchSuccessModal');
@@ -209,40 +248,6 @@ document.addEventListener('keydown', (e) => {
     hideLaunchSuccessModal();
   }
 });
-
-// ---- Wire up the action buttons ----
-// The download-report action calls the same function the step-5/step-6
-// buttons use. We deliberately DON'T close the modal here — the user
-// is likely to want to click more than one action.
-bind('launchSuccessReportBtn', 'click', () => {
-  downloadLaunchReport();
-});
-
-// External actions (Jupiter, CoinGecko, DexScreener, CoinCommunities):
-// one delegated handler reads data-url off whichever .launch-success-action
-// was clicked. window.open with _blank is intercepted by Electron's
-// setWindowOpenHandler (main.js) and routed to the system default
-// browser via shell.openExternal, so the link opens outside the app.
-// Same as we don't close on the report action — let the user click
-// multiple things in one sitting.
-(function wireLaunchSuccessActions() {
-  const container = document.querySelector('#launchSuccessModal .launch-success-actions');
-  if (!container) return;
-  container.addEventListener('click', (e) => {
-    const btn = e.target.closest('.launch-success-action[data-action="external"]');
-    if (!btn) return;
-    const url = btn.getAttribute('data-url');
-    if (!url) return;
-    try {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    } catch (err) {
-      // Shouldn't happen in Electron (popup blockers don't apply) but
-      // log it just in case so the user isn't met with silence.
-      console.warn('Failed to open external URL:', url, err);
-      log(`Could not open ${url} — please copy and open it manually.`, 'warning');
-    }
-  });
-})();
 
 // Re-open from the step-6 "View launch summary" button. Same path as
 // the auto-open after a successful transfer — re-runs showLaunchSuccessModal,
@@ -255,19 +260,56 @@ bind('viewLaunchSummaryBtn', 'click', () => {
 
 function buildAllocationsForApi() {
   return pools.map((p) => {
-    // Pass the price the UI already resolved through to the server as
-    // quoteUsdOverride, unless the user explicitly typed an override
-    // (which always wins). This means the launch flow doesn't re-fetch
-    // a price the UI just looked up — fewer external API calls, and the
-    // price the user saw in the UI is the price the launch math uses.
+    // Pass our resolved price through to the server as quoteUsdOverride.
+    //
+    // Per the price-safety plan (Milestones A + B), this no longer means
+    // "skip server-side price lookup" the way it used to. The server
+    // ALWAYS runs a fresh just-in-time Raydium swap probe at pool-create
+    // time for non-SOL quotes. What it does with the override:
+    //
+    //   1. Treats it as the drift-guard reference. After the probe runs,
+    //      it compares the probe value against this override. If they
+    //      differ by more than the configured threshold (default 25%),
+    //      it aborts the launch with a pre_flight error telling the user
+    //      to refresh the funding estimate.
+    //
+    //   2. For SOL pools, the override is checked against the live
+    //      SOL/USD oracle reading the same way. SOL rarely drifts that
+    //      much in a normal funding-to-create window, but the guard is
+    //      symmetric.
+    //
+    // What value to send: whatever the user committed to at funding time.
+    // The funding-estimate response (Milestone B) propagates its
+    // resolvedPrices back into pool.resolvedPriceUsd, so by the time the
+    // user clicks "Create Pools" the resolvedPriceUsd holds the canonical
+    // funding-estimate price. That's the price the launch math sized
+    // against; that's the right drift reference.
+    //
+    // If the user typed an explicit override in customize mode, that
+    // wins — the user is opting into a price they chose deliberately,
+    // and the drift guard checks the live probe against THEIR number.
     const effectiveUsdOverride =
       p.quoteUsdOverride != null
         ? p.quoteUsdOverride
         : (p.resolvedPriceUsd != null ? Number(p.resolvedPriceUsd) : null);
-    const effectiveSymbolOverride =
-      p.quoteSymbolOverride != null && p.quoteSymbolOverride !== ''
-        ? p.quoteSymbolOverride
-        : (p.resolvedSymbol || null);
+    // Symbol-override resolution priority:
+    //   1. User-typed override in customize mode (explicit user intent)
+    //   2. Resolved symbol from tokenInfoService (GeckoTerminal / Jupiter
+    //      / DexScreener) — usually present for liquid tokens
+    //   3. Flywheel label — bespoke flywheel tokens may not be in price
+    //      APIs yet; the label ("Reserve" / "Meme" / etc.) is a much
+    //      better display string than the first 6 chars of the mint
+    //   4. null — server falls back to mint.slice(0,6), which is the
+    //      "we genuinely don't know" surface for arbitrary tokens
+    let effectiveSymbolOverride;
+    if (p.quoteSymbolOverride != null && p.quoteSymbolOverride !== '') {
+      effectiveSymbolOverride = p.quoteSymbolOverride;
+    } else if (p.resolvedSymbol) {
+      effectiveSymbolOverride = p.resolvedSymbol;
+    } else {
+      const fw = Object.values(FLYWHEELS).find((f) => f.mint === p.quoteToken);
+      effectiveSymbolOverride = fw ? fw.label : null;
+    }
     const effectiveDecimalsOverride =
       p.quoteDecimalsOverride != null
         ? p.quoteDecimalsOverride
@@ -335,6 +377,27 @@ function buildAllocationsForApi() {
       distribution = [{ sharePercent: 100, recipient: null }];
     }
 
+    // Wire support config: { mode: 'off' } or { mode: 'custom', solValue, depthPct }.
+    // The solValue is the user's canonical input in SOL; the orchestrator
+    // converts to USD-equivalent raw quote units at LP-creation time
+    // using the live SOL price. depthPct controls how far below launch
+    // the position covers (range [1, 50], default 10). Support is
+    // quote-only — no supplyPercent conversion needed since it doesn't
+    // carve from token supply.
+    const supportCfg = p.supportConfig || { mode: 'off' };
+    const support = (supportCfg.mode === 'custom' && Number(supportCfg.solValue) > 0)
+      ? {
+          mode: 'custom',
+          solValue: Number(supportCfg.solValue),
+          // Clamp at wire-time so a transient out-of-range UI value (e.g.
+          // mid-keystroke typing) never gets sent to pre-flight. Pre-flight
+          // validates again with the same bounds; clamping here gives a
+          // cleaner UX (user doesn't see "invalid depthPct" errors from
+          // a value the UI will eventually correct on blur).
+          depthPct: clampSupportDepth(supportCfg.depthPct),
+        }
+      : { mode: 'off' };
+
     return {
       quoteToken: p.quoteToken,
       supplyPercent: p.supplyPercent,
@@ -345,6 +408,7 @@ function buildAllocationsForApi() {
       distribution,
       bootstrap,
       ladder,
+      support,
     };
   });
 }
@@ -426,8 +490,15 @@ function renderFundingRequirements() {
   // When that happens, a small grey/yellow note appears next to the
   // numbers indicating the buffer is below recommended but the launch
   // can still proceed.
-  const solReqSol = fundingRequirement.totalSol
-    || fundingRequirement.solLamports / 1e9;
+  // The launch's funding requirement comes from the server. The
+  // airdrop execution cost (ATA rent + tx fees for the recipient
+  // transfers) is computed client-side and added on top so the user
+  // funds enough for the entire flow including the post-launch
+  // distribution. When airdrop is disabled or empty this adds 0.
+  const airdropExecutionSol = computeAirdropExecutionCostSol();
+  const solReqSol = (fundingRequirement.totalSol
+    || fundingRequirement.solLamports / 1e9)
+    + airdropExecutionSol;
   const solRow = document.createElement('div');
   solRow.className = 'balance-row';
   solRow.dataset.kind = 'sol';
@@ -444,7 +515,16 @@ function renderFundingRequirements() {
   Object.entries(fundingRequirement.byQuote).forEach(([mint, rawAmt]) => {
     const pool = findPoolByMint(mint);
     const decimals = pool?.resolvedDecimals ?? pool?.quoteDecimalsOverride ?? 6;
-    const symbol = pool?.resolvedSymbol ?? pool?.quoteSymbolOverride ?? mint.slice(0, 6);
+    // Symbol resolution — same priority as buildAllocationsForApi:
+    // user override > resolved symbol > flywheel label > mint prefix.
+    // The mint-prefix fallback only fires for truly unknown tokens
+    // (no price-API coverage, not a flywheel, no user override) and
+    // even then is a worst-case display rather than a stable ticker.
+    let symbol = pool?.resolvedSymbol ?? pool?.quoteSymbolOverride;
+    if (!symbol) {
+      const fw = Object.values(FLYWHEELS).find((f) => f.mint === mint);
+      symbol = fw ? fw.label : mint.slice(0, 6);
+    }
     // neededWhole is the precise target (what the bootstrap actually
     // needs on-chain). displayNeeded is the user-facing rounded form;
     // displayed value may have lost precision via toPrecision/floor in
@@ -453,6 +533,17 @@ function renderFundingRequirements() {
     // would produce false "met" states for small fractional targets.
     const neededWhole = rawAmt / Math.pow(10, decimals);
     const displayNeeded = formatTokenDisplay(neededWhole);
+    // Approximate USD value of this manual-prefund target. Uses the
+    // pool's resolved price for the conversion — same source the
+    // estimator and cost-preview use. Hidden when we don't have a
+    // price (genuinely unpriced token).
+    const priceUsd = Number(pool?.resolvedPriceUsd ?? pool?.quoteUsdOverride);
+    const usdValue = Number.isFinite(priceUsd) && priceUsd > 0
+      ? neededWhole * priceUsd
+      : null;
+    const usdChip = usdValue != null
+      ? ` <span class="is-size-7 has-text-grey">(${formatUsdShort(usdValue)})</span>`
+      : '';
 
     const row = document.createElement('div');
     row.className = 'balance-row';
@@ -461,7 +552,7 @@ function renderFundingRequirements() {
     row.dataset.decimals = decimals;
     row.dataset.target = String(neededWhole);
     row.innerHTML = `
-      <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(symbol)}</strong></span>
+      <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(symbol)}</strong>${usdChip}</span>
       <span><span data-field="actual">0</span> / <span data-field="needed">${displayNeeded}</span></span>
     `;
     sendContainer.appendChild(row);
@@ -492,6 +583,21 @@ function renderFundingRequirements() {
       const acquireWhole = Number(item.targetRaw) / Math.pow(10, item.quoteDecimals);
       const minWhole = Number(item.minRaw || item.targetRaw) / Math.pow(10, item.quoteDecimals);
       const displayTarget = formatTokenDisplay(acquireWhole);
+      // Approximate USD value of the acquire target. item.quoteUsd is a
+      // string-encoded Decimal from the server estimator (the same price
+      // the swap budget was sized against). Multiplying by acquireWhole
+      // gives the dollar amount the user should expect to see swapped.
+      // Shown in parentheses next to the token count so the user can
+      // sanity-check magnitude — "3149 tokens" is meaningless without
+      // knowing each is worth $0.001, but "$3.15" is universally
+      // understood. Falls back to no USD chip when price is missing.
+      const quoteUsdPrice = Number(item.quoteUsd);
+      const usdValue = Number.isFinite(quoteUsdPrice) && quoteUsdPrice > 0
+        ? acquireWhole * quoteUsdPrice
+        : null;
+      const usdChip = usdValue != null
+        ? ` <span class="is-size-7 has-text-grey">(${formatUsdShort(usdValue)})</span>`
+        : '';
 
       const row = document.createElement('div');
       row.className = 'balance-row';
@@ -509,7 +615,7 @@ function renderFundingRequirements() {
       // it. Clicking it re-runs Acquire for just this one row.
       row.innerHTML = `
         <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(item.quoteSymbol)}</strong>
-          <span class="is-size-7 has-text-grey ml-2">≈ ${displayTarget}</span></span>
+          <span class="is-size-7 has-text-grey ml-2">≈ ${displayTarget}</span>${usdChip}</span>
         <span class="row-status-cell">
           <span data-field="status" class="is-size-7 has-text-grey">Pending</span>
           <button class="row-retry-btn" type="button" title="Retry this swap" aria-label="Retry">
@@ -555,9 +661,22 @@ function renderFundingBreakdown() {
       <td class="has-text-right is-family-monospace">${item.amount} ${escapeHtml(item.symbol)}</td>
     </tr>`;
   }
+  // Airdrop execution cost (ATA rent + tx fees) is calculated client-
+  // side since the server estimator doesn't know about the airdrop
+  // list. Show as a separate line item so the user understands where
+  // the SOL goes, then include in the displayed total below.
+  const airdropExecutionSol = computeAirdropExecutionCostSol();
+  if (airdropExecutionSol > 0) {
+    const n = simpleConfig.airdrop.parsedRows.length;
+    html += `<tr>
+      <td>Airdrop execution (${n} recipient${n === 1 ? '' : 's'}: ATA rent + tx fees)</td>
+      <td class="has-text-right is-family-monospace">${airdropExecutionSol.toFixed(4)} SOL</td>
+    </tr>`;
+  }
+  const displayedTotal = (fundingRequirement.totalSol || 0) + airdropExecutionSol;
   html += `<tr class="has-text-weight-bold">
     <td>Total SOL</td>
-    <td class="has-text-right is-family-monospace">${fundingRequirement.totalSol.toFixed(4)} SOL</td>
+    <td class="has-text-right is-family-monospace">${displayedTotal.toFixed(4)} SOL</td>
   </tr>`;
   html += '</tbody></table>';
   container.innerHTML = html;
@@ -621,8 +740,15 @@ async function pollBalances() {
     const subtotalSol = fundingRequirement.subtotalSol || 0;
     const totalSol = fundingRequirement.totalSol || (fundingRequirement.solLamports / 1e9);
     const solCredit = fundingRequirement.solCreditedForCompletedSwaps || 0;
-    const solMinNeeded = Math.max(0, subtotalSol - solCredit);
-    const solRecommended = Math.max(0, totalSol - solCredit);
+    // Airdrop execution cost is real SOL the wallet must hold even
+    // though it won't be spent until after the launch completes. Both
+    // the bare-minimum threshold and the recommended threshold get
+    // bumped by this — under-funding would leave the airdrop step
+    // stranded after the launch finishes, with the user having to
+    // top-up to complete the flow.
+    const airdropExecutionSol = computeAirdropExecutionCostSol();
+    const solMinNeeded = Math.max(0, subtotalSol - solCredit) + airdropExecutionSol;
+    const solRecommended = Math.max(0, totalSol - solCredit) + airdropExecutionSol;
     const solMet = sol >= solMinNeeded;
     const solHasFullBuffer = sol >= solRecommended;
     // The displayed "needed" is the bare minimum — the threshold that
@@ -1464,6 +1590,15 @@ function convertAutoSwapRowToManual(quoteMint, quoteSymbol) {
   // precise value; the displayed text is formatted for readability.
   const pool = findPoolByMint(quoteMint);
   const displayTarget = formatTokenDisplay(manualTarget);
+  // USD chip for consistency with the original Section-1 manual rows.
+  // Same source-of-truth (pool's resolved price) and same formatter.
+  const priceUsd = Number(pool?.resolvedPriceUsd ?? pool?.quoteUsdOverride);
+  const usdValue = Number.isFinite(priceUsd) && priceUsd > 0
+    ? manualTarget * priceUsd
+    : null;
+  const usdChip = usdValue != null
+    ? ` <span class="is-size-7 has-text-grey">(${formatUsdShort(usdValue)})</span>`
+    : '';
   const newRow = document.createElement('div');
   newRow.className = 'balance-row';
   newRow.dataset.kind = 'token';
@@ -1471,7 +1606,7 @@ function convertAutoSwapRowToManual(quoteMint, quoteSymbol) {
   newRow.dataset.decimals = decimals;
   newRow.dataset.target = String(manualTarget);
   newRow.innerHTML = `
-    <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(quoteSymbol)}</strong>
+    <span><span class="status-dot"></span>${rowLogoHtml(pool)}<strong>${escapeHtml(quoteSymbol)}</strong>${usdChip}
       <span class="tag is-warning is-light is-small ml-2">send manually</span></span>
     <span><span data-field="actual">0</span> / <span data-field="needed">${displayTarget}</span></span>
   `;

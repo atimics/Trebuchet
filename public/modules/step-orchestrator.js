@@ -511,3 +511,14 @@ bind('cancelConfirmDismissBtn', 'click', () => {
   document.getElementById('cancelConfirmModal').classList.remove('is-active');
 });
 
+// Show the step-6 cancelled panel and decide whether to offer the
+// "Start over with the same wallet" affordance. We only offer start-
+// over when nothing was created on-chain — i.e., the cancel happened
+// before step 4 (token creation). For step-4+ cancels, the token (and
+// possibly pools) exist on-chain; starting over would silently create
+// a SECOND set, leaving the first one stranded. Better UX is to
+// require the user to consciously launch a new instance for that case.
+//
+// `cancelStep` is the step the user was on when they hit cancel (not
+// the post-cancel step, which is always 6). `panelBodyText` is the
+// "what happened" message — varies by cancel mode (empty vs refunded).

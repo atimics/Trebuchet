@@ -211,13 +211,6 @@ function renderPools() {
   });
   updateAllocationSummary();
   updateContinueToFundingState();
-  // Re-validate the active vanity CA against the current pool set so
-  // the warning state in the result block stays in sync when the user
-  // adds/removes pools or a quote mint resolves to a new value. Guard
-  // with typeof in case this fires before the vanity renderer is
-  // defined (function-declaration order isn't guaranteed across this
-  // long file's binding sequence).
-  if (typeof renderVanityCAList === 'function') renderVanityCAList();
 }
 
 // ---------------------------------------------------------------------------
@@ -2086,11 +2079,9 @@ function applyResolvedInfoToPool(pool, info) {
   setIfPresent('resolvedSymbol', info.symbol);
   setIfPresent('resolvedDecimals', info.decimals);
   setIfPresent('resolvedPriceUsd', info.priceUsd);
-  // Save the resolved on-chain mint too. We need it at token-creation
-  // time to seed the keypair search that ensures the launched token
-  // sorts as mintA in every pool (which puts the launched token in
-  // the *denominator* of the displayed Raydium price, matching user
-  // expectations of "launch price up to infinity").
+  // Save the resolved on-chain mint too. Used as a display/link fallback
+  // (e.g. when building Solscan or Birdeye URLs in the pool header) —
+  // see the `pool.resolvedMint || pool.quoteToken` pattern elsewhere.
   setIfPresent('resolvedMint', info.address);
   // Display-only fields. Either may be null if no indexer had the
   // token; the UI handles that by hiding the logo and falling back
@@ -2619,11 +2610,54 @@ function updateContinueToFundingState() {
     // buildAllocationsForApi filters those out automatically (they
     // contribute nothing to the pool's allocation). A slice with an
     // external recipient configured but no address is still a real
-    // mistake — flag it.
+    // mistake — flag it. An address that's filled in but doesn't even
+    // look like base58 is also flagged here so the user sees the
+    // problem on the same screen they entered it (without this check
+    // the server's `normalizeDistribution` rejects with "Invalid
+    // recipient address" only AFTER funding is committed).
     for (const [si, slice] of p.distribution.entries()) {
       if (slice.useExternalRecipient && !slice.recipient) {
         reasons.push(`Pool ${i + 1} slice ${si + 1}: recipient address required`);
+      } else if (
+        slice.useExternalRecipient &&
+        slice.recipient &&
+        !isPlausibleSolAddress(slice.recipient)
+      ) {
+        reasons.push(
+          `Pool ${i + 1} slice ${si + 1}: recipient doesn't look like a valid ` +
+            `Solana address`,
+        );
       }
+    }
+  }
+
+  // Duplicate-pool detection. Raydium derives the CLMM pool PDA from
+  // (ammConfig, mintA, mintB), so two pools with the same quote token
+  // AND the same fee tier collide at the on-chain account address. The
+  // first createPool succeeds; the second fails at simulation with an
+  // opaque "account already in use" error. No SOL is lost, but the
+  // user gets a mid-launch failure with a confusing diagnostic.
+  // Catching it here keeps the failure local to the form.
+  //
+  // Distinct fee tiers on the same quote are legitimately separate
+  // pools — keyed by (normalized quote, ammConfigIndex) so they don't
+  // collide here.
+  const seenPoolKeys = new Map();
+  for (const [i, p] of pools.entries()) {
+    if (!p.quoteToken) continue;
+    const quoteKey =
+      (p.quoteToken || '').toUpperCase() === 'SOL' ? 'SOL' : p.quoteToken;
+    const key = `${quoteKey}|${p.ammConfigIndex}`;
+    if (seenPoolKeys.has(key)) {
+      const firstIdx = seenPoolKeys.get(key);
+      const label = p.resolvedSymbol || p.quoteToken;
+      reasons.push(
+        `Pool ${i + 1} duplicates Pool ${firstIdx + 1} (same ${label} ` +
+          `quote at the same fee tier). Pick a different quote or a ` +
+          `different fee tier — Raydium uses both to identify a pool.`,
+      );
+    } else {
+      seenPoolKeys.set(key, i);
     }
   }
 

@@ -418,12 +418,29 @@ async function removeRpc(url) {
   }
 }
 
-bind('rpcSettingsToggle', 'click', () => {
+function toggleSettingsPanel() {
+  const toggle = document.getElementById('rpcSettingsToggle');
   const panel = document.getElementById('rpcSettingsPanel');
   const chevron = document.getElementById('rpcSettingsChevron');
-  panel.classList.toggle('hidden');
-  chevron.classList.toggle('fa-chevron-down');
-  chevron.classList.toggle('fa-chevron-up');
+  if (!panel) return;
+  // classList.toggle returns true when the class is now present, i.e. the
+  // panel is now hidden — so aria-expanded is the negation.
+  const nowHidden = panel.classList.toggle('hidden');
+  if (chevron) {
+    chevron.classList.toggle('fa-chevron-down');
+    chevron.classList.toggle('fa-chevron-up');
+  }
+  if (toggle) toggle.setAttribute('aria-expanded', String(!nowHidden));
+}
+bind('rpcSettingsToggle', 'click', toggleSettingsPanel);
+// The header is role="button" with tabindex=0, so support keyboard
+// activation the way a native button would: Enter and Space toggle it
+// (Space is prevented from scrolling the page).
+bind('rpcSettingsToggle', 'keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    toggleSettingsPanel();
+  }
 });
 
 bind('testRpcBtn', 'click', async () => {
