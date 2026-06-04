@@ -107,6 +107,77 @@ function buildTokenomicsArcs() {
       });
     }
   });
+  // Preallocation arcs — render AFTER pool arcs so the donut reads
+  // "LP positions clockwise, then preallocation holdback" with a
+  // visual break at the boundary.
+  //
+  // The gap is purely a function of how much supply isn't allocated
+  // to LP. Both modes contribute here:
+  //   - SIMPLE mode with preallocation on: the user dialed the
+  //     simple-mode prealloc slider; pools sum to (100 - prealloc%).
+  //   - CUSTOMIZE mode: the user freely sized pools; whatever's left
+  //     between the sum and 100% is implicit preallocation, held in
+  //     the launch wallet.
+  // Either way, the gap is preallocation and the donut should show
+  // it explicitly so the user sees the full 100% of supply broken
+  // down. Without this, customize-mode under-allocation produced a
+  // visual gap in the donut that read as "missing config" rather
+  // than "deliberately held back."
+  //
+  // The airdrop split — separating the airdrop's covered portion
+  // from the launch-wallet remainder — only applies in simple mode,
+  // since customize mode has no airdrop UI. In customize mode the
+  // whole gap is a single "launch wallet (held back)" slice.
+  //
+  // Each arc carries a `poolIdx: -1` sentinel so renderTokenomicsBreakdownHtml
+  // knows to render them in their own non-pool section. Coloring uses
+  // a separate palette (slate/grey) so the preallocation slices are
+  // visually distinct from any pool's color family.
+  const poolsTotalPct = pools.reduce((s, p) => s + (Number(p.supplyPercent) || 0), 0);
+  const gapPct = Math.max(0, 100 - poolsTotalPct);
+  if (gapPct > 0.01) {
+    const isSimpleMode = !simpleConfig.mode || simpleConfig.mode === 'default';
+    const totalSupply = parseNumberInput(document.getElementById('tokenSupply'));
+    // Airdrop only applies in simple mode (no airdrop UI in customize).
+    const airdropOn = isSimpleMode
+      && simpleConfig.preallocationEnabled
+      && simpleConfig.airdrop && simpleConfig.airdrop.enabled
+      && Array.isArray(simpleConfig.airdrop.parsedRows)
+      && simpleConfig.airdrop.parsedRows.length > 0;
+    // Airdrop's covered token amount as a fraction of total supply.
+    let airdropFraction = 0;
+    if (airdropOn && Number.isFinite(totalSupply) && totalSupply > 0) {
+      const totalAirdropTokens = simpleConfig.airdrop.parsedRows
+        .reduce((s, r) => s + (Number(r.tokens) || 0), 0);
+      airdropFraction = totalAirdropTokens / totalSupply;
+      // Clamp to the gap fraction — airdrop can never exceed the
+      // preallocation. The budget gate normally blocks an over-budget
+      // CSV before it reaches here; this cap is a defensive sanity
+      // bound against any transient bookkeeping mismatch.
+      airdropFraction = Math.min(airdropFraction, gapPct / 100);
+    }
+    const launchWalletFraction = (gapPct / 100) - airdropFraction;
+    if (airdropFraction > 0) {
+      arcs.push({
+        poolIdx: -1,
+        kind: 'prealloc-airdrop',
+        variant: 0,
+        label: 'Airdrop',
+        share: airdropFraction,
+        color: 'hsl(210, 22%, 48%)', // slate-blue, distinct from any pool hue
+      });
+    }
+    if (launchWalletFraction > 0.0001) {
+      arcs.push({
+        poolIdx: -1,
+        kind: 'prealloc-launch',
+        variant: 0,
+        label: airdropOn ? 'Launch wallet (unallocated)' : 'Launch wallet (held back)',
+        share: launchWalletFraction,
+        color: 'hsl(210, 14%, 65%)', // lighter slate for the leftover
+      });
+    }
+  }
   return arcs;
 }
 
@@ -285,12 +356,53 @@ function renderTokenomicsBreakdownHtml(arcs) {
     html += '</div></div>';
   });
 
-  // Totals footer.
+  // Preallocation section — listed AFTER pools since it's the holdback
+  // portion that wasn't allocated to LP. Only renders when there are
+  // preallocation arcs in the chart (poolIdx === -1 sentinel). The
+  // header line summarizes the total holdback %; sub-lines split it
+  // into airdrop / launch-wallet portions matching the chart slices.
+  const preallocArcs = arcs.filter((a) => a.poolIdx === -1);
+  if (preallocArcs.length > 0) {
+    const preallocTotalShare = preallocArcs.reduce((s, a) => s + a.share, 0);
+    const preallocTotalPct = (preallocTotalShare * 100).toFixed(2);
+    html += `
+      <div class="mb-3">
+        <p class="is-size-7 mb-1">
+          <strong>Preallocation</strong> &nbsp;·&nbsp; ${preallocTotalPct}% of supply
+          &nbsp;·&nbsp; held back from LP
+        </p>
+        <div style="margin-left:1rem;">
+    `;
+    preallocArcs.forEach((arc) => {
+      html += `
+        <div class="is-size-7" style="display:flex;align-items:center;gap:0.4rem;margin:0.15rem 0;">
+          <span style="display:inline-block;width:10px;height:10px;background:${arc.color};border-radius:2px;flex-shrink:0;"></span>
+          <span style="flex:1;">${escapeHtml(arc.label)}</span>
+          <span class="has-text-grey">${(arc.share * 100).toFixed(2)}% of supply</span>
+        </div>
+      `;
+    });
+    html += '</div></div>';
+  }
+
+  // Totals footer. The chart shows 100% when (pool allocations) +
+  // (preallocation) sums to the full supply. Both are real arcs in
+  // the `arcs` array, so the existing sum already covers this case
+  // — but we need the warning text to actually be readable, so we
+  // swap the unreadable yellow Bulma class for a darker amber tone
+  // that has enough contrast against the parchment background.
   const totalShare = arcs.reduce((s, a) => s + a.share, 0);
   const totalPct = (totalShare * 100).toFixed(2);
   const allocated = totalPct === '100.00';
+  // Use explicit colors instead of has-text-warning (a pale yellow
+  // that disappears against the parchment background). Success stays
+  // as the green class (good contrast). The warning case gets a deep
+  // amber that reads clearly on the cream/parchment surface.
+  const footerStyle = allocated
+    ? 'color: #2c8a52;'  // ok-green, same family as has-text-success but tuned for parchment
+    : 'color: #b8821a;'; // deep amber — readable on parchment, still clearly "caution"
   html += `
-    <p class="is-size-7 mt-3 ${allocated ? 'has-text-success' : 'has-text-warning'}">
+    <p class="is-size-7 mt-3" style="${footerStyle} font-weight: 600;">
       <strong>${allocated ? '✓' : '⚠'}</strong>
       &nbsp;${totalPct}% of supply allocated across all positions${allocated ? '' : ' — should be 100%'}
     </p>

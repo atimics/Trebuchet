@@ -63,6 +63,12 @@ const DEFAULTS = Object.freeze({
   // changes, capturing tutorial screenshots, and demonstrating the app
   // without chain risk. Off by default; intentional opt-in only.
   demoMode: false,
+  // Intro splash video. The short animation that plays on startup. On by
+  // default; can be turned off in settings so the app opens straight to the
+  // UI (handy once the novelty wears off, or on slow hardware). Read by the
+  // renderer's setupSplashScreen() on load — disabled means the splash is
+  // dismissed immediately and never plays.
+  playIntroVideo: true,
 });
 
 // Lazy-loaded in-memory cache. We refresh from disk on every get()

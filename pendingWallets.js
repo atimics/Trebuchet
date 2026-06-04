@@ -183,6 +183,15 @@ export function remove(publicKey) {
   if (filtered.length !== list.length) persist(filtered);
 }
 
+// Return a single pending wallet by public key, decrypted, or null if not
+// found. Convenience over list().find(...) for the common "I have the pubkey,
+// give me the recoverable secret" lookup (resume, and the server-side signer
+// resolution that F5 moves toward — letting the client send a pubkey instead
+// of round-tripping the secret key through the renderer).
+export function get(publicKey) {
+  return load().find((w) => w.publicKey === publicKey) || null;
+}
+
 // Return all currently-pending wallets, decrypted into the in-memory
 // shape ({ publicKey, secretKey, mnemonic, createdAt }). Returned via
 // the local-only API to the loopback frontend, never over the network.

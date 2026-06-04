@@ -52,6 +52,7 @@ bind('generateWalletBtn', 'click', async () => {
       lastSolBalance = 0;
       createdTokenInfo = null;
       lpResult = null;
+      lastAirdropResult = null;
       fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 
       // Reset UI panels that may carry stale info from a previous attempt
@@ -63,13 +64,17 @@ bind('generateWalletBtn', 'click', async () => {
       document.getElementById('createTokenBtn').classList.remove('hidden');
       document.getElementById('createLpBtn').classList.remove('hidden');
       document.getElementById('transferAssetsBtn').classList.remove('hidden');
-      document.getElementById('lpDoneInfo').classList.add('hidden');
+      setLpDoneVisible(false);
       document.getElementById('lpFailInfo').classList.add('hidden');
       document.getElementById('lpProgress').classList.add('hidden');
       document.getElementById('lpProgressTree').innerHTML = '';
       document.getElementById('transferResult').classList.add('hidden');
       document.getElementById('fundingWalletInfo').classList.add('hidden');
       document.getElementById('destinationWallet').value = '';
+      // In demo mode, immediately re-fill with the synthetic destination
+      // address so the user doesn't have to re-enter anything to finish
+      // a second demo run after a reset. No-op in real mode.
+      applyDemoDestinationWallet();
 
       // Reset step summaries from any prior attempt
       for (let i = 2; i <= 6; i++) setStepSummary(i, '');

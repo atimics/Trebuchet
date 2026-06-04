@@ -33,14 +33,14 @@
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
     "build:js": "node scripts/build-app-js.mjs",
-    "build:c": "node scripts/build-c.mjs"
+    "build:c": "node scripts/build-c.mjs",
+    "check:package": "node scripts/check-package-files.mjs"
   },
   "files": [
     "build/**/*",
     "docs/**/*",
     "lpConstants.js",
     "lpDistribution.js",
-    "lpEstimate.js",
     "lpFeeTiers.js",
     "lpMintCompat.js",
     "main.js",
@@ -67,6 +67,7 @@
     "updateCheckBridge.js",
     "validators.js",
     "metadata.json",
+    "README.md",
     "public/**/*",
     "c/build/**/*"
   ],
@@ -118,7 +119,6 @@
     "files": [
       "lpConstants.js",
       "lpDistribution.js",
-      "lpEstimate.js",
       "lpFeeTiers.js",
       "lpMintCompat.js",
       "main.js",

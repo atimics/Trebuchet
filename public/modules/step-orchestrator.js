@@ -1,4 +1,6 @@
 // ===========================================================================
+// Step state machine
+// ===========================================================================
 //
 // A step's state is reflected by a CSS class on its card (.is-pending,
 // .is-active, .is-completed). The is-active card has its body visible;
@@ -81,11 +83,13 @@ function injectPeekBanner(card, stepNum) {
   // is-completed class — so we don't need to do anything else here.
   closeBtn.addEventListener('click', () => {
     setStepState(stepNum, 'completed');
-    // Mirror the header-collapse path: free the coin's WebGL context when
-    // leaving a peeked step 2 (it was rebuilt on peek-open).
-    if (stepNum === 2 && currentStep !== 2 &&
-        typeof destroyCoinPreview === 'function') {
-      destroyCoinPreview();
+    // Closing a peek of step 2: the card was moved into the config slot for
+    // the peek, so move it back to wherever the active step keeps it. The
+    // coin now travels through steps 2–6, so we relocate rather than tear it
+    // down.
+    if (stepNum === 2 && currentStep !== 2) {
+      relocateTokenPreview(slotKeyForStep(currentStep));
+      if (typeof renderTokenPreview === 'function') renderTokenPreview();
     }
   });
   banner.appendChild(closeBtn);
@@ -117,8 +121,26 @@ function activateStep(num) {
 
   // Update sticky bar
   document.getElementById('stickyStepNum').textContent = String(num);
+  // #8: total step count, derived from STEP_TITLES so the "/ N" stays
+  // correct on its own if the flow ever gains or loses a step.
+  const stepTotalEl = document.getElementById('stickyStepTotal');
+  if (stepTotalEl) stepTotalEl.textContent = String(Object.keys(STEP_TITLES).length);
   document.getElementById('stickyStepTitle').textContent = STEP_TITLES[num];
   document.getElementById('stickyBar').classList.add('is-visible');
+
+  // Demo mode folds its badge + Disable into the sticky bar (rather than a
+  // second fixed banner that would cover it). Now that the bar is visible,
+  // sync that chrome. Guarded for load-order safety.
+  if (typeof syncDemoChrome === 'function') syncDemoChrome();
+
+  // #9: the cost echo belongs only on step 2 (the config stage). The cost
+  // preview already hides itself off step 2, but clear the echo explicitly
+  // here too so it can never linger if a step change races the preview's
+  // own update.
+  if (num !== 2) {
+    const stickyCost = document.getElementById('stickyCost');
+    if (stickyCost) stickyCost.classList.add('hidden');
+  }
 
   // Scroll the active card into view (with a small delay to let CSS settle)
   setTimeout(() => {
@@ -138,16 +160,107 @@ function activateStep(num) {
     requestCostPreviewUpdate();
   }
 
-  // The 3D coin only lives on step 2 (the token-config screen). When the
-  // user moves forward into the funding/launch flow, free its WebGL context
-  // so it never accumulates across the launch. Returning to step 2 re-inits
-  // it lazily via renderTokenPreview(). We re-render the preview when
-  // arriving at step 2 so the coin mount gets (re)built and initialised.
-  if (num === 2) {
+  // When entering step 6, surface the pre-transfer airdrop summary so
+  // the user sees what's about to happen before clicking Transfer
+  // Assets. No-op when no airdrop is configured. typeof guards the
+  // hoisting order — renderAirdropPreTransferSummary is defined further
+  // down in this file.
+  if (num === 6 && typeof renderAirdropPreTransferSummary === 'function') {
+    renderAirdropPreTransferSummary();
+  }
+
+  // The token preview block (with its 3D coin) is a singleton DOM element
+  // that travels with the active step. It lives in the config slot on step 2,
+  // moves beside the QR on step 3, and now follows through steps 4–6 into
+  // their per-step slots so the coin and the launch-progress bar stay visible
+  // for the whole flow. The WebGL context survives each relocation because
+  // we move the same DOM node — appendChild() doesn't destroy its canvas.
+  //
+  // Only step 1 (the wallet-generation stage, before a token is configured)
+  // and a reset tear the coin down to free its WebGL context.
+  if (num >= 2 && num <= 6) {
+    relocateTokenPreview(slotKeyForStep(num));
+    // Re-render so the card reflects the current config and its stat tiles
+    // re-layout in the new slot. updateCoinPreview() (called from within)
+    // reattaches the live canvas rather than spinning up a second context.
     if (typeof renderTokenPreview === 'function') renderTokenPreview();
   } else {
+    relocateTokenPreview('config');
     if (typeof destroyCoinPreview === 'function') destroyCoinPreview();
   }
+
+  // Refresh the overall launch-progress bar for the new step position.
+  if (typeof updateLaunchProgress === 'function') updateLaunchProgress();
+}
+
+// Move the singleton #tokenPreviewBlock between its config-stage slot
+// and its funding-stage slot. The card uses its full size in both
+// locations — the funding stage's column layout gives it room to
+// render alongside the QR code without needing a compact variant.
+//
+// where: 'config' | 'funding'
+//
+// Safe to call when the block isn't currently in either slot (e.g.
+// during early init) — querySelector returns null and the function
+// bails. Idempotent: calling with the same destination twice is a
+// no-op (appendChild a node already in the target is harmless).
+// Slot-id map for the singleton preview card. Steps 4–6 each have their own
+// slot so the card (and its 3D coin) travels with the active step.
+const TOKEN_PREVIEW_SLOTS = {
+  config:  'tokenPreviewSlotConfig',
+  funding: 'tokenPreviewSlotFunding',
+  step4:   'tokenPreviewSlotStep4',
+  step5:   'tokenPreviewSlotStep5',
+  step6:   'tokenPreviewSlotStep6',
+};
+
+// Which slot the preview card belongs in for a given step: step 2 → config,
+// step 3 → funding (beside the QR), steps 4–6 → their own per-step slot.
+// Anything outside 2–6 has no card and defaults to config.
+function slotKeyForStep(num) {
+  if (num === 2) return 'config';
+  if (num === 3) return 'funding';
+  if (num >= 4 && num <= 6) return 'step' + num;
+  return 'config';
+}
+
+function relocateTokenPreview(where) {
+  const block = document.getElementById('tokenPreviewBlock');
+  if (!block) return;
+  const slotId = TOKEN_PREVIEW_SLOTS[where] || TOKEN_PREVIEW_SLOTS.config;
+  const slot = document.getElementById(slotId);
+  if (!slot) return;
+  // appendChild moves the same DOM node (and the live coin canvas inside it)
+  // without destroying it — the WebGL context survives the relocation.
+  slot.appendChild(block);
+}
+
+// ---------------------------------------------------------------------------
+// Overall launch progress
+// ---------------------------------------------------------------------------
+// The preview card carries a progress bar that fills as the launch advances
+// through its six steps and reaches 100% when the final transfer completes.
+// We base the in-flight percentage on currentStep (stable across "peeking" a
+// completed step, which momentarily toggles the is-completed classes) rather
+// than counting completed-step classes. The transfer-complete flag forces the
+// bar to 100% on the final sweep, since step 6 isn't marked is-completed.
+let _launchTransferComplete = false;
+
+function updateLaunchProgress() {
+  const fill = document.getElementById('tokenPreviewProgressFill');
+  const label = document.getElementById('tokenPreviewProgressLabel');
+  if (!fill || !label) return;
+  let pct;
+  if (_launchTransferComplete) {
+    pct = 100;
+  } else {
+    const step = (typeof currentStep === 'number') ? currentStep : 1;
+    // Steps before the active one are done; six steps total.
+    pct = Math.max(0, Math.min(100, Math.round(((step - 1) / 6) * 100)));
+  }
+  fill.style.width = pct + '%';
+  fill.classList.toggle('is-complete', pct >= 100);
+  label.textContent = pct >= 100 ? 'Launch complete' : `Launch progress · ${pct}%`;
 }
 
 // Set a step's completion summary (one-line text shown next to the title
@@ -183,12 +296,14 @@ function bindStepHeaders() {
         // Currently peeked → collapse back to completed.
         setStepState(i, 'completed');
         card.classList.remove('is-peeking');
-        // Free the coin's WebGL context again when leaving a peeked step 2
-        // (we rebuilt it on peek-open). Guard on currentStep so we never tear
-        // down a coin that legitimately belongs to the active step.
-        if (i === 2 && currentStep !== 2 &&
-            typeof destroyCoinPreview === 'function') {
-          destroyCoinPreview();
+        // If we just closed a peek of step 2, the preview block is
+        // currently in step 2's config slot (we moved it there when the
+        // peek opened — see below). Move it back to the slot that matches
+        // the actual current step (funding on step 3, the per-step slot on
+        // steps 4–6). The coin travels with it; no teardown.
+        if (i === 2 && currentStep !== 2) {
+          relocateTokenPreview(slotKeyForStep(currentStep));
+          if (typeof renderTokenPreview === 'function') renderTokenPreview();
         }
         return;
       }
@@ -215,12 +330,15 @@ function bindStepHeaders() {
       // after setStepState because setStepState tears down any prior
       // banner as part of its general state-change cleanup.
       injectPeekBanner(card, i);
-      // The 3D coin lives on step 2 and is torn down when the user navigates
-      // past it (activateStep frees its WebGL context). Peeking step 2 for
-      // review re-shows the step body but does NOT go through activateStep,
-      // so the coin would be missing — rebuild the preview here.
-      if (i === 2 && typeof renderTokenPreview === 'function') {
-        renderTokenPreview();
+      // The token preview block is a singleton. While the user is on
+      // step 3 it sits next to the QR in the funding slot. Peeking
+      // step 2 needs to show the preview INSIDE step 2 again, so move
+      // it back to the config slot for the duration of the peek. The
+      // peek-close handler above moves it back to wherever it should
+      // live afterwards.
+      if (i === 2) {
+        relocateTokenPreview('config');
+        if (typeof renderTokenPreview === 'function') renderTokenPreview();
       }
     });
   }

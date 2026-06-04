@@ -465,7 +465,7 @@ function buildLaunchJournalRow(journal, wallet) {
     document.getElementById('createTokenBtn').classList.remove('hidden');
     document.getElementById('createLpBtn').classList.remove('hidden');
     document.getElementById('transferAssetsBtn').classList.remove('hidden');
-    document.getElementById('lpDoneInfo').classList.add('hidden');
+    setLpDoneVisible(false);
     document.getElementById('lpFailInfo').classList.add('hidden');
     document.getElementById('lpProgress').classList.add('hidden');
     document.getElementById('lpProgressTree').innerHTML = '';

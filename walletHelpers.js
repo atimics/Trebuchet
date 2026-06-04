@@ -855,8 +855,8 @@ async function deliverOneAirdropRecipient({
         // Tx landed despite the confirmation failure. Mark success
         // with the signature we have in hand.
         console.log(
-          `  ↻ confirmation timed out but balance verified for `
-          + `${recipientPk.toBase58().slice(0, 8)}…; treating as delivered`,
+          `  [retry] confirmation timed out but balance verified for `
+          + `${recipientPk.toBase58().slice(0, 8)}...; treating as delivered`,
         );
         return { ok: true, txId: signature, attempts: attempt };
       }
@@ -1030,7 +1030,7 @@ export async function executeAirdrop({
 
     if (result.ok) {
       console.log(
-        `  ✓ ${i + 1}/${recipients.length} airdropped `
+        `  [ok] ${i + 1}/${recipients.length} airdropped `
         + `${r.tokens} to ${r.wallet} (${result.attempts} attempt${result.attempts === 1 ? '' : 's'}): `
         + `${result.txId}`,
       );
@@ -1053,13 +1053,13 @@ export async function executeAirdrop({
       if (result.attempts > 1 && paceMs < AIRDROP_PACE_MS_SLOW) {
         paceMs = AIRDROP_PACE_MS_SLOW;
         console.log(
-          `  ↻ pace bumped to ${paceMs}ms after retry on `
+          `  [retry] pace bumped to ${paceMs}ms after retry on `
           + `${r.wallet} (endpoint appears under pressure)`,
         );
       }
     } else {
       console.error(
-        `  ✗ ${i + 1}/${recipients.length} airdrop to ${r.wallet} `
+        `  [x] ${i + 1}/${recipients.length} airdrop to ${r.wallet} `
         + `failed after ${result.attempts} attempt${result.attempts === 1 ? '' : 's'}: `
         + `${result.error}`,
       );
@@ -1095,7 +1095,7 @@ export async function executeAirdrop({
     // runs. Final summary logged after the loop unconditionally.
     if ((i + 1) % AIRDROP_LOG_EVERY_N === 0) {
       console.log(
-        `  · progress: ${i + 1}/${recipients.length} processed `
+        `  - progress: ${i + 1}/${recipients.length} processed `
         + `(${transferred.length} delivered, ${failed.length} failed)`,
       );
     }

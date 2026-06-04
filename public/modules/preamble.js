@@ -1,3 +1,22 @@
+// app.js — frontend logic for Trebuchet
+//
+// Six-step launcher with collapsible step cards. Each step is in one of
+// three states:
+//
+//   pending   — collapsed, dimmed, header non-clickable. Default for
+//               all steps after the active one.
+//   active    — expanded, full opacity. Exactly one step at a time.
+//   completed — collapsed, full opacity, header clickable to re-expand
+//               for review. Body is hidden but accessible.
+//
+// The sticky bar at the top of the page shows the current step number/
+// title and a Cancel & Refund button. Cancel is available at any time
+// after the wallet is generated, but is disabled while an in-flight
+// operation (token creation, pool creation, etc.) is running. Cancel
+// uses the same /api/transfer-assets endpoint as the normal final
+// transfer — the difference is just the destination defaults to the
+// detected funding wallet.
+
 // ===========================================================================
 // Defensive listener helper
 // ===========================================================================
@@ -16,6 +35,54 @@ function bind(id, event, handler) {
 }
 
 // ===========================================================================
+// Local API session header
+// ===========================================================================
+//
+// The backend requires an x-trebuchet-session header on every /api request
+// except /api/session. Same-origin code can read that token; cross-origin
+// pages cannot read it because the server does not opt into CORS.
+const originalFetch = window.fetch.bind(window);
+let apiSessionTokenPromise = null;
+
+function isLocalApiRequest(input) {
+  const raw = typeof input === 'string' ? input : input?.url;
+  if (!raw) return false;
+  const url = new URL(raw, window.location.href);
+  return (
+    url.origin === window.location.origin &&
+    url.pathname.startsWith('/api/') &&
+    url.pathname !== '/api/session'
+  );
+}
+
+async function getApiSessionToken() {
+  if (!apiSessionTokenPromise) {
+    apiSessionTokenPromise = originalFetch('/api/session', {
+      credentials: 'same-origin',
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(`API session failed: HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (!data?.token) throw new Error('API session response missing token');
+        return data.token;
+      });
+  }
+  return apiSessionTokenPromise;
+}
+
+window.fetch = async (input, init = {}) => {
+  if (!isLocalApiRequest(input)) return originalFetch(input, init);
+
+  const headers = new Headers(
+    init.headers || (input instanceof Request ? input.headers : undefined),
+  );
+  headers.set('x-trebuchet-session', await getApiSessionToken());
+  return originalFetch(input, { ...init, headers });
+};
+
+// ===========================================================================
 // Global state
 // ===========================================================================
 
@@ -26,6 +93,169 @@ let balancePollHandle = null;
 let lpResult = null;
 let pools = [];
 let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
+// Airdrop execution result, populated by runTransfer() from the
+// transfer-assets response (and updated by the retry path). Carries
+// the per-recipient transferred/failed lists so the retry button has
+// the data to resubmit, and the launch report can include an Airdrop
+// section showing where the tokens went. Null when no airdrop ran or
+// step 6 hasn't been reached.
+//   { transferred: [{wallet, tokens, amountRaw, txId}, ...],
+//     failed:      [{wallet, tokens, amountRaw, error}, ...] }
+let lastAirdropResult = null;
+
+// Cache of resolved quote-token info, keyed by the canonical input the
+// user typed/picked (e.g. 'SOL', 'USDC', or a base58 mint address). Each
+// entry is the full info payload that resolvePoolQuote would otherwise
+// fetch from /api/quote-token-info, plus a fetchedAt timestamp for
+// price-staleness logic.
+//
+// Why we cache: rebuildPoolsFromSimple() (called on every simple-mode
+// input event) clears pools[] and re-adds them, which without this cache
+// would re-fire one network round-trip per pool per keystroke. That
+// hammers the server's compat check (which calls Solana RPC and gets
+// rate-limited) for no benefit — the user didn't change the quote token,
+// the same mint resolves to the same metadata.
+//
+// Two TTLs:
+//   - METADATA never expires for a given mint. Symbol, decimals, name,
+//     image URL, Token-2022 status, and Raydium-CLMM compatibility don't
+//     change for a given mint. Once we've successfully resolved them
+//     they're permanent for the page session.
+//   - PRICE expires after 60s. We re-fetch the price (and only the price)
+//     after the TTL elapses. This is hit only on the next actual resolve
+//     call, not on a timer — we don't want to drive RPC traffic from a
+//     background loop.
+//
+// Cache survives across rebuildPoolsFromSimple() calls because it lives
+// at module scope, not on the pool objects themselves.
+const quoteInfoCache = new Map();
+const QUOTE_PRICE_TTL_MS = 60_000;
+
+// localStorage key for the persisted metadata cache. Versioned (v1) so
+// if we ever change the metadata shape we can bump the version and
+// gracefully ignore the older payload rather than crash on a
+// schema-mismatched entry.
+const QUOTE_META_LS_KEY = 'trebuchet:quote-meta-v1';
+
+// Fields that are SAFE to persist long-term. These are properties of
+// the on-chain mint itself — they don't change once the token is
+// created — so caching them across sessions is correct and helpful.
+// Anything not in this list (notably priceUsd) is volatile and gets
+// refetched every session.
+//
+// If you add a new resolved field to the server payload, decide
+// whether it belongs here (immutable mint property) or is volatile
+// (changes with market/network state) and route accordingly.
+const QUOTE_META_PERSISTENT_FIELDS = [
+  'symbol',
+  'decimals',
+  'name',
+  'imageUrl',
+  'address',
+  'compatible',
+  'isToken2022',
+  'disallowedNames',
+  // Authority audit fields. These are properties of the on-chain mint
+  // and only transition in one direction (authority can be renounced,
+  // never re-added). Stale "freeze authority still active" would self-
+  // heal on the next refetch; stale "renounced" can never happen
+  // (one-way transition) so persistence is safe.
+  'freezeAuthorityDisabled',
+  'mintAuthorityRenounced',
+  'freezeAuthorityBlock',
+  'mintAuthorityWarning',
+  // Intentionally NOT persisted:
+  //   compatError — a transient string from the compat check (e.g.
+  //   "RPC failure"). Persisting it would survive across sessions
+  //   and, because the cache-merge "non-null wins, null falls back"
+  //   rule preserves prior non-null values, a successful retry
+  //   (compatError: null) wouldn't clear the stale error string.
+  //   The pool would carry a phantom warning the user can't dismiss.
+  //   raydiumTradeable — Raydium pools can come and go. We want
+  //   a fresh probe per session, not a stale cached "yes" from a
+  //   prior session when the pool may have been retired.
+  //   raydiumProbeError — transient string, same logic as compatError.
+  //   priceSource — display-only string about the price origin;
+  //   re-derives every time priceUsd is updated.
+  //
+  //   Other compat fields (compatible, isToken2022, disallowedNames)
+  //   are properties of the on-chain mint itself and self-heal across
+  //   refetches.
+];
+
+// Read the persisted metadata map from localStorage. Returns a plain
+// object keyed by quoteToken (mint address or canonical string).
+// Returns an empty object on any error — corrupted storage shouldn't
+// break the app, the worst case is we re-fetch metadata once.
+function readPersistedQuoteMeta() {
+  try {
+    const raw = localStorage.getItem(QUOTE_META_LS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (e) {
+    console.warn(`[quote-meta-cache] read failed: ${e.message}`);
+    return {};
+  }
+}
+
+// Write the persisted metadata map. Best-effort — localStorage can be
+// disabled, full, or unavailable (e.g. private browsing in some
+// browsers). On failure we log and continue; the in-memory cache
+// still works for the current session.
+function writePersistedQuoteMeta(map) {
+  try {
+    localStorage.setItem(QUOTE_META_LS_KEY, JSON.stringify(map));
+  } catch (e) {
+    console.warn(`[quote-meta-cache] write failed: ${e.message}`);
+  }
+}
+
+// Persist one mint's metadata. Reads the existing map, sets/replaces
+// the entry, writes back. We do this on every successful fetch so the
+// cache stays current as new mints are encountered.
+function persistQuoteMeta(quoteToken, info) {
+  if (!info) return;
+  const meta = {};
+  for (const field of QUOTE_META_PERSISTENT_FIELDS) {
+    if (info[field] !== undefined) meta[field] = info[field];
+  }
+  // Skip persisting if we don't have enough to be useful — a payload
+  // with no symbol and no decimals is a failed resolution we shouldn't
+  // pin to disk.
+  if (meta.symbol == null && meta.decimals == null) return;
+  const map = readPersistedQuoteMeta();
+  map[quoteToken] = meta;
+  writePersistedQuoteMeta(map);
+}
+
+// On startup, hydrate the in-memory cache with persisted metadata.
+// Each hydrated entry is marked with priceFetchedAt = 0 so the next
+// fetchQuoteInfoCached call for that mint goes to the server for a
+// fresh price (priceUsd null → cache miss on TTL check). The merge
+// logic then preserves the persisted metadata as the fresh response
+// augments the cached entry.
+//
+// IIFE-wrapped so the hydration logic doesn't pollute module scope
+// with temporary variables. Runs once at module load.
+(function hydrateQuoteMetaFromStorage() {
+  const map = readPersistedQuoteMeta();
+  for (const [quoteToken, meta] of Object.entries(map)) {
+    if (!meta || typeof meta !== 'object') continue;
+    quoteInfoCache.set(quoteToken, {
+      info: { ...meta, priceUsd: null },
+      fetchedAt: 0, // 0 = always-stale, forces a price refresh on first use
+    });
+  }
+})();
+
+// In-flight fetch promises keyed by the same quoteToken string. Used to
+// coalesce simultaneous resolve calls for the same mint — without this,
+// the first render storm after a wallet generation could fire N parallel
+// fetches for SOL before the first one returns, defeating the cache.
+// Each entry is a Promise; subsequent callers await the same promise
+// rather than starting a new fetch.
+const quoteInfoInFlight = new Map();
 
 // Demo mode flag. Set once on app load from /api/demo/status (see
 // startup.js). When true, the demo banner and the "Pretend funding
@@ -108,6 +338,20 @@ const LADDER_DEFAULT_BANDS = 5;
 const LADDER_MIN_BANDS = 3;
 const LADDER_MAX_BANDS = 10;
 const LADDER_CEILING_MULTIPLIER = 1000;
+
+// Support position depth bounds (in % below launch price).
+//   Default 10% — covers typical post-launch dip range without
+//   over-spreading the deposited SOL across too many ticks.
+//   Min 1%     — below this, computeSupportTicks collapses on
+//                high-tickSpacing fee tiers (the position would span
+//                a single tickSpacing, making it nearly useless).
+//   Max 50%    — below this, the per-tick density gets too thin for
+//                the support to actually backstop sells in any
+//                meaningful way; user might as well place liquidity
+//                via the normal main/ladder system.
+const SUPPORT_DEFAULT_DEPTH_PCT = 10;
+const SUPPORT_MIN_DEPTH_PCT = 1;
+const SUPPORT_MAX_DEPTH_PCT = 50;
 
 // Hard upper bound on the whole-token total supply the user can enter.
 //
@@ -207,6 +451,99 @@ let simpleConfig = {
   ladderEnabled: false,
   ladderPercent: LADDER_DEFAULT_PERCENT,
   ladderBandCount: LADDER_DEFAULT_BANDS,
+  // Preallocation: % of total token supply that's held BACK from LP. Used
+  // for team/VC/presale tokens, staking rewards, utility reserves, etc.
+  // The pool allocations scale down proportionally so the sum of all
+  // pool.supplyPercent values equals (100 - preallocationPercent).
+  //
+  // Preallocation by itself is purely a UI/budget concept — the tokens
+  // simply stay in the launch wallet (or get distributed by the user
+  // post-launch). Backing for that supply is provided via the SUPPORT
+  // position (see supportEnabled below).
+  preallocationEnabled: false,
+  preallocationPercent: 1, // % of total supply; default if user enables
+  // The user's *typed* value for prealloc %. When auto-fit is on, the
+  // effective preallocationPercent is max(this, airdrop_required_pct).
+  // Stored separately so the user's typed value survives airdrop edits
+  // that bump the effective percent up; lowering the airdrop later
+  // returns the effective percent to the user's typed value.
+  preallocationPercentInput: 1,
+  // Auto-fit airdrop: when on, the preallocation % is automatically
+  // raised (but never lowered) to fit the airdrop list's required
+  // tokens. The user's typed % acts as a minimum floor. Off means
+  // the over-budget red error fires when the airdrop exceeds the
+  // typed %, leaving the fix to the user.
+  preallocationAutoFit: true,
+  // Support position: a single-sided QUOTE position sitting just below
+  // launch price (down to -supportDepthPct), funded by the user as SOL.
+  // It backs preallocated supply by giving the holders a buy wall to
+  // sell into. Quote-only — no token supply consumed, so this is
+  // orthogonal to the pool allocation math. The simple-UI toggle puts
+  // support on the SOL pool only; customize mode lets each pool
+  // configure its own.
+  //
+  // supportDepthPct is the % below launch that the position covers.
+  // Default of 10% balances coverage (catches typical post-launch dips)
+  // with per-tick liquidity density (deeper ranges spread the same SOL
+  // across more ticks, thinning each tick's depth).
+  supportEnabled: false,
+  supportSolValue: 1, // SOL committed to the support position
+  supportDepthPct: 10, // % depth below launch price, in [1, 50]
+  // When true, the support SOL value is kept in sync with the
+  // preallocation's USD-equivalent (the "honest backing" amount). When
+  // false, the user has manual control over the SOL value. Surfaced
+  // as an "Auto" checkbox next to the support SOL input. When ON the
+  // SOL input is disabled and shows the computed value; when OFF the
+  // user can type freely.
+  //
+  // Default true — the natural pairing of preallocation + support is
+  // equal-value backing, and starting with auto on makes that the
+  // path of least resistance. The user can switch to manual any time.
+  supportAutoSize: true,
+  // UI-only: whether the collapsible "Advanced options" section in
+  // simple mode is currently expanded. Persists across re-renders so
+  // the section doesn't snap shut when the user types in one of its
+  // inputs. Default closed because the advanced section is for users
+  // who specifically want it — most launches use the headline controls
+  // (flywheel, preallocation, support) and never touch the advanced
+  // ones (starting liquidity, split LP, ladder).
+  _advancedExpanded: false,
+  // Airdrop config — a sub-feature of preallocation that lets the user
+  // upload a CSV of {wallet, sol_contributed} rows and have the launcher
+  // calculate token amounts per recipient based on the launch starting
+  // price. Each row's token count = (sol × SOL_USD × supply) / market_cap
+  // — the same "fair value at launch" rate the launch itself uses, so a
+  // contributor receives tokens worth the same USD as they sent.
+  //
+  // Disabled (and the toggle/inputs greyed) when preallocation is off,
+  // since the preallocation supply is the budget for the airdrop —
+  // without preallocation there's nothing to distribute.
+  //
+  // csvText is the raw user input (file upload or pasted). parsedRows
+  // is what the parser produced; parseError and budgetError carry
+  // user-facing error strings. Re-parsing is keystroke-driven from the
+  // textarea so the preview / errors update live. The actual on-chain
+  // distribution is performed during the Transfer Assets step (Step 6),
+  // alongside the NFT/token/SOL sweep. The recipient list and per-row
+  // token amounts are assembled by buildAirdropTransferPayload() and
+  // POSTed with the transfer-assets request; the server executes each
+  // recipient as its own classic-SPL transferChecked transaction so
+  // failures are isolated per-recipient. Partial failures surface in
+  // the transfer result UI with a Retry button.
+  airdrop: {
+    enabled: false,
+    csvText: '',
+    parsedRows: [],
+    parseError: null,
+    budgetError: null,
+    // _expanded: collapse state for the AIRDROP <details> sub-section
+    // (CSV upload UI). _breakdownExpanded: collapse state for the
+    // per-wallet rows nested inside the preallocation breakdown table.
+    // Both persist across re-renders so a render triggered by typing
+    // doesn't snap the section shut.
+    _expanded: false,
+    _breakdownExpanded: false,
+  },
 };
 
 // Build a distribution array of N equal slices that sum to exactly 100%.

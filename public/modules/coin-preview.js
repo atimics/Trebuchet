@@ -50,10 +50,59 @@ function applySimpleConfigMode() {
     simpleC.classList.remove('hidden');
     customC.classList.add('hidden');
     renderSimpleConfig();
+    // Move the Lock-liquidity field into the Advanced details slot
+    // inside simple mode. This is done AFTER renderSimpleConfig so the
+    // slot element exists. The field is the same DOM element that
+    // lives at #lockPositionsSlotPage in customize mode — we physically
+    // relocate it between modes rather than duplicating, so the
+    // checkbox state and any external listeners stay attached to a
+    // single canonical element.
+    relocateLockPositionsField('simple');
   } else {
     simpleC.classList.add('hidden');
     customC.classList.remove('hidden');
+    // renderSimpleConfig still needs to run in customize mode — it
+    // builds the preallocation block (and wires its handlers), which
+    // relocatePreallocationBlock (called inside renderSimpleConfig)
+    // then moves into #customizePreallocSlot above the pool list.
+    // The simple container itself stays hidden; we only need its DOM
+    // contents to exist so the block can be detached from it. The
+    // mode-aware HTML in the prealloc block hides the auto-back toggle
+    // and the "Enable Support position" link in customize mode (those
+    // refer to the simple-mode support row which isn't visible here).
+    renderSimpleConfig();
     renderPools();
+    // Move the Lock-liquidity field back to its page-level home so
+    // customize-mode users can access it.
+    relocateLockPositionsField('customize');
+  }
+}
+
+// Move the #lockPositionsField element between its two homes:
+//
+//   target='simple'    → into the Advanced options slot inside simple mode
+//   target='customize' → back to the page-level slot (below the customize
+//                        container, where it lives by default)
+//
+// No-ops if the field or the target slot can't be found (e.g. called
+// before the DOM is built, or with an unknown target). The same single
+// DOM element moves between locations; its state (checked/unchecked)
+// and any attached listeners are preserved by appendChild.
+function relocateLockPositionsField(target) {
+  const field = document.getElementById('lockPositionsField');
+  if (!field) return;
+  let slot;
+  if (target === 'simple') {
+    slot = document.getElementById('lockPositionsSlotSimple');
+  } else {
+    slot = document.getElementById('lockPositionsSlotPage');
+  }
+  if (!slot) return;
+  // appendChild moves the element if it has a parent; no need to
+  // detach first. Re-appending into the same slot is a no-op (the
+  // element is already a child).
+  if (field.parentElement !== slot) {
+    slot.appendChild(field);
   }
 }
 
@@ -263,7 +312,13 @@ function buildPreviewStatsHtml() {
     if (priceText) addTile('Start price', priceText);
   }
   if (_lastCostEstimate && Number.isFinite(_lastCostEstimate.totalSol)) {
-    addTile('Est. cost', `≈ ${_lastCostEstimate.totalSol.toFixed(3)} SOL`, 'is-cost');
+    // Airdrop execution (ATA rent + tx fees per recipient) is computed
+    // client-side and added on top of the server's launch-funding total
+    // since the server doesn't yet know about the airdrop list. When
+    // airdrop is disabled or empty this returns 0.
+    const airdropExecutionSol = computeAirdropExecutionCostSol();
+    const grandTotal = _lastCostEstimate.totalSol + airdropExecutionSol;
+    addTile('Est. cost', `≈ ${grandTotal.toFixed(3)} SOL`, 'is-cost');
   }
   const tilesHtml = tiles.length ? `<div class="tps-tiles">${tiles.join('')}</div>` : '';
 
@@ -275,6 +330,17 @@ function buildPreviewStatsHtml() {
     if (alloc > 0) {
       const allocText = (alloc % 1 === 0) ? alloc.toFixed(0) : alloc.toFixed(1);
       meta.push(`${allocText}% to liquidity`);
+    }
+    // When the pool allocations leave some supply uncommitted (sum < 100),
+    // call out the gap explicitly as "preallocated". Works in both
+    // simple-mode (where the user enables preallocation via the toggle)
+    // and customize-mode (where they manually set lower pool percentages).
+    // We surface the larger of (100 - alloc) and the simpleConfig pct so
+    // the display stays consistent across mode switches.
+    const gap = Math.max(0, 100 - alloc);
+    if (gap > 0.01) {
+      const gapText = (gap % 1 === 0) ? gap.toFixed(0) : gap.toFixed(1);
+      meta.push(`${gapText}% preallocated`);
     }
   }
   const metaHtml = `<div class="tps-meta">${meta.map(escapeHtml).join(' &middot; ')}</div>`;

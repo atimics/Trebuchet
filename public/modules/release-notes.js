@@ -51,7 +51,7 @@ window.__showUpdateResult = async function (info) {
   const dontCheckCheckedNow = info.checkOnStartup === false;
   const checkboxHtml =
     `<div style="margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px solid rgba(0,0,0,0.08);">` +
-      `<label class="checkbox is-size-7" style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer; user-select: none;">` +
+      `<label class="checkbox is-size-7" style="display: flex; align-items: center; gap: 0.4rem; user-select: none;">` +
         `<input type="checkbox" id="updatePrefCheckbox"${dontCheckCheckedNow ? ' checked' : ''}>` +
         `<span>Don't check for updates automatically</span>` +
       `</label>` +
@@ -211,5 +211,3 @@ function renderReleaseNotes(text) {
   return out.join('');
 }
 
-// ===========================================================================
-// Step state machine

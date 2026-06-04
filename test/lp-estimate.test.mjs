@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Decimal from 'decimal.js';
 
-import * as lpEstimate from '../lpEstimate.js';
+import * as lpEstimate from '../lpService.js'; // F15: de-forked — estimator now lives in lpService.js (the live path)
 import { WSOL_MINT, USDC_MINT } from '../lpConstants.js';
 
 test.afterEach(() => {
