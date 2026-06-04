@@ -13,3 +13,6 @@ latest.yml
 /pendingWallets.json
 /userPrefs.json
 repo.zip
+
+_tutorial/
+test/e2e/videos/
