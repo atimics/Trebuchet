@@ -148,6 +148,7 @@ const flows = {
       await genWallet(p);
       await p.fill('#tokenName', 'FundT'); await p.fill('#tokenSymbol', 'FND');
       await p.locator('#continueToFundingBtn').scrollIntoViewIfNeeded();
+      await p.waitForSelector('#costPreview:not(.hidden)', { timeout: 15000 });
       await p.click('#continueToFundingBtn'); await stepIs(p, 3);
       const addrText = await textOf(p, '#step3WalletAddr');
       ok(addrText.length > 20, 'addr missing');
@@ -163,6 +164,7 @@ const flows = {
       await genWallet(p);
       await p.fill('#tokenName', 'MkToken'); await p.fill('#tokenSymbol', 'MKT');
       await p.locator('#continueToFundingBtn').scrollIntoViewIfNeeded();
+      await p.waitForSelector('#costPreview:not(.hidden)', { timeout: 15000 });
       await p.click('#continueToFundingBtn'); await stepIs(p, 3);
       await p.locator('#continueToTokenBtn').scrollIntoViewIfNeeded();
       await p.click('#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
@@ -178,6 +180,7 @@ const flows = {
       await genWallet(p);
       await p.fill('#tokenName', 'LPToken'); await p.fill('#tokenSymbol', 'LPT');
       await p.locator('#continueToFundingBtn').scrollIntoViewIfNeeded();
+      await p.waitForSelector('#costPreview:not(.hidden)', { timeout: 15000 });
       await p.click('#continueToFundingBtn'); await stepIs(p, 3);
       await p.locator('#continueToTokenBtn').scrollIntoViewIfNeeded();
       await p.click('#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
@@ -201,6 +204,7 @@ const flows = {
       await genWallet(p);
       await p.fill('#tokenName', 'XferTkn'); await p.fill('#tokenSymbol', 'XFR');
       await p.locator('#continueToFundingBtn').scrollIntoViewIfNeeded();
+      await p.waitForSelector('#costPreview:not(.hidden)', { timeout: 15000 });
       await p.click('#continueToFundingBtn'); await stepIs(p, 3);
       await p.locator('#continueToTokenBtn').scrollIntoViewIfNeeded();
       await p.click('#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
