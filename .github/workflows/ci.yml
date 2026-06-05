@@ -159,6 +159,17 @@ jobs:
       - name: Run E2E tests
         run: node test/e2e/ui-flows.mjs 01 02 03 04 05 06 07 08 09 --mobile
 
+      - name: Visual regression test
+        run: npm run test:visual
+
+      - name: Upload visual diff artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual-diffs
+          path: test/ui/diffs
+          if-no-files-found: ignore
+
       - name: Convert videos to GIF
         if: always()
         run: |
