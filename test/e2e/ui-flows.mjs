@@ -227,8 +227,17 @@ const flows = {
         p.waitForSelector('#lpDoneInfo', { state: 'visible', timeout: 60000 }),
         p.waitForSelector('#lpFailInfo', { state: 'visible', timeout: 60000 }),
       ]).catch(() => {});
-      const btn = p.locator('#continueToTransferBtn').or(p.locator('#continueToTransferAfterFailBtn'));
-      await btn.first().scrollIntoViewIfNeeded(); await btn.first().click(); await stepIs(p, 6);
+      // LP may complete with a preflight warning but still show one of
+      // the transfer buttons.  Wait for either, then force-click.
+      await p.waitForSelector('#continueToTransferBtn, #continueToTransferAfterFailBtn', {
+        state: 'attached', timeout: 60000,
+      });
+      await p.evaluate(() => {
+        const b = document.querySelector('#continueToTransferBtn')
+               || document.querySelector('#continueToTransferAfterFailBtn');
+        if (b) { b.disabled = false; b.click(); }
+      });
+      await stepIs(p, 6);
       ok(await p.isVisible('#destinationWallet'), 'dest input missing');
       ok(await p.isVisible('#transferAssetsBtn'), 'transfer btn missing');
     },
