@@ -102,6 +102,18 @@ async function textOf(p, s) { return p.textContent(s).then(x => (x || '').trim()
 async function stepIs(p, n) { await p.waitForSelector('#step' + n + '-card.is-active', { timeout: 15000 }); }
 function ok(cond, msg) { if (!cond) throw new Error(msg); }
 
+// Click a button once it becomes enabled.  Uses evaluate to bypass
+// Playwright actionability checks that can hang in CI when the
+// button is inside a transitioning/animated container.
+async function clickWhenEnabled(p, selector, opts = {}) {
+  const timeout = opts.timeout || 30000;
+  await p.waitForFunction((sel) => {
+    const b = document.querySelector(sel);
+    return b && !b.disabled;
+  }, selector, { timeout });
+  await p.evaluate((sel) => document.querySelector(sel).click(), selector);
+}
+
 // Shared: generate wallet and advance to step 2
 async function genWallet(p) {
   await p.click('#generateWalletBtn'); await stepIs(p, 2);
@@ -147,11 +159,7 @@ const flows = {
     async run(p) {
       await genWallet(p);
       await p.fill('#tokenName', 'FundT'); await p.fill('#tokenSymbol', 'FND');
-      await p.waitForFunction(() => {
-        const b = document.getElementById('continueToFundingBtn');
-        return b && !b.disabled;
-      }, { timeout: 30000 });
-      await p.evaluate(() => document.getElementById('continueToFundingBtn').click()); await stepIs(p, 3);
+      await clickWhenEnabled(p, '#continueToFundingBtn'); await stepIs(p, 3);
       const addrText = await textOf(p, '#step3WalletAddr');
       ok(addrText.length > 20, 'addr missing');
       ok(/^[1-9A-HJ-NP-Za-km-z]+$/.test(addrText), 'step 3 addr not base58');
@@ -165,15 +173,11 @@ const flows = {
     async run(p) {
       await genWallet(p);
       await p.fill('#tokenName', 'MkToken'); await p.fill('#tokenSymbol', 'MKT');
-      await p.waitForFunction(() => {
-        const b = document.getElementById('continueToFundingBtn');
-        return b && !b.disabled;
-      }, { timeout: 30000 });
-      await p.evaluate(() => document.getElementById('continueToFundingBtn').click()); await stepIs(p, 3);
+      await clickWhenEnabled(p, '#continueToFundingBtn'); await stepIs(p, 3);
       await p.locator('#continueToTokenBtn').scrollIntoViewIfNeeded();
-      await p.click('#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
+      await clickWhenEnabled(p, '#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
       await p.locator('#createTokenBtn').scrollIntoViewIfNeeded();
-      await p.click('#createTokenBtn');
+      await clickWhenEnabled(p, '#createTokenBtn');
       await p.waitForSelector('#tokenCreatedInfo', { state: 'visible', timeout: 60000 });
       ok((await textOf(p, '#tokenMintAddress')).length > 30, 'mint missing');
     },
@@ -183,20 +187,16 @@ const flows = {
     async run(p) {
       await genWallet(p);
       await p.fill('#tokenName', 'LPToken'); await p.fill('#tokenSymbol', 'LPT');
-      await p.waitForFunction(() => {
-        const b = document.getElementById('continueToFundingBtn');
-        return b && !b.disabled;
-      }, { timeout: 30000 });
-      await p.evaluate(() => document.getElementById('continueToFundingBtn').click()); await stepIs(p, 3);
+      await clickWhenEnabled(p, '#continueToFundingBtn'); await stepIs(p, 3);
       await p.locator('#continueToTokenBtn').scrollIntoViewIfNeeded();
-      await p.click('#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
+      await clickWhenEnabled(p, '#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
       await p.locator('#createTokenBtn').scrollIntoViewIfNeeded();
-      await p.click('#createTokenBtn');
+      await clickWhenEnabled(p, '#createTokenBtn');
       await p.waitForSelector('#tokenCreatedInfo', { state: 'visible', timeout: 60000 });
       try { await stepIs(p, 5); } catch {
-        await p.locator('#continueToLpBtn').scrollIntoViewIfNeeded(); await p.click('#continueToLpBtn'); await stepIs(p, 5);
+        await p.locator('#continueToLpBtn').scrollIntoViewIfNeeded(); await clickWhenEnabled(p, '#continueToLpBtn'); await stepIs(p, 5);
       }
-      await p.locator('#createLpBtn').scrollIntoViewIfNeeded(); await p.click('#createLpBtn');
+      await p.locator('#createLpBtn').scrollIntoViewIfNeeded(); await clickWhenEnabled(p, '#createLpBtn');
       const done = await Promise.race([
         p.waitForSelector('#lpDoneInfo', { state: 'visible', timeout: 60000 }).then(() => 'ok'),
         p.waitForSelector('#lpFailInfo', { state: 'visible', timeout: 60000 }).then(() => 'fail'),
@@ -209,20 +209,16 @@ const flows = {
     async run(p) {
       await genWallet(p);
       await p.fill('#tokenName', 'XferTkn'); await p.fill('#tokenSymbol', 'XFR');
-      await p.waitForFunction(() => {
-        const b = document.getElementById('continueToFundingBtn');
-        return b && !b.disabled;
-      }, { timeout: 30000 });
-      await p.evaluate(() => document.getElementById('continueToFundingBtn').click()); await stepIs(p, 3);
+      await clickWhenEnabled(p, '#continueToFundingBtn'); await stepIs(p, 3);
       await p.locator('#continueToTokenBtn').scrollIntoViewIfNeeded();
-      await p.click('#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
+      await clickWhenEnabled(p, '#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
       await p.locator('#createTokenBtn').scrollIntoViewIfNeeded();
-      await p.click('#createTokenBtn');
+      await clickWhenEnabled(p, '#createTokenBtn');
       await p.waitForSelector('#tokenCreatedInfo', { state: 'visible', timeout: 60000 });
       try { await stepIs(p, 5); } catch {
-        await p.locator('#continueToLpBtn').scrollIntoViewIfNeeded(); await p.click('#continueToLpBtn'); await stepIs(p, 5);
+        await p.locator('#continueToLpBtn').scrollIntoViewIfNeeded(); await clickWhenEnabled(p, '#continueToLpBtn'); await stepIs(p, 5);
       }
-      await p.locator('#createLpBtn').scrollIntoViewIfNeeded(); await p.click('#createLpBtn');
+      await p.locator('#createLpBtn').scrollIntoViewIfNeeded(); await clickWhenEnabled(p, '#createLpBtn');
       await Promise.race([
         p.waitForSelector('#lpDoneInfo', { state: 'visible', timeout: 60000 }),
         p.waitForSelector('#lpFailInfo', { state: 'visible', timeout: 60000 }),
