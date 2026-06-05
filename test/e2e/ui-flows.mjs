@@ -11,6 +11,10 @@ import net from 'node:net';
 
 const TMP = fs.mkdtempSync(path.join(tmpdir(), 'treb-e2e-'));
 process.env.TREBUCHET_CONFIG_DIR = TMP;
+// Enable demo mode so token/LP creation uses the fast in-memory handler.
+// Without this, fake test tokens can't resolve through Jupiter and the
+// real token-creation path fails because the temp wallets have no SOL.
+fs.writeFileSync(TMP + '/userPrefs.json', JSON.stringify({ demoMode: true }));
 process.env.PORT = String(await new Promise((res, rej) => {
   const s = net.createServer(); s.unref(); s.on('error', rej);
   s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); });
@@ -102,11 +106,10 @@ async function textOf(p, s) { return p.textContent(s).then(x => (x || '').trim()
 async function stepIs(p, n) { await p.waitForSelector('#step' + n + '-card.is-active', { timeout: 15000 }); }
 function ok(cond, msg) { if (!cond) throw new Error(msg); }
 
-// Force-click a button that may be disabled.  Waits for the button to
-// exist in the DOM, then removes its disabled attribute and clicks via
-// evaluate, bypassing all Playwright actionability checks.  Used for
-// UI buttons gated on async price resolution (Jupiter/GeckoTerminal)
-// that never completes for fake test tokens in CI.
+// Force-click a disabled button by stripping its disabled attr first.
+// The app disables continue buttons until async price resolution
+// (Jupiter/GeckoTerminal) completes — but fake test tokens never
+// resolve, so the buttons stay disabled forever.
 async function forceClick(p, selector) {
   await p.waitForSelector(selector, { state: 'attached', timeout: 30000 });
   await p.evaluate((sel) => {
