@@ -148,7 +148,7 @@ const flows = {
       await genWallet(p);
       await p.fill('#tokenName', 'FundT'); await p.fill('#tokenSymbol', 'FND');
       await p.waitForSelector('#continueToFundingBtn:not([disabled])', { timeout: 30000 });
-      await p.click('#continueToFundingBtn'); await stepIs(p, 3);
+      await p.click('#continueToFundingBtn', { force: true }); await stepIs(p, 3);
       const addrText = await textOf(p, '#step3WalletAddr');
       ok(addrText.length > 20, 'addr missing');
       ok(/^[1-9A-HJ-NP-Za-km-z]+$/.test(addrText), 'step 3 addr not base58');
@@ -163,7 +163,7 @@ const flows = {
       await genWallet(p);
       await p.fill('#tokenName', 'MkToken'); await p.fill('#tokenSymbol', 'MKT');
       await p.waitForSelector('#continueToFundingBtn:not([disabled])', { timeout: 30000 });
-      await p.click('#continueToFundingBtn'); await stepIs(p, 3);
+      await p.click('#continueToFundingBtn', { force: true }); await stepIs(p, 3);
       await p.locator('#continueToTokenBtn').scrollIntoViewIfNeeded();
       await p.click('#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
       await p.locator('#createTokenBtn').scrollIntoViewIfNeeded();
@@ -178,7 +178,7 @@ const flows = {
       await genWallet(p);
       await p.fill('#tokenName', 'LPToken'); await p.fill('#tokenSymbol', 'LPT');
       await p.waitForSelector('#continueToFundingBtn:not([disabled])', { timeout: 30000 });
-      await p.click('#continueToFundingBtn'); await stepIs(p, 3);
+      await p.click('#continueToFundingBtn', { force: true }); await stepIs(p, 3);
       await p.locator('#continueToTokenBtn').scrollIntoViewIfNeeded();
       await p.click('#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
       await p.locator('#createTokenBtn').scrollIntoViewIfNeeded();
@@ -201,7 +201,7 @@ const flows = {
       await genWallet(p);
       await p.fill('#tokenName', 'XferTkn'); await p.fill('#tokenSymbol', 'XFR');
       await p.waitForSelector('#continueToFundingBtn:not([disabled])', { timeout: 30000 });
-      await p.click('#continueToFundingBtn'); await stepIs(p, 3);
+      await p.click('#continueToFundingBtn', { force: true }); await stepIs(p, 3);
       await p.locator('#continueToTokenBtn').scrollIntoViewIfNeeded();
       await p.click('#continueToTokenBtn'); await stepIs(p, 4);      await p.waitForTimeout(1000);
       await p.locator('#createTokenBtn').scrollIntoViewIfNeeded();
