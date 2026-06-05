@@ -29,6 +29,22 @@ import * as swapService from '../../swapService.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VIDEOS = path.join(__dirname, 'videos');
 fs.mkdirSync(VIDEOS, { recursive: true });
+const SCREENSHOTS = path.join(__dirname, '..', '..', 'test', 'ui', 'golden');
+const GOLDEN_MODE = process.argv.includes('--golden');
+const SCREENSHOT_MODE = process.argv.includes('--screenshots');
+let tmpScreenshots = null;
+if (GOLDEN_MODE) {
+  try { fs.rmSync(SCREENSHOTS, { recursive: true }); } catch {}
+  fs.mkdirSync(SCREENSHOTS, { recursive: true });
+} else if (SCREENSHOT_MODE) {
+  const screenshotsArgIdx = process.argv.indexOf('--screenshots');
+  if (screenshotsArgIdx >= 0 && screenshotsArgIdx + 1 < process.argv.length) {
+    tmpScreenshots = process.argv[screenshotsArgIdx + 1];
+    fs.mkdirSync(tmpScreenshots, { recursive: true });
+  } else {
+    tmpScreenshots = fs.mkdtempSync(path.join(tmpdir(), 'treb-screenshots-'));
+  }
+}
 
 let _pc = 0, _tc = 0;
 const fB58 = () => { const b = new Uint8Array(32); let v = ++_pc + 1; for (let i = 0; i < 32 && v > 0; i++) { b[i] = v & 0xff; v = Math.floor(v / 256); } b[31] = b[31] || 1; return new PublicKey(b).toBase58(); };
@@ -64,6 +80,7 @@ async function withPage(fn, size = 'desktop') {
   const vp = size === 'mobile' ? { width: 390, height: 844 } : { width: 1280, height: 900 };
   const ctx = await browser.newContext({ viewport: vp, recordVideo: { dir: VIDEOS, size: vp } });
   const p = await ctx.newPage();
+  const shotLabel = withPage._shotLabel || '';
   try {
     // Intercept the HTML response and remove the splash screen markup
     // before the browser parses it — no video frames at all in the recording.
@@ -81,6 +98,10 @@ async function withPage(fn, size = 'desktop') {
     });
 
     await p.goto(SERVER, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Wait for the demo banner — confirms demo mode is active and the
+    // page is fully loaded.  Without this, screenshots may capture a
+    // half-loaded page mid-animation.
+    try { await p.waitForSelector('#demoBanner', { state: 'visible', timeout: 15000 }); } catch {}
 
     // Dismiss the disclaimer modal as soon as it appears.
     try {
@@ -323,6 +344,9 @@ for (const size of sizes) {
     const flow = flows[key];
     const label = size === 'mobile' ? key + '-mobile' : key;
     process.stdout.write('  [' + label + '] ' + flow.name + (size === 'mobile' ? ' (mobile)' : '') + ' ... ');
+    // Tag screenshots with the flow label so they can be matched
+    // against golden images by name.
+    withPage._shotLabel = label;
     const ok_ = await withPage(flow.run, size);
     if (ok_) { passed++; console.log('PASS'); }
     else { failed++; }
