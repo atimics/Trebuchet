@@ -2906,6 +2906,21 @@ async function runCostPreview() {
     // cost to its own Est. Cost tile, so the two displays agree.
     const airdropExecutionSol = computeAirdropExecutionCostSol();
     setCostPreviewState('ready', data.estimate.totalSol + airdropExecutionSol);
+    // The airdrop token-amount preview depends on SOL's USD price, which
+    // for a flywheel-paired launch is only available via this estimate
+    // (there's no SOL-quoted pool to read it from). Now that the estimate —
+    // and its solUsd — has landed, re-render the airdrop display so the
+    // per-recipient amounts replace the "let SOL price resolve" placeholder.
+    // The guard flag stops this refresh from kicking off another
+    // cost-preview fetch and looping back into this handler.
+    if (typeof refreshAirdropDisplayInline === 'function') {
+      _airdropDisplayRefreshInProgress = true;
+      try {
+        refreshAirdropDisplayInline();
+      } finally {
+        _airdropDisplayRefreshInProgress = false;
+      }
+    }
   } catch (e) {
     if (seq !== _costPreviewRequestSeq) return;
     // Don't surface the error message — the user will see a real one

@@ -690,12 +690,45 @@ function parseAirdropCsv(text) {
 // { tokens, usd } added. If marketCap, supply, or solUsd is missing/
 // invalid, returns the input rows unchanged (tokens and usd are null)
 // and the caller can show a "fill in supply / market cap first" hint.
+// Guard against a cost-preview ⇄ airdrop-refresh loop. Set true while the
+// cost-preview completion handler re-renders the airdrop display, so that
+// refresh won't itself schedule another cost-preview fetch (which would
+// complete and trigger the refresh again, ad infinitum). Read in
+// refreshAirdropDisplayInline before it calls requestCostPreviewUpdate.
+let _airdropDisplayRefreshInProgress = false;
+
+// SOL's USD price for airdrop allocation math. The CSV gives each
+// recipient a SOL contribution; converting that to a token amount needs
+// SOL's USD price. We look in three places, in order of directness:
+//
+//   1. A SOL-quoted pool's resolved price (present for SOL-paired launches).
+//   2. The cached 'SOL' quote-info, if SOL was ever resolved as a quote.
+//   3. The launch cost estimate's solUsd, which the server always fills in
+//      (from the WSOL oracle, or a fallback constant).
+//
+// #3 is the one that matters for the default flywheel-paired launch: it
+// has no SOL-quoted pool, so without the estimate fallback solUsd would be
+// null, every recipient's token amount would compute as null, and the
+// airdrop would be filtered out and silently skipped at launch.
+function resolveAirdropSolUsd() {
+  const solPool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+  if (solPool && Number(solPool.resolvedPriceUsd) > 0) {
+    return Number(solPool.resolvedPriceUsd);
+  }
+  const cached = quoteInfoCache.get('SOL');
+  if (cached && cached.info && Number(cached.info.priceUsd) > 0) {
+    return Number(cached.info.priceUsd);
+  }
+  if (_lastCostEstimate && Number(_lastCostEstimate.solUsd) > 0) {
+    return Number(_lastCostEstimate.solUsd);
+  }
+  return null;
+}
+
 function annotateAirdropRowsWithTokens(parsedRows) {
   const supply = parseNumberInput(document.getElementById('tokenSupply'));
   const mcap = parseNumberInput(document.getElementById('targetMarketCap'));
-  const solPool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
-  const solUsd = solPool && Number(solPool.resolvedPriceUsd) > 0
-    ? Number(solPool.resolvedPriceUsd) : null;
+  const solUsd = resolveAirdropSolUsd();
 
   // Without complete inputs we can still show the rows (wallet + sol)
   // but can't compute token allocations. annotate with null fields.
@@ -799,8 +832,18 @@ function buildAirdropTransferPayload() {
   if (!simpleConfig.preallocationEnabled) return null;
   const airdrop = simpleConfig.airdrop;
   if (!airdrop || !airdrop.enabled) return null;
-  const rows = Array.isArray(airdrop.parsedRows) ? airdrop.parsedRows : [];
-  if (rows.length === 0) return null;
+  const rawRows = Array.isArray(airdrop.parsedRows) ? airdrop.parsedRows : [];
+  if (rawRows.length === 0) return null;
+
+  // Re-annotate the rows fresh at launch time rather than trusting the
+  // token amounts stored when the CSV was loaded. Those stored amounts can
+  // be null if the SOL/USD price hadn't resolved yet at load time (for a
+  // flywheel-paired launch the price arrives with the cost estimate, which
+  // may still have been in flight). The supply/market-cap inputs and the
+  // pools array both persist into the transfer step, so recomputing here
+  // guarantees we send correct per-recipient amounts whenever a price is
+  // available.
+  const rows = annotateAirdropRowsWithTokens(rawRows).rows;
 
   // Filter to rows with positive token amounts. annotateAirdropRowsWithTokens
   // sets tokens=null when inputs are incomplete (supply/mcap/SOL price
@@ -1635,7 +1678,11 @@ function refreshAirdropDisplayInline() {
     // STALE _lastCostEstimate.totalSol, and the user wouldn't see the
     // support bump until something else triggered a fetch (toggling
     // prealloc — which is exactly the workaround the user reported).
-    if (typeof requestCostPreviewUpdate === 'function') {
+    // Don't re-trigger a cost-preview fetch when this refresh was itself
+    // triggered BY a cost-preview completion (the airdrop re-render in the
+    // cost-preview handler) — that would loop fetch → refresh → fetch.
+    if (typeof requestCostPreviewUpdate === 'function'
+        && !_airdropDisplayRefreshInProgress) {
       requestCostPreviewUpdate();
     }
   }

@@ -4230,6 +4230,13 @@ export async function estimateRequiredFunding({
     quoteBreakdown,
     autoSwapPlan,
     resolvedPrices,
+    // SOL's USD price used for this estimate (from the WSOL oracle, or
+    // FALLBACK_SOL_USD if the oracle was unavailable). Exposed so the
+    // frontend can value SOL-denominated airdrop contributions even when
+    // the launch has no SOL-quoted pool to read a price from (e.g. a
+    // flywheel-paired launch). Without this the airdrop allocation can't
+    // be computed and the airdrop is silently skipped at launch.
+    solUsd: Number(solUsd.toString()),
   };
 }
 
