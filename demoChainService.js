@@ -37,7 +37,7 @@
 // It verifies UI flow, the state machine, conditional rendering, the
 // report generator, and the visual coherence of every screen.
 
-import { Keypair, PublicKey } from '@solana/web3.js';
+import { Keypair } from '@solana/web3.js';
 
 // ===========================================================================
 // Constants — the well-known quote mints, so SOL/USDC/USDT pools resolve to
@@ -759,15 +759,18 @@ export async function handleCreateLp(req, res, opts = {}) {
       // launchedToken.address`; doing the equivalent here keeps demo
       // launch reports and journal entries representative of either
       // outcome the user might see in production.
-      const launchedBytes = new PublicKey(tokenMint).toBytes();
-      const quoteBytes = new PublicKey(quote.address).toBytes();
-      let launchedSide = 'mintB';
-      for (let b = 0; b < 32; b++) {
-        if (launchedBytes[b] !== quoteBytes[b]) {
-          launchedSide = launchedBytes[b] < quoteBytes[b] ? 'mintA' : 'mintB';
-          break;
-        }
-      }
+      //
+      // We compare the address STRINGS directly rather than decoding them
+      // to pubkey bytes. Demo addresses are deliberately NOT valid 32-byte
+      // keys (see demoAddress above — the 'Demo' prefix makes them
+      // undecodable so they can never be used in a real on-chain call), so
+      // feeding them to new PublicKey() throws "Invalid public key input".
+      // A lexicographic string comparison is deterministic and varied
+      // enough to give demo reports either a mintA-side or mintB-side
+      // launch, which is all this simulation needs.
+      const launchedAddr = String(tokenMint);
+      const quoteAddr = String(quote.address);
+      const launchedSide = launchedAddr < quoteAddr ? 'mintA' : 'mintB';
 
       const resultEntry = {
         allocationIndex: allocIdx,
