@@ -113,6 +113,11 @@ async function withPage(fn, size = 'desktop') {
     // Brief settle so the UI is interactive.
     await p.waitForTimeout(500);
     await fn(p);
+    // Capture a screenshot after the flow for visual regression
+    if (GOLDEN_MODE || SCREENSHOT_MODE) {
+      const dest = GOLDEN_MODE ? SCREENSHOTS : tmpScreenshots;
+      await p.screenshot({ path: path.join(dest, shotLabel + '.png'), fullPage: false });
+    }
     return true;
   } catch (e) {
     console.error('  FAIL: ' + e.message.split('\n')[0]);
