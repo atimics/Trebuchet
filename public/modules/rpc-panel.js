@@ -210,8 +210,8 @@ function renderRpcConfig(config) {
     }
     if (config.saved.length > 1) {
       const rmBtn = document.createElement('button');
-      rmBtn.className = 'button is-small is-danger is-light';
-      rmBtn.innerHTML = '<span class="icon is-small"><i class="fas fa-times"></i></span>';
+      rmBtn.className = 'button is-danger is-light';
+      rmBtn.innerHTML = '<span class="icon"><i class="fas fa-times"></i></span>';
       rmBtn.title = 'Remove';
       rmBtn.addEventListener('click', () => removeRpc(rpc.url));
       actions.appendChild(rmBtn);
