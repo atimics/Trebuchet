@@ -3,6 +3,12 @@ CC       ?= cc
 # on CPUs that lack the build host's ISA extensions.  -march=native is only
 # used in the `dev` target (local development).
 CFLAGS   ?= -O3 -flto -mtune=generic -Wall -Wextra -Wpedantic -Wno-sign-compare
+# On Windows (mingw-w64), BCryptGenRandom needs -lbcrypt. The #pragma
+# comment(lib, ...) in randombytes.c only works with MSVC.
+LDLIBS   ?=
+ifeq ($(OS),Windows_NT)
+    LDLIBS += -lbcrypt
+endif
 BUILD_DIR = build
 
 VENDOR_DIR = vendor
@@ -25,7 +31,8 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 $(VANITY_BIN): $(VANITY_SRCS) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(VANITY_SRCS) -o $@ $(INCLUDES) -lpthread
+	$(CC) $(CFLAGS) $(VANITY_SRCS) -o $@ $(INCLUDES) -lpthread $(LDLIBS)
 
 clean:
 	rm -rf $(BUILD_DIR)
+

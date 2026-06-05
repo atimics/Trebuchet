@@ -278,8 +278,12 @@ const flows = {
       ok(logText.includes('Trebuchet'), 'log missing ready message');
       // Verify the launcher header is present
       ok(await p.isVisible('#rpcSettingsToggle'), 'RPC toggle missing');
-      // Demo mode toggle should be present
+      // Demo mode toggle lives inside the hidden RPC settings panel.
+      // Open the panel so the toggle is visible, then close after.
+      await p.click('#rpcSettingsToggle');
+      await p.waitForSelector('#rpcSettingsPanel', { state: 'visible', timeout: 5000 });
       ok(await p.isVisible('#demoModeToggle'), 'demo toggle missing');
+      await p.click('#rpcSettingsToggle');
     },
   },
 };
