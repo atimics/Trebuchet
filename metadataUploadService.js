@@ -5,6 +5,7 @@ import { irysUploader } from '@metaplex-foundation/umi-uploader-irys';
 import { getRpcUrl } from './rpcConfig.js';
 
 export const DEFAULT_IRYS_ADDRESS = 'https://node1.irys.xyz';
+export const DEVNET_IRYS_ADDRESS = 'https://devnet.irys.xyz';
 export const DEFAULT_IRYS_TIMEOUT_MS = 60000;
 export const PLACEHOLDER_TOKEN_IMAGE_URI = 'https://arweave.net/placeholder-token-image';
 
@@ -31,15 +32,18 @@ export function logoDataUrlToGenericFile(logoBase64) {
 
 export function createMetadataUmi({
   rpcUrl = getRpcUrl(),
-  irysAddress = DEFAULT_IRYS_ADDRESS,
+  irysAddress,
   timeout = DEFAULT_IRYS_TIMEOUT_MS,
 } = {}) {
+  // If no address explicitly given, auto-detect from RPC URL so devnet
+  // uses devnet.irys.xyz instead of node1.irys.xyz.  Passing mainnet
+  // unconditionally was the root cause of stuck uploads on devnet.
+  const address = irysAddress
+    || (rpcUrl.includes('devnet') ? DEVNET_IRYS_ADDRESS : DEFAULT_IRYS_ADDRESS);
+
   return createUmi(rpcUrl)
     .use(mplTokenMetadata())
-    .use(irysUploader({
-      address: irysAddress,
-      timeout,
-    }));
+    .use(irysUploader({ address, timeout }));
 }
 
 export function setMetadataUploaderIdentity(umi, tempWallet) {
@@ -61,13 +65,27 @@ export async function uploadTokenMetadata({
   onProgress,
   logger = console,
   placeholderImageUri = PLACEHOLDER_TOKEN_IMAGE_URI,
+  uploadTimeoutMs = DEFAULT_IRYS_TIMEOUT_MS,
 }) {
   let imageUri = placeholderImageUri;
+
+  const withTimeout = (promise, label) => {
+    if (!uploadTimeoutMs || uploadTimeoutMs <= 0) return promise;
+    return Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`${label} timed out after ${uploadTimeoutMs}ms`)), uploadTimeoutMs)
+      ),
+    ]);
+  };
 
   if (logoBase64) {
     try {
       const logoFile = logoDataUrlToGenericFile(logoBase64);
-      const [uploadedImageUri] = await umi.uploader.upload([logoFile]);
+      const [uploadedImageUri] = await withTimeout(
+        umi.uploader.upload([logoFile]),
+        'Logo upload'
+      );
       imageUri = uploadedImageUri;
       logger.log?.('Logo uploaded:', imageUri);
       onProgress?.({ stage: 'logo_uploaded', imageUri });
@@ -82,7 +100,10 @@ export async function uploadTokenMetadata({
   }
 
   const metadata = tokenMetadataJson({ name, symbol, description, imageUri });
-  const metadataUri = await umi.uploader.uploadJson(metadata);
+  const metadataUri = await withTimeout(
+    umi.uploader.uploadJson(metadata),
+    'Metadata upload'
+  );
   logger.log?.('Metadata uploaded:', metadataUri);
   onProgress?.({ stage: 'metadata_uploaded', metadataUri, imageUri });
 
