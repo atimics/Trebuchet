@@ -3657,6 +3657,35 @@ app.post('/api/pending-wallets/dismiss', (req, res) => {
   } catch (error) {
     console.error('Error dismissing pending wallet:', error);
     res.status(500).json({ success: false, error: error.message });
+
+
+// Return recent launch journals for the "Recent Launches" panel.
+app.get('/api/recent-launches', (_req, res) => {
+  try {
+    const journals = launchJournal.list({ includeCompleted: true });
+    const launches = journals
+      .filter(j => j.status !== 'archived')
+      .map(j => ({
+        id: j.id,
+        walletPublicKey: j.walletPublicKey,
+        stage: j.stage || 'wallet_generated',
+        createdAt: j.createdAt,
+        token: j.token ? {
+          name: j.token.name || '',
+          symbol: j.token.symbol || '',
+          mint: j.token.mint || '',
+        } : null,
+        lp: j.lp && Array.isArray(j.lp.results)
+          ? { poolCount: j.lp.results.length }
+          : null,
+        transfer: j.transfer ? { destination: j.transfer.destinationWallet || '' } : null,
+      }));
+    res.json({ success: true, launches });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
   }
 });
 

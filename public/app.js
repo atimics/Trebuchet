@@ -17336,6 +17336,12 @@ function buildPendingWalletRow(wallet) {
         </button>
       </div>
       <div class="control">
+        <button class="button is-small is-success" data-action="use-wallet">
+          <span class="icon is-small"><i class="fas fa-play"></i></span>
+          <span>Use this wallet</span>
+        </button>
+      </div>
+      <div class="control">
         <button class="button is-small is-danger is-light" data-action="dismiss">
           <span class="icon is-small"><i class="fas fa-trash"></i></span>
           <span>Discard</span>
@@ -17386,6 +17392,109 @@ function wireRowButtons(wrap, wallet, pubShort, hasMnemonic) {
   wrap.querySelector('[data-action="copy-pubkey"]').addEventListener('click', async () => {
     await copyToClipboard(wallet.publicKey, `Public key ${pubShort}`);
   });
+
+  // "Use this wallet" — loads it into the active session and checks
+  // for an existing launch to resume (token mint, LP results, etc.).
+  const useBtn = wrap.querySelector('[data-action="use-wallet"]');
+  if (useBtn) {
+    useBtn.addEventListener('click', async () => {
+      try {
+        const resp = await fetch('/api/pending-wallets/use', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ publicKey: wallet.publicKey }),
+        });
+        const data = await resp.json();
+        if (!data.success) throw new Error(data.error);
+
+        // Load the wallet into the session
+        tempWallet = {
+          publicKey: data.wallet.publicKey,
+          secretKey: data.wallet.secretKey,
+          qrCode: data.wallet.qrCode,
+        };
+        document.getElementById('walletInfo').classList.remove('hidden');
+        document.getElementById('walletAddress').value = data.wallet.publicKey;
+        if (typeof setQrCode === 'function') {
+          setQrCode('qrCode', data.wallet.qrCode, data.wallet.publicKey);
+        } else {
+          document.getElementById('qrCode').src = data.wallet.qrCode || '';
+        }
+
+        // Reset stale state
+        createdTokenInfo = null;
+        lpResult = null;
+        fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
+        document.getElementById('privateKeyContainer').classList.add('hidden');
+        document.getElementById('tokenCreatedInfo').classList.add('hidden');
+        document.getElementById('createTokenBtn').classList.remove('hidden');
+        document.getElementById('createLpBtn').classList.remove('hidden');
+        document.getElementById('transferAssetsBtn').classList.remove('hidden');
+        document.body.classList.add('has-log');
+        log(`Loaded wallet ${data.wallet.publicKey.slice(0, 8)}…`, 'success');
+
+        // Check for launch to resume
+        try {
+          const stateResp = await fetch(
+            `/api/launch-state?walletPublicKey=${encodeURIComponent(data.wallet.publicKey)}`,
+          );
+          const stateData = await stateResp.json();
+          if (stateData.success && stateData.state) {
+            const s = stateData.state;
+            if (s.token && s.token.mint) {
+              createdTokenInfo = {
+                mint: s.token.mint,
+                decimals: s.token.decimals || 9,
+                totalSupply: s.token.totalSupply,
+                name: s.token.name || '',
+                symbol: s.token.symbol || '',
+              };
+              document.getElementById('tokenCreatedInfo').classList.remove('hidden');
+              document.getElementById('tokenMintAddress').textContent = s.token.mint;
+              document.getElementById('tokenSolscanLink').href =
+                `https://solscan.io/token/${s.token.mint}`;
+              document.getElementById('createTokenBtn').classList.add('hidden');
+              log(`Resumed token ${s.token.symbol || s.token.mint.slice(0, 8)}`, 'info');
+            }
+            if (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0) {
+              lpResult = { results: s.lp.results };
+              document.getElementById('createLpBtn').classList.add('hidden');
+              if (typeof setLpDoneVisible === 'function') setLpDoneVisible(true);
+              log(`Resumed LP: ${s.lp.results.length} pool(s)`, 'info');
+            }
+            // Jump to appropriate step
+            const stage = s.stage || '';
+            if (stage.startsWith('lp_') || (lpResult && lpResult.results && lpResult.results.length > 0)) {
+              for (let i = 1; i <= 5; i++) setStepSummary(i, '');
+              if (createdTokenInfo) setStepSummary(4, `${createdTokenInfo.symbol} — ${createdTokenInfo.mint.slice(0, 8)}…`);
+              if (lpResult) setStepSummary(5, `${lpResult.results.length} pool(s)`);
+              activateStep(lpResult ? 6 : 5);
+            } else if (stage.startsWith('token_') || createdTokenInfo) {
+              for (let i = 1; i <= 4; i++) setStepSummary(i, '');
+              if (createdTokenInfo) setStepSummary(4, `${createdTokenInfo.symbol} — ${createdTokenInfo.mint.slice(0, 8)}…`);
+              activateStep(5);
+            } else {
+              activateStep(2);
+            }
+            if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+            updateCancelButtonState();
+          } else {
+            activateStep(2);
+            if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+            updateCancelButtonState();
+          }
+        } catch {
+          activateStep(2);
+        }
+
+        // Close the pending-wallets panel
+        const panel = document.getElementById('pendingWalletsPanel');
+        if (panel) panel.classList.add('hidden');
+      } catch (e) {
+        log(`Failed to load wallet: ${e.message}`, 'danger');
+      }
+    });
+  }
 
   wrap.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
     const ok = await confirmDialog({
