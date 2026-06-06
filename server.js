@@ -1132,13 +1132,26 @@ app.get('/api/rpc-health', async (_req, res) => {
 // ---------------------------------------------------------------------------
 
 function uploadLogo(req, res, next) {
-  upload.single('logo')(req, res, (err) => {
+  upload.single('logo')(req, res, async (err) => {
     if (err) {
       return res.status(400).json({ success: false, error: err.message });
     }
     if (req.file) {
       try {
         req.file.detectedMime = normalizeLogoImageMime(req.file.buffer);
+        // Square-crop to the smaller dimension, then resize to 400x400
+        // and compress to keep logo uploads compact (~20-50 KB).
+        // Metaplex recommends 400x400 or smaller for token logos.
+        const processed = await sharp(req.file.buffer)
+          .resize(400, 400, { fit: 'cover', position: 'centre' })
+          .jpeg({ quality: 85, mozjpeg: true })
+          .toBuffer()
+          .catch(() => null);
+        if (processed && processed.length > 0) {
+          req.file.buffer = processed;
+          req.file.detectedMime = 'image/jpeg';
+          req.file.size = processed.length;
+        }
       } catch (logoError) {
         return res.status(400).json({ success: false, error: logoError.message });
       }
