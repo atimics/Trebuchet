@@ -246,6 +246,13 @@ async function grindVanityKeypair({ vanityPrefix, vanitySuffix }) {
   return result.keypair;
 }
 
+// Commitment level for on-chain operations.  Devnet has sparse
+// validators and 'finalized' can take minutes — use 'processed'
+// so the UI stays responsive.
+function txCommitment() {
+  return getNetwork() === 'devnet' ? 'processed' : 'finalized';
+}
+
 // Create token with Metaplex
 export async function createTokenWithMetaplex({
   tempWalletSecretKey,
@@ -317,7 +324,7 @@ export async function createTokenWithMetaplex({
       null, // freeze authority (null = no freeze)
       9, // decimals
       mintKeypair ?? undefined, // searched keypair, or undefined for random
-      { commitment: 'finalized' },
+      { commitment: txCommitment() },
       TOKEN_PROGRAM_ID
     );
     console.log('Mint created:', mint.toString());
@@ -356,7 +363,7 @@ export async function createTokenWithMetaplex({
       tempWallet.publicKey,
       false,
       'finalized',
-      { commitment: 'finalized' },
+      { commitment: txCommitment() },
       TOKEN_PROGRAM_ID,
       ASSOCIATED_TOKEN_PROGRAM_ID
     ));
@@ -374,7 +381,7 @@ export async function createTokenWithMetaplex({
       tempWallet.publicKey,
       totalTokens,
       [],
-      { commitment: 'finalized' },
+      { commitment: txCommitment() },
       TOKEN_PROGRAM_ID
     );
     
@@ -382,7 +389,7 @@ export async function createTokenWithMetaplex({
     progress({ stage: 'supply_minted', tokenMint: mint.toString(), txId: mintSig });
     
     // Wait for confirmation
-    await connection.confirmTransaction(mintSig, 'finalized');
+    await connection.confirmTransaction(mintSig, txCommitment());
     console.log('Tokens minted successfully');
     
     // SAFETY STEP: Renounce all authorities to make the token safe
@@ -399,7 +406,7 @@ export async function createTokenWithMetaplex({
         AuthorityType.MintTokens,
         null, // New authority (null = renounce)
         [],
-        { commitment: 'finalized' },
+        { commitment: txCommitment() },
         TOKEN_PROGRAM_ID
       );
       console.log('Mint authority renounced:', renounceMintAuthSig);
@@ -408,7 +415,7 @@ export async function createTokenWithMetaplex({
         tokenMint: mint.toString(),
         txId: renounceMintAuthSig,
       });
-      await connection.confirmTransaction(renounceMintAuthSig, 'finalized');
+      await connection.confirmTransaction(renounceMintAuthSig, txCommitment());
     } catch (error) {
       console.error('Error renouncing mint authority:', error);
       throw new Error('Failed to renounce mint authority. Token creation aborted for safety.');
@@ -438,8 +445,8 @@ export async function createTokenWithMetaplex({
         // This effectively revokes the update authority permanently
         newUpdateAuthority: some(systemProgramAddress),
       }).sendAndConfirm(umi, {
-        send: { commitment: 'finalized' },
-        confirm: { commitment: 'finalized' }
+        send: { commitment: txCommitment() },
+        confirm: { commitment: txCommitment() }
       });
       
       console.log('Update authority successfully revoked (set to System Program)!');
@@ -496,8 +503,8 @@ export async function createTokenWithMetaplex({
           primarySaleHappened: none(),
           isMutable: some(false),
         }).sendAndConfirm(umi, {
-          send: { commitment: 'finalized' },
-          confirm: { commitment: 'finalized' }
+          send: { commitment: txCommitment() },
+          confirm: { commitment: txCommitment() }
         });
         
         console.log('Update authority revoked and metadata made immutable!');
@@ -527,8 +534,8 @@ export async function createTokenWithMetaplex({
             authority: umi.identity,
             newUpdateAuthority: some(systemProgramAddress),
           }).sendAndConfirm(umi, { 
-            send: { commitment: 'finalized' },
-            confirm: { commitment: 'finalized' }
+            send: { commitment: txCommitment() },
+            confirm: { commitment: txCommitment() }
           });
           
           console.log('Successfully revoked update authority in final attempt!');
@@ -645,7 +652,7 @@ export async function transferTokensAndSol({
         tempWallet.publicKey,
         false,
         'finalized',
-        { commitment: 'finalized' },
+        { commitment: txCommitment() },
         TOKEN_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
       );
@@ -659,7 +666,7 @@ export async function transferTokensAndSol({
         destinationPubkey, // Owner
         false,
         'finalized',
-        { commitment: 'finalized' },
+        { commitment: txCommitment() },
         TOKEN_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
       );
@@ -686,7 +693,7 @@ export async function transferTokensAndSol({
           tempWallet.publicKey,
           tokenBalance,
           [],
-          { commitment: 'finalized' },
+          { commitment: txCommitment() },
           TOKEN_PROGRAM_ID
         );
         console.log('Token transfer signature:', tokenTxSignature);
@@ -721,7 +728,7 @@ export async function transferTokensAndSol({
       const solTxSignature = await connection.sendTransaction(
         transaction,
         [tempWallet],
-        { commitment: 'finalized' }
+        { commitment: txCommitment() }
       );
       console.log('SOL transfer signature:', solTxSignature);
       await connection.confirmTransaction(solTxSignature, 'finalized');
