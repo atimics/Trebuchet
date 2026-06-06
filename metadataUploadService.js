@@ -66,6 +66,7 @@ export async function uploadTokenMetadata({
   logger = console,
   placeholderImageUri = PLACEHOLDER_TOKEN_IMAGE_URI,
   uploadTimeoutMs = DEFAULT_IRYS_TIMEOUT_MS,
+  rpcUrl = getRpcUrl(),
 }) {
   let imageUri = placeholderImageUri;
 
@@ -87,6 +88,11 @@ export async function uploadTokenMetadata({
         'Logo upload'
       );
       imageUri = uploadedImageUri;
+      // Fix devnet gateway (same logic as metadata URI)
+      if (rpcUrl?.includes('devnet') && imageUri?.includes('arweave.net')) {
+        const txId = imageUri.split('/').pop();
+        imageUri = `https://gateway.irys.xyz/${txId}`;
+      }
       logger.log?.('Logo uploaded:', imageUri);
       onProgress?.({ stage: 'logo_uploaded', imageUri });
     } catch (uploadError) {
@@ -100,10 +106,18 @@ export async function uploadTokenMetadata({
   }
 
   const metadata = tokenMetadataJson({ name, symbol, description, imageUri });
-  const metadataUri = await withTimeout(
+  let metadataUri = await withTimeout(
     umi.uploader.uploadJson(metadata),
     'Metadata upload'
   );
+  // The UMI Irys uploader hardcodes arweave.net regardless of network.
+  // On devnet, the data may settle on a different gateway or stay on Irys
+  // nodes.  Rewrite to the Irys gateway when we detect devnet.
+  if (rpcUrl?.includes('devnet') && metadataUri?.includes('arweave.net')) {
+    const txId = metadataUri.split('/').pop();
+    metadataUri = `https://gateway.irys.xyz/${txId}`;
+  }
+
   logger.log?.('Metadata uploaded:', metadataUri);
   onProgress?.({ stage: 'metadata_uploaded', metadataUri, imageUri });
 
