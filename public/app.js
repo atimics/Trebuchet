@@ -2476,6 +2476,73 @@ bind('addRpcBtn', 'click', async () => {
   }
 });
 
+
+// ── Network selector ──────────────────────────────────────────────────
+
+(function setupNetworkSelector() {
+  const mainnetBtn = document.getElementById('networkMainnetBtn');
+  const devnetBtn = document.getElementById('networkDevnetBtn');
+  const warning = document.getElementById('networkWarning');
+
+  if (!mainnetBtn || !devnetBtn) return;
+
+  async function applyNetwork(network) {
+    try {
+      const resp = await fetch('/api/rpc-config/set-network', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ network }),
+      }).then(r => r.json());
+
+      if (resp.success) {
+        updateButtonState(network);
+        renderRpcConfig(resp.config);
+        log(`Switched to ${network}`, 'info');
+
+        // Show warning when switching to devnet
+        if (network === 'devnet') {
+          warning.textContent = '⚠ Devnet — tokens and SOL have no real value. Use for testing only.';
+          warning.classList.remove('hidden');
+        } else {
+          warning.classList.add('hidden');
+        }
+      } else {
+        log(`Network switch failed: ${resp.error}`, 'danger');
+      }
+    } catch (e) {
+      log(`Network switch failed: ${e.message}`, 'danger');
+    }
+  }
+
+  function updateButtonState(network) {
+    if (network === 'devnet') {
+      mainnetBtn.classList.remove('is-primary', 'is-selected');
+      mainnetBtn.classList.add('is-light');
+      devnetBtn.classList.remove('is-light');
+      devnetBtn.classList.add('is-warning', 'is-selected');
+    } else {
+      devnetBtn.classList.remove('is-warning', 'is-selected');
+      devnetBtn.classList.add('is-light');
+      mainnetBtn.classList.remove('is-light');
+      mainnetBtn.classList.add('is-primary', 'is-selected');
+    }
+  }
+
+  // Fetch initial network state
+  fetch('/api/rpc-config/status')
+    .then(r => r.json())
+    .then(data => {
+      if (data.network) updateButtonState(data.network);
+      if (data.network === 'devnet') {
+        warning.textContent = '⚠ Devnet — tokens and SOL have no real value. Use for testing only.';
+        warning.classList.remove('hidden');
+      }
+    })
+    .catch(() => {});
+
+  mainnetBtn.addEventListener('click', () => applyNetwork('mainnet'));
+  devnetBtn.addEventListener('click', () => applyNetwork('devnet'));
+})();
 // ===========================================================================
 // STEP 1: Generate wallet
 // ===========================================================================

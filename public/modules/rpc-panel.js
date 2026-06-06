@@ -526,6 +526,12 @@ bind('addRpcBtn', 'click', async () => {
         renderRpcConfig(resp.config);
         log(`Switched to ${network}`, 'info');
 
+        // Update devnet banner and funding notice
+        const banner = document.getElementById('devnetBanner');
+        const notice = document.getElementById('devnetFundingNotice');
+        if (banner) banner.style.display = network === 'devnet' ? 'block' : 'none';
+        if (notice) notice.classList.toggle('hidden', network !== 'devnet');
+
         // Show warning when switching to devnet
         if (network === 'devnet') {
           warning.textContent = '⚠ Devnet — tokens and SOL have no real value. Use for testing only.';

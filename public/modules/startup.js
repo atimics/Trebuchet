@@ -863,3 +863,18 @@ function applyVanityAvailabilityUi(vanity) {
 // splash element missing), both gates are still default-true and this
 // is the only place the trigger ever fires.
 _evaluateStartupGates();
+
+// ── Devnet indicator ───────────────────────────────────────────────────
+
+(function setupDevnetIndicator() {
+  fetch('/api/rpc-config/status')
+    .then(r => r.json())
+    .then(data => {
+      const isDevnet = data && data.network === 'devnet';
+      const banner = document.getElementById('devnetBanner');
+      const notice = document.getElementById('devnetFundingNotice');
+      if (banner) banner.style.display = isDevnet ? 'block' : 'none';
+      if (notice) notice.classList.toggle('hidden', !isDevnet);
+    })
+    .catch(() => {});
+})();

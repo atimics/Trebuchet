@@ -3249,6 +3249,13 @@
     <!-- once /api/demo/status reports demo mode is on. Sticky so it   -->
     <!-- stays visible while scrolling.                                -->
     <!-- ============================================================ -->
+    <div id="devnetBanner" class="demo-banner" style="display: none; background: linear-gradient(135deg, #6c3cc9, #8b5cf6);">
+        <span class="demo-banner-text">
+            <strong>DEVNET</strong> — Tokens and SOL have no real value.
+            <a href="https://faucet.solana.com" target="_blank" rel="noopener" class="has-text-white has-text-underlined" style="margin-left: 0.5rem;">Get devnet SOL →</a>
+        </span>
+    </div>
+
     <div id="demoBanner" class="demo-banner" style="display: none;">
         <span class="demo-banner-text">
             <strong>DEMO MODE</strong> — No real transactions will be sent. No SOL is spent.
@@ -4135,6 +4142,15 @@
                             </span>
                         </h5>
                         <div id="balanceRows"></div>
+
+                        <!-- Devnet faucet notice — shown only when devnet is active -->
+                        <div id="devnetFundingNotice" class="notification py-2 px-3 mt-2 hidden" style="background: rgba(108, 60, 201, 0.15); border-left: 3px solid #8b5cf6;">
+                            <p class="is-size-7 mb-1">
+                                <strong>On devnet, fund your ephemeral wallet manually:</strong> copy the address above and send devnet SOL from
+                                <a href="https://faucet.solana.com" target="_blank" rel="noopener" class="has-text-link">faucet.solana.com</a>
+                                (requires GitHub sign-in). Then click <strong>Refresh balances</strong> below.
+                            </p>
+                        </div>
 
                         <!-- Section 2: things the system will acquire on the
                              user's behalf via Raydium swap. Hidden when there
