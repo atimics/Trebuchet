@@ -2,6 +2,30 @@
 // STEP 1: Generate wallet
 // ===========================================================================
 
+// Set a QR code image src, falling back to client-side generation if
+// the server-provided data URL is missing or broken (e.g. network error
+// during wallet gen on devnet).
+async function setQrCode(elementId, serverQr, publicKey) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  if (serverQr && serverQr.startsWith('data:image/')) {
+    el.src = serverQr;
+    el.onerror = async () => {
+      // Data URL was invalid — regenerate client-side
+      try {
+        const { default: QRCode } = await import('qrcode');
+        el.src = await QRCode.toDataURL(publicKey, { width: 256, margin: 2 });
+      } catch { /* both failed, leave broken */ }
+    };
+  } else {
+    // No server QR — generate client-side
+    try {
+      const { default: QRCode } = await import('qrcode');
+      el.src = await QRCode.toDataURL(publicKey, { width: 256, margin: 2 });
+    } catch { /* qrcode unavailable, leave empty */ }
+  }
+}
+
 bind('generateWalletBtn', 'click', async () => {
   const btn = document.getElementById('generateWalletBtn');
   // If a wallet already exists, this is a regenerate. Confirm to avoid
@@ -57,7 +81,7 @@ bind('generateWalletBtn', 'click', async () => {
 
       // Reset UI panels that may carry stale info from a previous attempt
       document.getElementById('walletInfo').classList.remove('hidden');
-      document.getElementById('qrCode').src = data.wallet.qrCode;
+      setQrCode('qrCode', data.wallet.qrCode, data.wallet.publicKey);
       document.getElementById('walletAddress').value = data.wallet.publicKey;
       document.getElementById('privateKeyContainer').classList.add('hidden');
       document.getElementById('tokenCreatedInfo').classList.add('hidden');
