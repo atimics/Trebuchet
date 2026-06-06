@@ -51,7 +51,7 @@ function makeConnection() {
   // 'processed' so transactions return immediately and the UI stays
   // responsive — the user can check confirmations on Solscan.
   return new Connection(url, {
-    commitment: network === 'devnet' ? 'processed' : 'confirmed',
+    commitment: 'confirmed',
     confirmTransactionInitialTimeout: 60_000,
   });
 }
