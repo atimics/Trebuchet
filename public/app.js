@@ -13650,24 +13650,7 @@ bind('createTokenBtn', 'click', async () => {
     setLoading(btn, true);
     markLaunchActiveForRpcHealth(true);
     try {
-      // Pre-check: if the wallet has no SOL, token creation will hang
-      // waiting for a transaction that can never confirm.
-      if (!demoModeActive) {
-        try {
-          const balResp = await fetch('/api/check-balance', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ publicKey: tempWallet.publicKey, tokenMints: [] }),
-          });
-          const balData = await balResp.json();
-          if (balData.success && (!balData.balance || balData.balance.sol < 0.001)) {
-            setLoading(btn, false);
-            log('Token creation blocked: wallet has insufficient SOL. Fund your wallet first.', 'danger');
-            return;
-          }
-        } catch { /* balance check is advisory, proceed */ }
-      }
-      log('Creating token...');
+      log('Creating token... (devnet confirmations can take 30–60 seconds)');
       const formData = new FormData();
       // F5: send the public key; the server resolves the secret from its
       // encrypted store for real launches. Demo has no server-side secret,
@@ -13702,9 +13685,7 @@ bind('createTokenBtn', 'click', async () => {
       const logoFile = document.getElementById('tokenLogo').files[0];
       if (logoFile) formData.append('logo', logoFile);
 
-      const ac = new AbortController();
-      const timeout = setTimeout(() => ac.abort(), 120_000); // 2 min timeout
-      const resp = await fetch('/api/create-token', { method: 'POST', body: formData, signal: ac.signal }).finally(() => clearTimeout(timeout));
+      const resp = await fetch('/api/create-token', { method: 'POST', body: formData });
       const data = await resp.json();
       if (!data.success) throw new Error(data.error);
 
