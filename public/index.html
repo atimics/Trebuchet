@@ -2979,6 +2979,19 @@
             text-align: center;
         }
         .demo-banner-text { line-height: 1.2; }
+        /* Devnet banner overrides — thicker and with white text
+           for contrast against the purple gradient background. */
+        #devnetBanner {
+            padding: 0.65rem 1rem !important;
+            color: #fff !important;
+            font-weight: 500;
+            border-bottom-color: rgba(255,255,255,0.2) !important;
+        }
+        #devnetBanner a {
+            color: #fff !important;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
         .demo-banner-btn {
             background: var(--warn-amber-ink);
             color: #fff;
