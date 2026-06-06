@@ -27,7 +27,7 @@ import {
   percentAmount,
   publicKey as umiPublicKey,
   none,
-  some
+  some,
 } from '@metaplex-foundation/umi';
 import QRCode from 'qrcode';
 import * as bip39 from 'bip39';
@@ -336,14 +336,22 @@ export async function createTokenWithMetaplex({
     // Convert the mint public key to Umi format
     const mintPubkey = umiPublicKey(mint.toString());
     
-    // Create metadata for the existing token
+    // Create metadata for the existing token.
+    // NOTE: When a vanity-ground mint keypair is used, the Metaplex
+    // createV1 instruction requires the mint to sign (error 0x86
+    // "Mint needs to be signer"). The current @metaplex-foundation/umi
+    // createV1 builder does not add the mint to the required signers
+    // when the mint already exists on-chain, causing this call to
+    // fail for vanity mints. A workaround (prepending a dummy signer
+    // instruction or patching the transaction signer set) is tracked
+    // but not yet implemented.
     await createV1(umi, {
       mint: mintPubkey,
       authority: umi.identity,
       name,
       symbol,
       uri: metadataUri,
-      sellerFeeBasisPoints: percentAmount(0), // 0% royalty for fungible tokens
+      sellerFeeBasisPoints: percentAmount(0),
       decimals: 9,
       tokenStandard: TokenStandard.Fungible,
     }).sendAndConfirm(umi);

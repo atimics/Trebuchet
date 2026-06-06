@@ -42,7 +42,7 @@ if (!devnetSecretB64) {
 }
 const devnetSecret = Uint8Array.from(Buffer.from(devnetSecretB64, 'base64'));
 const funder = Keypair.fromSecretKey(devnetSecret);
-const FUND_AMOUNT = 0.1; // SOL to send to the launch wallet per step
+const FUND_AMOUNT = 0.3; // SOL to send to the launch wallet per step
 
 console.log('Funder wallet: ' + funder.publicKey.toBase58());
 console.log('Devnet RPC:    ' + DEVNET_RPC);
@@ -80,6 +80,15 @@ console.log = (...a) => {
   const m = a.join(' ').match(/Server running on (http:\/\/127\.0\.0\.1:\d+)/);
   if (m) SERVER = m[1];
 };
+// Override the Arweave/Irys uploader with a mock. Must be a dynamic
+// import so it runs AFTER TREBUCHET_CONFIG_DIR is set (static imports
+// are hoisted and would read the wrong rpcConfig.json).
+const { setUploaderForTests } = await import('../../tokenService.js');
+setUploaderForTests(async () => ({
+  metadataUri: 'https://arweave.net/devnet-e2e-placeholder',
+  imageUri: 'https://arweave.net/devnet-e2e-placeholder-img',
+}));
+
 await import('../../server.js');
 for (let i = 0; i < 80 && !SERVER; i++) await new Promise(r => setTimeout(r, 250));
 console.log = _o;
@@ -175,7 +184,7 @@ try {
   // ══════════════════════════════════════════════════════════════════
   // Phase 1: Generate wallet, configure token, create it
   // ══════════════════════════════════════════════════════════════════
-  await withPage(async (p, log) => {
+  await withPage(async (p, _clog) => {
     await p.goto(SERVER, { waitUntil: 'domcontentloaded', timeout: 15000 });
     await dismissStartup(p);
 
@@ -190,10 +199,14 @@ try {
     // Step 2: Configure token
     await p.fill('#tokenName', TOKEN_NAME);
     await p.fill('#tokenSymbol', TOKEN_SYMBOL);
-    // Set vanity prefix
-    const prefixInput = await p.$('#vanityCAPrefix');
-    if (prefixInput) {
-      await prefixInput.fill(VANITY_PREFIX);
+    // Set vanity prefix — must select 'prefix' mode and fill the target
+    const modeSelect = await p.$('#vanityCAMode');
+    if (modeSelect) {
+      await modeSelect.selectOption('prefix');
+    }
+    const targetInput = await p.$('#vanityCATarget');
+    if (targetInput) {
+      await targetInput.fill(VANITY_PREFIX);
     }
     await p.waitForTimeout(2000); // let cost estimate settle
 
@@ -223,7 +236,7 @@ try {
   // ══════════════════════════════════════════════════════════════════
   // Phase 2: Simulate crash — reload and resume
   // ══════════════════════════════════════════════════════════════════
-  await withPage(async (p, log) => {
+  await withPage(async (p, _clog) => {
     await p.goto(SERVER, { waitUntil: 'domcontentloaded', timeout: 15000 });
     await dismissStartup(p);
 

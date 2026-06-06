@@ -16762,6 +16762,26 @@ function shortAddress(value, prefix = 6, suffix = 6) {
   return `${value.slice(0, prefix)}...${value.slice(-suffix)}`;
 }
 
+// Format an ISO timestamp as a human-readable relative age string
+// (e.g. "2h ago", "3d ago"). Used in launch journal row metadata.
+function formatAge(isoString) {
+  if (!isoString) return '';
+  var then = new Date(isoString).getTime();
+  if (isNaN(then)) return '';
+  var diff = Date.now() - then;
+  if (diff < 0) return 'just now';
+  var sec = Math.floor(diff / 1000);
+  if (sec < 60) return 'just now';
+  var min = Math.floor(sec / 60);
+  if (min < 60) return min + 'm ago';
+  var hr = Math.floor(min / 60);
+  if (hr < 24) return hr + 'h ago';
+  var days = Math.floor(hr / 24);
+  if (days < 30) return days + 'd ago';
+  var months = Math.floor(days / 30);
+  return months + 'mo ago';
+}
+
 function launchJournalStageLabel(journal) {
   const stage = journal.stage || 'unknown';
   const labels = {
