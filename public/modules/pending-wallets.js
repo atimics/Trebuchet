@@ -189,5 +189,5 @@ function buildLaunchRow(launch) {
 }
 
 export { loadRecentLaunches };
-loadRecentLaunches();
+setTimeout(function() { loadRecentLaunches(); }, 100);
 window.loadRecentLaunches = loadRecentLaunches;

@@ -17374,6 +17374,7 @@ function buildLaunchRow(launch) {
 
 export { loadRecentLaunches };
 loadRecentLaunches();
+window.loadRecentLaunches = loadRecentLaunches;
 // ===========================================================================
 // Initial state
 // ===========================================================================
