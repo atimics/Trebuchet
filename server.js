@@ -3660,6 +3660,34 @@ app.post('/api/pending-wallets/dismiss', (req, res) => {
   }
 });
 
+// Load a pending wallet into the active session — returns the full wallet
+// object (public key, secret key, QR code) so the frontend can use it for
+// a resumed launch without regenerating.
+app.post('/api/pending-wallets/use', async (req, res) => {
+  try {
+    const { publicKey } = req.body;
+    if (!publicKey) {
+      return res.status(400).json({ success: false, error: 'publicKey required' });
+    }
+    const wallet = pendingWallets.get(publicKey);
+    if (!wallet || !Array.isArray(wallet.secretKey)) {
+      return res.status(404).json({ success: false, error: 'wallet not found or secret missing' });
+    }
+    const qrCode = await getWalletQRCode(publicKey);
+    res.json({
+      success: true,
+      wallet: {
+        publicKey,
+        secretKey: wallet.secretKey,
+        qrCode,
+      },
+    });
+  } catch (error) {
+    console.error('Error loading pending wallet:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Helpers for the transfer-assets verification step.
 // ---------------------------------------------------------------------------
