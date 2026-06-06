@@ -15,6 +15,10 @@ async function loadRecentLaunches() {
     const data = await resp.json();
     if (!data.success || !Array.isArray(data.launches)) return;
 
+    // Clear the loading placeholder now that we have a response.
+    const loadingEl = document.getElementById('recentLaunchesLoading');
+    if (loadingEl) loadingEl.remove();
+
     const launches = data.launches;
     if (launches.length === 0) {
       panel.classList.add('hidden');
@@ -188,6 +192,6 @@ function buildLaunchRow(launch) {
   return wrap;
 }
 
-export { loadRecentLaunches };
+// loadRecentLaunches is exposed via window.loadRecentLaunches.
 setTimeout(function() { loadRecentLaunches(); }, 100);
 window.loadRecentLaunches = loadRecentLaunches;

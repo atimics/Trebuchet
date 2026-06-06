@@ -1,23 +1,29 @@
 // ===========================================================================
 // Initial state
 // ===========================================================================
-log('Trebuchet is ready. Click "Generate Wallet" to begin.');
-loadRpcConfig();
-startRpcHealthPolling();
-loadLaunchJournals();
-loadRecentLaunches();
-loadFeeTiers();
-bindStepHeaders();
-updateCancelButtonState();
-// Render the simple-config UI right away so it's visible from page load
-// (even before the user generates a wallet). The pool list inside the
-// customize-mode container starts empty and stays empty until pools[]
-// gets populated — by wallet generation, by recovery, or by manual add.
-applySimpleConfigMode();
-// Initial paint of the token-preview card. With the default values
-// pre-filled in the supply and market-cap inputs, the user sees the
-// placeholder name + a populated tech line right away.
-renderTokenPreview();
+// Defer all initialisation that makes fetch() calls until the event loop
+// settles. Calling fetch() during module evaluation can race with the
+// API session wrapper initialisation, freezing the renderer — the splash
+// video stalls on its first frame and the app becomes unresponsive.
+setTimeout(function () {
+  log('Trebuchet is ready. Click "Generate Wallet" to begin.');
+  loadRpcConfig();
+  startRpcHealthPolling();
+  loadLaunchJournals();
+  loadRecentLaunches();
+  loadFeeTiers();
+  bindStepHeaders();
+  updateCancelButtonState();
+  // Render the simple-config UI right away so it's visible from page load
+  // (even before the user generates a wallet). The pool list inside the
+  // customize-mode container starts empty and stays empty until pools[]
+  // gets populated — by wallet generation, by recovery, or by manual add.
+  applySimpleConfigMode();
+  // Initial paint of the token-preview card. With the default values
+  // pre-filled in the supply and market-cap inputs, the user sees the
+  // placeholder name + a populated tech line right away.
+  renderTokenPreview();
+}, 0);
 
 // ---------------------------------------------------------------------------
 // Tab-close / reload guard
@@ -862,19 +868,21 @@ function applyVanityAvailabilityUi(vanity) {
 // whichever is still blocking. If NEITHER gated (returning user +
 // splash element missing), both gates are still default-true and this
 // is the only place the trigger ever fires.
-_evaluateStartupGates();
+setTimeout(function () {
+  _evaluateStartupGates();
 
-// ── Devnet indicator ───────────────────────────────────────────────────
+  // ── Devnet indicator ───────────────────────────────────────────────────
 
-(function setupDevnetIndicator() {
-  fetch('/api/rpc-config/status')
-    .then(r => r.json())
-    .then(data => {
-      const isDevnet = data && data.network === 'devnet';
-      const banner = document.getElementById('devnetBanner');
-      const notice = document.getElementById('devnetFundingNotice');
-      if (banner) banner.style.display = isDevnet ? 'block' : 'none';
-      if (notice) notice.classList.toggle('hidden', !isDevnet);
-    })
-    .catch(() => {});
-})();
+  (function setupDevnetIndicator() {
+    fetch('/api/rpc-config/status')
+      .then(r => r.json())
+      .then(data => {
+        const isDevnet = data && data.network === 'devnet';
+        const banner = document.getElementById('devnetBanner');
+        const notice = document.getElementById('devnetFundingNotice');
+        if (banner) banner.style.display = isDevnet ? 'block' : 'none';
+        if (notice) notice.classList.toggle('hidden', !isDevnet);
+      })
+      .catch(() => {});
+  })();
+}, 0);

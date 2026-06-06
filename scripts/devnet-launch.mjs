@@ -33,6 +33,7 @@ import { createPoolsAndPositions } from '../lpService.js';
 import { sweepAllTokensToDestination, sweepSolToDestination, setConnectionFactoryForTests } from '../walletHelpers.js';
 import { setConnectionFactoryForTests as setLpConnection } from '../lpService.js';
 import { setConnectionFactoryForTests as setTokenConnection, setUmiFactoryForTests, setUploaderForTests, refreshConnection } from '../tokenService.js';
+import { generateVanityKeypair } from '../vanityKeygen.js';
 import fs from 'node:fs';
 
 // ── Config ──────────────────────────────────────────────────────────
@@ -47,6 +48,9 @@ const DEVNET_RPC = process.env.DEVNET_RPC || clusterApiUrl('devnet');
 const TOKEN_NAME = process.env.TOKEN_NAME || 'Devnet Test';
 const TOKEN_SYMBOL = process.env.TOKEN_SYMBOL || 'DTEST';
 const TOKEN_SUPPLY = process.env.TOKEN_SUPPLY || '1000000000';
+const VANITY_PREFIX = process.env.VANITY_PREFIX || '';
+const VANITY_SUFFIX = process.env.VANITY_SUFFIX || '';
+const VANITY_THREADS = parseInt(process.env.VANITY_THREADS || '4', 10);
 const AIRDROP_SOL = 2;
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -108,7 +112,23 @@ async function main() {
     log('Balance', `${solBalance / LAMPORTS_PER_SOL} SOL`);
   }
 
-  // ── 3. Create token with Metaplex ─────────────────────────────────
+  // ── 3. Vanity grind (optional) ──────────────────────────────────
+  let vanityCAKeypair = null;
+  if (VANITY_PREFIX || VANITY_SUFFIX) {
+    const target = VANITY_PREFIX ? `prefix "${VANITY_PREFIX}"` : `suffix "${VANITY_SUFFIX}"`;
+    log('Vanity', `grinding ${target} (${VANITY_THREADS} threads)…`);
+    const result = await generateVanityKeypair({
+      prefix: VANITY_PREFIX || undefined,
+      suffix: VANITY_SUFFIX || undefined,
+      threads: VANITY_THREADS,
+    });
+    vanityCAKeypair = result.secretKey;
+    const tier = result.tier ? ` (${result.tier})` : '';
+    log('Vanity', `found after ${result.attempts} attempts${tier}`);
+    log('Vanity CA', result.publicKey);
+  }
+
+  // ── 4. Create token with Metaplex ─────────────────────────────────
   log('Token', `creating "${TOKEN_NAME}" (${TOKEN_SYMBOL})…`);
   const tokenResult = await createTokenWithMetaplex({
     tempWalletSecretKey: Array.from(wallet.secretKey),
@@ -117,6 +137,7 @@ async function main() {
     description: 'Devnet test token — Trebuchet E2E exercise',
     totalSupply: TOKEN_SUPPLY,
     logoBase64: null,
+    vanityCAKeypair: vanityCAKeypair,
     onProgress: (event) => log('Token progress', event),
   });
 
@@ -131,7 +152,7 @@ async function main() {
   const tokenBalance = tokenResult.totalSupply;
   log('Token balance', `${tokenBalance} raw`);
 
-  // ── 4. Create Raydium CLMM pool ───────────────────────────────────
+  // ── 5. Create Raydium CLMM pool ───────────────────────────────────
   log('SDK', 'initializing Raydium (devnet)…');
   const raydium = await Raydium.load({
     owner: wallet,
@@ -172,7 +193,7 @@ async function main() {
   log('Pool', `created, tx: ${txId}`);
   log('Pool address', extInfo.address.id);
 
-  // ── 5. Open a position ────────────────────────────────────────────
+  // ── 6. Open a position ────────────────────────────────────────────
   log('Position', 'opening…');
   const poolInfo = await raydium.clmm.getPoolInfoFromRpc(extInfo.address.id);
   const pos = await raydium.clmm.openPositionFromBase({
@@ -188,7 +209,7 @@ async function main() {
   const { txId: posTxId } = await pos.execute();
   log('Position', `opened, tx: ${posTxId}`);
 
-  // ── 6. Sweep remaining funds ──────────────────────────────────────
+  // ── 7. Sweep remaining funds ──────────────────────────────────────
   const sweepResult = await sweepAllTokensToDestination({
     connection,
     walletKeypair: wallet,

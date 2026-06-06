@@ -3643,7 +3643,7 @@
             <!-- import it into Phantom etc. and recover funds) or discard the -->
             <!-- entry once they've confirmed nothing is at stake.             -->
             <!-- ============================================================ -->
-            <div class="hidden mb-4" id="recentLaunchesPanel">
+            <div class="mb-4" id="recentLaunchesPanel">
                 <div class="box p-3">
                     <h5 class="title is-6 mb-2">
                         <span class="icon"><i class="fas fa-history"></i></span>
@@ -3652,7 +3652,9 @@
                     <p class="is-size-7 mb-3 has-text-grey">
                         Launch state is saved automatically. Click <strong>Load</strong> to resume where you left off — wallet, token, and pool info are all restored.
                     </p>
-                    <div id="recentLaunchesList"></div>
+                    <div id="recentLaunchesList">
+                        <p class="has-text-grey is-size-7" id="recentLaunchesLoading">Loading…</p>
+                    </div>
                 </div>
             </div>
 

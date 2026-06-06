@@ -239,13 +239,65 @@ function buildMnemonicGrid(mnemonic) {
 // The Image decode is wrapped in a same-document objectURL that we
 // revoke immediately after, regardless of outcome, so this validation
 // path doesn't leak object URLs even on rapid file changes.
-async function validateLogoFile(file) {
-  if (file.size > MAX_LOGO_BYTES) {
-    const kb = (file.size / 1024).toFixed(1);
-    const maxKb = (MAX_LOGO_BYTES / 1024).toFixed(0);
-    return `Logo is ${kb}KB; max is ${maxKb}KB. ` +
-      `Compress the image or pick a smaller file.`;
+
+// Compress an image File to fit within maxDim and maxBytes.  Loads the
+// image into an offscreen canvas, scales down if needed, then exports
+// as JPEG with a binary-search quality loop to hit the byte target.
+// Returns a Blob (image/jpeg).  Throws if even quality 0.10 exceeds
+// maxBytes, so the caller can surface a graceful message.
+async function compressImageToFit(file, maxDim, maxBytes) {
+  // Decode the image.
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error('Could not decode image'));
+    i.src = URL.createObjectURL(file);
+  });
+
+  // Scale down to maxDim×maxDim while preserving aspect ratio.
+  let w = img.naturalWidth;
+  let h = img.naturalHeight;
+  if (w > maxDim || h > maxDim) {
+    const ratio = Math.min(maxDim / w, maxDim / h);
+    w = Math.round(w * ratio);
+    h = Math.round(h * ratio);
   }
+
+  // Binary-search JPEG quality to hit maxBytes.  We probe between
+  // 0.10 and 0.95 in 8 steps (~1.7% precision).
+  let lo = 0.10;
+  let hi = 0.95;
+  let best = null;
+  for (let step = 0; step < 8; step++) {
+    const q = (lo + hi) / 2;
+    const blob = await canvasToJpegBlob(img, w, h, q);
+    if (blob.size <= maxBytes) {
+      best = blob;
+      lo = q;               // try higher quality
+    } else {
+      hi = q;               // too big, try lower
+    }
+  }
+  if (!best) throw new Error('Cannot compress below byte limit');
+  return best;
+}
+
+// Draw the image onto an offscreen canvas and export as JPEG at the
+// given quality (0–1).  Returns a Blob.
+function canvasToJpegBlob(img, w, h, quality) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  return new Promise((resolve) => {
+    canvas.toBlob((b) => resolve(b), 'image/jpeg', quality);
+  });
+}
+
+async function validateLogoFileDimensionsOnly(file) {
+  // Size check removed — large files are now auto-compressed in the
+  // change handler rather than being rejected outright.
   // accept attribute on the input already restricts the picker to
   // image/png and image/jpeg, but the browser's filter isn't a hard
   // gate (drag-and-drop, devtools, OS file dialogs that ignore filters
@@ -314,26 +366,41 @@ bind('tokenLogo', 'change', async (e) => {
   filenameEl.textContent = f.name;
   setLogoError(null);
 
-  const err = await validateLogoFile(f);
+  // Run structural validation first (MIME type, dimensions).
+  // If only the file SIZE is wrong, we compress instead of rejecting.
+  const needsCompress = f.size > MAX_LOGO_BYTES;
+  const err = await validateLogoFileDimensionsOnly(f);
   if (err) {
-    // Reject the file: clear the input so subsequent code paths
-    // (renderTokenPreview, the create-token submit) see no logo at
-    // all, rather than seeing a logo that's about to be rejected by
-    // the server. Setting .value = '' is the cross-browser way to
-    // programmatically clear a file input.
     e.target.value = '';
     filenameEl.textContent = 'No file selected';
     setLogoError(err);
-    // Trigger a preview re-render so the thumbnail and live preview
-    // card both drop back to their no-logo state.
     if (typeof renderTokenPreview === 'function') renderTokenPreview();
     return;
   }
-  // Valid file — leave the filename as set above. The separate
-  // change-handler binding (see bind('tokenLogo', 'change', renderTokenPreview)
-  // below in this file) handles updating the preview thumbnail and
-  // live card. We don't trigger it directly from here; the browser
-  // fires `change` once and both listeners receive it.
+
+  if (needsCompress) {
+    filenameEl.textContent = f.name + ' (compressing…)';
+    try {
+      const compressed = await compressImageToFit(f, MAX_LOGO_DIMENSION, MAX_LOGO_BYTES);
+      // Replace the file input's FileList with the compressed version.
+      var dt = new DataTransfer();
+      dt.items.add(new File([compressed], f.name.replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' }));
+      e.target.files = dt.files;
+      var newKb = (compressed.size / 1024).toFixed(0);
+      filenameEl.textContent = f.name + ' → compressed to ' + newKb + 'KB';
+      setLogoError(null);
+    } catch (compressErr) {
+      e.target.value = '';
+      filenameEl.textContent = 'No file selected';
+      setLogoError('Could not compress the image enough. Try a smaller file.');
+      if (typeof renderTokenPreview === 'function') renderTokenPreview();
+      return;
+    }
+  }
+
+  // The separate change-handler binding (bind('tokenLogo', 'change',
+  // renderTokenPreview) below) updates the preview to reflect the
+  // (possibly compressed) file.
 });
 
 const poolList = document.getElementById('poolList');

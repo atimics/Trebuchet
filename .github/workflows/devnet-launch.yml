@@ -1,0 +1,62 @@
+name: Devnet Launch
+
+on:
+  workflow_dispatch:
+    inputs:
+      token_name:
+        description: 'Token name'
+        required: false
+        default: 'RATi'
+      token_symbol:
+        description: 'Token symbol'
+        required: false
+        default: 'RATi'
+      prefix:
+        description: 'Vanity prefix (leave empty to skip grinding)'
+        required: false
+        default: 'RAT'
+      threads:
+        description: 'Vanity grind threads'
+        required: false
+        default: '4'
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    name: Launch devnet token
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build vanity keygen binary
+        run: npm run build:c
+
+      - name: Derive funding wallet
+        env:
+          DEVNET_WALLET_SECRET_KEY: ${{ secrets.DEVNET_WALLET_SECRET_KEY }}
+        run: |
+          echo "$DEVNET_WALLET_SECRET_KEY" | base64 -d > /tmp/devnet-wallet.json
+
+      - name: Run devnet launch
+        env:
+          DEVNET_RPC: ${{ secrets.DEVNET_RPC }}
+          TOKEN_NAME: ${{ inputs.token_name }}
+          TOKEN_SYMBOL: ${{ inputs.token_symbol }}
+          VANITY_PREFIX: ${{ inputs.prefix }}
+          VANITY_THREADS: ${{ inputs.threads }}
+        run: |
+          node scripts/devnet-launch.mjs \
+            --keypair /tmp/devnet-wallet.json
