@@ -7,11 +7,24 @@
 //
 // Usage:
 //   node scripts/devnet-launch.mjs
-//   DEVNET_RPC=https://devnet.helius-rpc.com/?api-key=YOUR_KEY \
-//     node scripts/devnet-launch.mjs
+//   node scripts/devnet-launch.mjs --keypair /tmp/funded-wallet.json
+//   DEVNET_RPC=https://devnet.helius-rpc.com/?api-key=KEY \
+//     node scripts/devnet-launch.mjs --keypair my-wallet.json
+//
+// Options:
+//   --keypair <path>   Use an existing funded keypair (skips airdrop)
+//
+// CI usage:
+//   Store a devnet-funded keypair as GH secret DEVNET_WALLET, write it
+//   to disk in CI, then run with --keypair.  Fund it occasionally via
+//   https://faucet.solana.com (requires GitHub OAuth + captcha).
+//
+//   DEVNET_RPC=https://devnet.helius-rpc.com/?api-key=\${{ secrets.HELIUS_KEY }} \
+//     node scripts/devnet-launch.mjs --keypair /tmp/wallet.json
 //
 // Requirements:
 //   - Devnet RPC endpoint (default: https://api.devnet.solana.com)
+//   - Either: a pre-funded keypair (--keypair) or a working airdrop RPC
 
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, clusterApiUrl } from '@solana/web3.js';
 import { Raydium, TxVersion, DEVNET_PROGRAM_ID } from '@raydium-io/raydium-sdk-v2';
@@ -23,6 +36,12 @@ import { setConnectionFactoryForTests as setTokenConnection, setUmiFactoryForTes
 import fs from 'node:fs';
 
 // ── Config ──────────────────────────────────────────────────────────
+
+const args = process.argv.slice(2);
+const KEYPAIR_PATH = (() => {
+  const idx = args.indexOf('--keypair');
+  return idx >= 0 ? args[idx + 1] : null;
+})();
 
 const DEVNET_RPC = process.env.DEVNET_RPC || clusterApiUrl('devnet');
 const TOKEN_NAME = process.env.TOKEN_NAME || 'Devnet Test';
@@ -56,17 +75,38 @@ async function main() {
   setTokenConnection(() => connection);
   refreshConnection();
 
-  // ── 1. Generate wallet ────────────────────────────────────────────
-  const wallet = Keypair.generate();
+  // ── 1. Load or generate wallet ────────────────────────────────────
+  let wallet;
+  if (KEYPAIR_PATH) {
+    const raw = JSON.parse(fs.readFileSync(KEYPAIR_PATH, 'utf8'));
+    wallet = Keypair.fromSecretKey(Uint8Array.from(raw));
+    log('Wallet', wallet.publicKey.toBase58() + ' (loaded)');
+  } else {
+    wallet = Keypair.generate();
+    log('Wallet', wallet.publicKey.toBase58());
+  }
   const pubkey = wallet.publicKey;
-  log('Wallet', pubkey.toBase58());
 
   // ── 2. Fund with devnet SOL ───────────────────────────────────────
-  log('Airdrop', `requesting ${AIRDROP_SOL} SOL…`);
-  const airdropSig = await connection.requestAirdrop(pubkey, AIRDROP_SOL * LAMPORTS_PER_SOL);
-  await waitForConfirm(connection, airdropSig, 'Airdrop');
-  const solBalance = await connection.getBalance(pubkey);
-  log('Balance', `${solBalance / LAMPORTS_PER_SOL} SOL`);
+  if (KEYPAIR_PATH) {
+    const bal = await connection.getBalance(pubkey);
+    log('Balance', `${bal / LAMPORTS_PER_SOL} SOL (pre-funded, skipping airdrop)`);
+    if (bal < 0.5 * LAMPORTS_PER_SOL) {
+      throw new Error('Wallet balance too low. Fund it via https://faucet.solana.com first.');
+    }
+  } else {
+    log('Airdrop', `requesting ${AIRDROP_SOL} SOL…`);
+    try {
+      const airdropSig = await connection.requestAirdrop(pubkey, AIRDROP_SOL * LAMPORTS_PER_SOL);
+      await waitForConfirm(connection, airdropSig, 'Airdrop');
+    } catch (e) {
+      log('Airdrop failed', e.message);
+      log('Tip', 'Use --keypair with a pre-funded wallet, or fund via https://faucet.solana.com');
+      throw e;
+    }
+    const solBalance = await connection.getBalance(pubkey);
+    log('Balance', `${solBalance / LAMPORTS_PER_SOL} SOL`);
+  }
 
   // ── 3. Create token with Metaplex ─────────────────────────────────
   log('Token', `creating "${TOKEN_NAME}" (${TOKEN_SYMBOL})…`);
