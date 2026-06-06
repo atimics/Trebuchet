@@ -119,6 +119,67 @@ bind('generateWalletBtn', 'click', async () => {
       }
       applySimpleConfigMode();
 
+      // Check for an existing launch to resume (token already created,
+      // LP partially done, etc.).  The server journals every on-chain
+      // step so we can reconstruct the launch state after a crash.
+      try {
+        const stateResp = await fetch(
+          `/api/launch-state?walletPublicKey=${encodeURIComponent(data.wallet.publicKey)}`,
+        );
+        const stateData = await stateResp.json();
+        if (stateData.success && stateData.state) {
+          const s = stateData.state;
+          // Restore token info if we already created one
+          if (s.token && s.token.mint) {
+            createdTokenInfo = {
+              mint: s.token.mint,
+              decimals: s.token.decimals || 9,
+              totalSupply: s.token.totalSupply,
+              name: s.token.name || '',
+              symbol: s.token.symbol || '',
+            };
+            document.getElementById('tokenCreatedInfo').classList.remove('hidden');
+            document.getElementById('tokenMintAddress').textContent = s.token.mint;
+            document.getElementById('tokenSolscanLink').href =
+              `https://solscan.io/token/${s.token.mint}`;
+            document.getElementById('createTokenBtn').classList.add('hidden');
+            log(`Resumed token ${s.token.symbol || s.token.mint.slice(0, 8)}`, 'info');
+          }
+          // Restore LP result if pools were already created
+          if (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0) {
+            lpResult = { results: s.lp.results };
+            setLpDoneVisible(true);
+            document.getElementById('createLpBtn').classList.add('hidden');
+            log(`Resumed LP: ${s.lp.results.length} pool(s)`, 'info');
+          }
+          // Jump to the appropriate step
+          const stage = s.stage || '';
+          if (stage.startsWith('lp_') || (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0)) {
+            // LP was in progress or completed — go to step 5 or 6
+            const targetStep = s.transfer ? 6 : 5;
+            setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…`);
+            setStepSummary(2, `${s.token?.symbol || ''} / SOL`);
+            setStepSummary(3, '');
+            if (createdTokenInfo) setStepSummary(4, `${createdTokenInfo.symbol} — ${createdTokenInfo.mint.slice(0, 8)}…`);
+            if (lpResult) setStepSummary(5, `${lpResult.results.length} pool(s)`);
+            activateStep(targetStep);
+            if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+            updateCancelButtonState();
+            return;
+          } else if (stage.startsWith('token_')) {
+            // Token was created — go to step 5 (LP)
+            setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…`);
+            setStepSummary(2, `${s.token?.symbol || ''} / SOL`);
+            setStepSummary(3, '');
+            setStepSummary(4, `${createdTokenInfo.symbol} — ${createdTokenInfo.mint.slice(0, 8)}…`);
+            activateStep(5);
+            if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+            updateCancelButtonState();
+            return;
+          }
+        }
+      } catch { /* launch-state lookup is advisory */ }
+
       setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…${data.wallet.publicKey.slice(-6)}`);
       activateStep(2);
       updateContinueToFundingState();

@@ -873,6 +873,28 @@ app.post('/api/check-balance-detailed', async (req, res) => {
   }
 });
 
+// Return the launch journal state for a wallet.  The client uses this
+// to resume a launch after a crash or close — it reads the token mint,
+// decimals, supply, LP pool info, and current stage, then jumps to the
+// appropriate step without starting over.
+app.get('/api/launch-state', (req, res) => {
+  try {
+    const { walletPublicKey } = req.query;
+    if (!walletPublicKey) {
+      return res.status(400).json({ success: false, error: 'walletPublicKey is required' });
+    }
+    const journal = launchJournal.activeForWallet(walletPublicKey);
+    if (!journal) {
+      return res.json({ success: true, state: null });
+    }
+    // Return everything except raw events (too verbose) and secrets.
+    const { events, ...rest } = journal;
+    res.json({ success: true, state: rest });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // RPC config endpoints
 // ---------------------------------------------------------------------------
