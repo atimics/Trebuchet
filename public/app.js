@@ -2553,6 +2553,30 @@ bind('addRpcBtn', 'click', async () => {
 // STEP 1: Generate wallet
 // ===========================================================================
 
+// Set a QR code image src, falling back to client-side generation if
+// the server-provided data URL is missing or broken (e.g. network error
+// during wallet gen on devnet).
+async function setQrCode(elementId, serverQr, publicKey) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  if (serverQr && serverQr.startsWith('data:image/')) {
+    el.src = serverQr;
+    el.onerror = async () => {
+      // Data URL was invalid — regenerate client-side
+      try {
+        const { default: QRCode } = await import('qrcode');
+        el.src = await QRCode.toDataURL(publicKey, { width: 256, margin: 2 });
+      } catch { /* both failed, leave broken */ }
+    };
+  } else {
+    // No server QR — generate client-side
+    try {
+      const { default: QRCode } = await import('qrcode');
+      el.src = await QRCode.toDataURL(publicKey, { width: 256, margin: 2 });
+    } catch { /* qrcode unavailable, leave empty */ }
+  }
+}
+
 bind('generateWalletBtn', 'click', async () => {
   const btn = document.getElementById('generateWalletBtn');
   // If a wallet already exists, this is a regenerate. Confirm to avoid
@@ -2608,7 +2632,7 @@ bind('generateWalletBtn', 'click', async () => {
 
       // Reset UI panels that may carry stale info from a previous attempt
       document.getElementById('walletInfo').classList.remove('hidden');
-      document.getElementById('qrCode').src = data.wallet.qrCode;
+      setQrCode('qrCode', data.wallet.qrCode, data.wallet.publicKey);
       document.getElementById('walletAddress').value = data.wallet.publicKey;
       document.getElementById('privateKeyContainer').classList.add('hidden');
       document.getElementById('tokenCreatedInfo').classList.add('hidden');
@@ -12427,7 +12451,18 @@ function renderFundingRequirements() {
   // and stashed on tempWallet alongside publicKey/secretKey. Reuse it here
   // so users on mobile can scan rather than copy-paste the address.
   const step3Qr = document.getElementById('step3QrCode');
-  if (step3Qr && tempWallet.qrCode) step3Qr.src = tempWallet.qrCode;
+  if (step3Qr && tempWallet.publicKey) {
+    if (tempWallet.qrCode && tempWallet.qrCode.startsWith('data:image/')) {
+      step3Qr.src = tempWallet.qrCode;
+      step3Qr.onerror = () => {
+        import('qrcode').then(m => m.default.toDataURL(tempWallet.publicKey, { width: 256, margin: 2 }))
+          .then(url => { step3Qr.src = url; }).catch(() => {});
+      };
+    } else {
+      import('qrcode').then(m => m.default.toDataURL(tempWallet.publicKey, { width: 256, margin: 2 }))
+        .then(url => { step3Qr.src = url; }).catch(() => {});
+    }
+  }
 
   // ---- Section 1: things the user must send themselves ------------------
   // SOL is always present. Manual-prefund tokens (no auto-swap route, or
@@ -13615,6 +13650,23 @@ bind('createTokenBtn', 'click', async () => {
     setLoading(btn, true);
     markLaunchActiveForRpcHealth(true);
     try {
+      // Pre-check: if the wallet has no SOL, token creation will hang
+      // waiting for a transaction that can never confirm.
+      if (!demoModeActive) {
+        try {
+          const balResp = await fetch('/api/check-balance', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ publicKey: tempWallet.publicKey, tokenMints: [] }),
+          });
+          const balData = await balResp.json();
+          if (balData.success && (!balData.balance || balData.balance.sol < 0.001)) {
+            setLoading(btn, false);
+            log('Token creation blocked: wallet has insufficient SOL. Fund your wallet first.', 'danger');
+            return;
+          }
+        } catch { /* balance check is advisory, proceed */ }
+      }
       log('Creating token...');
       const formData = new FormData();
       // F5: send the public key; the server resolves the secret from its
@@ -13650,7 +13702,9 @@ bind('createTokenBtn', 'click', async () => {
       const logoFile = document.getElementById('tokenLogo').files[0];
       if (logoFile) formData.append('logo', logoFile);
 
-      const resp = await fetch('/api/create-token', { method: 'POST', body: formData });
+      const ac = new AbortController();
+      const timeout = setTimeout(() => ac.abort(), 120_000); // 2 min timeout
+      const resp = await fetch('/api/create-token', { method: 'POST', body: formData, signal: ac.signal }).finally(() => clearTimeout(timeout));
       const data = await resp.json();
       if (!data.success) throw new Error(data.error);
 
