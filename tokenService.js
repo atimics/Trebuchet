@@ -32,7 +32,7 @@ import {
 import QRCode from 'qrcode';
 import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
-import { getRpcUrl } from './rpcConfig.js';
+import { getRpcUrl, getNetwork } from './rpcConfig.js';
 import { generateVanityKeypair } from './vanityKeygen.js';
 import {
   createTokenMetadataUmi,
@@ -190,7 +190,10 @@ export async function checkWalletBalance(publicKey) {
     // If it's a connection error, try with public RPC
     if (error.message && error.message.includes('fetch')) {
       console.log('Trying public RPC endpoint...');
-      const publicConnection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
+      const fallbackUrl = (getNetwork && getNetwork()) === 'devnet'
+        ? 'https://api.devnet.solana.com'
+        : 'https://api.mainnet-beta.solana.com';
+      const publicConnection = new Connection(fallbackUrl, 'confirmed');
       try {
         const balance = await publicConnection.getBalance(pubKey);
         return balance / LAMPORTS_PER_SOL;

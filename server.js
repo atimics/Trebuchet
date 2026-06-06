@@ -43,6 +43,8 @@ import {
   addSavedRpc,
   removeSavedRpc,
   testRpc,
+  getNetwork,
+  setNetwork,
 } from './rpcConfig.js';
 
 import * as pendingWallets from './pendingWallets.js';
@@ -917,6 +919,34 @@ app.post('/api/rpc-config/add', (req, res) => {
 app.post('/api/rpc-config/remove', (req, res) => {
   try {
     removeSavedRpc(req.body.url);
+    refreshTokenServiceConnection();
+    res.json({ success: true, config: getRpcConfig() });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
+
+// Return current network and RPC config for the UI.
+app.get('/api/rpc-config/status', (_req, res) => {
+  try {
+    const config = getRpcConfig();
+    res.json({ success: true, config, network: getNetwork() });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Switch the active network.  Updates the active RPC to the first
+// saved endpoint for the new network, and persists the choice to
+// userPrefs so it survives restarts.
+app.post('/api/rpc-config/set-network', (req, res) => {
+  try {
+    const { network } = req.body;
+    if (network !== 'mainnet' && network !== 'devnet') {
+      return res.status(400).json({ success: false, error: 'Network must be "mainnet" or "devnet"' });
+    }
+    setNetwork(network);
+    userPrefs.set({ network });
     refreshTokenServiceConnection();
     res.json({ success: true, config: getRpcConfig() });
   } catch (e) {

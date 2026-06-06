@@ -101,6 +101,7 @@ import {
   Raydium,
   TxVersion,
   CLMM_PROGRAM_ID,
+  DEVNET_PROGRAM_ID,
 } from '@raydium-io/raydium-sdk-v2';
 import {
   TOKEN_PROGRAM_ID,
@@ -123,7 +124,7 @@ import {
 } from './lpMath.js';
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
-import { getRpcUrl } from './rpcConfig.js';
+import { getRpcUrl, getNetwork } from './rpcConfig.js';
 // Token metadata + USD price helpers. Imported (not just re-exported below) so
 // they're bound in THIS module's scope — estimateRequiredFunding and the quote
 // USD lookups call getUsdPrice directly. A bare `export { ... } from` is only a
@@ -419,6 +420,14 @@ export async function getClmmFeeTiers() {
  * can also override just the Connection construction (when they want the
  * real Raydium.load with a fake RPC) via setConnectionFactoryForTests.
  */
+// Return the CLMM program ID for the active network.
+function getClmmProgramId() {
+  const network = getNetwork();
+  return network === 'devnet'
+    ? DEVNET_PROGRAM_ID.CLMM_PROGRAM_ID
+    : CLMM_PROGRAM_ID;
+}
+
 async function initSdk(ownerKeypair) {
   if (__sdkFactoryOverride) return __sdkFactoryOverride(ownerKeypair);
   const connection = __connectionFactoryOverride
@@ -427,10 +436,11 @@ async function initSdk(ownerKeypair) {
         commitment: 'confirmed',
         confirmTransactionInitialTimeout: 60_000,
       });
+  const network = getNetwork();
   return Raydium.load({
     owner: ownerKeypair,
     connection,
-    cluster: 'mainnet',
+    cluster: network === 'devnet' ? 'devnet' : 'mainnet',
     disableFeatureCheck: true,
     disableLoadToken: true, // skip the multi-MB token-list fetch
     blockhashCommitment: 'finalized',
@@ -957,7 +967,7 @@ async function createSinglePool({
   progress({ stage: 'pool_create_start' });
 
   const createRes = await raydium.clmm.createPool({
-    programId: CLMM_PROGRAM_ID,
+    programId: getClmmProgramId(),
     mint1: launchedToken,
     mint2: quoteToken,
     ammConfig,
@@ -2819,8 +2829,22 @@ export async function createPoolsAndPositions({
   // -----------------------------------------------------------------------
   // 4. Fetch CLMM AmmConfigs once (used per-pool)
   // -----------------------------------------------------------------------
-  const allConfigs = await raydium.api.getClmmConfigs();
-  console.log(`Loaded ${allConfigs.length} AmmConfigs from Raydium API`);
+  let allConfigs;
+  try {
+    allConfigs = await raydium.api.getClmmConfigs();
+    console.log(`Loaded ${allConfigs.length} AmmConfigs from Raydium API`);
+  } catch {
+    // Hardcoded fallback — the four standard Raydium CLMM fee tiers.
+    // Used when the Raydium API is unreachable or when running on
+    // devnet (the API only serves mainnet data).
+    allConfigs = [
+      { id: '100',  index: 0, tickSpacing: 1,   tradeFeeRate: 100,   protocolFeeRate: 120000, fundFeeRate: 40000 },
+      { id: '500',  index: 1, tickSpacing: 10,  tradeFeeRate: 500,   protocolFeeRate: 120000, fundFeeRate: 40000 },
+      { id: '2500', index: 2, tickSpacing: 60,  tradeFeeRate: 2500,  protocolFeeRate: 120000, fundFeeRate: 40000 },
+      { id: '10000',index: 3, tickSpacing: 200, tradeFeeRate: 10000, protocolFeeRate: 120000, fundFeeRate: 40000 },
+    ];
+    console.log(`Using hardcoded fallback: ${allConfigs.length} fee tiers`);
+  }
 
   // -----------------------------------------------------------------------
   // 5. Build the launched-token info object the SDK expects

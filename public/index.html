@@ -3449,6 +3449,19 @@
                 </div>
 
                 <div id="rpcSettingsPanel" class="hidden mt-3">
+                    <!-- Network selector -->
+                    <h6 class="subtitle is-6 mb-2">Network</h6>
+                    <div class="field has-addons">
+                        <div class="control">
+                            <button class="button is-small" id="networkMainnetBtn">Mainnet</button>
+                        </div>
+                        <div class="control">
+                            <button class="button is-small" id="networkDevnetBtn">Devnet</button>
+                        </div>
+                    </div>
+                    <p id="networkWarning" class="help has-text-warning hidden"></p>
+                    <hr class="my-3">
+
                     <h6 class="subtitle is-6 mb-2">Saved Endpoints</h6>
                     <div id="rpcSavedList"></div>
                     <hr class="my-3">
