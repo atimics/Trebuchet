@@ -13650,7 +13650,7 @@ bind('createTokenBtn', 'click', async () => {
     setLoading(btn, true);
     markLaunchActiveForRpcHealth(true);
     try {
-      log('Creating token... (devnet confirmations can take 30–60 seconds)');
+      log('Creating token...');
       const formData = new FormData();
       // F5: send the public key; the server resolves the secret from its
       // encrypted store for real launches. Demo has no server-side secret,

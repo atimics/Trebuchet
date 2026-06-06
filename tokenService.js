@@ -45,10 +45,14 @@ import {
 // in the UI — server.js calls refreshConnection() after a successful change.
 function makeConnection() {
   const url = getRpcUrl();
-  console.log('Using RPC endpoint:', url);
+  const network = getNetwork();
+  console.log('Using RPC endpoint:', url, '(network:', network, ')');
+  // Devnet confirmations are very slow (sparse validator set).  Use
+  // 'processed' so transactions return immediately and the UI stays
+  // responsive — the user can check confirmations on Solscan.
   return new Connection(url, {
-    commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 60000,
+    commitment: network === 'devnet' ? 'processed' : 'confirmed',
+    confirmTransactionInitialTimeout: 60_000,
   });
 }
 

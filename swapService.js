@@ -76,7 +76,7 @@ import {
 } from '@solana/spl-token';
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
-import { getRpcUrl } from './rpcConfig.js';
+import { getRpcUrl, getNetwork } from './rpcConfig.js';
 import {
   classifySwapError,
   computeSwapSpendLamports,
