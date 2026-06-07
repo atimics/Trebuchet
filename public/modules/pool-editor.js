@@ -1011,6 +1011,7 @@ function buildPoolNode(pool, idx) {
           </optgroup>
           <optgroup label="Flywheels">
             <option value="HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r">$seige (Meme flywheel — recommended)</option>
+            <option value="8ZscSWe5ZSFbGYg4JzA3eqpf6iCnwT72i8TZvVni2yMY">RATi (Agent Economy — devnet)</option>
             <option value="J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj">XLRT (Reserve flywheel)</option>
           </optgroup>
           <optgroup label="Majors">

@@ -43,6 +43,8 @@ import {
   addSavedRpc,
   removeSavedRpc,
   testRpc,
+  getNetwork,
+  setNetwork,
 } from './rpcConfig.js';
 
 import * as pendingWallets from './pendingWallets.js';
@@ -871,6 +873,28 @@ app.post('/api/check-balance-detailed', async (req, res) => {
   }
 });
 
+// Return the launch journal state for a wallet.  The client uses this
+// to resume a launch after a crash or close — it reads the token mint,
+// decimals, supply, LP pool info, and current stage, then jumps to the
+// appropriate step without starting over.
+app.get('/api/launch-state', (req, res) => {
+  try {
+    const { walletPublicKey } = req.query;
+    if (!walletPublicKey) {
+      return res.status(400).json({ success: false, error: 'walletPublicKey is required' });
+    }
+    const journal = launchJournal.activeForWallet(walletPublicKey);
+    if (!journal) {
+      return res.json({ success: true, state: null });
+    }
+    // Return everything except raw events (too verbose) and secrets.
+    const { events, ...rest } = journal;
+    res.json({ success: true, state: rest });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // RPC config endpoints
 // ---------------------------------------------------------------------------
@@ -917,6 +941,34 @@ app.post('/api/rpc-config/add', (req, res) => {
 app.post('/api/rpc-config/remove', (req, res) => {
   try {
     removeSavedRpc(req.body.url);
+    refreshTokenServiceConnection();
+    res.json({ success: true, config: getRpcConfig() });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
+
+// Return current network and RPC config for the UI.
+app.get('/api/rpc-config/status', (_req, res) => {
+  try {
+    const config = getRpcConfig();
+    res.json({ success: true, config, network: getNetwork() });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Switch the active network.  Updates the active RPC to the first
+// saved endpoint for the new network, and persists the choice to
+// userPrefs so it survives restarts.
+app.post('/api/rpc-config/set-network', (req, res) => {
+  try {
+    const { network } = req.body;
+    if (network !== 'mainnet' && network !== 'devnet') {
+      return res.status(400).json({ success: false, error: 'Network must be "mainnet" or "devnet"' });
+    }
+    setNetwork(network);
+    userPrefs.set({ network });
     refreshTokenServiceConnection();
     res.json({ success: true, config: getRpcConfig() });
   } catch (e) {
@@ -1102,13 +1154,26 @@ app.get('/api/rpc-health', async (_req, res) => {
 // ---------------------------------------------------------------------------
 
 function uploadLogo(req, res, next) {
-  upload.single('logo')(req, res, (err) => {
+  upload.single('logo')(req, res, async (err) => {
     if (err) {
       return res.status(400).json({ success: false, error: err.message });
     }
     if (req.file) {
       try {
         req.file.detectedMime = normalizeLogoImageMime(req.file.buffer);
+        // Square-crop to the smaller dimension, then resize to 400x400
+        // and compress to keep logo uploads compact (~20-50 KB).
+        // Metaplex recommends 400x400 or smaller for token logos.
+        const processed = await sharp(req.file.buffer)
+          .resize(400, 400, { fit: 'cover', position: 'centre' })
+          .jpeg({ quality: 85, mozjpeg: true })
+          .toBuffer()
+          .catch(() => null);
+        if (processed && processed.length > 0) {
+          req.file.buffer = processed;
+          req.file.detectedMime = 'image/jpeg';
+          req.file.size = processed.length;
+        }
       } catch (logoError) {
         return res.status(400).json({ success: false, error: logoError.message });
       }
@@ -1307,6 +1372,8 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       vanityPrefix,
       vanitySuffix,
       vanityCAKeypair: vanityCAKeypairRaw,
+      allocations: allocationsRaw,
+      targetMarketCapUsd,
     } = req.body;
 
     // If the caller asked for a fresh vanity grind (prefix/suffix) but the
@@ -1378,26 +1445,47 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       onProgress: (event) => recordTokenJournalProgress(walletPublicKey, event),
     });
 
+    // Parse pool allocations if the frontend sent them, so the
+    // crash-resume path can pick up the pool plan from the journal.
+    let poolPlan = null;
+    let allocations = null;
+    if (allocationsRaw) {
+      try { allocations = JSON.parse(allocationsRaw); } catch (_) {}
+    }
+    if (allocations && Array.isArray(allocations) && allocations.length > 0) {
+      poolPlan = {
+        tokenMint: result.tokenMint,
+        tokenDecimals: 9,
+        tokenTotalSupply: normalizedTotalSupply,
+        targetMarketCapUsd: targetMarketCapUsd ? String(targetMarketCapUsd) : undefined,
+        allocations,
+        lockPositions: true,
+      };
+    }
+
+    const journalPatch = {
+      status: 'active',
+      stage: 'token_created',
+      error: null,
+      token: {
+        mint: result.tokenMint,
+        name: normalizedName,
+        symbol: normalizedSymbol,
+        totalSupply: normalizedTotalSupply,
+        decimals: 9,
+        metadataUri: result.metadataUri,
+        isSafe: result.isSafe,
+        mintAuthorityRenounced: result.mintAuthorityRenounced,
+        freezeAuthorityDisabled: result.freezeAuthorityDisabled,
+        metadataUpdateAuthorityRevoked: result.metadataUpdateAuthorityRevoked,
+        metadataImmutable: result.metadataImmutable,
+      },
+    };
+    if (poolPlan) journalPatch.poolPlan = poolPlan;
+
     launchJournal.upsertForWallet(
       walletPublicKey,
-      {
-        status: 'active',
-        stage: 'token_created',
-        error: null,
-        token: {
-          mint: result.tokenMint,
-          name: normalizedName,
-          symbol: normalizedSymbol,
-          totalSupply: normalizedTotalSupply,
-          decimals: 9,
-          metadataUri: result.metadataUri,
-          isSafe: result.isSafe,
-          mintAuthorityRenounced: result.mintAuthorityRenounced,
-          freezeAuthorityDisabled: result.freezeAuthorityDisabled,
-          metadataUpdateAuthorityRevoked: result.metadataUpdateAuthorityRevoked,
-          metadataImmutable: result.metadataImmutable,
-        },
-      },
+      journalPatch,
       { stage: 'token_created', tokenMint: result.tokenMint, metadataUri: result.metadataUri },
     );
 
@@ -3591,6 +3679,65 @@ app.post('/api/pending-wallets/dismiss', (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Error dismissing pending wallet:', error);
+    res.status(500).json({ success: false, error: error.message });
+
+  }
+});
+
+
+
+// Return recent launch journals for the "Recent Launches" panel.
+app.get('/api/recent-launches', (_req, res) => {
+  try {
+    const journals = launchJournal.list({ includeCompleted: true });
+    const launches = journals
+      .filter(j => j.status !== 'archived')
+      .map(j => ({
+        id: j.id,
+        walletPublicKey: j.walletPublicKey,
+        stage: j.stage || 'wallet_generated',
+        createdAt: j.createdAt,
+        token: j.token ? {
+          name: j.token.name || '',
+          symbol: j.token.symbol || '',
+          mint: j.token.mint || '',
+        } : null,
+        lp: j.lp && Array.isArray(j.lp.results)
+          ? { poolCount: j.lp.results.length }
+          : null,
+        transfer: j.transfer ? { destination: j.transfer.destinationWallet || '' } : null,
+      }));
+    res.json({ success: true, launches });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+
+// Load a pending wallet into the active session — returns the full wallet
+// object (public key, secret key, QR code) so the frontend can use it for
+// a resumed launch without regenerating.
+app.post('/api/pending-wallets/use', async (req, res) => {
+  try {
+    const { publicKey } = req.body;
+    if (!publicKey) {
+      return res.status(400).json({ success: false, error: 'publicKey required' });
+    }
+    const wallet = pendingWallets.get(publicKey);
+    if (!wallet || !Array.isArray(wallet.secretKey)) {
+      return res.status(404).json({ success: false, error: 'wallet not found or secret missing' });
+    }
+    const qrCode = await getWalletQRCode(publicKey);
+    res.json({
+      success: true,
+      wallet: {
+        publicKey,
+        secretKey: wallet.secretKey,
+        qrCode,
+      },
+    });
+  } catch (error) {
+    console.error('Error loading pending wallet:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

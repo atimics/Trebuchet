@@ -27,28 +27,32 @@ import {
   percentAmount,
   publicKey as umiPublicKey,
   none,
-  some
+  some,
+  createSignerFromKeypair,
 } from '@metaplex-foundation/umi';
 import QRCode from 'qrcode';
 import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
-import { getRpcUrl } from './rpcConfig.js';
+import { getRpcUrl, getNetwork } from './rpcConfig.js';
 import { generateVanityKeypair } from './vanityKeygen.js';
 import {
   createTokenMetadataUmi,
   uploadTokenMetadata,
 } from './metadataUploadService.js';
-
 // The RPC URL is sourced from rpcConfig.js, which seeds itself with a
 // public-mainnet default on first run and persists user-selected RPCs to
 // rpcConfig.json. The connection is rebuilt whenever the user switches RPCs
 // in the UI — server.js calls refreshConnection() after a successful change.
 function makeConnection() {
   const url = getRpcUrl();
-  console.log('Using RPC endpoint:', url);
+  const network = getNetwork();
+  console.log('Using RPC endpoint:', url, '(network:', network, ')');
+  // Devnet confirmations are very slow (sparse validator set).  Use
+  // 'processed' so transactions return immediately and the UI stays
+  // responsive — the user can check confirmations on Solscan.
   return new Connection(url, {
     commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 60000,
+    confirmTransactionInitialTimeout: 60_000,
   });
 }
 
@@ -87,7 +91,6 @@ async function withRpcRetry(fn, { maxRetries = 5, baseDelayMs = 1000 } = {}) {
 let _connectionFactory = makeConnection;
 let _umiFactory = createTokenMetadataUmi;
 let _uploadMetadata = uploadTokenMetadata;
-
 let connection = _connectionFactory();
 
 export function refreshConnection() {
@@ -190,7 +193,10 @@ export async function checkWalletBalance(publicKey) {
     // If it's a connection error, try with public RPC
     if (error.message && error.message.includes('fetch')) {
       console.log('Trying public RPC endpoint...');
-      const publicConnection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
+      const fallbackUrl = (getNetwork && getNetwork()) === 'devnet'
+        ? 'https://api.devnet.solana.com'
+        : 'https://api.mainnet-beta.solana.com';
+      const publicConnection = new Connection(fallbackUrl, 'confirmed');
       try {
         const balance = await publicConnection.getBalance(pubKey);
         return balance / LAMPORTS_PER_SOL;
@@ -237,6 +243,13 @@ async function grindVanityKeypair({ vanityPrefix, vanitySuffix }) {
   const result = await generateVanityKeypair({ prefix: vanityPrefix, suffix: vanitySuffix });
   console.log(`Vanity mint CA: ${result.publicKey}`);
   return result.keypair;
+}
+
+// Commitment level for on-chain operations.  Devnet has sparse
+// validators and 'finalized' can take minutes — use 'processed'
+// so the UI stays responsive.
+function txCommitment() {
+  return getNetwork() === 'devnet' ? 'processed' : 'finalized';
 }
 
 // Create token with Metaplex
@@ -310,7 +323,7 @@ export async function createTokenWithMetaplex({
       null, // freeze authority (null = no freeze)
       9, // decimals
       mintKeypair ?? undefined, // searched keypair, or undefined for random
-      { commitment: 'finalized' },
+      { commitment: txCommitment() },
       TOKEN_PROGRAM_ID
     );
     console.log('Mint created:', mint.toString());
@@ -319,20 +332,35 @@ export async function createTokenWithMetaplex({
     // Now create the metadata account for the existing mint
     console.log('Creating metadata account...');
     
-    // Convert the mint public key to Umi format
+    // Convert the mint public key to Umi format.
+    // When a vanity-ground mint keypair is available, wrap it as a UMI Signer
+    // BEFORE createV1 so the builder knows the mint must sign.  This ensures
+    // the instruction includes the SPL Token program and marks the mint as a
+    // required signer in the compiled message — no post-build surgery needed.
     const mintPubkey = umiPublicKey(mint.toString());
-    
-    // Create metadata for the existing token
-    await createV1(umi, {
-      mint: mintPubkey,
+    const umiMintSigner = mintKeypair
+      ? createSignerFromKeypair(
+          umi,
+          umi.eddsa.createKeypairFromSecretKey(mintKeypair.secretKey)
+        )
+      : null;
+
+    const metaTx = createV1(umi, {
+      mint: umiMintSigner || mintPubkey,
       authority: umi.identity,
       name,
       symbol,
       uri: metadataUri,
-      sellerFeeBasisPoints: percentAmount(0), // 0% royalty for fungible tokens
+      sellerFeeBasisPoints: percentAmount(0),
       decimals: 9,
       tokenStandard: TokenStandard.Fungible,
-    }).sendAndConfirm(umi);
+    });
+
+    // When using a pre-existing vanity mint, the mint keypair must sign the
+    // metadata creation transaction.  Passing the mint as a Signer above lets
+    // createV1 include the correct accounts and mark the signer.  The built-in
+    // sendAndConfirm handles signing with all required signers.
+    await metaTx.sendAndConfirm(umi);
     
     console.log('Metadata account created successfully');
     progress({ stage: 'metadata_account_created', tokenMint: mint.toString(), metadataUri });
@@ -349,7 +377,7 @@ export async function createTokenWithMetaplex({
       tempWallet.publicKey,
       false,
       'finalized',
-      { commitment: 'finalized' },
+      { commitment: txCommitment() },
       TOKEN_PROGRAM_ID,
       ASSOCIATED_TOKEN_PROGRAM_ID
     ));
@@ -367,7 +395,7 @@ export async function createTokenWithMetaplex({
       tempWallet.publicKey,
       totalTokens,
       [],
-      { commitment: 'finalized' },
+      { commitment: txCommitment() },
       TOKEN_PROGRAM_ID
     );
     
@@ -375,7 +403,7 @@ export async function createTokenWithMetaplex({
     progress({ stage: 'supply_minted', tokenMint: mint.toString(), txId: mintSig });
     
     // Wait for confirmation
-    await connection.confirmTransaction(mintSig, 'finalized');
+    await connection.confirmTransaction(mintSig, txCommitment());
     console.log('Tokens minted successfully');
     
     // SAFETY STEP: Renounce all authorities to make the token safe
@@ -392,7 +420,7 @@ export async function createTokenWithMetaplex({
         AuthorityType.MintTokens,
         null, // New authority (null = renounce)
         [],
-        { commitment: 'finalized' },
+        { commitment: txCommitment() },
         TOKEN_PROGRAM_ID
       );
       console.log('Mint authority renounced:', renounceMintAuthSig);
@@ -401,7 +429,7 @@ export async function createTokenWithMetaplex({
         tokenMint: mint.toString(),
         txId: renounceMintAuthSig,
       });
-      await connection.confirmTransaction(renounceMintAuthSig, 'finalized');
+      await connection.confirmTransaction(renounceMintAuthSig, txCommitment());
     } catch (error) {
       console.error('Error renouncing mint authority:', error);
       throw new Error('Failed to renounce mint authority. Token creation aborted for safety.');
@@ -431,8 +459,8 @@ export async function createTokenWithMetaplex({
         // This effectively revokes the update authority permanently
         newUpdateAuthority: some(systemProgramAddress),
       }).sendAndConfirm(umi, {
-        send: { commitment: 'finalized' },
-        confirm: { commitment: 'finalized' }
+        send: { commitment: txCommitment() },
+        confirm: { commitment: txCommitment() }
       });
       
       console.log('Update authority successfully revoked (set to System Program)!');
@@ -489,8 +517,8 @@ export async function createTokenWithMetaplex({
           primarySaleHappened: none(),
           isMutable: some(false),
         }).sendAndConfirm(umi, {
-          send: { commitment: 'finalized' },
-          confirm: { commitment: 'finalized' }
+          send: { commitment: txCommitment() },
+          confirm: { commitment: txCommitment() }
         });
         
         console.log('Update authority revoked and metadata made immutable!');
@@ -520,8 +548,8 @@ export async function createTokenWithMetaplex({
             authority: umi.identity,
             newUpdateAuthority: some(systemProgramAddress),
           }).sendAndConfirm(umi, { 
-            send: { commitment: 'finalized' },
-            confirm: { commitment: 'finalized' }
+            send: { commitment: txCommitment() },
+            confirm: { commitment: txCommitment() }
           });
           
           console.log('Successfully revoked update authority in final attempt!');
@@ -638,7 +666,7 @@ export async function transferTokensAndSol({
         tempWallet.publicKey,
         false,
         'finalized',
-        { commitment: 'finalized' },
+        { commitment: txCommitment() },
         TOKEN_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
       );
@@ -652,7 +680,7 @@ export async function transferTokensAndSol({
         destinationPubkey, // Owner
         false,
         'finalized',
-        { commitment: 'finalized' },
+        { commitment: txCommitment() },
         TOKEN_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
       );
@@ -679,7 +707,7 @@ export async function transferTokensAndSol({
           tempWallet.publicKey,
           tokenBalance,
           [],
-          { commitment: 'finalized' },
+          { commitment: txCommitment() },
           TOKEN_PROGRAM_ID
         );
         console.log('Token transfer signature:', tokenTxSignature);
@@ -714,7 +742,7 @@ export async function transferTokensAndSol({
       const solTxSignature = await connection.sendTransaction(
         transaction,
         [tempWallet],
-        { commitment: 'finalized' }
+        { commitment: txCommitment() }
       );
       console.log('SOL transfer signature:', solTxSignature);
       await connection.confirmTransaction(solTxSignature, 'finalized');

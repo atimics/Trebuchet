@@ -72,6 +72,10 @@ async function getApiSessionToken() {
   return apiSessionTokenPromise;
 }
 
+// Exposed for EventSource callers and lp-execution.js which pass the
+// session token as a query parameter (custom headers not possible).
+window.getApiSessionToken = getApiSessionToken;
+
 window.fetch = async (input, init = {}) => {
   if (!isLocalApiRequest(input)) return originalFetch(input, init);
 
@@ -2476,9 +2480,106 @@ bind('addRpcBtn', 'click', async () => {
   }
 });
 
+
+// ── Network selector ──────────────────────────────────────────────────
+
+(function setupNetworkSelector() {
+  const mainnetBtn = document.getElementById('networkMainnetBtn');
+  const devnetBtn = document.getElementById('networkDevnetBtn');
+  const warning = document.getElementById('networkWarning');
+
+  if (!mainnetBtn || !devnetBtn) return;
+
+  async function applyNetwork(network) {
+    try {
+      const resp = await fetch('/api/rpc-config/set-network', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ network }),
+      }).then(r => r.json());
+
+      if (resp.success) {
+        updateButtonState(network);
+        renderRpcConfig(resp.config);
+        log(`Switched to ${network}`, 'info');
+
+        // Update devnet banner and funding notice
+        const banner = document.getElementById('devnetBanner');
+        const notice = document.getElementById('devnetFundingNotice');
+        if (banner) banner.style.display = network === 'devnet' ? 'block' : 'none';
+        if (notice) notice.classList.toggle('hidden', network !== 'devnet');
+
+        // Show warning when switching to devnet
+        if (network === 'devnet') {
+          warning.textContent = '⚠ Devnet — tokens and SOL have no real value. Use for testing only.';
+          warning.classList.remove('hidden');
+        } else {
+          warning.classList.add('hidden');
+        }
+      } else {
+        log(`Network switch failed: ${resp.error}`, 'danger');
+      }
+    } catch (e) {
+      log(`Network switch failed: ${e.message}`, 'danger');
+    }
+  }
+
+  function updateButtonState(network) {
+    if (network === 'devnet') {
+      mainnetBtn.classList.remove('is-primary', 'is-selected');
+      mainnetBtn.classList.add('is-light');
+      devnetBtn.classList.remove('is-light');
+      devnetBtn.classList.add('is-warning', 'is-selected');
+    } else {
+      devnetBtn.classList.remove('is-warning', 'is-selected');
+      devnetBtn.classList.add('is-light');
+      mainnetBtn.classList.remove('is-light');
+      mainnetBtn.classList.add('is-primary', 'is-selected');
+    }
+  }
+
+  // Fetch initial network state
+  fetch('/api/rpc-config/status')
+    .then(r => r.json())
+    .then(data => {
+      if (data.network) updateButtonState(data.network);
+      if (data.network === 'devnet') {
+        warning.textContent = '⚠ Devnet — tokens and SOL have no real value. Use for testing only.';
+        warning.classList.remove('hidden');
+      }
+    })
+    .catch(() => {});
+
+  mainnetBtn.addEventListener('click', () => applyNetwork('mainnet'));
+  devnetBtn.addEventListener('click', () => applyNetwork('devnet'));
+})();
 // ===========================================================================
 // STEP 1: Generate wallet
 // ===========================================================================
+
+// Set a QR code image src, falling back to client-side generation if
+// the server-provided data URL is missing or broken (e.g. network error
+// during wallet gen on devnet).
+async function setQrCode(elementId, serverQr, publicKey) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  if (serverQr && serverQr.startsWith('data:image/')) {
+    el.src = serverQr;
+    el.onerror = async () => {
+      // Data URL was invalid — regenerate client-side
+      try {
+        const { default: QRCode } = await import('qrcode');
+        el.src = await QRCode.toDataURL(publicKey, { width: 256, margin: 2 });
+      } catch { /* both failed, leave broken */ }
+    };
+  } else {
+    // No server QR — generate client-side
+    try {
+      const { default: QRCode } = await import('qrcode');
+      el.src = await QRCode.toDataURL(publicKey, { width: 256, margin: 2 });
+    } catch { /* qrcode unavailable, leave empty */ }
+  }
+}
 
 bind('generateWalletBtn', 'click', async () => {
   const btn = document.getElementById('generateWalletBtn');
@@ -2535,7 +2636,7 @@ bind('generateWalletBtn', 'click', async () => {
 
       // Reset UI panels that may carry stale info from a previous attempt
       document.getElementById('walletInfo').classList.remove('hidden');
-      document.getElementById('qrCode').src = data.wallet.qrCode;
+      setQrCode('qrCode', data.wallet.qrCode, data.wallet.publicKey);
       document.getElementById('walletAddress').value = data.wallet.publicKey;
       document.getElementById('privateKeyContainer').classList.add('hidden');
       document.getElementById('tokenCreatedInfo').classList.add('hidden');
@@ -2572,6 +2673,67 @@ bind('generateWalletBtn', 'click', async () => {
         rebuildPoolsFromSimple();
       }
       applySimpleConfigMode();
+
+      // Check for an existing launch to resume (token already created,
+      // LP partially done, etc.).  The server journals every on-chain
+      // step so we can reconstruct the launch state after a crash.
+      try {
+        const stateResp = await fetch(
+          `/api/launch-state?walletPublicKey=${encodeURIComponent(data.wallet.publicKey)}`,
+        );
+        const stateData = await stateResp.json();
+        if (stateData.success && stateData.state) {
+          const s = stateData.state;
+          // Restore token info if we already created one
+          if (s.token && s.token.mint) {
+            createdTokenInfo = {
+              mint: s.token.mint,
+              decimals: s.token.decimals || 9,
+              totalSupply: s.token.totalSupply,
+              name: s.token.name || '',
+              symbol: s.token.symbol || '',
+            };
+            document.getElementById('tokenCreatedInfo').classList.remove('hidden');
+            document.getElementById('tokenMintAddress').textContent = s.token.mint;
+            document.getElementById('tokenSolscanLink').href =
+              `https://solscan.io/token/${s.token.mint}`;
+            document.getElementById('createTokenBtn').classList.add('hidden');
+            log(`Resumed token ${s.token.symbol || s.token.mint.slice(0, 8)}`, 'info');
+          }
+          // Restore LP result if pools were already created
+          if (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0) {
+            lpResult = { results: s.lp.results };
+            setLpDoneVisible(true);
+            document.getElementById('createLpBtn').classList.add('hidden');
+            log(`Resumed LP: ${s.lp.results.length} pool(s)`, 'info');
+          }
+          // Jump to the appropriate step
+          const stage = s.stage || '';
+          if (stage.startsWith('lp_') || (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0)) {
+            // LP was in progress or completed — go to step 5 or 6
+            const targetStep = s.transfer ? 6 : 5;
+            setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…`);
+            setStepSummary(2, `${s.token?.symbol || ''} / SOL`);
+            setStepSummary(3, '');
+            if (createdTokenInfo) setStepSummary(4, `${createdTokenInfo.symbol} — ${createdTokenInfo.mint.slice(0, 8)}…`);
+            if (lpResult) setStepSummary(5, `${lpResult.results.length} pool(s)`);
+            activateStep(targetStep);
+            if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+            updateCancelButtonState();
+            return;
+          } else if (stage.startsWith('token_')) {
+            // Token was created — go to step 5 (LP)
+            setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…`);
+            setStepSummary(2, `${s.token?.symbol || ''} / SOL`);
+            setStepSummary(3, '');
+            setStepSummary(4, `${createdTokenInfo.symbol} — ${createdTokenInfo.mint.slice(0, 8)}…`);
+            activateStep(5);
+            if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+            updateCancelButtonState();
+            return;
+          }
+        }
+      } catch { /* launch-state lookup is advisory */ }
 
       setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…${data.wallet.publicKey.slice(-6)}`);
       activateStep(2);
@@ -2632,13 +2794,65 @@ function buildMnemonicGrid(mnemonic) {
 // The Image decode is wrapped in a same-document objectURL that we
 // revoke immediately after, regardless of outcome, so this validation
 // path doesn't leak object URLs even on rapid file changes.
-async function validateLogoFile(file) {
-  if (file.size > MAX_LOGO_BYTES) {
-    const kb = (file.size / 1024).toFixed(1);
-    const maxKb = (MAX_LOGO_BYTES / 1024).toFixed(0);
-    return `Logo is ${kb}KB; max is ${maxKb}KB. ` +
-      `Compress the image or pick a smaller file.`;
+
+// Compress an image File to fit within maxDim and maxBytes.  Loads the
+// image into an offscreen canvas, scales down if needed, then exports
+// as JPEG with a binary-search quality loop to hit the byte target.
+// Returns a Blob (image/jpeg).  Throws if even quality 0.10 exceeds
+// maxBytes, so the caller can surface a graceful message.
+async function compressImageToFit(file, maxDim, maxBytes) {
+  // Decode the image.
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error('Could not decode image'));
+    i.src = URL.createObjectURL(file);
+  });
+
+  // Scale down to maxDim×maxDim while preserving aspect ratio.
+  let w = img.naturalWidth;
+  let h = img.naturalHeight;
+  if (w > maxDim || h > maxDim) {
+    const ratio = Math.min(maxDim / w, maxDim / h);
+    w = Math.round(w * ratio);
+    h = Math.round(h * ratio);
   }
+
+  // Binary-search JPEG quality to hit maxBytes.  We probe between
+  // 0.10 and 0.95 in 8 steps (~1.7% precision).
+  let lo = 0.10;
+  let hi = 0.95;
+  let best = null;
+  for (let step = 0; step < 8; step++) {
+    const q = (lo + hi) / 2;
+    const blob = await canvasToJpegBlob(img, w, h, q);
+    if (blob.size <= maxBytes) {
+      best = blob;
+      lo = q;               // try higher quality
+    } else {
+      hi = q;               // too big, try lower
+    }
+  }
+  if (!best) throw new Error('Cannot compress below byte limit');
+  return best;
+}
+
+// Draw the image onto an offscreen canvas and export as JPEG at the
+// given quality (0–1).  Returns a Blob.
+function canvasToJpegBlob(img, w, h, quality) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  return new Promise((resolve) => {
+    canvas.toBlob((b) => resolve(b), 'image/jpeg', quality);
+  });
+}
+
+async function validateLogoFileDimensionsOnly(file) {
+  // Size check removed — large files are now auto-compressed in the
+  // change handler rather than being rejected outright.
   // accept attribute on the input already restricts the picker to
   // image/png and image/jpeg, but the browser's filter isn't a hard
   // gate (drag-and-drop, devtools, OS file dialogs that ignore filters
@@ -2707,26 +2921,41 @@ bind('tokenLogo', 'change', async (e) => {
   filenameEl.textContent = f.name;
   setLogoError(null);
 
-  const err = await validateLogoFile(f);
+  // Run structural validation first (MIME type, dimensions).
+  // If only the file SIZE is wrong, we compress instead of rejecting.
+  const needsCompress = f.size > MAX_LOGO_BYTES;
+  const err = await validateLogoFileDimensionsOnly(f);
   if (err) {
-    // Reject the file: clear the input so subsequent code paths
-    // (renderTokenPreview, the create-token submit) see no logo at
-    // all, rather than seeing a logo that's about to be rejected by
-    // the server. Setting .value = '' is the cross-browser way to
-    // programmatically clear a file input.
     e.target.value = '';
     filenameEl.textContent = 'No file selected';
     setLogoError(err);
-    // Trigger a preview re-render so the thumbnail and live preview
-    // card both drop back to their no-logo state.
     if (typeof renderTokenPreview === 'function') renderTokenPreview();
     return;
   }
-  // Valid file — leave the filename as set above. The separate
-  // change-handler binding (see bind('tokenLogo', 'change', renderTokenPreview)
-  // below in this file) handles updating the preview thumbnail and
-  // live card. We don't trigger it directly from here; the browser
-  // fires `change` once and both listeners receive it.
+
+  if (needsCompress) {
+    filenameEl.textContent = f.name + ' (compressing…)';
+    try {
+      const compressed = await compressImageToFit(f, MAX_LOGO_DIMENSION, MAX_LOGO_BYTES);
+      // Replace the file input's FileList with the compressed version.
+      var dt = new DataTransfer();
+      dt.items.add(new File([compressed], f.name.replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' }));
+      e.target.files = dt.files;
+      var newKb = (compressed.size / 1024).toFixed(0);
+      filenameEl.textContent = f.name + ' → compressed to ' + newKb + 'KB';
+      setLogoError(null);
+    } catch (compressErr) {
+      e.target.value = '';
+      filenameEl.textContent = 'No file selected';
+      setLogoError('Could not compress the image enough. Try a smaller file.');
+      if (typeof renderTokenPreview === 'function') renderTokenPreview();
+      return;
+    }
+  }
+
+  // The separate change-handler binding (bind('tokenLogo', 'change',
+  // renderTokenPreview) below) updates the preview to reflect the
+  // (possibly compressed) file.
 });
 
 const poolList = document.getElementById('poolList');
@@ -7211,6 +7440,7 @@ function buildPoolNode(pool, idx) {
           </optgroup>
           <optgroup label="Flywheels">
             <option value="HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r">$seige (Meme flywheel — recommended)</option>
+            <option value="8ZscSWe5ZSFbGYg4JzA3eqpf6iCnwT72i8TZvVni2yMY">RATi (Agent Economy — devnet)</option>
             <option value="J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj">XLRT (Reserve flywheel)</option>
           </optgroup>
           <optgroup label="Majors">
@@ -12144,6 +12374,23 @@ bind('viewLaunchSummaryBtn', 'click', () => {
 
 function buildAllocationsForApi() {
   return pools.map((p) => {
+    // Pools loaded from a crash-resume journal already have wire-format
+    // allocations — pass them through without re-converting percentages.
+    if (p._fromJournal) {
+      return {
+        quoteToken: p.quoteToken,
+        supplyPercent: p.supplyPercent,
+        ammConfigIndex: p.ammConfigIndex,
+        quoteUsdOverride: p.quoteUsdOverride,
+        quoteDecimalsOverride: p.quoteDecimalsOverride,
+        quoteSymbolOverride: p.quoteSymbolOverride,
+        distribution: p.slices || [],
+        bootstrap: p.bootstrapConfig || { mode: "minimal" },
+        ladder: p.ladderConfig || { mode: "off", bands: [] },
+        support: p.support || 0,
+      };
+    }
+
     // Pass our resolved price through to the server as quoteUsdOverride.
     //
     // Per the price-safety plan (Milestones A + B), this no longer means
@@ -12354,7 +12601,18 @@ function renderFundingRequirements() {
   // and stashed on tempWallet alongside publicKey/secretKey. Reuse it here
   // so users on mobile can scan rather than copy-paste the address.
   const step3Qr = document.getElementById('step3QrCode');
-  if (step3Qr && tempWallet.qrCode) step3Qr.src = tempWallet.qrCode;
+  if (step3Qr && tempWallet.publicKey) {
+    if (tempWallet.qrCode && tempWallet.qrCode.startsWith('data:image/')) {
+      step3Qr.src = tempWallet.qrCode;
+      step3Qr.onerror = () => {
+        import('qrcode').then(m => m.default.toDataURL(tempWallet.publicKey, { width: 256, margin: 2 }))
+          .then(url => { step3Qr.src = url; }).catch(() => {});
+      };
+    } else {
+      import('qrcode').then(m => m.default.toDataURL(tempWallet.publicKey, { width: 256, margin: 2 }))
+        .then(url => { step3Qr.src = url; }).catch(() => {});
+    }
+  }
 
   // ---- Section 1: things the user must send themselves ------------------
   // SOL is always present. Manual-prefund tokens (no auto-swap route, or
@@ -13576,6 +13834,13 @@ bind('createTokenBtn', 'click', async () => {
       }
       const logoFile = document.getElementById('tokenLogo').files[0];
       if (logoFile) formData.append('logo', logoFile);
+
+      const allocations = buildAllocationsForApi();
+      if (allocations.length > 0) {
+        formData.append("allocations", JSON.stringify(allocations));
+        const targetMc = document.getElementById("targetMarketCap");
+        if (targetMc) formData.append("targetMarketCapUsd", targetMc.value.trim());
+      }
 
       const resp = await fetch('/api/create-token', { method: 'POST', body: formData });
       const data = await resp.json();
@@ -16526,6 +16791,26 @@ function shortAddress(value, prefix = 6, suffix = 6) {
   return `${value.slice(0, prefix)}...${value.slice(-suffix)}`;
 }
 
+// Format an ISO timestamp as a human-readable relative age string
+// (e.g. "2h ago", "3d ago"). Used in launch journal row metadata.
+function formatAge(isoString) {
+  if (!isoString) return '';
+  var then = new Date(isoString).getTime();
+  if (isNaN(then)) return '';
+  var diff = Date.now() - then;
+  if (diff < 0) return 'just now';
+  var sec = Math.floor(diff / 1000);
+  if (sec < 60) return 'just now';
+  var min = Math.floor(sec / 60);
+  if (min < 60) return min + 'm ago';
+  var hr = Math.floor(min / 60);
+  if (hr < 24) return hr + 'h ago';
+  var days = Math.floor(hr / 24);
+  if (days < 30) return days + 'd ago';
+  var months = Math.floor(days / 30);
+  return months + 'mo ago';
+}
+
 function launchJournalStageLabel(journal) {
   const stage = journal.stage || 'unknown';
   const labels = {
@@ -16700,6 +16985,26 @@ function prepareRecoveredSessionFromJournal(journal, wallet) {
     symbol: journal.token.symbol || 'TOKEN',
   };
   lpResult = { results: journalPriorResults(journal) };
+
+  // Restore pool allocations from the journal so the LP creation step
+  // has the same configuration the user set before the crash.
+  if (journal.poolPlan && Array.isArray(journal.poolPlan.allocations) && journal.poolPlan.allocations.length > 0) {
+    pools = journal.poolPlan.allocations.map((alloc) => ({
+      quoteToken: alloc.quoteToken,
+      supplyPercent: alloc.supplyPercent,
+      ammConfigIndex: alloc.ammConfigIndex,
+      quoteUsdOverride: alloc.quoteUsdOverride,
+      quoteDecimalsOverride: alloc.quoteDecimalsOverride,
+      quoteSymbolOverride: alloc.quoteSymbolOverride,
+      slices: alloc.distribution || [],
+      bootstrapConfig: alloc.bootstrap || { mode: 'minimal' },
+      ladderConfig: alloc.ladder || { mode: 'off', bands: [] },
+      support: alloc.support || 0,
+      // Flag that these were loaded from a journal — buildAllocationsForApi
+      // will pass them through without re-converting percentages.
+      _fromJournal: true,
+    }));
+  }
 
   document.body.classList.add('has-log');
   document.getElementById('walletInfo')?.classList.remove('hidden');
@@ -17013,268 +17318,229 @@ function buildLaunchJournalRow(journal, wallet) {
   return wrap;
 }
 
-// ===========================================================================
-// Pending-wallet recovery panel
-// ---------------------------------------------------------------------------
-// The server caches the secret key of any temporary wallet it generates and
-// only removes it once the final transfer step has confirmed the wallet is
-// on-chain empty. So if the app crashed or was closed mid-launch on a
-// previous session, those entries show up here and the user can copy the
-// secret key out for manual recovery.
+// Recent-launches panel
 //
-// Important: the panel only ever shows entries that existed *at startup*.
-// Wallets generated during the current session are not surfaced here —
-// the user can already see them in Step 1, and showing them in a "recover
-// previous session" panel during the active flow is misleading and
-// alarming. After a refresh or restart, anything still in the cache then
-// becomes visible — which is exactly when the panel actually matters.
-//
-// `pendingWalletStartupKeys` is the snapshot taken on first load. Once
-// it's set, refreshes filter the server's response down to only entries
-// whose publicKey was in the snapshot.
-// ===========================================================================
+// Shows automatically-saved launch files so the user can resume where
+// they left off — wallet, token, and pool state are all restored.
 
-let pendingWalletStartupKeys = null;
+let _launchesLoaded = false;
 
-async function loadPendingWallets() {
-  const panel = document.getElementById('pendingWalletsPanel');
-  const list = document.getElementById('pendingWalletsList');
+async function loadRecentLaunches() {
+  const panel = document.getElementById('recentLaunchesPanel');
+  const list = document.getElementById('recentLaunchesList');
   if (!panel || !list) return;
 
   try {
-    // Fetch the journals too: any wallet that has a matching launch journal
-    // is now shown — with its recovery phrase — inside that journal's card
-    // (see buildLaunchJournalRow). So this panel only needs to surface
-    // "orphan" wallets with no journal, which avoids showing the same
-    // wallet in two places. Using the current journal set (not the startup
-    // snapshot) means a wallet re-appears here if its journal is later
-    // dismissed without discarding the wallet.
-    const [resp, journalResp] = await Promise.all([
-      fetch('/api/pending-wallets').then((r) => r.json()),
-      fetch('/api/launch-journals').then((r) => r.json()).catch(() => ({ journals: [] })),
-    ]);
-    let wallets = (resp && resp.wallets) || [];
-    const journalWalletKeys = new Set(
-      ((journalResp && journalResp.journals) || [])
-        .map((j) => j.walletPublicKey)
-        .filter(Boolean),
-    );
+    const resp = await fetch('/api/recent-launches');
+    const data = await resp.json();
+    if (!data.success || !Array.isArray(data.launches)) return;
 
-    // First call: capture the set of pubkeys present at startup. Anything
-    // generated during this session is added to the server-side cache but
-    // won't be in this set, so it'll be filtered out below.
-    if (pendingWalletStartupKeys === null) {
-      pendingWalletStartupKeys = new Set(wallets.map((w) => w.publicKey));
-    }
+    // Clear the loading placeholder now that we have a response.
+    const loadingEl = document.getElementById('recentLaunchesLoading');
+    if (loadingEl) loadingEl.remove();
 
-    // Filter: only show entries that were in the startup snapshot, are
-    // still present in the cache, AND have no matching journal (those are
-    // handled by the journal card).
-    wallets = wallets.filter(
-      (w) => pendingWalletStartupKeys.has(w.publicKey) && !journalWalletKeys.has(w.publicKey),
-    );
-
-    if (wallets.length === 0) {
+    const launches = data.launches;
+    if (launches.length === 0) {
       panel.classList.add('hidden');
-      list.innerHTML = '';
       return;
     }
 
     list.innerHTML = '';
-    for (const w of wallets) {
-      list.appendChild(buildPendingWalletRow(w));
+    for (const launch of launches) {
+      list.appendChild(buildLaunchRow(launch));
     }
     panel.classList.remove('hidden');
+    _launchesLoaded = true;
   } catch (e) {
-    console.warn('Failed to load pending wallets:', e);
-    // Don't show the panel if we couldn't fetch — better silent than
-    // misleading.
-    panel.classList.add('hidden');
+    console.warn('Failed to load recent launches:', e);
   }
 }
 
-// Construct one row in the recovery panel. Truncated public key, age,
-// "Copy secret key" button, "Discard" button.
-function buildPendingWalletRow(wallet) {
-  const wrap = document.createElement('div');
+const STAGE_LABELS = {
+  wallet_generated: 'Wallet generated',
+  token_created: 'Token created',
+  token_progress: 'Creating token…',
+  lp_create_started: 'LP started',
+  lp_resume_started: 'LP resumed',
+  lp_locks: 'LP locking…',
+  lp_transfers: 'LP transfers…',
+};
+const STAGE_ICONS = {
+  wallet_generated: 'fa-wallet',
+  token_created: 'fa-coins',
+  token_progress: 'fa-spinner fa-pulse',
+  lp_create_started: 'fa-water',
+  lp_resume_started: 'fa-water',
+  lp_locks: 'fa-lock',
+  lp_transfers: 'fa-exchange-alt',
+};
+
+function buildLaunchRow(launch) {
+  var wrap = document.createElement('div');
   wrap.className = 'box p-3 mb-2 is-size-7';
 
-  const pubShort = `${wallet.publicKey.slice(0, 6)}…${wallet.publicKey.slice(-6)}`;
-  const ageStr = formatAge(wallet.createdAt);
+  var dateStr = new Date(launch.createdAt).toLocaleDateString(undefined, {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+  var label = launch.token?.symbol || launch.token?.name || 'Unnamed';
+  var pubShort = launch.walletPublicKey.slice(0, 6) + '\u2026' + launch.walletPublicKey.slice(-4);
+  var stageLabel = STAGE_LABELS[launch.stage] || launch.stage;
+  var stageIcon = STAGE_ICONS[launch.stage] || 'fa-circle';
 
-  // Decryption-failed branch: the file is on disk but we can't read the
-  // secret material. Most common cause is the OS keychain has rotated
-  // (e.g. file was copied from another machine, user account changed).
-  // We can't help recover it from the app — surface the situation, let
-  // the user discard.
-  if (wallet.decryptionFailed) {
-    wrap.innerHTML = `
-      <div class="mb-2">
-        <strong>Public key:</strong>
-        <span class="is-family-monospace">${pubShort}</span>
-        &nbsp;<span class="has-text-grey">(${ageStr})</span>
-      </div>
-      <div class="notification is-danger is-light is-size-7 py-2 px-3 mb-2">
-        <strong>Cannot decrypt this entry.</strong> The OS keychain key has
-        likely changed since this wallet was generated (file was copied to a
-        different user account or machine, or the keychain was reset). The
-        secret material in this entry is unrecoverable from inside the app.
-        If you have a backup of the recovery phrase elsewhere, use that.
-      </div>
-      <div class="field is-grouped">
-        <div class="control">
-          <button class="button is-small" data-action="copy-pubkey">
-            <span class="icon is-small"><i class="fas fa-copy"></i></span>
-            <span>Copy public key</span>
-          </button>
-        </div>
-        <div class="control">
-          <button class="button is-small is-danger is-light" data-action="dismiss">
-            <span class="icon is-small"><i class="fas fa-trash"></i></span>
-            <span>Discard</span>
-          </button>
-        </div>
-      </div>
-    `;
-    wireRowButtons(wrap, wallet, pubShort, /*hasMnemonic=*/false);
-    return wrap;
-  }
+  var meta = '';
+  if (launch.token?.mint) meta += 'Mint: ' + launch.token.mint.slice(0, 8) + '\u2026  ';
+  if (launch.lp?.poolCount) meta += launch.lp.poolCount + ' pool(s)  ';
+  if (launch.transfer?.destination) meta += 'Transferred';
 
-  // Prefer the recovery phrase if this wallet was generated with one.
-  // Older cached entries from before mnemonic support fall back to the
-  // base58 secret key.
-  const hasMnemonic = !!wallet.mnemonic;
-  const copyLabel = hasMnemonic ? 'Copy recovery phrase' : 'Copy secret key';
-  const copyIcon = hasMnemonic ? 'fa-list-ol' : 'fa-key';
+  wrap.innerHTML =
+    '<div class="is-flex is-align-items-center mb-2" style="gap: 0.5rem;">' +
+      '<span class="icon has-text-info"><i class="fas ' + stageIcon + '"></i></span>' +
+      '<strong>' + escapeHtml(label) + '</strong>' +
+      '<span class="has-text-grey">\u2014 ' + dateStr + '</span>' +
+    '</div>' +
+    '<div class="mb-1 has-text-grey is-size-7">' +
+      '<span class="is-family-monospace">' + pubShort + '</span>' +
+      ' &middot; ' + stageLabel +
+      (meta ? ' &middot; ' + meta : '') +
+    '</div>' +
+    '<div class="field is-grouped mt-2">' +
+      '<div class="control">' +
+        '<button class="button is-small is-success" data-action="load-launch" data-id="' + launch.id + '">' +
+          '<span class="icon is-small"><i class="fas fa-play"></i></span>' +
+          '<span>Load</span>' +
+        '</button>' +
+      '</div>' +
+      '<div class="control">' +
+        '<button class="button is-small is-danger is-light" data-action="discard-launch" data-id="' + launch.id + '">' +
+          '<span class="icon is-small"><i class="fas fa-trash"></i></span>' +
+          '<span>Discard</span>' +
+        '</button>' +
+      '</div>' +
+    '</div>';
 
-  wrap.innerHTML = `
-    <div class="mb-2">
-      <strong>Public key:</strong>
-      <span class="is-family-monospace">${pubShort}</span>
-      &nbsp;<span class="has-text-grey">(${ageStr})</span>
-    </div>
-    <div class="field is-grouped">
-      <div class="control">
-        <button class="button is-small is-info" data-action="copy-secret">
-          <span class="icon is-small"><i class="fas ${copyIcon}"></i></span>
-          <span>${copyLabel}</span>
-        </button>
-      </div>
-      <div class="control">
-        <button class="button is-small" data-action="copy-pubkey">
-          <span class="icon is-small"><i class="fas fa-copy"></i></span>
-          <span>Copy public key</span>
-        </button>
-      </div>
-      <div class="control">
-        <button class="button is-small is-danger is-light" data-action="dismiss">
-          <span class="icon is-small"><i class="fas fa-trash"></i></span>
-          <span>Discard</span>
-        </button>
-      </div>
-    </div>
-  `;
-  wireRowButtons(wrap, wallet, pubShort, hasMnemonic);
-  return wrap;
-}
-
-// Wire the per-row buttons. Extracted so both the normal and the
-// decryption-failed render paths share the same handler logic.
-function wireRowButtons(wrap, wallet, pubShort, hasMnemonic) {
-  // Centralised clipboard helper so we don't duplicate the try/catch
-  // every time. navigator.clipboard.writeText can throw in non-secure
-  // contexts (older Electron, http://), if the page doesn't have focus,
-  // or if the user has denied clipboard permission. Without this guard
-  // the rejection floats up as an unhandled promise rejection and the
-  // user has no idea the copy didn't happen.
-  const copyToClipboard = async (text, description) => {
+  wrap.querySelector('[data-action="load-launch"]').addEventListener('click', async function() {
     try {
-      await navigator.clipboard.writeText(text);
-      log(`${description} copied to clipboard`, 'info');
-    } catch (e) {
-      log(
-        `Couldn't copy ${description} (${e.message}). ` +
-        `Open the file at the pendingWallets path and copy the secret manually.`,
-        'warning',
-      );
-    }
-  };
+      var useResp = await fetch('/api/pending-wallets/use', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ publicKey: launch.walletPublicKey }),
+      });
+      var useData = await useResp.json();
+      if (!useData.success) throw new Error(useData.error || 'wallet not found');
 
-  // copy-secret button only exists in the normal render path
-  const copySecretBtn = wrap.querySelector('[data-action="copy-secret"]');
-  if (copySecretBtn) {
-    copySecretBtn.addEventListener('click', async () => {
-      const text = hasMnemonic ? wallet.mnemonic : wallet.secretKeyB58;
-      if (!text) {
-        log(`No secret available for ${pubShort}`, 'warning');
-        return;
+      tempWallet = {
+        publicKey: useData.wallet.publicKey,
+        secretKey: useData.wallet.secretKey,
+        qrCode: useData.wallet.qrCode,
+      };
+      document.getElementById('walletInfo').classList.remove('hidden');
+      document.getElementById('walletAddress').value = useData.wallet.publicKey;
+      if (typeof setQrCode === 'function') {
+        setQrCode('qrCode', useData.wallet.qrCode, useData.wallet.publicKey);
       }
-      const what = hasMnemonic ? 'Recovery phrase' : 'Secret key';
-      await copyToClipboard(text, `${what} for ${pubShort}`);
-    });
-  }
 
-  wrap.querySelector('[data-action="copy-pubkey"]').addEventListener('click', async () => {
-    await copyToClipboard(wallet.publicKey, `Public key ${pubShort}`);
+      createdTokenInfo = null;
+      lpResult = null;
+      fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
+      document.getElementById('privateKeyContainer').classList.add('hidden');
+      document.getElementById('tokenCreatedInfo').classList.add('hidden');
+      document.getElementById('createTokenBtn').classList.remove('hidden');
+      document.getElementById('createLpBtn').classList.remove('hidden');
+      document.body.classList.add('has-log');
+      log('Loaded ' + (label || pubShort), 'success');
+
+      var stateResp = await fetch('/api/launch-state?walletPublicKey=' + encodeURIComponent(launch.walletPublicKey));
+      var stateData = await stateResp.json();
+      if (stateData.success && stateData.state) {
+        var s = stateData.state;
+        if (s.token && s.token.mint) {
+          createdTokenInfo = {
+            mint: s.token.mint, decimals: s.token.decimals || 9,
+            totalSupply: s.token.totalSupply, name: s.token.name || '', symbol: s.token.symbol || '',
+          };
+          document.getElementById('tokenCreatedInfo').classList.remove('hidden');
+          document.getElementById('tokenMintAddress').textContent = s.token.mint;
+          document.getElementById('tokenSolscanLink').href = 'https://solscan.io/token/' + s.token.mint;
+          document.getElementById('createTokenBtn').classList.add('hidden');
+        }
+        if (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0) {
+          lpResult = { results: s.lp.results };
+          document.getElementById('createLpBtn').classList.add('hidden');
+          if (typeof setLpDoneVisible === 'function') setLpDoneVisible(true);
+        }
+        var stage = s.stage || '';
+        for (var i = 1; i <= 6; i++) setStepSummary(i, '');
+        setStepSummary(1, pubShort);
+        if (createdTokenInfo) setStepSummary(4, createdTokenInfo.symbol + ' \u2014 ' + createdTokenInfo.mint.slice(0, 8) + '\u2026');
+        if (lpResult) setStepSummary(5, lpResult.results.length + ' pool(s)');
+        if (lpResult && lpResult.results && lpResult.results.length) activateStep(6);
+        else if (stage.startsWith('lp_')) activateStep(5);
+        else if (createdTokenInfo) activateStep(5);
+        else activateStep(2);
+        if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+        updateCancelButtonState();
+      } else {
+        activateStep(2);
+        updateCancelButtonState();
+      }
+      panel.classList.add('hidden');
+    } catch (e) {
+      log('Failed to load launch: ' + e.message, 'danger');
+    }
   });
 
-  wrap.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
-    const ok = await confirmDialog({
-      title: 'Discard recovery entry?',
-      body:
-        `<p>Discard recovery entry for <strong>${escapeHtml(pubShort)}</strong>?</p>` +
-        `<p>Only do this if you've already moved any funds out of this wallet, ` +
-        `or you're sure none were ever sent there. This action cannot be undone.</p>`,
-      confirmLabel: 'Discard',
-      danger: true,
+  wrap.querySelector('[data-action="discard-launch"]').addEventListener('click', async function() {
+    var ok = await confirmDialog({
+      title: 'Discard launch?',
+      body: '<p>Discard launch data for <strong>' + escapeHtml(label) + '</strong>?</p>' +
+        '<p>This removes the journal entry. Recover funds from the wallet before discarding.</p>',
+      confirmLabel: 'Discard', danger: true,
     });
     if (!ok) return;
     try {
       await fetch('/api/pending-wallets/dismiss', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ publicKey: wallet.publicKey }),
+        body: JSON.stringify({ publicKey: launch.walletPublicKey }),
       });
-      await loadPendingWallets();
+      await loadRecentLaunches();
     } catch (e) {
-      log(`Failed to dismiss recovery entry: ${e.message}`, 'danger');
+      log('Failed to discard: ' + e.message, 'danger');
     }
   });
+
+  return wrap;
 }
 
-// "3 hours ago" / "5 days ago" / etc. Plain-English age display.
-function formatAge(isoString) {
-  const then = new Date(isoString).getTime();
-  if (!Number.isFinite(then)) return 'unknown age';
-
-  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (seconds < 60)        return 'just now';
-  if (seconds < 3600)      return `${Math.floor(seconds / 60)} min ago`;
-  if (seconds < 86400)     return `${Math.floor(seconds / 3600)} hr ago`;
-  if (seconds < 86400 * 7) return `${Math.floor(seconds / 86400)} days ago`;
-  return new Date(isoString).toLocaleDateString();
-}
-
+// loadRecentLaunches is exposed via window.loadRecentLaunches.
+setTimeout(function() { loadRecentLaunches(); }, 100);
+window.loadRecentLaunches = loadRecentLaunches;
 // ===========================================================================
 // Initial state
 // ===========================================================================
-log('Trebuchet is ready. Click "Generate Wallet" to begin.');
-loadRpcConfig();
-startRpcHealthPolling();
-loadLaunchJournals();
-loadPendingWallets();
-loadFeeTiers();
-bindStepHeaders();
-updateCancelButtonState();
-// Render the simple-config UI right away so it's visible from page load
-// (even before the user generates a wallet). The pool list inside the
-// customize-mode container starts empty and stays empty until pools[]
-// gets populated — by wallet generation, by recovery, or by manual add.
-applySimpleConfigMode();
-// Initial paint of the token-preview card. With the default values
-// pre-filled in the supply and market-cap inputs, the user sees the
-// placeholder name + a populated tech line right away.
-renderTokenPreview();
+// Defer all initialisation that makes fetch() calls until the event loop
+// settles. Calling fetch() during module evaluation can race with the
+// API session wrapper initialisation, freezing the renderer — the splash
+// video stalls on its first frame and the app becomes unresponsive.
+setTimeout(function () {
+  log('Trebuchet is ready. Click "Generate Wallet" to begin.');
+  loadRpcConfig();
+  startRpcHealthPolling();
+  loadLaunchJournals();
+  loadRecentLaunches();
+  loadFeeTiers();
+  bindStepHeaders();
+  updateCancelButtonState();
+  // Render the simple-config UI right away so it's visible from page load
+  // (even before the user generates a wallet). The pool list inside the
+  // customize-mode container starts empty and stays empty until pools[]
+  // gets populated — by wallet generation, by recovery, or by manual add.
+  applySimpleConfigMode();
+  // Initial paint of the token-preview card. With the default values
+  // pre-filled in the supply and market-cap inputs, the user sees the
+  // placeholder name + a populated tech line right away.
+  renderTokenPreview();
+}, 0);
 
 // ---------------------------------------------------------------------------
 // Tab-close / reload guard
@@ -18119,4 +18385,21 @@ function applyVanityAvailabilityUi(vanity) {
 // whichever is still blocking. If NEITHER gated (returning user +
 // splash element missing), both gates are still default-true and this
 // is the only place the trigger ever fires.
-_evaluateStartupGates();
+setTimeout(function () {
+  _evaluateStartupGates();
+
+  // ── Devnet indicator ───────────────────────────────────────────────────
+
+  (function setupDevnetIndicator() {
+    fetch('/api/rpc-config/status')
+      .then(r => r.json())
+      .then(data => {
+        const isDevnet = data && data.network === 'devnet';
+        const banner = document.getElementById('devnetBanner');
+        const notice = document.getElementById('devnetFundingNotice');
+        if (banner) banner.style.display = isDevnet ? 'block' : 'none';
+        if (notice) notice.classList.toggle('hidden', !isDevnet);
+      })
+      .catch(() => {});
+  })();
+}, 0);

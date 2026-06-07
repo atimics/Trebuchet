@@ -260,6 +260,23 @@ bind('viewLaunchSummaryBtn', 'click', () => {
 
 function buildAllocationsForApi() {
   return pools.map((p) => {
+    // Pools loaded from a crash-resume journal already have wire-format
+    // allocations — pass them through without re-converting percentages.
+    if (p._fromJournal) {
+      return {
+        quoteToken: p.quoteToken,
+        supplyPercent: p.supplyPercent,
+        ammConfigIndex: p.ammConfigIndex,
+        quoteUsdOverride: p.quoteUsdOverride,
+        quoteDecimalsOverride: p.quoteDecimalsOverride,
+        quoteSymbolOverride: p.quoteSymbolOverride,
+        distribution: p.slices || [],
+        bootstrap: p.bootstrapConfig || { mode: "minimal" },
+        ladder: p.ladderConfig || { mode: "off", bands: [] },
+        support: p.support || 0,
+      };
+    }
+
     // Pass our resolved price through to the server as quoteUsdOverride.
     //
     // Per the price-safety plan (Milestones A + B), this no longer means
@@ -470,7 +487,18 @@ function renderFundingRequirements() {
   // and stashed on tempWallet alongside publicKey/secretKey. Reuse it here
   // so users on mobile can scan rather than copy-paste the address.
   const step3Qr = document.getElementById('step3QrCode');
-  if (step3Qr && tempWallet.qrCode) step3Qr.src = tempWallet.qrCode;
+  if (step3Qr && tempWallet.publicKey) {
+    if (tempWallet.qrCode && tempWallet.qrCode.startsWith('data:image/')) {
+      step3Qr.src = tempWallet.qrCode;
+      step3Qr.onerror = () => {
+        import('qrcode').then(m => m.default.toDataURL(tempWallet.publicKey, { width: 256, margin: 2 }))
+          .then(url => { step3Qr.src = url; }).catch(() => {});
+      };
+    } else {
+      import('qrcode').then(m => m.default.toDataURL(tempWallet.publicKey, { width: 256, margin: 2 }))
+        .then(url => { step3Qr.src = url; }).catch(() => {});
+    }
+  }
 
   // ---- Section 1: things the user must send themselves ------------------
   // SOL is always present. Manual-prefund tokens (no auto-swap route, or

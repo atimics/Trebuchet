@@ -28,14 +28,14 @@ const __dirname = path.dirname(__filename);
 const CONFIG_DIR = process.env.TREBUCHET_CONFIG_DIR || __dirname;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'rpcConfig.json');
 
-// First-run default. Public mainnet works out of the box; users
-// should add their own dedicated endpoint (Helius / QuickNode /
+// First-run defaults.  Public mainnet and devnet endpoints.
+// Users should add their own dedicated endpoint (Helius / QuickNode /
 // Triton / Alchemy — free tier is plenty) via the in-app RPC
 // settings before attempting a real launch.
-const DEFAULT_RPC = {
-  name: 'Public mainnet',
-  url: 'https://api.mainnet-beta.solana.com',
-};
+const DEFAULT_RPCS = [
+  { name: 'Public mainnet', url: 'https://api.mainnet-beta.solana.com', network: 'mainnet' },
+  { name: 'Public devnet',  url: 'https://api.devnet.solana.com',         network: 'devnet' },
+];
 
 // In-memory state, lazily loaded
 let state = null;
@@ -49,6 +49,11 @@ function load() {
     if (fs.existsSync(CONFIG_FILE)) {
       const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
       state = JSON.parse(raw);
+      // Backward compat: add network field to entries and state.
+      if (!state.activeNetwork) state.activeNetwork = 'mainnet';
+      for (const r of state.saved) {
+        if (!r.network) r.network = 'mainnet';
+      }
       // Quick sanity check
       if (!state.active || !Array.isArray(state.saved) || state.saved.length === 0) {
         throw new Error('Config file malformed; reinitializing');
@@ -59,11 +64,12 @@ function load() {
     console.warn('rpcConfig: failed to load existing config, will reinitialize:', e.message);
   }
 
-  // First-run init: seed the saved-RPCs list with our default. The user
-  // can add their own endpoints through the in-app RPC settings UI
-  // (addSavedRpc) and switch the active one (setActiveRpc). All changes
-  // are persisted to CONFIG_FILE and survive restarts.
-  state = { active: DEFAULT_RPC.url, saved: [DEFAULT_RPC] };
+  // First-run init: seed the saved-RPCs list with defaults for both
+  // networks.  The user can add their own endpoints through the in-app
+  // RPC settings UI (addSavedRpc) and switch the active one
+  // (setActiveRpc). All changes are persisted to CONFIG_FILE and
+  // survive restarts.
+  state = { active: DEFAULT_RPCS[0].url, activeNetwork: 'mainnet', saved: [...DEFAULT_RPCS] };
   persist();
 }
 
@@ -127,7 +133,7 @@ export function setActiveRpc(url) {
  * Add a new RPC to the saved list. If a saved entry with the same URL already
  * exists, its name is updated (no duplicate URLs). URL must be valid.
  */
-export function addSavedRpc(name, url) {
+export function addSavedRpc(name, url, network) {
   ensureLoaded();
   if (!name || typeof name !== 'string') throw new Error('Name is required');
   if (!url || typeof url !== 'string') throw new Error('URL is required');
@@ -140,11 +146,13 @@ export function addSavedRpc(name, url) {
   const trimmedName = name.trim();
   const trimmedUrl = url.trim();
 
+  const rpcNetwork = network || state.activeNetwork || 'mainnet';
   const existing = state.saved.find((r) => r.url === trimmedUrl);
   if (existing) {
     existing.name = trimmedName;
+    if (network) existing.network = rpcNetwork;
   } else {
-    state.saved.push({ name: trimmedName, url: trimmedUrl });
+    state.saved.push({ name: trimmedName, url: trimmedUrl, network: rpcNetwork });
   }
   persist();
 }
@@ -208,6 +216,39 @@ export async function testRpc(url) {
   } catch (e) {
     return { ok: false, error: e.message };
   }
+}
+
+/**
+ * Get the active network ('mainnet' or 'devnet').
+ */
+export function getNetwork() {
+  ensureLoaded();
+  return state.activeNetwork || 'mainnet';
+}
+
+/**
+ * Set the active network.  Switches the active RPC to the first saved
+ * endpoint for that network.  If none exists, seeds a default.
+ */
+export function setNetwork(network) {
+  ensureLoaded();
+  if (network !== 'mainnet' && network !== 'devnet') {
+    throw new Error('Network must be "mainnet" or "devnet"');
+  }
+  state.activeNetwork = network;
+  // Find first saved endpoint for this network
+  const netRpcs = state.saved.filter(r => r.network === network);
+  if (netRpcs.length > 0) {
+    state.active = netRpcs[0].url;
+  } else {
+    // Seed a default for this network
+    const def = DEFAULT_RPCS.find(r => r.network === network);
+    if (def) {
+      state.saved.push({ ...def });
+      state.active = def.url;
+    }
+  }
+  persist();
 }
 
 // Eagerly load on module import so getRpcUrl() can be called synchronously

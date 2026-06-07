@@ -27,6 +27,12 @@ test('seeds default RPC config in the configured directory', async (t) => {
     {
       name: 'Public mainnet',
       url: 'https://api.mainnet-beta.solana.com',
+      network: 'mainnet',
+    },
+    {
+      name: 'Public devnet',
+      url: 'https://api.devnet.solana.com',
+      network: 'devnet',
     },
   ]);
 
@@ -43,16 +49,18 @@ test('adds, updates, selects, and removes saved RPC endpoints', async (t) => {
   rpcConfig.setActiveRpc(heliusUrl);
 
   assert.equal(rpcConfig.getRpcUrl(), heliusUrl);
-  assert.equal(rpcConfig.getConfig().saved.length, 2);
+  assert.equal(rpcConfig.getConfig().saved.length, 3);
 
   rpcConfig.addSavedRpc('Helius renamed', heliusUrl);
-  assert.equal(rpcConfig.getConfig().saved.length, 2);
+  assert.equal(rpcConfig.getConfig().saved.length, 3);
   assert.equal(
     rpcConfig.getConfig().saved.find((entry) => entry.url === heliusUrl).name,
     'Helius renamed',
   );
 
   rpcConfig.removeSavedRpc(heliusUrl);
+  // Also remove the devnet default so we're down to just mainnet.
+  rpcConfig.removeSavedRpc('https://api.devnet.solana.com');
   assert.equal(rpcConfig.getRpcUrl(), 'https://api.mainnet-beta.solana.com');
   assert.throws(
     () => rpcConfig.removeSavedRpc('https://api.mainnet-beta.solana.com'),

@@ -41,7 +41,7 @@ import {
   createTransferCheckedInstruction,
   getAccount,
 } from '@solana/spl-token';
-import { getRpcUrl } from './rpcConfig.js';
+import { getRpcUrl, getNetwork } from './rpcConfig.js';
 
 // Both token programs we need to query. Order matters only for log readability.
 const TOKEN_PROGRAMS = [

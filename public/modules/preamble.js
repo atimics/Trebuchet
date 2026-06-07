@@ -72,6 +72,10 @@ async function getApiSessionToken() {
   return apiSessionTokenPromise;
 }
 
+// Exposed for EventSource callers and lp-execution.js which pass the
+// session token as a query parameter (custom headers not possible).
+window.getApiSessionToken = getApiSessionToken;
+
 window.fetch = async (input, init = {}) => {
   if (!isLocalApiRequest(input)) return originalFetch(input, init);
 

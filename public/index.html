@@ -2979,6 +2979,19 @@
             text-align: center;
         }
         .demo-banner-text { line-height: 1.2; }
+        /* Devnet banner overrides — thicker and with white text
+           for contrast against the purple gradient background. */
+        #devnetBanner {
+            padding: 0.65rem 1rem !important;
+            color: #fff !important;
+            font-weight: 500;
+            border-bottom-color: rgba(255,255,255,0.2) !important;
+        }
+        #devnetBanner a {
+            color: #fff !important;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
         .demo-banner-btn {
             background: var(--warn-amber-ink);
             color: #fff;
@@ -3249,6 +3262,13 @@
     <!-- once /api/demo/status reports demo mode is on. Sticky so it   -->
     <!-- stays visible while scrolling.                                -->
     <!-- ============================================================ -->
+    <div id="devnetBanner" class="demo-banner" style="display: none; background: linear-gradient(135deg, #6c3cc9, #8b5cf6);">
+        <span class="demo-banner-text">
+            <strong>DEVNET</strong> — Tokens and SOL have no real value.
+            <a href="https://faucet.solana.com" target="_blank" rel="noopener" class="has-text-white has-text-underlined" style="margin-left: 0.5rem;">Get devnet SOL →</a>
+        </span>
+    </div>
+
     <div id="demoBanner" class="demo-banner" style="display: none;">
         <span class="demo-banner-text">
             <strong>DEMO MODE</strong> — No real transactions will be sent. No SOL is spent.
@@ -3449,6 +3469,19 @@
                 </div>
 
                 <div id="rpcSettingsPanel" class="hidden mt-3">
+                    <!-- Network selector -->
+                    <h6 class="subtitle is-6 mb-2">Network</h6>
+                    <div class="field has-addons">
+                        <div class="control">
+                            <button class="button is-small" id="networkMainnetBtn">Mainnet</button>
+                        </div>
+                        <div class="control">
+                            <button class="button is-small" id="networkDevnetBtn">Devnet</button>
+                        </div>
+                    </div>
+                    <p id="networkWarning" class="help has-text-warning hidden"></p>
+                    <hr class="my-3">
+
                     <h6 class="subtitle is-6 mb-2">Saved Endpoints</h6>
                     <div id="rpcSavedList"></div>
                     <hr class="my-3">
@@ -3610,26 +3643,19 @@
             <!-- import it into Phantom etc. and recover funds) or discard the -->
             <!-- entry once they've confirmed nothing is at stake.             -->
             <!-- ============================================================ -->
-            <div class="notification is-warning is-light hidden mb-4" id="pendingWalletsPanel">
-                <h5 class="title is-6 mb-2">
-                    <span class="icon"><i class="fas fa-exclamation-triangle"></i></span>
-                    Recoverable wallets without a matching launch
-                </h5>
-                <p class="is-size-7 mb-3">
-                    These temporary wallets were generated for previous launches
-                    but couldn't be matched to an entry above. If you sent funds
-                    to any of them, copy the recovery phrase and import it into a
-                    wallet app (Phantom, Solflare, Backpack) to recover the funds.
-                    Discard an entry only once you're sure there's nothing left
-                    to recover.
-                </p>
-                <p class="is-size-7 mb-3 has-text-grey">
-                    Recovery info is encrypted at rest using your OS keychain
-                    (Keychain on macOS, DPAPI on Windows, libsecret/kwallet on
-                    Linux) — the file on disk can't be read on another user
-                    account or another machine.
-                </p>
-                <div id="pendingWalletsList"></div>
+            <div class="mb-4" id="recentLaunchesPanel">
+                <div class="box p-3">
+                    <h5 class="title is-6 mb-2">
+                        <span class="icon"><i class="fas fa-history"></i></span>
+                        Recent Launches
+                    </h5>
+                    <p class="is-size-7 mb-3 has-text-grey">
+                        Launch state is saved automatically. Click <strong>Load</strong> to resume where you left off — wallet, token, and pool info are all restored.
+                    </p>
+                    <div id="recentLaunchesList">
+                        <p class="has-text-grey is-size-7" id="recentLaunchesLoading">Loading…</p>
+                    </div>
+                </div>
             </div>
 
             <!-- ============================================================ -->
@@ -4122,6 +4148,16 @@
                             </span>
                         </h5>
                         <div id="balanceRows"></div>
+
+                        <!-- Devnet faucet notice — shown only when devnet is active -->
+                        <div id="devnetFundingNotice" class="notification py-2 px-3 mt-2 hidden" style="background: rgba(108, 60, 201, 0.15); border-left: 3px solid #8b5cf6;">
+                            <p class="is-size-7 mb-1">
+                                <strong>Devnet requires SOL to create tokens and pools.</strong> Copy the wallet address above and get devnet SOL from
+                                <a href="https://faucet.solana.com" target="_blank" rel="noopener" class="has-text-link">faucet.solana.com</a>
+                                (GitHub sign-in required, ~2 SOL per request).
+                            </p>
+                            <p class="is-size-7">Then click <strong>Refresh balances</strong>. Token and LP creation will be blocked until SOL is detected.</p>
+                        </div>
 
                         <!-- Section 2: things the system will acquire on the
                              user's behalf via Raydium swap. Hidden when there
@@ -4720,7 +4756,6 @@
          wires it up. Loaded from 'self' to satisfy the CSP. -->
     <script src="vendor/three/three.min.js"></script>
     <script src="coinRenderer.js"></script>
-    <script src="api.js"></script>
     <script src="app.js"></script>
     <!-- ============================================================ -->
     <!-- Generic Confirm Modal                                          -->
