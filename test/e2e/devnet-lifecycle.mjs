@@ -149,7 +149,7 @@ try {
       p.push({
         quoteToken: 'So11111111111111111111111111111111111111112',
         supplyPercent: '100',
-        ammConfigIndex: 2,
+        ammConfigIndex: 0,
         quoteUsdOverride: null,
         quoteDecimalsOverride: null,
         quoteSymbolOverride: 'SOL',
@@ -206,42 +206,23 @@ try {
     assert(step5card, 'step 5 should be active after Load');
     log('step 5 active');
 
-    // Re-inject SOL pool config — the journal may not persist poolPlan
-    // if the create-token request didn't include allocations.
+    // Disable flywheel and inject SOL-only pool at the last moment.
     await p.evaluate(() => {
-      var p = window.__trebuchet_pools;
-      if (!p) return;
-      p.length = 0;
-      p.push({
-        quoteToken: 'So11111111111111111111111111111111111111112',
-        supplyPercent: '100', ammConfigIndex: 2,
-        quoteUsdOverride: null, quoteDecimalsOverride: null,
-        quoteSymbolOverride: 'SOL',
-        slices: [], bootstrapConfig: { mode: 'minimal' },
-        ladderConfig: { mode: 'off', bands: [] }, support: 0,
-        resolvedPriceUsd: null, resolvedSymbol: 'SOL', resolvedDecimals: 9,
-      });
-    });
-    await p.waitForTimeout(500);
-
-
-    // Re-inject SOL pool config — journal may not persist poolPlan.
-    await p.evaluate(() => {
+      if (typeof simpleConfig !== "undefined") simpleConfig.flywheelEnabled = false;
       var pl = window.__trebuchet_pools;
       if (!pl) return;
       pl.length = 0;
       pl.push({
-        quoteToken: 'So11111111111111111111111111111111111111112',
-        supplyPercent: '100', ammConfigIndex: 2,
+        quoteToken: "So11111111111111111111111111111111111111112",
+        supplyPercent: "100", ammConfigIndex: 0,
         quoteUsdOverride: null, quoteDecimalsOverride: null,
-        quoteSymbolOverride: 'SOL',
-        slices: [], bootstrapConfig: { mode: 'minimal' },
-        ladderConfig: { mode: 'off', bands: [] }, support: 0,
-        resolvedPriceUsd: null, resolvedSymbol: 'SOL', resolvedDecimals: 9,
+        quoteSymbolOverride: "SOL",
+        slices: [], bootstrapConfig: { mode: "minimal" },
+        ladderConfig: { mode: "off", bands: [] }, support: 0,
+        resolvedPriceUsd: null, resolvedSymbol: "SOL", resolvedDecimals: 9,
       });
     });
     await p.waitForTimeout(500);
-
     await forceClick(p, '#createLpBtn');
     // Confirm the preflight modal if it appears.
     try {
