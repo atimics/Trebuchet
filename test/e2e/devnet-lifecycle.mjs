@@ -57,6 +57,29 @@ let passed = 0, failed = 0;
 function assert(cond, msg) { if (!cond) throw new Error(msg); }
 const log = (s) => console.log('  ' + s);
 
+// Retry a phase once on network errors, with a cooldown.
+async function withRetry(fn, label, maxAttempts) {
+  maxAttempts = maxAttempts || 2;
+  var lastErr;
+  for (var attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      await fn();
+      return;
+    } catch (e) {
+      lastErr = e;
+      var msg = (e.message || '').toLowerCase();
+      var isNetwork = msg.includes('network') || msg.includes('fetch failed') || msg.includes('etimedout') || msg.includes('io suspended');
+      if (isNetwork && attempt < maxAttempts - 1) {
+        console.log('  retrying "' + label + '" after network error (attempt ' + (attempt + 1) + ')...');
+        await new Promise(function(r) { setTimeout(r, 5000); });
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
 async function withPage(fn, label) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const p = await ctx.newPage();

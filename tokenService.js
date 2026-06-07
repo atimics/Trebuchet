@@ -66,9 +66,21 @@ async function withRpcRetry(fn, { maxRetries = 5, baseDelayMs = 1000 } = {}) {
       return await fn();
     } catch (err) {
       lastError = err;
-      if (err.name === 'TokenAccountNotFoundError' && attempt < maxRetries) {
+      const msg = (err.message || '').toLowerCase();
+      const isRetryable =
+        err.name === 'TokenAccountNotFoundError' ||
+        msg.includes('fetch failed') ||
+        msg.includes('econnrefused') ||
+        msg.includes('econnreset') ||
+        msg.includes('etimedout') ||
+        msg.includes('network io suspended') ||
+        msg.includes('429') ||
+        msg.includes('too many requests') ||
+        msg.includes('503') ||
+        msg.includes('502');
+      if (isRetryable && attempt < maxRetries) {
         const delay = baseDelayMs * Math.pow(2, attempt);
-        console.log(`RPC retry ${attempt + 1}/${maxRetries} after TokenAccountNotFoundError, waiting ${delay}ms...`);
+        console.log(`RPC retry ${attempt + 1}/${maxRetries} after ${err.name || 'network error'}, waiting ${delay}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
