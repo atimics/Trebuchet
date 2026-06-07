@@ -43,6 +43,7 @@ export const moduleNames = [
   'journals.js',          // loadLaunchJournals(), resume
   'pending-wallets.js',   // loadPendingWallets()
   'startup.js',           // setupDisclaimer(), setupSplashScreen(), startup gates
+  'audio.js',             // click sound effects + looping background music
 ];
 
 // Absolute paths, in concatenation order, of every source that goes into the

@@ -158,6 +158,15 @@
     "asarUnpack": [
       "public/**/*",
       "public/intro.mp4",
+      "public/audio/warTheme.mp3",
+      "public/audio/click.flac",
+      "public/audio/checkbox.wav",
+      "public/audio/coins.wav",
+      "public/audio/menuSelect.wav",
+      "public/audio/expand.wav",
+      "public/audio/collapse.ogg",
+      "public/audio/expandStep.ogg",
+      "public/audio/collapseStep.ogg",
       "c/build/**/*"
     ],
     "mac": {

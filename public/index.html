@@ -3527,6 +3527,36 @@
                         The short animation that plays when Trebuchet opens. Turn it
                         off to go straight to the app on launch.
                     </p>
+
+                    <!-- ============================================ -->
+                    <!-- Audio. A click sound effect and looping       -->
+                    <!-- background music, both on by default. Both    -->
+                    <!-- are handled entirely in the renderer          -->
+                    <!-- (public/modules/audio.js); changes here take  -->
+                    <!-- effect immediately and persist to             -->
+                    <!-- userPrefs.json as playSoundEffects /          -->
+                    <!-- playBackgroundMusic.                          -->
+                    <!-- ============================================ -->
+                    <hr class="my-3">
+                    <h6 class="subtitle is-6 mb-2">Audio</h6>
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="soundEffectsToggle" checked>
+                            <span>Play sound effects</span>
+                        </label>
+                    </div>
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="backgroundMusicToggle" checked>
+                            <span>Play background music</span>
+                        </label>
+                    </div>
+                    <p class="help mb-2">
+                        Background music starts when the app opens and pauses
+                        while the window is in the background. Sound effects
+                        cover buttons, dropdown menus, checkboxes, and changes
+                        to the estimated launch cost.
+                    </p>
                 </div>
             </div>
 
