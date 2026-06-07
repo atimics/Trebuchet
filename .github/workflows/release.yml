@@ -191,13 +191,6 @@ jobs:
         with:
           path: release-assets
 
-      - name: Stage UI GIFs
-        run: |
-          if [ -d release-assets/ui-gifs ]; then
-            mkdir -p release-assets/ui-gifs-staging
-            cp release-assets/ui-gifs/*.gif release-assets/ui-gifs-staging/ 2>/dev/null || true
-          fi
-
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
