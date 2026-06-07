@@ -96,6 +96,8 @@ let fundingWallet = null;
 let balancePollHandle = null;
 let lpResult = null;
 let pools = [];
+// Exposed for tests that need to inspect/modify pools from page.evaluate.
+window.__trebuchet_pools = pools;
 let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 // Airdrop execution result, populated by runTransfer() from the
 // transfer-assets response (and updated by the retry path). Carries

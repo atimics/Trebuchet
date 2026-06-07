@@ -96,6 +96,8 @@ let fundingWallet = null;
 let balancePollHandle = null;
 let lpResult = null;
 let pools = [];
+// Exposed for tests that need to inspect/modify pools from page.evaluate.
+window.__trebuchet_pools = pools;
 let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 // Airdrop execution result, populated by runTransfer() from the
 // transfer-assets response (and updated by the retry path). Carries
@@ -17082,13 +17084,13 @@ function prepareRecoveredSessionFromJournal(journal, wallet) {
   };
   fundingWallet = null;
   fundingDetectionExhausted = false;
-  createdTokenInfo = {
+  createdTokenInfo = journal.token && journal.token.mint ? {
     mint: journal.token.mint,
     decimals: journal.token.decimals || journal.poolPlan?.tokenDecimals || 9,
     totalSupply: journal.token.totalSupply || journal.poolPlan?.tokenTotalSupply,
     name: journal.token.name || '',
     symbol: journal.token.symbol || 'TOKEN',
-  };
+  } : null;
   lpResult = { results: journalPriorResults(journal) };
 
   // Restore pool allocations from the journal so the LP creation step
@@ -17140,6 +17142,26 @@ function prepareRecoveredSessionFromJournal(journal, wallet) {
   setStepSummary(4, `${createdTokenInfo.symbol} - ${createdTokenInfo.mint.slice(0, 8)}...`);
   const count = lpResult.results.length;
   setStepSummary(5, count > 0 ? `${count} pool${count === 1 ? '' : 's'} recorded` : 'ready to resume');
+
+  // Activate the right step so the UI expands the card and the user
+  // can see their data and continue without generating a new wallet.
+  var stage = journal.stage || "";
+  if (lpResult && lpResult.results && lpResult.results.length) {
+    activateStep(6);
+  } else if (stage.startsWith("lp_")) {
+    activateStep(5);
+  } else if (journal.token && journal.token.mint) {
+    // Token fully created — go to LP configuration.
+    activateStep(5);
+  } else if (stage === "token_create_started") {
+    // Token creation was interrupted. Show step 4 so the user can
+    // retry — the server will pick up an existing mint if one exists.
+    activateStep(4);
+  } else {
+    activateStep(2);
+  }
+  if (typeof updateContinueToFundingState === "function") updateContinueToFundingState();
+  if (typeof updateCancelButtonState === "function") updateCancelButtonState();
 }
 
 async function resumeLaunchJournal(journal, wallet, btn) {
