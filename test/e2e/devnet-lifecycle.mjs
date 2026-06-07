@@ -252,6 +252,12 @@ try {
       await p.waitForTimeout(2000);
     } catch (e) {
       log("preflight modal skipped: " + e.message.slice(0, 80));
+    // If preflight failed, the UI may show an error. Log it.
+    try {
+      var errEl = await p.waitForSelector("#lpFailInfo:not(.hidden)", { timeout: 5000 });
+      var errText = await errEl.textContent();
+      log("LP error: " + errText.trim().slice(0, 200));
+    } catch {}
     }
     log('LP creation started');
     await p.waitForFunction(() => {
