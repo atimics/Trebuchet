@@ -223,7 +223,10 @@ static void *grind_thread(void *arg) {
     for (int i = 0; i < 8; i++) thread_seed[i] ^= (uint8_t)(tid >> (i * 8));
     {
         uint8_t tmp_pk[32], tmp_sk[64];
-        crypto_sign_seed_keypair(tmp_pk, tmp_sk, thread_seed);
+        if (crypto_sign_seed_keypair(tmp_pk, tmp_sk, thread_seed) != 0) {
+            atomic_fetch_sub(&gs->running_threads, 1);
+            return NULL;
+        }
         memcpy(thread_seed, tmp_pk, 32);
     }
 
@@ -236,7 +239,10 @@ static void *grind_thread(void *arg) {
     int use_fast = gs->use_fast_match;
 
     while (!atomic_load_explicit(&gs->found, memory_order_relaxed)) {
-        crypto_sign_seed_keypair(pk, sk, seed);
+        if (crypto_sign_seed_keypair(pk, sk, seed) != 0) {
+            atomic_fetch_sub(&gs->running_threads, 1);
+            return NULL;
+        }
 
         int matched = 0;
 
@@ -598,7 +604,7 @@ int main(int argc, char **argv) {
         double rate = (double)delta / dt;
 
         const char *pk_str = "";
-        if (atomic_exchange(&gs.last_pk_ready, 0))
+        if (atomic_exchange_explicit(&gs.last_pk_ready, 0, memory_order_acquire))
             pk_str = gs.last_pk;
         fprintf(stderr, "\r  Attempts: %llu  Rate: %.1f K/s  Running: %d threads  Key: %s  ",
                 (unsigned long long)total, rate / 1000.0,

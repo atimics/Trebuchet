@@ -157,7 +157,6 @@ function build(compiler) {
   console.log(`Building vanity_keygen with ${compiler}`);
   console.log(`  platform: ${process.platform} / ${process.arch}`);
   console.log(`  output:   ${outPath}`);
-  console.log('  sodiumCflags:', sodiumCflags);
   console.log('  sodiumLibs:', sodiumLibs);
   console.log('  linkLibs:', linkLibs);
 
