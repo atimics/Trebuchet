@@ -41,6 +41,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install libsodium (vanity keygen dependency)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsodium-dev
+
       - name: Build vanity keygen binary
         run: npm run build:c
 
