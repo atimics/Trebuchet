@@ -440,6 +440,7 @@ bind('createLpBtn', 'click', async () => {
       document.getElementById('lpFailInfo').classList.add('hidden');
 
       const allocations = buildAllocationsForApi();
+      console.log("LP-DEBUG: allocations=" + allocations.length + " pools=" + pools.length + " pool0=" + (pools[0] ? pools[0].quoteToken : "none"));
       const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
       const lockPositions = document.getElementById('lockPositions').checked;
 
