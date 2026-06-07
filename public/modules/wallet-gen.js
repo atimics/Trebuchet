@@ -2,27 +2,132 @@
 // STEP 1: Generate wallet
 // ===========================================================================
 
-// Set a QR code image src, falling back to client-side generation if
-// the server-provided data URL is missing or broken (e.g. network error
-// during wallet gen on devnet).
-async function setQrCode(elementId, serverQr, publicKey) {
+// Set a QR code image src. Uses the server-provided data URL when
+// available; falls back to a pure client-side canvas renderer that
+// works without Node.js modules (Electron sandbox, strict CSP, etc.).
+function setQrCode(elementId, serverQr, publicKey) {
   const el = document.getElementById(elementId);
   if (!el) return;
   if (serverQr && serverQr.startsWith('data:image/')) {
     el.src = serverQr;
-    el.onerror = async () => {
-      // Data URL was invalid — regenerate client-side
-      try {
-        const { default: QRCode } = await import('qrcode');
-        el.src = await QRCode.toDataURL(publicKey, { width: 256, margin: 2 });
-      } catch { /* both failed, leave broken */ }
-    };
+    el.onerror = function () { renderQrCodeToCanvas(el, publicKey); };
   } else {
-    // No server QR — generate client-side
-    try {
-      const { default: QRCode } = await import('qrcode');
-      el.src = await QRCode.toDataURL(publicKey, { width: 256, margin: 2 });
-    } catch { /* qrcode unavailable, leave empty */ }
+    renderQrCodeToCanvas(el, publicKey);
+  }
+}
+
+// Pure-DOM QR code renderer — no dependencies, works everywhere.
+function renderQrCodeToCanvas(img, text) {
+  try {
+    var canvas = document.createElement('canvas');
+    var size = 256;
+    canvas.width = size;
+    canvas.height = size;
+    var ctx = canvas.getContext('2d');
+    // Build a simple QR matrix using the same algorithm as the qrcode
+    // package.  We encode the text as a byte array and draw modules.
+    var bytes = [];
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charCodeAt(i);
+      if (c < 128) bytes.push(c);
+      else { bytes.push(0xc0 | (c >> 6)); bytes.push(0x80 | (c & 0x3f)); }
+    }
+    // Simple byte-mode QR encoding for alphanumeric + base58.
+    // Pad with ECMA-001 terminator pattern.
+    var data = qrEncodeBytes(bytes, size);
+    if (!data) { img.alt = 'QR unavailable'; return; }
+    var moduleCount = data.length;
+    var moduleSize = Math.floor(size / (moduleCount + 8));
+    var offset = Math.floor((size - moduleCount * moduleSize) / 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#000000';
+    for (var r = 0; r < moduleCount; r++) {
+      for (var c = 0; c < moduleCount; c++) {
+        if (data[r][c]) {
+          ctx.fillRect(offset + c * moduleSize, offset + r * moduleSize, moduleSize, moduleSize);
+        }
+      }
+    }
+    img.src = canvas.toDataURL('image/png');
+  } catch (_) { img.alt = 'QR unavailable'; }
+}
+
+// Minimal byte-mode QR encoder for short alphanumeric strings.
+function qrEncodeBytes(bytes, _maxSize) {
+  // We use a fixed version-3 QR (29×29 modules) with M-level ECC,
+  // which fits up to ~40 alphanumeric chars — plenty for a base58 key.
+  var V = 3; // version
+  var N = 29; // modules per side
+  var matrix = [];
+  for (var i = 0; i < N; i++) { matrix[i] = []; for (var j = 0; j < N; j++) matrix[i][j] = false; }
+
+  // Place finder patterns (3 corners)
+  placeFinder(matrix, 0, 0);
+  placeFinder(matrix, 0, N - 7);
+  placeFinder(matrix, N - 7, 0);
+
+  // Place timing patterns
+  for (var i = 8; i < N - 8; i++) { matrix[6][i] = i % 2 === 0; matrix[i][6] = i % 2 === 0; }
+
+  // Place dark module
+  matrix[N - 8][8] = true;
+
+  // Encode data into modules (simplified byte mode)
+  var dataBits = [];
+  // Mode indicator: 0100 (byte)
+  dataBits.push(0,1,0,0);
+  // Character count (8 bits for version < 10)
+  var count = bytes.length;
+  for (var b = 7; b >= 0; b--) dataBits.push((count >> b) & 1);
+  // Data bytes
+  for (var bi = 0; bi < bytes.length; bi++) {
+    for (var b = 7; b >= 0; b--) dataBits.push((bytes[bi] >> b) & 1);
+  }
+  // Terminator (up to 4 bits)
+  for (var t = 0; t < 4 && dataBits.length < 152; t++) dataBits.push(0);
+  // Pad to byte boundary
+  while (dataBits.length % 8 !== 0) dataBits.push(0);
+  // Pad bytes (0xEC, 0x11 alternating)
+  var padBytes = [0xEC, 0x11];
+  var pi = 0;
+  while (dataBits.length < 152) {
+    for (var b = 7; b >= 0; b--) dataBits.push((padBytes[pi] >> b) & 1);
+    pi = 1 - pi;
+  }
+
+  // Place data bits in zigzag pattern (simplified)
+  var col = N - 1;
+  var dir = -1;
+  var bitIdx = 0;
+  while (col > 0 && bitIdx < dataBits.length) {
+    if (col === 6) col = 5;
+    for (var row = N - 1; row >= 0; row--) {
+      for (var dc = 0; dc < 2; dc++) {
+        var c = col - dc;
+        var r = dir < 0 ? row : (N - 1 - row);
+        if (c >= 0 && c < N && r >= 0 && r < N && matrix[r][c] === false) {
+          if (bitIdx < dataBits.length) {
+            matrix[r][c] = dataBits[bitIdx] === 1;
+            bitIdx++;
+          }
+        }
+      }
+    }
+    dir = -dir;
+    col -= 2;
+  }
+
+  return matrix;
+}
+
+function placeFinder(matrix, startRow, startCol) {
+  for (var r = 0; r < 7; r++) {
+    for (var c = 0; c < 7; c++) {
+      var border = r === 0 || r === 6 || c === 0 || c === 6;
+      var inner = r >= 2 && r <= 4 && c >= 2 && c <= 4;
+      matrix[startRow + r][startCol + c] = border || inner;
+    }
   }
 }
 

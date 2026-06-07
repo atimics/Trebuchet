@@ -11,7 +11,11 @@ async function loadRecentLaunches() {
   if (!panel || !list) return;
 
   try {
-    const resp = await fetch('/api/recent-launches');
+    // 8-second timeout so the loading spinner never hangs forever.
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 8000);
+    const resp = await fetch('/api/recent-launches', { signal: ac.signal });
+    clearTimeout(timer);
     const data = await resp.json();
     if (!data.success || !Array.isArray(data.launches)) return;
 
@@ -33,6 +37,9 @@ async function loadRecentLaunches() {
     _launchesLoaded = true;
   } catch (e) {
     console.warn('Failed to load recent launches:', e);
+    // Remove the loading placeholder so the panel doesn't appear stuck.
+    const loadingEl = document.getElementById('recentLaunchesLoading');
+    if (loadingEl) loadingEl.remove();
   }
 }
 
@@ -108,61 +115,27 @@ function buildLaunchRow(launch) {
       var useData = await useResp.json();
       if (!useData.success) throw new Error(useData.error || 'wallet not found');
 
-      tempWallet = {
+      var wallet = {
         publicKey: useData.wallet.publicKey,
         secretKey: useData.wallet.secretKey,
-        qrCode: useData.wallet.qrCode,
+        secretKeyB58: useData.wallet.secretKeyB58,
+        mnemonic: useData.wallet.mnemonic,
       };
-      document.getElementById('walletInfo').classList.remove('hidden');
-      document.getElementById('walletAddress').value = useData.wallet.publicKey;
-      if (typeof setQrCode === 'function') {
-        setQrCode('qrCode', useData.wallet.qrCode, useData.wallet.publicKey);
-      }
-
-      createdTokenInfo = null;
-      lpResult = null;
-      fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
-      document.getElementById('privateKeyContainer').classList.add('hidden');
-      document.getElementById('tokenCreatedInfo').classList.add('hidden');
-      document.getElementById('createTokenBtn').classList.remove('hidden');
-      document.getElementById('createLpBtn').classList.remove('hidden');
-      document.body.classList.add('has-log');
-      log('Loaded ' + (label || pubShort), 'success');
 
       var stateResp = await fetch('/api/launch-state?walletPublicKey=' + encodeURIComponent(launch.walletPublicKey));
       var stateData = await stateResp.json();
-      if (stateData.success && stateData.state) {
-        var s = stateData.state;
-        if (s.token && s.token.mint) {
-          createdTokenInfo = {
-            mint: s.token.mint, decimals: s.token.decimals || 9,
-            totalSupply: s.token.totalSupply, name: s.token.name || '', symbol: s.token.symbol || '',
-          };
-          document.getElementById('tokenCreatedInfo').classList.remove('hidden');
-          document.getElementById('tokenMintAddress').textContent = s.token.mint;
-          document.getElementById('tokenSolscanLink').href = 'https://solscan.io/token/' + s.token.mint;
-          document.getElementById('createTokenBtn').classList.add('hidden');
-        }
-        if (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0) {
-          lpResult = { results: s.lp.results };
-          document.getElementById('createLpBtn').classList.add('hidden');
-          if (typeof setLpDoneVisible === 'function') setLpDoneVisible(true);
-        }
-        var stage = s.stage || '';
-        for (var i = 1; i <= 6; i++) setStepSummary(i, '');
-        setStepSummary(1, pubShort);
-        if (createdTokenInfo) setStepSummary(4, createdTokenInfo.symbol + ' \u2014 ' + createdTokenInfo.mint.slice(0, 8) + '\u2026');
-        if (lpResult) setStepSummary(5, lpResult.results.length + ' pool(s)');
-        if (lpResult && lpResult.results && lpResult.results.length) activateStep(6);
-        else if (stage.startsWith('lp_')) activateStep(5);
-        else if (createdTokenInfo) activateStep(5);
-        else activateStep(2);
-        if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
-        updateCancelButtonState();
-      } else {
-        activateStep(2);
-        updateCancelButtonState();
+      if (!stateData.success || !stateData.state) throw new Error('launch state not found');
+
+      // Delegate to the shared resume helper (journals.js) which
+      // restores wallet, token, pool plan, and LP state correctly.
+      prepareRecoveredSessionFromJournal(stateData.state, wallet);
+
+      if (typeof setQrCode === 'function' && useData.wallet.qrCode) {
+        setQrCode('qrCode', useData.wallet.qrCode, useData.wallet.publicKey);
       }
+
+      document.body.classList.add('has-log');
+      log('Loaded ' + (label || pubShort), 'success');
       panel.classList.add('hidden');
     } catch (e) {
       log('Failed to load launch: ' + e.message, 'danger');

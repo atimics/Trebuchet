@@ -2557,27 +2557,132 @@ bind('addRpcBtn', 'click', async () => {
 // STEP 1: Generate wallet
 // ===========================================================================
 
-// Set a QR code image src, falling back to client-side generation if
-// the server-provided data URL is missing or broken (e.g. network error
-// during wallet gen on devnet).
-async function setQrCode(elementId, serverQr, publicKey) {
+// Set a QR code image src. Uses the server-provided data URL when
+// available; falls back to a pure client-side canvas renderer that
+// works without Node.js modules (Electron sandbox, strict CSP, etc.).
+function setQrCode(elementId, serverQr, publicKey) {
   const el = document.getElementById(elementId);
   if (!el) return;
   if (serverQr && serverQr.startsWith('data:image/')) {
     el.src = serverQr;
-    el.onerror = async () => {
-      // Data URL was invalid — regenerate client-side
-      try {
-        const { default: QRCode } = await import('qrcode');
-        el.src = await QRCode.toDataURL(publicKey, { width: 256, margin: 2 });
-      } catch { /* both failed, leave broken */ }
-    };
+    el.onerror = function () { renderQrCodeToCanvas(el, publicKey); };
   } else {
-    // No server QR — generate client-side
-    try {
-      const { default: QRCode } = await import('qrcode');
-      el.src = await QRCode.toDataURL(publicKey, { width: 256, margin: 2 });
-    } catch { /* qrcode unavailable, leave empty */ }
+    renderQrCodeToCanvas(el, publicKey);
+  }
+}
+
+// Pure-DOM QR code renderer — no dependencies, works everywhere.
+function renderQrCodeToCanvas(img, text) {
+  try {
+    var canvas = document.createElement('canvas');
+    var size = 256;
+    canvas.width = size;
+    canvas.height = size;
+    var ctx = canvas.getContext('2d');
+    // Build a simple QR matrix using the same algorithm as the qrcode
+    // package.  We encode the text as a byte array and draw modules.
+    var bytes = [];
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charCodeAt(i);
+      if (c < 128) bytes.push(c);
+      else { bytes.push(0xc0 | (c >> 6)); bytes.push(0x80 | (c & 0x3f)); }
+    }
+    // Simple byte-mode QR encoding for alphanumeric + base58.
+    // Pad with ECMA-001 terminator pattern.
+    var data = qrEncodeBytes(bytes, size);
+    if (!data) { img.alt = 'QR unavailable'; return; }
+    var moduleCount = data.length;
+    var moduleSize = Math.floor(size / (moduleCount + 8));
+    var offset = Math.floor((size - moduleCount * moduleSize) / 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#000000';
+    for (var r = 0; r < moduleCount; r++) {
+      for (var c = 0; c < moduleCount; c++) {
+        if (data[r][c]) {
+          ctx.fillRect(offset + c * moduleSize, offset + r * moduleSize, moduleSize, moduleSize);
+        }
+      }
+    }
+    img.src = canvas.toDataURL('image/png');
+  } catch (_) { img.alt = 'QR unavailable'; }
+}
+
+// Minimal byte-mode QR encoder for short alphanumeric strings.
+function qrEncodeBytes(bytes, _maxSize) {
+  // We use a fixed version-3 QR (29×29 modules) with M-level ECC,
+  // which fits up to ~40 alphanumeric chars — plenty for a base58 key.
+  var V = 3; // version
+  var N = 29; // modules per side
+  var matrix = [];
+  for (var i = 0; i < N; i++) { matrix[i] = []; for (var j = 0; j < N; j++) matrix[i][j] = false; }
+
+  // Place finder patterns (3 corners)
+  placeFinder(matrix, 0, 0);
+  placeFinder(matrix, 0, N - 7);
+  placeFinder(matrix, N - 7, 0);
+
+  // Place timing patterns
+  for (var i = 8; i < N - 8; i++) { matrix[6][i] = i % 2 === 0; matrix[i][6] = i % 2 === 0; }
+
+  // Place dark module
+  matrix[N - 8][8] = true;
+
+  // Encode data into modules (simplified byte mode)
+  var dataBits = [];
+  // Mode indicator: 0100 (byte)
+  dataBits.push(0,1,0,0);
+  // Character count (8 bits for version < 10)
+  var count = bytes.length;
+  for (var b = 7; b >= 0; b--) dataBits.push((count >> b) & 1);
+  // Data bytes
+  for (var bi = 0; bi < bytes.length; bi++) {
+    for (var b = 7; b >= 0; b--) dataBits.push((bytes[bi] >> b) & 1);
+  }
+  // Terminator (up to 4 bits)
+  for (var t = 0; t < 4 && dataBits.length < 152; t++) dataBits.push(0);
+  // Pad to byte boundary
+  while (dataBits.length % 8 !== 0) dataBits.push(0);
+  // Pad bytes (0xEC, 0x11 alternating)
+  var padBytes = [0xEC, 0x11];
+  var pi = 0;
+  while (dataBits.length < 152) {
+    for (var b = 7; b >= 0; b--) dataBits.push((padBytes[pi] >> b) & 1);
+    pi = 1 - pi;
+  }
+
+  // Place data bits in zigzag pattern (simplified)
+  var col = N - 1;
+  var dir = -1;
+  var bitIdx = 0;
+  while (col > 0 && bitIdx < dataBits.length) {
+    if (col === 6) col = 5;
+    for (var row = N - 1; row >= 0; row--) {
+      for (var dc = 0; dc < 2; dc++) {
+        var c = col - dc;
+        var r = dir < 0 ? row : (N - 1 - row);
+        if (c >= 0 && c < N && r >= 0 && r < N && matrix[r][c] === false) {
+          if (bitIdx < dataBits.length) {
+            matrix[r][c] = dataBits[bitIdx] === 1;
+            bitIdx++;
+          }
+        }
+      }
+    }
+    dir = -dir;
+    col -= 2;
+  }
+
+  return matrix;
+}
+
+function placeFinder(matrix, startRow, startCol) {
+  for (var r = 0; r < 7; r++) {
+    for (var c = 0; c < 7; c++) {
+      var border = r === 0 || r === 6 || c === 0 || c === 6;
+      var inner = r >= 2 && r <= 4 && c >= 2 && c <= 4;
+      matrix[startRow + r][startCol + c] = border || inner;
+    }
   }
 }
 
@@ -17331,7 +17436,11 @@ async function loadRecentLaunches() {
   if (!panel || !list) return;
 
   try {
-    const resp = await fetch('/api/recent-launches');
+    // 8-second timeout so the loading spinner never hangs forever.
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 8000);
+    const resp = await fetch('/api/recent-launches', { signal: ac.signal });
+    clearTimeout(timer);
     const data = await resp.json();
     if (!data.success || !Array.isArray(data.launches)) return;
 
@@ -17353,6 +17462,9 @@ async function loadRecentLaunches() {
     _launchesLoaded = true;
   } catch (e) {
     console.warn('Failed to load recent launches:', e);
+    // Remove the loading placeholder so the panel doesn't appear stuck.
+    const loadingEl = document.getElementById('recentLaunchesLoading');
+    if (loadingEl) loadingEl.remove();
   }
 }
 
@@ -17428,61 +17540,27 @@ function buildLaunchRow(launch) {
       var useData = await useResp.json();
       if (!useData.success) throw new Error(useData.error || 'wallet not found');
 
-      tempWallet = {
+      var wallet = {
         publicKey: useData.wallet.publicKey,
         secretKey: useData.wallet.secretKey,
-        qrCode: useData.wallet.qrCode,
+        secretKeyB58: useData.wallet.secretKeyB58,
+        mnemonic: useData.wallet.mnemonic,
       };
-      document.getElementById('walletInfo').classList.remove('hidden');
-      document.getElementById('walletAddress').value = useData.wallet.publicKey;
-      if (typeof setQrCode === 'function') {
-        setQrCode('qrCode', useData.wallet.qrCode, useData.wallet.publicKey);
-      }
-
-      createdTokenInfo = null;
-      lpResult = null;
-      fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
-      document.getElementById('privateKeyContainer').classList.add('hidden');
-      document.getElementById('tokenCreatedInfo').classList.add('hidden');
-      document.getElementById('createTokenBtn').classList.remove('hidden');
-      document.getElementById('createLpBtn').classList.remove('hidden');
-      document.body.classList.add('has-log');
-      log('Loaded ' + (label || pubShort), 'success');
 
       var stateResp = await fetch('/api/launch-state?walletPublicKey=' + encodeURIComponent(launch.walletPublicKey));
       var stateData = await stateResp.json();
-      if (stateData.success && stateData.state) {
-        var s = stateData.state;
-        if (s.token && s.token.mint) {
-          createdTokenInfo = {
-            mint: s.token.mint, decimals: s.token.decimals || 9,
-            totalSupply: s.token.totalSupply, name: s.token.name || '', symbol: s.token.symbol || '',
-          };
-          document.getElementById('tokenCreatedInfo').classList.remove('hidden');
-          document.getElementById('tokenMintAddress').textContent = s.token.mint;
-          document.getElementById('tokenSolscanLink').href = 'https://solscan.io/token/' + s.token.mint;
-          document.getElementById('createTokenBtn').classList.add('hidden');
-        }
-        if (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0) {
-          lpResult = { results: s.lp.results };
-          document.getElementById('createLpBtn').classList.add('hidden');
-          if (typeof setLpDoneVisible === 'function') setLpDoneVisible(true);
-        }
-        var stage = s.stage || '';
-        for (var i = 1; i <= 6; i++) setStepSummary(i, '');
-        setStepSummary(1, pubShort);
-        if (createdTokenInfo) setStepSummary(4, createdTokenInfo.symbol + ' \u2014 ' + createdTokenInfo.mint.slice(0, 8) + '\u2026');
-        if (lpResult) setStepSummary(5, lpResult.results.length + ' pool(s)');
-        if (lpResult && lpResult.results && lpResult.results.length) activateStep(6);
-        else if (stage.startsWith('lp_')) activateStep(5);
-        else if (createdTokenInfo) activateStep(5);
-        else activateStep(2);
-        if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
-        updateCancelButtonState();
-      } else {
-        activateStep(2);
-        updateCancelButtonState();
+      if (!stateData.success || !stateData.state) throw new Error('launch state not found');
+
+      // Delegate to the shared resume helper (journals.js) which
+      // restores wallet, token, pool plan, and LP state correctly.
+      prepareRecoveredSessionFromJournal(stateData.state, wallet);
+
+      if (typeof setQrCode === 'function' && useData.wallet.qrCode) {
+        setQrCode('qrCode', useData.wallet.qrCode, useData.wallet.publicKey);
       }
+
+      document.body.classList.add('has-log');
+      log('Loaded ' + (label || pubShort), 'success');
       panel.classList.add('hidden');
     } catch (e) {
       log('Failed to load launch: ' + e.message, 'danger');

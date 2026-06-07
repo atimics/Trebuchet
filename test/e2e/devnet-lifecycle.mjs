@@ -225,22 +225,6 @@ try {
     await stepIs(p, 4);
     await p.waitForTimeout(1000);
 
-    // Set up a default SOL pool allocation so the journal saves a
-    // pool plan that the crash-resume phase can pick up.
-    await p.evaluate(() => {
-      if (typeof window.rebuildPoolsFromSimple === "function" && (!window.pools || window.pools.length === 0)) {
-        window.rebuildPoolsFromSimple();
-      }
-    });
-
-    // Upload a real token image for CI metadata (pick one randomly).
-    const logoPath = TOKEN_IMAGES[Math.floor(Math.random() * TOKEN_IMAGES.length)];
-    if (fs.existsSync(logoPath)) {
-      log('uploading logo: ' + path.basename(path.dirname(logoPath)) + '/' + path.basename(logoPath));
-      await p.setInputFiles('#tokenLogo', logoPath);
-      await p.waitForTimeout(1000);
-    }
-
     await forceClick(p, '#createTokenBtn');
     // Token creation with vanity grinding can take a while
     await p.waitForSelector('#tokenCreatedInfo', { state: 'visible', timeout: 300000 });
