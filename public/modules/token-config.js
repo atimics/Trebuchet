@@ -215,7 +215,21 @@ function removeSlice(poolIdx, sliceIdx) {
 // Pools come up collapsed by default (since they're at trivial defaults
 // with no user customization). Resolution kicks off automatically per
 // the existing addPool() behavior.
+//
+// This is a thin wrapper around rebuildPoolsFromSimpleCore so the
+// simple-mode ladder depth-chart preview refreshes after EVERY rebuild,
+// no matter which input triggered it — support edits, preallocation
+// auto-back, flywheel split, market cap, ladder controls. The core has
+// more than one exit (the flywheel branch returns early), so centralising
+// the refresh here means no exit path can forget it. updateSimpleLadderPreview
+// is a no-op when the preview isn't on screen (e.g. during the init rebuild
+// before the simple UI renders, or while in customize mode).
 function rebuildPoolsFromSimple() {
+  rebuildPoolsFromSimpleCore();
+  updateSimpleLadderPreview();
+}
+
+function rebuildPoolsFromSimpleCore() {
   // Wipe the existing pool list. We assume the caller knows what they're
   // doing — switching from customize → default mode should confirm
   // before calling this.
@@ -690,45 +704,12 @@ function parseAirdropCsv(text) {
 // { tokens, usd } added. If marketCap, supply, or solUsd is missing/
 // invalid, returns the input rows unchanged (tokens and usd are null)
 // and the caller can show a "fill in supply / market cap first" hint.
-// Guard against a cost-preview ⇄ airdrop-refresh loop. Set true while the
-// cost-preview completion handler re-renders the airdrop display, so that
-// refresh won't itself schedule another cost-preview fetch (which would
-// complete and trigger the refresh again, ad infinitum). Read in
-// refreshAirdropDisplayInline before it calls requestCostPreviewUpdate.
-let _airdropDisplayRefreshInProgress = false;
-
-// SOL's USD price for airdrop allocation math. The CSV gives each
-// recipient a SOL contribution; converting that to a token amount needs
-// SOL's USD price. We look in three places, in order of directness:
-//
-//   1. A SOL-quoted pool's resolved price (present for SOL-paired launches).
-//   2. The cached 'SOL' quote-info, if SOL was ever resolved as a quote.
-//   3. The launch cost estimate's solUsd, which the server always fills in
-//      (from the WSOL oracle, or a fallback constant).
-//
-// #3 is the one that matters for the default flywheel-paired launch: it
-// has no SOL-quoted pool, so without the estimate fallback solUsd would be
-// null, every recipient's token amount would compute as null, and the
-// airdrop would be filtered out and silently skipped at launch.
-function resolveAirdropSolUsd() {
-  const solPool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
-  if (solPool && Number(solPool.resolvedPriceUsd) > 0) {
-    return Number(solPool.resolvedPriceUsd);
-  }
-  const cached = quoteInfoCache.get('SOL');
-  if (cached && cached.info && Number(cached.info.priceUsd) > 0) {
-    return Number(cached.info.priceUsd);
-  }
-  if (_lastCostEstimate && Number(_lastCostEstimate.solUsd) > 0) {
-    return Number(_lastCostEstimate.solUsd);
-  }
-  return null;
-}
-
 function annotateAirdropRowsWithTokens(parsedRows) {
   const supply = parseNumberInput(document.getElementById('tokenSupply'));
   const mcap = parseNumberInput(document.getElementById('targetMarketCap'));
-  const solUsd = resolveAirdropSolUsd();
+  const solPool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+  const solUsd = solPool && Number(solPool.resolvedPriceUsd) > 0
+    ? Number(solPool.resolvedPriceUsd) : null;
 
   // Without complete inputs we can still show the rows (wallet + sol)
   // but can't compute token allocations. annotate with null fields.
@@ -832,18 +813,8 @@ function buildAirdropTransferPayload() {
   if (!simpleConfig.preallocationEnabled) return null;
   const airdrop = simpleConfig.airdrop;
   if (!airdrop || !airdrop.enabled) return null;
-  const rawRows = Array.isArray(airdrop.parsedRows) ? airdrop.parsedRows : [];
-  if (rawRows.length === 0) return null;
-
-  // Re-annotate the rows fresh at launch time rather than trusting the
-  // token amounts stored when the CSV was loaded. Those stored amounts can
-  // be null if the SOL/USD price hadn't resolved yet at load time (for a
-  // flywheel-paired launch the price arrives with the cost estimate, which
-  // may still have been in flight). The supply/market-cap inputs and the
-  // pools array both persist into the transfer step, so recomputing here
-  // guarantees we send correct per-recipient amounts whenever a price is
-  // available.
-  const rows = annotateAirdropRowsWithTokens(rawRows).rows;
+  const rows = Array.isArray(airdrop.parsedRows) ? airdrop.parsedRows : [];
+  if (rows.length === 0) return null;
 
   // Filter to rows with positive token amounts. annotateAirdropRowsWithTokens
   // sets tokens=null when inputs are incomplete (supply/mcap/SOL price
@@ -952,20 +923,26 @@ function recomputePoolSupportAndRebalance(_pool) {
   // No-op. Reserved for future use if support gains derived state.
 }
 
-// Translate the simple-UI ladder toggle into a per-pool ladderConfig.
+// Translate the simple-UI ladder controls into a per-pool ladderConfig.
 //
-// When the toggle is off (or the user is in customize mode but
+// When the toggle is off (or we're in customize mode but
 // rebuildPoolsFromSimple is somehow called), return { mode: 'off' }.
-// When on, generate the log-spaced default bands the simple UI would
-// have produced — same math as the original simple-mode auto-generated
-// bands. From this point, the user can edit individual bands in
-// customize mode and the per-pool ladderConfig becomes the source of
-// truth.
+// When on, generate the bands for the user's chosen strategy using the
+// SAME generator, gap, and ceiling-clamp that customize mode uses. The
+// returned config is fully initialized — strategy, gap, ceiling,
+// bandCount, and ladderPercent are all set — so switching into customize
+// carries the bands through unchanged (ensureLadderStrategyConfig sees an
+// initialized config and does not regenerate). That keeps the simple-mode
+// depth-chart preview identical to what the user sees after customizing.
 //
-// Each band has supplyPercent (equal share of the global ladder %),
-// lowerMultiplier, upperMultiplier. Multipliers are computed from
-// the log-spacing math: ln(ceiling) / (2N - 1) per "unit", N bands +
-// (N-1) gaps. Band i covers [ratio^(2i), ratio^(2i+1)].
+// Gap and ceiling are not exposed in the simple UI, so they take the
+// design defaults: gap = LADDER_GAP_DEFAULT (the same 4× customize starts
+// at) and ceiling = LADDER_CEILING_DEFAULT clamped down to the pool's
+// honest max (CEILING_MAX_MCAP_USD / target market cap), exactly as
+// poolMaxCeilingMultiplier does for customize. Reading the live market cap
+// here is what keeps the clamp — and therefore the band ranges — in sync
+// with customize; pools are rebuilt whenever the market cap changes, so
+// the drift check stays accurate.
 function deriveLadderConfigFromSimple() {
   if (simpleConfig.mode !== 'default') return { mode: 'off', bands: [] };
   if (!simpleConfig.ladderEnabled) return { mode: 'off', bands: [] };
@@ -977,14 +954,114 @@ function deriveLadderConfigFromSimple() {
     LADDER_MIN_BANDS,
     Math.min(LADDER_MAX_BANDS, Number(simpleConfig.ladderBandCount) || LADDER_DEFAULT_BANDS),
   );
+  // Chosen volatility shape, falling back to the default if the stored
+  // value is somehow not a known strategy id.
+  const strategy = LADDER_STRATEGY_IDS.includes(simpleConfig.ladderStrategy)
+    ? simpleConfig.ladderStrategy
+    : LADDER_DEFAULT_STRATEGY;
+  // Ceiling clamped to the pool's honest max, same as customize. We call
+  // poolMaxCeilingMultiplier (which reads the live #targetMarketCap and
+  // ignores its pool argument) when it's available; before it's defined
+  // (it lives in a later module, so only at runtime) we fall back to the
+  // raw default. Math.min means a low market cap pulls the ceiling down
+  // and a high one leaves it at the default.
+  const poolMax = (typeof poolMaxCeilingMultiplier === 'function')
+    ? poolMaxCeilingMultiplier(null)
+    : LADDER_CEILING_DEFAULT;
+  const ceiling = Math.min(LADDER_CEILING_DEFAULT, poolMax);
+  const gap = LADDER_GAP_DEFAULT;
   return {
     mode: 'manual',
-    bands: generateLogSpacedBands({
-      supplyPercent,
+    // Fully initialized so customize carries it through without
+    // regenerating. ladderPercent is the authoritative share (customize
+    // reads it directly rather than inferring it from the band sum).
+    strategy,
+    gap,
+    ceiling,
+    bandCount,
+    ladderPercent: supplyPercent,
+    bands: generateLadderStrategyBands({
+      strategy,
+      ladderPercent: supplyPercent,
       bandCount,
-      ceilingMultiplier: LADDER_CEILING_MULTIPLIER,
+      gap,
+      ceiling,
     }),
   };
+}
+
+// Render the simple-mode ladder depth-chart preview into #simpleLadderPreview.
+//
+// This is the simple-UI counterpart to updatePoolDepthChart: it charts the
+// representative pool (the SOL pool, or the first pool if there's no SOL pool)
+// using the same USD-notional and support scaling, so the preview is identical
+// to what the user sees on that pool after switching to customize. Called after
+// the pools are rebuilt (strategy / percent / band-count changes) and once on
+// every simple-config render. Safe to call when the ladder is off, the
+// container is absent, or no pool exists yet — in those cases it just empties
+// and hides the container so it leaves no gap.
+//
+// computeDepthProfile and renderDepthChartSvg live in the depth-chart module,
+// which is concatenated after this one; they're only referenced here at call
+// time (runtime), so the forward reference is fine.
+function updateSimpleLadderPreview() {
+  const wrap = document.getElementById('simpleLadderPreview');
+  if (!wrap) return;
+
+  const hide = () => { wrap.innerHTML = ''; wrap.style.display = 'none'; };
+  if (!simpleConfig.ladderEnabled) { hide(); return; }
+
+  const pool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL') || pools[0];
+  if (!pool) { hide(); return; }
+  if (typeof computeDepthProfile !== 'function' || typeof renderDepthChartSvg !== 'function') {
+    hide();
+    return;
+  }
+
+  // USD scaling so the quote-side support wall is comparable to the token-side
+  // bands — the pool's notional is its share of the target market cap; support's
+  // value is its SOL converted through the SOL pool's resolved price. Mirrors
+  // updatePoolDepthChart exactly.
+  const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+  const poolNotionalUsd = (Number(targetMc) > 0 && Number(pool.supplyPercent) > 0)
+    ? (Number(pool.supplyPercent) / 100) * Number(targetMc)
+    : 0;
+
+  let support = null;
+  const sc = pool.supportConfig;
+  if (sc && sc.mode === 'custom' && Number(sc.solValue) > 0) {
+    const solPool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+    const solUsd = solPool && Number(solPool.resolvedPriceUsd) > 0 ? Number(solPool.resolvedPriceUsd) : null;
+    if (solUsd) {
+      support = {
+        usd: Number(sc.solValue) * solUsd,
+        depthPct: (typeof clampSupportDepth === 'function') ? clampSupportDepth(sc.depthPct) : (Number(sc.depthPct) || 30),
+      };
+    }
+  }
+
+  const profile = computeDepthProfile(pool, { poolNotionalUsd, support });
+  // renderDepthChartSvg returns '' unless there's a ladder or a placeable
+  // support wall; hide the empty container so it leaves no gap. compact trims
+  // the caption and labels — the full explanation lives in customize mode.
+  const html = profile ? renderDepthChartSvg(profile, { compact: true }) : '';
+  wrap.innerHTML = html;
+  wrap.style.display = html ? '' : 'none';
+}
+
+// Build the HTML body for the "Ladder strategies" info dialog — one entry per
+// strategy (name, scenario tag, description), drawn from LADDER_STRATEGY_META
+// so it stays in lockstep with the dropdown and the customize-mode picker.
+// LADDER_STRATEGY_META lives in a later module but is only read here at call
+// time, so the forward reference is fine.
+function buildLadderStrategiesInfoHtml() {
+  const intro = '<p style="margin-bottom: 0.75rem;">Each strategy is a different volatility shape — it spreads the same ladder supply across a different set of price ranges above launch. They all use the same allocation, band count, gap, and ceiling; only the placement and overlap of the bands changes. Pick the resistance / accumulation profile that fits your launch.</p>';
+  const items = LADDER_STRATEGY_IDS.map((id) => {
+    const meta = LADDER_STRATEGY_META[id] || { name: id, note: '' };
+    const tag = meta.tag ? ` <span style="opacity: 0.7;">(${escapeHtml(meta.tag)})</span>` : '';
+    return `<p style="margin-bottom: 0.6rem;"><strong>${escapeHtml(meta.name)}</strong>${tag}<br>${escapeHtml(meta.note || '')}</p>`;
+  }).join('');
+  return intro + items;
 }
 
 // Generate N log-spaced ladder bands covering [1×, ceiling×] with equal
@@ -1015,8 +1092,222 @@ function generateLogSpacedBands({ supplyPercent, bandCount, ceilingMultiplier })
   return bands;
 }
 
-// Returns true when the user is currently focused on an input or
-// element inside #simpleConfigBody. Used by code paths that would
+// Strategy-based ladder generators for the Custom Positions editor. Each
+// strategy is a "volatility shape": it lays single-sided token bands over
+// [gap×, ceiling×] above launch, expressing where the ladder's supply should
+// sit. Supply is NOT split equally across bands — each band's share is weighted
+// to realise a rising depth profile (see the allocation block in
+// generateLadderStrategyBands), which keeps supply out of the cheap near-launch
+// range. The shapes differ in where the bands are placed and whether they
+// overlap. Overlap is intentional for some shapes (inverse ramp, pyramid,
+// multi-peak): the backend converts each band to ticks independently, and
+// overlapping ranges stack into deeper, smoother resistance.
+//
+// All placement math is in log10(multiplier) space, since price ranges read
+// naturally in decades (1×, 10×, 100×, …). The output is shaped exactly like
+// generateLogSpacedBands so it drops straight into pool.ladderConfig.bands.
+// Band widths (in log10 decades) for a "widening" ladder: `cnt` bands tiling
+// `span` decades, each at least `minW` wide and each wider than the one below
+// it. The widths grow geometrically by a factor chosen so they sum to `span`:
+//   - Roomy span (few bands / wide ceiling): a true 2× per band (doubling),
+//     because the first band is already ≥ minW.
+//   - Tight span: relax the factor below 2 (bisection) so the first band still
+//     clears minW while the bands still tile the span.
+//   - Too tight to fit `cnt` bands even at the minimum: fall back to equal
+//     widths (the gentlest fan we can manage for that many bands).
+// This keeps the first band a sensible size instead of the hair-thin sliver
+// that strict log-width doubling produces near launch for large band counts.
+function wideningWidths(span, cnt, minW) {
+  if (cnt <= 1) return [span];
+  const wDbl = span / (Math.pow(2, cnt) - 1);
+  if (wDbl >= minW) {
+    const out = [];
+    let w = wDbl;
+    for (let i = 0; i < cnt; i++) { out.push(w); w *= 2; }
+    return out;
+  }
+  if (minW * cnt >= span) return new Array(cnt).fill(span / cnt);
+  // Solve (g^cnt − 1)/(g − 1) = span/minW for the growth factor g in (1, 2).
+  const target = span / minW;
+  const f = (g) => (Math.pow(g, cnt) - 1) / (g - 1);
+  let lo = 1 + 1e-7;
+  let hi = 2;
+  for (let it = 0; it < 80; it++) { const g = (lo + hi) / 2; if (f(g) < target) lo = g; else hi = g; }
+  const g = (lo + hi) / 2;
+  const out = [];
+  let w = minW;
+  for (let i = 0; i < cnt; i++) { out.push(w); w *= g; }
+  // Rescale away the tiny bisection drift so the widths sum to span exactly.
+  const sum = out.reduce((a, b) => a + b, 0);
+  return out.map((x) => (x * span) / sum);
+}
+
+// Layout for the Gapped Doubling shape: `cnt` widening bands tiling `span`
+// decades with an air-pocket before each (gap = `gamma` × the preceding band's
+// width). Same widening principle as wideningWidths, but the gaps consume part
+// of the span, so the bands grow a little slower than they would with no gaps.
+// First band floored at `minW`; growth fitted so bands + gaps fill the span.
+// Returns { bands, gaps } in decades. Keeping the gap a fraction (not a full
+// band width) leaves the bands enough room to visibly widen.
+function gappedDoublingWidths(span, cnt, minW, gamma) {
+  if (cnt <= 1) return { bands: [span], gaps: [] };
+  // H(g) = total span (in units of the first band) consumed by bands + gaps
+  // when widths grow by factor g.
+  const H = (g) => {
+    if (Math.abs(g - 1) < 1e-9) return cnt + gamma * (cnt - 1);
+    return (Math.pow(g, cnt) - 1) / (g - 1) + (gamma * (Math.pow(g, cnt - 1) - 1)) / (g - 1);
+  };
+  const target = span / minW;
+  let rho;
+  let w0;
+  if (H(2) <= target) { rho = 2; w0 = span / H(2); }       // roomy: doubling fits, first band ≥ minW
+  else if (H(1) >= target) { rho = 1; w0 = span / H(1); }   // too tight: equal bands, first band < minW
+  else {
+    let lo = 1 + 1e-7;
+    let hi = 2;
+    for (let it = 0; it < 80; it++) { const g = (lo + hi) / 2; if (H(g) < target) lo = g; else hi = g; }
+    rho = (lo + hi) / 2;
+    w0 = minW;
+  }
+  const bands = [];
+  const gaps = [];
+  let w = w0;
+  for (let i = 0; i < cnt; i++) { bands.push(w); if (i < cnt - 1) gaps.push(gamma * w); w *= rho; }
+  // Rescale away drift so bands + gaps sum to span exactly.
+  const totalW = bands.reduce((a, b) => a + b, 0) + gaps.reduce((a, b) => a + b, 0);
+  const k = totalW > 0 ? span / totalW : 1;
+  return { bands: bands.map((b) => b * k), gaps: gaps.map((g) => g * k) };
+}
+
+function generateLadderStrategyBands({ strategy, ladderPercent, bandCount, gap, ceiling }) {
+  const n = Math.max(1, Math.round(Number(bandCount) || LADDER_DEFAULT_BANDS));
+  const G = Math.max(1, Number(gap) || LADDER_GAP_DEFAULT);
+  // Ceiling must sit comfortably above the gap or the ladder has no room to lay
+  // out — clamp it up if the caller passed something too tight.
+  const C = Math.max(G * 1.5, Number(ceiling) || LADDER_CEILING_DEFAULT);
+  const pctIn = Number(ladderPercent);
+  const ladderPct = Number.isFinite(pctIn) && pctIn > 0 ? pctIn : LADDER_DEFAULT_PERCENT;
+
+  const log10 = (x) => Math.log(x) / Math.LN10;
+  const pow10 = (e) => Math.pow(10, e);
+  const s = log10(G);     // start of the ladder, in decades above launch
+  const top = log10(C);   // ceiling, in decades
+  const span = top - s;   // total decades the ladder spans
+
+  // Each shape returns [{ lo, hi }] in multiplier units, always n bands total.
+  const shapes = {
+    // Doubling — discrete, non-overlapping bands that widen toward the ceiling.
+    // Widths grow geometrically (a true 2× when the span allows it), but the
+    // first band is floored to a sensible width rather than the hair-thin
+    // sliver strict doubling would put at launch. Thin near launch, supply
+    // fanned out toward the ceiling.
+    dbl() {
+      const widths = wideningWidths(span, n, log10(LADDER_MIN_BAND_RATIO));
+      const out = [];
+      let x = s;
+      for (let i = 0; i < n; i++) { out.push({ lo: pow10(x), hi: pow10(x + widths[i]) }); x += widths[i]; }
+      return out;
+    },
+    // Gapped Doubling — Doubling's widening bands, spaced out with an air-pocket
+    // before each. The bands still widen toward the ceiling; the gaps (half a
+    // band wide) sit between them as room for capitulation and fresh floors.
+    gapdbl() {
+      const { bands, gaps } = gappedDoublingWidths(span, n, log10(LADDER_MIN_BAND_RATIO), 0.5);
+      const out = [];
+      let x = s;
+      for (let i = 0; i < n; i++) {
+        out.push({ lo: pow10(x), hi: pow10(x + bands[i]) });
+        x += bands[i];
+        if (i < n - 1) x += gaps[i]; // air-pocket before the next band
+      }
+      return out;
+    },
+    // Inverse Ramp — overlapping bands that all reach the ceiling; lo steps up.
+    // Depth builds toward the top, parking the most supply high.
+    invramp() {
+      const out = [];
+      for (let i = 0; i < n; i++) out.push({ lo: pow10(s + (i * span) / n), hi: C });
+      return out;
+    },
+    // Pyramid — staggered overlapping bands of equal width; depth peaks mid-range.
+    pyr() {
+      const st = span / (2 * n - 1);
+      const W = n * st;
+      const out = [];
+      for (let i = 0; i < n; i++) out.push({ lo: pow10(s + i * st), hi: pow10(s + i * st + W) });
+      return out;
+    },
+    // Multi-Peak — several humps spread across the full range. We split
+    // [gap, ceiling] into `pk` equal sub-ranges and lay a small pyramid across
+    // each, so depth peaks in pk places rather than one. Spanning the full range
+    // (rather than a recentred slice) means the lowest band starts at the gap
+    // and the highest reaches the ceiling — exactly like every other strategy.
+    multi() {
+      const pk = n >= 7 ? 3 : 2;
+      const sizes = [];
+      for (let p = 0; p < pk; p++) sizes.push(Math.floor(n / pk) + (p < (n % pk) ? 1 : 0));
+      const subW = span / pk;
+      const out = [];
+      for (let p = 0; p < pk; p++) {
+        const m = sizes[p];
+        const a = s + p * subW;          // sub-range start
+        const st = subW / (2 * m - 1);   // m=1 → st = subW (single full-width band)
+        const W = m * st;
+        for (let j = 0; j < m; j++) out.push({ lo: pow10(a + j * st), hi: pow10(a + j * st + W) });
+      }
+      return out;
+    },
+  };
+
+  const shapeFn = shapes[strategy] || shapes[LADDER_DEFAULT_STRATEGY];
+  const raw = shapeFn();
+  const cnt = raw.length;
+
+  // Guard each range first: lo ≥ 1 and hi strictly above lo (degenerate bands
+  // get a hair of width), same bounds generateLogSpacedBands uses.
+  const guarded = raw.map((b) => {
+    const lo = Math.max(1, b.lo);
+    const hi = b.hi > lo ? b.hi : lo * 1.0001;
+    return { lo, hi };
+  });
+
+  // Per-band supply allocation. We deliberately do NOT split supply equally
+  // across the bands. Equal supply over these ranges piles tradeable supply
+  // just above launch — the bottom bands sit in a tiny price window, so a buyer
+  // can sweep the majority of the ladder cheaply (the exact failure we're
+  // guarding against), and the depth chart spikes into thin towers near launch.
+  //
+  // Instead we target a RISING liquidity-depth profile and back out the supply
+  // each band needs to realise it. A position's chart depth over [lo,hi] is
+  // supply ÷ (1/√lo − 1/√hi); so to place a relative depth d on a band we give
+  // it supply ∝ d × (1/√lo − 1/√hi). Choosing d that rises with the band index
+  // moves supply up into the higher, expensive-to-acquire ranges and flattens
+  // the spikes. The rise is steeper for the supply-control strategies (inverse
+  // ramp) and gentler for the easy-to-pump one (doubling); the others sit in
+  // between and lean on their range geometry for their distinctive shape.
+  const RISE = { dbl: 1, gapdbl: 1, invramp: 2, pyr: 1, multi: 1 };
+  const exp = RISE[strategy] != null ? RISE[strategy] : 1;
+  const depthCoef = (b) => (1 / Math.sqrt(b.lo) - 1 / Math.sqrt(b.hi)) || 1e-9;
+  const weights = guarded.map((b, i) => Math.pow(i + 1, exp) * depthCoef(b));
+  const wSum = weights.reduce((a, w) => a + w, 0) || 1;
+
+  // Per-band floor so the weighting can never starve a band down to a dead,
+  // not-worth-opening position. Capped at a third of the equal-split share so
+  // the floors always leave the weighting room to work (and never sum above the
+  // ladder's own share). With the floor reserved, the remainder is distributed
+  // by weight — the two together always sum back to ladderPct.
+  const sMin = Math.min(0.5, ladderPct / (3 * cnt));
+  const distributable = Math.max(0, ladderPct - sMin * cnt);
+
+  return guarded.map((b, i) => ({
+    supplyPercent: Number((sMin + (distributable * weights[i]) / wSum).toFixed(4)),
+    lowerMultiplier: Number(b.lo.toFixed(4)),
+    upperMultiplier: Number(b.hi.toFixed(4)),
+  }));
+}
+
+// Valid strategy ids in display order (Doubling is the default and first).
+const LADDER_STRATEGY_IDS = ['dbl', 'gapdbl', 'invramp', 'pyr', 'multi'];
 // otherwise re-render the simple config (and destroy the focused
 // element) — typing into a numeric input fires that input's handler
 // AND any async work (resolvePoolQuote completing, etc.) that wants
@@ -1678,11 +1969,7 @@ function refreshAirdropDisplayInline() {
     // STALE _lastCostEstimate.totalSol, and the user wouldn't see the
     // support bump until something else triggered a fetch (toggling
     // prealloc — which is exactly the workaround the user reported).
-    // Don't re-trigger a cost-preview fetch when this refresh was itself
-    // triggered BY a cost-preview completion (the airdrop re-render in the
-    // cost-preview handler) — that would loop fetch → refresh → fetch.
-    if (typeof requestCostPreviewUpdate === 'function'
-        && !_airdropDisplayRefreshInProgress) {
+    if (typeof requestCostPreviewUpdate === 'function') {
       requestCostPreviewUpdate();
     }
   }
@@ -1854,6 +2141,14 @@ function renderSimpleConfig() {
     LADDER_MIN_BANDS,
     Math.min(LADDER_MAX_BANDS, Number(simpleConfig.ladderBandCount) || LADDER_DEFAULT_BANDS),
   );
+  // Selected ladder strategy (volatility shape), defaulting to Doubling
+  // if the stored value isn't a known strategy id. LADDER_STRATEGY_IDS
+  // and LADDER_STRATEGY_META are resolved at render time (runtime), so
+  // referencing them here is safe even though META lives in a later
+  // module.
+  const ladderStrategy = LADDER_STRATEGY_IDS.includes(simpleConfig.ladderStrategy)
+    ? simpleConfig.ladderStrategy
+    : LADDER_DEFAULT_STRATEGY;
 
   // Preallocation state. Inputs only matter when the toggle is on; we
   // still render their values (just disabled) so the user can see what
@@ -2252,8 +2547,30 @@ function renderSimpleConfig() {
                    value="${ladderBandCount}" ${ladderSlidersDisabled}>
             <span class="simple-config-slider-value" id="simpleLadderBandsValue">${ladderBandCount} bands</span>
           </div>
+          <div id="simpleLadderStrategyRow" style="flex: 0 0 100%; display: ${simpleConfig.ladderEnabled ? 'flex' : 'none'}; gap: 1.25rem; flex-wrap: wrap; align-items: flex-start; margin-top: 0.25rem;">
+            <div style="flex: 1 1 17rem; min-width: 15rem;">
+              <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.4rem;">
+                <strong style="font-size: 0.9rem;">Strategy</strong>
+                <button type="button" class="button is-small" id="simpleLadderInfo"
+                        title="Explain the ladder strategies" aria-label="Explain the ladder strategies"
+                        style="padding: 0 0.4rem; height: 1.5rem; line-height: 1; font-size: 0.9rem;">&#9432;</button>
+              </div>
+              <div class="select is-small simple-config-dropdown">
+                <select id="simpleLadderStrategy">
+                  ${LADDER_STRATEGY_IDS.map((id) => {
+                    const meta = LADDER_STRATEGY_META[id] || { name: id };
+                    const selected = id === ladderStrategy ? 'selected' : '';
+                    const label = meta.tag ? `${meta.name} \u2014 ${meta.tag}` : meta.name;
+                    return `<option value="${id}" ${selected}>${escapeHtml(label)}</option>`;
+                  }).join('')}
+                </select>
+              </div>
+              <p class="simple-config-help-text" id="simpleLadderStrategyNote" style="margin: 0.5rem 0 0 0;">${escapeHtml((LADDER_STRATEGY_META[ladderStrategy] || {}).note || '')}</p>
+            </div>
+            <div id="simpleLadderPreview" style="flex: 2 1 20rem; min-width: 16rem;"></div>
+          </div>
         </div>
-        <p class="simple-config-help-text">Splits a portion of each pool's supply across discrete log-spaced price bands going up to 1000× launch (with gaps between bands for breakouts). Each band acts as resistance on the way up and support on the way back down. Smooths supply distribution so 90% isn't gobbled up by the time you hit 10× — leaves room for higher-mcap accumulation. The rest of the pool stays in a wide position covering all prices.</p>
+        <p class="simple-config-help-text">Splits a portion of each pool's supply across discrete price bands following your chosen strategy (see the info button by the Strategy dropdown), climbing toward a high-multiple ceiling with gaps between bands for breakouts. Each band acts as resistance on the way up and support on the way back down. Smooths supply distribution so 90% isn't gobbled up by the time you hit 10× — leaves room for higher-mcap accumulation. The rest of the pool stays in a wide position covering all prices.</p>
         <div class="simple-config-customize-row" style="margin-top: 0.75rem;">
           <button type="button" class="button is-link is-light" id="simpleCustomizeBtn">
             <span class="icon"><i class="fas fa-sliders-h"></i></span>
@@ -2290,6 +2607,9 @@ function renderSimpleConfig() {
   const ladderPctReadout = body.querySelector('#simpleLadderPercentValue');
   const ladderBandsSlider = body.querySelector('#simpleLadderBandsSlider');
   const ladderBandsReadout = body.querySelector('#simpleLadderBandsValue');
+  const ladderStrategySelect = body.querySelector('#simpleLadderStrategy');
+  const ladderInfoBtn = body.querySelector('#simpleLadderInfo');
+  const ladderStrategyNote = body.querySelector('#simpleLadderStrategyNote');
   const customizeBtn = body.querySelector('#simpleCustomizeBtn');
 
   // Learn-more link — opens the static flywheel explainer modal. The link
@@ -2374,8 +2694,9 @@ function renderSimpleConfig() {
   // Ladder slider handlers update state on each tick and refresh just
   // the readout text — no full re-render needed for the simple UI
   // (rest of it is invariant under these changes). We do rebuild pools
-  // so each pool's ladderConfig gets fresh bands sized for the new
-  // value, in case the user switches to customize.
+  // so each pool's ladderConfig gets fresh bands sized for the new value
+  // (in case the user switches to customize); rebuildPoolsFromSimple also
+  // refreshes the depth-chart preview, so it tracks the change live.
   ladderPctSlider.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     simpleConfig.ladderPercent = Number.isFinite(v) ? v : LADDER_DEFAULT_PERCENT;
@@ -2388,6 +2709,40 @@ function renderSimpleConfig() {
     ladderBandsReadout.textContent = `${simpleConfig.ladderBandCount} bands`;
     rebuildPoolsFromSimple();
   });
+
+  // Strategy dropdown: store the chosen shape, update the inline note, then
+  // rebuild the pools so their ladderConfigs carry the new strategy's bands
+  // (the rebuild also refreshes the preview). Like the sliders, no full
+  // re-render — the rest of the simple UI is invariant under a strategy change.
+  if (ladderStrategySelect) {
+    ladderStrategySelect.addEventListener('change', (e) => {
+      const id = LADDER_STRATEGY_IDS.includes(e.target.value)
+        ? e.target.value : LADDER_DEFAULT_STRATEGY;
+      simpleConfig.ladderStrategy = id;
+      if (ladderStrategyNote) {
+        ladderStrategyNote.textContent = (LADDER_STRATEGY_META[id] || {}).note || '';
+      }
+      rebuildPoolsFromSimple();
+    });
+  }
+
+  // Info button: open a read-only dialog explaining every strategy. Reuses
+  // the generic confirm modal in info-only mode (no Cancel). Always
+  // enabled — it's purely educational, useful even before the ladder is on.
+  if (ladderInfoBtn) {
+    ladderInfoBtn.addEventListener('click', () => {
+      confirmDialog({
+        title: 'Ladder strategies',
+        body: buildLadderStrategiesInfoHtml(),
+        confirmLabel: 'Got it',
+        hideCancel: true,
+      });
+    });
+  }
+
+  // Populate the preview now (and on every re-render this wiring runs).
+  // Safe to call when the ladder is off — it just clears and hides.
+  updateSimpleLadderPreview();
 
   // Preallocation toggle: enable/disable the preallocation feature.
   // When enabled, the % value (kept in state) determines how much of

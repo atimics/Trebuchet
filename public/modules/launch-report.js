@@ -512,6 +512,25 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
           ${userPool.quoteToken && userPool.quoteToken !== 'SOL' ? renderAddressRow('Quote token mint', userPool.quoteToken) : ''}
           ${renderAddressRow('Create-pool TX', r.txIds?.createPool, 'tx')}
         </div>
+        ${(() => {
+          // Per-pool liquidity depth chart, baked in as static SVG so the
+          // standalone report needs no scripts. Two-sided: support buy wall
+          // below launch + wide/ladder above. Shown when there's a ladder or a
+          // (placeable) support wall; omitted for a lone flat band.
+          if (typeof computeDepthProfile !== 'function') return '';
+          const poolNotionalUsd = (Number(targetMc) > 0 && Number(userPool.supplyPercent) > 0)
+            ? (Number(userPool.supplyPercent) / 100) * Number(targetMc) : 0;
+          let support = null;
+          const sc = userPool.supportConfig;
+          if (sc && sc.mode === 'custom' && Number(sc.solValue) > 0) {
+            const solPool = (Array.isArray(pools) ? pools : []).find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+            const solUsd = solPool && Number(solPool.resolvedPriceUsd) > 0 ? Number(solPool.resolvedPriceUsd) : null;
+            if (solUsd) support = { usd: Number(sc.solValue) * solUsd, depthPct: Number(sc.depthPct) || 30 };
+          }
+          const prof = computeDepthProfile(userPool, { poolNotionalUsd, support });
+          const html = prof ? renderDepthChartSvg(prof) : '';
+          return html ? `<div class="pool-depth-chart" style="margin: 12px 0 4px;">${html}</div>` : '';
+        })()}
         <div class="positions-grid">${positionsHtml}</div>
       </section>`;
   });
