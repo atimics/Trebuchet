@@ -33,7 +33,11 @@ bind('createTokenBtn', 'click', async () => {
         const vanityTarget = document.getElementById('vanityCATarget')?.value.trim();
         if (vanityTarget) {
           const vanityMode = document.getElementById('vanityCAMode')?.value || 'suffix';
-          if (vanityMode === 'prefix') {
+          if (vanityMode === 'both') {
+            formData.append('vanityPrefix', vanityTarget);
+            const suffixTarget = document.getElementById('vanityCASuffixTarget')?.value.trim();
+            if (suffixTarget) formData.append('vanitySuffix', suffixTarget);
+          } else if (vanityMode === 'prefix') {
             formData.append('vanityPrefix', vanityTarget);
           } else {
             formData.append('vanitySuffix', vanityTarget);
@@ -120,8 +124,8 @@ function renderLpSummary() {
   `;
   for (const p of pools) {
     const quoteSafe = escapeHtml(p.resolvedSymbol || p.quoteToken || '');
-    const sliceCount = p.distribution.length;
-    const externalCount = p.distribution.filter((s) => s.useExternalRecipient && s.recipient).length;
+    const sliceCount = (p.distribution || p.slices || []).length;
+    const externalCount = (p.distribution || p.slices || []).filter((s) => s.useExternalRecipient && s.recipient).length;
     html += `<li><strong>${quoteSafe}</strong> pool — ${p.supplyPercent}% of supply, `;
     html += `${sliceCount} slice${sliceCount === 1 ? '' : 's'}`;
     if (externalCount > 0) html += ` (${externalCount} to external wallet${externalCount === 1 ? '' : 's'})`;
@@ -984,14 +988,14 @@ function buildPhaseProgressTree(pools, lockPositions) {
   let phase1Rows = '';
   pools.forEach((p, i) => {
     const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-    const sliceCount = p.distribution.length;
+    const sliceCount = (p.distribution || p.slices || []).length;
     // Per-pool ladder band count: in customize mode each pool has its
     // own ladder config; in simple mode the simpleConfig values apply
     // uniformly. The progress tree always uses the per-pool value so
     // it matches what createSinglePool will actually do.
-    const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
-      && Array.isArray(p.ladderConfig.bands))
-      ? p.ladderConfig.bands.length
+    const poolLadderBandCount = (p.ladderConfig || p.ladder || { mode: "off", bands: [] }?.mode === 'manual'
+      && Array.isArray(p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands))
+      ? p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands.length
       : ladderBandCount;
     // Per-pool support presence: support adds one progress row per
     // pool that has it configured. In simple mode the user's launch-
@@ -999,8 +1003,8 @@ function buildPhaseProgressTree(pools, lockPositions) {
     // bootstrap) so every pool typically gets a row. In customize
     // mode the user controls support per-pool. Either way, we read
     // each pool's supportConfig and add the row when needed.
-    const poolHasSupport = p.supportConfig?.mode === 'custom'
-      && Number(p.supportConfig.solValue) > 0;
+    const poolHasSupport = p.supportConfig || { mode: "off", solValue: 0 }?.mode === 'custom'
+      && Number(p.supportConfig || { mode: "off", solValue: 0 }.solValue) > 0;
     phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="pool"><span class="icon">◯</span>${label} — Create pool</div>`;
     for (let s = 0; s < sliceCount; s++) {
       phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="slice-${s}"><span class="icon">◯</span>${label} — Open slice ${s + 1} of ${sliceCount}</div>`;
@@ -1070,16 +1074,16 @@ function buildPhaseProgressTree(pools, lockPositions) {
     solLastOrder.forEach((i) => {
       const p = pools[i];
       const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-      const sliceCount = p.distribution.length;
+      const sliceCount = (p.distribution || p.slices || []).length;
       // Same per-pool ladder count + support detection as Phase 1, so
       // the phase rows are perfectly symmetric and the lock progress
       // matches what got opened.
-      const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
-        && Array.isArray(p.ladderConfig.bands))
-        ? p.ladderConfig.bands.length
+      const poolLadderBandCount = (p.ladderConfig || p.ladder || { mode: "off", bands: [] }?.mode === 'manual'
+        && Array.isArray(p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands))
+        ? p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands.length
         : ladderBandCount;
-      const poolHasSupport = p.supportConfig?.mode === 'custom'
-        && Number(p.supportConfig.solValue) > 0;
+      const poolHasSupport = p.supportConfig || { mode: "off", solValue: 0 }?.mode === 'custom'
+        && Number(p.supportConfig || { mode: "off", solValue: 0 }.solValue) > 0;
       for (let s = 0; s < sliceCount; s++) {
         phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="lock-${s}"><span class="icon">◯</span>${label} — Lock slice ${s + 1}</div>`;
       }
@@ -1110,7 +1114,7 @@ function buildPhaseProgressTree(pools, lockPositions) {
       let phase4Rows = '';
       pools.forEach((p, i) => {
         const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-        const sliceCount = p.distribution.length;
+        const sliceCount = (p.distribution || p.slices || []).length;
         for (let s = 0; s < sliceCount; s++) {
           if (p.distribution[s].useExternalRecipient && p.distribution[s].recipient) {
             phase4Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="xfer-${s}"><span class="icon">◯</span>${label} — Transfer slice ${s + 1} Fee Key to recipient</div>`;
@@ -1875,6 +1879,16 @@ function removeKeyDisplay() {
 // driven by the data-mode attribute, so all transitions go through one
 // place. Production code never reads data-mode externally — it's purely
 // an internal flag the click handler reads to decide what to do.
+function bindVanityModeChange() {
+  var modeEl = document.getElementById('vanityCAMode');
+  var suffixRow = document.getElementById('vanityCASuffixRow');
+  if (!modeEl || !suffixRow) return;
+  modeEl.addEventListener('change', function() {
+    suffixRow.classList.toggle('hidden', modeEl.value !== 'both');
+  });
+}
+bindVanityModeChange();
+
 function setGrindButtonState(state) {
   const btn = document.getElementById('grindCABtn');
   if (!btn) return;
@@ -1957,6 +1971,13 @@ bind('grindCABtn', 'click', async () => {
     try {
       const mode = document.getElementById('vanityCAMode').value;
       const isSuffix = mode === 'suffix';
+      const isPrefix = mode === 'prefix';
+      const isBoth = mode === 'both';
+      let suffixTarget = null;
+      if (isBoth) {
+        suffixTarget = document.getElementById('vanityCASuffixTarget')?.value.trim();
+        if (!suffixTarget) { log('Enter a suffix for Starts & Ends with mode.', 'warn'); return; }
+      }
 
       // Show single active progress bar
       const progressEl = document.getElementById('vanityCAProgress');
@@ -1981,8 +2002,14 @@ bind('grindCABtn', 'click', async () => {
       setupKeyDisplay(target);
 
       const params = new URLSearchParams();
-      if (isSuffix) params.set('suffix', target);
-      else params.set('prefix', target);
+      if (isBoth) {
+        params.set('prefix', target);
+        params.set('suffix', suffixTarget);
+      } else if (isSuffix) {
+        params.set('suffix', target);
+      } else {
+        params.set('prefix', target);
+      }
       // Pass the session token as a query param — EventSource can't set
       // custom headers, so the SSE endpoint validates it inline.
       try {

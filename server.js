@@ -1423,6 +1423,9 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
           totalSupply: normalizedTotalSupply,
           decimals: 9,
         },
+        vanityPrefix: vanityPrefix || null,
+        vanitySuffix: vanitySuffix || null,
+        vanityCAKeypair: vanityCAKeypairRaw || null,
       },
       {
         stage: 'token_create_started',

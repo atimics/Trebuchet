@@ -115,11 +115,13 @@ function buildLaunchRow(launch) {
       var useData = await useResp.json();
       if (!useData.success) throw new Error(useData.error || 'wallet not found');
 
+      var sk = useData.wallet.secretKey;
       var wallet = {
         publicKey: useData.wallet.publicKey,
-        secretKey: useData.wallet.secretKey,
-        secretKeyB58: useData.wallet.secretKeyB58,
-        mnemonic: useData.wallet.mnemonic,
+        secretKey: sk,
+        secretKeyB58: null,
+        mnemonic: useData.wallet.mnemonic || null,
+        qrCode: useData.wallet.qrCode || null,
       };
 
       var stateResp = await fetch('/api/launch-state?walletPublicKey=' + encodeURIComponent(launch.walletPublicKey));

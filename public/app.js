@@ -629,6 +629,363 @@ const STEP_TITLES = {
 };
 
 // ===========================================================================
+// session.js — centralized launch session state
+// ===========================================================================
+//
+// Every piece of launch state lives here.  Modules read/write session.*
+// directly.  Save snapshots everything; Load restores everything and
+// calls renderAll() to push state into the DOM.
+//
+// This replaces the scattered module-level let variables (tempWallet,
+// createdTokenInfo, pools, lpResult, etc.) that made save/load fragile.
+
+// ── Core state (all serializable) ──────────────────────────────────
+
+const session = {
+  // Step 1: Wallet
+  wallet: null,          // { publicKey, secretKey, secretKeyB58, mnemonic, qrCode }
+
+  // Step 2: Token config + vanity
+  tokenConfig: {         // what the user typed in step 2
+    name: '',
+    symbol: '',
+    description: '',
+    totalSupply: '',
+  },
+  vanity: {
+    mode: 'suffix',      // 'prefix' | 'suffix' | 'both'
+    prefix: '',
+    suffix: '',
+    caKeypair: null,     // pre-ground CA secret key array (or null)
+  },
+
+  // Step 4: Created token info
+  token: null,           // { mint, decimals, name, symbol, totalSupply, metadataUri, isSafe }
+
+  // Step 2/5: Pool configuration
+  pools: [],             // internal pool config objects
+  targetMarketCapUsd: '',
+
+  // Step 3: Funding
+  fundingRqmt: { solLamports: 0, byQuote: {}, autoSwapPlan: [] },
+
+  // Step 5: LP results
+  lp: null,              // { results: [{ allocationIndex, poolId, ... }], failedPhase }
+
+  // Step 6: Transfer
+  transfer: null,        // { destinationWallet, txIds }
+
+  // Progress
+  currentStep: 1,
+  stepSummaries: {},     // { 1: "ABC...xyz", 4: "RATi - RATxxx...", 5: "1 pool" }
+
+  // Activity log
+  activityEntries: [],
+
+  // Journal linkage
+  journalId: null,
+  walletPublicKey: null,
+  stage: null,           // raw journal stage
+};
+
+// ── Backward-compatible globals (existing code reads these directly) ──
+
+// These are set by reference so existing modules that mutate them
+// continue to work.  They ARE the session fields.
+// tempWallet synced via syncGlobalsToSession()
+// createdTokenInfo synced via syncGlobalsToSession()
+// pools already declared in preamble.js; we share the reference below
+// lpResult synced via syncGlobalsToSession()
+// fundingRequirement already declared in preamble.js; reset below
+
+// Keep tempWallet & createdTokenInfo synced with session
+function syncGlobalsToSession() {
+  if (session.wallet) tempWallet = session.wallet;
+  else tempWallet = null;
+  if (session.token) createdTokenInfo = session.token;
+  else createdTokenInfo = null;
+  if (session.lp) lpResult = session.lp;
+  else lpResult = null;
+}
+
+// Share the pools array reference so existing code mutates session.pools directly.
+pools.length = 0;
+fundingRequirement.solLamports = 0;
+fundingRequirement.byQuote = {};
+fundingRequirement.autoSwapPlan.length = 0;
+
+// ── Save / Load ────────────────────────────────────────────────────
+
+/** Snapshot the current session to a plain object (no references). */
+session.saveSnapshot = function() {
+  return {
+    wallet: session.wallet ? { ...session.wallet } : null,
+    tokenConfig: { ...session.tokenConfig },
+    vanity: {
+      mode: session.vanity.mode,
+      prefix: session.vanity.prefix,
+      suffix: session.vanity.suffix,
+      caKeypair: session.vanity.caKeypair ? session.vanity.caKeypair.slice() : null,
+    },
+    token: session.token ? { ...session.token } : null,
+    pools: session.pools.map(function(p) { return { ...p }; }),
+    targetMarketCapUsd: session.targetMarketCapUsd,
+    fundingRqmt: {
+      solLamports: session.fundingRqmt.solLamports,
+      byQuote: { ...session.fundingRqmt.byQuote },
+      autoSwapPlan: session.fundingRqmt.autoSwapPlan.slice(),
+    },
+    lp: session.lp ? { results: session.lp.results.slice(), failedPhase: session.lp.failedPhase } : null,
+    transfer: session.transfer ? { ...session.transfer } : null,
+    currentStep: session.currentStep,
+    stepSummaries: { ...session.stepSummaries },
+    activityEntries: session.activityEntries.slice(),
+    journalId: session.journalId,
+    walletPublicKey: session.walletPublicKey,
+    stage: session.stage,
+  };
+};
+
+/** Restore from a snapshot or journal object. */
+session.restoreFromSnapshot = function(snap) {
+  if (snap.wallet) session.wallet = { ...snap.wallet };
+  if (snap.tokenConfig) session.tokenConfig = { ...snap.tokenConfig };
+  if (snap.vanity) {
+    session.vanity.mode = snap.vanity.mode || 'suffix';
+    session.vanity.prefix = snap.vanity.prefix || '';
+    session.vanity.suffix = snap.vanity.suffix || '';
+    session.vanity.caKeypair = snap.vanity.caKeypair ? snap.vanity.caKeypair.slice() : null;
+  }
+  if (snap.token) session.token = { ...snap.token };
+  if (snap.pools) {
+    pools.length = 0;
+    for (var i = 0; i < snap.pools.length; i++) pools.push({ ...snap.pools[i] });
+  }
+  if (snap.targetMarketCapUsd != null) session.targetMarketCapUsd = snap.targetMarketCapUsd;
+  if (snap.fundingRqmt) {
+    session.fundingRqmt.solLamports = snap.fundingRqmt.solLamports || 0;
+    session.fundingRqmt.byQuote = snap.fundingRqmt.byQuote || {};
+    session.fundingRqmt.autoSwapPlan = snap.fundingRqmt.autoSwapPlan || [];
+  }
+  if (snap.lp) session.lp = { results: snap.lp.results.slice(), failedPhase: snap.lp.failedPhase };
+  if (snap.transfer) session.transfer = { ...snap.transfer };
+  if (snap.currentStep) session.currentStep = snap.currentStep;
+  if (snap.stepSummaries) session.stepSummaries = { ...snap.stepSummaries };
+  if (snap.activityEntries) session.activityEntries = snap.activityEntries.slice();
+  session.journalId = snap.journalId || null;
+  session.walletPublicKey = snap.walletPublicKey || null;
+  session.stage = snap.stage || null;
+  syncGlobalsToSession();
+};
+
+// ── Journal adapter ─────────────────────────────────────────────────
+
+/** Build a session snapshot from a launch journal (server-side format). */
+session.fromJournal = function(journal) {
+  var snap = {};
+
+  // Wallet: comes from pendingWallets, not the journal itself.
+  // Set externally via session.wallet = ... before calling this.
+
+  // Token config from journal
+  if (journal.token) {
+    snap.tokenConfig = {
+      name: journal.token.name || '',
+      symbol: journal.token.symbol || '',
+      description: journal.token.description || '',
+      totalSupply: journal.token.totalSupply || '',
+    };
+    // If token has a mint, it was created
+    if (journal.token.mint) {
+      snap.token = {
+        mint: journal.token.mint,
+        decimals: journal.token.decimals || 9,
+        name: journal.token.name || '',
+        symbol: journal.token.symbol || '',
+        totalSupply: journal.token.totalSupply || '',
+        metadataUri: journal.token.metadataUri || '',
+        isSafe: journal.token.isSafe || false,
+      };
+    }
+  }
+
+  // Vanity config
+  snap.vanity = {
+    mode: journal.vanityPrefix ? 'prefix' : (journal.vanitySuffix ? 'suffix' : 'suffix'),
+    prefix: journal.vanityPrefix || '',
+    suffix: journal.vanitySuffix || '',
+    caKeypair: journal.vanityCAKeypair || null,
+  };
+  if (journal.vanityPrefix && journal.vanitySuffix) snap.vanity.mode = 'both';
+
+  // Pools from poolPlan
+  if (journal.poolPlan && Array.isArray(journal.poolPlan.allocations)) {
+    snap.pools = journal.poolPlan.allocations.map(function(a) {
+      return {
+        quoteToken: a.quoteToken,
+        supplyPercent: a.supplyPercent,
+        ammConfigIndex: a.ammConfigIndex,
+        quoteUsdOverride: a.quoteUsdOverride,
+        quoteDecimalsOverride: a.quoteDecimalsOverride,
+        quoteSymbolOverride: a.quoteSymbolOverride,
+        slices: a.distribution || [],
+        bootstrapConfig: a.bootstrap || { mode: 'minimal' },
+        ladderConfig: a.ladder || { mode: 'off', bands: [] },
+        support: a.support || 0,
+        _fromJournal: true,
+      };
+    });
+    if (journal.poolPlan.targetMarketCapUsd) {
+      snap.targetMarketCapUsd = journal.poolPlan.targetMarketCapUsd;
+    }
+  }
+
+  // LP results
+  if (journal.lp && Array.isArray(journal.lp.results)) {
+    snap.lp = { results: journal.lp.results.slice(), failedPhase: journal.lp.failedPhase || null };
+  }
+
+  // Transfer
+  if (journal.transfer) {
+    snap.transfer = { destinationWallet: journal.transfer.destinationWallet || '' };
+  }
+
+  // Stage → step mapping
+  snap.stage = journal.stage;
+  snap.walletPublicKey = journal.walletPublicKey;
+  snap.journalId = journal.id;
+  if (journal.stage === 'wallet_generated') snap.currentStep = 2;
+  else if (journal.stage === 'token_create_started') snap.currentStep = 4;
+  else if (journal.stage === 'token_created') snap.currentStep = 5;
+  else if (journal.stage && journal.stage.startsWith('lp_')) snap.currentStep = 5;
+  else if (journal.lp && journal.lp.results && journal.lp.results.length) snap.currentStep = 6;
+
+  session.restoreFromSnapshot(snap);
+};
+
+/** Build a server-ready save payload from the current session. */
+session.toSavePayload = function() {
+  return session.saveSnapshot();
+};
+
+// ── UI rendering ────────────────────────────────────────────────────
+
+/** Push all session state into the DOM. Call after any restore. */
+session.renderAll = function() {
+  // Step 1: Wallet display
+  if (session.wallet) {
+    var walletInfo = document.getElementById('walletInfo');
+    if (walletInfo) walletInfo.classList.remove('hidden');
+    var wa = document.getElementById('walletAddress');
+    if (wa) wa.value = session.wallet.publicKey;
+    if (typeof setQrCode === 'function') {
+      setQrCode('qrCode', session.wallet.qrCode, session.wallet.publicKey);
+    }
+    document.getElementById('privateKeyContainer')?.classList.add('hidden');
+    document.body.classList.add('has-log');
+  }
+
+  // Step 2: Token config fields
+  if (session.tokenConfig) {
+    var tn = document.getElementById('tokenName');
+    if (tn && session.tokenConfig.name) tn.value = session.tokenConfig.name;
+    var ts = document.getElementById('tokenSymbol');
+    if (ts && session.tokenConfig.symbol) ts.value = session.tokenConfig.symbol;
+    var td = document.getElementById('tokenDescription');
+    if (td && session.tokenConfig.description) td.value = session.tokenConfig.description;
+    var tsp = document.getElementById('tokenSupply');
+    if (tsp && session.tokenConfig.totalSupply) tsp.value = session.tokenConfig.totalSupply;
+  }
+
+  // Vanity config
+  if (session.vanity) {
+    var vcm = document.getElementById('vanityCAMode');
+    if (vcm && session.vanity.mode) vcm.value = session.vanity.mode;
+    var vct = document.getElementById('vanityCATarget');
+    if (vct) {
+      if (session.vanity.mode === 'both') {
+        vct.value = session.vanity.prefix || '';
+        var vcs = document.getElementById('vanityCASuffixTarget');
+        if (vcs) vcs.value = session.vanity.suffix || '';
+        var vcsr = document.getElementById('vanityCASuffixRow');
+        if (vcsr) vcsr.classList.remove('hidden');
+      } else if (session.vanity.mode === 'prefix') {
+        vct.value = session.vanity.prefix || '';
+      } else {
+        vct.value = session.vanity.suffix || '';
+      }
+    }
+    // Restore pre-ground CA
+    if (session.vanity.caKeypair) {
+      try {
+        var raw = session.vanity.caKeypair;
+        if (typeof raw === 'string') raw = JSON.parse(raw);
+        if (Array.isArray(raw) && raw.length === 64) {
+          vanityCAKeypairs = [{
+            publicKey: null,
+            secretKey: raw,
+            rarity: 'saved',
+            epochs: 0,
+            attempts: 0,
+          }];
+          selectedVanityCA = 0;
+          if (typeof updateVanityCAResult === 'function') updateVanityCAResult();
+        }
+      } catch (_) {}
+    }
+  }
+
+  // Step 4: Token created info
+  if (session.token && session.token.mint) {
+    var tci = document.getElementById('tokenCreatedInfo');
+    if (tci) tci.classList.remove('hidden');
+    var me = document.getElementById('tokenMintAddress');
+    if (me) me.textContent = session.token.mint;
+    var sl = document.getElementById('tokenSolscanLink');
+    if (sl) sl.href = 'https://solscan.io/token/' + session.token.mint;
+  }
+
+  // Market cap
+  var mcEl = document.getElementById('targetMarketCap');
+  if (mcEl && session.targetMarketCapUsd) mcEl.value = session.targetMarketCapUsd;
+
+  // Step summaries
+  if (session.wallet) {
+    var pk = session.wallet.publicKey;
+    if (typeof setStepSummary === 'function') {
+      setStepSummary(1, pk.slice(0, 8) + '\u2026' + pk.slice(-6));
+    }
+  }
+  if (session.token && session.token.mint && typeof setStepSummary === 'function') {
+    setStepSummary(4, (session.token.symbol || '?') + ' \u2014 ' + session.token.mint.slice(0, 8) + '\u2026');
+  }
+
+  // Buttons
+  var hasToken = !!(session.token && session.token.mint);
+  var hasLp = !!(session.lp && session.lp.results && session.lp.results.length);
+  var ctb = document.getElementById('createTokenBtn');
+  var clb = document.getElementById('createLpBtn');
+  var tab = document.getElementById('transferAssetsBtn');
+  if (ctb) ctb.classList.toggle('hidden', hasToken);
+  if (clb) clb.classList.toggle('hidden', !hasToken || hasLp);
+  if (tab) tab.classList.toggle('hidden', !hasLp);
+
+  // Activate step
+  if (typeof activateStep === 'function') {
+    activateStep(session.currentStep || 2);
+  }
+  if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+  if (typeof updateCancelButtonState === 'function') updateCancelButtonState();
+
+  // Grind button
+  if (typeof setGrindButtonState === 'function') setGrindButtonState('grind');
+};
+
+// Expose for tests
+window.__trebuchet_session = session;
+window.__trebuchet_pools = pools;
+
+// ===========================================================================
 // Logging
 // ===========================================================================
 const activityLog = document.getElementById('activityLog');
@@ -13932,7 +14289,11 @@ bind('createTokenBtn', 'click', async () => {
         const vanityTarget = document.getElementById('vanityCATarget')?.value.trim();
         if (vanityTarget) {
           const vanityMode = document.getElementById('vanityCAMode')?.value || 'suffix';
-          if (vanityMode === 'prefix') {
+          if (vanityMode === 'both') {
+            formData.append('vanityPrefix', vanityTarget);
+            const suffixTarget = document.getElementById('vanityCASuffixTarget')?.value.trim();
+            if (suffixTarget) formData.append('vanitySuffix', suffixTarget);
+          } else if (vanityMode === 'prefix') {
             formData.append('vanityPrefix', vanityTarget);
           } else {
             formData.append('vanitySuffix', vanityTarget);
@@ -14019,8 +14380,8 @@ function renderLpSummary() {
   `;
   for (const p of pools) {
     const quoteSafe = escapeHtml(p.resolvedSymbol || p.quoteToken || '');
-    const sliceCount = p.distribution.length;
-    const externalCount = p.distribution.filter((s) => s.useExternalRecipient && s.recipient).length;
+    const sliceCount = (p.distribution || p.slices || []).length;
+    const externalCount = (p.distribution || p.slices || []).filter((s) => s.useExternalRecipient && s.recipient).length;
     html += `<li><strong>${quoteSafe}</strong> pool — ${p.supplyPercent}% of supply, `;
     html += `${sliceCount} slice${sliceCount === 1 ? '' : 's'}`;
     if (externalCount > 0) html += ` (${externalCount} to external wallet${externalCount === 1 ? '' : 's'})`;
@@ -14883,14 +15244,14 @@ function buildPhaseProgressTree(pools, lockPositions) {
   let phase1Rows = '';
   pools.forEach((p, i) => {
     const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-    const sliceCount = p.distribution.length;
+    const sliceCount = (p.distribution || p.slices || []).length;
     // Per-pool ladder band count: in customize mode each pool has its
     // own ladder config; in simple mode the simpleConfig values apply
     // uniformly. The progress tree always uses the per-pool value so
     // it matches what createSinglePool will actually do.
-    const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
-      && Array.isArray(p.ladderConfig.bands))
-      ? p.ladderConfig.bands.length
+    const poolLadderBandCount = (p.ladderConfig || p.ladder || { mode: "off", bands: [] }?.mode === 'manual'
+      && Array.isArray(p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands))
+      ? p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands.length
       : ladderBandCount;
     // Per-pool support presence: support adds one progress row per
     // pool that has it configured. In simple mode the user's launch-
@@ -14898,8 +15259,8 @@ function buildPhaseProgressTree(pools, lockPositions) {
     // bootstrap) so every pool typically gets a row. In customize
     // mode the user controls support per-pool. Either way, we read
     // each pool's supportConfig and add the row when needed.
-    const poolHasSupport = p.supportConfig?.mode === 'custom'
-      && Number(p.supportConfig.solValue) > 0;
+    const poolHasSupport = p.supportConfig || { mode: "off", solValue: 0 }?.mode === 'custom'
+      && Number(p.supportConfig || { mode: "off", solValue: 0 }.solValue) > 0;
     phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="pool"><span class="icon">◯</span>${label} — Create pool</div>`;
     for (let s = 0; s < sliceCount; s++) {
       phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="slice-${s}"><span class="icon">◯</span>${label} — Open slice ${s + 1} of ${sliceCount}</div>`;
@@ -14969,16 +15330,16 @@ function buildPhaseProgressTree(pools, lockPositions) {
     solLastOrder.forEach((i) => {
       const p = pools[i];
       const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-      const sliceCount = p.distribution.length;
+      const sliceCount = (p.distribution || p.slices || []).length;
       // Same per-pool ladder count + support detection as Phase 1, so
       // the phase rows are perfectly symmetric and the lock progress
       // matches what got opened.
-      const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
-        && Array.isArray(p.ladderConfig.bands))
-        ? p.ladderConfig.bands.length
+      const poolLadderBandCount = (p.ladderConfig || p.ladder || { mode: "off", bands: [] }?.mode === 'manual'
+        && Array.isArray(p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands))
+        ? p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands.length
         : ladderBandCount;
-      const poolHasSupport = p.supportConfig?.mode === 'custom'
-        && Number(p.supportConfig.solValue) > 0;
+      const poolHasSupport = p.supportConfig || { mode: "off", solValue: 0 }?.mode === 'custom'
+        && Number(p.supportConfig || { mode: "off", solValue: 0 }.solValue) > 0;
       for (let s = 0; s < sliceCount; s++) {
         phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="lock-${s}"><span class="icon">◯</span>${label} — Lock slice ${s + 1}</div>`;
       }
@@ -15009,7 +15370,7 @@ function buildPhaseProgressTree(pools, lockPositions) {
       let phase4Rows = '';
       pools.forEach((p, i) => {
         const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-        const sliceCount = p.distribution.length;
+        const sliceCount = (p.distribution || p.slices || []).length;
         for (let s = 0; s < sliceCount; s++) {
           if (p.distribution[s].useExternalRecipient && p.distribution[s].recipient) {
             phase4Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="xfer-${s}"><span class="icon">◯</span>${label} — Transfer slice ${s + 1} Fee Key to recipient</div>`;
@@ -15774,6 +16135,16 @@ function removeKeyDisplay() {
 // driven by the data-mode attribute, so all transitions go through one
 // place. Production code never reads data-mode externally — it's purely
 // an internal flag the click handler reads to decide what to do.
+function bindVanityModeChange() {
+  var modeEl = document.getElementById('vanityCAMode');
+  var suffixRow = document.getElementById('vanityCASuffixRow');
+  if (!modeEl || !suffixRow) return;
+  modeEl.addEventListener('change', function() {
+    suffixRow.classList.toggle('hidden', modeEl.value !== 'both');
+  });
+}
+bindVanityModeChange();
+
 function setGrindButtonState(state) {
   const btn = document.getElementById('grindCABtn');
   if (!btn) return;
@@ -15856,6 +16227,13 @@ bind('grindCABtn', 'click', async () => {
     try {
       const mode = document.getElementById('vanityCAMode').value;
       const isSuffix = mode === 'suffix';
+      const isPrefix = mode === 'prefix';
+      const isBoth = mode === 'both';
+      let suffixTarget = null;
+      if (isBoth) {
+        suffixTarget = document.getElementById('vanityCASuffixTarget')?.value.trim();
+        if (!suffixTarget) { log('Enter a suffix for Starts & Ends with mode.', 'warn'); return; }
+      }
 
       // Show single active progress bar
       const progressEl = document.getElementById('vanityCAProgress');
@@ -15880,8 +16258,14 @@ bind('grindCABtn', 'click', async () => {
       setupKeyDisplay(target);
 
       const params = new URLSearchParams();
-      if (isSuffix) params.set('suffix', target);
-      else params.set('prefix', target);
+      if (isBoth) {
+        params.set('prefix', target);
+        params.set('suffix', suffixTarget);
+      } else if (isSuffix) {
+        params.set('suffix', target);
+      } else {
+        params.set('prefix', target);
+      }
       // Pass the session token as a query param — EventSource can't set
       // custom headers, so the SSE endpoint validates it inline.
       try {
@@ -17076,92 +17460,24 @@ function canResumeLaunchJournal(journal, wallet) {
 }
 
 function prepareRecoveredSessionFromJournal(journal, wallet) {
-  tempWallet = {
+  // Set wallet on session (loaded externally from pendingWallets).
+  session.wallet = {
     publicKey: wallet.publicKey,
     secretKey: wallet.secretKey,
-    secretKeyB58: wallet.secretKeyB58,
-    mnemonic: wallet.mnemonic,
+    secretKeyB58: wallet.secretKeyB58 || null,
+    mnemonic: wallet.mnemonic || null,
+    qrCode: wallet.qrCode || null,
   };
+  // Restore state from journal.
+  session.fromJournal(journal);
+  // Push everything to the DOM.
+  session.renderAll();
+  // Sync backward-compat globals.
+  tempWallet = session.wallet;
+  createdTokenInfo = session.token;
+  lpResult = session.lp;
   fundingWallet = null;
   fundingDetectionExhausted = false;
-  createdTokenInfo = journal.token && journal.token.mint ? {
-    mint: journal.token.mint,
-    decimals: journal.token.decimals || journal.poolPlan?.tokenDecimals || 9,
-    totalSupply: journal.token.totalSupply || journal.poolPlan?.tokenTotalSupply,
-    name: journal.token.name || '',
-    symbol: journal.token.symbol || 'TOKEN',
-  } : null;
-  lpResult = { results: journalPriorResults(journal) };
-
-  // Restore pool allocations from the journal so the LP creation step
-  // has the same configuration the user set before the crash.
-  if (journal.poolPlan && Array.isArray(journal.poolPlan.allocations) && journal.poolPlan.allocations.length > 0) {
-    pools = journal.poolPlan.allocations.map((alloc) => ({
-      quoteToken: alloc.quoteToken,
-      supplyPercent: alloc.supplyPercent,
-      ammConfigIndex: alloc.ammConfigIndex,
-      quoteUsdOverride: alloc.quoteUsdOverride,
-      quoteDecimalsOverride: alloc.quoteDecimalsOverride,
-      quoteSymbolOverride: alloc.quoteSymbolOverride,
-      slices: alloc.distribution || [],
-      bootstrapConfig: alloc.bootstrap || { mode: 'minimal' },
-      ladderConfig: alloc.ladder || { mode: 'off', bands: [] },
-      support: alloc.support || 0,
-      // Flag that these were loaded from a journal — buildAllocationsForApi
-      // will pass them through without re-converting percentages.
-      _fromJournal: true,
-    }));
-  }
-
-  document.body.classList.add('has-log');
-  document.getElementById('walletInfo')?.classList.remove('hidden');
-  const walletAddress = document.getElementById('walletAddress');
-  if (walletAddress) walletAddress.value = wallet.publicKey;
-  document.getElementById('privateKeyContainer')?.classList.add('hidden');
-  document.getElementById('tokenCreatedInfo')?.classList.remove('hidden');
-  const mintEl = document.getElementById('tokenMintAddress');
-  if (mintEl) mintEl.textContent = journal.token.mint;
-  const solscanLink = document.getElementById('tokenSolscanLink');
-  if (solscanLink) solscanLink.href = `https://solscan.io/token/${journal.token.mint}`;
-
-  document.getElementById('createTokenBtn')?.classList.add('hidden');
-  document.getElementById('createLpBtn')?.classList.add('hidden');
-  document.getElementById('transferAssetsBtn')?.classList.remove('hidden');
-  document.getElementById('transferResult')?.classList.add('hidden');
-  // The "View launch summary" button is revealed only on a fully clean
-  // transfer (runTransfer success branch). When resuming a stale journal
-  // in a session where a previous launch already completed successfully,
-  // the button could still carry over visible from that earlier success.
-  // Re-hide it here so the resumed launch's step 6 starts in the right
-  // state — symmetrical with the transferResult reset right above.
-  document.getElementById('viewLaunchSummaryBtn')?.classList.add('hidden');
-  const dest = document.getElementById('destinationWallet');
-  if (dest) dest.value = '';
-
-  setStepSummary(1, `${wallet.publicKey.slice(0, 8)}...${wallet.publicKey.slice(-6)}`);
-  setStepSummary(4, `${createdTokenInfo.symbol} - ${createdTokenInfo.mint.slice(0, 8)}...`);
-  const count = lpResult.results.length;
-  setStepSummary(5, count > 0 ? `${count} pool${count === 1 ? '' : 's'} recorded` : 'ready to resume');
-
-  // Activate the right step so the UI expands the card and the user
-  // can see their data and continue without generating a new wallet.
-  var stage = journal.stage || "";
-  if (lpResult && lpResult.results && lpResult.results.length) {
-    activateStep(6);
-  } else if (stage.startsWith("lp_")) {
-    activateStep(5);
-  } else if (journal.token && journal.token.mint) {
-    // Token fully created — go to LP configuration.
-    activateStep(5);
-  } else if (stage === "token_create_started") {
-    // Token creation was interrupted. Show step 4 so the user can
-    // retry — the server will pick up an existing mint if one exists.
-    activateStep(4);
-  } else {
-    activateStep(2);
-  }
-  if (typeof updateContinueToFundingState === "function") updateContinueToFundingState();
-  if (typeof updateCancelButtonState === "function") updateCancelButtonState();
 }
 
 async function resumeLaunchJournal(journal, wallet, btn) {
@@ -17562,11 +17878,13 @@ function buildLaunchRow(launch) {
       var useData = await useResp.json();
       if (!useData.success) throw new Error(useData.error || 'wallet not found');
 
+      var sk = useData.wallet.secretKey;
       var wallet = {
         publicKey: useData.wallet.publicKey,
-        secretKey: useData.wallet.secretKey,
-        secretKeyB58: useData.wallet.secretKeyB58,
-        mnemonic: useData.wallet.mnemonic,
+        secretKey: sk,
+        secretKeyB58: null,
+        mnemonic: useData.wallet.mnemonic || null,
+        qrCode: useData.wallet.qrCode || null,
       };
 
       var stateResp = await fetch('/api/launch-state?walletPublicKey=' + encodeURIComponent(launch.walletPublicKey));

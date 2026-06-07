@@ -33,6 +33,8 @@
 #endif
 
 #include <sodium.h>
+#include <math.h>
+#include "leos_engine.h"
 #include "base58.h"
 #include "vrf_ed25519.h"
 
@@ -48,6 +50,26 @@
  * the secret key of the first keypair in the chain. */
 
 #define SEED_CHAIN_BYTES 32
+
+/* ------------------------------------------------------------------ */
+/* Holographic proof-of-grind accumulator                              */
+/* ------------------------------------------------------------------ */
+#define HOLO_DEFAULT_DIM        2048
+#define HOLO_DEFAULT_SAMPLE_RATE 4
+#define HOLO_MAX_DIM            8192
+
+static uint64_t holo_hash32(const uint8_t bytes[32]) {
+    uint64_t h = 0;
+    for (int i = 0; i < 4; i++) {
+        uint64_t w = 0;
+        for (int j = 0; j < 8; j++) w = (w << 8) | (uint64_t)bytes[i * 8 + j];
+        h ^= w;
+    }
+    h ^= h >> 30; h *= 0xbf58476d1ce4e5b9ULL;
+    h ^= h >> 27; h *= 0x94d049bb133111ebULL;
+    h ^= h >> 31;
+    return h;
+}
 
 /* ------------------------------------------------------------------ */
 /* Fast suffix pre-check helpers                                       */
@@ -171,11 +193,21 @@ typedef struct {
     uint64_t     fast_mod;
     int          fast_num_variants;
     uint64_t     fast_target_vals[MAX_CASE_VARIANTS];
+    int          holo_enabled;
+    size_t       holo_dim;
+    int          holo_sample_rate;
+    LeosEngine  *holo_eng;
+    double     **holo_thread_traces;
+    atomic_ullong holo_accumulated;
 } grind_state_t;
 
 typedef struct {
     int            id;
     grind_state_t *state;
+    double        *holo_trace;
+    double        *holo_pos_vec;
+    double        *holo_key_vec;
+    double        *holo_bound;
 } thread_arg_t;
 
 #define FLUSH_INTERVAL 16384
@@ -278,6 +310,16 @@ static void *grind_thread(void *arg) {
             if ((local_attempts & 0xFFF) == 0)
                 progress_sample(gs, pk);
 
+            if (gs->holo_enabled && ta->holo_trace &&
+                (local_attempts % (uint64_t)gs->holo_sample_rate == 0)) {
+                uint64_t gpos = global_base + local_attempts;
+                leos_engine_keygen(gs->holo_eng, gpos * 0x9e3779b97f4a7c15ULL, ta->holo_pos_vec);
+                leos_engine_keygen(gs->holo_eng, holo_hash32(pk), ta->holo_key_vec);
+                leos_engine_bind(gs->holo_eng, ta->holo_pos_vec, ta->holo_key_vec, ta->holo_bound);
+                leos_engine_add(gs->holo_eng, ta->holo_trace, ta->holo_bound, ta->holo_trace);
+                atomic_fetch_add(&gs->holo_accumulated, 1);
+            }
+
         } else {
             /* Full encode every iteration (prefix mode or long suffix) */
             size_t b58_len = base58_encode(pk, 32, b58, sizeof(b58));
@@ -290,6 +332,15 @@ static void *grind_thread(void *arg) {
                         atomic_store_explicit(&gs->last_pk_ready, 1,
                                               memory_order_release);
                     }
+                }
+                if (gs->holo_enabled && ta->holo_trace &&
+                    (local_attempts % (uint64_t)gs->holo_sample_rate == 0)) {
+                    uint64_t gpos = global_base + local_attempts;
+                    leos_engine_keygen(gs->holo_eng, gpos * 0x9e3779b97f4a7c15ULL, ta->holo_pos_vec);
+                    leos_engine_keygen(gs->holo_eng, holo_hash32(pk), ta->holo_key_vec);
+                    leos_engine_bind(gs->holo_eng, ta->holo_pos_vec, ta->holo_key_vec, ta->holo_bound);
+                    leos_engine_add(gs->holo_eng, ta->holo_trace, ta->holo_bound, ta->holo_trace);
+                    atomic_fetch_add(&gs->holo_accumulated, 1);
                 }
                 matched = check_full_match(b58, b58_len, gs);
             }
@@ -426,6 +477,8 @@ int main(int argc, char **argv) {
     int thread_count = 0;
     int case_sensitive = 1;
     int quiet = 0;
+    int holo_dim = HOLO_DEFAULT_DIM;
+    int holo_sample_rate = HOLO_DEFAULT_SAMPLE_RATE;
     const char *target_str2  = NULL;
     match_mode_t mode = MATCH_PREFIX;
 
@@ -451,6 +504,10 @@ int main(int argc, char **argv) {
             vrf_blockhash_hex = argv[++i];
         } else if (strcmp(argv[i], "--quiet") == 0) {
             quiet = 1;
+        } else if (strcmp(argv[i], "--holo-dim") == 0 && i + 1 < argc) {
+            holo_dim = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--holo-sample-rate") == 0 && i + 1 < argc) {
+            holo_sample_rate = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]); return 0;
         } else {
@@ -485,6 +542,9 @@ int main(int argc, char **argv) {
 
     if (thread_count <= 0) thread_count = get_cpu_count();
     if (thread_count > 256) thread_count = 256;
+    if (holo_dim < 64 || holo_dim > HOLO_MAX_DIM) holo_dim = HOLO_DEFAULT_DIM;
+    if (holo_sample_rate < 1) holo_sample_rate = 1;
+    { int d = 1; while (d < holo_dim) d <<= 1; if (d > HOLO_MAX_DIM) d = HOLO_MAX_DIM; holo_dim = d; }
 
     double prob = 1.0;
     for (int i = 0; i < target_len; i++) prob /= 58.0;
@@ -610,6 +670,20 @@ int main(int argc, char **argv) {
     memcpy(gs.fast_target_vals, fast_target_vals, sizeof(fast_target_vals));
     memcpy(gs.master_seed, master_seed, 32);
 
+    gs.holo_enabled     = 1;
+    gs.holo_dim         = (size_t)holo_dim;
+    gs.holo_sample_rate = holo_sample_rate;
+    gs.holo_eng         = leos_engine_create((size_t)holo_dim);
+    atomic_init(&gs.holo_accumulated, 0);
+    if (!gs.holo_eng) { gs.holo_enabled = 0; }
+    gs.holo_thread_traces = (double **)calloc((size_t)thread_count, sizeof(double *));
+    if (gs.holo_thread_traces) {
+        for (int t = 0; t < thread_count; t++) {
+            gs.holo_thread_traces[t] = (double *)calloc((size_t)holo_dim, sizeof(double));
+            if (!gs.holo_thread_traces[t]) gs.holo_enabled = 0;
+        }
+    } else { gs.holo_enabled = 0; }
+
     pthread_t *threads = (pthread_t *)calloc((size_t)thread_count, sizeof(pthread_t));
     thread_arg_t *args = (thread_arg_t *)calloc((size_t)thread_count, sizeof(thread_arg_t));
     if (!threads || !args) {
@@ -623,6 +697,19 @@ int main(int argc, char **argv) {
     for (int i = 0; i < thread_count; i++) {
         args[i].id = i;
         args[i].state = &gs;
+        if (gs.holo_enabled && gs.holo_thread_traces) {
+            args[i].holo_trace   = gs.holo_thread_traces[i];
+            args[i].holo_pos_vec = calloc((size_t)holo_dim, sizeof(double));
+            args[i].holo_key_vec = calloc((size_t)holo_dim, sizeof(double));
+            args[i].holo_bound   = calloc((size_t)holo_dim, sizeof(double));
+            if (!args[i].holo_pos_vec || !args[i].holo_key_vec || !args[i].holo_bound) {
+                free(args[i].holo_pos_vec); free(args[i].holo_key_vec); free(args[i].holo_bound);
+                args[i].holo_trace = NULL;
+                args[i].holo_pos_vec = NULL;
+                args[i].holo_key_vec = NULL;
+                args[i].holo_bound = NULL;
+            }
+        }
         pthread_create(&threads[i], NULL, grind_thread, &args[i]);
     }
 
@@ -659,6 +746,30 @@ int main(int argc, char **argv) {
     for (int i = 0; i < thread_count; i++)
         pthread_join(threads[i], NULL);
 
+    double *holo_merged = NULL;
+    uint64_t holo_positions = 0;
+    double   holo_fidelity = 0.0;
+    char     holo_hex[131073] = "";
+    if (gs.holo_enabled && gs.holo_thread_traces) {
+        holo_positions = atomic_load(&gs.holo_accumulated);
+        holo_merged = calloc((size_t)holo_dim, sizeof(double));
+        if (holo_merged) {
+            for (int t = 0; t < thread_count; t++)
+                if (gs.holo_thread_traces[t])
+                    for (int j = 0; j < holo_dim; j++)
+                        holo_merged[j] += gs.holo_thread_traces[t][j];
+            double norm = 0.0;
+            for (int j = 0; j < holo_dim; j++) norm += holo_merged[j] * holo_merged[j];
+            norm = sqrt(norm);
+            if (norm > 0.0) for (int j = 0; j < holo_dim; j++) holo_merged[j] /= norm;
+            holo_fidelity = holo_positions > 0 ? 1.0 / sqrt((double)holo_positions) : 0.0;
+            size_t blen = (size_t)holo_dim * sizeof(double);
+            const unsigned char *rw = (const unsigned char *)holo_merged;
+            for (size_t k = 0; k < blen; k++) sprintf(holo_hex + k * 2, "%02x", rw[k]);
+            holo_hex[blen * 2] = '\0';
+        }
+    }
+
     struct timeval t_end;
     gettimeofday(&t_end, NULL);
     double elapsed = (double)(t_end.tv_sec - t_start.tv_sec) +
@@ -678,7 +789,7 @@ int main(int argc, char **argv) {
     char pk_b58_output[48];
     b58_of(gs.result_pk, pk_b58_output);
 
-    char json_buf[8192];
+    char json_buf[262144];
     int off = 0;
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "{");
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "\"secretKey\":[");
@@ -717,6 +828,11 @@ int main(int argc, char **argv) {
         off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
             ",\"vrfBlockhash\":\"%s\"", vrf_blockhash_b58);
     }
+    if (gs.holo_enabled && holo_merged) {
+        off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
+            ",\"hologram\":{\"dim\":%d,\"traceHex\":\"%s\",\"positions\":%llu,\"fidelity\":%.6f}",
+            holo_dim, holo_hex, (unsigned long long)holo_positions, holo_fidelity);
+    }
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "}");
 
     if (out_path) {
@@ -734,6 +850,17 @@ int main(int argc, char **argv) {
     if (!quiet) fprintf(stderr, "Address: %s\n", gs.result_b58);
     if (!quiet && out_path) fprintf(stderr, "Keypair saved to: %s\n", out_path);
 
+    if (gs.holo_thread_traces) {
+        for (int t = 0; t < thread_count; t++) {
+            free(gs.holo_thread_traces[t]);
+            free(args[t].holo_pos_vec);
+            free(args[t].holo_key_vec);
+            free(args[t].holo_bound);
+        }
+        free(gs.holo_thread_traces);
+    }
+    free(holo_merged);
+    if (gs.holo_eng) leos_engine_destroy(gs.holo_eng);
     free(threads);
     free(args);
     return 0;

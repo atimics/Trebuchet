@@ -231,92 +231,24 @@ function canResumeLaunchJournal(journal, wallet) {
 }
 
 function prepareRecoveredSessionFromJournal(journal, wallet) {
-  tempWallet = {
+  // Set wallet on session (loaded externally from pendingWallets).
+  session.wallet = {
     publicKey: wallet.publicKey,
     secretKey: wallet.secretKey,
-    secretKeyB58: wallet.secretKeyB58,
-    mnemonic: wallet.mnemonic,
+    secretKeyB58: wallet.secretKeyB58 || null,
+    mnemonic: wallet.mnemonic || null,
+    qrCode: wallet.qrCode || null,
   };
+  // Restore state from journal.
+  session.fromJournal(journal);
+  // Push everything to the DOM.
+  session.renderAll();
+  // Sync backward-compat globals.
+  tempWallet = session.wallet;
+  createdTokenInfo = session.token;
+  lpResult = session.lp;
   fundingWallet = null;
   fundingDetectionExhausted = false;
-  createdTokenInfo = journal.token && journal.token.mint ? {
-    mint: journal.token.mint,
-    decimals: journal.token.decimals || journal.poolPlan?.tokenDecimals || 9,
-    totalSupply: journal.token.totalSupply || journal.poolPlan?.tokenTotalSupply,
-    name: journal.token.name || '',
-    symbol: journal.token.symbol || 'TOKEN',
-  } : null;
-  lpResult = { results: journalPriorResults(journal) };
-
-  // Restore pool allocations from the journal so the LP creation step
-  // has the same configuration the user set before the crash.
-  if (journal.poolPlan && Array.isArray(journal.poolPlan.allocations) && journal.poolPlan.allocations.length > 0) {
-    pools = journal.poolPlan.allocations.map((alloc) => ({
-      quoteToken: alloc.quoteToken,
-      supplyPercent: alloc.supplyPercent,
-      ammConfigIndex: alloc.ammConfigIndex,
-      quoteUsdOverride: alloc.quoteUsdOverride,
-      quoteDecimalsOverride: alloc.quoteDecimalsOverride,
-      quoteSymbolOverride: alloc.quoteSymbolOverride,
-      slices: alloc.distribution || [],
-      bootstrapConfig: alloc.bootstrap || { mode: 'minimal' },
-      ladderConfig: alloc.ladder || { mode: 'off', bands: [] },
-      support: alloc.support || 0,
-      // Flag that these were loaded from a journal — buildAllocationsForApi
-      // will pass them through without re-converting percentages.
-      _fromJournal: true,
-    }));
-  }
-
-  document.body.classList.add('has-log');
-  document.getElementById('walletInfo')?.classList.remove('hidden');
-  const walletAddress = document.getElementById('walletAddress');
-  if (walletAddress) walletAddress.value = wallet.publicKey;
-  document.getElementById('privateKeyContainer')?.classList.add('hidden');
-  document.getElementById('tokenCreatedInfo')?.classList.remove('hidden');
-  const mintEl = document.getElementById('tokenMintAddress');
-  if (mintEl) mintEl.textContent = journal.token.mint;
-  const solscanLink = document.getElementById('tokenSolscanLink');
-  if (solscanLink) solscanLink.href = `https://solscan.io/token/${journal.token.mint}`;
-
-  document.getElementById('createTokenBtn')?.classList.add('hidden');
-  document.getElementById('createLpBtn')?.classList.add('hidden');
-  document.getElementById('transferAssetsBtn')?.classList.remove('hidden');
-  document.getElementById('transferResult')?.classList.add('hidden');
-  // The "View launch summary" button is revealed only on a fully clean
-  // transfer (runTransfer success branch). When resuming a stale journal
-  // in a session where a previous launch already completed successfully,
-  // the button could still carry over visible from that earlier success.
-  // Re-hide it here so the resumed launch's step 6 starts in the right
-  // state — symmetrical with the transferResult reset right above.
-  document.getElementById('viewLaunchSummaryBtn')?.classList.add('hidden');
-  const dest = document.getElementById('destinationWallet');
-  if (dest) dest.value = '';
-
-  setStepSummary(1, `${wallet.publicKey.slice(0, 8)}...${wallet.publicKey.slice(-6)}`);
-  setStepSummary(4, `${createdTokenInfo.symbol} - ${createdTokenInfo.mint.slice(0, 8)}...`);
-  const count = lpResult.results.length;
-  setStepSummary(5, count > 0 ? `${count} pool${count === 1 ? '' : 's'} recorded` : 'ready to resume');
-
-  // Activate the right step so the UI expands the card and the user
-  // can see their data and continue without generating a new wallet.
-  var stage = journal.stage || "";
-  if (lpResult && lpResult.results && lpResult.results.length) {
-    activateStep(6);
-  } else if (stage.startsWith("lp_")) {
-    activateStep(5);
-  } else if (journal.token && journal.token.mint) {
-    // Token fully created — go to LP configuration.
-    activateStep(5);
-  } else if (stage === "token_create_started") {
-    // Token creation was interrupted. Show step 4 so the user can
-    // retry — the server will pick up an existing mint if one exists.
-    activateStep(4);
-  } else {
-    activateStep(2);
-  }
-  if (typeof updateContinueToFundingState === "function") updateContinueToFundingState();
-  if (typeof updateCancelButtonState === "function") updateCancelButtonState();
 }
 
 async function resumeLaunchJournal(journal, wallet, btn) {

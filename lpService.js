@@ -976,7 +976,10 @@ async function createSinglePool({
     computeBudgetConfig: await lpComputeBudgetConfig(raydium),
   });
 
-  const createTx = await createRes.execute({ sendAndConfirm: true });
+  const createTx = await withRateLimitBackoff(
+    () => createRes.execute({ sendAndConfirm: true }),
+    { onRetry: (info) => progress({ stage: 'pool_create_retry', attempt: info.attempt, delayMs: info.delayMs, poolAllocIdx: allocIdx }) }
+  );
   // extInfo.address.id is already a base58 string (SDK calls .toString() internally
   // when building the extInfo). Don't call toBase58() on it.
   const poolId = createRes.extInfo.address.id;
@@ -1692,6 +1695,79 @@ async function openBootstrapPosition({
 // Mutates the results in place: each `mainPositions[i].locked` and
 // `mainPositions[i].txIds.lock` get set, same for the bootstrap.
 // ---------------------------------------------------------------------------
+
+// ── Rate-limit recovery ─────────────────────────────────────────────
+
+/**
+ * Detect whether an error is a transient RPC rate limit that should be
+ * retried with backoff rather than failing the launch immediately.
+ */
+function isRetryableRateLimit(err) {
+  if (!err) return false;
+  const msg = (err.message || String(err)).toLowerCase();
+  // HTTP 429
+  if (msg.includes('429') || msg.includes('too many requests')) return true;
+  // Solana RPC rate limit messages
+  if (msg.includes('rate limit') || msg.includes('ratelimit')) return true;
+  if (msg.includes('throttled') || msg.includes('try again')) return true;
+  // Web3.js retry exhaustion
+  if (msg.includes('was not confirmed') && msg.includes('retries')) return true;
+  // Generic HTTP 5xx server errors (transient)
+  if (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('504')) return true;
+  // Network errors
+  if (msg.includes('fetch failed') || msg.includes('econnrefused') || msg.includes('econnreset')) return true;
+  if (msg.includes('etimedout') || msg.includes('enotfound')) return true;
+  return false;
+}
+
+/**
+ * Human-readable summary of why a launch phase failed, for the UI.
+ */
+function describeFailure(err, phase) {
+  const msg = (err.message || String(err)).toLowerCase();
+  if (msg.includes('429') || msg.includes('too many requests') || msg.includes('rate limit')) {
+    return 'RPC rate limit — wait 30s and click Resume to retry. Consider using a dedicated RPC endpoint (Helius, Triton, QuickNode).';
+  }
+  if (msg.includes('fetch failed') || msg.includes('econnrefused') || msg.includes('etimedout')) {
+    return 'Network error reaching RPC — check your connection and retry.';
+  }
+  if (msg.includes('0x1')) return 'Insufficient SOL in the launch wallet to cover rent and fees. Fund the wallet and retry.';
+  if (msg.includes('0x86')) return 'Mint must sign the metadata transaction — this is a bug, please report.';
+  if (msg.includes('simulation failed')) {
+    return 'Transaction simulation failed — the pool parameters may be invalid. Try adjusting your configuration.';
+  }
+  // Return the original error, truncated
+  const short = err.message || String(err);
+  return short.length > 200 ? short.slice(0, 197) + '...' : short;
+}
+
+/**
+ * Execute an async function with exponential backoff on rate-limit errors.
+ * Returns the function result or throws on non-retryable errors / exhaustion.
+ */
+async function withRateLimitBackoff(fn, {
+  maxRetries = 4,
+  baseDelayMs = 2000,
+  maxDelayMs = 30000,
+  onRetry = null,       // called with { attempt, delayMs, error }
+} = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (!isRetryableRateLimit(err) || attempt >= maxRetries) throw err;
+      const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
+      const jitter = delay * (0.5 + Math.random() * 0.5); // 50%-100% of delay
+      if (onRetry) onRetry({ attempt: attempt + 1, delayMs: Math.round(jitter), error: err });
+      console.warn(`Rate limit hit, retrying in ${Math.round(jitter / 1000)}s (attempt ${attempt + 1}/${maxRetries})...`);
+      await new Promise(r => setTimeout(r, jitter));
+    }
+  }
+  throw lastError;
+}
+
 // Inter-tx pacing for Phase 3 (locks) and Phase 4 (transfers).
 //
 // sendAndConfirm is the natural floor between transactions because it

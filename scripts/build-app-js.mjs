@@ -24,6 +24,7 @@ const root = join(__dirname, '..');
 // owns a contiguous slice of the original hand-written app.js.
 export const moduleNames = [
   'preamble.js',          // file header, bind(), API-session fetch wrapper, state, constants, flywheels
+  'session.js',           // SessionState: centralized launch state, save/restore, renderAll
   'activity-log.js',      // log(), startServerLogStream(), setLoading(), withRunState()
   'confirm-dialog.js',    // confirmDialog()
   'release-notes.js',     // renderReleaseNotes() — update check UI

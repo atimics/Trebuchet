@@ -13,7 +13,7 @@ INCLUDES   = -I. -I$(VENDOR_DIR)
 SODIUM_CFLAGS := $(shell pkg-config --cflags libsodium 2>/dev/null || echo)
 SODIUM_LDLIBS := $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
 
-VANITY_SRCS = vanity_keygen/vanity_keygen.c vrf_ed25519.c
+VANITY_SRCS = vanity_keygen/vanity_keygen.c vrf_ed25519.c leos_engine.c
 VANITY_BIN  = $(BUILD_DIR)/vanity_keygen
 
 .PHONY: all clean dev
@@ -27,7 +27,7 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 $(VANITY_BIN): $(VANITY_SRCS) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(SODIUM_CFLAGS) $(VANITY_SRCS) -o $@ $(INCLUDES) -lpthread $(SODIUM_LDLIBS)
+	$(CC) $(CFLAGS) $(SODIUM_CFLAGS) $(VANITY_SRCS) -o $@ $(INCLUDES) -lpthread $(SODIUM_LDLIBS) -lm
 
 clean:
 	rm -rf $(BUILD_DIR)
