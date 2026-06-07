@@ -863,3 +863,4 @@ function applyVanityAvailabilityUi(vanity) {
 // splash element missing), both gates are still default-true and this
 // is the only place the trigger ever fires.
 _evaluateStartupGates();
+
