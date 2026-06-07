@@ -339,6 +339,47 @@ const LADDER_MIN_BANDS = 3;
 const LADDER_MAX_BANDS = 10;
 const LADDER_CEILING_MULTIPLIER = 1000;
 
+// Custom Positions ladder — strategy picker controls (the per-pool advanced
+// editor). The simple-config sliders above still use LADDER_DEFAULT_* /
+// LADDER_CEILING_MULTIPLIER; these drive the strategy-based generator instead.
+//
+//   Gap     — the empty "air-pocket" multiplier before the first band. The
+//             ladder lays out over [gap×, ceiling×]. A wider gap leaves more
+//             room for early price discovery before resistance kicks in;
+//             lower-mcap launches tend to want a wider gap. Default 4×.
+//   Ceiling — the top of the ladder. Default 100,000×; adjustable up to the
+//             multiplier that reaches a $1B fully-diluted market cap
+//             (CEILING_MAX_MCAP_USD ÷ launch market cap — see
+//             poolMaxCeilingMultiplier). Above ~$1B FDV isn't an honest place
+//             to park ladder supply, so that's the cap we expose.
+//   Strategy — which volatility shape generates the bands. Default 'dbl'
+//             (Doubling): thin near launch, supply fanned toward the ceiling.
+const LADDER_GAP_DEFAULT = 4;
+const LADDER_GAP_MIN = 1;
+const LADDER_GAP_MAX = 10;
+const LADDER_CEILING_DEFAULT = 100000;
+const LADDER_DEFAULT_STRATEGY = 'dbl';
+
+// Minimum width of a ladder band, as a price ratio (upper ÷ lower). The
+// widening shapes (Doubling, Gapped Doubling) floor their first band at this so
+// it can't collapse into a hair-thin sliver right at launch — strict log-width
+// doubling otherwise makes the first band span/(2^bands − 1) wide, which is
+// near-zero for large band counts. The first band is at least this wide; the
+// rest widen from there.
+const LADDER_MIN_BAND_RATIO = 1.5;
+
+// Honest upper bound for the ladder ceiling: a $1B fully-diluted market cap.
+// The ceiling is a multiple of the launch price, and market cap scales linearly
+// with price (supply is fixed), so the max ceiling multiplier is simply
+// CEILING_MAX_MCAP_USD ÷ launch market cap. The tick range allows absurd
+// (~1e25×) multiples, and nobody ladders supply above a $1B FDV, so this is the
+// cap we actually expose. See poolMaxCeilingMultiplier.
+const CEILING_MAX_MCAP_USD = 1_000_000_000;
+
+// Fallback ceiling cap (a multiplier) used only before the market cap is set,
+// when the $1B-equivalent multiple can't be computed yet.
+const LADDER_CEILING_FALLBACK_MAX = 1_000_000;
+
 // Support position depth bounds (in % below launch price).
 //   Default 10% — covers typical post-launch dip range without
 //   over-spreading the deposited SOL across too many ticks.
@@ -451,6 +492,11 @@ let simpleConfig = {
   ladderEnabled: false,
   ladderPercent: LADDER_DEFAULT_PERCENT,
   ladderBandCount: LADDER_DEFAULT_BANDS,
+  // Which volatility shape the simple-mode ladder uses. Mirrors the
+  // strategy picker in customize mode; the bands the simple config
+  // generates now come from generateLadderStrategyBands with this shape
+  // (Doubling by default) rather than the old equal log-spaced layout.
+  ladderStrategy: LADDER_DEFAULT_STRATEGY,
   // Preallocation: % of total token supply that's held BACK from LP. Used
   // for team/VC/presale tokens, staking rewards, utility reserves, etc.
   // The pool allocations scale down proportionally so the sum of all

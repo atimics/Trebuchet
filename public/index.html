@@ -1284,6 +1284,15 @@
         body.medieval-cursor select::picker(select) {
             appearance: base-select;
         }
+        /* With base-select active the <select> renders its own native
+           dropdown arrow inside the control, but every select in the app
+           is wrapped in Bulma's .select, which already draws a themed
+           (rubric) arrow via ::after. Hide the native one so only the
+           themed arrow shows — otherwise the control has two arrows (the
+           stray second one appeared at the bottom-left of the button). */
+        body.medieval-cursor .select select::picker-icon {
+            display: none;
+        }
 
         /* --- Active / mousedown (clenched fist) ------------------ */
         /* :active fires while the pointer is held on the element. */
