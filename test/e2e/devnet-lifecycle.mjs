@@ -243,7 +243,16 @@ try {
     await p.waitForTimeout(500);
 
     await forceClick(p, '#createLpBtn');
-    await stepIs(p, 5);
+    // Confirm the preflight modal if it appears.
+    try {
+      await p.waitForSelector("#createLpConfirmModal.is-active", { timeout: 15000 });
+      log("preflight modal visible");
+      await p.click("#createLpConfirmProceedBtn");
+      log("preflight confirmed");
+      await p.waitForTimeout(2000);
+    } catch (e) {
+      log("preflight modal skipped: " + e.message.slice(0, 80));
+    }
     log('LP creation started');
     await p.waitForFunction(() => {
       const card = document.getElementById('step5-card');
