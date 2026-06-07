@@ -72,6 +72,10 @@ async function getApiSessionToken() {
   return apiSessionTokenPromise;
 }
 
+// Exposed for EventSource callers and lp-execution.js which pass the
+// session token as a query parameter (custom headers not possible).
+window.getApiSessionToken = getApiSessionToken;
+
 window.fetch = async (input, init = {}) => {
   if (!isLocalApiRequest(input)) return originalFetch(input, init);
 
@@ -7436,6 +7440,7 @@ function buildPoolNode(pool, idx) {
           </optgroup>
           <optgroup label="Flywheels">
             <option value="HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r">$seige (Meme flywheel — recommended)</option>
+            <option value="8ZscSWe5ZSFbGYg4JzA3eqpf6iCnwT72i8TZvVni2yMY">RATi (Agent Economy — devnet)</option>
             <option value="J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj">XLRT (Reserve flywheel)</option>
           </optgroup>
           <optgroup label="Majors">
@@ -12369,6 +12374,23 @@ bind('viewLaunchSummaryBtn', 'click', () => {
 
 function buildAllocationsForApi() {
   return pools.map((p) => {
+    // Pools loaded from a crash-resume journal already have wire-format
+    // allocations — pass them through without re-converting percentages.
+    if (p._fromJournal) {
+      return {
+        quoteToken: p.quoteToken,
+        supplyPercent: p.supplyPercent,
+        ammConfigIndex: p.ammConfigIndex,
+        quoteUsdOverride: p.quoteUsdOverride,
+        quoteDecimalsOverride: p.quoteDecimalsOverride,
+        quoteSymbolOverride: p.quoteSymbolOverride,
+        distribution: p.slices || [],
+        bootstrap: p.bootstrapConfig || { mode: "minimal" },
+        ladder: p.ladderConfig || { mode: "off", bands: [] },
+        support: p.support || 0,
+      };
+    }
+
     // Pass our resolved price through to the server as quoteUsdOverride.
     //
     // Per the price-safety plan (Milestones A + B), this no longer means
@@ -13812,6 +13834,13 @@ bind('createTokenBtn', 'click', async () => {
       }
       const logoFile = document.getElementById('tokenLogo').files[0];
       if (logoFile) formData.append('logo', logoFile);
+
+      const allocations = buildAllocationsForApi();
+      if (allocations.length > 0) {
+        formData.append("allocations", JSON.stringify(allocations));
+        const targetMc = document.getElementById("targetMarketCap");
+        if (targetMc) formData.append("targetMarketCapUsd", targetMc.value.trim());
+      }
 
       const resp = await fetch('/api/create-token', { method: 'POST', body: formData });
       const data = await resp.json();
@@ -16956,6 +16985,26 @@ function prepareRecoveredSessionFromJournal(journal, wallet) {
     symbol: journal.token.symbol || 'TOKEN',
   };
   lpResult = { results: journalPriorResults(journal) };
+
+  // Restore pool allocations from the journal so the LP creation step
+  // has the same configuration the user set before the crash.
+  if (journal.poolPlan && Array.isArray(journal.poolPlan.allocations) && journal.poolPlan.allocations.length > 0) {
+    pools = journal.poolPlan.allocations.map((alloc) => ({
+      quoteToken: alloc.quoteToken,
+      supplyPercent: alloc.supplyPercent,
+      ammConfigIndex: alloc.ammConfigIndex,
+      quoteUsdOverride: alloc.quoteUsdOverride,
+      quoteDecimalsOverride: alloc.quoteDecimalsOverride,
+      quoteSymbolOverride: alloc.quoteSymbolOverride,
+      slices: alloc.distribution || [],
+      bootstrapConfig: alloc.bootstrap || { mode: 'minimal' },
+      ladderConfig: alloc.ladder || { mode: 'off', bands: [] },
+      support: alloc.support || 0,
+      // Flag that these were loaded from a journal — buildAllocationsForApi
+      // will pass them through without re-converting percentages.
+      _fromJournal: true,
+    }));
+  }
 
   document.body.classList.add('has-log');
   document.getElementById('walletInfo')?.classList.remove('hidden');

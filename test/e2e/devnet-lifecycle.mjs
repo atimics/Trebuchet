@@ -26,8 +26,16 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
 import crypto from 'node:crypto';
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Real token images for CI metadata — pick one randomly per run.
+// __dirname is test/e2e/; rati/ is a sibling repo at ../../rati/.
+const TOKEN_IMAGES = [
+  path.resolve(__dirname, '../../../rati/tokens/Kyro/image.png'),
+  path.resolve(__dirname, '../../../rati/tokens/Ruby/image.png'),
+  path.resolve(__dirname, '../../../rati/tokens/noxannihilism_bob_the_obsequious_snake_cca92fc1-79d1-46d3-b135-613a2851835d.png'),
+];
+
 const TMP = fs.mkdtempSync(path.join(tmpdir(), 'treb-devnet-'));
 const DEVNET_RPC = process.env.DEVNET_RPC || clusterApiUrl('devnet');
 const VANITY_PREFIX = process.env.VANITY_PREFIX || 'RAT';
@@ -80,14 +88,6 @@ console.log = (...a) => {
   const m = a.join(' ').match(/Server running on (http:\/\/127\.0\.0\.1:\d+)/);
   if (m) SERVER = m[1];
 };
-// Override the Arweave/Irys uploader with a mock. Must be a dynamic
-// import so it runs AFTER TREBUCHET_CONFIG_DIR is set (static imports
-// are hoisted and would read the wrong rpcConfig.json).
-const { setUploaderForTests } = await import('../../tokenService.js');
-setUploaderForTests(async () => ({
-  metadataUri: 'https://arweave.net/devnet-e2e-placeholder',
-  imageUri: 'https://arweave.net/devnet-e2e-placeholder-img',
-}));
 
 await import('../../server.js');
 for (let i = 0; i < 80 && !SERVER; i++) await new Promise(r => setTimeout(r, 250));
@@ -224,6 +224,23 @@ try {
     await forceClick(p, '#continueToTokenBtn');
     await stepIs(p, 4);
     await p.waitForTimeout(1000);
+
+    // Set up a default SOL pool allocation so the journal saves a
+    // pool plan that the crash-resume phase can pick up.
+    await p.evaluate(() => {
+      if (typeof window.rebuildPoolsFromSimple === "function" && (!window.pools || window.pools.length === 0)) {
+        window.rebuildPoolsFromSimple();
+      }
+    });
+
+    // Upload a real token image for CI metadata (pick one randomly).
+    const logoPath = TOKEN_IMAGES[Math.floor(Math.random() * TOKEN_IMAGES.length)];
+    if (fs.existsSync(logoPath)) {
+      log('uploading logo: ' + path.basename(path.dirname(logoPath)) + '/' + path.basename(logoPath));
+      await p.setInputFiles('#tokenLogo', logoPath);
+      await p.waitForTimeout(1000);
+    }
+
     await forceClick(p, '#createTokenBtn');
     // Token creation with vanity grinding can take a while
     await p.waitForSelector('#tokenCreatedInfo', { state: 'visible', timeout: 300000 });
@@ -240,17 +257,10 @@ try {
     await p.goto(SERVER, { waitUntil: 'domcontentloaded', timeout: 15000 });
     await dismissStartup(p);
 
-    // The Recent Launches panel should show our in-progress launch.
-    // Wait for it to load (no longer hidden, and has rows).
-    await p.waitForFunction(() => {
-      const panel = document.getElementById('recentLaunchesPanel');
-      const list = document.getElementById('recentLaunchesList');
-      return panel && !panel.classList.contains('hidden') && list && list.children.length > 0;
-    }, { timeout: 15000 });
+    // Wait for the Load button on the first launch row to appear.
+    const loadBtn = await p.waitForSelector('#recentLaunchesList button[data-action="load-launch"]', { timeout: 15000 });
     log('recent launches panel visible');
-
-    // Click the Load button on the first launch row
-    await p.click('#recentLaunchesList button[data-action="load-launch"]');
+    await loadBtn.click();
     await p.waitForTimeout(2000);
     log('launch loaded');
 

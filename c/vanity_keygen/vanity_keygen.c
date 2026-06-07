@@ -27,39 +27,12 @@
 #include <unistd.h>
 #include <sys/time.h>
 
-/* Cross-platform entropy source.
- *
- * On POSIX (macOS, Linux) we use getentropy() from <sys/random.h>.
- * Windows MinGW doesn't ship <sys/random.h> or getentropy(), so we
- * provide a same-shape static shim backed by BCryptGenRandom — the
- * Windows Crypto Next Generation RNG. This is the same source
- * randombytes.c uses for Windows, so the entropy story stays
- * consistent across the binary. The #pragma comment(lib, ...) is the
- * MinGW/MSVC idiom for telling the linker to pull in bcrypt.lib;
- * mirrors what randombytes.c already does. */
-#if defined(_WIN32)
-  #include <windows.h>
-  #include <bcrypt.h>
-  #include <io.h>      /* _setmode, _fileno */
-  #include <fcntl.h>   /* _O_BINARY */
-  #pragma comment(lib, "bcrypt.lib")
 
-  static int getentropy(void *buf, size_t n) {
-      while (n > 0) {
-          ULONG chunk = (n > 0x7fffffffULL) ? 0x7fffffff : (ULONG)n;
-          NTSTATUS s = BCryptGenRandom(NULL, (PUCHAR)buf, chunk,
-                                       BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-          if (s != 0) return -1;
-          buf = (char *)buf + chunk;
-          n -= chunk;
-      }
-      return 0;
-  }
-#else
-  #include <sys/random.h>
+#if defined(_WIN32)
+#include <windows.h>
 #endif
 
-#include "tweetnacl.h"
+#include <sodium.h>
 #include "base58.h"
 #include "vrf_ed25519.h"
 
@@ -250,7 +223,7 @@ static void *grind_thread(void *arg) {
     for (int i = 0; i < 8; i++) thread_seed[i] ^= (uint8_t)(tid >> (i * 8));
     {
         uint8_t tmp_pk[32], tmp_sk[64];
-        crypto_sign_keypair_from_seed(tmp_pk, tmp_sk, thread_seed);
+        crypto_sign_seed_keypair(tmp_pk, tmp_sk, thread_seed);
         memcpy(thread_seed, tmp_pk, 32);
     }
 
@@ -263,7 +236,7 @@ static void *grind_thread(void *arg) {
     int use_fast = gs->use_fast_match;
 
     while (!atomic_load_explicit(&gs->found, memory_order_relaxed)) {
-        crypto_sign_keypair_from_seed(pk, sk, seed);
+        crypto_sign_seed_keypair(pk, sk, seed);
 
         int matched = 0;
 
@@ -383,9 +356,8 @@ static void print_usage(const char *prog) {
 
 static int get_cpu_count(void) {
 #if defined(_WIN32)
-    /* Windows: <windows.h> is already included in the platform block
-     * at the top of the file. GetSystemInfo reports the number of
-     * logical processors, the same semantic sysconf returns on POSIX. */
+    /* Windows: GetSystemInfo reports the number of logical processors.
+     * <windows.h> is included via the libsodium header chain. */
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     return (si.dwNumberOfProcessors > 0) ? (int)si.dwNumberOfProcessors : 4;
@@ -424,15 +396,13 @@ static void hex_encode(const uint8_t *in, int len, char *out) {
     out[len * 2] = '\0';
 }
 
+
 int main(int argc, char **argv) {
-#if defined(_WIN32)
-    /* Switch stdout to binary mode so the C runtime doesn't translate
-     * \n into \r\n. Today's JSON output is single-line, so the Node
-     * side's stdout.trim() forgives the trailing translation. But any
-     * future multi-line value embedded in the JSON would silently
-     * corrupt on Windows only — preempt that whole class of bug here. */
-    _setmode(_fileno(stdout), _O_BINARY);
-#endif
+    if (sodium_init() < 0) {
+        fprintf(stderr, "Error: libsodium init failed\n");
+        return 1;
+    }
+
 
     const char *target_str = NULL;
     const char *out_path = NULL;
@@ -557,9 +527,9 @@ int main(int argc, char **argv) {
     uint8_t master_seed[32];
     if (use_vrf) {
         memcpy(master_seed, vrf_output, 32);
-    } else if (getentropy(master_seed, 32) != 0) {
-        fprintf(stderr, "Error: getentropy failed -- cannot generate secure seed\n");
-        return 1;
+    } else {
+        /* libsodium CSPRNG -- works on all platforms. */
+        randombytes_buf(master_seed, 32);
     }
 
     if (!quiet) {

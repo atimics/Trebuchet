@@ -28,6 +28,7 @@ import {
   publicKey as umiPublicKey,
   none,
   some,
+  createSignerFromKeypair,
 } from '@metaplex-foundation/umi';
 import QRCode from 'qrcode';
 import * as bip39 from 'bip39';
@@ -38,7 +39,6 @@ import {
   createTokenMetadataUmi,
   uploadTokenMetadata,
 } from './metadataUploadService.js';
-
 // The RPC URL is sourced from rpcConfig.js, which seeds itself with a
 // public-mainnet default on first run and persists user-selected RPCs to
 // rpcConfig.json. The connection is rebuilt whenever the user switches RPCs
@@ -91,7 +91,6 @@ async function withRpcRetry(fn, { maxRetries = 5, baseDelayMs = 1000 } = {}) {
 let _connectionFactory = makeConnection;
 let _umiFactory = createTokenMetadataUmi;
 let _uploadMetadata = uploadTokenMetadata;
-
 let connection = _connectionFactory();
 
 export function refreshConnection() {
@@ -333,20 +332,21 @@ export async function createTokenWithMetaplex({
     // Now create the metadata account for the existing mint
     console.log('Creating metadata account...');
     
-    // Convert the mint public key to Umi format
+    // Convert the mint public key to Umi format.
+    // When a vanity-ground mint keypair is available, wrap it as a UMI Signer
+    // BEFORE createV1 so the builder knows the mint must sign.  This ensures
+    // the instruction includes the SPL Token program and marks the mint as a
+    // required signer in the compiled message — no post-build surgery needed.
     const mintPubkey = umiPublicKey(mint.toString());
-    
-    // Create metadata for the existing token.
-    // NOTE: When a vanity-ground mint keypair is used, the Metaplex
-    // createV1 instruction requires the mint to sign (error 0x86
-    // "Mint needs to be signer"). The current @metaplex-foundation/umi
-    // createV1 builder does not add the mint to the required signers
-    // when the mint already exists on-chain, causing this call to
-    // fail for vanity mints. A workaround (prepending a dummy signer
-    // instruction or patching the transaction signer set) is tracked
-    // but not yet implemented.
-    await createV1(umi, {
-      mint: mintPubkey,
+    const umiMintSigner = mintKeypair
+      ? createSignerFromKeypair(
+          umi,
+          umi.eddsa.createKeypairFromSecretKey(mintKeypair.secretKey)
+        )
+      : null;
+
+    const metaTx = createV1(umi, {
+      mint: umiMintSigner || mintPubkey,
       authority: umi.identity,
       name,
       symbol,
@@ -354,7 +354,13 @@ export async function createTokenWithMetaplex({
       sellerFeeBasisPoints: percentAmount(0),
       decimals: 9,
       tokenStandard: TokenStandard.Fungible,
-    }).sendAndConfirm(umi);
+    });
+
+    // When using a pre-existing vanity mint, the mint keypair must sign the
+    // metadata creation transaction.  Passing the mint as a Signer above lets
+    // createV1 include the correct accounts and mark the signer.  The built-in
+    // sendAndConfirm handles signing with all required signers.
+    await metaTx.sendAndConfirm(umi);
     
     console.log('Metadata account created successfully');
     progress({ stage: 'metadata_account_created', tokenMint: mint.toString(), metadataUri });

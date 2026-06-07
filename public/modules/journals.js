@@ -248,6 +248,26 @@ function prepareRecoveredSessionFromJournal(journal, wallet) {
   };
   lpResult = { results: journalPriorResults(journal) };
 
+  // Restore pool allocations from the journal so the LP creation step
+  // has the same configuration the user set before the crash.
+  if (journal.poolPlan && Array.isArray(journal.poolPlan.allocations) && journal.poolPlan.allocations.length > 0) {
+    pools = journal.poolPlan.allocations.map((alloc) => ({
+      quoteToken: alloc.quoteToken,
+      supplyPercent: alloc.supplyPercent,
+      ammConfigIndex: alloc.ammConfigIndex,
+      quoteUsdOverride: alloc.quoteUsdOverride,
+      quoteDecimalsOverride: alloc.quoteDecimalsOverride,
+      quoteSymbolOverride: alloc.quoteSymbolOverride,
+      slices: alloc.distribution || [],
+      bootstrapConfig: alloc.bootstrap || { mode: 'minimal' },
+      ladderConfig: alloc.ladder || { mode: 'off', bands: [] },
+      support: alloc.support || 0,
+      // Flag that these were loaded from a journal — buildAllocationsForApi
+      // will pass them through without re-converting percentages.
+      _fromJournal: true,
+    }));
+  }
+
   document.body.classList.add('has-log');
   document.getElementById('walletInfo')?.classList.remove('hidden');
   const walletAddress = document.getElementById('walletAddress');

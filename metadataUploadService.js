@@ -88,11 +88,6 @@ export async function uploadTokenMetadata({
         'Logo upload'
       );
       imageUri = uploadedImageUri;
-      // Fix devnet gateway (same logic as metadata URI)
-      if (rpcUrl?.includes('devnet') && imageUri?.includes('arweave.net')) {
-        const txId = imageUri.split('/').pop();
-        imageUri = `https://gateway.irys.xyz/${txId}`;
-      }
       logger.log?.('Logo uploaded:', imageUri);
       onProgress?.({ stage: 'logo_uploaded', imageUri });
     } catch (uploadError) {
@@ -103,6 +98,13 @@ export async function uploadTokenMetadata({
         error: uploadError?.message || String(uploadError),
       });
     }
+  }
+
+  // Rewrite arweave.net → gateway.irys.xyz on devnet for both uploaded
+  // logos and placeholder images (the rewrite above only ran for uploads).
+  if (rpcUrl?.includes('devnet') && imageUri?.includes('arweave.net')) {
+    const txId = imageUri.split('/').pop();
+    imageUri = `https://gateway.irys.xyz/${txId}`;
   }
 
   const metadata = tokenMetadataJson({ name, symbol, description, imageUri });

@@ -32,13 +32,30 @@ const buildDir = path.join(cDir, 'build');
 // compiler's diagnostic messages readable.
 const sources = [
   path.join('vanity_keygen', 'vanity_keygen.c'),
-  'vrf_ed25519.c',
-  path.join('vendor', 'tweetnacl', 'tweetnacl.c'),
-  path.join('vendor', 'tweetnacl', 'randombytes.c'),
+  'vrf_ed25519.c'
 ];
 
 // Include paths, same set as the Makefile's INCLUDES variable.
-const includes = ['.', 'vendor', path.join('vendor', 'tweetnacl')];
+const includes = ['.', 'vendor'];
+
+
+// Detect libsodium via pkg-config or Homebrew default paths.
+let sodiumCflags = "";
+try {
+  const p = spawnSync("pkg-config", ["--cflags", "libsodium"], { stdio: "pipe" });
+  if (p.status === 0) sodiumCflags = p.stdout.toString().trim();
+} catch (_) {}
+if (!sodiumCflags && process.platform === "darwin") {
+  sodiumCflags = "-I/opt/homebrew/opt/libsodium/include -I/opt/homebrew/include";
+}
+let sodiumLibs = "-lsodium";
+try {
+  const p = spawnSync("pkg-config", ["--libs", "libsodium"], { stdio: "pipe" });
+  if (p.status === 0) sodiumLibs = p.stdout.toString().trim();
+} catch (_) {}
+if (sodiumLibs === "-lsodium" && process.platform === "darwin") {
+  sodiumLibs = "-L/opt/homebrew/opt/libsodium/lib -lsodium";
+}
 
 // Try a compiler by probing with --version. Returns the name if usable,
 // null otherwise. Uses shell: true on Windows so the search obeys
@@ -120,8 +137,8 @@ function build(compiler) {
     : [];
 
   const linkLibs = process.platform === 'win32'
-    ? ['-static-libgcc', '-Wl,-Bstatic', '-lpthread', '-Wl,-Bdynamic', '-lbcrypt']
-    : ['-pthread'];
+    ? ['-static-libgcc', '-Wl,-Bstatic', '-lpthread', '-Wl,-Bdynamic', '-lsodium']
+    : ['-pthread', '-lsodium'];
 
   const args = [
     '-O3', '-flto',
@@ -131,12 +148,18 @@ function build(compiler) {
     ...sources,
     '-o', outPath,
     ...includes.flatMap((i) => ['-I', i]),
+    ...(sodiumCflags ? sodiumCflags.split(/\s+/).filter(f => f.startsWith('-I')) : []),
+    ...(sodiumLibs ? sodiumLibs.split(/\s+/) : []),
+
     ...linkLibs,
   ];
 
   console.log(`Building vanity_keygen with ${compiler}`);
   console.log(`  platform: ${process.platform} / ${process.arch}`);
   console.log(`  output:   ${outPath}`);
+  console.log('  sodiumCflags:', sodiumCflags);
+  console.log('  sodiumLibs:', sodiumLibs);
+  console.log('  linkLibs:', linkLibs);
 
   const result = spawnSync(compiler, args, {
     cwd: cDir,

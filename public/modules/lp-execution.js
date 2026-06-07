@@ -43,6 +43,13 @@ bind('createTokenBtn', 'click', async () => {
       const logoFile = document.getElementById('tokenLogo').files[0];
       if (logoFile) formData.append('logo', logoFile);
 
+      const allocations = buildAllocationsForApi();
+      if (allocations.length > 0) {
+        formData.append("allocations", JSON.stringify(allocations));
+        const targetMc = document.getElementById("targetMarketCap");
+        if (targetMc) formData.append("targetMarketCapUsd", targetMc.value.trim());
+      }
+
       const resp = await fetch('/api/create-token', { method: 'POST', body: formData });
       const data = await resp.json();
       if (!data.success) throw new Error(data.error);

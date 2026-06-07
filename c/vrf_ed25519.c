@@ -9,7 +9,7 @@
  */
 
 #include "vrf_ed25519.h"
-#include "tweetnacl.h"
+#include <sodium.h>
 #include <string.h>
 
 int vrf_keygen(uint8_t pk[VRF_PK_BYTES], uint8_t sk[VRF_SK_BYTES]) {
@@ -18,7 +18,7 @@ int vrf_keygen(uint8_t pk[VRF_PK_BYTES], uint8_t sk[VRF_SK_BYTES]) {
 
 int vrf_keygen_from_seed(uint8_t pk[VRF_PK_BYTES], uint8_t sk[VRF_SK_BYTES],
                           const uint8_t seed[32]) {
-    return crypto_sign_keypair_from_seed(pk, sk, seed);
+    return crypto_sign_seed_keypair(pk, sk, seed);
 }
 
 int vrf_prove(uint8_t proof[VRF_PROOF_BYTES],

@@ -1372,6 +1372,8 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       vanityPrefix,
       vanitySuffix,
       vanityCAKeypair: vanityCAKeypairRaw,
+      allocations: allocationsRaw,
+      targetMarketCapUsd,
     } = req.body;
 
     // If the caller asked for a fresh vanity grind (prefix/suffix) but the
@@ -1443,26 +1445,47 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       onProgress: (event) => recordTokenJournalProgress(walletPublicKey, event),
     });
 
+    // Parse pool allocations if the frontend sent them, so the
+    // crash-resume path can pick up the pool plan from the journal.
+    let poolPlan = null;
+    let allocations = null;
+    if (allocationsRaw) {
+      try { allocations = JSON.parse(allocationsRaw); } catch (_) {}
+    }
+    if (allocations && Array.isArray(allocations) && allocations.length > 0) {
+      poolPlan = {
+        tokenMint: result.tokenMint,
+        tokenDecimals: 9,
+        tokenTotalSupply: normalizedTotalSupply,
+        targetMarketCapUsd: targetMarketCapUsd ? String(targetMarketCapUsd) : undefined,
+        allocations,
+        lockPositions: true,
+      };
+    }
+
+    const journalPatch = {
+      status: 'active',
+      stage: 'token_created',
+      error: null,
+      token: {
+        mint: result.tokenMint,
+        name: normalizedName,
+        symbol: normalizedSymbol,
+        totalSupply: normalizedTotalSupply,
+        decimals: 9,
+        metadataUri: result.metadataUri,
+        isSafe: result.isSafe,
+        mintAuthorityRenounced: result.mintAuthorityRenounced,
+        freezeAuthorityDisabled: result.freezeAuthorityDisabled,
+        metadataUpdateAuthorityRevoked: result.metadataUpdateAuthorityRevoked,
+        metadataImmutable: result.metadataImmutable,
+      },
+    };
+    if (poolPlan) journalPatch.poolPlan = poolPlan;
+
     launchJournal.upsertForWallet(
       walletPublicKey,
-      {
-        status: 'active',
-        stage: 'token_created',
-        error: null,
-        token: {
-          mint: result.tokenMint,
-          name: normalizedName,
-          symbol: normalizedSymbol,
-          totalSupply: normalizedTotalSupply,
-          decimals: 9,
-          metadataUri: result.metadataUri,
-          isSafe: result.isSafe,
-          mintAuthorityRenounced: result.mintAuthorityRenounced,
-          freezeAuthorityDisabled: result.freezeAuthorityDisabled,
-          metadataUpdateAuthorityRevoked: result.metadataUpdateAuthorityRevoked,
-          metadataImmutable: result.metadataImmutable,
-        },
-      },
+      journalPatch,
       { stage: 'token_created', tokenMint: result.tokenMint, metadataUri: result.metadataUri },
     );
 
@@ -3658,6 +3681,10 @@ app.post('/api/pending-wallets/dismiss', (req, res) => {
     console.error('Error dismissing pending wallet:', error);
     res.status(500).json({ success: false, error: error.message });
 
+  }
+});
+
+
 
 // Return recent launch journals for the "Recent Launches" panel.
 app.get('/api/recent-launches', (_req, res) => {
@@ -3686,8 +3713,6 @@ app.get('/api/recent-launches', (_req, res) => {
   }
 });
 
-  }
-});
 
 // Load a pending wallet into the active session — returns the full wallet
 // object (public key, secret key, QR code) so the frontend can use it for
