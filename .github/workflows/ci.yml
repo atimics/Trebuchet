@@ -50,17 +50,31 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # Smoke tests exercise live RPC and Raydium API dependencies read-only.
+      # No transactions are sent.  Requires the SMOKE_TEST_RPC repository
+      # secret.  When the secret is unset (e.g. on forks), the test harness
+      # skips itself gracefully and this step passes.
+      - name: Smoke tests (read-only mainnet)
+        continue-on-error: true
+        env:
+          TREBUCHET_SMOKE_TEST_RPC: ${{ secrets.SMOKE_TEST_RPC }}
+        run: node --test test/smoke-launch.test.mjs
+
       # F17: critical issues block the build outright.
       - name: Critical audit gate
         run: npm audit --audit-level=critical
 
       # F17: high-severity issues are reported on every PR but do NOT block
-      # yet — there is a known high-severity chain (bigint-buffer, pulled in
-      # transitively by @solana/spl-token and the Raydium SDK) that can only
-      # be cleared by a dependency bump (see F6/F17). Once that bump lands and
-      # this step passes, remove continue-on-error to make high severity
-      # blocking like critical.
-      - name: High audit report (non-blocking until dep bump)
+      # yet — the sole finding is an unfixed upstream vulnerability
+      # (GHSA-3gc7-fjrx-p6mg: bigint-buffer buffer overflow in toBigIntLE()).
+      # bigint-buffer 1.1.5 is current; @solana/buffer-layout-utils uses the
+      # vulnerable decode path for parsing on-chain data layouts.  In
+      # Trebuchet the attack surface is limited to reading trusted RPC data.
+      #
+      # No upstream fix is available as of 2026-06.  When a fix ships (in
+      # bigint-buffer or buffer-layout-utils), remove continue-on-error and
+      # make high-severity blocking like critical.
+      - name: High audit report (non-blocking — unfixed upstream vuln)
         continue-on-error: true
         run: npm audit --audit-level=high
 
@@ -121,3 +135,50 @@ jobs:
 
       - name: Build package smoke
         run: ${{ matrix.smoke_command }}
+
+  e2e:
+    name: E2E UI Flows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
+
+      - name: Run E2E tests
+        run: node test/e2e/ui-flows.mjs 01 02 03 04 05 06 07 08 09 --mobile
+
+      - name: Convert videos to GIF
+        if: always()
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          for f in test/e2e/videos/*.webm; do
+            name="${f%.webm}"
+            ffmpeg -y -i "$f" -vf "fps=6,scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" -loop 0 "${name}.gif" 2>/dev/null
+          done
+
+      - name: Build tutorial page
+        if: always()
+        run: |
+          mkdir -p _tutorial
+          cp test/e2e/videos/*.gif _tutorial/ 2>/dev/null || true
+          cp test/e2e/tutorial.html _tutorial/index.html
+
+      - name: Upload tutorial artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-walkthrough
+          path: _tutorial
+          if-no-files-found: ignore

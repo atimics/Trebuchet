@@ -2039,6 +2039,9 @@
             align-items: center;
             gap: 0.75rem;
             flex-wrap: wrap;
+            border-radius: 4px;
+            cursor: default;
+            transition: background 0.15s ease;
             padding: 0.75rem 1rem;
             background: var(--paper-card);
             border: 1px solid var(--rule);
@@ -2184,6 +2187,9 @@
             align-items: center;
             gap: 0.5rem;
             flex-wrap: wrap;
+            border-radius: 4px;
+            cursor: default;
+            transition: background 0.15s ease;
         }
         .slice-row .slice-label {
             font-weight: 600;
@@ -2234,6 +2240,9 @@
             display: flex;
             gap: 0.4rem;
             flex-wrap: wrap;
+            border-radius: 4px;
+            cursor: default;
+            transition: background 0.15s ease;
             margin-bottom: 0.6rem;
         }
 
@@ -2270,6 +2279,9 @@
             justify-content: space-between;
             gap: 0.5rem;
             flex-wrap: wrap;
+            border-radius: 4px;
+            cursor: default;
+            transition: background 0.15s ease;
             margin-bottom: 0.4rem;
         }
         .distribution-expanded-header .label {
@@ -2676,6 +2688,9 @@
         .token-preview-stats .tps-tiles {
             display: flex;
             flex-wrap: wrap;
+            border-radius: 4px;
+            cursor: default;
+            transition: background 0.15s ease;
             gap: 0.5rem;
         }
         .token-preview-stats .tps-tile {
@@ -2713,6 +2728,9 @@
         .token-preview-stats .tps-pools {
             display: flex;
             flex-wrap: wrap;
+            border-radius: 4px;
+            cursor: default;
+            transition: background 0.15s ease;
             align-items: center;
             gap: 0.35rem;
         }
@@ -3066,8 +3084,12 @@
             border-bottom: 1px dashed var(--rule);
             gap: 0.5rem;
             flex-wrap: wrap;
+            border-radius: 4px;
+            cursor: default;
+            transition: background 0.15s ease;
         }
         .rpc-row:last-child { border-bottom: none; }
+        .rpc-row:hover { background: rgba(128,128,128,0.06); }
         .rpc-row .rpc-info {
             flex: 1;
             min-width: 0;
@@ -3206,6 +3228,20 @@
             width: 100%;
             height: 500px;
             border: none;
+        }
+
+        /* ── Global focus-visible ring ── */
+        :focus-visible {
+            outline: 2px solid var(--primary, #d84b4b);
+            outline-offset: 2px;
+            border-radius: 2px;
+        }
+        /* ── Improved disabled button contrast ── */
+        .button[disabled],
+        .button:disabled,
+        .button.is-static {
+            opacity: 0.55;
+            filter: grayscale(0.3);
         }
 </style>
 </head>
@@ -4228,6 +4264,12 @@
                         <div id="lpProgressTree"></div>
                     </div>
 
+                    <div id="lpDoneInfo" class="hidden mt-3">
+                        <div class="notification is-success is-light is-size-7 py-2 px-3">
+                            <p><strong>All pools created.</strong></p>
+                            <p id="lpDoneSummary"></p>
+                        </div>
+                    </div>
                     <!-- Post-creation actions live in the LEFT column, where the
                          primary "continue" action sits on every other step.
                          Shown in sync with the result summary on the right via
@@ -4236,7 +4278,7 @@
                          done until the transfer in step 6 (which re-offers the
                          download); only a collapsible preview is offered now. -->
                     <div id="lpDoneActions" class="hidden mt-3">
-                        <div class="field is-grouped">
+                        <div class="field is-grouped is-grouped-multiline">
                             <div class="control">
                                 <button class="button is-primary" id="continueToTransferBtn">
                                     <span>Continue to Final Transfer</span>
@@ -4687,6 +4729,7 @@
          wires it up. Loaded from 'self' to satisfy the CSP. -->
     <script src="vendor/three/three.min.js"></script>
     <script src="coinRenderer.js"></script>
+    <script src="api.js"></script>
     <script src="app.js"></script>
     <!-- ============================================================ -->
     <!-- Generic Confirm Modal                                          -->
