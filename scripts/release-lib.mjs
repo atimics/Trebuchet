@@ -232,7 +232,7 @@ export function staleReleaseAssetNames(existingAssets, releaseAssets) {
     .sort();
 }
 
-export function buildReleaseNotes(tagName, metadata) {
+export function buildReleaseNotes(tagName, metadata, uiGifAssets = []) {
   const lines = [
     `# ${tagName}`,
     '',
@@ -251,6 +251,16 @@ export function buildReleaseNotes(tagName, metadata) {
 
   for (const entry of [...metadata].sort(compareTargets)) {
     lines.push(`- ${entry.label}: ${entry.trust} (${entry.files.join(', ')})`);
+  }
+
+  if (uiGifAssets.length > 0) {
+    lines.push('', '## UI walkthrough', '');
+    lines.push('Animated GIFs of the complete launch flow (desktop and mobile):');
+    lines.push('');
+    for (const gif of uiGifAssets) {
+      const name = gif.replace(/^.*[/]/, '').replace(/.gif$/, '');
+      lines.push(`- ${name}`);
+    }
   }
 
   lines.push('', '## Verification', '', '- Download `SHA256SUMS.txt` with the release assets.', '- Verify checksums locally with `shasum -a 256 -c SHA256SUMS.txt`.', '');
