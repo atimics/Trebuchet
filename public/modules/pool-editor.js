@@ -1006,26 +1006,7 @@ function buildPoolNode(pool, idx) {
       <label class="label is-small">Quote Token</label>
       <div class="select is-small is-fullwidth">
         <select data-field="quoteSelect">
-          <optgroup label="Native">
-            <option value="SOL">SOL</option>
-          </optgroup>
-          <optgroup label="Flywheels">
-            <option value="HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r">$seige (Meme flywheel — recommended)</option>
-            <option value="8ZscSWe5ZSFbGYg4JzA3eqpf6iCnwT72i8TZvVni2yMY">RATi (Agent Economy — devnet)</option>
-            <option value="J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj">XLRT (Reserve flywheel)</option>
-          </optgroup>
-          <optgroup label="Majors">
-            <option value="3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh">wBTC (Wormhole)</option>
-            <option value="7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs">ETH (Wormhole)</option>
-          </optgroup>
-          <optgroup label="Stables">
-            <option value="USDC">USDC</option>
-            <option value="USDT">USDT</option>
-            <option value="USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB">USD1 (World Liberty Financial)</option>
-          </optgroup>
-          <optgroup label="Other">
-            <option value="__custom">Custom mint…</option>
-          </optgroup>
+          <!-- Options are built dynamically from TOKEN_REGISTRY in renderPoolEditorOptions() -->
         </select>
       </div>
       <input class="input is-small mt-1 hidden" type="text" data-field="quoteCustom" placeholder="SPL mint address">
@@ -1057,6 +1038,7 @@ function buildPoolNode(pool, idx) {
 
   const quoteSelect = row1.querySelector('[data-field="quoteSelect"]');
   const quoteCustom = row1.querySelector('[data-field="quoteCustom"]');
+  renderPoolEditorOptions(quoteSelect);
 
   // The dropdown contains a mix of uppercase symbols (SOL/USDC/USDT — these
   // are the tokens the server knows about via KNOWN_QUOTES) and raw mint
@@ -3654,3 +3636,45 @@ function resetForNewLaunch() {
 
 bind('startOverBtn', 'click', resetForNewLaunch);
 
+// Builds pool-editor quote dropdown options from the central TOKEN_REGISTRY.
+// Called after the pool row template is inserted into the DOM.
+function renderPoolEditorOptions(selectEl) {
+  if (!selectEl || typeof TOKEN_REGISTRY === "undefined") return;
+  // Detect current value before clearing
+  var prev = selectEl.value;
+  selectEl.innerHTML = "";
+  
+  var groups = { native: "Native", flywheel: "Flywheels", major: "Majors", stable: "Stables" };
+  var groupOrder = ["native", "flywheel", "major", "stable"];
+  
+  for (var gi = 0; gi < groupOrder.length; gi++) {
+    var g = groupOrder[gi];
+    var tokens = typeof tokensByGroup === 'function' ? tokensByGroup(g) : [];
+    if (!tokens.length) continue;
+    var og = document.createElement("optgroup");
+    og.label = groups[g] || g;
+    for (var ti = 0; ti < tokens.length; ti++) {
+      var t = tokens[ti];
+      var opt = document.createElement("option");
+      opt.value = t.address || t.symbol;
+      opt.textContent = t.symbol + (t.description ? " (" + t.description + ")" : "") + (t.network === "devnet" ? " — devnet" : "");
+      og.appendChild(opt);
+    }
+    selectEl.appendChild(og);
+  }
+  // "Other" group always last (custom mint)
+  var og2 = document.createElement("optgroup");
+  og2.label = "Other";
+  var optCust = document.createElement("option");
+  optCust.value = "__custom";
+  optCust.textContent = "Custom mint…";
+  og2.appendChild(optCust);
+  selectEl.appendChild(og2);
+  
+  // Restore selection if it still exists
+  if (prev) {
+    for (var vi = 0; vi < selectEl.options.length; vi++) {
+      if (selectEl.options[vi].value === prev) { selectEl.selectedIndex = vi; break; }
+    }
+  }
+}

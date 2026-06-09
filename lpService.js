@@ -111,6 +111,7 @@ import {
   ExtensionType,
 } from '@solana/spl-token';
 import { transferTokenWithProgram } from './walletHelpers.js';
+import { TOKEN_REGISTRY, tokenByKey, tokenByAddress, isAllowedQuote, tokensByNetwork } from './tokenRegistry.js';
 import { discoverRaydiumRoute, probeRaydiumPriceStrict } from './swapService.js';
 import {
   computeBootstrapTicks,
@@ -273,6 +274,24 @@ export const KNOWN_QUOTES = {
       'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB/logo.svg',
   },
 };
+
+// --- Devnet quote tokens for realistic pool testing on devnet ---
+// RATi, Kyro, Ruby are curated devnet-native tokens usable as quote/basis tokens.
+// Add new entries as you create devnet pool tokens.
+// Also add matching <option> entries in pool-editor.js and app.js for UI visibility.
+// DEPRECATED — use tokenRegistry.js (isAllowedQuote(spec, 'devnet')) instead.
+// Kept for backward compatibility during transition; will be removed.
+export const DEVNET_ALLOWED_QUOTES = {
+  RATI: { address: '8ZscSWe5ZSFbGYg4JzA3eqpf6iCnwT72i8TZvVni2yMY', symbol: 'RATi', decimals: 9, name: 'RATi (Agent Economy)' },
+  KYRO: { address: '7m5Y29h6pEvzfkgn3hkYqFQNUrL5CofXtrnDJoqCKyro', symbol: 'Kyro', decimals: 6, name: 'Kyro (Intent Protocol)' },
+  RUBY: { address: '2hJY16WZgTQXXo6qBoWoBtZM7fz556cw3qdLgtntRuby', symbol: 'Ruby', decimals: 6, name: 'Ruby (Ruby High AI)' },
+};
+
+// Thin wrapper — the real network-scoped allowlist lives in tokenRegistry.js.
+export function isAllowedDevnetQuote(spec) {
+  return isAllowedQuote(spec, 'devnet');
+}
+
 
 // Tokens we trust at compile time. The /api/quote-token-info endpoint
 // skips the on-chain authority audit (mint/freeze authority checks) AND
@@ -715,6 +734,23 @@ async function resolveQuoteToken(connection, spec, overrides = {}) {
     }
     if (overrides.symbol) base.symbol = overrides.symbol;
     return base;
+  }
+
+  // Central token registry lookup (tokenRegistry.js). Covers SOL, flywheels, majors, stables,
+  // and devnet-native tokens (RATi, Kyro, Ruby, etc.) across both networks.
+  // Returns a friendly symbol + decimals early so downstream avoids extra RPC roundtrips.
+  const _hit = tokenByKey(upper) || tokenByAddress(spec);
+  if (_hit) {
+    var _base = {
+      address: _hit.address,
+      programId: TOKEN_PROGRAM_ID.toBase58(),
+      decimals: _hit.decimals,
+      symbol: _hit.symbol,
+      name: _hit.name,
+    };
+    if (overrides.decimals !== undefined && overrides.decimals !== null) _base.decimals = Number(overrides.decimals);
+    if (overrides.symbol) _base.symbol = overrides.symbol;
+    return _base;
   }
 
   // Treat as a mint address.
@@ -2385,6 +2421,23 @@ export async function preflightCreatePoolsAndPositions({
   targetMarketCapUsd,
   allocations,
 }) {
+  onProgress && onProgress({ stage: "lp_preflight", allocationCount: allocations.length });
+  var _pnet = (typeof getNetwork === "function") ? getNetwork() : null;
+  if (_pnet === "devnet") {
+    var _pbad = allocations.filter(function(a) {
+      var q = a.quoteToken || a.quoteSymbolOverride || "";
+      return !isAllowedDevnetQuote(q);
+    });
+    if (_pbad.length > 0) {
+      var _pnames = _pbad.map(function(a) { return a.quoteSymbolOverride || (a.quoteToken ? a.quoteToken.slice(0, 8) : "custom"); }).join(", ");
+      var _perr = new Error(
+        "Devnet launches only support SOL or curated devnet pool tokens (non-allowed: " + _pnames + "). " +
+        "Add the token to tokenRegistry.js (TOKEN_REGISTRY) and re-import, or restrict to SOL / RATi / Kyro / Ruby / other allowed basis tokens. No SOL was spent."
+      );
+      _perr.failedPhase = "pre_flight";
+      throw _perr;
+    }
+  }
   if (!Array.isArray(allocations) || allocations.length === 0) {
     const e = new Error('No allocations provided');
     e.failedPhase = 'pre_flight';
@@ -2454,6 +2507,7 @@ export async function preflightCreatePoolsAndPositions({
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
     const alloc = allocations[allocIdx];
     try {
+      onProgress && onProgress({ stage: "lp_quote_resolving", allocationIndex: allocIdx, quote: alloc.quoteToken || alloc.quoteSymbolOverride || "custom" });
       const quoteToken = await resolveQuoteToken(connection, alloc.quoteToken, {
         decimals: alloc.quoteDecimalsOverride,
         symbol: alloc.quoteSymbolOverride,
@@ -2546,6 +2600,27 @@ export async function createPoolsAndPositions({
   // each retry only attempting the work that didn't complete before.
   priorResults = [],
 }) {
+  onProgress && onProgress({ stage: "lp_preflight", allocationCount: allocations.length });
+  var _net = (typeof getNetwork === "function") ? getNetwork() : null;
+  if (_net === "devnet") {
+    var _bad = allocations.filter(function(a) {
+      var q = a.quoteToken || a.quoteSymbolOverride || "";
+      return !isAllowedDevnetQuote(q);
+    });
+    if (_bad.length > 0) {
+      var _names = _bad.map(function(a) { return a.quoteSymbolOverride || (a.quoteToken ? a.quoteToken.slice(0, 8) : "custom"); }).join(", ");
+      var _err = new Error(
+        "Devnet launches only support SOL or curated devnet pool tokens (see tokenRegistry.js — RATi, Kyro, Ruby + your additions). " +
+        "Non-allowed quotes on devnet: " + _names + ". " +
+        "Add the mint to the allowlist (and a pool editor dropdown entry) or use only allowed quotes. No SOL was spent."
+      );
+      _err.failedPhase = "pre_flight";
+      _err.partialResults = priorResults || [];
+      throw _err;
+    }
+    var _curated = Object.keys(DEVNET_ALLOWED_QUOTES || {}).join(", ") || "(none)";
+    console.log("Devnet: pools restricted to SOL + curated quotes (" + _curated + ").");
+  }
   console.log(`\n=== Creating pools and positions for ${tokenMint} ===`);
   console.log(`Total supply: ${tokenTotalSupply}, target MC: $${targetMarketCapUsd}`);
   console.log(`Allocations: ${allocations.length}, lock: ${lockPositions}`);
@@ -2964,7 +3039,8 @@ export async function createPoolsAndPositions({
       console.log(
         `  [${i}] ${quoteToken.symbol} -> ${programLabel}${extLabel} [ok]`,
       );
-      resolvedAllocs.push({ alloc, quoteToken });
+
+      onProgress && onProgress({ stage: "lp_quote_resolved", allocationIndex: i, quoteSymbol: quoteToken.symbol, quoteAddress: quoteToken.address });      resolvedAllocs.push({ alloc, quoteToken });
     } catch (err) {
       // Annotate with which allocation failed so the caller can highlight
       // the right row in the UI. partialResults preserves any priorResults

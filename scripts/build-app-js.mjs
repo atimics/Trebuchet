@@ -23,6 +23,7 @@ const root = join(__dirname, '..');
 // Concatenation order — this is the canonical structure of app.js. Each module
 // owns a contiguous slice of the original hand-written app.js.
 export const moduleNames = [
+  'token-registry.js',    // single-source token registry (shared by server and client)
   'preamble.js',          // file header, bind(), API-session fetch wrapper, state, constants, flywheels
   'session.js',           // SessionState: centralized launch state, save/restore, renderAll
   'activity-log.js',      // log(), startServerLogStream(), setLoading(), withRunState()

@@ -32,7 +32,8 @@ const buildDir = path.join(cDir, 'build');
 // compiler's diagnostic messages readable.
 const sources = [
   path.join('vanity_keygen', 'vanity_keygen.c'),
-  'vrf_ed25519.c'
+  'vrf_ed25519.c',
+  'leos_engine.c',
 ];
 
 // Include paths, same set as the Makefile's INCLUDES variable.

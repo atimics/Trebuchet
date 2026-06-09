@@ -1,3 +1,178 @@
+// token-registry.js — thin shim for the client build. The canonical tokenRegistry.js
+// lives in the repo root and is imported by server-side code (lpService.js).
+// For the client bundle we copy a snapshot of TOKEN_REGISTRY here so the concatenated
+// app.js has it without needing ESM imports.
+//
+// When adding tokens: edit the root tokenRegistry.js, then re-run `npm run build:js`
+// which will rebuild this snapshot into public/app.js.
+//
+// (Replaces the old scattered FLYWHEELS + hardcoded <option> tags.)
+
+var TOKEN_REGISTRY = {
+  // ==========================================================================
+  // Native
+  // ==========================================================================
+  SOL: {
+    address: 'So11111111111111111111111111111111111111112',
+    symbol: 'SOL',
+    decimals: 9,
+    name: 'Solana',
+    network: 'both',
+    group: 'native',
+  },
+
+  // ==========================================================================
+  // Flywheels (mainnet)
+  // ==========================================================================
+  SEIGE: {
+    address: 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r',
+    symbol: '$seige',
+    decimals: 6,
+    name: 'Seige (Meme Flywheel)',
+    network: 'mainnet',
+    group: 'flywheel',
+    description: 'Meme-token flywheel — recommended',
+    isFlywheel: true,
+    available: true,
+  },
+  XLRT: {
+    address: 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj',
+    symbol: 'XLRT',
+    decimals: 9,
+    name: 'XLRT (Reserve Flywheel)',
+    network: 'mainnet',
+    group: 'flywheel',
+    description: 'wBTC + ETH reserve flywheel',
+    isFlywheel: true,
+    available: true,
+  },
+
+  // ==========================================================================
+  // Devnet-native basis tokens
+  // ==========================================================================
+  RATI: {
+    address: '8ZscSWe5ZSFbGYg4JzA3eqpf6iCnwT72i8TZvVni2yMY',
+    symbol: 'RATi',
+    decimals: 9,
+    name: 'RATi (Agent Economy)',
+    network: 'devnet',
+    group: 'flywheel',
+    description: 'Agent Economy — devnet',
+    isFlywheel: true,
+    available: true,
+  },
+  KYRO: {
+    address: '7m5Y29h6pEvzfkgn3hkYqFQNUrL5CofXtrnDJoqCKyro',
+    symbol: 'Kyro',
+    decimals: 6,
+    name: 'Kyro (Intent Protocol)',
+    network: 'devnet',
+    group: 'flywheel',
+    description: 'Intent Protocol — devnet',
+    isFlywheel: true,
+    available: true,
+  },
+  RUBY: {
+    address: '2hJY16WZgTQXXo6qBoWoBtZM7fz556cw3qdLgtntRuby',
+    symbol: 'Ruby',
+    decimals: 6,
+    name: 'Ruby (Ruby High AI)',
+    network: 'devnet',
+    group: 'flywheel',
+    description: 'Ruby High AI — devnet',
+    isFlywheel: true,
+    available: true,
+  },
+
+  // ==========================================================================
+  // Majors
+  // ==========================================================================
+  WBTC: {
+    address: '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh',
+    symbol: 'wBTC',
+    decimals: 8,
+    name: 'Wrapped BTC (Wormhole)',
+    network: 'mainnet',
+    group: 'major',
+  },
+  WETH: {
+    address: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',
+    symbol: 'wETH',
+    decimals: 8,
+    name: 'Wrapped ETH (Wormhole)',
+    network: 'mainnet',
+    group: 'major',
+  },
+
+  // ==========================================================================
+  // Stables
+  // ==========================================================================
+  USDC: {
+    address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    symbol: 'USDC',
+    decimals: 6,
+    name: 'USD Coin',
+    network: 'mainnet',
+    group: 'stable',
+  },
+  USDT: {
+    address: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+    symbol: 'USDT',
+    decimals: 6,
+    name: 'USDT',
+    network: 'mainnet',
+    group: 'stable',
+  },
+  USD1: {
+    address: 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB',
+    symbol: 'USD1',
+    decimals: 6,
+    name: 'USD1 (World Liberty Financial)',
+    network: 'mainnet',
+    group: 'stable',
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Query helpers
+// ---------------------------------------------------------------------------
+
+function tokenByKey(key) {
+  return TOKEN_REGISTRY[key] || null;
+}
+
+function tokenByAddress(addr) {
+  if (!addr) return null;
+  const s = String(addr);
+  return Object.values(TOKEN_REGISTRY).find((t) => t.address === s) || null;
+}
+
+function tokensByGroup(group) {
+  return Object.values(TOKEN_REGISTRY).filter((t) => t.group === group);
+}
+
+function tokensByNetwork(net) {
+  if (!net) return Object.values(TOKEN_REGISTRY);
+  return Object.values(TOKEN_REGISTRY).filter((t) => t.network === net || t.network === 'both');
+}
+
+function allFlywheels() {
+  return Object.values(TOKEN_REGISTRY).filter((t) => t.isFlywheel);
+}
+
+function flywheelsByNetwork(net) {
+  return Object.values(TOKEN_REGISTRY).filter((t) => t.isFlywheel && (t.network === net || t.network === 'both'));
+}
+
+/** Predicate: is this quote token allowed for launches on the given network? */
+function isAllowedQuote(spec, network) {
+  if (!spec) return false;
+  const str = String(spec);
+  const upper = str.toUpperCase();
+  const token = tokenByKey(upper) || tokenByAddress(str);
+  if (!token) return false;
+  return token.network === network || token.network === 'both';
+}
 // app.js — frontend logic for Trebuchet
 //
 // Six-step launcher with collapsible step cards. Each step is in one of
@@ -295,22 +470,17 @@ let demoModeReloading = false;
 //   description  — optional short tagline shown next to the dropdown
 //   available    — when false, the option is shown grayed out as a hint
 //                  that this flywheel exists but isn't launched yet
-const FLYWHEELS = {
-  reserve: {
-    key: 'reserve',
-    label: 'Reserve',
-    mint: 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj',
-    description: 'wBTC + ETH reserve flywheel',
-    available: true,
-  },
-  meme: {
-    key: 'meme',
-    label: 'Meme',
-    mint: 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r',
-    description: 'Meme-token flywheel',
-    available: true,
-  },
-};
+// FLYWHEELS is now derived from the central TOKEN_REGISTRY (tokenRegistry.js / token-registry.js).
+// To add flywheel tokens, edit tokenRegistry.js and rebuild.
+var FLYWHEELS = {};
+(function(){
+  if (typeof allFlywheels !== "function") return;
+  var fws = allFlywheels();
+  for (var i = 0; i < fws.length; i++) {
+    var f = fws[i];
+    FLYWHEELS[f.symbol] = { key: f.symbol, label: f.symbol, mint: f.address, description: f.description || '', available: f.available };
+  }
+})();
 
 // Flywheel allocation bounds and default. The slider in the simple-config
 // UI lets users dial this between MIN and MAX; default is the value the
@@ -7899,26 +8069,7 @@ function buildPoolNode(pool, idx) {
       <label class="label is-small">Quote Token</label>
       <div class="select is-small is-fullwidth">
         <select data-field="quoteSelect">
-          <optgroup label="Native">
-            <option value="SOL">SOL</option>
-          </optgroup>
-          <optgroup label="Flywheels">
-            <option value="HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r">$seige (Meme flywheel — recommended)</option>
-            <option value="8ZscSWe5ZSFbGYg4JzA3eqpf6iCnwT72i8TZvVni2yMY">RATi (Agent Economy — devnet)</option>
-            <option value="J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj">XLRT (Reserve flywheel)</option>
-          </optgroup>
-          <optgroup label="Majors">
-            <option value="3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh">wBTC (Wormhole)</option>
-            <option value="7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs">ETH (Wormhole)</option>
-          </optgroup>
-          <optgroup label="Stables">
-            <option value="USDC">USDC</option>
-            <option value="USDT">USDT</option>
-            <option value="USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB">USD1 (World Liberty Financial)</option>
-          </optgroup>
-          <optgroup label="Other">
-            <option value="__custom">Custom mint…</option>
-          </optgroup>
+          <!-- Options are built dynamically from TOKEN_REGISTRY in renderPoolEditorOptions() -->
         </select>
       </div>
       <input class="input is-small mt-1 hidden" type="text" data-field="quoteCustom" placeholder="SPL mint address">
@@ -7950,6 +8101,7 @@ function buildPoolNode(pool, idx) {
 
   const quoteSelect = row1.querySelector('[data-field="quoteSelect"]');
   const quoteCustom = row1.querySelector('[data-field="quoteCustom"]');
+  renderPoolEditorOptions(quoteSelect);
 
   // The dropdown contains a mix of uppercase symbols (SOL/USDC/USDT — these
   // are the tokens the server knows about via KNOWN_QUOTES) and raw mint
@@ -10547,6 +10699,48 @@ function resetForNewLaunch() {
 
 bind('startOverBtn', 'click', resetForNewLaunch);
 
+// Builds pool-editor quote dropdown options from the central TOKEN_REGISTRY.
+// Called after the pool row template is inserted into the DOM.
+function renderPoolEditorOptions(selectEl) {
+  if (!selectEl || typeof TOKEN_REGISTRY === "undefined") return;
+  // Detect current value before clearing
+  var prev = selectEl.value;
+  selectEl.innerHTML = "";
+  
+  var groups = { native: "Native", flywheel: "Flywheels", major: "Majors", stable: "Stables" };
+  var groupOrder = ["native", "flywheel", "major", "stable"];
+  
+  for (var gi = 0; gi < groupOrder.length; gi++) {
+    var g = groupOrder[gi];
+    var tokens = typeof tokensByGroup === 'function' ? tokensByGroup(g) : [];
+    if (!tokens.length) continue;
+    var og = document.createElement("optgroup");
+    og.label = groups[g] || g;
+    for (var ti = 0; ti < tokens.length; ti++) {
+      var t = tokens[ti];
+      var opt = document.createElement("option");
+      opt.value = t.address || t.symbol;
+      opt.textContent = t.symbol + (t.description ? " (" + t.description + ")" : "") + (t.network === "devnet" ? " — devnet" : "");
+      og.appendChild(opt);
+    }
+    selectEl.appendChild(og);
+  }
+  // "Other" group always last (custom mint)
+  var og2 = document.createElement("optgroup");
+  og2.label = "Other";
+  var optCust = document.createElement("option");
+  optCust.value = "__custom";
+  optCust.textContent = "Custom mint…";
+  og2.appendChild(optCust);
+  selectEl.appendChild(og2);
+  
+  // Restore selection if it still exists
+  if (prev) {
+    for (var vi = 0; vi < selectEl.options.length; vi++) {
+      if (selectEl.options[vi].value === prev) { selectEl.selectedIndex = vi; break; }
+    }
+  }
+}
 // ===========================================================================
 // Tokenomics Preview Modal
 // ===========================================================================
@@ -14758,6 +14952,9 @@ bind('createLpBtn', 'click', async () => {
       log(`Starting pool creation for ${pools.length} pool(s)...`);
       addProgressIntro();
       buildPhaseProgressTree(pools, lockPositions);
+      // Show the live log with initial message.
+      if (typeof _lpShowLog === "function") _lpShowLog();
+      if (typeof _lpAppendLog === "function") _lpAppendLog("Waiting for pool creation to start…");
 
       // Start the LP progress poll just before the fetch so per-step
       // events translate to row checkmarks in real time (instead of all
@@ -15465,6 +15662,47 @@ function _updatePhaseProgress(phaseElement) {
 // prevent the user from worrying that nothing is happening. Per-step progress
 // tracking would require server-side streaming (SSE/WS) — for now the user
 // just sees pending → done at the end. Server console shows the live progress.
+function _lpShowLog() {
+  var details = document.getElementById('lpProgressLog');
+  if (details && details.classList.contains('hidden')) {
+    details.classList.remove('hidden');
+  }
+}
+
+function _lpAppendLog(line) {
+  var details = document.getElementById('lpProgressLog');
+  var pre = document.getElementById('lpProgressLogContent');
+  if (!details || !pre) return;
+  if (details.classList.contains('hidden')) details.classList.remove('hidden');
+  var ts = new Date().toISOString().slice(11, 19);
+  pre.textContent += '[' + ts + '] ' + line + '\n';
+  pre.scrollTop = pre.scrollHeight;
+}
+
+// Map human-readable stage names to log lines.
+function _lpStageToLog(event) {
+  if (!event || !event.stage) return null;
+  var idx = event.allocationIndex != null ? (' pool ' + (event.allocationIndex + 1)) : '';
+  switch (event.stage) {
+    case 'pool_create_start': return 'Creating pool' + idx + '…';
+    case 'pool_create_done':   return 'Pool' + idx + ' created: ' + (event.poolId || '');
+    case 'pool_create_retry':  return 'Pool' + idx + ' retry ' + event.attempt + ' (rate limit, waiting ' + (event.delayMs / 1000) + 's)';
+    case 'main_open_start':    return 'Opening slice ' + (event.sliceIndex + 1) + idx + '…';
+    case 'main_open_done':     return 'Slice ' + (event.sliceIndex + 1) + idx + ' opened: ' + (event.nftMint || '');
+    case 'bootstrap_open_start': return 'Opening bootstrap' + idx + '…';
+    case 'bootstrap_open_done':  return 'Bootstrap' + idx + ' opened: ' + (event.nftMint || '');
+    case 'main_lock_done':     return 'Locked slice ' + (event.sliceIndex + 1) + idx;
+    case 'main_lock_failed':   return 'Lock failed for slice ' + (event.sliceIndex + 1) + idx + ': ' + (event.error || '');
+    case 'bootstrap_lock_done': return 'Locked bootstrap' + idx;
+    case 'phase3_start':       return 'Starting position locks…';
+        case "lp_preflight": return "Preflight (validating " + (event.allocationCount || "?") + " pools)…";
+    case "lp_quote_resolving": { var q = event.quote || ""; var qs = String(q).slice(0,10); if (q && qs.length < String(q).length) qs += "…"; var i = (event.allocationIndex != null ? (event.allocationIndex+1) : "?"); return "Resolving quote for pool " + i + (qs ? " ("+qs+")" : "") + "…"; }
+    case "lp_quote_resolved": { var sym = event.quoteSymbol || (event.quoteAddress ? String(event.quoteAddress).slice(0,8) : ""); var i = (event.allocationIndex != null ? (event.allocationIndex+1) : "?"); return "Quote ready: " + sym + " (pool " + i + ")"; }
+default: return null;
+  }
+}
+
+
 function addProgressIntro() {
   const tree = document.getElementById('lpProgressTree');
   const note = document.createElement('div');
@@ -15472,7 +15710,7 @@ function addProgressIntro() {
   note.innerHTML =
     '<i class="fas fa-info-circle"></i>&nbsp;Creating pools and positions can take several minutes. ' +
     'Each step submits a transaction and waits for confirmation. ' +
-    'Live progress is logged to the server console. ' +
+    'Live progress is shown in the log below. ' +
     'The checkmarks below will populate when the operation completes.';
   tree.appendChild(note);
 }
@@ -16625,6 +16863,7 @@ let _lpProgressSeenCount = 0;
 // buildPhaseProgressTree. Failed events use the same data-stage as
 // their _done counterparts — they're different "kinds" of the same
 // underlying row, not separate rows.
+// Append a line to the streaming progress log (collapsible <details>).
 function _lpEventToRow(event) {
   if (!event || event.allocationIndex == null) return null;
   const idx = event.allocationIndex;
@@ -16680,6 +16919,8 @@ function startLpProgressPoll(walletPublicKey) {
           // based on the event kind returned by the translator.
           for (const ev of data.state.events) {
             const mapped = _lpEventToRow(ev);
+            var logLine = _lpStageToLog(ev);
+            if (logLine) _lpAppendLog(logLine);
             if (!mapped) continue;
             if (mapped.kind === 'failed') {
               markRowFailed(mapped.row, mapped.error);

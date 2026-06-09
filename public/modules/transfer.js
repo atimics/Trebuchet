@@ -188,6 +188,7 @@ let _lpProgressSeenCount = 0;
 // buildPhaseProgressTree. Failed events use the same data-stage as
 // their _done counterparts — they're different "kinds" of the same
 // underlying row, not separate rows.
+// Append a line to the streaming progress log (collapsible <details>).
 function _lpEventToRow(event) {
   if (!event || event.allocationIndex == null) return null;
   const idx = event.allocationIndex;
@@ -243,6 +244,8 @@ function startLpProgressPoll(walletPublicKey) {
           // based on the event kind returned by the translator.
           for (const ev of data.state.events) {
             const mapped = _lpEventToRow(ev);
+            var logLine = _lpStageToLog(ev);
+            if (logLine) _lpAppendLog(logLine);
             if (!mapped) continue;
             if (mapped.kind === 'failed') {
               markRowFailed(mapped.row, mapped.error);

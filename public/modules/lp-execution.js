@@ -502,6 +502,9 @@ bind('createLpBtn', 'click', async () => {
       log(`Starting pool creation for ${pools.length} pool(s)...`);
       addProgressIntro();
       buildPhaseProgressTree(pools, lockPositions);
+      // Show the live log with initial message.
+      if (typeof _lpShowLog === "function") _lpShowLog();
+      if (typeof _lpAppendLog === "function") _lpAppendLog("Waiting for pool creation to start…");
 
       // Start the LP progress poll just before the fetch so per-step
       // events translate to row checkmarks in real time (instead of all
@@ -1209,6 +1212,47 @@ function _updatePhaseProgress(phaseElement) {
 // prevent the user from worrying that nothing is happening. Per-step progress
 // tracking would require server-side streaming (SSE/WS) — for now the user
 // just sees pending → done at the end. Server console shows the live progress.
+function _lpShowLog() {
+  var details = document.getElementById('lpProgressLog');
+  if (details && details.classList.contains('hidden')) {
+    details.classList.remove('hidden');
+  }
+}
+
+function _lpAppendLog(line) {
+  var details = document.getElementById('lpProgressLog');
+  var pre = document.getElementById('lpProgressLogContent');
+  if (!details || !pre) return;
+  if (details.classList.contains('hidden')) details.classList.remove('hidden');
+  var ts = new Date().toISOString().slice(11, 19);
+  pre.textContent += '[' + ts + '] ' + line + '\n';
+  pre.scrollTop = pre.scrollHeight;
+}
+
+// Map human-readable stage names to log lines.
+function _lpStageToLog(event) {
+  if (!event || !event.stage) return null;
+  var idx = event.allocationIndex != null ? (' pool ' + (event.allocationIndex + 1)) : '';
+  switch (event.stage) {
+    case 'pool_create_start': return 'Creating pool' + idx + '…';
+    case 'pool_create_done':   return 'Pool' + idx + ' created: ' + (event.poolId || '');
+    case 'pool_create_retry':  return 'Pool' + idx + ' retry ' + event.attempt + ' (rate limit, waiting ' + (event.delayMs / 1000) + 's)';
+    case 'main_open_start':    return 'Opening slice ' + (event.sliceIndex + 1) + idx + '…';
+    case 'main_open_done':     return 'Slice ' + (event.sliceIndex + 1) + idx + ' opened: ' + (event.nftMint || '');
+    case 'bootstrap_open_start': return 'Opening bootstrap' + idx + '…';
+    case 'bootstrap_open_done':  return 'Bootstrap' + idx + ' opened: ' + (event.nftMint || '');
+    case 'main_lock_done':     return 'Locked slice ' + (event.sliceIndex + 1) + idx;
+    case 'main_lock_failed':   return 'Lock failed for slice ' + (event.sliceIndex + 1) + idx + ': ' + (event.error || '');
+    case 'bootstrap_lock_done': return 'Locked bootstrap' + idx;
+    case 'phase3_start':       return 'Starting position locks…';
+        case "lp_preflight": return "Preflight (validating " + (event.allocationCount || "?") + " pools)…";
+    case "lp_quote_resolving": { var q = event.quote || ""; var qs = String(q).slice(0,10); if (q && qs.length < String(q).length) qs += "…"; var i = (event.allocationIndex != null ? (event.allocationIndex+1) : "?"); return "Resolving quote for pool " + i + (qs ? " ("+qs+")" : "") + "…"; }
+    case "lp_quote_resolved": { var sym = event.quoteSymbol || (event.quoteAddress ? String(event.quoteAddress).slice(0,8) : ""); var i = (event.allocationIndex != null ? (event.allocationIndex+1) : "?"); return "Quote ready: " + sym + " (pool " + i + ")"; }
+default: return null;
+  }
+}
+
+
 function addProgressIntro() {
   const tree = document.getElementById('lpProgressTree');
   const note = document.createElement('div');
@@ -1216,7 +1260,7 @@ function addProgressIntro() {
   note.innerHTML =
     '<i class="fas fa-info-circle"></i>&nbsp;Creating pools and positions can take several minutes. ' +
     'Each step submits a transaction and waits for confirmation. ' +
-    'Live progress is logged to the server console. ' +
+    'Live progress is shown in the log below. ' +
     'The checkmarks below will populate when the operation completes.';
   tree.appendChild(note);
 }
