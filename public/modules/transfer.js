@@ -692,7 +692,7 @@ async function runAirdropRetry() {
     log('Cannot retry airdrop: token info missing.', 'warning');
     return;
   }
-  if (!tempWallet || !tempWallet.secretKey) {
+  if (!tempWallet || !tempWallet.publicKey || (demoModeActive && !tempWallet.secretKey)) {
     log('Cannot retry airdrop: launch wallet key not available.', 'warning');
     return;
   }
@@ -790,4 +790,3 @@ function downloadFailedAirdropRecipientsCsv() {
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-

@@ -205,7 +205,7 @@ function canResumeLaunchJournal(journal, wallet) {
     journal.poolPlan?.targetMarketCapUsd &&
     Array.isArray(journal.poolPlan?.allocations) &&
     wallet &&
-    Array.isArray(wallet.secretKey) &&
+    wallet.hasSecretKey &&
     unsafeCreatedPoolEvents(journal).length === 0
   );
 }
@@ -213,9 +213,9 @@ function canResumeLaunchJournal(journal, wallet) {
 function prepareRecoveredSessionFromJournal(journal, wallet) {
   tempWallet = {
     publicKey: wallet.publicKey,
-    secretKey: wallet.secretKey,
-    secretKeyB58: wallet.secretKeyB58,
-    mnemonic: wallet.mnemonic,
+    ...(wallet.secretKey ? { secretKey: wallet.secretKey } : {}),
+    ...(wallet.secretKeyB58 ? { secretKeyB58: wallet.secretKeyB58 } : {}),
+    ...(wallet.mnemonic ? { mnemonic: wallet.mnemonic } : {}),
   };
   fundingWallet = null;
   fundingDetectionExhausted = false;
@@ -257,6 +257,19 @@ function prepareRecoveredSessionFromJournal(journal, wallet) {
   setStepSummary(4, `${createdTokenInfo.symbol} - ${createdTokenInfo.mint.slice(0, 8)}...`);
   const count = lpResult.results.length;
   setStepSummary(5, count > 0 ? `${count} pool${count === 1 ? '' : 's'} recorded` : 'ready to resume');
+}
+
+async function revealPendingWalletSecret(publicKey) {
+  const resp = await fetch('/api/pending-wallets/reveal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ publicKey }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.success || !data.wallet) {
+    throw new Error(data.error || `Reveal failed with HTTP ${resp.status}`);
+  }
+  return data.wallet;
 }
 
 async function resumeLaunchJournal(journal, wallet, btn) {
@@ -337,8 +350,8 @@ function buildLaunchJournalRow(journal, wallet) {
   // secret decrypted; secretIsMnemonic picks the recovery-phrase vs raw-key
   // wording. When a wallet is attached but can't be decrypted we show a note
   // instead of a copy button.
-  const hasSecret = !!(wallet && !wallet.decryptionFailed && (wallet.mnemonic || wallet.secretKeyB58));
-  const secretIsMnemonic = hasSecret && !!wallet.mnemonic;
+  const hasSecret = !!(wallet && !wallet.decryptionFailed && (wallet.hasMnemonic || wallet.hasSecretKey));
+  const secretIsMnemonic = hasSecret && !!wallet.hasMnemonic;
   const recoverBtnHtml = hasSecret ? `
         <div class="control">
           <button class="button is-small is-info" data-action="copy-recovery">
@@ -432,7 +445,7 @@ function buildLaunchJournalRow(journal, wallet) {
 
   // Use-wallet button: load this wallet as active tempWallet for a fresh launch
   wrap.querySelector('[data-action="use-wallet"]')?.addEventListener('click', async () => {
-    if (!wallet || !wallet.secretKey) return;
+    if (!wallet || !wallet.hasSecretKey) return;
     if (tempWallet) {
       const ok = await confirmDialog({
         title: 'Switch wallet?',
@@ -452,9 +465,6 @@ function buildLaunchJournalRow(journal, wallet) {
 
     tempWallet = {
       publicKey: wallet.publicKey,
-      secretKey: wallet.secretKey,
-      secretKeyB58: wallet.secretKeyB58,
-      mnemonic: wallet.mnemonic || null,
     };
 
     document.getElementById('walletInfo').classList.remove('hidden');
@@ -485,12 +495,17 @@ function buildLaunchJournalRow(journal, wallet) {
     if (typeof updateCancelButtonState === 'function') updateCancelButtonState();
   });
   wrap.querySelector('[data-action="copy-recovery"]')?.addEventListener('click', async () => {
-    const text = wallet && (wallet.mnemonic || wallet.secretKeyB58);
-    if (!text) {
-      log(`No recovery secret available for ${walletShort}`, 'warning');
-      return;
+    try {
+      const revealed = await revealPendingWalletSecret(wallet.publicKey);
+      const text = revealed.mnemonic || revealed.secretKeyB58;
+      if (!text) {
+        log(`No recovery secret available for ${walletShort}`, 'warning');
+        return;
+      }
+      await copyText(text, revealed.mnemonic ? 'Recovery phrase' : 'Secret key');
+    } catch (e) {
+      log(`Couldn't reveal recovery secret for ${walletShort}: ${e.message}`, 'warning');
     }
-    await copyText(text, wallet.mnemonic ? 'Recovery phrase' : 'Secret key');
   });
   wrap.querySelector('[data-action="resume"]')?.addEventListener('click', async (event) => {
     await resumeLaunchJournal(journal, wallet, event.currentTarget);
@@ -539,4 +554,3 @@ function buildLaunchJournalRow(journal, wallet) {
 
   return wrap;
 }
-
