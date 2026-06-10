@@ -29,7 +29,8 @@ The workflow builds:
   - `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, or
   - `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, or
   - `APPLE_KEYCHAIN`, `APPLE_KEYCHAIN_PROFILE`.
-- If the macOS credentials are absent, the workflow still builds macOS **unsigned test artifacts** and marks the release accordingly.
+- If the macOS credentials are absent, the workflow still builds macOS **unsigned test artifacts** and marks the release accordingly. Website download cards disclose that macOS may report unsigned downloads as damaged, and show the quarantine-removal command for users who trust the download:
+  `xattr -dr com.apple.quarantine /Applications/Trebuchet.app`.
 - Windows installer and portable EXE artifacts are **signed** only when `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` are configured.
 - If the Windows credentials are absent, the workflow still builds Windows installer and portable EXE **unsigned test artifacts** and marks the release accordingly.
 - Linux AppImage and deb artifacts are built as **unsigned** packages.
