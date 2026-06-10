@@ -37,9 +37,26 @@ test('ci only runs package smoke builds before release', () => {
   assert.doesNotMatch(workflow, /needs:\s+test/);
   assert.doesNotMatch(workflow, /macos-15-intel/);
   assert.doesNotMatch(workflow, /Install Linux packaging dependencies/);
+  assert.match(workflow, /Install system dependencies \(libsodium\)/);
   assert.match(workflow, /Build package smoke/);
   assert.doesNotMatch(workflow, /Build release package/);
   assert.doesNotMatch(workflow, /Upload build artifact/);
+});
+
+test('release and package smoke builds install libsodium before native vanity build', () => {
+  const ci = read('.github/workflows/ci.yml');
+  const release = read('.github/workflows/release.yml');
+
+  for (const workflow of [ci, release]) {
+    assert.match(workflow, /libsodium-dev/);
+    assert.match(workflow, /brew install libsodium pkg-config/);
+    assert.match(workflow, /vcpkg install libsodium:x64-mingw-static/);
+    assert.match(workflow, /SODIUM_INCLUDE_DIR/);
+    assert.match(workflow, /SODIUM_LIB_DIR/);
+    assert.match(workflow, /Install system dependencies[\s\S]+Build vanity keygen binary/);
+  }
+
+  assert.match(release, /libarchive-tools[\s\S]+rpm/);
 });
 
 test('main merges automatically create patch, minor, or major release tags', () => {
