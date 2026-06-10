@@ -208,6 +208,9 @@ function renderPools() {
   poolList.innerHTML = '';
   pools.forEach((pool, idx) => {
     poolList.appendChild(buildPoolNode(pool, idx));
+    // Node is now in the DOM, so its depth-chart container can be found and
+    // filled. Covers the initial paint and every structural re-render.
+    updatePoolDepthChart(idx);
   });
   updateAllocationSummary();
   updateContinueToFundingState();
@@ -411,6 +414,47 @@ function rebalanceWideSlicesByDelta(pool, delta) {
 //
 // (Function still named updatePoolTitle for backward compatibility with
 // existing call sites — its scope grew but the name stuck.)
+// Redraw one pool's liquidity depth chart in place. Cheap and idempotent:
+// recomputes the profile from the pool's current config and swaps the SVG.
+// Safe to call when the pool is collapsed (no container) — it just no-ops.
+function updatePoolDepthChart(poolIdx) {
+  const pool = pools[poolIdx];
+  if (!pool) return;
+  const node = poolList.children[poolIdx];
+  if (!node) return;
+  const wrap = node.querySelector('[data-field="depthChart"]');
+  if (!wrap) return;
+
+  // USD scaling so the quote-side support wall is comparable to the token-side
+  // bands. The pool's notional is its share of the target market cap; support's
+  // value is its SOL converted through the SOL pool's resolved price.
+  const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
+  const poolNotionalUsd = (Number(targetMc) > 0 && Number(pool.supplyPercent) > 0)
+    ? (Number(pool.supplyPercent) / 100) * Number(targetMc)
+    : 0;
+
+  let support = null;
+  const sc = pool.supportConfig;
+  if (sc && sc.mode === 'custom' && Number(sc.solValue) > 0) {
+    const solPool = pools.find((p) => (p.quoteToken || '').toUpperCase() === 'SOL');
+    const solUsd = solPool && Number(solPool.resolvedPriceUsd) > 0 ? Number(solPool.resolvedPriceUsd) : null;
+    if (solUsd) {
+      support = {
+        usd: Number(sc.solValue) * solUsd,
+        depthPct: (typeof clampSupportDepth === 'function') ? clampSupportDepth(sc.depthPct) : (Number(sc.depthPct) || 30),
+      };
+    }
+  }
+
+  const profile = computeDepthProfile(pool, { poolNotionalUsd, support });
+  // renderDepthChartSvg returns '' unless there's a ladder or a (placeable)
+  // support wall — a lone wide band says nothing useful. Hide the empty
+  // container so it leaves no gap.
+  const html = profile ? renderDepthChartSvg(profile) : '';
+  wrap.innerHTML = html;
+  wrap.style.display = html ? '' : 'none';
+}
+
 function updatePoolTitle(poolIdx) {
   const pool = pools[poolIdx];
   if (!pool) return;
@@ -420,6 +464,11 @@ function updatePoolTitle(poolIdx) {
   if (titleEl) titleEl.innerHTML = renderPoolTitle(pool, poolIdx);
   updatePoolLogo(node, pool);
   updatePoolAffordance(node, pool);
+  // The depth chart's shape depends on the supply split, which several live
+  // edits change; refreshing here covers supplyPercent, ladder %, and
+  // distribution edits (which all route through here via
+  // updatePoolPositionsTotal).
+  updatePoolDepthChart(poolIdx);
 }
 
 // Apply visibility rules for the per-pool override section ("manual quote
@@ -1286,24 +1335,37 @@ function buildPoolNode(pool, idx) {
   addSliceBtn.addEventListener('click', () => addSlice(idx));
   distSection.appendChild(addSliceBtn);
 
-  // Ladder section: lets the user view, add, edit, or remove individual
-  // ladder bands. Each band has supplyPercent (of pool), lowerMultiplier,
-  // and upperMultiplier (relative to launch price). Bands are independent
-  // — they can be overlapping or have gaps, and the order doesn't matter
-  // to the backend math.
+  // Custom Positions area. The mockup-approved order puts the whole-pool
+  // liquidity depth chart at the TOP (it's the source of truth for the shape),
+  // then the Ladder strategy picker, then the Support position at the bottom.
   //
-  // Note: the per-pool bootstrap section used to render here too, but
-  // was removed as part of the support-consolidation change. The
-  // bootstrap is now always a minimal ~$1 reservation; real quote-side
-  // starting liquidity is added via the Support position (below).
-  // Token-side density near launch price is the Ladder's job.
+  // Liquidity depth chart — a whole-pool view spanning the support buy wall
+  // (below launch) and the wide + ladder positions (above launch). It sits
+  // above the controls that feed it so the user reads the shape first, then
+  // adjusts. updatePoolDepthChart fills it (and hides it when there's neither
+  // a ladder nor support to show, so an unconfigured pool shows no empty chart).
+  const depthWrap = document.createElement('div');
+  depthWrap.className = 'pool-depth-chart';
+  depthWrap.dataset.field = 'depthChart';
+  depthWrap.style.cssText = 'margin: 18px 0 6px;';
+  body.appendChild(depthWrap);
+
+  // Ladder section: the volatility-strategy picker generates single-sided
+  // bands above launch (supplyPercent of pool, lowerMultiplier, upperMultiplier
+  // relative to launch). Bands are independent — they can overlap or have gaps,
+  // and order doesn't matter to the backend math.
+  //
+  // Note: the per-pool bootstrap section used to render here too, but was
+  // removed as part of the support-consolidation change. The bootstrap is now
+  // always a minimal ~$1 reservation; real quote-side starting liquidity is
+  // added via the Support position (below). Token-side density near launch
+  // price is the Ladder's job.
   body.appendChild(buildLadderNode(pool, idx));
 
-  // Support section: lets the user attach a single-sided quote-only
-  // position just below launch price, backing any preallocated supply.
-  // Quote-only — does not affect supplyPercent or the positions-total
-  // calculation, so it sits between the ladder section and the totals
-  // indicator without participating in that math.
+  // Support section: a single-sided quote-only position just below launch
+  // price, backing any preallocated supply. Quote-only — does not affect
+  // supplyPercent or the positions-total calculation, so it sits at the bottom
+  // of the custom-positions area without participating in that math.
   body.appendChild(buildSupportNode(pool, idx));
 
   // Positions total indicator. Under unified semantics, bootstrap
@@ -1535,6 +1597,7 @@ function buildSupportNode(pool, poolIdx) {
       depthPct: clampSupportDepth(pool.supportConfig?.depthPct),
     };
     refreshHint();
+    updatePoolDepthChart(poolIdx);
     if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
   });
 
@@ -1550,6 +1613,7 @@ function buildSupportNode(pool, poolIdx) {
       depthPct: v, // un-clamped during typing; clamped at use-sites
     };
     refreshHint();
+    updatePoolDepthChart(poolIdx);
     if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
   });
   depthInput.addEventListener('blur', (e) => {
@@ -1561,6 +1625,7 @@ function buildSupportNode(pool, poolIdx) {
     };
     e.target.value = v;
     refreshHint();
+    updatePoolDepthChart(poolIdx);
   });
 
   return node;
@@ -1673,52 +1738,359 @@ function buildBootstrapNode(pool, poolIdx) {
   return node;
 }
 
+// ---------------------------------------------------------------------------
+// Custom Positions — Ladder strategy support
+// ---------------------------------------------------------------------------
+
+// Compact multiplier label for the ladder controls and chips. Mirrors the
+// depth chart's formatter (k/M/B/T, scientific past a trillion) so the numbers
+// read the same in the controls as on the axis.
+function formatMultiplierLabel(m) {
+  if (!Number.isFinite(m) || m <= 0) return '0';
+  if (m >= 1e15) return m.toExponential(1).replace('e+', 'e');
+  if (m >= 1e12) return `${+(m / 1e12).toFixed(1)}T`;
+  if (m >= 1e9) return `${+(m / 1e9).toFixed(1)}B`;
+  if (m >= 1e6) return `${+(m / 1e6).toFixed(1)}M`;
+  if (m >= 1000) return `${+(m / 1000).toFixed(m < 10000 ? 1 : 0)}k`;
+  return String(Math.round(m));
+}
+
+// The pool's maximum ladder ceiling, as a multiple of the launch price. We cap
+// it at an honest $1B fully-diluted market cap rather than the tick range's
+// true limit (which is absurd — a cheap launch has ~1e25× of tick headroom).
+// Market cap scales linearly with price (supply is fixed), so the multiplier
+// that reaches a $1B FDV is just CEILING_MAX_MCAP_USD ÷ launch market cap —
+// needing only the market cap input, no quote price, decimals, or tick math.
+// Rounded down to two significant figures for a clean cap. The backend still
+// clamps any band to the real tick bound at execution, so this is purely the
+// editor's ceiling.
+//
+// (The `pool` argument is unused — market cap is a token-level figure shared
+// across pools — but kept for call-site symmetry with the other pool helpers.)
+function poolMaxCeilingMultiplier(pool) {
+  const mcap = parseNumberInput(document.getElementById('targetMarketCap'));
+  if (!(mcap > 0)) return LADDER_CEILING_FALLBACK_MAX;
+  const mult = CEILING_MAX_MCAP_USD / mcap;
+  if (!(mult > 0) || !Number.isFinite(mult)) return LADDER_CEILING_FALLBACK_MAX;
+  // Round down to two significant figures: clean to show, and never above $1B.
+  const e = Math.floor(Math.log10(mult));
+  const f = Math.pow(10, e - 1);
+  return Math.max(1, Math.floor(mult / f) * f);
+}
+
+// Build the controls-help line under the ladder's Bands/Gap/Ceiling inputs.
+// Shared by buildLadderNode's render and refreshLadderMcapDisplays so the
+// wording lives in one place. The trailing sentence translates the current
+// ceiling multiplier into the market cap it tops out at (mcap × ceiling, since
+// mcap scales linearly with price) — making a bare "100,000×" legible in
+// dollars and tying it to the $1B cap. Omitted until market cap is set.
+function ladderControlsHelpHtml(pool, poolMax) {
+  const cfg = (pool && pool.ladderConfig) || {};
+  const base = `Gap is the air-pocket before the first band. Ceiling tops the ladder — default ${formatMultiplierLabel(LADDER_CEILING_DEFAULT)}×, up to a $1B market cap (${formatMultiplierLabel(poolMax)}×).`;
+  const mcap = parseNumberInput(document.getElementById('targetMarketCap'));
+  if (Number.isFinite(mcap) && mcap > 0 && Number(cfg.ceiling) > 0) {
+    // Use the effective ceiling (clamped to the cap) for the dollar figure. In
+    // steady state cfg.ceiling is already ≤ poolMax so this is a no-op; it only
+    // bites while the user is typing mcap upward, before the blur-time re-clamp
+    // — without it the readout would briefly show a market cap above $1B and
+    // contradict the cap stated in the same sentence.
+    const eff = Math.min(Number(cfg.ceiling), poolMax);
+    return `${base} At ${formatMultiplierLabel(eff)}× the ladder tops out near ${formatUsdShort(mcap * eff)} market cap.`;
+  }
+  return base;
+}
+
+// Refresh the market-cap-derived bits of every visible ladder section in place:
+// the ceiling dollar readout in the controls-help line and the ceiling input's
+// max attribute (both derive from $1B ÷ mcap). Called live as the target market
+// cap changes so the ladder stays honest without a full renderPools — which
+// would reflow the whole pool list and could eat an in-flight click. This does
+// NOT mutate band data or the stored ceiling; an over-cap ceiling is re-clamped
+// on blur (see the targetMarketCap blur handler), not mid-keystroke.
+function refreshLadderMcapDisplays() {
+  for (let i = 0; i < pools.length; i++) {
+    const pool = pools[i];
+    const node = poolList.children[i];
+    if (!node) continue;
+    const help = node.querySelector('[data-ladder-controls-help]');
+    const ceilingInput = node.querySelector('[data-ladder-ceiling]');
+    if (!help && !ceilingInput) continue; // ladder off or pool collapsed
+    const poolMax = poolMaxCeilingMultiplier(pool);
+    if (ceilingInput) ceilingInput.max = String(Math.round(poolMax));
+    if (help) help.innerHTML = ladderControlsHelpHtml(pool, poolMax);
+  }
+}
+
+// Format a band multiplier for DISPLAY in the editable band-table inputs. The
+// strategy generator stores precise values (e.g. 1.5613) so the band geometry
+// and tick math stay exact; rendering all four decimals just makes the table
+// noisy. We round only what's shown — the stored value is untouched and the
+// input handlers write back only on a real user edit — so this cannot drift the
+// bands or collapse a tight one. Faithful enough to edit against: two decimals
+// under 10×, one decimal under 1000×, whole numbers above.
+function formatBandMultiplierValue(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '';
+  if (n < 10) return String(+n.toFixed(2));
+  if (n < 1000) return String(+n.toFixed(1));
+  return String(Math.round(n));
+}
+
+// Strategy display metadata (name, scenario tag, and the descriptive note shown
+// under the picker). The shapes themselves live in generateLadderStrategyBands.
+const LADDER_STRATEGY_META = {
+  dbl: { name: 'Doubling', tag: 'easy to pump', note: 'Discrete bands that double in width past the gap — thin near launch for fast early movement, with supply fanned out toward the ceiling.' },
+  gapdbl: { name: 'Gapped Doubling', tag: 'stepwise', note: 'Doubling\u2019s widening bands, spaced out with an air-pocket before each — supply climbs in widening steps, leaving room between for capitulation and fresh floors.' },
+  invramp: { name: 'Inverse Ramp', tag: 'locks supply high', note: 'Overlapping bands all reaching the ceiling — depth builds upward, parking the most supply high where it cannot be dumped near launch. The strongest supply-control shape.' },
+  pyr: { name: 'Pyramid', tag: 'mid concentration', note: 'Overlapping bands peak in the middle of the range — supply concentrated at mid multiples, lighter at both ends.' },
+  multi: { name: 'Multi-Peak', tag: 'several peaks', note: 'Several humps spread across the range — supply distributed over multiple resistance shelves rather than piled at one point, with the lowest band at the gap and the highest reaching the ceiling.' },
+};
+
+// Backfill the strategy-config fields on a pool's ladderConfig. Pools created
+// before the strategy picker existed (e.g. by the simple-config sliders, which
+// use generateLogSpacedBands and lay their first band at 1×) carry only
+// { mode, bands }. We set sensible defaults — notably the gap and ceiling come
+// from the design defaults, NOT inferred from the seeded bands, so the gap
+// lands on its intended 4× rather than the 1× those bands happen to start at.
+// Band count and ladder share ARE carried over from the existing bands (the
+// share has to be, or the positions total would shift). Idempotent.
+function ensureLadderStrategyConfig(pool) {
+  if (!pool.ladderConfig) pool.ladderConfig = { mode: 'off', bands: [] };
+  const cfg = pool.ladderConfig;
+  const bands = Array.isArray(cfg.bands) ? cfg.bands : [];
+
+  // True only the first time the strategy system touches this pool.
+  const wasUninitialized = !LADDER_STRATEGY_IDS.includes(cfg.strategy);
+  if (wasUninitialized) cfg.strategy = LADDER_DEFAULT_STRATEGY;
+
+  if (cfg.bandCount == null) {
+    cfg.bandCount = bands.length >= LADDER_MIN_BANDS ? bands.length : LADDER_DEFAULT_BANDS;
+  }
+  cfg.bandCount = Math.min(LADDER_MAX_BANDS, Math.max(LADDER_MIN_BANDS, Math.round(cfg.bandCount)));
+
+  // Gap and ceiling default to the design defaults rather than being read back
+  // from the seeded bands (which start at 1×, which would otherwise pin the gap
+  // at 1× instead of 4×).
+  if (cfg.gap == null) cfg.gap = LADDER_GAP_DEFAULT;
+  cfg.gap = Math.min(LADDER_GAP_MAX, Math.max(LADDER_GAP_MIN, cfg.gap));
+
+  if (cfg.ceiling == null) {
+    const maxHi = bands.length ? Math.max(...bands.map((b) => Number(b.upperMultiplier) || 0)) : 0;
+    cfg.ceiling = maxHi > 0 ? maxHi : LADDER_CEILING_DEFAULT;
+  }
+
+  // Ladder share MUST be carried over from the existing bands — defaulting it
+  // would shift the pool's positions total off 100%.
+  if (cfg.ladderPercent == null) {
+    const sum = bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0);
+    cfg.ladderPercent = sum > 0 ? sum : LADDER_DEFAULT_PERCENT;
+  }
+
+  // Never let the ceiling exceed the pool's honest max ($1B market cap). This
+  // clamps both the default (100,000×, which is above the cap for launches over
+  // ~$10k FDV) and any inferred value, so the control, the cap, and the
+  // generated bands all stay consistent.
+  const capMax = poolMaxCeilingMultiplier(pool);
+  if (Number(cfg.ceiling) > capMax) cfg.ceiling = capMax;
+
+  // First time the strategy system takes over a pool whose bands were seeded
+  // elsewhere (the simple-config ladder, laid from 1×): regenerate them from
+  // the strategy defaults so the displayed ladder matches the controls — the
+  // gap moves to 4×, etc. The ladder share is unchanged, so the positions total
+  // stays put and no wide-slice rebalance is needed.
+  if (wasUninitialized && bands.length > 0) {
+    cfg.bands = generateLadderStrategyBands({
+      strategy: cfg.strategy,
+      ladderPercent: cfg.ladderPercent,
+      bandCount: cfg.bandCount,
+      gap: cfg.gap,
+      ceiling: cfg.ceiling,
+    });
+  }
+
+  return cfg;
+}
+
+// Regenerate the ladder bands from the pool's current strategy config, keeping
+// the pool's positions total at 100% by absorbing the band-total delta into
+// the wide slices (same rebalance the toggle/add/remove paths use). Caller is
+// responsible for re-rendering (renderPools) afterwards.
+function regenerateLadderBands(pool) {
+  const cfg = ensureLadderStrategyConfig(pool);
+  const oldTotal = (cfg.mode === 'manual' && Array.isArray(cfg.bands))
+    ? cfg.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
+    : 0;
+  cfg.mode = 'manual';
+  cfg.bands = generateLadderStrategyBands({
+    strategy: cfg.strategy,
+    ladderPercent: cfg.ladderPercent,
+    bandCount: cfg.bandCount,
+    gap: cfg.gap,
+    ceiling: cfg.ceiling,
+  });
+  const newTotal = cfg.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0);
+  rebalanceWideSlicesByDelta(pool, newTotal - oldTotal);
+}
+
+// Tiny stacked depth thumbnail for a strategy chip. Same liquidity math and
+// palette as the per-pool depth chart (so a chip previews the shape the chart
+// will draw): a tan wide-band baseline plus the ladder bands, each band an
+// equal share of the ladder supply, stacked where they overlap.
+function renderLadderThumbSvg(bands, ceiling) {
+  const PALETTE = ['#9a2424', '#2f6f5e', '#c0871f', '#3f5a8a', '#8a3f6a', '#5f6a2a', '#7a4a2a'];
+  const WIDE = '#d8c39a';
+  const NOTIONAL = 250000;
+  const Lt = (v, lo, hi) => { const d = 1 / Math.sqrt(lo) - 1 / Math.sqrt(hi); return d > 0 ? v / d : 0; };
+
+  const bs = Array.isArray(bands) ? bands : [];
+  const sumW = bs.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0);
+  const wideW = Math.max(0, 100 - sumW);
+  const C = Math.max(Number(ceiling) || 10, ...bs.map((b) => Number(b.upperMultiplier) || 1), 10);
+
+  const comps = [];
+  if (wideW > 0) comps.push({ c: WIDE, lo: 1, hi: C, L: Lt((wideW / 100) * NOTIONAL, 1, C) });
+  bs.forEach((b, i) => {
+    const lo = Math.max(1, Number(b.lowerMultiplier) || 1);
+    const hi = Math.max(lo * 1.0001, Number(b.upperMultiplier) || 1);
+    comps.push({ c: PALETTE[i % PALETTE.length], lo, hi, L: Lt(((Number(b.supplyPercent) || 0) / 100) * NOTIONAL, lo, hi) });
+  });
+
+  const edges = new Set([1, C]);
+  comps.forEach((c) => { edges.add(c.lo); edges.add(c.hi); });
+  const xs = Array.from(edges).filter((x) => x >= 1 && x <= C * 1.0001).sort((a, b) => a - b);
+
+  const W = 120; const H = 34; const plotH = H - 4; const yB = H - 2;
+  const lmin = Math.log(1); const lspan = (Math.log(C) - lmin) || 1;
+  const X = (x) => ((Math.log(x) - lmin) / lspan) * W;
+
+  let maxL = 0; const segs = [];
+  for (let i = 0; i < xs.length - 1; i++) {
+    const lo = xs[i]; const hi = xs[i + 1];
+    if (hi <= lo) continue;
+    let tot = 0; const parts = [];
+    comps.forEach((c) => { if (c.lo <= lo + 1e-9 && c.hi >= hi - 1e-9) { parts.push(c); tot += c.L; } });
+    segs.push({ lo, hi, parts });
+    if (tot > maxL) maxL = tot;
+  }
+  maxL = maxL || 1;
+
+  let f = '';
+  for (const sgmt of segs) {
+    const xa = X(sgmt.lo); const w = X(sgmt.hi) - xa;
+    if (w <= 0) continue;
+    let cum = 0;
+    for (const p of sgmt.parts) {
+      const h = (p.L / maxL) * plotH;
+      if (h <= 0) continue;
+      f += `<rect x="${xa.toFixed(1)}" y="${(yB - cum - h).toFixed(1)}" width="${Math.max(0.6, w).toFixed(1)}" height="${h.toFixed(1)}" fill="${p.c}" fill-opacity="0.9"/>`;
+      cum += h;
+    }
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;" aria-hidden="true">${f}</svg>`;
+}
+
 function buildLadderNode(pool, poolIdx) {
-  // Ladder section. Shows the current bands (if any) and lets the user
-  // toggle ladder on/off, add bands, edit individual bands, remove bands,
-  // or load a 5-band log-spaced preset.
+  // Custom Positions — Ladder. A "volatility strategy" picker generates the
+  // ladder bands: pick a shape, set how many bands, the gap before the first
+  // band, and the ceiling, and the bands are laid out for you. The bands stay
+  // fully editable in the collapsed "Ladder positions" table — but those manual
+  // edits are ephemeral: changing the strategy, band count, gap, or ceiling
+  // regenerates the bands and discards them.
+  //
+  // The ladder's job is supply control: it relocates a slice of the pool's
+  // supply to higher price ranges so it can't be dumped near launch. The depth
+  // chart at the top of the pool is the source of truth for the shape.
   const node = document.createElement('div');
   node.className = 'pool-ladder-section box has-background-light p-3 mt-3 mb-0';
 
-  const cfg = pool.ladderConfig || { mode: 'off', bands: [] };
+  const cfg = ensureLadderStrategyConfig(pool);
   const enabled = cfg.mode === 'manual';
-  const checked = enabled ? 'checked' : '';
+  const poolMax = poolMaxCeilingMultiplier(pool);
+  const tableOpen = !!cfg._uiTableOpen;
 
   node.innerHTML = `
     <label class="label is-small mb-1">
-      <input type="checkbox" data-ladder-toggle ${checked}>
+      <input type="checkbox" data-ladder-toggle ${enabled ? 'checked' : ''}>
       Ladder positions
     </label>
     <p class="is-size-7 has-text-grey mb-2">
-      Discrete single-sided positions at specific price ranges above launch.
-      Each band carves out a slice of this pool's allocated supply and provides resistance
-      going up / support coming back down. Bands can overlap or have gaps — both are valid.
+      Single-sided positions above launch that relocate a slice of this pool's
+      supply to higher price ranges — resistance going up, and supply that can't
+      be dumped near launch. Pick a strategy to lay out the bands; they stay
+      fully editable. Bands can overlap or leave gaps — both are valid.
     </p>
     <div class="ladder-bands-container" ${enabled ? '' : 'style="display:none;"'}>
-      <div class="ladder-bands-list" data-ladder-bands></div>
-      <div class="ladder-bands-actions" style="margin-top: 0.5rem;">
-        <button type="button" class="button is-small is-light" data-ladder-add>
-          <span class="icon"><i class="fas fa-plus"></i></span><span>Add band</span>
-        </button>
-        <button type="button" class="button is-small is-light" data-ladder-preset>
-          <span class="icon"><i class="fas fa-magic"></i></span><span>Generate 5-band preset to 1000×</span>
-        </button>
+
+      <div class="ladder-strategy-controls" style="display:flex;flex-wrap:wrap;gap:0.5rem 1.25rem;align-items:flex-end;margin-bottom:0.35rem;">
+        <div class="field mb-0">
+          <label class="label is-small mb-1">Bands</label>
+          <div class="field has-addons mb-0">
+            <div class="control"><button type="button" class="button is-small" data-ladder-band-dec>&minus;</button></div>
+            <div class="control"><span class="button is-small is-static" data-ladder-band-count style="min-width:2.4rem;">${cfg.bandCount}</span></div>
+            <div class="control"><button type="button" class="button is-small" data-ladder-band-inc>+</button></div>
+          </div>
+        </div>
+        <div class="field mb-0">
+          <label class="label is-small mb-1">Gap</label>
+          <div class="field has-addons mb-0">
+            <div class="control"><input class="input is-small" type="number" min="${LADDER_GAP_MIN}" max="${LADDER_GAP_MAX}" step="0.5" data-ladder-gap value="${cfg.gap}" style="width:4.5rem;"></div>
+            <div class="control"><a class="button is-small is-static">× from launch</a></div>
+          </div>
+        </div>
+        <div class="field mb-0">
+          <label class="label is-small mb-1">Ceiling</label>
+          <div class="field has-addons mb-0">
+            <div class="control"><input class="input is-small" type="number" min="10" max="${Math.round(poolMax)}" step="1000" data-ladder-ceiling value="${cfg.ceiling}" style="width:8rem;"></div>
+            <div class="control"><a class="button is-small is-static">× launch</a></div>
+            <div class="control"><button type="button" class="button is-small is-light" data-ladder-ceiling-max title="Set to the max ($1B market cap)">max</button></div>
+          </div>
+        </div>
       </div>
-      <p class="help is-danger mt-1 hidden" data-ladder-warning></p>
+      <p class="help has-text-grey mb-2" data-ladder-controls-help></p>
+
+      <div class="ladder-strategy-chips" data-ladder-chips
+           style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0.4rem;margin-bottom:0.4rem;"></div>
+      <p class="is-size-7 has-text-grey mb-2" data-ladder-strategy-note></p>
+
+      <div class="ladder-positions-disclosure" data-ladder-disclosure role="button" tabindex="0"
+           style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;padding:0.45rem 0;border-top:1px solid rgba(0,0,0,0.08);">
+        <span class="icon is-small"><i class="fas fa-chevron-${tableOpen ? 'down' : 'right'}" data-ladder-chevron></i></span>
+        <span class="has-text-weight-semibold is-size-7">Ladder positions</span>
+        <span class="is-size-7 has-text-grey" data-ladder-summary></span>
+        <span class="is-size-7 has-text-grey" style="margin-left:auto;">tap to customize</span>
+      </div>
+
+      <div class="ladder-bands-detail" data-ladder-detail ${tableOpen ? '' : 'style="display:none;"'}>
+        <div class="ladder-bands-list" data-ladder-bands></div>
+        <div class="ladder-bands-actions" style="margin-top:0.5rem;">
+          <button type="button" class="button is-small is-light" data-ladder-add>
+            <span class="icon"><i class="fas fa-plus"></i></span><span>Add band</span>
+          </button>
+        </div>
+        <p class="help has-text-grey mt-1">
+          Manual edits here are temporary — changing the strategy, band count,
+          gap, or ceiling above regenerates the bands and discards them.
+        </p>
+        <p class="help is-danger mt-1 hidden" data-ladder-warning></p>
+      </div>
+
     </div>
   `;
 
   const toggle = node.querySelector('[data-ladder-toggle]');
-  const container = node.querySelector('.ladder-bands-container');
+  const chips = node.querySelector('[data-ladder-chips]');
+  const noteEl = node.querySelector('[data-ladder-strategy-note]');
+  const summaryEl = node.querySelector('[data-ladder-summary]');
+  const controlsHelp = node.querySelector('[data-ladder-controls-help]');
   const bandsList = node.querySelector('[data-ladder-bands]');
   const addBtn = node.querySelector('[data-ladder-add]');
-  const presetBtn = node.querySelector('[data-ladder-preset]');
   const warning = node.querySelector('[data-ladder-warning]');
+  const disclosure = node.querySelector('[data-ladder-disclosure]');
+  const detail = node.querySelector('[data-ladder-detail]');
+  const chevron = node.querySelector('[data-ladder-chevron]');
 
-  // Render the current band rows. Called from the toggle, the add/remove
-  // band handlers, and the preset handler. Editing an individual band
-  // updates state in place via the row's own event handlers without
-  // re-rendering — same pattern as slice rows.
+  // Render the current band rows (unchanged behaviour — editing a band updates
+  // state in place; those edits persist until the next strategy regeneration).
   function renderBands() {
     bandsList.innerHTML = '';
     const bands = Array.isArray(pool.ladderConfig?.bands) ? pool.ladderConfig.bands : [];
@@ -1728,10 +2100,9 @@ function buildLadderNode(pool, poolIdx) {
     updateWarning();
   }
 
-  // Validate the band list and surface a warning paragraph when the
-  // total supplyPercent exceeds 100% or any band has bad geometry.
-  // Backend pre-flight will catch the same conditions, but inline
-  // feedback during editing is much friendlier.
+  // Validate the band list and surface a warning when the total supplyPercent
+  // exceeds 100% or any band has bad geometry. Backend pre-flight catches the
+  // same conditions, but inline feedback during editing is friendlier.
   function updateWarning() {
     const bands = Array.isArray(pool.ladderConfig?.bands) ? pool.ladderConfig.bands : [];
     let msg = '';
@@ -1743,111 +2114,144 @@ function buildLadderNode(pool, poolIdx) {
         const b = bands[i];
         const lo = Number(b.lowerMultiplier);
         const hi = Number(b.upperMultiplier);
-        if (!(lo >= 1)) {
-          msg = `Band ${i + 1}: lower multiplier must be ≥ 1× launch price.`;
-          break;
-        }
-        if (!(hi > lo)) {
-          msg = `Band ${i + 1}: upper multiplier must be greater than lower.`;
-          break;
-        }
-        if (!(b.supplyPercent > 0)) {
-          msg = `Band ${i + 1}: supply % must be greater than 0.`;
-          break;
-        }
+        if (!(lo >= 1)) { msg = `Band ${i + 1}: lower multiplier must be ≥ 1× launch price.`; break; }
+        if (!(hi > lo)) { msg = `Band ${i + 1}: upper multiplier must be greater than lower.`; break; }
+        if (!(b.supplyPercent > 0)) { msg = `Band ${i + 1}: supply % must be greater than 0.`; break; }
       }
     }
-    if (msg) {
-      warning.textContent = msg;
-      warning.classList.remove('hidden');
-    } else {
-      warning.classList.add('hidden');
-    }
+    if (msg) { warning.textContent = msg; warning.classList.remove('hidden'); }
+    else { warning.classList.add('hidden'); }
   }
 
+  // Render the five strategy chips, each previewing its shape with the current
+  // band count / gap / ceiling. Clicking one switches the strategy and
+  // regenerates the bands.
+  function renderChips() {
+    const lc = pool.ladderConfig;
+    chips.innerHTML = '';
+    LADDER_STRATEGY_IDS.forEach((id) => {
+      const meta = LADDER_STRATEGY_META[id];
+      const bands = generateLadderStrategyBands({ strategy: id, ladderPercent: lc.ladderPercent, bandCount: lc.bandCount, gap: lc.gap, ceiling: lc.ceiling });
+      const selected = lc.strategy === id;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'button ladder-strategy-chip';
+      btn.dataset.strategy = id;
+      btn.style.cssText = 'height:auto;display:block;text-align:left;padding:0.4rem 0.45rem;white-space:normal;'
+        + (selected ? 'border-color:#9a2424;box-shadow:inset 0 0 0 1px #9a2424;' : '');
+      btn.innerHTML = renderLadderThumbSvg(bands, lc.ceiling)
+        + `<div class="is-size-7 has-text-weight-semibold" style="line-height:1.1;margin-top:0.2rem;">${meta.name}</div>`
+        + `<div class="has-text-grey" style="font-size:0.65rem;line-height:1.1;">${meta.tag}</div>`;
+      btn.addEventListener('click', () => {
+        pool.ladderConfig.strategy = id;
+        regenerateLadderBands(pool);
+        renderPools();
+      });
+      chips.appendChild(btn);
+    });
+  }
+
+  // Refresh the selected-strategy note, the disclosure summary, and the
+  // controls help line from current config.
+  function updateMeta() {
+    const lc = pool.ladderConfig;
+    const meta = LADDER_STRATEGY_META[lc.strategy] || LADDER_STRATEGY_META[LADDER_DEFAULT_STRATEGY];
+    noteEl.innerHTML = `<strong>${meta.name}</strong> — ${meta.note}`;
+    summaryEl.textContent = `${lc.bandCount} bands · ${meta.name} · gap ${lc.gap}× · to ${formatMultiplierLabel(lc.ceiling)}×`;
+    controlsHelp.innerHTML = ladderControlsHelpHtml(pool, poolMax);
+  }
+
+  // Toggle ladder on/off. Same wide-slice rebalance as before so positions
+  // total stays at 100%. Turning on with no existing bands seeds them from the
+  // current strategy; existing bands are preserved across an off/on cycle.
   toggle.addEventListener('change', (e) => {
-    // Compute the ladder total before and after the toggle so we can
-    // absorb the delta into the wide slices and keep positions total
-    // at 100%. Same rationale as the bootstrap toggle.
-    const oldLadderTotal = (pool.ladderConfig && pool.ladderConfig.mode === 'manual' && Array.isArray(pool.ladderConfig.bands))
-      ? pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
+    const lc = ensureLadderStrategyConfig(pool);
+    const oldTotal = (lc.mode === 'manual' && Array.isArray(lc.bands))
+      ? lc.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
       : 0;
     if (e.target.checked) {
-      // Turning ladder on with no existing bands → seed with the preset.
-      // If the user had bands from a previous toggle-on, preserve them.
-      const existing = Array.isArray(pool.ladderConfig?.bands)
-        ? pool.ladderConfig.bands
-        : [];
-      pool.ladderConfig = {
-        mode: 'manual',
-        bands: existing.length > 0 ? existing : generateLogSpacedBands({
-          supplyPercent: LADDER_DEFAULT_PERCENT,
-          bandCount: LADDER_DEFAULT_BANDS,
-          ceilingMultiplier: LADDER_CEILING_MULTIPLIER,
-        }),
-      };
-      container.style.display = '';
+      lc.mode = 'manual';
+      if (!Array.isArray(lc.bands) || lc.bands.length === 0) {
+        lc.bands = generateLadderStrategyBands({ strategy: lc.strategy, ladderPercent: lc.ladderPercent, bandCount: lc.bandCount, gap: lc.gap, ceiling: lc.ceiling });
+      }
     } else {
-      // Off: keep the bands on the object for restoration on re-toggle.
-      pool.ladderConfig = {
-        mode: 'off',
-        bands: Array.isArray(pool.ladderConfig?.bands) ? pool.ladderConfig.bands : [],
-      };
-      container.style.display = 'none';
+      lc.mode = 'off'; // keep bands on the object for restoration on re-toggle
     }
-    const newLadderTotal = (pool.ladderConfig.mode === 'manual' && Array.isArray(pool.ladderConfig.bands))
-      ? pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
+    const newTotal = (lc.mode === 'manual' && Array.isArray(lc.bands))
+      ? lc.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
       : 0;
-    rebalanceWideSlicesByDelta(pool, newLadderTotal - oldLadderTotal);
-    // Full re-render: the wide slice values changed, the band list
-    // toggled visibility, the positions-total needs refresh, and the
-    // pool affordance may have flipped between attention/normal.
-    renderPools();
-  });
-
-  addBtn.addEventListener('click', () => {
-    if (!Array.isArray(pool.ladderConfig?.bands)) {
-      pool.ladderConfig = { mode: 'manual', bands: [] };
-    }
-    // New band gets sensible defaults: 5% supply, 1.5× to 2× range.
-    // User can edit immediately. The 5% is taken from the wide bucket
-    // via rebalance so positions total stays at 100% — without this,
-    // adding a band would silently overshoot 100% and the user would
-    // see a confusing warning they didn't trigger intentionally.
-    const newBand = { supplyPercent: 5, lowerMultiplier: 1.5, upperMultiplier: 2.0 };
-    pool.ladderConfig.bands.push(newBand);
-    rebalanceWideSlicesByDelta(pool, newBand.supplyPercent);
-    renderPools();
-  });
-
-  presetBtn.addEventListener('click', () => {
-    // Replace current bands with the 5-band log-spaced preset. This is
-    // a destructive action but the user explicitly asked for it; a
-    // confirmation prompt would be overkill since they can just edit
-    // bands afterward if they liked the prior state.
-    //
-    // Compute the band-total delta and rebalance wide slices so the
-    // pool's positions total stays at 100%. The preset is always
-    // LADDER_DEFAULT_PERCENT (50%) so most likely the wide bucket
-    // shrinks to absorb the increase — unless the user had a heavier
-    // ladder configured manually, in which case wide grows.
-    const oldTotal = (pool.ladderConfig?.mode === 'manual' && Array.isArray(pool.ladderConfig.bands))
-      ? pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0)
-      : 0;
-    pool.ladderConfig = {
-      mode: 'manual',
-      bands: generateLogSpacedBands({
-        supplyPercent: LADDER_DEFAULT_PERCENT,
-        bandCount: LADDER_DEFAULT_BANDS,
-        ceilingMultiplier: LADDER_CEILING_MULTIPLIER,
-      }),
-    };
-    const newTotal = pool.ladderConfig.bands.reduce((s, b) => s + (Number(b.supplyPercent) || 0), 0);
     rebalanceWideSlicesByDelta(pool, newTotal - oldTotal);
     renderPools();
   });
 
+  // Band-count stepper.
+  node.querySelector('[data-ladder-band-dec]').addEventListener('click', () => {
+    const lc = pool.ladderConfig;
+    if (lc.bandCount > LADDER_MIN_BANDS) { lc.bandCount -= 1; regenerateLadderBands(pool); renderPools(); }
+  });
+  node.querySelector('[data-ladder-band-inc]').addEventListener('click', () => {
+    const lc = pool.ladderConfig;
+    if (lc.bandCount < LADDER_MAX_BANDS) { lc.bandCount += 1; regenerateLadderBands(pool); renderPools(); }
+  });
+
+  // Gap and ceiling commit on change (blur/enter), not every keystroke, so
+  // typing isn't interrupted by the regenerate-and-rerender.
+  node.querySelector('[data-ladder-gap]').addEventListener('change', (e) => {
+    let v = Number(e.target.value);
+    if (!Number.isFinite(v)) v = LADDER_GAP_DEFAULT;
+    v = Math.min(LADDER_GAP_MAX, Math.max(LADDER_GAP_MIN, v));
+    pool.ladderConfig.gap = v;
+    regenerateLadderBands(pool);
+    renderPools();
+  });
+  node.querySelector('[data-ladder-ceiling]').addEventListener('change', (e) => {
+    let v = Number(e.target.value);
+    if (!Number.isFinite(v)) v = LADDER_CEILING_DEFAULT;
+    const floor = Math.max(10, pool.ladderConfig.gap * 1.5);
+    v = Math.min(poolMax, Math.max(floor, v));
+    pool.ladderConfig.ceiling = v;
+    regenerateLadderBands(pool);
+    renderPools();
+  });
+  node.querySelector('[data-ladder-ceiling-max]').addEventListener('click', () => {
+    pool.ladderConfig.ceiling = poolMax;
+    regenerateLadderBands(pool);
+    renderPools();
+  });
+
+  // Collapsed band table disclosure — toggled in place so we don't lose scroll
+  // position; the open/closed state lives on the config so it survives the
+  // full re-renders that control changes trigger.
+  function setTableOpen(open) {
+    pool.ladderConfig._uiTableOpen = open;
+    detail.style.display = open ? '' : 'none';
+    if (chevron) {
+      chevron.classList.toggle('fa-chevron-down', open);
+      chevron.classList.toggle('fa-chevron-right', !open);
+    }
+  }
+  disclosure.addEventListener('click', () => setTableOpen(!pool.ladderConfig._uiTableOpen));
+  disclosure.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTableOpen(!pool.ladderConfig._uiTableOpen); }
+  });
+
+  // Add a manual band. Diverges the table from the strategy's band count until
+  // the next regeneration — that's the intended ephemeral-edit behaviour. Opens
+  // the table so the user sees the row they just added.
+  addBtn.addEventListener('click', () => {
+    const lc = ensureLadderStrategyConfig(pool);
+    if (!Array.isArray(lc.bands)) lc.bands = [];
+    lc.mode = 'manual';
+    const newBand = { supplyPercent: 5, lowerMultiplier: 1.5, upperMultiplier: 2.0 };
+    lc.bands.push(newBand);
+    lc._uiTableOpen = true;
+    rebalanceWideSlicesByDelta(pool, newBand.supplyPercent);
+    renderPools();
+  });
+
   // Initial paint.
+  renderChips();
+  updateMeta();
   renderBands();
 
   return node;
@@ -1871,10 +2275,10 @@ function buildBandRow(pool, poolIdx, band, bandIdx, rerenderBands, updateWarning
     <span style="line-height:30px;">% of pool</span>
     <span class="is-size-7 has-text-grey" style="line-height:30px;">Range:</span>
     <input class="input is-small" type="number" min="1" step="0.01"
-           data-field="lowerMultiplier" value="${Number(band.lowerMultiplier)}" style="width: 5rem;">
+           data-field="lowerMultiplier" value="${formatBandMultiplierValue(band.lowerMultiplier)}" style="width: 5rem;">
     <span class="is-size-7" style="line-height:30px;">× to</span>
     <input class="input is-small" type="number" min="1" step="0.01"
-           data-field="upperMultiplier" value="${Number(band.upperMultiplier)}" style="width: 5rem;">
+           data-field="upperMultiplier" value="${formatBandMultiplierValue(band.upperMultiplier)}" style="width: 5rem;">
     <span class="is-size-7" style="line-height:30px;">× launch</span>
     <span class="is-size-7 has-text-grey-dark" data-mcap-hint style="line-height:30px;margin-left:0.4rem;flex:1;"></span>
     <button class="button is-danger is-small is-light" data-action="remove-band" title="Remove band">
@@ -1916,6 +2320,7 @@ function buildBandRow(pool, poolIdx, band, bandIdx, rerenderBands, updateWarning
       band.lowerMultiplier = v;
       updateMcapHint();
       updateWarning();
+      updatePoolDepthChart(poolIdx);
     }
   });
   row.querySelector('[data-field="upperMultiplier"]').addEventListener('input', (e) => {
@@ -1924,6 +2329,7 @@ function buildBandRow(pool, poolIdx, band, bandIdx, rerenderBands, updateWarning
       band.upperMultiplier = v;
       updateMcapHint();
       updateWarning();
+      updatePoolDepthChart(poolIdx);
     }
   });
 
@@ -2889,21 +3295,6 @@ async function runCostPreview() {
     // cost to its own Est. Cost tile, so the two displays agree.
     const airdropExecutionSol = computeAirdropExecutionCostSol();
     setCostPreviewState('ready', data.estimate.totalSol + airdropExecutionSol);
-    // The airdrop token-amount preview depends on SOL's USD price, which
-    // for a flywheel-paired launch is only available via this estimate
-    // (there's no SOL-quoted pool to read it from). Now that the estimate —
-    // and its solUsd — has landed, re-render the airdrop display so the
-    // per-recipient amounts replace the "let SOL price resolve" placeholder.
-    // The guard flag stops this refresh from kicking off another
-    // cost-preview fetch and looping back into this handler.
-    if (typeof refreshAirdropDisplayInline === 'function') {
-      _airdropDisplayRefreshInProgress = true;
-      try {
-        refreshAirdropDisplayInline();
-      } finally {
-        _airdropDisplayRefreshInProgress = false;
-      }
-    }
   } catch (e) {
     if (seq !== _costPreviewRequestSeq) return;
     // Don't surface the error message — the user will see a real one
@@ -2968,6 +3359,20 @@ bind('targetMarketCap', 'input', () => {
     // The bootstrap dollar hint, the band mcap hints, and the positions-
     // total indicator all depend on mcap; re-render to refresh them.
     renderPools();
+  } else if (simpleConfig.mode === 'customize') {
+    // Customize mode with no custom-bootstrap pool: renderPools didn't fire,
+    // but the depth chart's USD scaling (token-side bands vs the quote-side
+    // support wall) tracks target mcap. Redraw each pool's chart live so the
+    // support-vs-token balance stays honest as mcap changes. This is a pure
+    // SVG redraw — it does NOT touch band supply or the ceiling cap, so it
+    // can't disturb the user's configured positions mid-edit. The ceiling
+    // cap (which also derives from mcap) is re-clamped on the next ladder
+    // interaction via ensureLadderStrategyConfig.
+    for (let i = 0; i < pools.length; i++) updatePoolDepthChart(i);
+    // The ceiling cap ($1B ÷ mcap) and its dollar readout also track mcap;
+    // refresh them in place too, so the whole ladder section stays honest as
+    // the user types — without a reflowing renderPools.
+    refreshLadderMcapDisplays();
   }
   // Preallocation display in the simple config also depends on mcap
   // (USD value of the held-back tokens). The auto-sized support value
@@ -3019,7 +3424,27 @@ bind('tokenSupply', 'input', () => {
 // flushing here would unconditionally call rebuildPoolsFromSimple
 // and wipe user pool customizations. Skip when in customize mode.
 bind('targetMarketCap', 'blur', () => {
-  if (simpleConfig.mode === 'customize') return;
+  if (simpleConfig.mode === 'customize') {
+    // mcap drives the ladder ceiling cap ($1B ÷ mcap). If raising mcap pulled
+    // the cap below a pool's configured ceiling, clamp it down and regenerate
+    // that pool's bands so the chart and positions match the tighter ceiling.
+    // (Lowering mcap raises the cap and never forces a clamp.) regenerate runs
+    // through ensureLadderStrategyConfig, which does the clamp, and preserves
+    // the positions total via its delta rebalance. Re-render only when a clamp
+    // actually fired, so we don't reflow the pool list — the dollar readout and
+    // cap were already refreshed live by the input handler. We must NOT rebuild
+    // from simple here; that would wipe the user's customizations.
+    let changed = false;
+    for (const p of pools) {
+      const cfg = p.ladderConfig;
+      if (cfg && cfg.mode === 'manual' && Number(cfg.ceiling) > poolMaxCeilingMultiplier(p)) {
+        regenerateLadderBands(p);
+        changed = true;
+      }
+    }
+    if (changed) renderPools();
+    return;
+  }
   flushRebuildPoolsFromSimple();
 });
 bind('tokenSupply', 'blur', () => {
@@ -3484,6 +3909,7 @@ function resetForNewLaunch() {
     ladderEnabled: false,
     ladderPercent: LADDER_DEFAULT_PERCENT,
     ladderBandCount: LADDER_DEFAULT_BANDS,
+    ladderStrategy: LADDER_DEFAULT_STRATEGY,
     // Preallocation defaults — disabled by default, 1% if the user
     // enables it. Auto-fit defaults on so the airdrop CSV automatically
     // raises the floor as needed. Both effective and typed values seed

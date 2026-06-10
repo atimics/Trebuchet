@@ -1284,6 +1284,15 @@
         body.medieval-cursor select::picker(select) {
             appearance: base-select;
         }
+        /* With base-select active the <select> renders its own native
+           dropdown arrow inside the control, but every select in the app
+           is wrapped in Bulma's .select, which already draws a themed
+           (rubric) arrow via ::after. Hide the native one so only the
+           themed arrow shows — otherwise the control has two arrows (the
+           stray second one appeared at the bottom-left of the button). */
+        body.medieval-cursor .select select::picker-icon {
+            display: none;
+        }
 
         /* --- Active / mousedown (clenched fist) ------------------ */
         /* :active fires while the pointer is held on the element. */
@@ -3550,6 +3559,36 @@
                     <p class="help mb-2">
                         The short animation that plays when Trebuchet opens. Turn it
                         off to go straight to the app on launch.
+                    </p>
+
+                    <!-- ============================================ -->
+                    <!-- Audio. A click sound effect and looping       -->
+                    <!-- background music, both on by default. Both    -->
+                    <!-- are handled entirely in the renderer          -->
+                    <!-- (public/modules/audio.js); changes here take  -->
+                    <!-- effect immediately and persist to             -->
+                    <!-- userPrefs.json as playSoundEffects /          -->
+                    <!-- playBackgroundMusic.                          -->
+                    <!-- ============================================ -->
+                    <hr class="my-3">
+                    <h6 class="subtitle is-6 mb-2">Audio</h6>
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="soundEffectsToggle" checked>
+                            <span>Play sound effects</span>
+                        </label>
+                    </div>
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="backgroundMusicToggle" checked>
+                            <span>Play background music</span>
+                        </label>
+                    </div>
+                    <p class="help mb-2">
+                        Background music starts when the app opens and pauses
+                        while the window is in the background. Sound effects
+                        cover buttons, dropdown menus, checkboxes, and changes
+                        to the estimated launch cost.
                     </p>
                 </div>
             </div>

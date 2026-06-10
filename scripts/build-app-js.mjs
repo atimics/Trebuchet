@@ -35,6 +35,7 @@ export const moduleNames = [
   'wallet-gen.js',        // wallet generation UI, mnemonic grid
   'token-config.js',      // addPool(), renderSimpleConfig() incl. Advanced options section
   'coin-preview.js',      // updateCoinPreview(), flywheel explainer modal
+  'depth-chart.js',       // computeDepthProfile(), renderDepthChartSvg() — per-pool liquidity depth
   'pool-editor.js',       // renderTokenPreview(), renderPools(), cost preview, allocations, preallocation arcs
   'tokenomics.js',        // showTokenomicsModal(), donut chart
   'launch-report.js',     // buildLaunchReportHtml() incl. airdrop section, downloadLaunchReport()
@@ -44,6 +45,7 @@ export const moduleNames = [
   'journals.js',          // loadLaunchJournals(), resume
   'pending-wallets.js',   // loadPendingWallets()
   'startup.js',           // setupDisclaimer(), setupSplashScreen(), startup gates
+  'audio.js',             // click sound effects + looping background music
 ];
 
 // Absolute paths, in concatenation order, of every source that goes into the

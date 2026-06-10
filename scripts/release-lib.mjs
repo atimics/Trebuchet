@@ -180,6 +180,57 @@ export async function collectFiles(rootDir) {
   return found.sort();
 }
 
+// GitHub requires every release asset to have a unique file name, so two
+// collected files that share a basename cannot both be uploaded. In practice
+// this happens when a non-installer file (a shared demo/doc asset, say) gets
+// bundled into more than one per-platform build artifact: download-artifact
+// unpacks each artifact into its own release-assets/<artifact>/ subtree, so the
+// same file lands several times under different parent directories.
+//
+// Those copies are byte-identical -- the *same* logical asset duplicated, not a
+// conflict -- so we collapse them to one copy and carry on. We only treat it as
+// a hard error when two files share a name but differ in content, because that
+// would silently clobber one with the other on GitHub and points at a genuine
+// build/naming bug (e.g. two platforms emitting different files of the same
+// name). That keeps the safety check meaningful without aborting a release over
+// an incidental duplicate.
+async function dedupeAssetsByName(assetPaths) {
+  const byName = new Map();
+  for (const assetPath of assetPaths) {
+    const name = path.basename(assetPath);
+    if (!byName.has(name)) {
+      byName.set(name, []);
+    }
+    byName.get(name).push(assetPath);
+  }
+
+  const kept = [];
+  for (const [name, paths] of byName) {
+    if (paths.length === 1) {
+      kept.push(paths[0]);
+      continue;
+    }
+
+    // More than one file claims this name. Hash every copy: matching digests
+    // mean it is the same asset duplicated across artifacts (safe to collapse),
+    // a mismatch is a real collision we refuse to paper over.
+    let firstDigest = null;
+    for (const candidate of paths) {
+      const digest = createHash('sha256').update(await readFile(candidate)).digest('hex');
+      if (firstDigest === null) {
+        firstDigest = digest;
+      } else if (digest !== firstDigest) {
+        throw new Error(`Duplicate release asset name detected with conflicting contents: ${name}`);
+      }
+    }
+
+    // paths came from collectFiles (sorted), so paths[0] is a stable choice.
+    kept.push(paths[0]);
+  }
+
+  return kept.sort();
+}
+
 export async function collectReleaseBundle(rootDir) {
   const files = await collectFiles(rootDir);
   const metadataFiles = files.filter(
@@ -198,9 +249,14 @@ export async function collectReleaseBundle(rootDir) {
   }
 
   metadata.sort(compareTargets);
-  assets.sort();
 
-  return { assets, metadata };
+  // Collapse byte-identical duplicates (same file delivered by several platform
+  // artifacts) down to one copy; throws only on a genuine name-vs-content
+  // conflict. This is what both writeChecksumFile and the gh upload consume, so
+  // deduping here fixes every downstream step at once.
+  const dedupedAssets = await dedupeAssetsByName(assets);
+
+  return { assets: dedupedAssets, metadata };
 }
 
 export async function writeChecksumFile(outputFile, assets) {

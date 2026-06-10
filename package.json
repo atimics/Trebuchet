@@ -29,6 +29,8 @@
     "test": "node --test test/*.test.mjs",
     "test:e2e": "node test/e2e/ui-flows.mjs --mobile",
     "devnet-launch": "node scripts/devnet-launch.mjs",
+    "test:visual": "node scripts/visual-diff.mjs",
+    "test:visual:golden": "node scripts/visual-diff.mjs --golden",
     "smoke:mainnet:readonly": "node test-token2022-compat.mjs",
     "build": "electron-builder",
     "build:mac": "electron-builder --mac",
@@ -100,7 +102,9 @@
     "@types/node": "^20.14.10",
     "electron": "^42.2.0",
     "electron-builder": "^26.8.1",
-    "playwright": "^1.60.0"
+    "pixelmatch": "^7.2.0",
+    "playwright": "^1.60.0",
+    "pngjs": "^7.0.0"
   },
   "overrides": {
     "axios": "^1.16.1",
@@ -158,6 +162,15 @@
     "asarUnpack": [
       "public/**/*",
       "public/intro.mp4",
+      "public/audio/warTheme.mp3",
+      "public/audio/click.flac",
+      "public/audio/checkbox.wav",
+      "public/audio/coins.wav",
+      "public/audio/menuSelect.wav",
+      "public/audio/expand.wav",
+      "public/audio/collapse.ogg",
+      "public/audio/expandStep.ogg",
+      "public/audio/collapseStep.ogg",
       "c/build/**/*"
     ],
     "mac": {

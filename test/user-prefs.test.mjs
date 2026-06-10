@@ -73,7 +73,7 @@ test('round-trips multiple writes without losing or duplicating fields', async (
   const onDisk = JSON.parse(readFileSync(path.join(configDir, 'userPrefs.json'), 'utf8'));
   assert.deepEqual(
     Object.keys(onDisk).sort(),
-    ['checkForUpdatesOnStartup', 'coinPreview', 'demoMode', 'medievalCursor', 'network', 'playIntroVideo'].sort(),
+    ['checkForUpdatesOnStartup', 'coinPreview', 'demoMode', 'medievalCursor', 'network', 'playIntroVideo', 'playSoundEffects', 'playBackgroundMusic'].sort(),
   );
   assert.equal(onDisk.checkForUpdatesOnStartup, false);
 });
@@ -111,7 +111,7 @@ test('rejects unknown keys without corrupting existing state', async (t) => {
   const onDisk = JSON.parse(readFileSync(path.join(configDir, 'userPrefs.json'), 'utf8'));
   assert.deepEqual(
     Object.keys(onDisk).sort(),
-    ['checkForUpdatesOnStartup', 'coinPreview', 'demoMode', 'medievalCursor', 'network', 'playIntroVideo'].sort(),
+    ['checkForUpdatesOnStartup', 'coinPreview', 'demoMode', 'medievalCursor', 'network', 'playIntroVideo', 'playSoundEffects', 'playBackgroundMusic'].sort(),
   );
 });
 
