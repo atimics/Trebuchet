@@ -9,22 +9,72 @@
 // Enhanced Info, set up a community.
 //
 // Coin lifecycle:
-//   - coinRenderer is a page-wide singleton (one WebGL context at a time).
-//     destroyCoinPreview() ran when the user left step 2, so by the time
-//     this modal opens the renderer is inactive.
-//   - showLaunchSuccessModal() calls coinRenderer.init() on the modal's
-//     mount and then setFaces() with the user's logo (data URL) and the
-//     largest pool's quote-token logo. Same data-URL trick the launch
-//     report uses, so we don't need a CORS proxy for the front face and
-//     the back face goes through the existing /api/proxy-image route
+//   - coinRenderer is a page-wide singleton (one WebGL context at a time),
+//     and the token preview card it lives in TRAVELS with the active step
+//     (steps 2-6, see relocateTokenPreview). So when this modal opens at
+//     the end of step 6, the renderer is typically ALIVE and owned by the
+//     step-6 preview card — the modal borrows it.
+//   - showLaunchSuccessModal() destroys the live context (one context at a
+//     time) and init()s on the modal's own mount, then setFaces() with the
+//     user's logo (data URL) and the largest pool's quote-token logo. Same
+//     data-URL trick the launch report uses, so we don't need a CORS proxy
+//     for the front face; the back face goes through /api/proxy-image
 //     (via proxiedImageUrl) like the step-2 preview does.
-//   - hideLaunchSuccessModal() destroys the renderer to free the WebGL
-//     context. Browsers cap live contexts; we don't want to keep one
-//     alive in a hidden modal.
+//   - hideLaunchSuccessModal() destroys the modal's context AND HANDS THE
+//     COIN BACK to the step preview card via renderTokenPreview() — the
+//     card is still on screen behind the modal, and without the hand-back
+//     its coin stays gone after dismissal.
 // ===========================================================================
 
 // Show the launch success modal. Populates token identity, the summary
 // line, and (re)initialises the 3D coin in the modal's mount.
+// Reflect the permanent-report publish state in the success modal. The publish
+// is kicked off during step 6, between airdrop and sweep
+// (publishLaunchReportToArweave), and may still be in
+// flight when this modal opens, so this is called on open and again when the
+// publish settles. Reads getPublishedReport() from launch-report.js.
+function renderPublishedReportCard() {
+  const el = document.getElementById('launchSuccessReportLink');
+  if (!el) return;
+  const title = document.getElementById('launchSuccessReportLinkTitle');
+  const desc = document.getElementById('launchSuccessReportLinkDesc');
+  const icon = document.getElementById('launchSuccessReportLinkIcon');
+  const rep = (typeof getPublishedReport === 'function') ? getPublishedReport() : null;
+
+  // Hidden when publishing is off, was skipped, or hasn't started.
+  if (!rep || rep.status === 'skipped') {
+    el.classList.add('hidden');
+    el.onclick = null;
+    return;
+  }
+  el.classList.remove('hidden');
+
+  if (rep.status === 'pending') {
+    if (icon) icon.className = 'fas fa-spinner fa-spin';
+    if (title) title.textContent = 'Publishing permanent report…';
+    if (desc) desc.textContent = 'Writing a permanent copy to Arweave — this finishes on its own.';
+    el.disabled = true;
+    el.onclick = null;
+  } else if (rep.status === 'done') {
+    if (icon) icon.className = 'fas fa-globe';
+    if (title) title.textContent = 'View the permanent report (Arweave)';
+    if (desc) desc.textContent = 'A permanent, public copy of this launch, findable from the token address.';
+    el.disabled = false;
+    el.onclick = () => {
+      try { window.open(rep.htmlUri || rep.jsonUri, '_blank', 'noopener,noreferrer'); }
+      catch (err) { console.warn('Failed to open report URL:', err); }
+    };
+  } else {
+    if (icon) icon.className = 'fas fa-rotate-right';
+    if (title) title.textContent = "Report didn't publish — retry";
+    if (desc) desc.textContent = 'Publishing to Arweave failed. The launch itself is unaffected; you can try again.';
+    el.disabled = false;
+    el.onclick = () => {
+      if (typeof publishLaunchReportToArweave === 'function') publishLaunchReportToArweave();
+    };
+  }
+}
+
 async function showLaunchSuccessModal() {
   const modal = document.getElementById('launchSuccessModal');
   if (!modal) return;
@@ -70,6 +120,11 @@ async function showLaunchSuccessModal() {
     if (reportBtn) reportBtn.addEventListener('click', () => downloadLaunchReport());
     modal.dataset.closeHandlersWired = 'true';
   }
+
+  // Reflect the permanent-report publish state (kicked off at step 5). Safe to
+  // call on every open; re-invoked by publishLaunchReportToArweave when the
+  // async publish settles.
+  renderPublishedReportCard();
 
   // ---- Populate identity & summary ----
   // Prefer the resolved on-chain info (createdTokenInfo, set by
@@ -158,11 +213,13 @@ async function showLaunchSuccessModal() {
     const mount = document.getElementById('launchSuccessCoin');
     if (mount) {
       try {
-        // Destroy any prior coin context first. By construction the coin
-        // should already be down (destroyCoinPreview ran when leaving
-        // step 2), but if the user reopens the modal via the step-6
-        // "View launch summary" button we need to tear down the modal's
-        // own coin from the previous open before init() will succeed.
+        // Destroy any prior coin context first — one WebGL context at a
+        // time. This is normally the step-6 preview card's LIVE coin
+        // (the travelling preview card owns the renderer through steps
+        // 2-6); on a re-open via "View launch summary" it's the modal's
+        // own coin from the previous open. Either way init() needs the
+        // singleton free. hideLaunchSuccessModal gives the coin back to
+        // the preview card on close.
         if (window.coinRenderer.isActive()) {
           window.coinRenderer.destroy();
         }
@@ -223,6 +280,23 @@ function hideLaunchSuccessModal() {
   // async showLaunchSuccessModal flow on re-open).
   const mount = document.getElementById('launchSuccessCoin');
   if (mount) mount.classList.remove('coin-live');
+
+  // Hand the coin back to the step preview card. The modal borrowed the
+  // singleton renderer from the travelling preview card (visible behind
+  // the modal on step 6); without this the card's coin area stays empty
+  // after dismissal — its mount still carries coin-live (hiding the flat
+  // fallback) but holds no canvas. renderTokenPreview() re-renders the
+  // card and its updateCoinPreview() call re-init()s the renderer into
+  // the card's mount, exactly like a step relocation does. Guarded: on
+  // any path where the preview card isn't rendered (coinCanRun false,
+  // mount missing), updateCoinPreview is a safe no-op.
+  if (typeof renderTokenPreview === 'function') {
+    try {
+      renderTokenPreview();
+    } catch (e) {
+      console.warn('Launch success modal: failed to restore preview coin:', e);
+    }
+  }
 }
 
 // ---- Modal close handlers wired lazily in showLaunchSuccessModal() ----
@@ -635,7 +709,7 @@ function renderFundingRequirements() {
     acquireWrap.style.display = autoPlan.length > 0 ? '' : 'none';
   }
 
-  attachRowLogoFallbacks(document.getElementById('step3') || document);
+  attachRowLogoFallbacks(document.getElementById('step3-card') || document);
   renderFundingBreakdown();
 }
 
@@ -652,7 +726,7 @@ function renderFundingBreakdown() {
     const isBuffer = /safety buffer/i.test(item.label);
     html += `<tr${isBuffer ? ' class="has-text-grey"' : ''}>
       <td>${escapeHtml(item.label)}</td>
-      <td class="has-text-right is-family-monospace">${item.sol.toFixed(4)} SOL</td>
+      <td class="has-text-right is-family-monospace">${item.sol > 0 && item.sol < 0.0001 ? '< 0.0001' : item.sol.toFixed(4)} SOL</td>
     </tr>`;
   }
   for (const item of fundingRequirement.quoteBreakdown || []) {
@@ -1223,7 +1297,16 @@ async function runAcquireFlow(planSubset, btn) {
       }),
     });
     if (!resp.ok) {
-      log(`Acquire failed: HTTP ${resp.status}`, 'danger');
+      // Pull the structured body if there is one — a 409 OP_IN_FLIGHT
+      // means another launch operation (a still-running acquire, or a
+      // launch in progress) holds the wallet; the server's message
+      // explains what to do. Anything else surfaces its error text.
+      const body = await resp.json().catch(() => ({}));
+      if (resp.status === 409 && body.code === 'OP_IN_FLIGHT') {
+        log(body.error, 'warning');
+      } else {
+        log(`Acquire failed: ${body.error || `HTTP ${resp.status}`}`, 'danger');
+      }
       return;
     }
     const { jobId } = await resp.json();

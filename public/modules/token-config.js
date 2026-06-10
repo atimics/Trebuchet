@@ -808,6 +808,30 @@ function computeAirdropExecutionCostSol() {
 // All four conditions are needed: any one failing means there's
 // nothing legitimate to airdrop.
 function buildAirdropTransferPayload() {
+  const live = buildLiveAirdropTransferPayload();
+  if (live) return live;
+  // Journal-restored fallback: when resuming a launch after an app
+  // restart, the simple-mode airdrop config that feeds the live builder
+  // is gone, but the plan was journaled at create-lp time and restored
+  // by prepareRecoveredSessionFromJournal. The mint check pins the plan
+  // to this exact token. The server independently skips any recipients
+  // its journal already records as delivered, so replaying the full
+  // plan here is safe even when the airdrop partially (or fully) ran
+  // before the restart.
+  if (restoredAirdropPayload
+      && createdTokenInfo
+      && createdTokenInfo.mint
+      && restoredAirdropPayload.tokenMint === createdTokenInfo.mint
+      && Array.isArray(restoredAirdropPayload.recipients)
+      && restoredAirdropPayload.recipients.length > 0) {
+    return restoredAirdropPayload;
+  }
+  return null;
+}
+
+// The live builder: reads the CURRENT simple-mode config. Split out so the
+// journal-restored fallback above can wrap it without touching the logic.
+function buildLiveAirdropTransferPayload() {
   if (!createdTokenInfo || !createdTokenInfo.mint) return null;
   if (simpleConfig.mode === 'customize') return null;
   if (!simpleConfig.preallocationEnabled) return null;
@@ -1622,7 +1646,23 @@ function buildAirdropResultsHtml() {
       <strong>⚠</strong> ${escapeHtml(err)}
     </div>`;
   })();
-  return errorHtml + summaryLineHtml;
+  // Soft duration warning for very large lists. No cap — the airdrop runs
+  // sequentially (pacing + per-tx confirmation), so a big list is purely a
+  // time commitment, and that's the user's call. ~4s/recipient matches the
+  // estimate runTransfer logs at execution time.
+  const sizeWarningHtml = (() => {
+    const n = airdrop.parsedRows.length;
+    if (n <= 1000) return '';
+    const estMinutes = Math.ceil((n * 4) / 60);
+    return `<div class="notification is-warning is-light py-2 px-3 mt-2 mb-0 is-size-7">
+      <strong>⚠</strong> ${n.toLocaleString()} recipients is a lot — the airdrop sends
+      one transaction per wallet and will take roughly ${estMinutes} minutes during the
+      final transfer. The app must stay open the whole time. Delivery is tracked
+      per-recipient, so if anything interrupts it, a retry only sends to wallets
+      that haven't received theirs yet.
+    </div>`;
+  })();
+  return errorHtml + sizeWarningHtml + summaryLineHtml;
 }
 
 // Render (or hide) the pre-transfer airdrop summary panel in step 6.

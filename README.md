@@ -249,6 +249,32 @@ genuinely just a paranoia option, not a normal step.
   pool supply that goes into the ladder (20–80%); a second slider
   picks the number of bands (3–10). The remainder of the pool's
   supply stays in a wide main position covering all prices.
+- **Preallocate supply** (default off) — holds back a percentage of
+  total supply from the LP entirely, for team/VC tokens, presales,
+  airdrops, staking rewards, or any utility reserve. Pool
+  allocations scale down to fit what's left. The preallocated
+  tokens stay in the launch wallet and sweep to your destination
+  on Step 6 for you to distribute. **Warning:** preallocated supply
+  without a Support position behind it is the textbook rug shape —
+  the app nags you about this, and the **Auto-back with support**
+  toggle pins the Support position's SOL value to cover the
+  preallocation's USD value so holders always have an honest exit.
+- **Airdrop** (under Preallocation) — paste or upload a CSV of
+  `wallet,sol` rows (e.g. presale contributors and what they put
+  in) and each wallet receives the matching USD value in tokens at
+  the launch price, sent automatically during the Step 6 sweep.
+  The list is validated as you type, the per-wallet token amounts
+  preview in a table, and **Auto-fit airdrop** raises the
+  preallocation percentage automatically if the list outgrows it.
+  Failed deliveries (rare) can be retried from Step 6; anything
+  undelivered sweeps to your destination wallet instead, so tokens
+  are never stranded.
+- **Add support position** (default off) — a single-sided buy wall
+  just below launch price. You set the SOL value and the depth
+  (how far below launch it extends). Quote-side only, so it costs
+  SOL but no token supply. This is what backs preallocated supply
+  with real exit liquidity; it also catches early dips for a
+  regular launch.
 - **Customize pools manually** — for anything more elaborate than
   the defaults: multiple non-SOL pools, custom quote tokens, per-pool
   splits, external Fee Key recipients, custom ladder bands at
@@ -353,10 +379,16 @@ Enter your destination wallet address. **Verify it character by
 character** — there is no undo. The app shows a confirmation modal
 listing exactly what's about to move; read it.
 
-Click **Confirm and Transfer**. The app sweeps:
+Click **Confirm and Transfer**. The app sweeps, in order:
 
-- All Fee Key NFTs (these are your earnings stream — keep them safe)
-- Any unallocated tokens that didn't go into pools
+- All Fee Key NFTs first (these are your earnings stream — keep
+  them safe)
+- The airdrop, if you configured one — each listed wallet gets its
+  tokens before the rest of the supply moves; a live progress bar
+  tracks deliveries, and any failed rows get a retry button (or
+  fall through to your destination wallet so nothing is stranded)
+- Any unallocated tokens that didn't go into pools (including the
+  preallocation remainder after the airdrop)
 - Remaining SOL above what's needed for the final transaction fees
 
 After the sweep completes you'll see a green confirmation with a
@@ -447,6 +479,13 @@ If you wanted any of those, you launched on the wrong tool.
   tokenomics** at the bottom of Step 2 — the donut chart makes
   miscalibrated bootstrap / ladder / pool-split percentages obvious
   before you've committed any SOL.
+- **Walk the flow in Demo Mode first.** Settings → Demo Mode
+  simulates every on-chain operation — the full six-step flow,
+  progress trees, failure banners, launch report and all — without
+  sending a single transaction or spending any SOL. It's the
+  fastest way to learn what each step does and looks like before
+  committing real money. Turn it off before a real launch (a
+  banner reminds you while it's on).
 - **Test on devnet first** if you change anything substantive about
   the launch parameters or you're learning the flow. Mistakes on
   mainnet cost real money.
@@ -509,6 +548,17 @@ entry to clear it.
 When you actually try to close the app mid-launch via the X button,
 a confirmation dialog appears first asking whether to leave or stay,
 so accidental closes are caught before they happen.
+
+**"It says another launch operation is already running for this wallet."**
+The app refuses to run two operations on the same launch wallet at
+once — two pool-creation runs would make duplicate pools; a sweep
+during pool creation would pull funds out from under the launch.
+This usually means a previous click is still working (launches take
+minutes) or the window reloaded mid-launch while the work kept
+running in the background. Wait for it to finish — the progress
+list keeps updating — and only restart the app if you're certain
+the operation is dead rather than slow. Restarting clears the lock
+(and stops any operation that was genuinely still running).
 
 **"I want to launch with a quote token I don't see in the dropdown."**
 Use Customize mode in Step 2 and pick "Custom mint…" in the quote

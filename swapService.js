@@ -645,15 +645,24 @@ async function signAndSendTradeApiTx(connection, ownerKeypair, base64Tx) {
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash({
     commitment: 'finalized',
   });
+  // Capture the timeout id so it can be cleared once confirmTransaction
+  // settles. Without the clear, the timer stays armed for the full
+  // CONFIRM_TIMEOUT_MS after a successful confirm, and that waste compounds
+  // across the retry ladder. The late rejection itself isn't unhandled
+  // (Promise.race consumes the loser's settlement) — this is timer hygiene.
+  let confirmTimer;
   const confirmation = await Promise.race([
     connection.confirmTransaction(
       { blockhash, lastValidBlockHeight, signature },
       'confirmed',
     ),
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('confirm timed out')), CONFIRM_TIMEOUT_MS),
-    ),
-  ]);
+    new Promise((_, reject) => {
+      confirmTimer = setTimeout(
+        () => reject(new Error('confirm timed out')),
+        CONFIRM_TIMEOUT_MS,
+      );
+    }),
+  ]).finally(() => clearTimeout(confirmTimer));
   if (confirmation?.value?.err) {
     throw new Error(`tx error: ${JSON.stringify(confirmation.value.err)}`);
   }

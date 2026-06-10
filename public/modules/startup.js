@@ -557,6 +557,100 @@ setupSplashScreen();
     });
   });
 })();
+
+// ===========================================================================
+// Launch-report preference + "What's this?" explainer (renderer side)
+// ---------------------------------------------------------------------------
+// The "Publish a permanent launch report to Arweave" checkbox mirrors the
+// other settings toggles: reflect the persisted value on load, persist changes
+// via /api/user-prefs. The "What's this?" link opens a plain-language modal.
+// The actual publishing happens server-side at step 5; this only manages the
+// on/off preference and the explainer UI.
+// ===========================================================================
+(function setupLaunchReportPref() {
+  const settingsToggle = document.getElementById('publishReportToggle');
+  const stepToggle = document.getElementById('lpPublishReportToggle');
+  const configToggle = document.getElementById('configPublishReportToggle');
+  const toggles = [settingsToggle, stepToggle, configToggle].filter(Boolean);
+
+  // Reflect the persisted value into every launch-report toggle on load.
+  fetch('/api/user-prefs')
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.prefs) {
+        const on = data.prefs.publishLaunchReport !== false;
+        toggles.forEach((t) => { t.checked = on; });
+      }
+    })
+    .catch((err) => {
+      console.warn('Failed to read launch-report preference:', err);
+    })
+    .finally(() => {
+      // Paint the step-5 idle hint once the toggle state is known.
+      if (typeof refreshLaunchReportUi === 'function') {
+        try { refreshLaunchReportUi(); } catch (_) { /* DOM may not be ready */ }
+      }
+    });
+
+  // A change on any toggle persists the pref, syncs the other toggle, refreshes
+  // the status surfaces, and — if turned ON after the pools are already created
+  // — publishes now (the idempotency guard prevents duplicates).
+  const onToggleChange = (source) => {
+    const on = source.checked;
+    toggles.forEach((t) => { if (t !== source) t.checked = on; });
+    fetch('/api/user-prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publishLaunchReport: on }),
+    }).catch((err) => {
+      console.warn('Failed to persist launch-report preference:', err);
+    });
+    if (typeof refreshLaunchReportUi === 'function') {
+      try { refreshLaunchReportUi(); } catch (_) { /* no-op */ }
+    }
+    // The launch-report line is part of the cost estimate, so re-run the cost
+    // preview whenever the toggle changes.
+    if (typeof requestCostPreviewUpdate === 'function') {
+      try { requestCostPreviewUpdate(); } catch (_) { /* no-op */ }
+    }
+    if (on && typeof publishLaunchReportToArweave === 'function'
+        && typeof lpResult !== 'undefined' && lpResult
+        && typeof createdTokenInfo !== 'undefined' && createdTokenInfo && createdTokenInfo.mint
+        // Only publish immediately when the step-6 publish point already
+        // passed while the toggle was OFF (it recorded 'skipped'). Before
+        // that, flipping the pref is enough — runTransfer publishes after
+        // the airdrop and before the sweep, so the permanent record gets
+        // the real delivery results.
+        && typeof _publishedReport !== 'undefined' && _publishedReport
+        && _publishedReport.status === 'skipped') {
+      publishLaunchReportToArweave();
+    }
+  };
+  toggles.forEach((t) => t.addEventListener('change', () => onToggleChange(t)));
+
+  // "What's this?" explainer modal. Its markup lives LATER in index.html than
+  // <script src="app.js">, so it is NOT in the DOM when this runs (while the
+  // openers are). Binding directly here would silently no-op. Use document-level
+  // event delegation and resolve the modal at click time, so open/close work
+  // regardless of parse order — the same hazard the success modal documents.
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    // Open: any launch-report "What's this?" link (Settings, step 5, or config).
+    if (t.closest('#launchReportWhatsThis, #lpReportWhatsThis, #configReportWhatsThis')) {
+      e.preventDefault();
+      const m = document.getElementById('launchReportInfoModal');
+      if (m) m.classList.add('is-active');
+      return;
+    }
+    // Close: the X, the "Got it" button, or a click on the modal backdrop.
+    if (t.closest('#launchReportInfoClose, #launchReportInfoDone')
+        || (t.matches && t.matches('#launchReportInfoModal .modal-background'))) {
+      const m = document.getElementById('launchReportInfoModal');
+      if (m) m.classList.remove('is-active');
+    }
+  });
+})();
 // ===========================================================================
 // Demo destination wallet
 // ---------------------------------------------------------------------------
