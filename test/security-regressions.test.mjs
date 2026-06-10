@@ -43,3 +43,12 @@ test('C Makefile uses portable flags for release (-march=native only in dev targ
     '-march=native must not be in default CFLAGS — only in the dev target',
   );
 });
+
+test('build-c honors explicit libsodium paths and links Windows system crypto', () => {
+  const script = readFileSync(path.join(REPO, 'scripts', 'build-c.mjs'), 'utf8');
+
+  assert.match(script, /SODIUM_INCLUDE_DIR/);
+  assert.match(script, /SODIUM_LIB_DIR/);
+  assert.match(script, /x64-mingw-static/);
+  assert.match(script, /-lbcrypt/);
+});

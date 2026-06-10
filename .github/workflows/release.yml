@@ -98,11 +98,24 @@ jobs:
           restore-keys: |
             electron-cache-${{ runner.os }}-${{ matrix.artifact }}-
 
-      - name: Install Linux packaging dependencies
-        if: runner.os == 'Linux'
+      - name: Install system dependencies
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libarchive-tools rpm
+          case "${{ runner.os }}" in
+            Linux)
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq libarchive-tools libsodium-dev pkg-config rpm
+              ;;
+            macOS)
+              brew install libsodium pkg-config 2>/dev/null || true
+              ;;
+            Windows)
+              vcpkg install libsodium:x64-mingw-static
+              vcpkg_root="${VCPKG_INSTALLATION_ROOT:-C:/vcpkg}"
+              echo "SODIUM_INCLUDE_DIR=${vcpkg_root}/installed/x64-mingw-static/include" >> "$GITHUB_ENV"
+              echo "SODIUM_LIB_DIR=${vcpkg_root}/installed/x64-mingw-static/lib" >> "$GITHUB_ENV"
+              ;;
+          esac
 
       - name: Install dependencies
         run: npm ci

@@ -134,9 +134,19 @@ jobs:
         shell: bash
         run: |
           case "${{ runner.os }}" in
-            Linux)   sudo apt-get update -qq && sudo apt-get install -y -qq libsodium-dev ;;
-            macOS)   brew install libsodium 2>/dev/null || true ;;
-            Windows) vcpkg install libsodium --triplet x64-windows || choco install libsodium -y ;;
+            Linux)
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq libsodium-dev pkg-config
+              ;;
+            macOS)
+              brew install libsodium pkg-config 2>/dev/null || true
+              ;;
+            Windows)
+              vcpkg install libsodium:x64-mingw-static
+              vcpkg_root="${VCPKG_INSTALLATION_ROOT:-C:/vcpkg}"
+              echo "SODIUM_INCLUDE_DIR=${vcpkg_root}/installed/x64-mingw-static/include" >> "$GITHUB_ENV"
+              echo "SODIUM_LIB_DIR=${vcpkg_root}/installed/x64-mingw-static/lib" >> "$GITHUB_ENV"
+              ;;
           esac
 
       - name: Build vanity keygen binary

@@ -40,20 +40,69 @@ const sources = [
 const includes = ['.', 'vendor'];
 
 
-// Detect libsodium via pkg-config or Homebrew default paths.
-let sodiumCflags = "";
+function splitPathEnv(value) {
+  if (!value) return [];
+  const delimiter = value.includes(';') ? ';' : path.delimiter;
+  return value
+    .split(delimiter)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function firstExistingPath(candidates) {
+  return candidates.find((candidate) => candidate && existsSync(candidate)) || '';
+}
+
+function windowsVcpkgRoot() {
+  return process.env.VCPKG_INSTALLATION_ROOT || process.env.VCPKG_ROOT || 'C:/vcpkg';
+}
+
+function sodiumIncludeDirsFromEnv() {
+  return splitPathEnv(process.env.SODIUM_INCLUDE_DIR || process.env.SODIUM_INCLUDE_PATH);
+}
+
+function sodiumLibDirsFromEnv() {
+  return splitPathEnv(process.env.SODIUM_LIB_DIR || process.env.SODIUM_LIBRARY_PATH);
+}
+
+// Detect libsodium via explicit env, pkg-config, or common package-manager paths.
+const explicitSodiumIncludes = sodiumIncludeDirsFromEnv();
+const explicitSodiumLibDirs = sodiumLibDirsFromEnv();
+
+let sodiumCflags = explicitSodiumIncludes.map((dir) => `-I${dir}`).join(' ');
 try {
   const p = spawnSync("pkg-config", ["--cflags", "libsodium"], { stdio: "pipe" });
-  if (p.status === 0) sodiumCflags = p.stdout.toString().trim();
+  if (!sodiumCflags && p.status === 0) sodiumCflags = p.stdout.toString().trim();
 } catch (_) {}
+if (!sodiumCflags && process.platform === "win32") {
+  const root = windowsVcpkgRoot();
+  const includeDir = firstExistingPath([
+    path.join(root, 'installed', 'x64-mingw-static', 'include'),
+    path.join(root, 'installed', 'x64-mingw-dynamic', 'include'),
+    'C:/msys64/mingw64/include',
+  ]);
+  if (includeDir) sodiumCflags = `-I${includeDir}`;
+}
 if (!sodiumCflags && process.platform === "darwin") {
   sodiumCflags = "-I/opt/homebrew/opt/libsodium/include -I/opt/homebrew/include";
 }
-let sodiumLibs = "-lsodium";
+
+let sodiumLibs = explicitSodiumLibDirs.length
+  ? `${explicitSodiumLibDirs.map((dir) => `-L${dir}`).join(' ')} -lsodium`
+  : "-lsodium";
 try {
   const p = spawnSync("pkg-config", ["--libs", "libsodium"], { stdio: "pipe" });
-  if (p.status === 0) sodiumLibs = p.stdout.toString().trim();
+  if (sodiumLibs === "-lsodium" && p.status === 0) sodiumLibs = p.stdout.toString().trim();
 } catch (_) {}
+if (sodiumLibs === "-lsodium" && process.platform === "win32") {
+  const root = windowsVcpkgRoot();
+  const libDir = firstExistingPath([
+    path.join(root, 'installed', 'x64-mingw-static', 'lib'),
+    path.join(root, 'installed', 'x64-mingw-dynamic', 'lib'),
+    'C:/msys64/mingw64/lib',
+  ]);
+  if (libDir) sodiumLibs = `-L${libDir} -lsodium`;
+}
 if (sodiumLibs === "-lsodium" && process.platform === "darwin") {
   sodiumLibs = "-L/opt/homebrew/opt/libsodium/lib -lsodium";
 }
@@ -137,9 +186,16 @@ function build(compiler) {
     ? ['-D__USE_MINGW_ANSI_STDIO=1']
     : [];
 
-  const linkLibs = process.platform === 'win32'
-    ? ['-static-libgcc', '-Wl,-Bstatic', '-lpthread', '-Wl,-Bdynamic', '-lsodium']
-    : ['-pthread', '-lsodium'];
+  const platformLinkLibs = process.platform === 'win32'
+    ? ['-static-libgcc', '-Wl,-Bstatic', '-lpthread', '-Wl,-Bdynamic', '-lbcrypt']
+    : ['-pthread'];
+
+  const sodiumIncludeFlags = sodiumCflags
+    ? sodiumCflags.split(/\s+/).filter((flag) => flag.startsWith('-I'))
+    : [];
+  const sodiumLinkFlags = sodiumLibs
+    ? sodiumLibs.split(/\s+/)
+    : ['-lsodium'];
 
   const args = [
     '-O3', '-flto',
@@ -149,17 +205,17 @@ function build(compiler) {
     ...sources,
     '-o', outPath,
     ...includes.flatMap((i) => ['-I', i]),
-    ...(sodiumCflags ? sodiumCflags.split(/\s+/).filter(f => f.startsWith('-I')) : []),
-    ...(sodiumLibs ? sodiumLibs.split(/\s+/) : []),
-
-    ...linkLibs,
+    ...sodiumIncludeFlags,
+    ...platformLinkLibs,
+    ...sodiumLinkFlags,
   ];
 
   console.log(`Building vanity_keygen with ${compiler}`);
   console.log(`  platform: ${process.platform} / ${process.arch}`);
   console.log(`  output:   ${outPath}`);
+  console.log('  sodiumCflags:', sodiumCflags || '(none)');
   console.log('  sodiumLibs:', sodiumLibs);
-  console.log('  linkLibs:', linkLibs);
+  console.log('  platformLinkLibs:', platformLinkLibs);
 
   const result = spawnSync(compiler, args, {
     cwd: cDir,
