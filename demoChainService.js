@@ -614,6 +614,20 @@ export async function handleCreateToken(req, res) {
 // reads from results, so getting this shape right is what makes the rest
 // of the UI work unchanged.
 
+// Demo stub for /api/publish-launch-report. No Arweave write — returns
+// Arweave-shaped URIs so the success modal's permanent-report card renders in
+// a demo walkthrough exactly as it would after a real publish.
+export function handlePublishLaunchReport(req, res) {
+  const { mint } = req.body || {};
+  if (!mint) {
+    return res.json({ success: true, skipped: true, reason: 'missing-mint' });
+  }
+  const htmlUri = `https://arweave.net/${demoAddress()}`;
+  const jsonUri = `https://arweave.net/${demoAddress()}`;
+  console.log(`[demo] === Published launch report for ${mint} (simulated) ===`);
+  return res.json({ success: true, skipped: false, failed: false, jsonUri, htmlUri });
+}
+
 export async function handleCreateLp(req, res, opts = {}) {
   try {
     const {
@@ -677,6 +691,10 @@ export async function handleCreateLp(req, res, opts = {}) {
         mainPositions.push({
           sliceIndex: i,
           sharePercent: slice.sharePercent,
+          // Plausible wide single-sided range above launch (parity with the
+          // real result shape — the launch report renders these).
+          tickLower: 60,
+          tickUpper: 443580,
           nftMint: demoAddress(),
           locked: false,
           recipient: slice.recipient || null,
@@ -779,6 +797,10 @@ export async function handleCreateLp(req, res, opts = {}) {
         supplyPercent: alloc.supplyPercent,
         poolId,
         launchedSide,
+        // Pool parameters mirrored from the real result shape for the
+        // launch report / Arweave record.
+        tickSpacing: 60,
+        initialPrice: '0.0001',
         mainPositions,
         ladderPositions,
         supportPositions,
@@ -828,6 +850,10 @@ export async function handleCreateLp(req, res, opts = {}) {
       r.bootstrap = {
         nftMint: demoAddress(),
         locked: false,
+        // Narrow straddle around the launch tick — parity with the real
+        // bootstrap record (the launch report renders the range).
+        tickLower: -60,
+        tickUpper: 60,
         txIds: { open: demoSignature(), lock: null },
       };
       // A bootstrap consumes a tiny bit of the quote side. We don't track
@@ -861,8 +887,11 @@ export async function handleCreateLp(req, res, opts = {}) {
           await sleep(1500);
           pos.locked = true;
           pos.txIds.lock = demoSignature();
+          // The real lock mints a NEW Fee Key NFT (the position NFT goes
+          // into the lock program's escrow); model that with a fresh mint.
+          pos.feeKeyNftMint = demoAddress();
           st.nfts.push({
-            mint: pos.nftMint,
+            mint: pos.feeKeyNftMint,
             name: `Fee Key (${r.quoteSymbol} main ${i + 1})`,
             symbol: 'FEEKEY',
             programName: 'Token Program',
@@ -875,8 +904,9 @@ export async function handleCreateLp(req, res, opts = {}) {
           await sleep(1200);
           lp.locked = true;
           lp.txIds.lock = demoSignature();
+          lp.feeKeyNftMint = demoAddress();
           st.nfts.push({
-            mint: lp.nftMint,
+            mint: lp.feeKeyNftMint,
             name: `Fee Key (${r.quoteSymbol} ladder ${bi + 1})`,
             symbol: 'FEEKEY',
             programName: 'Token Program',
@@ -892,21 +922,23 @@ export async function handleCreateLp(req, res, opts = {}) {
           await sleep(1200);
           sp.locked = true;
           sp.txIds.lock = demoSignature();
+          sp.feeKeyNftMint = demoAddress();
           st.nfts.push({
-            mint: sp.nftMint,
+            mint: sp.feeKeyNftMint,
             name: `Fee Key (${r.quoteSymbol} support)`,
             symbol: 'FEEKEY',
             programName: 'Token Program',
           });
-          emit({ stage: 'support_lock_done', allocationIndex: idx });
+          emit({ stage: 'support_lock_done', allocationIndex: idx, supportIndex: si });
         }
         if (r.bootstrap && r.bootstrap.nftMint) {
           console.log(`[demo] [${r.quoteSymbol}] locking bootstrap`);
           await sleep(1200);
           r.bootstrap.locked = true;
           r.bootstrap.txIds.lock = demoSignature();
+          r.bootstrap.feeKeyNftMint = demoAddress();
           st.nfts.push({
-            mint: r.bootstrap.nftMint,
+            mint: r.bootstrap.feeKeyNftMint,
             name: `Fee Key (${r.quoteSymbol} bootstrap)`,
             symbol: 'FEEKEY',
             programName: 'Token Program',
@@ -936,8 +968,10 @@ export async function handleCreateLp(req, res, opts = {}) {
           await sleep(1000);
           pos.transferredTo = pos.recipient;
           pos.txIds.transfer = demoSignature();
-          // Remove the transferred Fee Key from the launch wallet.
-          st.nfts = st.nfts.filter((n) => n.mint !== pos.nftMint);
+          // Remove the transferred Fee Key from the launch wallet. Same
+          // preference order as lpService: the lock NFT is the Fee Key.
+          const demoFeeKeyMint = pos.feeKeyNftMint || pos.nftMint;
+          st.nfts = st.nfts.filter((n) => n.mint !== demoFeeKeyMint);
           emit({ stage: 'main_transfer_done', allocationIndex: allocIdx, sliceIndex: i });
         }
       }

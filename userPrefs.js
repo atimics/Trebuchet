@@ -78,6 +78,14 @@ const DEFAULTS = Object.freeze({
   // user has interacted with the page. On by default; toggled in settings.
   // Like the sound effect, this is renderer-side only.
   playBackgroundMusic: true,
+  // Publish a permanent launch report to Arweave (a machine-readable JSON
+  // plus the rendered HTML) after a launch completes, tagged so anyone can
+  // find it from the token mint — without writing anything onto the token's
+  // own metadata. On by default; opt-out for users who don't want their
+  // token associated with the launchpad (e.g. a corporate launch). The
+  // report is signed by the launch wallet, so it's verifiable against
+  // on-chain state, and a failed publish never blocks or fails a launch.
+  publishLaunchReport: true,
 });
 
 // Lazy-loaded in-memory cache. We refresh from disk on every get()
