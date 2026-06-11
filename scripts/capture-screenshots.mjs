@@ -189,31 +189,57 @@ try {
   ` });
   const setClean = (on) => page.evaluate((v) => document.body.classList.toggle('shots-clean', v), on);
 
-  // Clip a fullPage screenshot to the element's document-coordinate
-  // box. Unlike locator.screenshot(), this has NO stability wait — on
-  // slow CI runners the live cost estimate re-renders the config body
-  // continuously and an element that keeps detaching never counts as
-  // "stable", which timed out every detour capture (and only there;
-  // fast local networks let the churn settle in time).
+  // Element capture without locator stability waits AND without
+  // fullPage. Both bit us on CI:
+  //   - locator.screenshot() waits for a stable bounding box, which
+  //     never happens while the live cost estimate re-renders the
+  //     config body on a slow runner;
+  //   - fullPage screenshots use Chromium's captureBeyondViewport,
+  //     which is flaky under SwiftShader with a continuously-animating
+  //     WebGL canvas (the coin) on the page — viewport-sized shots kept
+  //     working in the same runs that hung every fullPage capture, and
+  //     a wedged capture poisons coordinate-based clicks afterwards.
+  // So: temporarily grow the viewport to fit the element, scroll it to
+  // the top, take a PLAIN viewport screenshot clipped to its rect, and
+  // restore the standard viewport before any further interaction.
+  const STD_VIEWPORT = { width: 1440, height: 1000 };
   async function shootClipped(selector, name) {
-    const box = await page.evaluate((sel) => {
+    const measure = await page.evaluate((sel) => {
       const el = document.querySelector(sel);
       if (!el) return null;
-      el.scrollIntoView({ block: 'start' });
       const r = el.getBoundingClientRect();
-      return {
-        x: Math.max(0, r.left + window.scrollX),
-        y: Math.max(0, r.top + window.scrollY),
-        width: Math.max(1, r.width),
-        height: Math.max(1, r.height),
-      };
+      return { width: r.width, height: r.height };
     }, selector);
-    if (!box) throw new Error(`shootClipped: ${selector} not found`);
-    await page.waitForTimeout(600); // let scroll/coin settle (best effort)
-    await setClean(true);
-    await page.screenshot({ path: join(outDir, name), fullPage: true, clip: box });
-    await setClean(false);
-    console.log(`captured ${name}`);
+    if (!measure) throw new Error(`shootClipped: ${selector} not found`);
+    // Cap the viewport: at deviceScaleFactor 2 a 6000px-tall buffer is
+    // already ~140MB of pixels; anything taller than the cap gets its
+    // top 6000px, which no app card exceeds in practice.
+    const vpHeight = Math.min(Math.max(Math.ceil(measure.height) + 40, STD_VIEWPORT.height), 6000);
+    try {
+      await page.setViewportSize({ width: STD_VIEWPORT.width, height: vpHeight });
+      const box = await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        el.scrollIntoView({ block: 'start' });
+        const r = el.getBoundingClientRect();
+        return {
+          x: Math.max(0, r.left),
+          y: Math.max(0, r.top),
+          width: Math.max(1, Math.min(r.width, window.innerWidth - Math.max(0, r.left))),
+          height: Math.max(1, Math.min(r.height, window.innerHeight - Math.max(0, r.top))),
+        };
+      }, selector);
+      if (!box) throw new Error(`shootClipped: ${selector} vanished during capture`);
+      await page.waitForTimeout(600); // let scroll/coin/relayout settle (best effort)
+      await setClean(true);
+      await page.screenshot({ path: join(outDir, name), clip: box, timeout: 20_000 });
+      await setClean(false);
+      console.log(`captured ${name}`);
+    } finally {
+      await setClean(false);
+      await page.setViewportSize(STD_VIEWPORT);
+      await page.waitForTimeout(300);
+    }
   }
 
   async function shootCard(stepNum, name) {
@@ -516,7 +542,14 @@ try {
       // present; the data-URL fallback renders instantly either way.
       await reportPage.setContent(reportHtml, { waitUntil: 'networkidle' });
       await reportPage.waitForTimeout(800);
-      await reportPage.screenshot({ path: join(outDir, '10-launch-report.png'), fullPage: true });
+      // Same tall-viewport technique as shootClipped — grow the viewport
+      // to the document height and take a plain screenshot, avoiding
+      // Chromium's captureBeyondViewport (fullPage) entirely. dsf is 1
+      // here so even a very tall buffer stays cheap.
+      const docHeight = await reportPage.evaluate(() => Math.ceil(document.documentElement.scrollHeight));
+      await reportPage.setViewportSize({ width: 1100, height: Math.min(docHeight + 20, 20000) });
+      await reportPage.waitForTimeout(400);
+      await reportPage.screenshot({ path: join(outDir, '10-launch-report.png'), timeout: 20_000 });
       await reportPage.close();
       console.log('captured 10-launch-report.png (full document)');
     }
@@ -547,11 +580,7 @@ try {
   await page.waitForSelector('#launchSuccessModal.is-active', { timeout: TRANSFER_TIMEOUT });
   await page.waitForTimeout(2000); // coin spin-up + publish-state card
   await gifFrame('launch complete');
-  await setClean(true);
-  await page.locator('#launchSuccessModal .modal-card, #launchSuccessModal .modal-content').first()
-    .screenshot({ path: join(outDir, '12-launch-success.png') });
-  await setClean(false);
-  console.log('captured 12-launch-success.png');
+  await shootClipped('#launchSuccessModal .modal-card, #launchSuccessModal .modal-content', '12-launch-success.png');
 
   // Close the modal and grab the completed step-6 card (transfer summary +
   // report buttons + the coin handed back to the preview card).
