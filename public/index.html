@@ -4268,6 +4268,12 @@
                             </button>
                         </div>
                     </div>
+                    <!-- Next-action hint. The continue button can stay disabled
+                         for several distinct reasons (SOL not yet arrived,
+                         quote tokens still to acquire, manual prefunds pending)
+                         and a silently-disabled button gives the user nothing
+                         to act on. pollBalances() keeps this line current. -->
+                    <p class="is-size-7 has-text-grey mt-1 hidden" id="fundingNextHint"></p>
                 </div>
             </div>
 
