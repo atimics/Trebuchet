@@ -189,28 +189,41 @@ try {
   ` });
   const setClean = (on) => page.evaluate((v) => document.body.classList.toggle('shots-clean', v), on);
 
-  async function shootCard(stepNum, name) {
-    const card = page.locator(`#step${stepNum}-card`);
-    await card.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(600); // let transitions/coin settle
+  // Clip a fullPage screenshot to the element's document-coordinate
+  // box. Unlike locator.screenshot(), this has NO stability wait — on
+  // slow CI runners the live cost estimate re-renders the config body
+  // continuously and an element that keeps detaching never counts as
+  // "stable", which timed out every detour capture (and only there;
+  // fast local networks let the churn settle in time).
+  async function shootClipped(selector, name) {
+    const box = await page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      el.scrollIntoView({ block: 'start' });
+      const r = el.getBoundingClientRect();
+      return {
+        x: Math.max(0, r.left + window.scrollX),
+        y: Math.max(0, r.top + window.scrollY),
+        width: Math.max(1, r.width),
+        height: Math.max(1, r.height),
+      };
+    }, selector);
+    if (!box) throw new Error(`shootClipped: ${selector} not found`);
+    await page.waitForTimeout(600); // let scroll/coin settle (best effort)
     await setClean(true);
-    await card.screenshot({ path: join(outDir, name) });
+    await page.screenshot({ path: join(outDir, name), fullPage: true, clip: box });
     await setClean(false);
     console.log(`captured ${name}`);
+  }
+
+  async function shootCard(stepNum, name) {
+    await shootClipped(`#step${stepNum}-card`, name);
   }
 
   // Element screenshot of an arbitrary selector — used for focused panel
   // captures (a <details> section, a modal card) where the whole step
   // card would bury the feature being shown.
-  async function shootEl(selector, name) {
-    const el = page.locator(selector).first();
-    await el.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(400);
-    await setClean(true);
-    await el.screenshot({ path: join(outDir, name) });
-    await setClean(false);
-    console.log(`captured ${name}`);
-  }
+  const shootEl = shootClipped;
 
   // One GIF milestone frame (full viewport, uniform size).
   async function gifFrame(label) {
@@ -289,15 +302,15 @@ try {
   // prealloc + airdrop on for the capture — the live section with the
   // CSV editor active — then restore both. Each toggle re-renders the
   // simple body, hence the fresh getElementById per step.
+  const setCheckedById = (id, checked) => page.evaluate(({ elId, want }) => {
+    const el = document.getElementById(elId);
+    if (el && el.checked !== want) el.click();
+    return !!el;
+  }, { elId: id, want: checked });
   try {
-    const clickById = (id) => page.evaluate((elId) => {
-      const el = document.getElementById(elId);
-      if (el) el.click();
-      return !!el;
-    }, id);
-    await clickById('simplePreallocToggle');
+    await setCheckedById('simplePreallocToggle', true);
     await page.waitForTimeout(600);
-    await clickById('simpleAirdropToggle');
+    await setCheckedById('simpleAirdropToggle', true);
     await page.waitForTimeout(600);
     await page.evaluate(() => {
       const adv = document.getElementById('simpleAdvancedDetails');
@@ -307,16 +320,21 @@ try {
     });
     await page.waitForTimeout(500);
     await shootEl('#simpleAirdropDetails', '04-airdrop-config.png');
-    // Restore defaults (airdrop off first — it depends on prealloc).
-    await clickById('simpleAirdropToggle');
+  } catch (e) {
+    console.warn('airdrop capture skipped:', e.message);
+  } finally {
+    // Restore defaults whether or not the capture succeeded (airdrop
+    // off first — it depends on prealloc). State-checked: only clicks
+    // when the toggle is actually on.
+    await setCheckedById('simpleAirdropToggle', false);
     await page.waitForTimeout(400);
-    await clickById('simplePreallocToggle');
+    await setCheckedById('simplePreallocToggle', false);
     await page.waitForTimeout(600);
     await page.evaluate(() => {
       const adv = document.getElementById('simpleAdvancedDetails');
       if (adv) adv.open = true;
     });
-  } catch (e) { console.warn('airdrop capture skipped:', e.message); }
+  }
 
   // Customize mode: the manual pool editor. Enable the first pool's
   // ladder so the screenshot shows the band table, not just the toggle.
@@ -324,23 +342,24 @@ try {
     await page.click('#simpleCustomizeBtn');
     await page.waitForSelector('#customizeConfigContainer:not(.hidden)', { timeout: STEP_TIMEOUT });
     await page.waitForTimeout(800);
-    // Expand every pool's editor — cards render collapsed behind their
-    // "▸ configure" header, and a folded row demonstrates nothing.
+    // Expand the editor's full depth in one DOM pass — no locator
+    // actions (their stability waits are what timed out on CI):
+    //   1. every pool's editor (cards render collapsed behind their
+    //      "▸ configure" header; a folded row demonstrates nothing),
+    //   2. the first pool's ladder toggle (reveals band controls),
+    //   3. then, after the re-render settles: every <details>, the
+    //      per-band positions table disclosure, and the custom
+    //      support inputs. All defensive — a missing piece stays
+    //      collapsed rather than failing the run.
     await page.evaluate(() => {
       document.querySelectorAll('#poolList .pool-row-header').forEach((h) => h.click());
     });
     await page.waitForTimeout(800);
-
-    const ladderToggle = page.locator('[data-ladder-toggle]').first();
-    if (await ladderToggle.count()) {
-      await ladderToggle.check();
-      await page.waitForTimeout(800);
-    }
-    // Expand the rest of the editor's depth: the per-band positions
-    // table (its own disclosure, collapsed even with the ladder on),
-    // the first pool's custom support inputs, and any <details>
-    // sections. All inside the container, all evaluated defensively —
-    // a missing piece just stays collapsed rather than failing the run.
+    await page.evaluate(() => {
+      const ladder = document.querySelector('[data-ladder-toggle]');
+      if (ladder && !ladder.checked) ladder.click();
+    });
+    await page.waitForTimeout(800);
     await page.evaluate(() => {
       const root = document.getElementById('customizeConfigContainer');
       if (!root) return;
@@ -352,19 +371,25 @@ try {
     });
     await page.waitForTimeout(800);
     await shootEl('#customizeConfigContainer', '05-custom-pools.png');
-
-    // Going back to simple may raise the discard-confirmation dialog
-    // depending on how far the state diverged — accept it when it
-    // appears. (Not captured: a sometimes-there dialog means a
-    // sometimes-broken README image.)
-    await page.click('#returnToSimpleBtn');
-    try {
-      await page.waitForSelector('#genericConfirmModal.is-active', { timeout: 5_000 });
-      await page.click('#genericConfirmOk');
-    } catch (_) { /* nothing customized enough to warrant the confirm */ }
-    await page.waitForSelector('#simpleConfigContainer:not(.hidden)', { timeout: STEP_TIMEOUT });
-    await page.waitForTimeout(600);
-  } catch (e) { console.warn('customize capture skipped:', e.message); }
+  } catch (e) {
+    console.warn('customize capture skipped:', e.message);
+  } finally {
+    // ALWAYS return to simple mode — a failed capture must cost one
+    // image, not leave the editor in customize mode for the rest of
+    // the run (which is how the CI run lost step 3). The discard-
+    // confirmation may or may not appear depending on how far the
+    // state diverged; accept it when it does.
+    const inCustomize = await page.$eval('#customizeConfigContainer', (el) => !el.classList.contains('hidden')).catch(() => false);
+    if (inCustomize) {
+      await page.evaluate(() => document.getElementById('returnToSimpleBtn')?.click());
+      try {
+        await page.waitForSelector('#genericConfirmModal.is-active', { timeout: 5_000 });
+        await page.evaluate(() => document.getElementById('genericConfirmOk')?.click());
+      } catch (_) { /* nothing customized enough to warrant the confirm */ }
+      await page.waitForSelector('#simpleConfigContainer:not(.hidden)', { timeout: STEP_TIMEOUT });
+      await page.waitForTimeout(600);
+    }
+  }
 
   // Leave the advanced panel collapsed — the default state — so later
   // captures and gif frames show the step as a user first sees it.
