@@ -324,14 +324,32 @@ function setLoading(btn, loading) {
 
 // Wrap an async operation in run-state handling. While `isRunningOperation`
 // is true, the cancel button is disabled — don't sweep mid-transaction.
+// Depth counter for the data-treb-busy DOM signal below. withRunState
+// can nest (a balance poll can overlap a user action); the flag must
+// only clear when the LAST operation finishes.
+let _runStateDepth = 0;
+
 async function withRunState(fn) {
   isRunningOperation = true;
   updateCancelButtonState();
+  // Automation/readiness signal: <body data-treb-busy="1"> while any
+  // wrapped operation is in flight. The screenshot harness (and any
+  // future e2e tooling) waits on this instead of guessing from side
+  // effects — e.g. "Continue to Funding" runs a full estimate
+  // round-trip against live price APIs BEFORE the step advances, and
+  // without a signal the only observable is a button that was clicked
+  // and a step that hasn't changed yet.
+  _runStateDepth += 1;
+  document.body.dataset.trebBusy = '1';
   try {
     return await fn();
   } finally {
     isRunningOperation = false;
     updateCancelButtonState();
+    _runStateDepth = Math.max(0, _runStateDepth - 1);
+    if (_runStateDepth === 0) {
+      delete document.body.dataset.trebBusy;
+    }
   }
 }
 

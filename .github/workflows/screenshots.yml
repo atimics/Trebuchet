@@ -75,6 +75,13 @@ jobs:
 
       - name: Capture screenshots
         run: npm run shots
+        env:
+          # 3D coin enabled — the retry/escalating-budget harness handles
+          # SwiftShader's slow rasterization. If runner flakes return
+          # (watch for clicks timing out at "performing click action",
+          # which retries do NOT cover), remove this line: the capture
+          # falls back to the app's flat-logo mode and is fully stable.
+          SHOTS_COIN: '1'
 
       # PR mode: publish the output as a downloadable artifact for review.
       # Open the PR's checks page → this run → "readme-screenshots".

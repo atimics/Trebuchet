@@ -33,7 +33,7 @@
 // ===========================================================================
 
 import { spawn, execSync } from 'child_process';
-import { mkdirSync, rmSync, writeFileSync, mkdtempSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync, mkdtempSync, copyFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
@@ -71,6 +71,10 @@ const LP_TIMEOUT = 300_000;
 const TRANSFER_TIMEOUT = 180_000;
 
 mkdirSync(outDir, { recursive: true });
+// Clear any failure dump from a previous run — it must never linger into
+// a successful run's output (the CI workflow commits this directory
+// wholesale).
+rmSync(join(outDir, 'failure-state.png'), { force: true });
 
 // Milestone frames for the happy-path GIF. Full-viewport shots (uniform
 // dimensions — ffmpeg needs every frame the same size, so these are
@@ -84,11 +88,23 @@ let _frameNo = 0;
 // Fresh config dir per run: demo mode on, intro video and audio off (the
 // splash would cover the first screenshot; audio is pointless headless).
 const cfgDir = mkdtempSync(join(tmpdir(), 'treb-shots-'));
+// The 3D coin is off by default for captures. Three rounds of CI-only
+// failures (element-stability timeouts, hung plain screenshots, a click
+// wedged mid-dispatch while step advance synchronously re-inits the
+// renderer) all shared one variable: SwiftShader software-rendering the
+// WebGL coin on a 2-vCPU runner — every capture that hung had the coin
+// in or near it, and the same script ran clean locally. The app has a
+// designed fallback for exactly this (coinPreview pref → flat logo via
+// coinCanRun()), so captures use it: deterministic everywhere, and the
+// flat logo reads perfectly well at README sizes. SHOTS_COIN=1 re-enables
+// the 3D coin for local runs where you want the showpiece shots.
+const COIN_ENABLED = process.env.SHOTS_COIN === '1';
 writeFileSync(join(cfgDir, 'userPrefs.json'), JSON.stringify({
   demoMode: true,
   playIntroVideo: false,
   playSoundEffects: false,
   playBackgroundMusic: false,
+  coinPreview: COIN_ENABLED,
 }, null, 2));
 
 console.log(`Booting server on :${PORT} (config: ${cfgDir})`);
@@ -175,6 +191,16 @@ try {
     deviceScaleFactor: 2,
   });
 
+  // Forward the page's own voice into the harness output. Console
+  // errors and page crashes were invisible here, which turned every
+  // failure diagnosis into timeout archaeology.
+  page.on('console', (msg) => {
+    if (msg.type() === 'error' || msg.type() === 'warning') {
+      console.log(`[page ${msg.type()}] ${msg.text()}`);
+    }
+  });
+  page.on('pageerror', (err) => console.log(`[page exception] ${err.message}`));
+
   // Element screenshot of one step card, with stable naming. Scrolls the
   // card into view first so lazy layout (the travelling preview card)
   // settles before capture.
@@ -217,24 +243,52 @@ try {
     const vpHeight = Math.min(Math.max(Math.ceil(measure.height) + 40, STD_VIEWPORT.height), 6000);
     try {
       await page.setViewportSize({ width: STD_VIEWPORT.width, height: vpHeight });
-      const box = await page.evaluate((sel) => {
-        const el = document.querySelector(sel);
-        if (!el) return null;
-        el.scrollIntoView({ block: 'start' });
-        const r = el.getBoundingClientRect();
-        return {
-          x: Math.max(0, r.left),
-          y: Math.max(0, r.top),
-          width: Math.max(1, Math.min(r.width, window.innerWidth - Math.max(0, r.left))),
-          height: Math.max(1, Math.min(r.height, window.innerHeight - Math.max(0, r.top))),
-        };
-      }, selector);
-      if (!box) throw new Error(`shootClipped: ${selector} vanished during capture`);
-      await page.waitForTimeout(600); // let scroll/coin/relayout settle (best effort)
-      await setClean(true);
-      await page.screenshot({ path: join(outDir, name), clip: box, timeout: 20_000 });
-      await setClean(false);
-      console.log(`captured ${name}`);
+      // Let in-flight work settle before capturing — some captures land
+      // right after a toggle that refetches the cost estimate, and a
+      // renderer mid-churn can starve the screenshot of a frame (the
+      // airdrop shot failed exactly this way, transiently). Best-effort:
+      // a busy page just falls through after the timeout.
+      await page.waitForLoadState('networkidle', { timeout: 8_000 }).catch(() => {});
+      // Transient churn also means a single attempt can lose the race —
+      // the identical capture succeeds on the next run. Retry instead of
+      // re-running: re-measure each attempt (a re-render may have
+      // replaced the element) and capture with a per-attempt timeout.
+      let lastErr = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const box = await page.evaluate((sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return null;
+          el.scrollIntoView({ block: 'start' });
+          const r = el.getBoundingClientRect();
+          return {
+            x: Math.max(0, r.left),
+            y: Math.max(0, r.top),
+            width: Math.max(1, Math.min(r.width, window.innerWidth - Math.max(0, r.left))),
+            height: Math.max(1, Math.min(r.height, window.innerHeight - Math.max(0, r.top))),
+          };
+        }, selector);
+        if (!box) throw new Error(`shootClipped: ${selector} vanished during capture`);
+        await page.waitForTimeout(600); // let scroll/relayout settle (best effort)
+        await setClean(true);
+        try {
+          // Escalating budget: the biggest capture (the fully-expanded
+          // customize container at the 6000px viewport cap) is a ~138MB
+          // buffer at retina scale and legitimately takes 15-20s+ to
+          // rasterize and read back — it isn't stuck, it's slow. Give
+          // later attempts progressively more time; a genuinely wedged
+          // capture still fails all three.
+          await page.screenshot({ path: join(outDir, name), clip: box, timeout: 20_000 * attempt });
+          await setClean(false);
+          console.log(`captured ${name}`);
+          return;
+        } catch (e) {
+          lastErr = e;
+          await setClean(false);
+          console.warn(`capture attempt ${attempt} for ${name} failed (${e.message.split('\n')[0]}) — retrying`);
+          await page.waitForTimeout(2_000);
+        }
+      }
+      throw lastErr;
     } finally {
       await setClean(false);
       await page.setViewportSize(STD_VIEWPORT);
@@ -286,6 +340,26 @@ try {
   // orchestrator marks the active card with .is-active.
   const stepIs = (n) => page.waitForSelector(`#step${n}-card.is-active`, { timeout: STEP_TIMEOUT });
 
+  // ---- Settings panel (global chrome: RPC endpoint, demo mode,
+  // startup toggles). Captured expanded, then re-collapsed. The panel's
+  // wrapper box has no id of its own — :has() selects it via the toggle.
+  try {
+    await page.evaluate(() => document.getElementById('rpcSettingsToggle')?.click());
+    await page.waitForSelector('#rpcSettingsPanel:not(.hidden)', { timeout: 10_000 });
+    await page.waitForTimeout(500);
+    await shootEl('.box:has(> #rpcSettingsToggle)', '00-settings.png');
+  } catch (e) {
+    console.warn('settings capture skipped:', e.message);
+  } finally {
+    await page.evaluate(() => {
+      const panel = document.getElementById('rpcSettingsPanel');
+      if (panel && !panel.classList.contains('hidden')) {
+        document.getElementById('rpcSettingsToggle')?.click();
+      }
+    });
+    await page.waitForTimeout(300);
+  }
+
   // ---- Step 1: generate the launch wallet ----
   await waitEnabled('#generateWalletBtn');
   await page.waitForTimeout(400);
@@ -311,6 +385,24 @@ try {
   await shootCard(2, '02-token-config.png');
   await gifFrame('token configured');
 
+  // ---- Tokenomics dialog: the allocation donut for the current config.
+  try {
+    await page.evaluate(() => document.getElementById('visualizeTokenomicsBtn')?.click());
+    await page.waitForSelector('#tokenomicsModal.is-active', { timeout: 10_000 });
+    await page.waitForTimeout(800); // chart render
+    await shootEl('#tokenomicsModal .modal-card', '03-tokenomics.png');
+  } catch (e) {
+    console.warn('tokenomics capture skipped:', e.message);
+  } finally {
+    await page.evaluate(() => {
+      const modal = document.getElementById('tokenomicsModal');
+      if (modal && modal.classList.contains('is-active')) {
+        document.getElementById('tokenomicsModalCloseBtn')?.click();
+      }
+    });
+    await page.waitForTimeout(300);
+  }
+
   // ---- Step 2 detours: capture every configuration surface ----
   // IMPORTANT nesting fact (learned the hard way): the airdrop section
   // AND the "Customize pools manually" button both live INSIDE
@@ -320,7 +412,7 @@ try {
   try {
     await page.evaluate(() => { const d = document.getElementById('simpleAdvancedDetails'); if (d) d.open = true; });
     await page.waitForTimeout(500);
-    await shootEl('#simpleAdvancedDetails', '03-advanced-options.png');
+    await shootEl('#simpleAdvancedDetails', '04-advanced-options.png');
   } catch (e) { console.warn('advanced-options capture skipped:', e.message); }
 
   // Airdrop section (nested in the advanced panel). It renders dimmed
@@ -345,7 +437,7 @@ try {
       if (d) d.open = true;
     });
     await page.waitForTimeout(500);
-    await shootEl('#simpleAirdropDetails', '04-airdrop-config.png');
+    await shootEl('#simpleAirdropDetails', '05-airdrop-config.png');
   } catch (e) {
     console.warn('airdrop capture skipped:', e.message);
   } finally {
@@ -396,7 +488,7 @@ try {
       if (support && !support.checked) support.click();
     });
     await page.waitForTimeout(800);
-    await shootEl('#customizeConfigContainer', '05-custom-pools.png');
+    await shootEl('#customizeConfigContainer', '06-custom-pools.png');
   } catch (e) {
     console.warn('customize capture skipped:', e.message);
   } finally {
@@ -428,6 +520,14 @@ try {
   // shows resolved numbers, with a long allowance for slow CI networks.
   await waitEnabled('#continueToFundingBtn', 60_000);
   await page.click('#continueToFundingBtn');
+  // The click handler runs ANOTHER full estimate round-trip against
+  // live price APIs before the step advances (see the
+  // continueToFundingBtn handler) — the app marks this in-flight work
+  // with <body data-treb-busy>, so wait for the app's own signal to
+  // clear, then for the step transition, each with a budget sized for
+  // a slow network rather than a UI tick.
+  await page.waitForSelector('body[data-treb-busy]', { timeout: 10_000 }).catch(() => {});
+  await page.waitForSelector('body:not([data-treb-busy])', { timeout: 120_000 });
   await stepIs(3);
 
   // ---- Step 3: funding (demo inject + acquire) ----
@@ -479,7 +579,7 @@ try {
   }
   if (!funded) throw new Error('funding never confirmed — #continueToTokenBtn stayed disabled');
   await page.waitForTimeout(600);
-  await shootCard(3, '06-funding.png');
+  await shootCard(3, '07-funding.png');
   await gifFrame('funding arrived');
   await page.click('#continueToTokenBtn');
   await stepIs(4);
@@ -489,7 +589,7 @@ try {
   await page.click('#createTokenBtn');
   await waitEnabled('#continueToLpBtn', STEP_TIMEOUT);
   await page.waitForTimeout(600);
-  await shootCard(4, '07-create-token.png');
+  await shootCard(4, '08-create-token.png');
   await gifFrame('token minted');
   await page.click('#continueToLpBtn');
   await stepIs(5);
@@ -506,7 +606,7 @@ try {
   // is also a safety feature worth a frame of its own.
   await page.waitForSelector('#createLpConfirmModal.is-active', { timeout: 60_000 });
   await page.waitForTimeout(800); // resolved-price rows render
-  await shootEl('#createLpConfirmModal .modal-card', '08-preflight-confirm.png');
+  await shootEl('#createLpConfirmModal .modal-card', '09-preflight-confirm.png');
   await waitEnabled('#createLpConfirmProceedBtn');
   await page.click('#createLpConfirmProceedBtn');
 
@@ -519,7 +619,7 @@ try {
   // mode animates the full progress tree, hence the long timeout.
   await page.waitForSelector('#lpDoneActions:not(.hidden)', { state: 'visible', timeout: LP_TIMEOUT });
   await page.waitForTimeout(600);
-  await shootCard(5, '09-create-pools.png');
+  await shootCard(5, '10-create-pools.png');
   await gifFrame('pools complete');
 
   // The launch report. Expand the inline preview for the GIF frame, then
@@ -534,24 +634,100 @@ try {
 
     const reportHtml = await page.$eval('#step5ReportIframe', (f) => f.srcdoc).catch(() => null);
     if (reportHtml) {
+      // The dossier is ~15,000px tall, which defeated both whole-document
+      // mechanisms: a grown VIEWPORT that tall exceeds compositor surface
+      // limits, and fullPage's captureBeyondViewport proved flaky too.
+      // So: the one primitive that has never failed — plain viewport
+      // screenshots — sliced down the document and stitched with ffmpeg
+      // (already a dependency for the gif). Without ffmpeg, the top
+      // slice alone still ships so the README never breaks.
+      //
+      // bypassCSP: the report carries its own CSP meta; under a
+      // synthetic setContent origin it blocks the report's inline
+      // scripts and spams errors. domcontentloaded, not networkidle:
+      // demo-mode reports can reference made-up remote URLs that never
+      // resolve, and an idle wait would stall on them.
       const reportPage = await browser.newPage({
         viewport: { width: 1100, height: 1400 },
         deviceScaleFactor: 1,
+        bypassCSP: true,
       });
-      // networkidle so the remote logo (Arweave imageUri) loads when
-      // present; the data-URL fallback renders instantly either way.
-      await reportPage.setContent(reportHtml, { waitUntil: 'networkidle' });
-      await reportPage.waitForTimeout(800);
-      // Same tall-viewport technique as shootClipped — grow the viewport
-      // to the document height and take a plain screenshot, avoiding
-      // Chromium's captureBeyondViewport (fullPage) entirely. dsf is 1
-      // here so even a very tall buffer stays cheap.
-      const docHeight = await reportPage.evaluate(() => Math.ceil(document.documentElement.scrollHeight));
-      await reportPage.setViewportSize({ width: 1100, height: Math.min(docHeight + 20, 20000) });
-      await reportPage.waitForTimeout(400);
-      await reportPage.screenshot({ path: join(outDir, '10-launch-report.png'), timeout: 20_000 });
+      reportPage.on('pageerror', (err) => console.log(`[report exception] ${err.message}`));
+      await reportPage.setContent(reportHtml, { waitUntil: 'domcontentloaded' });
+      await reportPage.waitForTimeout(1500); // fonts/images settle (best effort)
+
+      const SLICE_H = 1400;
+      const docH = await reportPage.evaluate(() => Math.ceil(document.documentElement.scrollHeight));
+      // Pre-warm: scroll the whole document once so layout and raster
+      // for every section happen BEFORE the first capture — a cold
+      // 15,000px render otherwise lands its cost on slice 1's budget.
+      await reportPage.evaluate(async (step) => {
+        for (let y = 0; y < document.documentElement.scrollHeight; y += step) {
+          window.scrollTo(0, y);
+          await new Promise((r) => setTimeout(r, 40));
+        }
+        window.scrollTo(0, 0);
+      }, SLICE_H);
+      await reportPage.waitForTimeout(500);
+      const sliceDir = mkdtempSync(join(tmpdir(), 'treb-report-slices-'));
+      const slices = [];
+      try {
+        for (let offset = 0, i = 0; offset < docH; offset += SLICE_H, i += 1) {
+          const remainder = Math.min(SLICE_H, docH - offset);
+          // The final partial slice: the window can't scroll past
+          // docH - SLICE_H, so scroll to the clamp and clip the bottom
+          // `remainder` pixels to avoid duplicating content.
+          const target = Math.min(offset, Math.max(0, docH - SLICE_H));
+          await reportPage.evaluate((y) => window.scrollTo(0, y), target);
+          await reportPage.waitForTimeout(150);
+          const slicePath = join(sliceDir, `slice-${String(i).padStart(2, '0')}.png`);
+          // Same retry-with-escalating-budget policy as shootClipped —
+          // the lone single-attempt capture in the script is the one
+          // that failed, naturally.
+          let sliceErr = null;
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              await reportPage.screenshot({
+                path: slicePath,
+                // The slice's content sits (offset - target) pixels below
+                // the viewport top: 0 for full slices (scroll reached the
+                // offset exactly), SLICE_H - remainder for the clamped
+                // final partial, and 0 again for a document shorter than
+                // one viewport.
+                clip: { x: 0, y: offset - target, width: 1100, height: remainder },
+                timeout: 20_000 * attempt,
+              });
+              sliceErr = null;
+              break;
+            } catch (e) {
+              sliceErr = e;
+              console.warn(`report slice ${i} attempt ${attempt} failed (${e.message.split('\n')[0]}) — retrying`);
+              await reportPage.waitForTimeout(1_500);
+            }
+          }
+          if (sliceErr) throw sliceErr;
+          slices.push(slicePath);
+        }
+        if (slices.length === 1) {
+          copyFileSync(slices[0], join(outDir, '11-launch-report.png'));
+        } else {
+          try {
+            execSync('ffmpeg -version', { stdio: 'ignore' });
+            const inputs = slices.map((s) => `-i "${s}"`).join(' ');
+            execSync(
+              `ffmpeg -y ${inputs} -filter_complex "vstack=inputs=${slices.length}" "${join(outDir, '11-launch-report.png')}"`,
+              { stdio: 'ignore' },
+            );
+          } catch (e) {
+            console.warn('report stitch skipped (ffmpeg unavailable or failed) — shipping the top slice:', e.message.split('\n')[0]);
+            copyFileSync(slices[0], join(outDir, '11-launch-report.png'));
+          }
+        }
+        console.log(`captured 11-launch-report.png (full document, ${slices.length} slices)`);
+      } finally {
+        rmSync(sliceDir, { recursive: true, force: true });
+      }
       await reportPage.close();
-      console.log('captured 10-launch-report.png (full document)');
     }
 
     await page.click('#step5ReportToggle'); // collapse again for the next shot
@@ -571,7 +747,7 @@ try {
   await page.click('#transferAssetsBtn');
   // Confirmation modal: tick the verified-address checkbox, confirm.
   await page.waitForSelector('#transferConfirmModal.is-active', { timeout: STEP_TIMEOUT });
-  await shootEl('#transferConfirmModal .modal-card', '11-transfer-confirm.png');
+  await shootEl('#transferConfirmModal .modal-card', '12-transfer-confirm.png');
   await page.check('#transferConfirmCheckbox');
   await waitEnabled('#transferConfirmBtn');
   await page.click('#transferConfirmBtn');
@@ -580,13 +756,13 @@ try {
   await page.waitForSelector('#launchSuccessModal.is-active', { timeout: TRANSFER_TIMEOUT });
   await page.waitForTimeout(2000); // coin spin-up + publish-state card
   await gifFrame('launch complete');
-  await shootClipped('#launchSuccessModal .modal-card, #launchSuccessModal .modal-content', '12-launch-success.png');
+  await shootClipped('#launchSuccessModal .modal-card, #launchSuccessModal .modal-content', '13-launch-success.png');
 
   // Close the modal and grab the completed step-6 card (transfer summary +
   // report buttons + the coin handed back to the preview card).
   await page.keyboard.press('Escape');
   await page.waitForTimeout(1200);
-  await shootCard(6, '13-transfer.png');
+  await shootCard(6, '14-transfer.png');
 
   await browser.close();
 
@@ -611,6 +787,21 @@ try {
 } catch (e) {
   failed = true;
   console.error('\nScreenshot capture FAILED:', e.message);
+  // Best-effort failure-state dump — what was actually on screen, which
+  // step was active, whether the app was mid-operation. Diagnosis from
+  // evidence instead of timeout archaeology.
+  try {
+    if (typeof page !== 'undefined' && !page.isClosed()) {
+      const state = await page.evaluate(() => ({
+        activeStep: document.querySelector('[id$="-card"].is-active')?.id || 'none',
+        busy: document.body.dataset.trebBusy === '1',
+        openModal: [...document.querySelectorAll('.modal.is-active')].map((m) => m.id).join(',') || 'none',
+      })).catch(() => null);
+      if (state) console.error(`Failure state: step=${state.activeStep} busy=${state.busy} modal=${state.openModal}`);
+      await page.screenshot({ path: join(outDir, 'failure-state.png'), timeout: 15_000 }).catch(() => {});
+      console.error(`Failure screenshot: ${join(outDir, 'failure-state.png')}`);
+    }
+  } catch (_) { /* the dump must never mask the original failure */ }
 } finally {
   cleanup();
 }

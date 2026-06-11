@@ -17,13 +17,22 @@ charging launch fees, or holding your liquidity hostage.
 
 Every launch walks the same six steps. These images are generated
 automatically from the app itself — a real demo-mode launch driven by
-[`scripts/capture-screenshots.mjs`](scripts/capture-screenshots.mjs) — so
-they always match the current build.
+[`scripts/capture-screenshots.mjs`](scripts/capture-screenshots.mjs).
+CI re-runs that launch and refreshes every image whenever the UI
+changes, so what you see below is the current build, not a screenshot
+from six versions ago.
 
 <p><img src="docs/screenshots/launch-flow.gif" width="760" alt="A complete launch, start to finish"></p>
 
 *The whole happy path, start to finish: generate a wallet, configure,
 fund, mint, build pools, transfer.*
+
+<p><img src="docs/screenshots/00-settings.png" width="760" alt="The settings panel — RPC endpoint, demo mode, startup options"></p>
+
+*Before anything else: the settings panel. Pick your RPC endpoint (a
+dedicated one — the public endpoint will rate-limit a real launch),
+toggle demo mode to walk the whole flow with no real transactions, and
+set startup preferences.*
 
 ### 1. Generate a launch wallet
 
@@ -40,17 +49,23 @@ Name, symbol, supply, logo, and target market cap — with a live 3D
 preview of your coin and a running cost estimate. Simple mode picks
 sensible pool defaults; everything below is optional.
 
-<p><img src="docs/screenshots/03-advanced-options.png" width="680" alt="Advanced options — preallocation, support floor, pool pairing"></p>
+<p><img src="docs/screenshots/03-tokenomics.png" width="680" alt="The tokenomics dialog — where every token goes"></p>
+
+*Visualize tokenomics: the allocation donut shows where every token
+goes — pools, positions, ladder bands, preallocation — before you
+commit to anything.*
+
+<p><img src="docs/screenshots/04-advanced-options.png" width="680" alt="Advanced options — preallocation, support floor, pool pairing"></p>
 
 *Advanced options: hold back a preallocation, set a support floor that
 backstops the price, and choose what your launch pairs against.*
 
-<p><img src="docs/screenshots/04-airdrop-config.png" width="680" alt="Airdrop configuration — CSV recipients with per-wallet amounts"></p>
+<p><img src="docs/screenshots/05-airdrop-config.png" width="680" alt="Airdrop configuration — CSV recipients with per-wallet amounts"></p>
 
 *Airdrops: paste or upload a CSV of recipients and amounts; delivery is
 tracked per-wallet during the final transfer, with retry for failures.*
 
-<p><img src="docs/screenshots/05-custom-pools.png" width="680" alt="Customize mode — per-pool fee tiers, slices, and ladder bands"></p>
+<p><img src="docs/screenshots/06-custom-pools.png" width="680" alt="Customize mode — per-pool fee tiers, slices, and ladder bands"></p>
 
 *Customize mode: full manual control — multiple pools, quote tokens,
 fee tiers, Fee Key slice splits, and ladder positions with per-band
@@ -58,14 +73,14 @@ price ranges.*
 
 ### 3. Fund the wallet
 
-<p><img src="docs/screenshots/06-funding.png" width="760" alt="Step 3 — fund the launch wallet"></p>
+<p><img src="docs/screenshots/07-funding.png" width="760" alt="Step 3 — fund the launch wallet"></p>
 
 Send the estimated SOL to the launch wallet; the checklist turns green
 as funds arrive. (In demo mode, a button pretends for you.)
 
 ### 4. Mint the token
 
-<p><img src="docs/screenshots/07-create-token.png" width="760" alt="Step 4 — mint the token"></p>
+<p><img src="docs/screenshots/08-create-token.png" width="760" alt="Step 4 — mint the token"></p>
 
 SPL token with Metaplex metadata; mint, freeze, and metadata-update
 authorities are renounced on the spot, so the supply and identity are
@@ -73,19 +88,19 @@ locked before the pools exist.
 
 ### 5. Create pools and positions
 
-<p><img src="docs/screenshots/08-preflight-confirm.png" width="520" alt="Pre-flight price confirmation before anything launches"></p>
+<p><img src="docs/screenshots/09-preflight-confirm.png" width="520" alt="Pre-flight price confirmation before anything launches"></p>
 
 *Before anything touches the chain, a pre-flight probe resolves live
 prices and asks you to confirm them — a drift guard against launching
 into a moved market.*
 
-<p><img src="docs/screenshots/09-create-pools.png" width="760" alt="Step 5 — create pools and locked positions"></p>
+<p><img src="docs/screenshots/10-create-pools.png" width="760" alt="Step 5 — create pools and locked positions"></p>
 
 Raydium CLMM pools with single-sided concentrated liquidity, locked via
 Burn & Earn into Fee Key NFTs. The progress tree shows every pool,
 position, and lock as it lands.
 
-<p><img src="docs/screenshots/10-launch-report.png" width="760" alt="The complete launch report — the permanent dossier"></p>
+<p><img src="docs/screenshots/11-launch-report.png" width="760" alt="The complete launch report — the permanent dossier"></p>
 
 *Every launch produces a permanent, on-chain-verifiable report: token
 authorities, every pool, every locked position with its Fee Key NFT, and
@@ -94,18 +109,18 @@ to Arweave during the final transfer. Shown here in full.*
 
 ### 6. Transfer to your wallet
 
-<p><img src="docs/screenshots/11-transfer-confirm.png" width="520" alt="The transfer confirmation — verify the full address"></p>
+<p><img src="docs/screenshots/12-transfer-confirm.png" width="520" alt="The transfer confirmation — verify the full address"></p>
 
 *The destination address must be verified character-for-character
 before anything moves.*
 
-<p><img src="docs/screenshots/13-transfer.png" width="760" alt="Step 6 — sweep everything to your wallet"></p>
+<p><img src="docs/screenshots/14-transfer.png" width="760" alt="Step 6 — sweep everything to your wallet"></p>
 
 Airdrops (if configured) go out, the report publishes to Arweave, and
 everything left — tokens, SOL, Fee Key NFTs — sweeps to your
 destination wallet.
 
-<p><img src="docs/screenshots/12-launch-success.png" width="520" alt="Launch complete — the success summary"></p>
+<p><img src="docs/screenshots/13-launch-success.png" width="520" alt="Launch complete — the success summary"></p>
 
 **Launch complete.** Your coin, your Fee Keys, your liquidity locked for
 life — and the next steps for listings laid out.
