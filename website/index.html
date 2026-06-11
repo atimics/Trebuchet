@@ -1197,6 +1197,29 @@
         font-style: normal;
         margin: 0;
     }
+    .os-card .macos-unsigned-note {
+        margin: 2px 0 0;
+        padding: 10px 12px;
+        border: 1px solid rgba(214, 176, 89, 0.35);
+        background: rgba(214, 176, 89, 0.08);
+        color: rgba(239, 229, 205, 0.78);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        line-height: 1.55;
+        letter-spacing: 0.03em;
+    }
+    .os-card .macos-unsigned-note code {
+        display: block;
+        margin-top: 6px;
+        padding: 7px 8px;
+        overflow-x: auto;
+        border-radius: 3px;
+        background: rgba(8, 7, 5, 0.45);
+        color: var(--paper);
+        font-size: 10px;
+        letter-spacing: 0;
+        white-space: nowrap;
+    }
 
     /* Secondary actions row (Build from source, Follow on X) lives
        below the OS grid. Slightly smaller visual weight than before
@@ -3464,6 +3487,10 @@
                 <p class="os-hint">
                     Apple Silicon: M1, M2, M3, M4 chips.<br>
                     Intel: Macs sold before late 2020.
+                </p>
+                <p class="macos-unsigned-note">
+                    Unsigned build: macOS may say the app is damaged. After copying Trebuchet to Applications, run:
+                    <code>xattr -dr com.apple.quarantine /Applications/Trebuchet.app</code>
                 </p>
             </div>
 
