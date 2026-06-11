@@ -331,10 +331,29 @@ try {
   // harness does. Fresh config dir means it always appears.
   try {
     await page.waitForSelector('#disclaimerAgreeCheck', { state: 'visible', timeout: 8_000 });
-    await page.click('#disclaimerAgreeCheck');
-    await page.click('#disclaimerAgreeBtn');
+    await click('#disclaimerAgreeCheck');
+    await click('#disclaimerAgreeBtn');
     await page.waitForTimeout(400);
   } catch (_) { /* not shown (pref persisted) — fine */ }
+
+  // Dispatch a click via the DOM, bypassing locator actionability.
+  // Locator clicks wait for the element to be "visible, enabled and
+  // stable" — and with the 3D coin re-initializing under SwiftShader on
+  // step transitions, layout keeps shifting and that wait can starve
+  // for 30s+ (the CI failure at #createLpBtn). Same rule the detours
+  // have always followed. Where enabled-ness matters, the surrounding
+  // waitEnabled() calls still enforce it via DOM attributes, which need
+  // no geometric stability. Throws if the element is missing so a
+  // wrong selector still fails loudly.
+  async function click(selector) {
+    const found = await page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return false;
+      el.click();
+      return true;
+    }, selector);
+    if (!found) throw new Error(`click: ${selector} not found`);
+  }
 
   // Canonical step-advance wait, borrowed from the e2e harness: the
   // orchestrator marks the active card with .is-active.
@@ -365,7 +384,7 @@ try {
   await page.waitForTimeout(400);
   await shootCard(1, '01-generate-wallet.png');
   await gifFrame('fresh start');
-  await page.click('#generateWalletBtn');
+  await click('#generateWalletBtn');
   await stepIs(2);
   await page.waitForTimeout(800);
   await gifFrame('wallet generated');
@@ -457,7 +476,7 @@ try {
   // Customize mode: the manual pool editor. Enable the first pool's
   // ladder so the screenshot shows the band table, not just the toggle.
   try {
-    await page.click('#simpleCustomizeBtn');
+    await click('#simpleCustomizeBtn');
     await page.waitForSelector('#customizeConfigContainer:not(.hidden)', { timeout: STEP_TIMEOUT });
     await page.waitForTimeout(800);
     // Expand the editor's full depth in one DOM pass — no locator
@@ -519,7 +538,7 @@ try {
   // APIs) — wait for the real enabled state so the funding screenshot
   // shows resolved numbers, with a long allowance for slow CI networks.
   await waitEnabled('#continueToFundingBtn', 60_000);
-  await page.click('#continueToFundingBtn');
+  await click('#continueToFundingBtn');
   // The click handler runs ANOTHER full estimate round-trip against
   // live price APIs before the step advances (see the
   // continueToFundingBtn handler) — the app marks this in-flight work
@@ -558,14 +577,14 @@ try {
   let funded = false;
   let acquireClicked = false;
   outer: for (let attempt = 1; attempt <= 3 && !funded; attempt++) {
-    await page.click('#demoFundBtn');
+    await click('#demoFundBtn');
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       if (await isEnabled('#continueToTokenBtn')) { funded = true; break outer; }
       if (!acquireClicked && await isEnabled('#acquireQuoteTokensBtn')) {
         acquireClicked = true;
         console.log('SOL funded — acquiring quote tokens…');
-        await page.click('#acquireQuoteTokensBtn');
+        await click('#acquireQuoteTokensBtn');
         // Demo swaps simulate per-pool latency; wait generously, then
         // fall through to the outer funded check.
         funded = await page.waitForSelector('#continueToTokenBtn:not([disabled])', { state: 'visible', timeout: 90_000 })
@@ -581,22 +600,22 @@ try {
   await page.waitForTimeout(600);
   await shootCard(3, '07-funding.png');
   await gifFrame('funding arrived');
-  await page.click('#continueToTokenBtn');
+  await click('#continueToTokenBtn');
   await stepIs(4);
 
   // ---- Step 4: create the token ----
   await waitEnabled('#createTokenBtn');
-  await page.click('#createTokenBtn');
+  await click('#createTokenBtn');
   await waitEnabled('#continueToLpBtn', STEP_TIMEOUT);
   await page.waitForTimeout(600);
   await shootCard(4, '08-create-token.png');
   await gifFrame('token minted');
-  await page.click('#continueToLpBtn');
+  await click('#continueToLpBtn');
   await stepIs(5);
 
   // ---- Step 5: create pools + positions ----
   await waitEnabled('#createLpBtn');
-  await page.click('#createLpBtn');
+  await click('#createLpBtn');
 
   // Pre-flight price confirmation (Milestone C): Create Pools doesn't
   // launch anything — it probes live prices and opens a confirmation
@@ -608,7 +627,7 @@ try {
   await page.waitForTimeout(800); // resolved-price rows render
   await shootEl('#createLpConfirmModal .modal-card', '09-preflight-confirm.png');
   await waitEnabled('#createLpConfirmProceedBtn');
-  await page.click('#createLpConfirmProceedBtn');
+  await click('#createLpConfirmProceedBtn');
 
   // One mid-flight frame so the GIF shows the live progress tree — the
   // most distinctive moment of the whole launch. At the 0.3× demo time
@@ -627,7 +646,7 @@ try {
   // crop cut the dossier off after its first screenful, which undersold
   // the single most differentiating artifact of a launch.
   try {
-    await page.click('#step5ReportToggle');
+    await click('#step5ReportToggle');
     // The report renders into an iframe; give it a beat to paint.
     await page.waitForTimeout(1500);
     await gifFrame('report preview');
@@ -730,27 +749,27 @@ try {
       await reportPage.close();
     }
 
-    await page.click('#step5ReportToggle'); // collapse again for the next shot
+    await click('#step5ReportToggle'); // collapse again for the next shot
     await page.waitForTimeout(400);
   } catch (e) {
     console.warn('report capture skipped:', e.message);
   }
 
   await waitEnabled('#continueToTransferBtn');
-  await page.click('#continueToTransferBtn');
+  await click('#continueToTransferBtn');
   await stepIs(6);
 
   // ---- Step 6: final transfer ----
   // Demo mode pre-fills #destinationWallet with a recognisable DemoDest…
   // address, so no typing needed.
   await waitEnabled('#transferAssetsBtn');
-  await page.click('#transferAssetsBtn');
+  await click('#transferAssetsBtn');
   // Confirmation modal: tick the verified-address checkbox, confirm.
   await page.waitForSelector('#transferConfirmModal.is-active', { timeout: STEP_TIMEOUT });
   await shootEl('#transferConfirmModal .modal-card', '12-transfer-confirm.png');
-  await page.check('#transferConfirmCheckbox');
+  await click('#transferConfirmCheckbox');
   await waitEnabled('#transferConfirmBtn');
-  await page.click('#transferConfirmBtn');
+  await click('#transferConfirmBtn');
 
   // The success modal opens itself when the sweep completes.
   await page.waitForSelector('#launchSuccessModal.is-active', { timeout: TRANSFER_TIMEOUT });
