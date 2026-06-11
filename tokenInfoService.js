@@ -166,6 +166,23 @@ function writeCachePrice(mint, priceUsd) {
   trimCache();
 }
 
+// In-flight de-duplication (singleflight). The TTL cache above handles repeat
+// lookups across time; this collapses *concurrent* lookups for the same key,
+// while the cache is cold or expired, into a single network round-trip.
+// Without it, N simultaneous callers for one mint each fire their own request.
+// Keyed by `${kind}:${mint}` so a price fetch and a metadata fetch for the
+// same mint don't share a slot. The promise is removed in finally() so a
+// rejected fetch doesn't poison the next attempt. Cheaper than a global rate
+// limiter and, unlike one, it adds no latency to the common cached path.
+const _inflight = new Map();
+function singleflight(key, fn) {
+  const existing = _inflight.get(key);
+  if (existing) return existing;
+  const p = Promise.resolve().then(fn).finally(() => _inflight.delete(key));
+  _inflight.set(key, p);
+  return p;
+}
+
 // ---------------------------------------------------------------------------
 // On-chain reads (decimals + symbol)
 // ---------------------------------------------------------------------------
@@ -719,7 +736,19 @@ async function resolvePriceUsd(mintAddress) {
   if (cached?.priceUsd !== undefined) {
     return cached.priceUsd; // may be a Decimal or null (cached negative)
   }
+  // Cache miss: collapse concurrent callers for the same mint into one network
+  // round-trip via singleflight. The TTL cache above handles repeats across
+  // time; without this, N simultaneous price lookups for one mint each fire
+  // the full Jupiter → Gecko → DexScreener fallback chain.
+  return singleflight('price:' + mintAddress, () =>
+    _resolvePriceUsdUncached(mintAddress),
+  );
+}
 
+// Actual fetch path for resolvePriceUsd. Assumes the cache was already checked
+// (and missed). Writes the result — including a null "negative" cache entry —
+// back to the cache before returning.
+async function _resolvePriceUsdUncached(mintAddress) {
   let price = null;
   let source = null;
 

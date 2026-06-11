@@ -323,6 +323,26 @@ function renderTokenSweepBreakdown(tokenSweep) {
   container.innerHTML = rows;
 }
 
+// Log an airdrop outcome: success summary first (so the user sees what
+// worked), then per-recipient failures with their reason. Capped at 5
+// failures in the log to avoid spam — the result panel shows the full list.
+function logAirdropOutcome(result) {
+  if (!result) return;
+  const delivered = (result.transferred || []).length;
+  if (delivered > 0) {
+    log(`Airdrop delivered to ${delivered} recipient${delivered === 1 ? '' : 's'}`, 'success');
+  }
+  const failed = result.failed || [];
+  const failedToShow = failed.slice(0, 5);
+  for (const f of failedToShow) {
+    const wShort = f.wallet ? `${f.wallet.slice(0, 4)}…${f.wallet.slice(-4)}` : 'unknown';
+    log(`Airdrop failed (${wShort}): ${f.error}`, 'warning');
+  }
+  if (failed.length > failedToShow.length) {
+    log(`…and ${failed.length - failedToShow.length} more airdrop failure${failed.length - failedToShow.length === 1 ? '' : 's'}. See the panel above for details.`, 'warning');
+  }
+}
+
 async function runTransfer() {
   const btn = document.getElementById('transferAssetsBtn');
   const dest = document.getElementById('destinationWallet').value.trim();
@@ -351,43 +371,122 @@ async function runTransfer() {
           + `close the app until it completes.`,
         );
       }
-      // Kick off the live progress poll BEFORE the fetch so the user
-      // sees the "0 / N" initial frame the moment the request goes out.
-      // Stops in the finally block below regardless of fetch outcome.
-      if (airdropPayload && tempWallet && tempWallet.publicKey) {
+      // ---- Step 6a: airdrop (when configured) --------------------------
+      // Runs as its own server call BEFORE the report publish and the
+      // sweep. The airdrop is the last on-chain token-setup work, so once
+      // it lands the permanent launch report can be written with the real
+      // delivery results instead of a forever-"pending" section.
+      // /api/run-airdrop is per-recipient idempotent (it skips wallets the
+      // server's journal already records as delivered), so a transfer
+      // re-run after a partial failure can never double-pay.
+      if (airdropPayload) {
+        // Kick off the live progress poll BEFORE the fetch so the user
+        // sees the "0 / N" initial frame the moment the request goes out.
         startAirdropProgressPoll(
           tempWallet.publicKey,
           airdropPayload.recipients.length,
         );
+        try {
+          let aResp;
+          try {
+            aResp = await fetch('/api/run-airdrop', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                walletPublicKey: tempWallet.publicKey,
+                ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+                tokenMint: airdropPayload.tokenMint,
+                tokenDecimals: airdropPayload.tokenDecimals,
+                isToken2022: !!airdropPayload.isToken2022,
+                recipients: airdropPayload.recipients,
+              }),
+            });
+          } finally {
+            stopAirdropProgressPoll();
+            hideAirdropProgressPanel();
+          }
+          const aData = await aResp.json();
+          if (aResp.status === 409) {
+            // Another airdrop is already in flight for this wallet —
+            // don't sweep out from under it. Not a failure: wait, retry.
+            log(aData.error || 'Another airdrop is already running for this wallet.', 'warning');
+            return;
+          }
+          if (!aData.success) {
+            throw new Error(aData.error || `Airdrop failed with HTTP ${aResp.status}`);
+          }
+          // The server returns its merged journal record (prior delivered +
+          // this run) — replace wholesale.
+          lastAirdropResult = {
+            transferred: aData.airdrop?.transferred || [],
+            failed: aData.airdrop?.failed || [],
+          };
+        } catch (e) {
+          // The airdrop endpoint failed outright (network blip, server
+          // error before per-recipient handling). Mirror the server's
+          // crash shape — every recipient marked failed — and continue
+          // with the publish + sweep: the un-airdropped tokens still
+          // reach the destination wallet, and the journal dedup means a
+          // later retry can't double-pay anyone whose tx did land.
+          log(`Airdrop step failed: ${e.message} — continuing with the sweep. Use the retry button afterwards.`, 'warning');
+          lastAirdropResult = {
+            transferred: [],
+            failed: airdropPayload.recipients.map((r) => ({
+              wallet: r.wallet,
+              tokens: r.tokens,
+              amountRaw: null,
+              error: `Airdrop step failed: ${e.message}`,
+            })),
+          };
+        }
+        renderAirdropTransferResult(lastAirdropResult);
+        hideAirdropPreTransferSummary();
+        logAirdropOutcome(lastAirdropResult);
       }
-      let resp;
-      try {
-        resp = await fetch('/api/transfer-assets', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            walletPublicKey: tempWallet.publicKey,
-            // F5: the server resolves the secret from its encrypted store using
-            // the public key for real launches; only demo mode (in-memory
-            // ledger, no server-side secret) still sends the key inline.
-            ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
-            destinationWallet: dest,
-            tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
-            // airdrop is optional — present only when applicable, omitted
-            // otherwise so we don't send an empty payload for no-airdrop launches.
-            ...(airdropPayload ? { airdrop: airdropPayload } : {}),
-          }),
-        });
-      } finally {
-        // Stop polling and hide the live panel whether the fetch
-        // succeeded, failed, or threw — the renderAirdropTransferResult
-        // below shows the final summary on success, and the catch
-        // branch surfaces errors. Either way the progress panel is
-        // stale once we leave this block.
-        stopAirdropProgressPoll();
-        hideAirdropProgressPanel();
+
+      // ---- Step 6b: publish the permanent launch report ----------------
+      // Every on-chain token-setup transaction has landed (pools, locks,
+      // transfers, airdrop). Publish to Arweave NOW, before the sweep —
+      // the report carries the airdrop outcome, and the only on-chain
+      // work left afterwards is the sweep itself. Awaited because the
+      // ordering is the point; a publish failure is logged inside and
+      // never blocks the sweep (the success-modal card offers a retry,
+      // and the launch wallet's key remains available server-side).
+      _resetCachedReport();
+      if (typeof _publishedReport === 'undefined' || !_publishedReport
+          || (_publishedReport.status !== 'done' && _publishedReport.status !== 'skipped')) {
+        if (typeof isLaunchReportEnabled !== 'function' || isLaunchReportEnabled()) {
+          log('Publishing the permanent launch report to Arweave…');
+        }
       }
+      await publishLaunchReportToArweave();
+
+      // ---- Step 6c: sweep everything to the destination ----------------
+      const resp = await fetch('/api/transfer-assets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          walletPublicKey: tempWallet.publicKey,
+          // F5: the server resolves the secret from its encrypted store using
+          // the public key for real launches; only demo mode (in-memory
+          // ledger, no server-side secret) still sends the key inline.
+          ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+          destinationWallet: dest,
+          tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
+          // No airdrop payload: it already ran in step 6a. The server
+          // keeps its in-process airdrop branch as a safety net for old
+          // clients, but this client never exercises it.
+        }),
+      });
       const data = await resp.json();
+      if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
+        // Another launch operation is still running for this wallet —
+        // e.g. pool creation that survived a UI reload, or a previous
+        // transfer click. Sweeping now would pull assets out from under
+        // it, so the server refused. Not a failure: wait and retry.
+        log(data.error, 'warning');
+        return;
+      }
       if (!data.success) throw new Error(data.error);
 
       document.getElementById('transferResult').classList.remove('hidden');
@@ -401,23 +500,21 @@ async function runTransfer() {
       // moved (the answer to "did my held-back supply get swept?").
       renderTokenSweepBreakdown(data.tokenSweep);
 
-      // Persist the airdrop result module-side so the retry button has the
-      // failed-recipients list and the launch report can include an Airdrop
-      // section. data.airdrop is null when no airdrop ran (no payload sent).
-      // MUST happen BEFORE renderLaunchReportPreview('step6') below, because
-      // buildAirdropReportSection() reads from lastAirdropResult — calling
-      // the preview first would render the report without the airdrop block
-      // and (worse) cache that stale HTML in _cachedReportHtml.
-      lastAirdropResult = data.airdrop || null;
-      renderAirdropTransferResult(lastAirdropResult);
+      // The airdrop already ran in step 6a and lastAirdropResult holds the
+      // merged record. data.airdrop is null in the new flow (no payload
+      // sent with the sweep); only overwrite if the server's in-process
+      // safety-net branch somehow ran (old-client compatibility).
+      if (data.airdrop) {
+        lastAirdropResult = data.airdrop;
+        renderAirdropTransferResult(lastAirdropResult);
+      }
       // Pre-transfer summary is no longer relevant — the airdrop has
       // either run (result panel above takes over) or was bypassed.
       hideAirdropPreTransferSummary();
 
-      // Invalidate any cached report from step 5's preview — that build
-      // ran when lastAirdropResult was still null and is now stale.
-      // Fresh build below picks up the airdrop section.
-      _resetCachedReport();
+      // Step 6b already rebuilt the cached report (with the airdrop
+      // section) for the Arweave publish; this render just shows it in
+      // the step-6 preview container.
       renderLaunchReportPreview('step6');
 
       // Detect partial-failure modes. The server's transfer endpoint can
@@ -450,7 +547,9 @@ async function runTransfer() {
       // user can come back later with the secret key and try again.
       const tokenErrors = data.tokenSweep?.errors || [];
       const nftErrors = data.nftSweep?.errors || [];
-      const airdropFailed = data.airdrop?.failed || [];
+      // From step 6a's run (or the journal-restored record on a resumed
+      // session) — the sweep response no longer carries the airdrop.
+      const airdropFailed = lastAirdropResult?.failed || [];
       const hasPartialFailure =
         data.solSweepError
         || tokenErrors.length > 0
@@ -471,23 +570,6 @@ async function runTransfer() {
       }
       for (const e of nftErrors) {
         log(`NFT sweep error (${e.mint?.slice(0, 8) || 'unknown'}…): ${e.error}`, 'warning');
-      }
-      // Airdrop logging: success summary first (so the user sees what worked),
-      // then per-recipient failures with their reason. Capped at 5 failures
-      // in the log to avoid spam — the result panel below shows the full list.
-      if (data.airdrop) {
-        const delivered = (data.airdrop.transferred || []).length;
-        if (delivered > 0) {
-          log(`Airdrop delivered to ${delivered} recipient${delivered === 1 ? '' : 's'}`, 'success');
-        }
-        const failedToShow = airdropFailed.slice(0, 5);
-        for (const f of failedToShow) {
-          const wShort = f.wallet ? `${f.wallet.slice(0, 4)}…${f.wallet.slice(-4)}` : 'unknown';
-          log(`Airdrop failed (${wShort}): ${f.error}`, 'warning');
-        }
-        if (airdropFailed.length > failedToShow.length) {
-          log(`…and ${airdropFailed.length - failedToShow.length} more airdrop failure${airdropFailed.length - failedToShow.length === 1 ? '' : 's'}. See the panel above for details.`, 'warning');
-        }
       }
 
       // Hide the Transfer button — flow is complete. Re-clicking would attempt
@@ -730,17 +812,19 @@ async function runAirdropRetry() {
     }
     const data = await resp.json();
     if (!data.success) throw new Error(data.error);
-    const result = data.airdrop;
-    // Merge: newly-delivered append to transferred; still-failed
-    // replaces failed (every entry in the response's failed list
-    // failed THIS attempt too).
+    // The server returns the MERGED per-recipient record (prior delivered +
+    // this attempt's outcome, deduped against its journal) — replace our
+    // copy wholesale rather than appending, which would double-count the
+    // previously-delivered rows. Compute the log lines as deltas against
+    // what we held before the call.
+    const priorDeliveredCount = (lastAirdropResult.transferred || []).length;
     lastAirdropResult = {
-      transferred: [...(lastAirdropResult.transferred || []), ...(result.transferred || [])],
-      failed: result.failed || [],
+      transferred: data.airdrop?.transferred || [],
+      failed: data.airdrop?.failed || [],
     };
     renderAirdropTransferResult(lastAirdropResult);
-    const delivered = (result.transferred || []).length;
-    const stillFailed = (result.failed || []).length;
+    const delivered = Math.max(0, lastAirdropResult.transferred.length - priorDeliveredCount);
+    const stillFailed = lastAirdropResult.failed.length;
     if (delivered > 0) {
       log(`Retry: ${delivered} additional recipient${delivered === 1 ? '' : 's'} delivered`, 'success');
     }

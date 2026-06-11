@@ -45,6 +45,13 @@ bind('createTokenBtn', 'click', async () => {
 
       const resp = await fetch('/api/create-token', { method: 'POST', body: formData });
       const data = await resp.json();
+      if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
+        // A prior token creation (or other launch operation) is still
+        // running for this wallet — likely a double-click or a UI reload
+        // mid-creation. Not a failure; just wait for it to finish.
+        log(data.error, 'warning');
+        return;
+      }
       if (!data.success) throw new Error(data.error);
 
       createdTokenInfo = {
@@ -53,6 +60,17 @@ bind('createTokenBtn', 'click', async () => {
         totalSupply: totalSupplyRaw,
         name: data.name || document.getElementById('tokenName').value.trim(),
         symbol: data.symbol || document.getElementById('tokenSymbol').value.trim(),
+        // Token-safety facts for the launch report / Arweave audit record.
+        // The create-token endpoint spreads createTokenWithMetaplex's result
+        // into the response, so these ride along on the same payload. They
+        // let the permanent report assert (and a verifier confirm against
+        // the mint account) that supply, freezing, and metadata are locked.
+        metadataUri: data.metadataUri || null,
+        imageUri: data.imageUri || null,
+        mintAuthorityRenounced: data.mintAuthorityRenounced === true,
+        freezeAuthorityDisabled: data.freezeAuthorityDisabled === true,
+        metadataUpdateAuthorityRevoked: data.metadataUpdateAuthorityRevoked === true,
+        metadataImmutable: data.metadataImmutable === true,
       };
 
       document.getElementById('tokenMintAddress').textContent = data.tokenMint;
@@ -490,12 +508,15 @@ bind('createLpBtn', 'click', async () => {
       log(`Starting pool creation for ${pools.length} pool(s)...`);
       addProgressIntro();
       buildPhaseProgressTree(pools, lockPositions);
+      // Fresh launch: clear any published-report record from a prior run so the
+      // step-5 publish fires (its idempotency guard skips 'pending'/'done') and
+      // the success modal shows THIS launch's report rather than a stale one.
+      _publishedReport = null;
 
       // Start the LP progress poll just before the fetch so per-step
       // events translate to row checkmarks in real time (instead of all
-      // rows flipping at once when the response lands). Currently only
-      // demo mode emits these events; real mode silently no-ops because
-      // the server-side tracker is never populated.
+      // rows flipping at once when the response lands). Both demo and
+      // real launches feed the server-side tracker now.
       if (tempWallet && tempWallet.publicKey) {
         startLpProgressPoll(tempWallet.publicKey);
       }
@@ -516,6 +537,17 @@ bind('createLpBtn', 'click', async () => {
             targetMarketCapUsd: targetMc,
             allocations,
             lockPositions,
+            // Airdrop plan (or absent when none configured). The server
+            // doesn't act on it here — it journals it under
+            // poolPlan.airdropPlan so a launch resumed after an app
+            // restart still carries the configured airdrop into the
+            // final transfer. Without this, the airdrop config would be
+            // lost with the frontend's memory and the resumed transfer
+            // would silently skip it.
+            ...((() => {
+              const plan = buildAirdropTransferPayload();
+              return plan ? { airdrop: plan } : {};
+            })()),
           }),
         });
       } finally {
@@ -543,6 +575,26 @@ bind('createLpBtn', 'click', async () => {
         throw new Error(`Unexpected response: ${parseErr.message}`);
       }
 
+      if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
+        // Another launch operation is already running for this wallet —
+        // usually a prior create-lp that survived a UI reload (the server
+        // runs in-process with Electron main, so the launch keeps going
+        // even if the page reloads). Do NOT render this as a launch
+        // failure; the launch isn't failed, it's running. Reattach the
+        // progress poll so the user can watch it, and keep them away
+        // from the retry buttons.
+        log(data.error, 'warning');
+        log(
+          'Reattached to the running operation — progress will update ' +
+          'below as it proceeds. Do not close the app.',
+          'warning',
+        );
+        if (tempWallet && tempWallet.publicKey) {
+          startLpProgressPoll(tempWallet.publicKey);
+        }
+        return;
+      }
+
       if (data.success) {
         lpResult = data;
         data.results.forEach((r, i) => markPoolDone(i, r));
@@ -551,6 +603,13 @@ bind('createLpBtn', 'click', async () => {
         setLpDoneVisible(true);
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
         renderLaunchReportPreview('step5');
+        // NOTE: the permanent launch report is NOT published here anymore.
+        // It publishes during step 6 (runTransfer), after the airdrop and
+        // before the sweep — at that point every on-chain token-setup
+        // transaction has landed, so the permanent record includes the
+        // actual airdrop delivery results instead of a forever-"pending"
+        // section. The step-5 preview below still shows the report;
+        // pending sections render as pending until then.
         // Hide the Create Pools button — re-clicking would attempt to create
         // duplicate pools for the same token, which is wasteful and confusing.
         document.getElementById('createLpBtn').classList.add('hidden');
@@ -1550,6 +1609,23 @@ bind('retryBootstrapsBtn', 'click', async () => {
           );
         }
         throw new Error(`Unexpected response: ${parseErr.message}`);
+      }
+
+      if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
+        // Another launch operation (likely the original create-lp, or a
+        // previous resume click) is still running for this wallet. The
+        // resume was rejected to prevent two orchestrators racing over
+        // the same positions. Reattach the progress poll and wait.
+        log(data.error, 'warning');
+        log(
+          'Reattached to the running operation — wait for it to finish ' +
+          'before resuming. Do not close the app.',
+          'warning',
+        );
+        if (tempWallet && tempWallet.publicKey) {
+          startLpProgressPoll(tempWallet.publicKey);
+        }
+        return;
       }
 
       if (data.success) {

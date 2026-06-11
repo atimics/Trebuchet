@@ -15,6 +15,20 @@ export const COST_TRANSFER_SOL     = 0.005;
 export const COST_BS_QUOTE_SOL     = 0.001;
 export const COST_TX_BUFFER_SOL    = 0.001;
 export const COST_TOKEN_CREATE_SOL = 0.05;
+// Permanent launch report (Arweave) publish cost.
+//
+// The report — the rendered HTML plus a small JSON record — is posted to Arweave
+// via Irys, signed by the launch wallet. Arweave is priced per byte and is very
+// cheap, so the real cost is a small fraction of a cent. We compute it as
+// (representative report size) x (per-byte price) rather than guessing a flat
+// number. At ~128 KB and Arweave's going rate this lands well under 0.0001 SOL —
+// effectively negligible, and small reports may even fall under Irys's free
+// threshold. Tune these two inputs if Arweave/SOL move materially, or replace the
+// product with a live lookup (GET https://node1.irys.xyz/price/solana/<bytes>,
+// which returns lamports) for byte-exact pricing.
+export const LAUNCH_REPORT_EST_BYTES = 131072;     // ~128 KB: HTML (with a modest embedded logo) + JSON
+export const ARWEAVE_LAMPORTS_PER_BYTE = 0.06;     // conservative; ~$7/GiB at ~$150/SOL
+export const COST_LAUNCH_REPORT_SOL = (LAUNCH_REPORT_EST_BYTES * ARWEAVE_LAMPORTS_PER_BYTE) / 1e9;
 export const SAFETY_BUFFER_PCT     = 0.20;
 
 // Bootstrap budget: $1 worth of quote token (USD-denominated).

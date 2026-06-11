@@ -162,6 +162,13 @@ function buildAirdropReportSection() {
     if (!Number.isFinite(num)) return '—';
     return num.toLocaleString(undefined, { maximumFractionDigits: 6 });
   };
+  // Max rows rendered per recipient table (pending / delivered / failed).
+  // Keeps very large airdrops from blowing the published report past the
+  // Arweave free-upload size cap; the overflow collapses into a count row.
+  const MAX_REPORT_AIRDROP_ROWS = 100;
+  const overflowRowHtml = (hidden, colSpan, noun) => (hidden > 0
+    ? `<tr><td colspan="${colSpan}" style="color: var(--ink-muted, #6a4f2a); font-style: italic;">…and ${hidden.toLocaleString()} more ${noun} — every transfer is verifiable on-chain from the launch wallet.</td></tr>`
+    : '');
 
   // ---- Pending path: airdrop configured but not yet executed ----
   // Triggered when no result exists yet but the configured payload has
@@ -186,7 +193,7 @@ function buildAirdropReportSection() {
     // third column reads "pending" instead of a tx link. Amber tint
     // mirrors the failed-row treatment so "not yet done" is visually
     // distinct from delivered/success.
-    const pendingRows = recipients.map((r) => {
+    const pendingRows = recipients.slice(0, MAX_REPORT_AIRDROP_ROWS).map((r) => {
       const wAddr = String(r.wallet || '');
       const tokensTxt = fmtTokens(r.tokens);
       return `<tr>
@@ -197,7 +204,7 @@ function buildAirdropReportSection() {
         <td style="text-align: right;">${tokensTxt}</td>
         <td style="color: #b8821a; font-style: italic;">pending</td>
       </tr>`;
-    }).join('');
+    }).join('') + overflowRowHtml(recipients.length - MAX_REPORT_AIRDROP_ROWS, 3, 'pending recipients');
 
     return `
       <hr class="section-rule">
@@ -250,7 +257,7 @@ function buildAirdropReportSection() {
   // report reads consistently end-to-end.
   let deliveredRows = '';
   if (delivered.length > 0) {
-    deliveredRows = delivered.map((r) => {
+    deliveredRows = delivered.slice(0, MAX_REPORT_AIRDROP_ROWS).map((r) => {
       const wAddr = String(r.wallet || '');
       const tokensTxt = fmtTokens(r.tokens);
       const txCell = r.txId
@@ -264,7 +271,7 @@ function buildAirdropReportSection() {
         <td style="text-align: right;">${tokensTxt}</td>
         <td>${txCell}</td>
       </tr>`;
-    }).join('');
+    }).join('') + overflowRowHtml(delivered.length - MAX_REPORT_AIRDROP_ROWS, 3, 'delivered recipients');
   }
 
   // Failed rows — each shows wallet + tokens + the failure reason
@@ -273,7 +280,7 @@ function buildAirdropReportSection() {
   // amber to distinguish from delivered rows at a glance.
   let failedRows = '';
   if (failed.length > 0) {
-    failedRows = failed.map((r) => {
+    failedRows = failed.slice(0, MAX_REPORT_AIRDROP_ROWS).map((r) => {
       const wAddr = String(r.wallet || '');
       const tokensTxt = fmtTokens(r.tokens);
       let reasonRaw = String(r.error || 'unknown error');
@@ -289,7 +296,7 @@ function buildAirdropReportSection() {
         <td style="text-align: right;">${tokensTxt}</td>
         <td style="color: #b8821a;">${escapeHtml(reasonRaw)}${verifyLinkHtml}</td>
       </tr>`;
-    }).join('');
+    }).join('') + overflowRowHtml(failed.length - MAX_REPORT_AIRDROP_ROWS, 3, 'failed recipients');
   }
 
   // Compose the two subsections. We only render a subsection when
@@ -384,7 +391,7 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
   results.forEach((r, idx) => {
     const userPool = pools[r.allocationIndex ?? idx] || pools[idx] || {};
     const sym = r.quoteSymbol || userPool.resolvedSymbol || '?';
-    const supplyPct = Number(userPool.supplyPercent ?? 0).toFixed(2);
+    const supplyPct = Number(r.supplyPercent ?? userPool.supplyPercent ?? 0).toFixed(2);
     const feeTierIdx = userPool.ammConfigIndex;
     const feeTier = feeTiers.find((t) => t.index === feeTierIdx);
     const feeTierLabel = feeTier
@@ -407,6 +414,7 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
             ${renderLockBadge(r.bootstrap.locked)}
           </div>
           ${renderAddressRow('Position NFT', r.bootstrap.nftMint)}
+          ${r.bootstrap.feeKeyNftMint ? renderAddressRow('Fee Key NFT', r.bootstrap.feeKeyNftMint) : ''}
           ${renderAddressRow('Open TX', r.bootstrap.txIds?.open, 'tx')}
           ${renderAddressRow('Lock TX', r.bootstrap.txIds?.lock, 'tx')}
         </div>`;
@@ -440,7 +448,9 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
             ${renderLockBadge(pos.locked)}
           </div>
           ${shareText ? renderFactRow('Share', shareText) : ''}
+          ${Number.isFinite(pos.tickLower) && Number.isFinite(pos.tickUpper) ? renderFactRow('Range', `tick ${pos.tickLower} \u2192 ${pos.tickUpper} (single-sided, above launch)`) : ''}
           ${renderAddressRow('Position NFT', pos.nftMint)}
+          ${pos.feeKeyNftMint ? renderAddressRow('Fee Key NFT', pos.feeKeyNftMint) : ''}
           ${renderAddressRow('Open TX', pos.txIds?.open, 'tx')}
           ${renderAddressRow('Lock TX', pos.txIds?.lock, 'tx')}
           ${recipientBlock}
@@ -467,6 +477,7 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
           ${renderFactRow('Range', rangeLabel)}
           ${supplyText ? renderFactRow('Token-supply share', supplyText) : ''}
           ${renderAddressRow('Position NFT', pos.nftMint)}
+          ${pos.feeKeyNftMint ? renderAddressRow('Fee Key NFT', pos.feeKeyNftMint) : ''}
           ${renderAddressRow('Open TX', pos.txIds?.open, 'tx')}
           ${renderAddressRow('Lock TX', pos.txIds?.lock, 'tx')}
         </div>`;
@@ -491,6 +502,7 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
           </div>
           ${renderFactRow('Range', depthLabel)}
           ${renderAddressRow('Position NFT', pos.nftMint)}
+          ${pos.feeKeyNftMint ? renderAddressRow('Fee Key NFT', pos.feeKeyNftMint) : ''}
           ${renderAddressRow('Open TX', pos.txIds?.open, 'tx')}
           ${renderAddressRow('Lock TX', pos.txIds?.lock, 'tx')}
         </div>`;
@@ -509,7 +521,14 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
         </div>
         <div class="pool-addresses">
           ${renderAddressRow('Pool ID', r.poolId)}
-          ${userPool.quoteToken && userPool.quoteToken !== 'SOL' ? renderAddressRow('Quote token mint', userPool.quoteToken) : ''}
+          ${(() => {
+            // Quote mint: the result records the resolved address; the
+            // config carries the user's raw entry (symbol or address).
+            // Skip the row for native SOL — its mint is implied.
+            const qm = r.quoteAddress || userPool.quoteToken;
+            const isSol = (r.quoteSymbol || userPool.quoteToken || '').toUpperCase() === 'SOL';
+            return (qm && !isSol) ? renderAddressRow('Quote token mint', qm) : '';
+          })()}
           ${renderAddressRow('Create-pool TX', r.txIds?.createPool, 'tx')}
         </div>
         ${(() => {
@@ -518,8 +537,9 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
           // below launch + wide/ladder above. Shown when there's a ladder or a
           // (placeable) support wall; omitted for a lone flat band.
           if (typeof computeDepthProfile !== 'function') return '';
-          const poolNotionalUsd = (Number(targetMc) > 0 && Number(userPool.supplyPercent) > 0)
-            ? (Number(userPool.supplyPercent) / 100) * Number(targetMc) : 0;
+          const effSupplyPct = Number(r.supplyPercent ?? userPool.supplyPercent);
+          const poolNotionalUsd = (Number(targetMc) > 0 && effSupplyPct > 0)
+            ? (effSupplyPct / 100) * Number(targetMc) : 0;
           let support = null;
           const sc = userPool.supportConfig;
           if (sc && sc.mode === 'custom' && Number(sc.solValue) > 0) {
@@ -1237,6 +1257,20 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
   <h3 class="subsection">Mint &amp; launch wallet</h3>
   ${renderAddressRow('Token mint', tokenInfo.mint)}
   ${tempWallet?.publicKey ? renderAddressRow('Launch wallet', tempWallet.publicKey) : ''}
+  ${tokenInfo.metadataUri ? renderAddressRow('Metadata URI', tokenInfo.metadataUri) : ''}
+
+  ${(tokenInfo.mintAuthorityRenounced || tokenInfo.freezeAuthorityDisabled || tokenInfo.metadataUpdateAuthorityRevoked) ? `
+  <h3 class="subsection">Contract safety</h3>
+  <!-- Authority-renunciation facts recorded at token creation. Each is
+       independently verifiable on-chain: mint/freeze from the mint account
+       (both authority options unset), metadata immutability from the
+       Metaplex metadata account. Listed so auditors and listing reviewers
+       know exactly what to check. -->
+  ${renderFactRow('Mint authority', tokenInfo.mintAuthorityRenounced ? 'Renounced — supply is permanently capped' : 'NOT renounced')}
+  ${renderFactRow('Freeze authority', tokenInfo.freezeAuthorityDisabled ? 'Disabled — holders can never be frozen' : 'NOT disabled')}
+  ${renderFactRow('Metadata update authority', tokenInfo.metadataUpdateAuthorityRevoked ? 'Revoked — name/symbol/logo are permanent' : 'NOT revoked')}
+  ${renderFactRow('Token program', 'SPL Token (classic) — no Token-2022 extensions')}
+  ` : ''}
 
   <hr class="section-rule">
   <div class="enum-badge">[ 02 ] &nbsp; Tokenomics</div>
@@ -1257,6 +1291,44 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
   ${poolSections}
 
   ${buildAirdropReportSection()}
+
+  <hr class="section-rule">
+  <div class="enum-badge">[ 05 ] &nbsp; Verification</div>
+  <h2 class="section-title">Auditing this launch</h2>
+  <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a);">
+    Every claim in this report is verifiable on-chain. To audit the launch
+    against the principles Trebuchet enforces:
+  </p>
+  <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a);">
+    <strong>Safe token contract</strong> — fetch the token mint account: the
+    mint and freeze authority options must both be unset (renounced), and the
+    Metaplex metadata account must show the update authority revoked. The
+    mint must be owned by the classic SPL Token program (no Token-2022
+    extensions such as transfer hooks or pausable supply).
+  </p>
+  <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a);">
+    <strong>Locked liquidity</strong> — each position above lists its lock
+    transaction and Fee Key NFT. The lock (Raydium Burn &amp; Earn) moves the
+    position NFT into the lock program's escrow and mints the Fee Key in its
+    place; the on-chain locked-position account links the two. Locked
+    liquidity can never be withdrawn — only its trading fees can be claimed,
+    by whoever holds the Fee Key.
+  </p>
+  <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a);">
+    <strong>Concentrated LP shape</strong> — the tick ranges above define
+    each position's price band; fetch each position account (via its NFT
+    mint) to confirm the recorded bounds and liquidity.
+  </p>
+  <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a);">
+    <strong>Report authenticity</strong> — the permanent copy of this report
+    is published to Arweave tagged with
+    <code>Data-Protocol: trebuchet-launch-report</code> and
+    <code>Mint: &lt;token mint&gt;</code>, uploaded and signed by the launch
+    wallet — the same key that minted the token and created the pools. When
+    querying Arweave for reports about a mint, ignore any item whose owner
+    is not the mint's on-chain creator; only the creator-signed report is
+    genuine.
+  </p>
 
   <footer class="doc-footer">
     <div>
@@ -1396,6 +1468,255 @@ async function downloadLaunchReport() {
 bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
 
 // ===========================================================================
+// Permanent launch report — publish to Arweave
+// ===========================================================================
+//
+// After step 5 completes (all pools created, positions locked) we optionally
+// publish the launch report to Arweave so anyone holding the token mint can
+// find it — without anything being written onto the token's own metadata. Two
+// artifacts go up: the rendered HTML (the same document the Download button
+// produces) and a machine-readable JSON record. The SERVER signs both with the
+// launch wallet, which is why this runs at step 5: that wallet is swept at
+// step 6 and is gone by the time the success modal opens.
+//
+// Opt-out (userPrefs.publishLaunchReport) and any failure are handled by the
+// server; this is fire-and-forget. The result is stashed in _publishedReport
+// for the success modal's renderPublishedReportCard() to display.
+
+function getPublishedReport() {
+  return _publishedReport;
+}
+
+// Compact machine-readable launch record. Mirrors the data the HTML report
+// shows but as structured JSON for querying/verification. Small (well under
+// the Arweave free-tier limit) and never includes secrets.
+function buildLaunchReportData(lp) {
+  const results = (lp && Array.isArray(lp.results)) ? lp.results : [];
+
+  // Map one position record into the audit shape. Every field here exists
+  // to let a third party verify a Trebuchet launch principle on-chain:
+  //   - tickLower/tickUpper prove the position's range (concentrated LP);
+  //   - locked + the lock tx + feeKeyNftMint prove the Burn & Earn lock
+  //     (the position NFT is escrowed by the lock program and the Fee Key
+  //     NFT is minted in its place — the lock account on-chain links the
+  //     two, so a verifier can confirm the liquidity can never be pulled);
+  //   - recipient/transferredTo + the transfer tx prove where each fee
+  //     stream went.
+  // Older journals (pre-feeKeyNftMint / pre-tick-recording) yield nulls for
+  // the missing fields rather than failing.
+  const mapPosition = (pos, type, extra) => ({
+    type,
+    ...(extra || {}),
+    tickLower: Number.isFinite(pos.tickLower) ? pos.tickLower : null,
+    tickUpper: Number.isFinite(pos.tickUpper) ? pos.tickUpper : null,
+    positionNftMint: pos.nftMint || null,
+    feeKeyNftMint: pos.feeKeyNftMint || null,
+    locked: pos.locked === true,
+    openTx: pos.txIds?.open || null,
+    lockTx: pos.txIds?.lock || null,
+    transferTx: pos.txIds?.transfer || null,
+  });
+
+  return {
+    // Version of this inner payload. The Arweave envelope's Schema-Version
+    // tag (owned by launchReportService) describes the envelope; this field
+    // tracks the launch payload itself. v1 was the original thin shape
+    // (mint + pool ids); v2 adds the per-position audit records and the
+    // token-safety facts.
+    dataVersion: 2,
+    launchWallet: tempWallet ? String(tempWallet.publicKey) : null,
+    // Flat token identity fields kept from v1 for any reader already
+    // consuming them; the structured facts live under token.
+    mint: createdTokenInfo?.mint || null,
+    name: createdTokenInfo?.name || null,
+    symbol: createdTokenInfo?.symbol || null,
+    decimals: createdTokenInfo?.decimals ?? null,
+    totalSupply: createdTokenInfo?.totalSupply ?? null,
+    supply: (() => {
+      const allocated = results.reduce(
+        (s, r) => s + (Number.isFinite(r.supplyPercent) ? r.supplyPercent : 0),
+        0,
+      );
+      return {
+        allocatedToPoolsPercent: Number(allocated.toFixed(4)),
+        preallocationPercent: Number(Math.max(0, 100 - allocated).toFixed(4)),
+      };
+    })(),
+    token: {
+      mint: createdTokenInfo?.mint || null,
+      // Trebuchet mints classic SPL tokens; recording the program id lets a
+      // verifier confirm there are no Token-2022 extensions (transfer
+      // hooks, pausable, etc.) without guessing.
+      tokenProgram: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      metadataUri: createdTokenInfo?.metadataUri || null,
+      // Safety facts recorded at creation time. Each is independently
+      // verifiable on-chain: mint/freeze authority from the mint account
+      // (both authority options must be unset), metadata mutability from
+      // the Metaplex metadata account (isMutable false, update authority
+      // revoked). A verifier should treat the on-chain state as truth and
+      // these flags as the launch's claim.
+      authorities: {
+        mintAuthorityRenounced: createdTokenInfo?.mintAuthorityRenounced === true,
+        freezeAuthorityDisabled: createdTokenInfo?.freezeAuthorityDisabled === true,
+        metadataUpdateAuthorityRevoked: createdTokenInfo?.metadataUpdateAuthorityRevoked === true,
+        metadataImmutable: createdTokenInfo?.metadataImmutable === true,
+      },
+    },
+    pools: results.map((r) => ({
+      poolId: r.poolId || null,
+      quote: r.quoteSymbol || null,
+      quoteMint: r.quoteAddress || null,
+      supplyPercent: Number.isFinite(r.supplyPercent) ? r.supplyPercent : null,
+      launchedSide: r.launchedSide || null,
+      // Pool parameters: tickSpacing identifies the CLMM fee-tier config
+      // the pool was created with; initialPrice is the launch price (in
+      // quote per launched token) the pool opened at.
+      tickSpacing: Number.isFinite(r.tickSpacing) ? r.tickSpacing : null,
+      initialPrice: r.initialPrice || null,
+      createPoolTx: r.txIds?.createPool || null,
+      positions: [
+        ...(r.mainPositions || []).map((p) => mapPosition(p, 'main', {
+          sliceIndex: p.sliceIndex ?? null,
+          sharePercent: Number.isFinite(p.sharePercent) ? p.sharePercent : null,
+          recipient: p.recipient || null,
+          transferredTo: p.transferredTo || null,
+        })),
+        ...(r.ladderPositions || []).map((p) => mapPosition(p, 'ladder', {
+          bandIndex: p.bandIndex ?? null,
+        })),
+        ...(r.supportPositions || []).map((p) => mapPosition(p, 'support', {
+          depthPct: Number.isFinite(p.depthPct) ? p.depthPct : null,
+          quoteRaw: p.quoteRaw || null,
+        })),
+        ...(r.bootstrap ? [mapPosition(r.bootstrap, 'bootstrap')] : []),
+      ],
+    })),
+  };
+}
+
+// Kick off (or retry) the Arweave publish. Reads shared launch state
+// (createdTokenInfo, lpResult, tempWallet). Never throws; updates
+// _publishedReport and refreshes the success-modal card if it's open.
+// Is launch-report publishing currently enabled? Reads the in-context step-5
+// toggle if present, else the Settings toggle; both reflect the same pref.
+// Defaults to on if neither is in the DOM yet.
+function isLaunchReportEnabled() {
+  const t = document.getElementById('configPublishReportToggle')
+    || document.getElementById('lpPublishReportToggle')
+    || document.getElementById('publishReportToggle');
+  return t ? t.checked : true;
+}
+
+// Step-5 status line (#lpReportStatus, under the Create Pools button). Shows an
+// idle hint before completion, then live publish status. Kept in sync with the
+// success-modal card by refreshLaunchReportUi().
+function renderLaunchReportStep5Status() {
+  const el = document.getElementById('lpReportStatus');
+  if (!el) return;
+  el.innerHTML = '';
+  const rep = _publishedReport;
+
+  if (!rep) {
+    el.textContent = isLaunchReportEnabled()
+      ? 'A permanent launch report will be published to Arweave when this launch completes.'
+      : 'Launch report publishing is off — your launch stays private.';
+    return;
+  }
+  if (rep.status === 'skipped') {
+    el.textContent = 'Launch report publishing is off — your launch stays private.';
+    return;
+  }
+  if (rep.status === 'pending') {
+    el.textContent = 'Publishing the permanent launch report to Arweave…';
+    return;
+  }
+  if (rep.status === 'done') {
+    el.append('Permanent launch report published — ');
+    const a = document.createElement('a');
+    a.href = rep.htmlUri || rep.jsonUri || '#';
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = 'view on Arweave';
+    el.append(a);
+    return;
+  }
+  // failed
+  el.append('Couldn’t publish the launch report. ');
+  const retry = document.createElement('a');
+  retry.href = '#';
+  retry.textContent = 'Retry';
+  retry.addEventListener('click', (e) => { e.preventDefault(); publishLaunchReportToArweave(); });
+  el.append(retry);
+  el.append(' — the launch itself is unaffected.');
+}
+
+// Refresh every launch-report surface from the current _publishedReport state:
+// the step-5 status line and the success-modal card. Each renderer no-ops if
+// its DOM isn't present, so this is safe to call any time.
+function refreshLaunchReportUi() {
+  try { renderLaunchReportStep5Status(); } catch (e) { console.warn('step-5 report status render failed', e); }
+  try { renderPublishedReportCard(); } catch (e) { /* modal may not be open */ }
+}
+
+async function publishLaunchReportToArweave(lp) {
+  const data = lp || lpResult;
+  const mint = createdTokenInfo?.mint;
+  if (!mint) return; // nothing to key discovery off — skip silently
+
+  // Idempotency: skip if a publish is already in flight or has succeeded, so a
+  // second completion trigger can't double-publish. A FAILED publish can still
+  // be retried — status would be 'failed' here, which isn't caught.
+  if (_publishedReport && (_publishedReport.status === 'pending' || _publishedReport.status === 'done')) {
+    return;
+  }
+  // Opt-out: respect the launch-report toggle (same pref as Settings). When
+  // off, record a 'skipped' state and don't publish.
+  if (!isLaunchReportEnabled()) {
+    _publishedReport = { status: 'skipped', reason: 'opted-out' };
+    refreshLaunchReportUi();
+    return;
+  }
+  _publishedReport = { status: 'pending' };
+  refreshLaunchReportUi();
+
+  try {
+    const reportHtml = await _getReportHtml();
+    const launchData = buildLaunchReportData(data);
+    const poolIds = launchData.pools.map((p) => p.poolId).filter(Boolean);
+
+    const resp = await fetch('/api/publish-launch-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        walletPublicKey: tempWallet ? String(tempWallet.publicKey) : undefined,
+        mint,
+        poolIds,
+        reportHtml,
+        launchData,
+      }),
+    });
+    const out = await resp.json();
+
+    if (out && out.skipped) {
+      _publishedReport = { status: 'skipped', reason: out.reason };
+    } else if (out && out.failed) {
+      _publishedReport = { status: 'failed', error: out.error };
+      log(`Launch report publish failed: ${out.error || 'unknown error'}`, 'warning');
+    } else if (out && out.success) {
+      _publishedReport = { status: 'done', jsonUri: out.jsonUri, htmlUri: out.htmlUri };
+      log('Permanent launch report published to Arweave', 'success');
+    } else {
+      _publishedReport = { status: 'failed', error: 'unexpected response' };
+    }
+  } catch (err) {
+    _publishedReport = { status: 'failed', error: err?.message || String(err) };
+    console.error('publishLaunchReportToArweave failed:', err);
+  }
+
+  refreshLaunchReportUi();
+}
+
+// ===========================================================================
 // Inline Launch Report Preview
 // ===========================================================================
 //
@@ -1407,6 +1728,16 @@ bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
 // Memoized report HTML — build once per launch, reuse across all three
 // containers. Reset by the lpDoneInfo/transferResult hide paths.
 let _cachedReportHtml = null;
+// Result of the Arweave publish kicked off during step 6's transfer flow,
+// after the airdrop and before the sweep (see publishLaunchReportToArweave
+// and runTransfer's step 6b). Shape:
+//   { status: 'pending' | 'done' | 'failed' | 'skipped', jsonUri?, htmlUri?, error?, reason? }
+// Read by the success modal's renderPublishedReportCard(). null = not started.
+// Reset per-launch at the start of an LP run (see lp-execution.js), NOT here.
+// _resetCachedReport() runs mid-transfer to rebuild the HTML with airdrop
+// results — wiping the published record there would erase the step-5 publish
+// before the success modal can show it.
+let _publishedReport = null;
 function _resetCachedReport() {
   _cachedReportHtml = null;
   // Also clear every preview iframe's srcdoc. renderLaunchReportPreview
@@ -1427,8 +1758,10 @@ function _resetCachedReport() {
 async function _getReportHtml() {
   if (_cachedReportHtml) return _cachedReportHtml;
   try {
-    const logoDataUrl = await readLogoAsDataUrl();
-    _cachedReportHtml = buildLaunchReportHtml({ logoDataUrl });
+    const logoSrc = (createdTokenInfo && createdTokenInfo.imageUri)
+      ? createdTokenInfo.imageUri
+      : await readLogoAsDataUrl();
+    _cachedReportHtml = buildLaunchReportHtml({ logoDataUrl: logoSrc });
   } catch (e) {
     console.error('Failed to build report HTML for preview:', e);
     _cachedReportHtml = '<html><body><p>Failed to generate preview.</p></body></html>';
@@ -1448,8 +1781,13 @@ async function renderLaunchReportPreview(prefix) {
 
   if (!container || !toggleBtn || !body || !iframe) return;
 
-  // Reveal the preview container
+  // Reveal the preview container AND the toggle button. The step-6 and
+  // modal toggles are standalone buttons outside the container (next to /
+  // above it), initially hidden because the report doesn't exist until the
+  // launch reaches this point; for step 5 the un-hide is a no-op since that
+  // toggle lives in the action row shown by setLpDoneVisible().
   container.classList.remove('hidden');
+  toggleBtn.classList.remove('hidden');
 
   // Load the report into the iframe (only if not already loaded)
   if (!iframe.srcdoc) {

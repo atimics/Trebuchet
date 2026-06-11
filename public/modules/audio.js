@@ -47,6 +47,9 @@
     collapse:     { url: 'audio/collapse.ogg',     volume: 0.5, poolSize: 2 },
     expandStep:   { url: 'audio/expandStep.ogg',   volume: 0.5, poolSize: 2 },
     collapseStep: { url: 'audio/collapseStep.ogg', volume: 0.5, poolSize: 2 },
+    // Played when the launch-success modal appears — the payoff moment of
+    // the whole flow, so it sits a notch above the UI ticks.
+    launch:       { url: 'audio/launch.ogg',       volume: 0.6, poolSize: 1 },
   };
 
   // What counts as "a clickable control" for the click sound. We match the
@@ -216,6 +219,35 @@
       });
       observer.observe(card, { attributes: true, attributeFilter: ['class'] });
     }
+  }
+
+  // ---- Launch-success fanfare ---------------------------------------------
+  // Play the launch sound whenever the launch-success modal appears. Watching
+  // the modal's class (Bulma modals show via is-active) keeps this module
+  // self-contained — no call site needed in the modal-opening code, same as
+  // every other trigger in this file.
+  //
+  // Wrinkle: the modal markup lives LATER in index.html than the app.js
+  // script tag (see the lazy-wire comment in showLaunchSuccessModal), so the
+  // element isn't in the DOM yet when this module boots. Try immediately for
+  // safety, and fall back to wiring at DOMContentLoaded.
+  function watchLaunchSuccessModal() {
+    if (typeof MutationObserver === 'undefined') return;
+    const wire = () => {
+      const modal = document.getElementById('launchSuccessModal');
+      if (!modal) return false;
+      let wasActive = modal.classList.contains('is-active');
+      const observer = new MutationObserver(() => {
+        const now = modal.classList.contains('is-active');
+        if (now === wasActive) return;
+        wasActive = now;
+        if (now) playSfx('launch');
+      });
+      observer.observe(modal, { attributes: true, attributeFilter: ['class'] });
+      return true;
+    };
+    if (wire()) return;
+    document.addEventListener('DOMContentLoaded', wire, { once: true });
   }
 
   // ---- Background music --------------------------------------------------
@@ -391,6 +423,7 @@
   watchCostEstimate();
   watchDetailsPanels();
   watchStepCards();
+  watchLaunchSuccessModal();
   // Start music as early as possible. In Electron this begins immediately,
   // under the first startup dialog; in a browser it's a no-op until a gesture.
   tryStartMusic();
