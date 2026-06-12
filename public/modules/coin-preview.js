@@ -137,10 +137,18 @@ let _previewLogoFailBound = false;
 // weak hardware or when WebGL/the script isn't available.
 // ===========================================================================
 
-// Feature flag for the 3D coin. The coin is an always-on feature (no user
-// toggle), so this stays true; it only gates coinCanRun() together with the
-// runtime check that coinRenderer/THREE actually loaded.
+// 3D coin preferences. Both persist in userPrefs.json and have settings-
+// panel toggles:
+//   coinPreview       — show the 3D coin at all (off → flat logo fallback).
+//   coinPreviewParked — hold a fixed pose (logo forward, yawed ~30° so the
+//                       relief and reeded edge still read as 3D) instead of
+//                       spinning. Deterministic pixels for screenshots, and
+//                       the renderer idles its loop when parked.
+// Defaults match userPrefs.js; values load async below, and the coin only
+// attaches at step 2 — long after the boot-time prefs fetch resolves — so
+// the first attach sees real values.
 let coinPreviewEnabled = true;
+let coinParked = false;
 // Remembers the last front URL and back signature we pushed, so we only
 // rebuild a face texture when its source actually changed (texture uploads
 // are the expensive part; debounce-by-equality avoids thrashing them).
@@ -219,6 +227,7 @@ function updateCoinPreview(frontUrl, symbol) {
     // Force a fresh push of both faces after init.
     _coinFrontUrl = undefined;
     _coinBackSig = undefined;
+    window.coinRenderer.setParked(coinParked);
   } else if (!mount.querySelector('canvas')) {
     // Already initialised, but this mount has no canvas — the surrounding DOM
     // was re-rendered (e.g. entering "review completed step" rebuilds the
@@ -404,3 +413,81 @@ function updatePreviewStats() {
   existing.outerHTML = buildPreviewStatsHtml();
 }
 
+
+// ===========================================================================
+// 3D coin preference wiring — mirrors the audio module's pattern: read
+// persisted prefs once at boot, reflect them into the settings-panel
+// checkboxes, persist changes fire-and-forget.
+// ===========================================================================
+
+function _persistCoinPref(key, value) {
+  fetch('/api/user-prefs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ [key]: value }),
+  }).catch((err) => {
+    console.warn(`coin: failed to persist ${key}:`, err);
+  });
+}
+
+function _loadCoinPrefs() {
+  fetch('/api/user-prefs')
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.prefs) {
+        coinPreviewEnabled = data.prefs.coinPreview !== false;
+        coinParked = data.prefs.coinPreviewParked === true;
+      }
+      const showToggle = document.getElementById('coinPreviewToggle');
+      if (showToggle) showToggle.checked = coinPreviewEnabled;
+      const parkToggle = document.getElementById('coinParkedToggle');
+      if (parkToggle) parkToggle.checked = coinParked;
+      // If the coin somehow attached before prefs resolved, apply now.
+      if (window.coinRenderer && window.coinRenderer.isActive()) {
+        window.coinRenderer.setParked(coinParked);
+      }
+    })
+    .catch((err) => {
+      console.warn('coin: failed to read preferences, using defaults:', err);
+    });
+}
+
+function _wireCoinSettingsToggles() {
+  const showToggle = document.getElementById('coinPreviewToggle');
+  if (showToggle) {
+    showToggle.addEventListener('change', () => {
+      coinPreviewEnabled = showToggle.checked;
+      _persistCoinPref('coinPreview', coinPreviewEnabled);
+      if (!coinPreviewEnabled && window.coinRenderer && window.coinRenderer.isActive()) {
+        // Tear the context down (browsers cap live WebGL contexts) — the
+        // re-render below falls back to the flat logo via coinCanRun().
+        window.coinRenderer.destroy();
+      }
+      // Rebuild the preview card so the change applies immediately. The
+      // modules share one scope after concatenation, but stay defensive
+      // in case the preview hasn't been built yet.
+      if (typeof renderTokenPreview === 'function') renderTokenPreview();
+    });
+  }
+
+  const parkToggle = document.getElementById('coinParkedToggle');
+  if (parkToggle) {
+    parkToggle.addEventListener('change', () => {
+      coinParked = parkToggle.checked;
+      _persistCoinPref('coinPreviewParked', coinParked);
+      if (window.coinRenderer && window.coinRenderer.isActive()) {
+        window.coinRenderer.setParked(coinParked);
+      }
+    });
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    _loadCoinPrefs();
+    _wireCoinSettingsToggles();
+  });
+} else {
+  _loadCoinPrefs();
+  _wireCoinSettingsToggles();
+}

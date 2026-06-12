@@ -955,6 +955,27 @@ async function pollBalances() {
 
     document.getElementById('continueToTokenBtn').disabled = !allMet;
 
+    // Next-action hint: say WHY continue is disabled and what to do
+    // next. A disabled button with no stated reason is a dead end — the
+    // only prior cue was the small per-row status text, which is easy to
+    // miss (especially "Ready to acquire", which needs a button click
+    // the user may not connect to the disabled continue).
+    const nextHint = document.getElementById('fundingNextHint');
+    if (nextHint) {
+      if (allMet) {
+        nextHint.classList.add('hidden');
+      } else if (!solMet) {
+        nextHint.textContent = 'Waiting for SOL — send the recommended amount to the launch wallet above, then the checks update automatically.';
+        nextHint.classList.remove('hidden');
+      } else if (anyAutoSwapPending) {
+        nextHint.textContent = 'SOL funded ✓ — click “Acquire quote tokens” to swap for the remaining pool tokens, then Continue unlocks.';
+        nextHint.classList.remove('hidden');
+      } else {
+        nextHint.textContent = 'Waiting for the remaining token balances to arrive — the checks above update automatically.';
+        nextHint.classList.remove('hidden');
+      }
+    }
+
     // Acquire-quote-tokens button: enabled when SOL is funded AND
     // there are still pending auto-swaps. Disabled-but-visible when
     // SOL is short so the user sees the button is there waiting.

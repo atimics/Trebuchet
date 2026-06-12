@@ -3554,6 +3554,32 @@
                         to the estimated launch cost.
                     </p>
                     <!-- ============================================ -->
+                    <!-- 3D coin preview. Both persist to             -->
+                    <!-- userPrefs.json as coinPreview /              -->
+                    <!-- coinPreviewParked and take effect            -->
+                    <!-- immediately (public/modules/coin-preview.js).-->
+                    <!-- ============================================ -->
+                    <hr class="my-3">
+                    <h6 class="subtitle is-6 mb-2">3D coin preview</h6>
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="coinPreviewToggle" checked>
+                            <span>Show the 3D coin</span>
+                        </label>
+                    </div>
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="coinParkedToggle">
+                            <span>Hold a fixed pose instead of spinning</span>
+                        </label>
+                    </div>
+                    <p class="help mb-2">
+                        The fixed pose faces your logo forward, turned about
+                        30&deg; so the coin still reads as 3D. It also lets the
+                        renderer idle between changes, which saves CPU/GPU.
+                        Turning the coin off shows the flat logo instead.
+                    </p>
+                    <!-- ============================================ -->
                     <!-- Launch report (Arweave) opt-out + explainer. -->
                     <!-- ============================================ -->
                     <hr class="my-3">
@@ -4268,6 +4294,12 @@
                             </button>
                         </div>
                     </div>
+                    <!-- Next-action hint. The continue button can stay disabled
+                         for several distinct reasons (SOL not yet arrived,
+                         quote tokens still to acquire, manual prefunds pending)
+                         and a silently-disabled button gives the user nothing
+                         to act on. pollBalances() keeps this line current. -->
+                    <p class="is-size-7 has-text-grey mt-1 hidden" id="fundingNextHint"></p>
                 </div>
             </div>
 
