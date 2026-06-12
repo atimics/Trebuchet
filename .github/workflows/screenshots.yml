@@ -74,14 +74,13 @@ jobs:
         run: npm run build:js
 
       - name: Capture screenshots
+        # The 3D coin stays OFF in CI (no SHOTS_COIN). It was tried twice:
+        # SwiftShader on a 2-vCPU runner stalls the renderer main thread
+        # during coin re-init on step transitions — first starving click
+        # actionability, then the step-transition wait itself. Capture
+        # retries can absorb slow screenshots but not an unbounded main-
+        # thread stall. Locally the coin works: SHOTS_COIN=1 npm run shots.
         run: npm run shots
-        env:
-          # 3D coin enabled — the retry/escalating-budget harness handles
-          # SwiftShader's slow rasterization. If runner flakes return
-          # (watch for clicks timing out at "performing click action",
-          # which retries do NOT cover), remove this line: the capture
-          # falls back to the app's flat-logo mode and is fully stable.
-          SHOTS_COIN: '1'
 
       # PR mode: publish the output as a downloadable artifact for review.
       # Open the PR's checks page → this run → "readme-screenshots".

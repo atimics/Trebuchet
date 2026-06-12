@@ -339,3 +339,26 @@ test('success modal hands the 3D coin back to the preview card on close', () => 
     'free the modal context before the card re-claims the singleton',
   );
 });
+
+test('parked-coin pose is wired end to end', () => {
+  const renderer = readFileSync(new URL('../public/coinRenderer.js', import.meta.url), 'utf8');
+  // The renderer exposes the switch and holds the documented pose.
+  assert.match(renderer, /setParked,/, 'coinRenderer must export setParked');
+  assert.match(renderer, /PARKED_YAW = -Math\.PI \/ 6/, 'parked pose is ~30° yaw, logo forward');
+  // Render-on-demand: every texture lands in applyFace, which must kick
+  // frames or parked mode would never show new faces.
+  assert.match(renderer, /function applyFace\(material, content\) \{\n    \/\/ Parked mode renders on demand/,
+    'applyFace must kick parked rendering');
+
+  const preview = readFileSync(new URL('../public/modules/coin-preview.js', import.meta.url), 'utf8');
+  // Prefs actually consumed (coinPreview was a dead pref before this).
+  assert.match(preview, /data\.prefs\.coinPreview !== false/, 'coinPreview pref must be read');
+  assert.match(preview, /data\.prefs\.coinPreviewParked === true/, 'coinPreviewParked pref must be read');
+
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="coinPreviewToggle"/, 'settings panel must have the show-coin toggle');
+  assert.match(html, /id="coinParkedToggle"/, 'settings panel must have the parked-pose toggle');
+
+  const prefs = readFileSync(new URL('../userPrefs.js', import.meta.url), 'utf8');
+  assert.match(prefs, /coinPreviewParked: false/, 'userPrefs must default coinPreviewParked off');
+});

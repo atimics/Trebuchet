@@ -68,6 +68,17 @@
 
   // Spin speed (radians/sec) and a clock for frame-rate-independent motion.
   const SPIN_SPEED = 0.9;
+
+  // ---- Parked pose -----------------------------------------------------
+  // When parked, the coin holds a fixed pose instead of spinning: logo
+  // facing the camera, yawed ~30° so the reeded edge and relief read as
+  // 3D. Deterministic pixels (screenshots are reproducible) and — because
+  // a static scene doesn't need a render loop — we render on demand:
+  // a few frames after anything visual changes (texture upload, resize,
+  // reattach), then stop the rAF loop entirely.
+  let parked = false;
+  let parkKick = 0;          // frames left to render while parked
+  const PARKED_YAW = -Math.PI / 6; // ~30°: front logo forward, edge showing
   let lastTime = 0;
 
   // The face-texture resolution. 512 is plenty for a coin on screen and
@@ -368,6 +379,10 @@
 
   // Apply freshly-built textures to a face material, disposing the old ones.
   function applyFace(material, content) {
+    // Parked mode renders on demand — every texture change must trigger
+    // frames or the new face would never appear. 90 frames (~1.5s) also
+    // covers GPU texture upload latency.
+    kickParkedRender(90);
     const { map, normalMap } = buildFaceTextures(content);
     if (material.map) {
       liveTextures.delete(material.map);
@@ -703,8 +718,39 @@
     const t = now || 0;
     const dt = lastTime ? (t - lastTime) / 1000 : 0;
     lastTime = t;
-    if (coinGroup) coinGroup.rotation.y += SPIN_SPEED * dt;
+    if (coinGroup) {
+      // Snap (not lerp) to the parked pose every frame — cheap, and it
+      // self-heals if anything else touched the rotation.
+      if (parked) coinGroup.rotation.y = PARKED_YAW;
+      else coinGroup.rotation.y += SPIN_SPEED * dt;
+    }
     renderWithGlow();
+    if (parked) {
+      parkKick -= 1;
+      if (parkKick <= 0) stopLoop(); // static scene: nothing left to draw
+    }
+  }
+
+  // Render a handful of frames while parked, then go idle again. No-op
+  // when spinning (the loop is already free-running). Generous frame
+  // counts cover async texture uploads that land a beat later.
+  function kickParkedRender(frames) {
+    if (!parked || !renderer) return;
+    parkKick = Math.max(parkKick, frames);
+    startLoop();
+  }
+
+  // Public switch between the spinning showpiece and the fixed pose.
+  function setParked(value) {
+    parked = !!value;
+    if (!renderer) return; // applied on init via the next kick/startLoop
+    if (parked) {
+      if (coinGroup) coinGroup.rotation.y = PARKED_YAW;
+      parkKick = 10;
+      startLoop(); // runs 10 frames, then animate() parks the loop
+    } else {
+      startLoop(); // resume free-running spin
+    }
   }
 
   function startLoop() {
@@ -734,6 +780,7 @@
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    kickParkedRender(3);
   }
 
   // -------------------------------------------------------------------------
@@ -847,6 +894,7 @@
 
   function setBumpDepth(value) {
     reliefStrength = value;
+    kickParkedRender(3);
     for (const m of [frontMaterial, backMaterial]) {
       if (!m) continue;
       if (m.normalScale) m.normalScale.set(value, value);
@@ -951,6 +999,7 @@
     setFaces,
     setBackSymbol,
     setBumpDepth,
+    setParked,
     isActive,
     destroy,
   };

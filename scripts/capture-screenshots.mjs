@@ -105,6 +105,10 @@ writeFileSync(join(cfgDir, 'userPrefs.json'), JSON.stringify({
   playSoundEffects: false,
   playBackgroundMusic: false,
   coinPreview: COIN_ENABLED,
+  // Parked pose: logo forward, yawed ~30°, renderer idle between changes.
+  // Deterministic pixels run-to-run, and no continuous rasterization — the
+  // thing that made the spinning coin untenable under SwiftShader on CI.
+  coinPreviewParked: true,
 }, null, 2));
 
 console.log(`Booting server on :${PORT} (config: ${cfgDir})`);
