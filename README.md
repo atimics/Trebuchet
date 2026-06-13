@@ -689,8 +689,30 @@ standalone:
 npm install
 npm run web        # standalone web server on port 3000
 npm start          # Electron desktop app
+npm run build:spa  # static browser build in dist/spa, including WASM assets
 npm run build:win  # build Windows installer and portable EXE
 ```
+
+### Static browser SPA build
+
+The browser build is emitted to `dist/spa`:
+
+```bash
+npm run build:spa
+npx http-server dist/spa -c-1
+```
+
+`build:spa` compiles the browser WASM vanity-keygen artifact, rebuilds
+`public/app.js`, copies the static frontend, swaps in `spa-api.js`, and
+relaxes only the generated static CSP entries needed for external RPC
+calls and WebAssembly compilation.
+
+Current scope: the static SPA boots, persists local settings in
+`localStorage`, resolves built-in quote tokens, loads the browser WASM
+vanity module, and supports browser-wallet detection. Server-signed
+launch endpoints intentionally return `STATIC_SPA_UNSUPPORTED` until
+token creation, LP creation, report publishing, airdrop, and sweep are
+converted to client-side transaction construction plus wallet signing.
 
 Source files of interest:
 
@@ -712,6 +734,7 @@ Source files of interest:
   tokenomics visualization, and the HTML launch-report generator
 - `public/index.html` — single-page frontend (Bulma + the styles
   needed for the parchment-themed launch report)
+- `public/spa-api.js` — static browser API shim used by `build:spa`
 - `main.js` — Electron entry point, menu definition, BrowserWindow
   lifecycle
 

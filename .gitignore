@@ -9,6 +9,7 @@ builder-debug.yml
 builder-effective-config.yaml
 latest.yml
 /c/build
+/public/wasm
 /launchJournals.json
 /pendingWallets.json
 /userPrefs.json

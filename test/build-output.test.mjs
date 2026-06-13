@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appJs = readFileSync(path.join(ROOT, 'public/app.js'), 'utf8');
+const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 
 test('app.js installs the API session fetch wrapper', () => {
   // Without these the client sends no x-trebuchet-session header and every
@@ -102,4 +103,13 @@ test('app.js is not a truncated stale-module build', () => {
     `app.js is only ${Math.round(bytes / 1024)}KB — expected ~830KB. It may have ` +
     `been rebuilt from the incomplete public/modules/ extraction.`,
   );
+});
+
+test('static SPA and WASM build scripts are wired', () => {
+  assert.equal(pkg.scripts['build:wasm'], 'node scripts/build-wasm.mjs');
+  assert.equal(pkg.scripts['build:spa'], 'npm run build:wasm && node scripts/build-spa.mjs');
+
+  const spaApi = readFileSync(path.join(ROOT, 'public/spa-api.js'), 'utf8');
+  assert.ok(spaApi.includes('TREBUCHET_STATIC_SPA'), 'static SPA runtime flag missing');
+  assert.ok(spaApi.includes('STATIC_SPA_UNSUPPORTED'), 'server-only endpoint guard missing');
 });

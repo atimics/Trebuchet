@@ -25,6 +25,8 @@
     "start": "electron .",
     "web": "npm run build:c && npm run build:js && node server.js",
     "web:dev": "node --watch server.js",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "build:spa": "npm run build:wasm && node scripts/build-spa.mjs",
     "check:syntax": "node scripts/check-syntax.mjs",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "node test/e2e/ui-flows.mjs --mobile",
