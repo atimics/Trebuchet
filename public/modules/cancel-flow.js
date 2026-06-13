@@ -101,6 +101,14 @@ bind('cancelConfirmProceedBtn', 'click', async () => {
         }),
       });
       const data = await resp.json();
+      if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
+        // Another launch operation is still running for this wallet.
+        // Cancelling means sweeping, and sweeping mid-operation would
+        // strand the launch — the server refused for good reason. Wait
+        // for the running operation to finish, then cancel.
+        log(data.error, 'warning');
+        return;
+      }
       if (!data.success) throw new Error(data.error);
 
       const swept = [

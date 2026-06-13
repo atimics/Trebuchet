@@ -226,8 +226,45 @@ function prepareRecoveredSessionFromJournal(journal, wallet) {
     totalSupply: journal.token.totalSupply || journal.poolPlan?.tokenTotalSupply,
     name: journal.token.name || '',
     symbol: journal.token.symbol || 'TOKEN',
+    // Token-safety facts restored from the journal (recorded there at
+    // token-creation time) so a resumed launch still publishes a complete
+    // audit record to Arweave.
+    metadataUri: journal.token.metadataUri || null,
+    imageUri: journal.token.imageUri || null,
+    mintAuthorityRenounced: journal.token.mintAuthorityRenounced === true,
+    freezeAuthorityDisabled: journal.token.freezeAuthorityDisabled === true,
+    metadataUpdateAuthorityRevoked: journal.token.metadataUpdateAuthorityRevoked === true,
+    metadataImmutable: journal.token.metadataImmutable === true,
   };
   lpResult = { results: journalPriorResults(journal) };
+
+  // Airdrop state. The journal carries two complementary records:
+  //   - journal.airdrop: the per-recipient result of any airdrop that
+  //     already ran (written by transfer-assets / retry-airdrop). Restoring
+  //     it brings back the report's delivered/failed section and the
+  //     retry button after an app restart.
+  //   - journal.poolPlan.airdropPlan: the configured plan, journaled at
+  //     create-lp. Restoring it lets a resumed transfer still execute the
+  //     airdrop even though the simple-mode config it was built from
+  //     didn't survive the restart. The server filters out recipients its
+  //     journal already records as delivered, so restoring the full plan
+  //     is safe regardless of how far the airdrop got.
+  lastAirdropResult = (journal.airdrop && typeof journal.airdrop === 'object')
+    ? journal.airdrop
+    : null;
+  restoredAirdropPayload = journal.poolPlan?.airdropPlan || null;
+  // Publish state: if the permanent report already went to Arweave in a
+  // previous session, restore the recorded URIs so the UI shows the link
+  // and runTransfer's publish step becomes a no-op (the server is also
+  // idempotent on this, so the restore is belt-and-braces for the UI).
+  if (journal.reportPublish && journal.reportPublish.jsonUri) {
+    _publishedReport = {
+      status: 'done',
+      jsonUri: journal.reportPublish.jsonUri,
+      htmlUri: journal.reportPublish.htmlUri || null,
+    };
+    if (typeof refreshLaunchReportUi === 'function') refreshLaunchReportUi();
+  }
 
   document.body.classList.add('has-log');
   document.getElementById('walletInfo')?.classList.remove('hidden');

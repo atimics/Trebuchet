@@ -73,6 +73,8 @@ function normalizeJournal(raw) {
     poolPlan: raw.poolPlan && typeof raw.poolPlan === 'object' ? raw.poolPlan : null,
     lp: raw.lp && typeof raw.lp === 'object' ? raw.lp : null,
     transfer: raw.transfer && typeof raw.transfer === 'object' ? raw.transfer : null,
+    airdrop: raw.airdrop && typeof raw.airdrop === 'object' ? raw.airdrop : null,
+    reportPublish: raw.reportPublish && typeof raw.reportPublish === 'object' ? raw.reportPublish : null,
     error: typeof raw.error === 'string' ? raw.error : null,
     events: Array.isArray(raw.events) ? raw.events.slice(-MAX_EVENTS) : [],
   };
@@ -188,6 +190,8 @@ export function upsertForWallet(walletPublicKey, patch = {}, event = null) {
       poolPlan: null,
       lp: null,
       transfer: null,
+      airdrop: null,
+      reportPublish: null,
       error: null,
       events: [],
     };

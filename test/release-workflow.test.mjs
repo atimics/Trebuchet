@@ -246,6 +246,8 @@ test('website download CTA uses per-OS direct links to tagged GitHub releases', 
   assert.match(site, /Trebuchet-__TREBUCHET_VERSION__-Portable\.exe/);
   assert.match(site, /Trebuchet-__TREBUCHET_VERSION__-x86_64\.AppImage/);
   assert.match(site, /trebuchet-desktop___TREBUCHET_VERSION___amd64\.deb/);
+  assert.match(site, /Unsigned build: macOS may say the app is damaged/);
+  assert.match(site, /xattr -dr com\.apple\.quarantine \/Applications\/Trebuchet\.app/);
 
   // Negative checks — make sure we don't slip back into the old
   // "redirect to /releases/latest" or "raw committed dist files"

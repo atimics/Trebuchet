@@ -102,6 +102,12 @@ let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 //   { transferred: [{wallet, tokens, amountRaw, txId}, ...],
 //     failed:      [{wallet, tokens, amountRaw, error}, ...] }
 let lastAirdropResult = null;
+// Airdrop plan restored from a launch journal (poolPlan.airdropPlan) when
+// resuming a launch after an app restart. buildAirdropTransferPayload()
+// falls back to this when the live simple-mode config can't produce a
+// payload (it lives only in frontend memory and didn't survive the
+// restart). Null in normal sessions.
+let restoredAirdropPayload = null;
 
 // ===========================================================================
 // Launch signer boundary
@@ -1064,14 +1070,32 @@ function setLoading(btn, loading) {
 
 // Wrap an async operation in run-state handling. While `isRunningOperation`
 // is true, the cancel button is disabled — don't sweep mid-transaction.
+// Depth counter for the data-treb-busy DOM signal below. withRunState
+// can nest (a balance poll can overlap a user action); the flag must
+// only clear when the LAST operation finishes.
+let _runStateDepth = 0;
+
 async function withRunState(fn) {
   isRunningOperation = true;
   updateCancelButtonState();
+  // Automation/readiness signal: <body data-treb-busy="1"> while any
+  // wrapped operation is in flight. The screenshot harness (and any
+  // future e2e tooling) waits on this instead of guessing from side
+  // effects — e.g. "Continue to Funding" runs a full estimate
+  // round-trip against live price APIs BEFORE the step advances, and
+  // without a signal the only observable is a button that was clicked
+  // and a step that hasn't changed yet.
+  _runStateDepth += 1;
+  document.body.dataset.trebBusy = '1';
   try {
     return await fn();
   } finally {
     isRunningOperation = false;
     updateCancelButtonState();
+    _runStateDepth = Math.max(0, _runStateDepth - 1);
+    if (_runStateDepth === 0) {
+      delete document.body.dataset.trebBusy;
+    }
   }
 }
 
@@ -2011,6 +2035,14 @@ bind('cancelConfirmProceedBtn', 'click', async () => {
         }),
       });
       const data = await resp.json();
+      if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
+        // Another launch operation is still running for this wallet.
+        // Cancelling means sweeping, and sweeping mid-operation would
+        // strand the launch — the server refused for good reason. Wait
+        // for the running operation to finish, then cancel.
+        log(data.error, 'warning');
+        return;
+      }
       if (!data.success) throw new Error(data.error);
 
       const swept = [
@@ -4025,6 +4057,30 @@ function computeAirdropExecutionCostSol() {
 // All four conditions are needed: any one failing means there's
 // nothing legitimate to airdrop.
 function buildAirdropTransferPayload() {
+  const live = buildLiveAirdropTransferPayload();
+  if (live) return live;
+  // Journal-restored fallback: when resuming a launch after an app
+  // restart, the simple-mode airdrop config that feeds the live builder
+  // is gone, but the plan was journaled at create-lp time and restored
+  // by prepareRecoveredSessionFromJournal. The mint check pins the plan
+  // to this exact token. The server independently skips any recipients
+  // its journal already records as delivered, so replaying the full
+  // plan here is safe even when the airdrop partially (or fully) ran
+  // before the restart.
+  if (restoredAirdropPayload
+      && createdTokenInfo
+      && createdTokenInfo.mint
+      && restoredAirdropPayload.tokenMint === createdTokenInfo.mint
+      && Array.isArray(restoredAirdropPayload.recipients)
+      && restoredAirdropPayload.recipients.length > 0) {
+    return restoredAirdropPayload;
+  }
+  return null;
+}
+
+// The live builder: reads the CURRENT simple-mode config. Split out so the
+// journal-restored fallback above can wrap it without touching the logic.
+function buildLiveAirdropTransferPayload() {
   if (!createdTokenInfo || !createdTokenInfo.mint) return null;
   if (simpleConfig.mode === 'customize') return null;
   if (!simpleConfig.preallocationEnabled) return null;
@@ -4839,7 +4895,23 @@ function buildAirdropResultsHtml() {
       <strong>⚠</strong> ${escapeHtml(err)}
     </div>`;
   })();
-  return errorHtml + summaryLineHtml;
+  // Soft duration warning for very large lists. No cap — the airdrop runs
+  // sequentially (pacing + per-tx confirmation), so a big list is purely a
+  // time commitment, and that's the user's call. ~4s/recipient matches the
+  // estimate runTransfer logs at execution time.
+  const sizeWarningHtml = (() => {
+    const n = airdrop.parsedRows.length;
+    if (n <= 1000) return '';
+    const estMinutes = Math.ceil((n * 4) / 60);
+    return `<div class="notification is-warning is-light py-2 px-3 mt-2 mb-0 is-size-7">
+      <strong>⚠</strong> ${n.toLocaleString()} recipients is a lot — the airdrop sends
+      one transaction per wallet and will take roughly ${estMinutes} minutes during the
+      final transfer. The app must stay open the whole time. Delivery is tracked
+      per-recipient, so if anything interrupts it, a retry only sends to wallets
+      that haven't received theirs yet.
+    </div>`;
+  })();
+  return errorHtml + sizeWarningHtml + summaryLineHtml;
 }
 
 // Render (or hide) the pre-transfer airdrop summary panel in step 6.
@@ -6770,10 +6842,18 @@ let _previewLogoFailBound = false;
 // weak hardware or when WebGL/the script isn't available.
 // ===========================================================================
 
-// Feature flag for the 3D coin. The coin is an always-on feature (no user
-// toggle), so this stays true; it only gates coinCanRun() together with the
-// runtime check that coinRenderer/THREE actually loaded.
+// 3D coin preferences. Both persist in userPrefs.json and have settings-
+// panel toggles:
+//   coinPreview       — show the 3D coin at all (off → flat logo fallback).
+//   coinPreviewParked — hold a fixed pose (logo forward, yawed ~30° so the
+//                       relief and reeded edge still read as 3D) instead of
+//                       spinning. Deterministic pixels for screenshots, and
+//                       the renderer idles its loop when parked.
+// Defaults match userPrefs.js; values load async below, and the coin only
+// attaches at step 2 — long after the boot-time prefs fetch resolves — so
+// the first attach sees real values.
 let coinPreviewEnabled = true;
+let coinParked = false;
 // Remembers the last front URL and back signature we pushed, so we only
 // rebuild a face texture when its source actually changed (texture uploads
 // are the expensive part; debounce-by-equality avoids thrashing them).
@@ -6852,6 +6932,7 @@ function updateCoinPreview(frontUrl, symbol) {
     // Force a fresh push of both faces after init.
     _coinFrontUrl = undefined;
     _coinBackSig = undefined;
+    window.coinRenderer.setParked(coinParked);
   } else if (!mount.querySelector('canvas')) {
     // Already initialised, but this mount has no canvas — the surrounding DOM
     // was re-rendered (e.g. entering "review completed step" rebuilds the
@@ -7037,6 +7118,84 @@ function updatePreviewStats() {
   existing.outerHTML = buildPreviewStatsHtml();
 }
 
+
+// ===========================================================================
+// 3D coin preference wiring — mirrors the audio module's pattern: read
+// persisted prefs once at boot, reflect them into the settings-panel
+// checkboxes, persist changes fire-and-forget.
+// ===========================================================================
+
+function _persistCoinPref(key, value) {
+  fetch('/api/user-prefs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ [key]: value }),
+  }).catch((err) => {
+    console.warn(`coin: failed to persist ${key}:`, err);
+  });
+}
+
+function _loadCoinPrefs() {
+  fetch('/api/user-prefs')
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.prefs) {
+        coinPreviewEnabled = data.prefs.coinPreview !== false;
+        coinParked = data.prefs.coinPreviewParked === true;
+      }
+      const showToggle = document.getElementById('coinPreviewToggle');
+      if (showToggle) showToggle.checked = coinPreviewEnabled;
+      const parkToggle = document.getElementById('coinParkedToggle');
+      if (parkToggle) parkToggle.checked = coinParked;
+      // If the coin somehow attached before prefs resolved, apply now.
+      if (window.coinRenderer && window.coinRenderer.isActive()) {
+        window.coinRenderer.setParked(coinParked);
+      }
+    })
+    .catch((err) => {
+      console.warn('coin: failed to read preferences, using defaults:', err);
+    });
+}
+
+function _wireCoinSettingsToggles() {
+  const showToggle = document.getElementById('coinPreviewToggle');
+  if (showToggle) {
+    showToggle.addEventListener('change', () => {
+      coinPreviewEnabled = showToggle.checked;
+      _persistCoinPref('coinPreview', coinPreviewEnabled);
+      if (!coinPreviewEnabled && window.coinRenderer && window.coinRenderer.isActive()) {
+        // Tear the context down (browsers cap live WebGL contexts) — the
+        // re-render below falls back to the flat logo via coinCanRun().
+        window.coinRenderer.destroy();
+      }
+      // Rebuild the preview card so the change applies immediately. The
+      // modules share one scope after concatenation, but stay defensive
+      // in case the preview hasn't been built yet.
+      if (typeof renderTokenPreview === 'function') renderTokenPreview();
+    });
+  }
+
+  const parkToggle = document.getElementById('coinParkedToggle');
+  if (parkToggle) {
+    parkToggle.addEventListener('change', () => {
+      coinParked = parkToggle.checked;
+      _persistCoinPref('coinPreviewParked', coinParked);
+      if (window.coinRenderer && window.coinRenderer.isActive()) {
+        window.coinRenderer.setParked(coinParked);
+      }
+    });
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    _loadCoinPrefs();
+    _wireCoinSettingsToggles();
+  });
+} else {
+  _loadCoinPrefs();
+  _wireCoinSettingsToggles();
+}
 // depth-chart.js
 //
 // A small, dependency-free liquidity-depth chart for a SINGLE pool. Shared by
@@ -10615,7 +10774,7 @@ async function runCostPreview() {
     const resp = await fetch('/api/estimate-lp-funding', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc }),
+      body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc, publishLaunchReport: isLaunchReportEnabled() }),
     });
     // If a newer request started while this one was in flight, drop
     // our result. Without this guard, an out-of-order response could
@@ -11040,7 +11199,7 @@ bind('continueToFundingBtn', 'click', async () => {
         // targetMarketCapUsd is only used by the estimator when a custom-
         // mode bootstrap is present, but we send it unconditionally so the
         // server has it available regardless. All-minimal launches ignore it.
-        body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc }),
+        body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc, publishLaunchReport: isLaunchReportEnabled() }),
       });
       const data = await resp.json();
       if (!data.success) throw new Error(data.error);
@@ -11220,6 +11379,7 @@ function resetForNewLaunch() {
   createdTokenInfo = null;
   lpResult = null;
   lastAirdropResult = null;
+  restoredAirdropPayload = null;
   if (typeof _resetCachedReport === 'function') _resetCachedReport();
   fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
   fundingWallet = null;
@@ -12045,6 +12205,13 @@ function buildAirdropReportSection() {
     if (!Number.isFinite(num)) return '—';
     return num.toLocaleString(undefined, { maximumFractionDigits: 6 });
   };
+  // Max rows rendered per recipient table (pending / delivered / failed).
+  // Keeps very large airdrops from blowing the published report past the
+  // Arweave free-upload size cap; the overflow collapses into a count row.
+  const MAX_REPORT_AIRDROP_ROWS = 100;
+  const overflowRowHtml = (hidden, colSpan, noun) => (hidden > 0
+    ? `<tr><td colspan="${colSpan}" style="color: var(--ink-muted, #6a4f2a); font-style: italic;">…and ${hidden.toLocaleString()} more ${noun} — every transfer is verifiable on-chain from the launch wallet.</td></tr>`
+    : '');
 
   // ---- Pending path: airdrop configured but not yet executed ----
   // Triggered when no result exists yet but the configured payload has
@@ -12069,7 +12236,7 @@ function buildAirdropReportSection() {
     // third column reads "pending" instead of a tx link. Amber tint
     // mirrors the failed-row treatment so "not yet done" is visually
     // distinct from delivered/success.
-    const pendingRows = recipients.map((r) => {
+    const pendingRows = recipients.slice(0, MAX_REPORT_AIRDROP_ROWS).map((r) => {
       const wAddr = String(r.wallet || '');
       const tokensTxt = fmtTokens(r.tokens);
       return `<tr>
@@ -12080,7 +12247,7 @@ function buildAirdropReportSection() {
         <td style="text-align: right;">${tokensTxt}</td>
         <td style="color: #b8821a; font-style: italic;">pending</td>
       </tr>`;
-    }).join('');
+    }).join('') + overflowRowHtml(recipients.length - MAX_REPORT_AIRDROP_ROWS, 3, 'pending recipients');
 
     return `
       <hr class="section-rule">
@@ -12133,7 +12300,7 @@ function buildAirdropReportSection() {
   // report reads consistently end-to-end.
   let deliveredRows = '';
   if (delivered.length > 0) {
-    deliveredRows = delivered.map((r) => {
+    deliveredRows = delivered.slice(0, MAX_REPORT_AIRDROP_ROWS).map((r) => {
       const wAddr = String(r.wallet || '');
       const tokensTxt = fmtTokens(r.tokens);
       const txCell = r.txId
@@ -12147,7 +12314,7 @@ function buildAirdropReportSection() {
         <td style="text-align: right;">${tokensTxt}</td>
         <td>${txCell}</td>
       </tr>`;
-    }).join('');
+    }).join('') + overflowRowHtml(delivered.length - MAX_REPORT_AIRDROP_ROWS, 3, 'delivered recipients');
   }
 
   // Failed rows — each shows wallet + tokens + the failure reason
@@ -12156,7 +12323,7 @@ function buildAirdropReportSection() {
   // amber to distinguish from delivered rows at a glance.
   let failedRows = '';
   if (failed.length > 0) {
-    failedRows = failed.map((r) => {
+    failedRows = failed.slice(0, MAX_REPORT_AIRDROP_ROWS).map((r) => {
       const wAddr = String(r.wallet || '');
       const tokensTxt = fmtTokens(r.tokens);
       let reasonRaw = String(r.error || 'unknown error');
@@ -12172,7 +12339,7 @@ function buildAirdropReportSection() {
         <td style="text-align: right;">${tokensTxt}</td>
         <td style="color: #b8821a;">${escapeHtml(reasonRaw)}${verifyLinkHtml}</td>
       </tr>`;
-    }).join('');
+    }).join('') + overflowRowHtml(failed.length - MAX_REPORT_AIRDROP_ROWS, 3, 'failed recipients');
   }
 
   // Compose the two subsections. We only render a subsection when
@@ -12267,7 +12434,7 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
   results.forEach((r, idx) => {
     const userPool = pools[r.allocationIndex ?? idx] || pools[idx] || {};
     const sym = r.quoteSymbol || userPool.resolvedSymbol || '?';
-    const supplyPct = Number(userPool.supplyPercent ?? 0).toFixed(2);
+    const supplyPct = Number(r.supplyPercent ?? userPool.supplyPercent ?? 0).toFixed(2);
     const feeTierIdx = userPool.ammConfigIndex;
     const feeTier = feeTiers.find((t) => t.index === feeTierIdx);
     const feeTierLabel = feeTier
@@ -12290,6 +12457,7 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
             ${renderLockBadge(r.bootstrap.locked)}
           </div>
           ${renderAddressRow('Position NFT', r.bootstrap.nftMint)}
+          ${r.bootstrap.feeKeyNftMint ? renderAddressRow('Fee Key NFT', r.bootstrap.feeKeyNftMint) : ''}
           ${renderAddressRow('Open TX', r.bootstrap.txIds?.open, 'tx')}
           ${renderAddressRow('Lock TX', r.bootstrap.txIds?.lock, 'tx')}
         </div>`;
@@ -12323,7 +12491,9 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
             ${renderLockBadge(pos.locked)}
           </div>
           ${shareText ? renderFactRow('Share', shareText) : ''}
+          ${Number.isFinite(pos.tickLower) && Number.isFinite(pos.tickUpper) ? renderFactRow('Range', `tick ${pos.tickLower} \u2192 ${pos.tickUpper} (single-sided, above launch)`) : ''}
           ${renderAddressRow('Position NFT', pos.nftMint)}
+          ${pos.feeKeyNftMint ? renderAddressRow('Fee Key NFT', pos.feeKeyNftMint) : ''}
           ${renderAddressRow('Open TX', pos.txIds?.open, 'tx')}
           ${renderAddressRow('Lock TX', pos.txIds?.lock, 'tx')}
           ${recipientBlock}
@@ -12350,6 +12520,7 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
           ${renderFactRow('Range', rangeLabel)}
           ${supplyText ? renderFactRow('Token-supply share', supplyText) : ''}
           ${renderAddressRow('Position NFT', pos.nftMint)}
+          ${pos.feeKeyNftMint ? renderAddressRow('Fee Key NFT', pos.feeKeyNftMint) : ''}
           ${renderAddressRow('Open TX', pos.txIds?.open, 'tx')}
           ${renderAddressRow('Lock TX', pos.txIds?.lock, 'tx')}
         </div>`;
@@ -12374,6 +12545,7 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
           </div>
           ${renderFactRow('Range', depthLabel)}
           ${renderAddressRow('Position NFT', pos.nftMint)}
+          ${pos.feeKeyNftMint ? renderAddressRow('Fee Key NFT', pos.feeKeyNftMint) : ''}
           ${renderAddressRow('Open TX', pos.txIds?.open, 'tx')}
           ${renderAddressRow('Lock TX', pos.txIds?.lock, 'tx')}
         </div>`;
@@ -12392,7 +12564,14 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
         </div>
         <div class="pool-addresses">
           ${renderAddressRow('Pool ID', r.poolId)}
-          ${userPool.quoteToken && userPool.quoteToken !== 'SOL' ? renderAddressRow('Quote token mint', userPool.quoteToken) : ''}
+          ${(() => {
+            // Quote mint: the result records the resolved address; the
+            // config carries the user's raw entry (symbol or address).
+            // Skip the row for native SOL — its mint is implied.
+            const qm = r.quoteAddress || userPool.quoteToken;
+            const isSol = (r.quoteSymbol || userPool.quoteToken || '').toUpperCase() === 'SOL';
+            return (qm && !isSol) ? renderAddressRow('Quote token mint', qm) : '';
+          })()}
           ${renderAddressRow('Create-pool TX', r.txIds?.createPool, 'tx')}
         </div>
         ${(() => {
@@ -12401,8 +12580,9 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
           // below launch + wide/ladder above. Shown when there's a ladder or a
           // (placeable) support wall; omitted for a lone flat band.
           if (typeof computeDepthProfile !== 'function') return '';
-          const poolNotionalUsd = (Number(targetMc) > 0 && Number(userPool.supplyPercent) > 0)
-            ? (Number(userPool.supplyPercent) / 100) * Number(targetMc) : 0;
+          const effSupplyPct = Number(r.supplyPercent ?? userPool.supplyPercent);
+          const poolNotionalUsd = (Number(targetMc) > 0 && effSupplyPct > 0)
+            ? (effSupplyPct / 100) * Number(targetMc) : 0;
           let support = null;
           const sc = userPool.supportConfig;
           if (sc && sc.mode === 'custom' && Number(sc.solValue) > 0) {
@@ -13120,6 +13300,20 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
   <h3 class="subsection">Mint &amp; launch wallet</h3>
   ${renderAddressRow('Token mint', tokenInfo.mint)}
   ${tempWallet?.publicKey ? renderAddressRow('Launch wallet', tempWallet.publicKey) : ''}
+  ${tokenInfo.metadataUri ? renderAddressRow('Metadata URI', tokenInfo.metadataUri) : ''}
+
+  ${(tokenInfo.mintAuthorityRenounced || tokenInfo.freezeAuthorityDisabled || tokenInfo.metadataUpdateAuthorityRevoked) ? `
+  <h3 class="subsection">Contract safety</h3>
+  <!-- Authority-renunciation facts recorded at token creation. Each is
+       independently verifiable on-chain: mint/freeze from the mint account
+       (both authority options unset), metadata immutability from the
+       Metaplex metadata account. Listed so auditors and listing reviewers
+       know exactly what to check. -->
+  ${renderFactRow('Mint authority', tokenInfo.mintAuthorityRenounced ? 'Renounced — supply is permanently capped' : 'NOT renounced')}
+  ${renderFactRow('Freeze authority', tokenInfo.freezeAuthorityDisabled ? 'Disabled — holders can never be frozen' : 'NOT disabled')}
+  ${renderFactRow('Metadata update authority', tokenInfo.metadataUpdateAuthorityRevoked ? 'Revoked — name/symbol/logo are permanent' : 'NOT revoked')}
+  ${renderFactRow('Token program', 'SPL Token (classic) — no Token-2022 extensions')}
+  ` : ''}
 
   <hr class="section-rule">
   <div class="enum-badge">[ 02 ] &nbsp; Tokenomics</div>
@@ -13140,6 +13334,44 @@ function buildLaunchReportHtml({ logoDataUrl = null } = {}) {
   ${poolSections}
 
   ${buildAirdropReportSection()}
+
+  <hr class="section-rule">
+  <div class="enum-badge">[ 05 ] &nbsp; Verification</div>
+  <h2 class="section-title">Auditing this launch</h2>
+  <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a);">
+    Every claim in this report is verifiable on-chain. To audit the launch
+    against the principles Trebuchet enforces:
+  </p>
+  <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a);">
+    <strong>Safe token contract</strong> — fetch the token mint account: the
+    mint and freeze authority options must both be unset (renounced), and the
+    Metaplex metadata account must show the update authority revoked. The
+    mint must be owned by the classic SPL Token program (no Token-2022
+    extensions such as transfer hooks or pausable supply).
+  </p>
+  <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a);">
+    <strong>Locked liquidity</strong> — each position above lists its lock
+    transaction and Fee Key NFT. The lock (Raydium Burn &amp; Earn) moves the
+    position NFT into the lock program's escrow and mints the Fee Key in its
+    place; the on-chain locked-position account links the two. Locked
+    liquidity can never be withdrawn — only its trading fees can be claimed,
+    by whoever holds the Fee Key.
+  </p>
+  <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a);">
+    <strong>Concentrated LP shape</strong> — the tick ranges above define
+    each position's price band; fetch each position account (via its NFT
+    mint) to confirm the recorded bounds and liquidity.
+  </p>
+  <p style="font-size: 13px; color: var(--ink-muted, #6a4f2a);">
+    <strong>Report authenticity</strong> — the permanent copy of this report
+    is published to Arweave tagged with
+    <code>Data-Protocol: trebuchet-launch-report</code> and
+    <code>Mint: &lt;token mint&gt;</code>, uploaded and signed by the launch
+    wallet — the same key that minted the token and created the pools. When
+    querying Arweave for reports about a mint, ignore any item whose owner
+    is not the mint's on-chain creator; only the creator-signed report is
+    genuine.
+  </p>
 
   <footer class="doc-footer">
     <div>
@@ -13279,6 +13511,255 @@ async function downloadLaunchReport() {
 bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
 
 // ===========================================================================
+// Permanent launch report — publish to Arweave
+// ===========================================================================
+//
+// After step 5 completes (all pools created, positions locked) we optionally
+// publish the launch report to Arweave so anyone holding the token mint can
+// find it — without anything being written onto the token's own metadata. Two
+// artifacts go up: the rendered HTML (the same document the Download button
+// produces) and a machine-readable JSON record. The SERVER signs both with the
+// launch wallet, which is why this runs at step 5: that wallet is swept at
+// step 6 and is gone by the time the success modal opens.
+//
+// Opt-out (userPrefs.publishLaunchReport) and any failure are handled by the
+// server; this is fire-and-forget. The result is stashed in _publishedReport
+// for the success modal's renderPublishedReportCard() to display.
+
+function getPublishedReport() {
+  return _publishedReport;
+}
+
+// Compact machine-readable launch record. Mirrors the data the HTML report
+// shows but as structured JSON for querying/verification. Small (well under
+// the Arweave free-tier limit) and never includes secrets.
+function buildLaunchReportData(lp) {
+  const results = (lp && Array.isArray(lp.results)) ? lp.results : [];
+
+  // Map one position record into the audit shape. Every field here exists
+  // to let a third party verify a Trebuchet launch principle on-chain:
+  //   - tickLower/tickUpper prove the position's range (concentrated LP);
+  //   - locked + the lock tx + feeKeyNftMint prove the Burn & Earn lock
+  //     (the position NFT is escrowed by the lock program and the Fee Key
+  //     NFT is minted in its place — the lock account on-chain links the
+  //     two, so a verifier can confirm the liquidity can never be pulled);
+  //   - recipient/transferredTo + the transfer tx prove where each fee
+  //     stream went.
+  // Older journals (pre-feeKeyNftMint / pre-tick-recording) yield nulls for
+  // the missing fields rather than failing.
+  const mapPosition = (pos, type, extra) => ({
+    type,
+    ...(extra || {}),
+    tickLower: Number.isFinite(pos.tickLower) ? pos.tickLower : null,
+    tickUpper: Number.isFinite(pos.tickUpper) ? pos.tickUpper : null,
+    positionNftMint: pos.nftMint || null,
+    feeKeyNftMint: pos.feeKeyNftMint || null,
+    locked: pos.locked === true,
+    openTx: pos.txIds?.open || null,
+    lockTx: pos.txIds?.lock || null,
+    transferTx: pos.txIds?.transfer || null,
+  });
+
+  return {
+    // Version of this inner payload. The Arweave envelope's Schema-Version
+    // tag (owned by launchReportService) describes the envelope; this field
+    // tracks the launch payload itself. v1 was the original thin shape
+    // (mint + pool ids); v2 adds the per-position audit records and the
+    // token-safety facts.
+    dataVersion: 2,
+    launchWallet: tempWallet ? String(tempWallet.publicKey) : null,
+    // Flat token identity fields kept from v1 for any reader already
+    // consuming them; the structured facts live under token.
+    mint: createdTokenInfo?.mint || null,
+    name: createdTokenInfo?.name || null,
+    symbol: createdTokenInfo?.symbol || null,
+    decimals: createdTokenInfo?.decimals ?? null,
+    totalSupply: createdTokenInfo?.totalSupply ?? null,
+    supply: (() => {
+      const allocated = results.reduce(
+        (s, r) => s + (Number.isFinite(r.supplyPercent) ? r.supplyPercent : 0),
+        0,
+      );
+      return {
+        allocatedToPoolsPercent: Number(allocated.toFixed(4)),
+        preallocationPercent: Number(Math.max(0, 100 - allocated).toFixed(4)),
+      };
+    })(),
+    token: {
+      mint: createdTokenInfo?.mint || null,
+      // Trebuchet mints classic SPL tokens; recording the program id lets a
+      // verifier confirm there are no Token-2022 extensions (transfer
+      // hooks, pausable, etc.) without guessing.
+      tokenProgram: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      metadataUri: createdTokenInfo?.metadataUri || null,
+      // Safety facts recorded at creation time. Each is independently
+      // verifiable on-chain: mint/freeze authority from the mint account
+      // (both authority options must be unset), metadata mutability from
+      // the Metaplex metadata account (isMutable false, update authority
+      // revoked). A verifier should treat the on-chain state as truth and
+      // these flags as the launch's claim.
+      authorities: {
+        mintAuthorityRenounced: createdTokenInfo?.mintAuthorityRenounced === true,
+        freezeAuthorityDisabled: createdTokenInfo?.freezeAuthorityDisabled === true,
+        metadataUpdateAuthorityRevoked: createdTokenInfo?.metadataUpdateAuthorityRevoked === true,
+        metadataImmutable: createdTokenInfo?.metadataImmutable === true,
+      },
+    },
+    pools: results.map((r) => ({
+      poolId: r.poolId || null,
+      quote: r.quoteSymbol || null,
+      quoteMint: r.quoteAddress || null,
+      supplyPercent: Number.isFinite(r.supplyPercent) ? r.supplyPercent : null,
+      launchedSide: r.launchedSide || null,
+      // Pool parameters: tickSpacing identifies the CLMM fee-tier config
+      // the pool was created with; initialPrice is the launch price (in
+      // quote per launched token) the pool opened at.
+      tickSpacing: Number.isFinite(r.tickSpacing) ? r.tickSpacing : null,
+      initialPrice: r.initialPrice || null,
+      createPoolTx: r.txIds?.createPool || null,
+      positions: [
+        ...(r.mainPositions || []).map((p) => mapPosition(p, 'main', {
+          sliceIndex: p.sliceIndex ?? null,
+          sharePercent: Number.isFinite(p.sharePercent) ? p.sharePercent : null,
+          recipient: p.recipient || null,
+          transferredTo: p.transferredTo || null,
+        })),
+        ...(r.ladderPositions || []).map((p) => mapPosition(p, 'ladder', {
+          bandIndex: p.bandIndex ?? null,
+        })),
+        ...(r.supportPositions || []).map((p) => mapPosition(p, 'support', {
+          depthPct: Number.isFinite(p.depthPct) ? p.depthPct : null,
+          quoteRaw: p.quoteRaw || null,
+        })),
+        ...(r.bootstrap ? [mapPosition(r.bootstrap, 'bootstrap')] : []),
+      ],
+    })),
+  };
+}
+
+// Kick off (or retry) the Arweave publish. Reads shared launch state
+// (createdTokenInfo, lpResult, tempWallet). Never throws; updates
+// _publishedReport and refreshes the success-modal card if it's open.
+// Is launch-report publishing currently enabled? Reads the in-context step-5
+// toggle if present, else the Settings toggle; both reflect the same pref.
+// Defaults to on if neither is in the DOM yet.
+function isLaunchReportEnabled() {
+  const t = document.getElementById('configPublishReportToggle')
+    || document.getElementById('lpPublishReportToggle')
+    || document.getElementById('publishReportToggle');
+  return t ? t.checked : true;
+}
+
+// Step-5 status line (#lpReportStatus, under the Create Pools button). Shows an
+// idle hint before completion, then live publish status. Kept in sync with the
+// success-modal card by refreshLaunchReportUi().
+function renderLaunchReportStep5Status() {
+  const el = document.getElementById('lpReportStatus');
+  if (!el) return;
+  el.innerHTML = '';
+  const rep = _publishedReport;
+
+  if (!rep) {
+    el.textContent = isLaunchReportEnabled()
+      ? 'A permanent launch report will be published to Arweave when this launch completes.'
+      : 'Launch report publishing is off — your launch stays private.';
+    return;
+  }
+  if (rep.status === 'skipped') {
+    el.textContent = 'Launch report publishing is off — your launch stays private.';
+    return;
+  }
+  if (rep.status === 'pending') {
+    el.textContent = 'Publishing the permanent launch report to Arweave…';
+    return;
+  }
+  if (rep.status === 'done') {
+    el.append('Permanent launch report published — ');
+    const a = document.createElement('a');
+    a.href = rep.htmlUri || rep.jsonUri || '#';
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = 'view on Arweave';
+    el.append(a);
+    return;
+  }
+  // failed
+  el.append('Couldn’t publish the launch report. ');
+  const retry = document.createElement('a');
+  retry.href = '#';
+  retry.textContent = 'Retry';
+  retry.addEventListener('click', (e) => { e.preventDefault(); publishLaunchReportToArweave(); });
+  el.append(retry);
+  el.append(' — the launch itself is unaffected.');
+}
+
+// Refresh every launch-report surface from the current _publishedReport state:
+// the step-5 status line and the success-modal card. Each renderer no-ops if
+// its DOM isn't present, so this is safe to call any time.
+function refreshLaunchReportUi() {
+  try { renderLaunchReportStep5Status(); } catch (e) { console.warn('step-5 report status render failed', e); }
+  try { renderPublishedReportCard(); } catch (e) { /* modal may not be open */ }
+}
+
+async function publishLaunchReportToArweave(lp) {
+  const data = lp || lpResult;
+  const mint = createdTokenInfo?.mint;
+  if (!mint) return; // nothing to key discovery off — skip silently
+
+  // Idempotency: skip if a publish is already in flight or has succeeded, so a
+  // second completion trigger can't double-publish. A FAILED publish can still
+  // be retried — status would be 'failed' here, which isn't caught.
+  if (_publishedReport && (_publishedReport.status === 'pending' || _publishedReport.status === 'done')) {
+    return;
+  }
+  // Opt-out: respect the launch-report toggle (same pref as Settings). When
+  // off, record a 'skipped' state and don't publish.
+  if (!isLaunchReportEnabled()) {
+    _publishedReport = { status: 'skipped', reason: 'opted-out' };
+    refreshLaunchReportUi();
+    return;
+  }
+  _publishedReport = { status: 'pending' };
+  refreshLaunchReportUi();
+
+  try {
+    const reportHtml = await _getReportHtml();
+    const launchData = buildLaunchReportData(data);
+    const poolIds = launchData.pools.map((p) => p.poolId).filter(Boolean);
+
+    const resp = await fetch('/api/publish-launch-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...buildLaunchSignerRequestFields(),
+        mint,
+        poolIds,
+        reportHtml,
+        launchData,
+      }),
+    });
+    const out = await resp.json();
+
+    if (out && out.skipped) {
+      _publishedReport = { status: 'skipped', reason: out.reason };
+    } else if (out && out.failed) {
+      _publishedReport = { status: 'failed', error: out.error };
+      log(`Launch report publish failed: ${out.error || 'unknown error'}`, 'warning');
+    } else if (out && out.success) {
+      _publishedReport = { status: 'done', jsonUri: out.jsonUri, htmlUri: out.htmlUri };
+      log('Permanent launch report published to Arweave', 'success');
+    } else {
+      _publishedReport = { status: 'failed', error: 'unexpected response' };
+    }
+  } catch (err) {
+    _publishedReport = { status: 'failed', error: err?.message || String(err) };
+    console.error('publishLaunchReportToArweave failed:', err);
+  }
+
+  refreshLaunchReportUi();
+}
+
+// ===========================================================================
 // Inline Launch Report Preview
 // ===========================================================================
 //
@@ -13290,6 +13771,16 @@ bind('downloadReportBtnStep6', 'click', downloadLaunchReport);
 // Memoized report HTML — build once per launch, reuse across all three
 // containers. Reset by the lpDoneInfo/transferResult hide paths.
 let _cachedReportHtml = null;
+// Result of the Arweave publish kicked off during step 6's transfer flow,
+// after the airdrop and before the sweep (see publishLaunchReportToArweave
+// and runTransfer's step 6b). Shape:
+//   { status: 'pending' | 'done' | 'failed' | 'skipped', jsonUri?, htmlUri?, error?, reason? }
+// Read by the success modal's renderPublishedReportCard(). null = not started.
+// Reset per-launch at the start of an LP run (see lp-execution.js), NOT here.
+// _resetCachedReport() runs mid-transfer to rebuild the HTML with airdrop
+// results — wiping the published record there would erase the step-5 publish
+// before the success modal can show it.
+let _publishedReport = null;
 function _resetCachedReport() {
   _cachedReportHtml = null;
   // Also clear every preview iframe's srcdoc. renderLaunchReportPreview
@@ -13310,8 +13801,10 @@ function _resetCachedReport() {
 async function _getReportHtml() {
   if (_cachedReportHtml) return _cachedReportHtml;
   try {
-    const logoDataUrl = await readLogoAsDataUrl();
-    _cachedReportHtml = buildLaunchReportHtml({ logoDataUrl });
+    const logoSrc = (createdTokenInfo && createdTokenInfo.imageUri)
+      ? createdTokenInfo.imageUri
+      : await readLogoAsDataUrl();
+    _cachedReportHtml = buildLaunchReportHtml({ logoDataUrl: logoSrc });
   } catch (e) {
     console.error('Failed to build report HTML for preview:', e);
     _cachedReportHtml = '<html><body><p>Failed to generate preview.</p></body></html>';
@@ -13331,8 +13824,13 @@ async function renderLaunchReportPreview(prefix) {
 
   if (!container || !toggleBtn || !body || !iframe) return;
 
-  // Reveal the preview container
+  // Reveal the preview container AND the toggle button. The step-6 and
+  // modal toggles are standalone buttons outside the container (next to /
+  // above it), initially hidden because the report doesn't exist until the
+  // launch reaches this point; for step 5 the un-hide is a no-op since that
+  // toggle lives in the action row shown by setLpDoneVisible().
   container.classList.remove('hidden');
+  toggleBtn.classList.remove('hidden');
 
   // Load the report into the iframe (only if not already loaded)
   if (!iframe.srcdoc) {
@@ -13450,7 +13948,6 @@ function _legacyCopyReport(text, count, mode) {
 
 
 
-
 // ===========================================================================
 // Launch Success Modal
 // ---------------------------------------------------------------------------
@@ -13462,22 +13959,72 @@ function _legacyCopyReport(text, count, mode) {
 // Enhanced Info, set up a community.
 //
 // Coin lifecycle:
-//   - coinRenderer is a page-wide singleton (one WebGL context at a time).
-//     destroyCoinPreview() ran when the user left step 2, so by the time
-//     this modal opens the renderer is inactive.
-//   - showLaunchSuccessModal() calls coinRenderer.init() on the modal's
-//     mount and then setFaces() with the user's logo (data URL) and the
-//     largest pool's quote-token logo. Same data-URL trick the launch
-//     report uses, so we don't need a CORS proxy for the front face and
-//     the back face goes through the existing /api/proxy-image route
+//   - coinRenderer is a page-wide singleton (one WebGL context at a time),
+//     and the token preview card it lives in TRAVELS with the active step
+//     (steps 2-6, see relocateTokenPreview). So when this modal opens at
+//     the end of step 6, the renderer is typically ALIVE and owned by the
+//     step-6 preview card — the modal borrows it.
+//   - showLaunchSuccessModal() destroys the live context (one context at a
+//     time) and init()s on the modal's own mount, then setFaces() with the
+//     user's logo (data URL) and the largest pool's quote-token logo. Same
+//     data-URL trick the launch report uses, so we don't need a CORS proxy
+//     for the front face; the back face goes through /api/proxy-image
 //     (via proxiedImageUrl) like the step-2 preview does.
-//   - hideLaunchSuccessModal() destroys the renderer to free the WebGL
-//     context. Browsers cap live contexts; we don't want to keep one
-//     alive in a hidden modal.
+//   - hideLaunchSuccessModal() destroys the modal's context AND HANDS THE
+//     COIN BACK to the step preview card via renderTokenPreview() — the
+//     card is still on screen behind the modal, and without the hand-back
+//     its coin stays gone after dismissal.
 // ===========================================================================
 
 // Show the launch success modal. Populates token identity, the summary
 // line, and (re)initialises the 3D coin in the modal's mount.
+// Reflect the permanent-report publish state in the success modal. The publish
+// is kicked off during step 6, between airdrop and sweep
+// (publishLaunchReportToArweave), and may still be in
+// flight when this modal opens, so this is called on open and again when the
+// publish settles. Reads getPublishedReport() from launch-report.js.
+function renderPublishedReportCard() {
+  const el = document.getElementById('launchSuccessReportLink');
+  if (!el) return;
+  const title = document.getElementById('launchSuccessReportLinkTitle');
+  const desc = document.getElementById('launchSuccessReportLinkDesc');
+  const icon = document.getElementById('launchSuccessReportLinkIcon');
+  const rep = (typeof getPublishedReport === 'function') ? getPublishedReport() : null;
+
+  // Hidden when publishing is off, was skipped, or hasn't started.
+  if (!rep || rep.status === 'skipped') {
+    el.classList.add('hidden');
+    el.onclick = null;
+    return;
+  }
+  el.classList.remove('hidden');
+
+  if (rep.status === 'pending') {
+    if (icon) icon.className = 'fas fa-spinner fa-spin';
+    if (title) title.textContent = 'Publishing permanent report…';
+    if (desc) desc.textContent = 'Writing a permanent copy to Arweave — this finishes on its own.';
+    el.disabled = true;
+    el.onclick = null;
+  } else if (rep.status === 'done') {
+    if (icon) icon.className = 'fas fa-globe';
+    if (title) title.textContent = 'View the permanent report (Arweave)';
+    if (desc) desc.textContent = 'A permanent, public copy of this launch, findable from the token address.';
+    el.disabled = false;
+    el.onclick = () => {
+      try { window.open(rep.htmlUri || rep.jsonUri, '_blank', 'noopener,noreferrer'); }
+      catch (err) { console.warn('Failed to open report URL:', err); }
+    };
+  } else {
+    if (icon) icon.className = 'fas fa-rotate-right';
+    if (title) title.textContent = "Report didn't publish — retry";
+    if (desc) desc.textContent = 'Publishing to Arweave failed. The launch itself is unaffected; you can try again.';
+    el.disabled = false;
+    el.onclick = () => {
+      if (typeof publishLaunchReportToArweave === 'function') publishLaunchReportToArweave();
+    };
+  }
+}
+
 async function showLaunchSuccessModal() {
   const modal = document.getElementById('launchSuccessModal');
   if (!modal) return;
@@ -13523,6 +14070,11 @@ async function showLaunchSuccessModal() {
     if (reportBtn) reportBtn.addEventListener('click', () => downloadLaunchReport());
     modal.dataset.closeHandlersWired = 'true';
   }
+
+  // Reflect the permanent-report publish state (kicked off at step 5). Safe to
+  // call on every open; re-invoked by publishLaunchReportToArweave when the
+  // async publish settles.
+  renderPublishedReportCard();
 
   // ---- Populate identity & summary ----
   // Prefer the resolved on-chain info (createdTokenInfo, set by
@@ -13611,11 +14163,13 @@ async function showLaunchSuccessModal() {
     const mount = document.getElementById('launchSuccessCoin');
     if (mount) {
       try {
-        // Destroy any prior coin context first. By construction the coin
-        // should already be down (destroyCoinPreview ran when leaving
-        // step 2), but if the user reopens the modal via the step-6
-        // "View launch summary" button we need to tear down the modal's
-        // own coin from the previous open before init() will succeed.
+        // Destroy any prior coin context first — one WebGL context at a
+        // time. This is normally the step-6 preview card's LIVE coin
+        // (the travelling preview card owns the renderer through steps
+        // 2-6); on a re-open via "View launch summary" it's the modal's
+        // own coin from the previous open. Either way init() needs the
+        // singleton free. hideLaunchSuccessModal gives the coin back to
+        // the preview card on close.
         if (window.coinRenderer.isActive()) {
           window.coinRenderer.destroy();
         }
@@ -13676,6 +14230,23 @@ function hideLaunchSuccessModal() {
   // async showLaunchSuccessModal flow on re-open).
   const mount = document.getElementById('launchSuccessCoin');
   if (mount) mount.classList.remove('coin-live');
+
+  // Hand the coin back to the step preview card. The modal borrowed the
+  // singleton renderer from the travelling preview card (visible behind
+  // the modal on step 6); without this the card's coin area stays empty
+  // after dismissal — its mount still carries coin-live (hiding the flat
+  // fallback) but holds no canvas. renderTokenPreview() re-renders the
+  // card and its updateCoinPreview() call re-init()s the renderer into
+  // the card's mount, exactly like a step relocation does. Guarded: on
+  // any path where the preview card isn't rendered (coinCanRun false,
+  // mount missing), updateCoinPreview is a safe no-op.
+  if (typeof renderTokenPreview === 'function') {
+    try {
+      renderTokenPreview();
+    } catch (e) {
+      console.warn('Launch success modal: failed to restore preview coin:', e);
+    }
+  }
 }
 
 // ---- Modal close handlers wired lazily in showLaunchSuccessModal() ----
@@ -14088,7 +14659,7 @@ function renderFundingRequirements() {
     acquireWrap.style.display = autoPlan.length > 0 ? '' : 'none';
   }
 
-  attachRowLogoFallbacks(document.getElementById('step3') || document);
+  attachRowLogoFallbacks(document.getElementById('step3-card') || document);
   renderFundingBreakdown();
 }
 
@@ -14105,7 +14676,7 @@ function renderFundingBreakdown() {
     const isBuffer = /safety buffer/i.test(item.label);
     html += `<tr${isBuffer ? ' class="has-text-grey"' : ''}>
       <td>${escapeHtml(item.label)}</td>
-      <td class="has-text-right is-family-monospace">${item.sol.toFixed(4)} SOL</td>
+      <td class="has-text-right is-family-monospace">${item.sol > 0 && item.sol < 0.0001 ? '< 0.0001' : item.sol.toFixed(4)} SOL</td>
     </tr>`;
   }
   for (const item of fundingRequirement.quoteBreakdown || []) {
@@ -14333,6 +14904,27 @@ async function pollBalances() {
     });
 
     document.getElementById('continueToTokenBtn').disabled = !allMet;
+
+    // Next-action hint: say WHY continue is disabled and what to do
+    // next. A disabled button with no stated reason is a dead end — the
+    // only prior cue was the small per-row status text, which is easy to
+    // miss (especially "Ready to acquire", which needs a button click
+    // the user may not connect to the disabled continue).
+    const nextHint = document.getElementById('fundingNextHint');
+    if (nextHint) {
+      if (allMet) {
+        nextHint.classList.add('hidden');
+      } else if (!solMet) {
+        nextHint.textContent = 'Waiting for SOL — send the recommended amount to the launch wallet above, then the checks update automatically.';
+        nextHint.classList.remove('hidden');
+      } else if (anyAutoSwapPending) {
+        nextHint.textContent = 'SOL funded ✓ — click “Acquire quote tokens” to swap for the remaining pool tokens, then Continue unlocks.';
+        nextHint.classList.remove('hidden');
+      } else {
+        nextHint.textContent = 'Waiting for the remaining token balances to arrive — the checks above update automatically.';
+        nextHint.classList.remove('hidden');
+      }
+    }
 
     // Acquire-quote-tokens button: enabled when SOL is funded AND
     // there are still pending auto-swaps. Disabled-but-visible when
@@ -14672,7 +15264,16 @@ async function runAcquireFlow(planSubset, btn) {
       }),
     });
     if (!resp.ok) {
-      log(`Acquire failed: HTTP ${resp.status}`, 'danger');
+      // Pull the structured body if there is one — a 409 OP_IN_FLIGHT
+      // means another launch operation (a still-running acquire, or a
+      // launch in progress) holds the wallet; the server's message
+      // explains what to do. Anything else surfaces its error text.
+      const body = await resp.json().catch(() => ({}));
+      if (resp.status === 409 && body.code === 'OP_IN_FLIGHT') {
+        log(body.error, 'warning');
+      } else {
+        log(`Acquire failed: ${body.error || `HTTP ${resp.status}`}`, 'danger');
+      }
       return;
     }
     const { jobId } = await resp.json();
@@ -15142,6 +15743,13 @@ bind('createTokenBtn', 'click', async () => {
 
       const resp = await fetch('/api/create-token', { method: 'POST', body: formData });
       const data = await resp.json();
+      if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
+        // A prior token creation (or other launch operation) is still
+        // running for this wallet — likely a double-click or a UI reload
+        // mid-creation. Not a failure; just wait for it to finish.
+        log(data.error, 'warning');
+        return;
+      }
       if (!data.success) throw new Error(data.error);
 
       createdTokenInfo = {
@@ -15150,6 +15758,17 @@ bind('createTokenBtn', 'click', async () => {
         totalSupply: totalSupplyRaw,
         name: data.name || document.getElementById('tokenName').value.trim(),
         symbol: data.symbol || document.getElementById('tokenSymbol').value.trim(),
+        // Token-safety facts for the launch report / Arweave audit record.
+        // The create-token endpoint spreads createTokenWithMetaplex's result
+        // into the response, so these ride along on the same payload. They
+        // let the permanent report assert (and a verifier confirm against
+        // the mint account) that supply, freezing, and metadata are locked.
+        metadataUri: data.metadataUri || null,
+        imageUri: data.imageUri || null,
+        mintAuthorityRenounced: data.mintAuthorityRenounced === true,
+        freezeAuthorityDisabled: data.freezeAuthorityDisabled === true,
+        metadataUpdateAuthorityRevoked: data.metadataUpdateAuthorityRevoked === true,
+        metadataImmutable: data.metadataImmutable === true,
       };
 
       document.getElementById('tokenMintAddress').textContent = data.tokenMint;
@@ -15587,12 +16206,15 @@ bind('createLpBtn', 'click', async () => {
       log(`Starting pool creation for ${pools.length} pool(s)...`);
       addProgressIntro();
       buildPhaseProgressTree(pools, lockPositions);
+      // Fresh launch: clear any published-report record from a prior run so the
+      // step-5 publish fires (its idempotency guard skips 'pending'/'done') and
+      // the success modal shows THIS launch's report rather than a stale one.
+      _publishedReport = null;
 
       // Start the LP progress poll just before the fetch so per-step
       // events translate to row checkmarks in real time (instead of all
-      // rows flipping at once when the response lands). Currently only
-      // demo mode emits these events; real mode silently no-ops because
-      // the server-side tracker is never populated.
+      // rows flipping at once when the response lands). Both demo and
+      // real launches feed the server-side tracker now.
       if (tempWallet && tempWallet.publicKey) {
         startLpProgressPoll(tempWallet.publicKey);
       }
@@ -15609,6 +16231,17 @@ bind('createLpBtn', 'click', async () => {
             targetMarketCapUsd: targetMc,
             allocations,
             lockPositions,
+            // Airdrop plan (or absent when none configured). The server
+            // doesn't act on it here — it journals it under
+            // poolPlan.airdropPlan so a launch resumed after an app
+            // restart still carries the configured airdrop into the
+            // final transfer. Without this, the airdrop config would be
+            // lost with the frontend's memory and the resumed transfer
+            // would silently skip it.
+            ...((() => {
+              const plan = buildAirdropTransferPayload();
+              return plan ? { airdrop: plan } : {};
+            })()),
           }),
         });
       } finally {
@@ -15636,6 +16269,26 @@ bind('createLpBtn', 'click', async () => {
         throw new Error(`Unexpected response: ${parseErr.message}`);
       }
 
+      if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
+        // Another launch operation is already running for this wallet —
+        // usually a prior create-lp that survived a UI reload (the server
+        // runs in-process with Electron main, so the launch keeps going
+        // even if the page reloads). Do NOT render this as a launch
+        // failure; the launch isn't failed, it's running. Reattach the
+        // progress poll so the user can watch it, and keep them away
+        // from the retry buttons.
+        log(data.error, 'warning');
+        log(
+          'Reattached to the running operation — progress will update ' +
+          'below as it proceeds. Do not close the app.',
+          'warning',
+        );
+        if (tempWallet && tempWallet.publicKey) {
+          startLpProgressPoll(tempWallet.publicKey);
+        }
+        return;
+      }
+
       if (data.success) {
         lpResult = data;
         data.results.forEach((r, i) => markPoolDone(i, r));
@@ -15644,6 +16297,13 @@ bind('createLpBtn', 'click', async () => {
         setLpDoneVisible(true);
         document.getElementById('lpDoneSummary').innerHTML = buildLpDoneSummary(data.results);
         renderLaunchReportPreview('step5');
+        // NOTE: the permanent launch report is NOT published here anymore.
+        // It publishes during step 6 (runTransfer), after the airdrop and
+        // before the sweep — at that point every on-chain token-setup
+        // transaction has landed, so the permanent record includes the
+        // actual airdrop delivery results instead of a forever-"pending"
+        // section. The step-5 preview below still shows the report;
+        // pending sections render as pending until then.
         // Hide the Create Pools button — re-clicking would attempt to create
         // duplicate pools for the same token, which is wasteful and confusing.
         document.getElementById('createLpBtn').classList.add('hidden');
@@ -16641,6 +17301,23 @@ bind('retryBootstrapsBtn', 'click', async () => {
         throw new Error(`Unexpected response: ${parseErr.message}`);
       }
 
+      if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
+        // Another launch operation (likely the original create-lp, or a
+        // previous resume click) is still running for this wallet. The
+        // resume was rejected to prevent two orchestrators racing over
+        // the same positions. Reattach the progress poll and wait.
+        log(data.error, 'warning');
+        log(
+          'Reattached to the running operation — wait for it to finish ' +
+          'before resuming. Do not close the app.',
+          'warning',
+        );
+        if (tempWallet && tempWallet.publicKey) {
+          startLpProgressPoll(tempWallet.publicKey);
+        }
+        return;
+      }
+
       if (data.success) {
         // Full success — every pool now has main positions + bootstrap.
         // Replace lpResult with the canonical full result so downstream
@@ -17557,6 +18234,26 @@ function renderTokenSweepBreakdown(tokenSweep) {
   container.innerHTML = rows;
 }
 
+// Log an airdrop outcome: success summary first (so the user sees what
+// worked), then per-recipient failures with their reason. Capped at 5
+// failures in the log to avoid spam — the result panel shows the full list.
+function logAirdropOutcome(result) {
+  if (!result) return;
+  const delivered = (result.transferred || []).length;
+  if (delivered > 0) {
+    log(`Airdrop delivered to ${delivered} recipient${delivered === 1 ? '' : 's'}`, 'success');
+  }
+  const failed = result.failed || [];
+  const failedToShow = failed.slice(0, 5);
+  for (const f of failedToShow) {
+    const wShort = f.wallet ? `${f.wallet.slice(0, 4)}…${f.wallet.slice(-4)}` : 'unknown';
+    log(`Airdrop failed (${wShort}): ${f.error}`, 'warning');
+  }
+  if (failed.length > failedToShow.length) {
+    log(`…and ${failed.length - failedToShow.length} more airdrop failure${failed.length - failedToShow.length === 1 ? '' : 's'}. See the panel above for details.`, 'warning');
+  }
+}
+
 async function runTransfer() {
   const btn = document.getElementById('transferAssetsBtn');
   const dest = document.getElementById('destinationWallet').value.trim();
@@ -17585,39 +18282,117 @@ async function runTransfer() {
           + `close the app until it completes.`,
         );
       }
-      // Kick off the live progress poll BEFORE the fetch so the user
-      // sees the "0 / N" initial frame the moment the request goes out.
-      // Stops in the finally block below regardless of fetch outcome.
-      if (airdropPayload && tempWallet && tempWallet.publicKey) {
+      // ---- Step 6a: airdrop (when configured) --------------------------
+      // Runs as its own server call BEFORE the report publish and the
+      // sweep. The airdrop is the last on-chain token-setup work, so once
+      // it lands the permanent launch report can be written with the real
+      // delivery results instead of a forever-"pending" section.
+      // /api/run-airdrop is per-recipient idempotent (it skips wallets the
+      // server's journal already records as delivered), so a transfer
+      // re-run after a partial failure can never double-pay.
+      if (airdropPayload) {
+        // Kick off the live progress poll BEFORE the fetch so the user
+        // sees the "0 / N" initial frame the moment the request goes out.
         startAirdropProgressPoll(
           tempWallet.publicKey,
           airdropPayload.recipients.length,
         );
+        try {
+          let aResp;
+          try {
+            aResp = await fetch('/api/run-airdrop', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                ...buildLaunchSignerRequestFields(),
+                tokenMint: airdropPayload.tokenMint,
+                tokenDecimals: airdropPayload.tokenDecimals,
+                isToken2022: !!airdropPayload.isToken2022,
+                recipients: airdropPayload.recipients,
+              }),
+            });
+          } finally {
+            stopAirdropProgressPoll();
+            hideAirdropProgressPanel();
+          }
+          const aData = await aResp.json();
+          if (aResp.status === 409) {
+            // Another airdrop is already in flight for this wallet —
+            // don't sweep out from under it. Not a failure: wait, retry.
+            log(aData.error || 'Another airdrop is already running for this wallet.', 'warning');
+            return;
+          }
+          if (!aData.success) {
+            throw new Error(aData.error || `Airdrop failed with HTTP ${aResp.status}`);
+          }
+          // The server returns its merged journal record (prior delivered +
+          // this run) — replace wholesale.
+          lastAirdropResult = {
+            transferred: aData.airdrop?.transferred || [],
+            failed: aData.airdrop?.failed || [],
+          };
+        } catch (e) {
+          // The airdrop endpoint failed outright (network blip, server
+          // error before per-recipient handling). Mirror the server's
+          // crash shape — every recipient marked failed — and continue
+          // with the publish + sweep: the un-airdropped tokens still
+          // reach the destination wallet, and the journal dedup means a
+          // later retry can't double-pay anyone whose tx did land.
+          log(`Airdrop step failed: ${e.message} — continuing with the sweep. Use the retry button afterwards.`, 'warning');
+          lastAirdropResult = {
+            transferred: [],
+            failed: airdropPayload.recipients.map((r) => ({
+              wallet: r.wallet,
+              tokens: r.tokens,
+              amountRaw: null,
+              error: `Airdrop step failed: ${e.message}`,
+            })),
+          };
+        }
+        renderAirdropTransferResult(lastAirdropResult);
+        hideAirdropPreTransferSummary();
+        logAirdropOutcome(lastAirdropResult);
       }
-      let resp;
-      try {
-        resp = await fetch('/api/transfer-assets', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...buildLaunchSignerRequestFields(),
-            destinationWallet: dest,
-            tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
-            // airdrop is optional — present only when applicable, omitted
-            // otherwise so we don't send an empty payload for no-airdrop launches.
-            ...(airdropPayload ? { airdrop: airdropPayload } : {}),
-          }),
-        });
-      } finally {
-        // Stop polling and hide the live panel whether the fetch
-        // succeeded, failed, or threw — the renderAirdropTransferResult
-        // below shows the final summary on success, and the catch
-        // branch surfaces errors. Either way the progress panel is
-        // stale once we leave this block.
-        stopAirdropProgressPoll();
-        hideAirdropProgressPanel();
+
+      // ---- Step 6b: publish the permanent launch report ----------------
+      // Every on-chain token-setup transaction has landed (pools, locks,
+      // transfers, airdrop). Publish to Arweave NOW, before the sweep —
+      // the report carries the airdrop outcome, and the only on-chain
+      // work left afterwards is the sweep itself. Awaited because the
+      // ordering is the point; a publish failure is logged inside and
+      // never blocks the sweep (the success-modal card offers a retry,
+      // and the launch wallet's key remains available server-side).
+      _resetCachedReport();
+      if (typeof _publishedReport === 'undefined' || !_publishedReport
+          || (_publishedReport.status !== 'done' && _publishedReport.status !== 'skipped')) {
+        if (typeof isLaunchReportEnabled !== 'function' || isLaunchReportEnabled()) {
+          log('Publishing the permanent launch report to Arweave…');
+        }
       }
+      await publishLaunchReportToArweave();
+
+      // ---- Step 6c: sweep everything to the destination ----------------
+      const resp = await fetch('/api/transfer-assets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...buildLaunchSignerRequestFields(),
+          destinationWallet: dest,
+          tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
+          // No airdrop payload: it already ran in step 6a. The server
+          // keeps its in-process airdrop branch as a safety net for old
+          // clients, but this client never exercises it.
+        }),
+      });
       const data = await resp.json();
+      if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
+        // Another launch operation is still running for this wallet —
+        // e.g. pool creation that survived a UI reload, or a previous
+        // transfer click. Sweeping now would pull assets out from under
+        // it, so the server refused. Not a failure: wait and retry.
+        log(data.error, 'warning');
+        return;
+      }
       if (!data.success) throw new Error(data.error);
 
       document.getElementById('transferResult').classList.remove('hidden');
@@ -17631,23 +18406,21 @@ async function runTransfer() {
       // moved (the answer to "did my held-back supply get swept?").
       renderTokenSweepBreakdown(data.tokenSweep);
 
-      // Persist the airdrop result module-side so the retry button has the
-      // failed-recipients list and the launch report can include an Airdrop
-      // section. data.airdrop is null when no airdrop ran (no payload sent).
-      // MUST happen BEFORE renderLaunchReportPreview('step6') below, because
-      // buildAirdropReportSection() reads from lastAirdropResult — calling
-      // the preview first would render the report without the airdrop block
-      // and (worse) cache that stale HTML in _cachedReportHtml.
-      lastAirdropResult = data.airdrop || null;
-      renderAirdropTransferResult(lastAirdropResult);
+      // The airdrop already ran in step 6a and lastAirdropResult holds the
+      // merged record. data.airdrop is null in the new flow (no payload
+      // sent with the sweep); only overwrite if the server's in-process
+      // safety-net branch somehow ran (old-client compatibility).
+      if (data.airdrop) {
+        lastAirdropResult = data.airdrop;
+        renderAirdropTransferResult(lastAirdropResult);
+      }
       // Pre-transfer summary is no longer relevant — the airdrop has
       // either run (result panel above takes over) or was bypassed.
       hideAirdropPreTransferSummary();
 
-      // Invalidate any cached report from step 5's preview — that build
-      // ran when lastAirdropResult was still null and is now stale.
-      // Fresh build below picks up the airdrop section.
-      _resetCachedReport();
+      // Step 6b already rebuilt the cached report (with the airdrop
+      // section) for the Arweave publish; this render just shows it in
+      // the step-6 preview container.
       renderLaunchReportPreview('step6');
 
       // Detect partial-failure modes. The server's transfer endpoint can
@@ -17680,7 +18453,9 @@ async function runTransfer() {
       // user can come back later with the secret key and try again.
       const tokenErrors = data.tokenSweep?.errors || [];
       const nftErrors = data.nftSweep?.errors || [];
-      const airdropFailed = data.airdrop?.failed || [];
+      // From step 6a's run (or the journal-restored record on a resumed
+      // session) — the sweep response no longer carries the airdrop.
+      const airdropFailed = lastAirdropResult?.failed || [];
       const hasPartialFailure =
         data.solSweepError
         || tokenErrors.length > 0
@@ -17701,23 +18476,6 @@ async function runTransfer() {
       }
       for (const e of nftErrors) {
         log(`NFT sweep error (${e.mint?.slice(0, 8) || 'unknown'}…): ${e.error}`, 'warning');
-      }
-      // Airdrop logging: success summary first (so the user sees what worked),
-      // then per-recipient failures with their reason. Capped at 5 failures
-      // in the log to avoid spam — the result panel below shows the full list.
-      if (data.airdrop) {
-        const delivered = (data.airdrop.transferred || []).length;
-        if (delivered > 0) {
-          log(`Airdrop delivered to ${delivered} recipient${delivered === 1 ? '' : 's'}`, 'success');
-        }
-        const failedToShow = airdropFailed.slice(0, 5);
-        for (const f of failedToShow) {
-          const wShort = f.wallet ? `${f.wallet.slice(0, 4)}…${f.wallet.slice(-4)}` : 'unknown';
-          log(`Airdrop failed (${wShort}): ${f.error}`, 'warning');
-        }
-        if (airdropFailed.length > failedToShow.length) {
-          log(`…and ${airdropFailed.length - failedToShow.length} more airdrop failure${airdropFailed.length - failedToShow.length === 1 ? '' : 's'}. See the panel above for details.`, 'warning');
-        }
       }
 
       // Hide the Transfer button — flow is complete. Re-clicking would attempt
@@ -17956,17 +18714,19 @@ async function runAirdropRetry() {
     }
     const data = await resp.json();
     if (!data.success) throw new Error(data.error);
-    const result = data.airdrop;
-    // Merge: newly-delivered append to transferred; still-failed
-    // replaces failed (every entry in the response's failed list
-    // failed THIS attempt too).
+    // The server returns the MERGED per-recipient record (prior delivered +
+    // this attempt's outcome, deduped against its journal) — replace our
+    // copy wholesale rather than appending, which would double-count the
+    // previously-delivered rows. Compute the log lines as deltas against
+    // what we held before the call.
+    const priorDeliveredCount = (lastAirdropResult.transferred || []).length;
     lastAirdropResult = {
-      transferred: [...(lastAirdropResult.transferred || []), ...(result.transferred || [])],
-      failed: result.failed || [],
+      transferred: data.airdrop?.transferred || [],
+      failed: data.airdrop?.failed || [],
     };
     renderAirdropTransferResult(lastAirdropResult);
-    const delivered = (result.transferred || []).length;
-    const stillFailed = (result.failed || []).length;
+    const delivered = Math.max(0, lastAirdropResult.transferred.length - priorDeliveredCount);
+    const stillFailed = lastAirdropResult.failed.length;
     if (delivered > 0) {
       log(`Retry: ${delivered} additional recipient${delivered === 1 ? '' : 's'} delivered`, 'success');
     }
@@ -18244,8 +19004,45 @@ function prepareRecoveredSessionFromJournal(journal, wallet) {
     totalSupply: journal.token.totalSupply || journal.poolPlan?.tokenTotalSupply,
     name: journal.token.name || '',
     symbol: journal.token.symbol || 'TOKEN',
+    // Token-safety facts restored from the journal (recorded there at
+    // token-creation time) so a resumed launch still publishes a complete
+    // audit record to Arweave.
+    metadataUri: journal.token.metadataUri || null,
+    imageUri: journal.token.imageUri || null,
+    mintAuthorityRenounced: journal.token.mintAuthorityRenounced === true,
+    freezeAuthorityDisabled: journal.token.freezeAuthorityDisabled === true,
+    metadataUpdateAuthorityRevoked: journal.token.metadataUpdateAuthorityRevoked === true,
+    metadataImmutable: journal.token.metadataImmutable === true,
   };
   lpResult = { results: journalPriorResults(journal) };
+
+  // Airdrop state. The journal carries two complementary records:
+  //   - journal.airdrop: the per-recipient result of any airdrop that
+  //     already ran (written by transfer-assets / retry-airdrop). Restoring
+  //     it brings back the report's delivered/failed section and the
+  //     retry button after an app restart.
+  //   - journal.poolPlan.airdropPlan: the configured plan, journaled at
+  //     create-lp. Restoring it lets a resumed transfer still execute the
+  //     airdrop even though the simple-mode config it was built from
+  //     didn't survive the restart. The server filters out recipients its
+  //     journal already records as delivered, so restoring the full plan
+  //     is safe regardless of how far the airdrop got.
+  lastAirdropResult = (journal.airdrop && typeof journal.airdrop === 'object')
+    ? journal.airdrop
+    : null;
+  restoredAirdropPayload = journal.poolPlan?.airdropPlan || null;
+  // Publish state: if the permanent report already went to Arweave in a
+  // previous session, restore the recorded URIs so the UI shows the link
+  // and runTransfer's publish step becomes a no-op (the server is also
+  // idempotent on this, so the restore is belt-and-braces for the UI).
+  if (journal.reportPublish && journal.reportPublish.jsonUri) {
+    _publishedReport = {
+      status: 'done',
+      jsonUri: journal.reportPublish.jsonUri,
+      htmlUri: journal.reportPublish.htmlUri || null,
+    };
+    if (typeof refreshLaunchReportUi === 'function') refreshLaunchReportUi();
+  }
 
   document.body.classList.add('has-log');
   document.getElementById('walletInfo')?.classList.remove('hidden');
@@ -19379,6 +20176,100 @@ setupSplashScreen();
     });
   });
 })();
+
+// ===========================================================================
+// Launch-report preference + "What's this?" explainer (renderer side)
+// ---------------------------------------------------------------------------
+// The "Publish a permanent launch report to Arweave" checkbox mirrors the
+// other settings toggles: reflect the persisted value on load, persist changes
+// via /api/user-prefs. The "What's this?" link opens a plain-language modal.
+// The actual publishing happens server-side at step 5; this only manages the
+// on/off preference and the explainer UI.
+// ===========================================================================
+(function setupLaunchReportPref() {
+  const settingsToggle = document.getElementById('publishReportToggle');
+  const stepToggle = document.getElementById('lpPublishReportToggle');
+  const configToggle = document.getElementById('configPublishReportToggle');
+  const toggles = [settingsToggle, stepToggle, configToggle].filter(Boolean);
+
+  // Reflect the persisted value into every launch-report toggle on load.
+  fetch('/api/user-prefs')
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.prefs) {
+        const on = data.prefs.publishLaunchReport !== false;
+        toggles.forEach((t) => { t.checked = on; });
+      }
+    })
+    .catch((err) => {
+      console.warn('Failed to read launch-report preference:', err);
+    })
+    .finally(() => {
+      // Paint the step-5 idle hint once the toggle state is known.
+      if (typeof refreshLaunchReportUi === 'function') {
+        try { refreshLaunchReportUi(); } catch (_) { /* DOM may not be ready */ }
+      }
+    });
+
+  // A change on any toggle persists the pref, syncs the other toggle, refreshes
+  // the status surfaces, and — if turned ON after the pools are already created
+  // — publishes now (the idempotency guard prevents duplicates).
+  const onToggleChange = (source) => {
+    const on = source.checked;
+    toggles.forEach((t) => { if (t !== source) t.checked = on; });
+    fetch('/api/user-prefs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publishLaunchReport: on }),
+    }).catch((err) => {
+      console.warn('Failed to persist launch-report preference:', err);
+    });
+    if (typeof refreshLaunchReportUi === 'function') {
+      try { refreshLaunchReportUi(); } catch (_) { /* no-op */ }
+    }
+    // The launch-report line is part of the cost estimate, so re-run the cost
+    // preview whenever the toggle changes.
+    if (typeof requestCostPreviewUpdate === 'function') {
+      try { requestCostPreviewUpdate(); } catch (_) { /* no-op */ }
+    }
+    if (on && typeof publishLaunchReportToArweave === 'function'
+        && typeof lpResult !== 'undefined' && lpResult
+        && typeof createdTokenInfo !== 'undefined' && createdTokenInfo && createdTokenInfo.mint
+        // Only publish immediately when the step-6 publish point already
+        // passed while the toggle was OFF (it recorded 'skipped'). Before
+        // that, flipping the pref is enough — runTransfer publishes after
+        // the airdrop and before the sweep, so the permanent record gets
+        // the real delivery results.
+        && typeof _publishedReport !== 'undefined' && _publishedReport
+        && _publishedReport.status === 'skipped') {
+      publishLaunchReportToArweave();
+    }
+  };
+  toggles.forEach((t) => t.addEventListener('change', () => onToggleChange(t)));
+
+  // "What's this?" explainer modal. Its markup lives LATER in index.html than
+  // <script src="app.js">, so it is NOT in the DOM when this runs (while the
+  // openers are). Binding directly here would silently no-op. Use document-level
+  // event delegation and resolve the modal at click time, so open/close work
+  // regardless of parse order — the same hazard the success modal documents.
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    // Open: any launch-report "What's this?" link (Settings, step 5, or config).
+    if (t.closest('#launchReportWhatsThis, #lpReportWhatsThis, #configReportWhatsThis')) {
+      e.preventDefault();
+      const m = document.getElementById('launchReportInfoModal');
+      if (m) m.classList.add('is-active');
+      return;
+    }
+    // Close: the X, the "Got it" button, or a click on the modal backdrop.
+    if (t.closest('#launchReportInfoClose, #launchReportInfoDone')
+        || (t.matches && t.matches('#launchReportInfoModal .modal-background'))) {
+      const m = document.getElementById('launchReportInfoModal');
+      if (m) m.classList.remove('is-active');
+    }
+  });
+})();
 // ===========================================================================
 // Demo destination wallet
 // ---------------------------------------------------------------------------
@@ -19735,6 +20626,9 @@ _evaluateStartupGates();
     collapse:     { url: 'audio/collapse.ogg',     volume: 0.5, poolSize: 2 },
     expandStep:   { url: 'audio/expandStep.ogg',   volume: 0.5, poolSize: 2 },
     collapseStep: { url: 'audio/collapseStep.ogg', volume: 0.5, poolSize: 2 },
+    // Played when the launch-success modal appears — the payoff moment of
+    // the whole flow, so it sits a notch above the UI ticks.
+    launch:       { url: 'audio/launch.ogg',       volume: 0.6, poolSize: 1 },
   };
 
   // What counts as "a clickable control" for the click sound. We match the
@@ -19904,6 +20798,35 @@ _evaluateStartupGates();
       });
       observer.observe(card, { attributes: true, attributeFilter: ['class'] });
     }
+  }
+
+  // ---- Launch-success fanfare ---------------------------------------------
+  // Play the launch sound whenever the launch-success modal appears. Watching
+  // the modal's class (Bulma modals show via is-active) keeps this module
+  // self-contained — no call site needed in the modal-opening code, same as
+  // every other trigger in this file.
+  //
+  // Wrinkle: the modal markup lives LATER in index.html than the app.js
+  // script tag (see the lazy-wire comment in showLaunchSuccessModal), so the
+  // element isn't in the DOM yet when this module boots. Try immediately for
+  // safety, and fall back to wiring at DOMContentLoaded.
+  function watchLaunchSuccessModal() {
+    if (typeof MutationObserver === 'undefined') return;
+    const wire = () => {
+      const modal = document.getElementById('launchSuccessModal');
+      if (!modal) return false;
+      let wasActive = modal.classList.contains('is-active');
+      const observer = new MutationObserver(() => {
+        const now = modal.classList.contains('is-active');
+        if (now === wasActive) return;
+        wasActive = now;
+        if (now) playSfx('launch');
+      });
+      observer.observe(modal, { attributes: true, attributeFilter: ['class'] });
+      return true;
+    };
+    if (wire()) return;
+    document.addEventListener('DOMContentLoaded', wire, { once: true });
   }
 
   // ---- Background music --------------------------------------------------
@@ -20079,6 +21002,7 @@ _evaluateStartupGates();
   watchCostEstimate();
   watchDetailsPanels();
   watchStepCards();
+  watchLaunchSuccessModal();
   // Start music as early as possible. In Electron this begins immediately,
   // under the first startup dialog; in a browser it's a no-op until a gesture.
   tryStartMusic();

@@ -102,6 +102,12 @@ let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 //   { transferred: [{wallet, tokens, amountRaw, txId}, ...],
 //     failed:      [{wallet, tokens, amountRaw, error}, ...] }
 let lastAirdropResult = null;
+// Airdrop plan restored from a launch journal (poolPlan.airdropPlan) when
+// resuming a launch after an app restart. buildAirdropTransferPayload()
+// falls back to this when the live simple-mode config can't produce a
+// payload (it lives only in frontend memory and didn't survive the
+// restart). Null in normal sessions.
+let restoredAirdropPayload = null;
 
 // ===========================================================================
 // Launch signer boundary

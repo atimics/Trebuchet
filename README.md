@@ -2,9 +2,9 @@
 
 A barebones Solana token launcher. No frills, no extractive nonsense.
 
-> The trebuchet is the superior siege weapon. It can launch a 90 kg
-
 [![CI](https://github.com/AnOversizedMooseWithSocks/Trebuchet/actions/workflows/ci.yml/badge.svg)](https://github.com/AnOversizedMooseWithSocks/Trebuchet/actions/workflows/ci.yml)
+
+> The trebuchet is the superior siege weapon. It can launch a 90 kg
 > projectile over 300 meters.
 
 Trebuchet mints an SPL token, deploys it as single-sided liquidity on
@@ -12,6 +12,118 @@ Raydium CLMM, locks the position with Burn & Earn, and hands you the
 Fee Key NFTs that will earn fees forever. It runs on your own machine
 against your own RPC, with no middleman taking a cut of your supply,
 charging launch fees, or holding your liquidity hostage.
+
+## A tour of the launch flow
+
+Every launch walks the same six steps. These images are generated
+automatically from the app itself — a real demo-mode launch driven by
+[`scripts/capture-screenshots.mjs`](scripts/capture-screenshots.mjs).
+CI re-runs that launch and refreshes every image whenever the UI
+changes, so what you see below is the current build, not a screenshot
+from six versions ago.
+
+<p><img src="docs/screenshots/launch-flow.gif" width="760" alt="A complete launch, start to finish"></p>
+
+*The whole happy path, start to finish: generate a wallet, configure,
+fund, mint, build pools, transfer.*
+
+<p><img src="docs/screenshots/00-settings.png" width="760" alt="The settings panel — RPC endpoint, demo mode, startup options"></p>
+
+*Before anything else: the settings panel. Pick your RPC endpoint (a
+dedicated one — the public endpoint will rate-limit a real launch),
+toggle demo mode to walk the whole flow with no real transactions, and
+set startup preferences.*
+
+### 1. Generate a launch wallet
+
+<p><img src="docs/screenshots/01-generate-wallet.png" width="760" alt="Step 1 — generate the ephemeral launch wallet"></p>
+
+Every launch uses a fresh ephemeral wallet; nothing touches your
+personal keys. You can optionally grind a vanity contract address here.
+
+### 2. Configure the token and pools
+
+<p><img src="docs/screenshots/02-token-config.png" width="760" alt="Step 2 — configure the token, with live 3D coin preview"></p>
+
+Name, symbol, supply, logo, and target market cap — with a live 3D
+preview of your coin and a running cost estimate. Simple mode picks
+sensible pool defaults; everything below is optional.
+
+<p><img src="docs/screenshots/03-tokenomics.png" width="680" alt="The tokenomics dialog — where every token goes"></p>
+
+*Visualize tokenomics: the allocation donut shows where every token
+goes — pools, positions, ladder bands, preallocation — before you
+commit to anything.*
+
+<p><img src="docs/screenshots/04-advanced-options.png" width="680" alt="Advanced options — preallocation, support floor, pool pairing"></p>
+
+*Advanced options: hold back a preallocation, set a support floor that
+backstops the price, and choose what your launch pairs against.*
+
+<p><img src="docs/screenshots/05-airdrop-config.png" width="680" alt="Airdrop configuration — CSV recipients with per-wallet amounts"></p>
+
+*Airdrops: paste or upload a CSV of recipients and amounts; delivery is
+tracked per-wallet during the final transfer, with retry for failures.*
+
+<p><img src="docs/screenshots/06-custom-pools.png" width="680" alt="Customize mode — per-pool fee tiers, slices, and ladder bands"></p>
+
+*Customize mode: full manual control — multiple pools, quote tokens,
+fee tiers, Fee Key slice splits, and ladder positions with per-band
+price ranges.*
+
+### 3. Fund the wallet
+
+<p><img src="docs/screenshots/07-funding.png" width="760" alt="Step 3 — fund the launch wallet"></p>
+
+Send the estimated SOL to the launch wallet; the checklist turns green
+as funds arrive. (In demo mode, a button pretends for you.)
+
+### 4. Mint the token
+
+<p><img src="docs/screenshots/08-create-token.png" width="760" alt="Step 4 — mint the token"></p>
+
+SPL token with Metaplex metadata; mint, freeze, and metadata-update
+authorities are renounced on the spot, so the supply and identity are
+locked before the pools exist.
+
+### 5. Create pools and positions
+
+<p><img src="docs/screenshots/09-preflight-confirm.png" width="520" alt="Pre-flight price confirmation before anything launches"></p>
+
+*Before anything touches the chain, a pre-flight probe resolves live
+prices and asks you to confirm them — a drift guard against launching
+into a moved market.*
+
+<p><img src="docs/screenshots/10-create-pools.png" width="760" alt="Step 5 — create pools and locked positions"></p>
+
+Raydium CLMM pools with single-sided concentrated liquidity, locked via
+Burn & Earn into Fee Key NFTs. The progress tree shows every pool,
+position, and lock as it lands.
+
+<p><img src="docs/screenshots/11-launch-report.png" width="760" alt="The complete launch report — the permanent dossier"></p>
+
+*Every launch produces a permanent, on-chain-verifiable report: token
+authorities, every pool, every locked position with its Fee Key NFT, and
+how to audit it all — previewable inline, downloadable, and published
+to Arweave during the final transfer. Shown here in full.*
+
+### 6. Transfer to your wallet
+
+<p><img src="docs/screenshots/12-transfer-confirm.png" width="520" alt="The transfer confirmation — verify the full address"></p>
+
+*The destination address must be verified character-for-character
+before anything moves.*
+
+<p><img src="docs/screenshots/14-transfer.png" width="760" alt="Step 6 — sweep everything to your wallet"></p>
+
+Airdrops (if configured) go out, the report publishes to Arweave, and
+everything left — tokens, SOL, Fee Key NFTs — sweeps to your
+destination wallet.
+
+<p><img src="docs/screenshots/13-launch-success.png" width="520" alt="Launch complete — the success summary"></p>
+
+**Launch complete.** Your coin, your Fee Keys, your liquidity locked for
+life — and the next steps for listings laid out.
 
 ## Release authenticity
 
@@ -249,6 +361,32 @@ genuinely just a paranoia option, not a normal step.
   pool supply that goes into the ladder (20–80%); a second slider
   picks the number of bands (3–10). The remainder of the pool's
   supply stays in a wide main position covering all prices.
+- **Preallocate supply** (default off) — holds back a percentage of
+  total supply from the LP entirely, for team/VC tokens, presales,
+  airdrops, staking rewards, or any utility reserve. Pool
+  allocations scale down to fit what's left. The preallocated
+  tokens stay in the launch wallet and sweep to your destination
+  on Step 6 for you to distribute. **Warning:** preallocated supply
+  without a Support position behind it is the textbook rug shape —
+  the app nags you about this, and the **Auto-back with support**
+  toggle pins the Support position's SOL value to cover the
+  preallocation's USD value so holders always have an honest exit.
+- **Airdrop** (under Preallocation) — paste or upload a CSV of
+  `wallet,sol` rows (e.g. presale contributors and what they put
+  in) and each wallet receives the matching USD value in tokens at
+  the launch price, sent automatically during the Step 6 sweep.
+  The list is validated as you type, the per-wallet token amounts
+  preview in a table, and **Auto-fit airdrop** raises the
+  preallocation percentage automatically if the list outgrows it.
+  Failed deliveries (rare) can be retried from Step 6; anything
+  undelivered sweeps to your destination wallet instead, so tokens
+  are never stranded.
+- **Add support position** (default off) — a single-sided buy wall
+  just below launch price. You set the SOL value and the depth
+  (how far below launch it extends). Quote-side only, so it costs
+  SOL but no token supply. This is what backs preallocated supply
+  with real exit liquidity; it also catches early dips for a
+  regular launch.
 - **Customize pools manually** — for anything more elaborate than
   the defaults: multiple non-SOL pools, custom quote tokens, per-pool
   splits, external Fee Key recipients, custom ladder bands at
@@ -353,10 +491,16 @@ Enter your destination wallet address. **Verify it character by
 character** — there is no undo. The app shows a confirmation modal
 listing exactly what's about to move; read it.
 
-Click **Confirm and Transfer**. The app sweeps:
+Click **Confirm and Transfer**. The app sweeps, in order:
 
-- All Fee Key NFTs (these are your earnings stream — keep them safe)
-- Any unallocated tokens that didn't go into pools
+- All Fee Key NFTs first (these are your earnings stream — keep
+  them safe)
+- The airdrop, if you configured one — each listed wallet gets its
+  tokens before the rest of the supply moves; a live progress bar
+  tracks deliveries, and any failed rows get a retry button (or
+  fall through to your destination wallet so nothing is stranded)
+- Any unallocated tokens that didn't go into pools (including the
+  preallocation remainder after the airdrop)
 - Remaining SOL above what's needed for the final transaction fees
 
 After the sweep completes you'll see a green confirmation with a
@@ -447,6 +591,13 @@ If you wanted any of those, you launched on the wrong tool.
   tokenomics** at the bottom of Step 2 — the donut chart makes
   miscalibrated bootstrap / ladder / pool-split percentages obvious
   before you've committed any SOL.
+- **Walk the flow in Demo Mode first.** Settings → Demo Mode
+  simulates every on-chain operation — the full six-step flow,
+  progress trees, failure banners, launch report and all — without
+  sending a single transaction or spending any SOL. It's the
+  fastest way to learn what each step does and looks like before
+  committing real money. Turn it off before a real launch (a
+  banner reminds you while it's on).
 - **Test on devnet first** if you change anything substantive about
   the launch parameters or you're learning the flow. Mistakes on
   mainnet cost real money.
@@ -509,6 +660,17 @@ entry to clear it.
 When you actually try to close the app mid-launch via the X button,
 a confirmation dialog appears first asking whether to leave or stay,
 so accidental closes are caught before they happen.
+
+**"It says another launch operation is already running for this wallet."**
+The app refuses to run two operations on the same launch wallet at
+once — two pool-creation runs would make duplicate pools; a sweep
+during pool creation would pull funds out from under the launch.
+This usually means a previous click is still working (launches take
+minutes) or the window reloaded mid-launch while the work kept
+running in the background. Wait for it to finish — the progress
+list keeps updating — and only restart the app if you're certain
+the operation is dead rather than slow. Restarting clears the lock
+(and stops any operation that was genuinely still running).
 
 **"I want to launch with a quote token I don't see in the dropdown."**
 Use Customize mode in Step 2 and pick "Custom mint…" in the quote

@@ -3193,21 +3193,17 @@
             border-radius: var(--radius-sm);
             overflow: hidden;
         }
-        /* The step-5 preview is full width and its toggle lives elsewhere
-           (the left-column action row). When collapsed, the container would
-           otherwise render as an empty bordered strip below the layout, so
-           drop the border until the body (the report) is expanded. */
-        .report-preview-fullwidth:has(> .launch-report-preview-body.hidden) {
+        /* Every preview's toggle is a standalone button OUTSIDE the
+           bordered container (step 5's always was; step 6 and the modal
+           moved out when the toggle became a real button). When collapsed,
+           the container would otherwise render as an empty bordered strip,
+           so drop the border until the body (the report) is expanded. */
+        .launch-report-preview:has(> .launch-report-preview-body.hidden) {
             border: none;
         }
-        .launch-report-preview-toggle {
-            width: 100%;
-            justify-content: flex-start;
-            padding: 8px 12px;
-            border-radius: 0;
-            background: var(--paper-deep);
-            border-bottom: 1px solid var(--rule);
-        }
+        /* The toggle itself is a normal Bulma button (is-link is-light, to
+           match the Download-launch-report button); the only custom bit
+           left is the rotating chevron that signals expand/collapse. */
         .launch-report-preview-toggle .icon {
             transition: transform 180ms ease;
         }
@@ -3557,6 +3553,54 @@
                         cover buttons, dropdown menus, checkboxes, and changes
                         to the estimated launch cost.
                     </p>
+                    <!-- ============================================ -->
+                    <!-- 3D coin preview. Both persist to             -->
+                    <!-- userPrefs.json as coinPreview /              -->
+                    <!-- coinPreviewParked and take effect            -->
+                    <!-- immediately (public/modules/coin-preview.js).-->
+                    <!-- ============================================ -->
+                    <hr class="my-3">
+                    <h6 class="subtitle is-6 mb-2">3D coin preview</h6>
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="coinPreviewToggle" checked>
+                            <span>Show the 3D coin</span>
+                        </label>
+                    </div>
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="coinParkedToggle">
+                            <span>Hold a fixed pose instead of spinning</span>
+                        </label>
+                    </div>
+                    <p class="help mb-2">
+                        The fixed pose faces your logo forward, turned about
+                        30&deg; so the coin still reads as 3D. It also lets the
+                        renderer idle between changes, which saves CPU/GPU.
+                        Turning the coin off shows the flat logo instead.
+                    </p>
+                    <!-- ============================================ -->
+                    <!-- Launch report (Arweave) opt-out + explainer. -->
+                    <!-- ============================================ -->
+                    <hr class="my-3">
+                    <h6 class="subtitle is-6 mb-2">
+                        Launch report
+                        <a href="#" id="launchReportWhatsThis" class="is-size-7 has-text-weight-normal ml-2">What's this?</a>
+                    </h6>
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="publishReportToggle" checked>
+                            <span>Publish a permanent launch report to Arweave</span>
+                        </label>
+                    </div>
+                    <p class="help mb-2">
+                        After a launch finishes, a permanent public record of it
+                        is written to Arweave so anyone can look it up from the
+                        token's address. Nothing is added to the token itself.
+                        Turn this off to keep your launch private.
+                    </p>
+
+
                 </div>
             </div>
 
@@ -3681,6 +3725,13 @@
                     <span class="icon step-chevron"><i class="fas fa-chevron-down"></i></span>
                 </div>
                 <div class="step-body">
+                    <details class="mb-3" id="step1Explainer">
+                        <summary class="is-clickable is-size-7"><strong>About this step</strong></summary>
+                        <div class="notification is-info is-light is-size-7 mt-2 mb-0 py-2 px-3">
+                            <p>Trebuchet runs the entire launch from a fresh, single-use wallet instead of your personal one. Your own keys are never asked for and never touch this app — you only ever send SOL to the launch wallet and name a destination for the final sweep.</p>
+                            <p class="mt-2"><strong>The key is stored encrypted on this machine</strong> until the launch completes. If the app closes or crashes mid-launch, the wallet appears in the recovery panel on the start screen so nothing is stranded. Generating a wallet costs nothing and touches nothing on-chain.</p>
+                        </div>
+                    </details>
                     <p class="mb-3">A fresh keypair will be generated to perform all on-chain actions. You'll fund it once, and at the end everything in the wallet (token supply remainders, SOL, and Fee Key NFTs) gets swept to your destination wallet.</p>
                     <button class="button is-primary" id="generateWalletBtn">
                         <span class="icon"><i class="fas fa-wallet"></i></span>
@@ -3749,6 +3800,14 @@
                     <span class="icon step-chevron"><i class="fas fa-chevron-down"></i></span>
                 </div>
                 <div class="step-body">
+                    <details class="mb-3" id="step2Explainer">
+                        <summary class="is-clickable is-size-7"><strong>About this step</strong></summary>
+                        <div class="notification is-info is-light is-size-7 mt-2 mb-0 py-2 px-3">
+                            <p>Everything here is configuration only — nothing happens on-chain until step 4. Change anything as often as you like; the cost estimate updates as you do.</p>
+                            <p class="mt-2"><strong>Token details</strong> set the coin's identity (name, symbol, logo, supply). <strong>Pool configuration</strong> decides where its liquidity lives: each pool pairs your token against a quote token, and the target market cap sets the launch price across all of them.</p>
+                            <p class="mt-2"><strong>Simple mode</strong> uses a sensible preset. <strong>Customize</strong> opens per-pool control: supply split, fee tiers, ladder positions (sell walls at higher prices), and support positions (a buy wall below launch). Each control explains itself where it appears.</p>
+                        </div>
+                    </details>
 
                     <h4 class="title is-6">Token Details</h4>
                     <div class="columns is-multiline">
@@ -3993,10 +4052,22 @@
                     -->
                     <div id="lockPositionsSlotPage">
                       <div class="field" id="lockPositionsField">
-                          <label class="checkbox is-size-7">
-                              <input type="checkbox" id="lockPositions" checked>
-                              &nbsp;<strong>Lock liquidity (Burn &amp; Earn)</strong> — recommended; mints transferable Fee Key NFTs that earn fees forever.
-                          </label>
+                          <!-- Each option is wrapped in its own block row so the
+                               two inline checkbox labels stack vertically instead
+                               of running onto one line. -->
+                          <div class="mb-2">
+                              <label class="checkbox is-size-7">
+                                  <input type="checkbox" id="lockPositions" checked>
+                                  &nbsp;<strong>Lock liquidity (Burn &amp; Earn)</strong> — recommended; mints transferable Fee Key NFTs that earn fees forever.
+                              </label>
+                          </div>
+                          <div>
+                              <label class="checkbox is-size-7">
+                                  <input type="checkbox" id="configPublishReportToggle" checked>
+                                  &nbsp;<strong>Publish launch report</strong> — a permanent public record on Arweave.
+                              </label>
+                              <a href="#" id="configReportWhatsThis" class="is-size-7 ml-2">What’s this?</a>
+                          </div>
                       </div>
                     </div>
 
@@ -4245,6 +4316,12 @@
                             </button>
                         </div>
                     </div>
+                    <!-- Next-action hint. The continue button can stay disabled
+                         for several distinct reasons (SOL not yet arrived,
+                         quote tokens still to acquire, manual prefunds pending)
+                         and a silently-disabled button gives the user nothing
+                         to act on. pollBalances() keeps this line current. -->
+                    <p class="is-size-7 has-text-grey mt-1 hidden" id="fundingNextHint"></p>
                 </div>
             </div>
 
@@ -4263,6 +4340,13 @@
                          when there's room and the card wraps below when not. -->
                     <div class="step-preview-layout">
                         <div class="step-preview-content">
+                            <details class="mb-3" id="step4Explainer">
+                                <summary class="is-clickable is-size-7"><strong>About this step</strong></summary>
+                                <div class="notification is-info is-light is-size-7 mt-2 mb-0 py-2 px-3">
+                                    <p>This is the first on-chain action. It mints your token, attaches the metadata (name, symbol, logo), and then <strong>permanently renounces the mint, freeze, and metadata-update authorities</strong> — meaning nobody, including you, can ever print more supply, freeze holders, or change the token's identity. Scanners and traders check for exactly this.</p>
+                                    <p class="mt-2"><strong>Once created, the token is permanent.</strong> If you spot a typo in the name or symbol afterward, the only fix is to start over with a new token (the SOL spent on this one — a small rent amount — is not recoverable). Double-check the preview card before clicking.</p>
+                                </div>
+                            </details>
                             <p class="is-size-7 mb-3">Mints the SPL token with Metaplex metadata, transfers the supply to the ephemeral wallet, and renounces all authorities (mint, freeze, metadata-update).</p>
                             <button class="button is-primary" id="createTokenBtn">
                                 <span class="icon"><i class="fas fa-coins"></i></span>
@@ -4304,6 +4388,14 @@
                          right; wraps to stacked when the row gets too narrow. -->
                     <div class="step-preview-layout">
                         <div class="step-preview-content">
+                    <details class="mb-3" id="step5Explainer">
+                        <summary class="is-clickable is-size-7"><strong>About this step</strong></summary>
+                        <div class="notification is-info is-light is-size-7 mt-2 mb-0 py-2 px-3">
+                            <p>This step builds the markets. It runs in phases: first every pool is created with its main liquidity positions (not yet tradable), then each pool gets a small bootstrap position that makes it live, then <strong>every position is locked</strong> — burning the LP NFTs in exchange for Fee Key NFTs. The locked liquidity can never be withdrawn, by anyone; the Fee Keys collect the trading fees it earns, forever.</p>
+                            <p class="mt-2"><strong>The lock is the point of no return.</strong> Before locks, a failed launch can be swept back to your wallet. After locks, the LP'd supply is committed for the life of the pools — that permanence is what the launch is selling to traders.</p>
+                            <p class="mt-2"><strong>This takes several minutes. Don't close the app.</strong> If something fails partway (usually a transient RPC error), you won't lose anything: the progress list shows exactly what completed, and a Resume button retries only the missing work. Even after a crash, the wallet and a launch journal survive on disk for recovery.</p>
+                        </div>
+                    </details>
                     <div id="lpSummary" class="content is-small mb-3"></div>
 
                     <button class="button is-primary" id="createLpBtn">
@@ -4311,17 +4403,30 @@
                         <span>Create Pools</span>
                     </button>
 
+                    <!-- Launch report (Arweave): in-context opt-in/out + live
+                         status. Visible throughout step 5 so the choice can be
+                         made before pools are created; the status line updates
+                         as the report publishes after completion. Mirrors the
+                         global Settings toggle (same pref) — wired together in
+                         setupLaunchReportPref(). -->
+                    <div id="lpReportPublish" class="mt-3">
+                        <label class="checkbox is-size-7">
+                            <input type="checkbox" id="lpPublishReportToggle" checked>
+                            <span>Publish a permanent launch report to Arweave</span>
+                        </label>
+                        <a href="#" id="lpReportWhatsThis" class="is-size-7 ml-2">What’s this?</a>
+                        <p class="help is-size-7 mt-1" id="lpReportStatus"></p>
+                    </div>
+
                     <div id="lpProgress" class="mt-3 hidden">
                         <h5 class="subtitle is-6 mb-2">Progress</h5>
                         <div id="lpProgressTree"></div>
                     </div>
 
-                    <div id="lpDoneInfo" class="hidden mt-3">
-                        <div class="notification is-success is-light is-size-7 py-2 px-3">
-                            <p><strong>All pools created.</strong></p>
-                            <p id="lpDoneSummary"></p>
-                        </div>
-                    </div>
+                    <!-- The "All pools created" result summary lives in the
+                         right-column aside (see #lpDoneInfo further down) —
+                         a duplicate copy of it used to sit here and, being
+                         first in the DOM, shadowed the aside one. -->
                     <!-- Post-creation actions live in the LEFT column, where the
                          primary "continue" action sits on every other step.
                          Shown in sync with the result summary on the right via
@@ -4338,7 +4443,7 @@
                                 </button>
                             </div>
                             <div class="control">
-                                <button class="launch-report-preview-toggle button is-small is-text" type="button" id="step5ReportToggle">
+                                <button class="launch-report-preview-toggle button is-link is-light" type="button" id="step5ReportToggle">
                                     <span class="icon"><i class="fas fa-chevron-right"></i></span>
                                     <span>Show launch report preview</span>
                                 </button>
@@ -4449,6 +4554,13 @@
                       place in that case.
                     -->
                     <div id="step6NormalBody">
+                        <details class="mb-3" id="step6Explainer">
+                            <summary class="is-clickable is-size-7"><strong>About this step</strong></summary>
+                            <div class="notification is-info is-light is-size-7 mt-2 mb-0 py-2 px-3">
+                                <p>The final cleanup. Everything left in the launch wallet moves to an address you choose: Fee Key NFTs first (the most valuable items), then the airdrop if you configured one, then all remaining tokens, then the leftover SOL. <strong>Double-check the destination address</strong> — transfers on Solana are final.</p>
+                                <p class="mt-2">If any individual transfer fails (rare, usually an RPC blip), the rest still complete and you can run the sweep again to pick up stragglers. The launch wallet's recovery entry is only cleared once the app verifies on-chain that the wallet is actually empty.</p>
+                            </div>
+                        </details>
                         <p class="is-size-7 mb-3">Sweeps everything still in the ephemeral wallet — leftover launched tokens, SOL, and any Fee Key NFTs (from locked positions) — to your destination wallet.</p>
 
                         <div class="field">
@@ -4559,14 +4671,18 @@
                                 <span class="icon"><i class="fas fa-file-download"></i></span>
                                 <span>Download launch report</span>
                             </button>
+                            <!-- Preview toggle — a proper button beside the download
+                                 button (it used to be the text-link header strip of
+                                 the preview box below). Hidden until the report
+                                 exists; renderLaunchReportPreview() reveals it. -->
+                            <button class="launch-report-preview-toggle button is-link is-light mt-2 hidden" type="button" id="step6ReportToggle">
+                                <span class="icon"><i class="fas fa-chevron-right"></i></span>
+                                <span>Show launch report preview</span>
+                            </button>
                             <!-- Inline launch report preview — collapsed by default.
                                  Same pattern as step 5. Populated by
                                  renderLaunchReportPreview() in launch-report.js. -->
                             <div class="launch-report-preview mt-3 hidden" id="step6ReportPreview">
-                                <button class="launch-report-preview-toggle button is-small is-text" type="button" id="step6ReportToggle">
-                                    <span class="icon"><i class="fas fa-chevron-right"></i></span>
-                                    <span>Show launch report preview</span>
-                                </button>
                                 <div class="launch-report-preview-body hidden">
                                     <div class="launch-report-preview-toolbar">
                                         <button class="button is-small is-text" type="button" id="step6CopyAllAddrs">
@@ -4955,6 +5071,46 @@
       and torn down when it closes (browsers cap live WebGL contexts;
       we don't want a stray live coin lingering after dismissal).
     -->
+    <!-- "What's this?" explainer modal for the launch report. -->
+    <div class="modal" id="launchReportInfoModal">
+        <div class="modal-background"></div>
+        <div class="modal-card">
+            <header class="modal-card-head">
+                <p class="modal-card-title">About the launch report</p>
+                <button class="delete" aria-label="close" id="launchReportInfoClose"></button>
+            </header>
+            <section class="modal-card-body">
+                <p class="mb-3">
+                    When a launch finishes, Trebuchet can publish a
+                    permanent record of it to Arweave — a self-contained
+                    HTML report plus a machine-readable JSON copy.
+                </p>
+                <p class="mb-3">
+                    The record is tagged with your token's mint address,
+                    so anyone can find it by looking up the token. It's
+                    signed by the launch wallet, which lets others verify
+                    it really describes this launch.
+                </p>
+                <p class="mb-3">
+                    Nothing is written onto the token's own metadata —
+                    the token carries no mark and isn't tied to the
+                    launchpad. The link only points one way: the report
+                    references the token, not the other way around.
+                </p>
+                <p>
+                    Leave it on for a transparent, auditable launch. Turn
+                    it off to keep the launch private — for example a
+                    corporate token that shouldn't be associated with a
+                    launchpad. Either way, publishing never affects the
+                    launch itself.
+                </p>
+            </section>
+            <footer class="modal-card-foot">
+                <button class="button" id="launchReportInfoDone">Got it</button>
+            </footer>
+        </div>
+    </div>
+
     <div class="modal" id="launchSuccessModal" role="dialog" aria-modal="true" aria-labelledby="launchSuccessTitle">
         <div class="modal-background"></div>
         <div class="modal-card launch-success-modal-card">
@@ -5006,6 +5162,18 @@
                         </span>
                     </button>
 
+                    <!-- Permanent (Arweave) report link. Populated by
+                         renderPublishedReportCard() from the publish kicked off
+                         at step 5; hidden when publishing is off or hasn't
+                         produced a link yet. -->
+                    <button class="launch-success-action hidden" type="button" id="launchSuccessReportLink">
+                        <span class="launch-success-action-icon"><i class="fas fa-globe" id="launchSuccessReportLinkIcon"></i></span>
+                        <span class="launch-success-action-body">
+                            <span class="launch-success-action-title" id="launchSuccessReportLinkTitle"></span>
+                            <span class="launch-success-action-desc" id="launchSuccessReportLinkDesc"></span>
+                        </span>
+                    </button>
+
                     <!-- Jupiter VRFD verification. data-url is read by a
                          shared external-action click handler in app.js. -->
                     <button class="launch-success-action" type="button"
@@ -5053,11 +5221,14 @@
                 
                 <!-- Inline launch report preview — same pattern as step 5/6.
                      Collapsed by default. Populated when the modal opens. -->
+                <!-- Preview toggle — a proper button above the preview box (it
+                     used to be the box's text-link header strip). Hidden until
+                     renderLaunchReportPreview() reveals it with the container. -->
+                <button class="launch-report-preview-toggle button is-link is-light mt-3 hidden" type="button" id="modalReportToggle">
+                    <span class="icon"><i class="fas fa-chevron-right"></i></span>
+                    <span>Show launch report preview</span>
+                </button>
                 <div class="launch-report-preview mt-3 hidden" id="modalReportPreview">
-                    <button class="launch-report-preview-toggle button is-small is-text" type="button" id="modalReportToggle">
-                        <span class="icon"><i class="fas fa-chevron-right"></i></span>
-                        <span>Show launch report preview</span>
-                    </button>
                     <div class="launch-report-preview-body hidden">
                         <div class="launch-report-preview-toolbar">
                             <button class="button is-small is-text" type="button" id="modalCopyAllAddrs">

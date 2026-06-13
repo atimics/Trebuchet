@@ -159,6 +159,7 @@ import {
   COST_BS_QUOTE_SOL,
   COST_TX_BUFFER_SOL,
   COST_TOKEN_CREATE_SOL,
+  COST_LAUNCH_REPORT_SOL,
   SAFETY_BUFFER_PCT,
   BS_BOOTSTRAP_USD,
   AUTOSWAP_TARGET_USD,
@@ -848,13 +849,32 @@ async function transferNftToRecipient({
 // congestion without overpaying. Any RPC failure falls back to the floor so
 // a fee lookup can never block a launch. getRecentPrioritizationFees returns
 // [{ slot, prioritizationFee }, ...] over a recent window.
-async function lpPriorityFeeMicroLamports(connection) {
+//
+// writableAccounts (optional): the accounts this transaction will write-lock.
+// When supplied, the sample is scoped to recent fees paid by transactions
+// contending for *those* accounts (the `lockedWritableAccounts` filter) rather
+// than the whole network — a far better predictor of what it costs to land a
+// tx that locks our pool. Left undefined for the initial createPool (the pool
+// account doesn't exist yet), so that path keeps the network-wide sample.
+async function lpPriorityFeeMicroLamports(connection, writableAccounts) {
   try {
-    const recent = await connection.getRecentPrioritizationFees();
+    const scoped =
+      Array.isArray(writableAccounts) && writableAccounts.length > 0;
+    const recent = await connection.getRecentPrioritizationFees(
+      scoped ? { lockedWritableAccounts: writableAccounts } : undefined,
+    );
     if (Array.isArray(recent) && recent.length > 0) {
+      // Drop zero-fee slots before taking the percentile. Idle slots (where
+      // nobody paid priority) pull the estimate toward 0 — the wrong direction
+      // during the localized congestion we're trying to price for. If every
+      // sampled slot is zero there's no contention and the floor is correct
+      // anyway. (Remove the .filter() to revert to the prior include-zeros
+      // behaviour.)
       const fees = recent
         .map((r) => Number(r.prioritizationFee) || 0)
+        .filter((f) => f > 0)
         .sort((a, b) => a - b);
+      if (fees.length === 0) return LP_PRIORITY_FEE_FLOOR_MICROLAMPORTS;
       const idx = Math.min(fees.length - 1, Math.floor(fees.length * 0.75));
       const p75 = fees[idx];
       return Math.max(
@@ -874,10 +894,29 @@ async function lpPriorityFeeMicroLamports(connection) {
 // a freshly-sampled dynamic priority fee. Pass the raydium instance; we read
 // its connection. Awaited at each SDK call site (createPool / openPosition /
 // lockPosition) so the fee reflects conditions at build time.
-async function lpComputeBudgetConfig(raydium) {
+//
+// poolId (optional): the pool's state account. When known — every step after
+// the pool is created — it scopes the fee sample to contention on that pool
+// (see lpPriorityFeeMicroLamports). Omitted by createPool, which can't scope
+// to an account that doesn't exist yet.
+async function lpComputeBudgetConfig(raydium, poolId) {
+  let writableAccounts;
+  if (poolId) {
+    try {
+      writableAccounts = [
+        poolId instanceof PublicKey ? poolId : new PublicKey(poolId),
+      ];
+    } catch {
+      // Malformed id — fall back to the network-wide sample rather than throw.
+      writableAccounts = undefined;
+    }
+  }
   return {
     units: LP_COMPUTE_UNIT_LIMIT,
-    microLamports: await lpPriorityFeeMicroLamports(raydium.connection),
+    microLamports: await lpPriorityFeeMicroLamports(
+      raydium.connection,
+      writableAccounts,
+    ),
   };
 }
 
@@ -1142,7 +1181,7 @@ async function createSinglePool({
       // the ATA.)
       otherAmountMax: new BN(0),
       txVersion: TxVersion.V0,
-      computeBudgetConfig: await lpComputeBudgetConfig(raydium),
+      computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
     });
     const openTx = await openRes.execute({ sendAndConfirm: true });
     const nftMint = openRes.extInfo?.nftMint?.toBase58();
@@ -1164,6 +1203,10 @@ async function createSinglePool({
     mainPositions.push({
       sliceIndex: i,
       sharePercent: slice.sharePercent,
+      // Tick range recorded for the launch report / audit record — proves
+      // the wide main position's bounds without an on-chain lookup.
+      tickLower: mainTicks.tickLower,
+      tickUpper: mainTicks.tickUpper,
       nftMint,
       // Phase 3 will flip this to true (or push to lockFailures if it
       // can't). When lockPositions is false (test/manual launches),
@@ -1280,7 +1323,7 @@ async function createSinglePool({
         otherAmountMax: new BN(0),
         ownerInfo: { useSOLBalance: false },
         txVersion: TxVersion.V0,
-        computeBudgetConfig: await lpComputeBudgetConfig(raydium),
+        computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
       });
       const ladderTx = await ladderRes.execute({ sendAndConfirm: true });
       const ladderNftMint = ladderRes.extInfo?.nftMint?.toBase58();
@@ -1392,7 +1435,7 @@ async function createSinglePool({
       otherAmountMax: new BN(0),
       ownerInfo: { useSOLBalance: true },
       txVersion: TxVersion.V0,
-      computeBudgetConfig: await lpComputeBudgetConfig(raydium),
+      computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
     });
     const supportTx = await supportRes.execute({ sendAndConfirm: true });
     const supportNftMint = supportRes.extInfo?.nftMint?.toBase58();
@@ -1446,6 +1489,12 @@ async function createSinglePool({
   return {
     poolId,
     launchedSide: launchedIsMintA ? 'mintA' : 'mintB',
+    // Pool parameters recorded for the launch report / audit record: the
+    // tick spacing identifies the fee tier's granularity and initialPrice
+    // is the launch price the pool was created at (string — Decimal
+    // doesn't JSON-serialize usefully).
+    tickSpacing,
+    initialPrice: initialPrice.toString(),
     mainPositions,
     ladderPositions,
     supportPositions,
@@ -1629,12 +1678,19 @@ async function openBootstrapPosition({
     baseAmount: bootstrapBaseRaw,
     otherAmountMax: bsOtherMax,
     txVersion: TxVersion.V0,
-    computeBudgetConfig: await lpComputeBudgetConfig(raydium),
+    computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
   });
   const bsTx = await bsRes.execute({ sendAndConfirm: true });
   const bsNftMint = bsRes.extInfo?.nftMint?.toBase58();
   console.log(`  bootstrap opened: nft=${bsNftMint}, tx=${bsTx.txId}`);
-  progress({ stage: 'bootstrap_open_done', nftMint: bsNftMint, txId: bsTx.txId });
+  progress({
+    stage: 'bootstrap_open_done',
+    nftMint: bsNftMint,
+    txId: bsTx.txId,
+    // Journaled so a resumed launch's bootstrap record keeps its range.
+    tickLower: bsTicks.tickLower,
+    tickUpper: bsTicks.tickUpper,
+  });
 
   // Lock the bootstrap. Bootstrap is never split or transferred to recipients
   // — the Fee Key just stays with the ephemeral wallet for the final sweep.
@@ -1648,15 +1704,44 @@ async function openBootstrapPosition({
   return {
     nftMint: bsNftMint,
     locked: false,
+    // Tick range recorded for the launch report / audit record, same as
+    // every other position type.
+    tickLower: bsTicks.tickLower,
+    tickUpper: bsTicks.tickUpper,
     txIds: { open: bsTx.txId, lock: null },
   };
+}
+
+// Pull the Fee Key NFT mint out of a raydium.clmm.lockPosition() result.
+//
+// Verified against the SDK source (v0.1.144-alpha): lockPosition() returns
+// extInfo = ClmmInstrument.makeLockPositions().address, which includes
+// `lockNftMint` — the mint of the NEW NFT that Burn & Earn creates. The
+// original position NFT is moved into the lock program's escrow ATA by the
+// same instruction, so after a lock the wallet holds the lock NFT, not the
+// position NFT. That lock NFT *is* the Fee Key: it collects the trading
+// fees and it's what transfers (Phase 4) and sweeps (step 6).
+//
+// Recording it matters twice over: the launch report / Arweave audit record
+// needs it so a verifier can tie each locked position to the Fee Key that
+// owns its fee stream, and Phase 4 needs it to transfer the right mint.
+// Defensive access throughout — a missing field records null rather than
+// failing a lock that already succeeded on-chain.
+function feeKeyMintFromLockResult(lockRes) {
+  try {
+    const m = lockRes?.extInfo?.lockNftMint;
+    if (!m) return null;
+    return typeof m === 'string' ? m : m.toBase58();
+  } catch (_) {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Phase 3: Lock every position across every pool.
 //
 // Runs after every position (main + bootstrap) is open across every pool.
-// This is the irreversibility line: each successful lock burns the position
+// This is the irreversibility line: each successful lock escrows the position
 // NFT and mints a Fee Key NFT, committing the LP'd tokens for life.
 //
 // Fail-soft: failures collect into a `lockFailures` array and don't stop
@@ -1757,12 +1842,16 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         const lockTx = await lockRes.execute({ sendAndConfirm: true });
         pos.locked = true;
         pos.txIds.lock = lockTx.txId;
+        pos.feeKeyNftMint = feeKeyMintFromLockResult(lockRes);
         console.log(`  locked: tx=${lockTx.txId}`);
         progress({
           stage: 'main_lock_done',
           allocationIndex: allocIdx,
           sliceIndex: i,
           txId: lockTx.txId,
+          // Journaled so crash-resumed launches keep the Fee Key mint
+          // (Phase 4 transfers it; the audit record publishes it).
+          feeKeyNftMint: pos.feeKeyNftMint,
         });
       } catch (e) {
         console.error(`  lock FAILED: ${e.message}`);
@@ -1814,9 +1903,11 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         const lockTx = await lockRes.execute({ sendAndConfirm: true });
         lp.locked = true;
         lp.txIds.lock = lockTx.txId;
+        lp.feeKeyNftMint = feeKeyMintFromLockResult(lockRes);
         console.log(`  locked: tx=${lockTx.txId}`);
         progress({
           stage: 'ladder_lock_done',
+          feeKeyNftMint: lp.feeKeyNftMint,
           allocationIndex: allocIdx,
           bandIndex: bi,
           txId: lockTx.txId,
@@ -1872,9 +1963,11 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         const lockTx = await lockRes.execute({ sendAndConfirm: true });
         sp.locked = true;
         sp.txIds.lock = lockTx.txId;
+        sp.feeKeyNftMint = feeKeyMintFromLockResult(lockRes);
         console.log(`  locked: tx=${lockTx.txId}`);
         progress({
           stage: 'support_lock_done',
+          feeKeyNftMint: sp.feeKeyNftMint,
           allocationIndex: allocIdx,
           supportIndex: si,
           txId: lockTx.txId,
@@ -1911,9 +2004,11 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         const lockTx = await lockRes.execute({ sendAndConfirm: true });
         bs.locked = true;
         bs.txIds.lock = lockTx.txId;
+        bs.feeKeyNftMint = feeKeyMintFromLockResult(lockRes);
         console.log(`  bootstrap locked: tx=${lockTx.txId}`);
         progress({
           stage: 'bootstrap_lock_done',
+          feeKeyNftMint: bs.feeKeyNftMint,
           allocationIndex: allocIdx,
           txId: lockTx.txId,
         });
@@ -1955,8 +2050,9 @@ async function lockAllPositions({ raydium, results, onProgress }) {
 // Phase 4: Transfer Fee Key NFTs to external recipients.
 //
 // Runs after Phase 3. Only LOCKED positions have Fee Key NFTs to transfer —
-// the Fee Key is what the locker mints when it burns the position NFT, so
-// an unlocked position has no Fee Key.
+// the Fee Key is the lock NFT the locker mints while moving the position
+// NFT into the lock program's escrow, so an unlocked position has no
+// Fee Key (and the position NFT itself is no longer in the wallet).
 //
 // Fail-soft like Phase 3. Failures collect into `transferFailures` and
 // don't block other transfers. A transfer failure leaves the Fee Key NFT
@@ -2012,12 +2108,19 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
         });
         continue;
       }
-      console.log(`[${symbol}] transferring Fee Key (slice ${i + 1}) to ${pos.recipient}...`);
+      // The Fee Key is the lock NFT Burn & Earn minted in Phase 3 — the
+      // original position NFT moved into the lock program's escrow when the
+      // lock executed, so it's no longer in the wallet. Prefer the recorded
+      // feeKeyNftMint; the pos.nftMint fallback only matters for journals
+      // written before the field existed (those transfers fail into
+      // transferFailures, same as they would have before).
+      const feeKeyMint = pos.feeKeyNftMint || pos.nftMint;
+      console.log(`[${symbol}] transferring Fee Key (slice ${i + 1}) nft=${feeKeyMint} to ${pos.recipient}...`);
       try {
         const txId = await transferNftToRecipient({
           connection,
           ownerKeypair,
-          nftMint: pos.nftMint,
+          nftMint: feeKeyMint,
           recipient: pos.recipient,
         });
         pos.transferredTo = pos.recipient;
@@ -3525,8 +3628,10 @@ export async function createPoolsAndPositions({
   //
   // This is the irreversibility line. Every preceding phase produced state
   // that the ephemeral wallet can still walk back from (close positions,
-  // sweep tokens). Locking burns the position NFT and mints a Fee Key NFT,
-  // committing the LP'd tokens for life.
+  // sweep tokens). Locking escrows the position NFT inside the lock
+  // program and mints a Fee Key NFT in its place, committing the LP'd
+  // tokens for life — only the fee stream remains claimable, by whoever
+  // holds the Fee Key.
   //
   // We only reach here if Phase 1 and Phase 2 both succeeded — so every
   // pool has its main positions AND its bootstrap open. Locking everything
@@ -3698,6 +3803,10 @@ export async function estimateRequiredFunding({
   // safe (under-budgets so the launch flow surfaces an error rather than
   // proceeding with a half-funded bootstrap).
   targetMarketCapUsd,
+  // When true, include a line for publishing the permanent launch report to
+  // Arweave. The endpoint resolves the effective value from the request body
+  // (live cost preview) or the saved preference; defaults off for direct callers.
+  publishLaunchReport = false,
 }) {
   const solBreakdown = [];
   const quoteBreakdown = [];
@@ -4207,6 +4316,12 @@ export async function estimateRequiredFunding({
   // Token creation cost (was previously added by the frontend; now part of
   // the breakdown so the user sees it).
   addSol('Token creation (mint + metadata)', COST_TOKEN_CREATE_SOL);
+
+  // Permanent launch report (Arweave). Only when the user has the launch-report
+  // option enabled (opt-out, default on). See COST_LAUNCH_REPORT_SOL.
+  if (publishLaunchReport) {
+    addSol('Launch report (permanent Arweave publish)', COST_LAUNCH_REPORT_SOL);
+  }
 
   // Safety buffer applies only to the buffered subtotal — exact deposits
   // (support positions) live in the unbuffered subtotal and pass through

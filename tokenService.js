@@ -335,7 +335,7 @@ export async function createTokenWithMetaplex({
     }).sendAndConfirm(umi);
     
     console.log('Metadata account created successfully');
-    progress({ stage: 'metadata_account_created', tokenMint: mint.toString(), metadataUri });
+    progress({ stage: 'metadata_account_created', tokenMint: mint.toString(), metadataUri, imageUri });
     
     // Small delay to ensure metadata account is fully propagated
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -374,8 +374,8 @@ export async function createTokenWithMetaplex({
     console.log('Mint transaction signature:', mintSig);
     progress({ stage: 'supply_minted', tokenMint: mint.toString(), txId: mintSig });
     
-    // Wait for confirmation
-    await connection.confirmTransaction(mintSig, 'finalized');
+    // mintTo() above already sent and confirmed at 'finalized', so a second
+    // confirmTransaction here would just be a redundant RPC round-trip.
     console.log('Tokens minted successfully');
     
     // SAFETY STEP: Renounce all authorities to make the token safe
@@ -401,7 +401,8 @@ export async function createTokenWithMetaplex({
         tokenMint: mint.toString(),
         txId: renounceMintAuthSig,
       });
-      await connection.confirmTransaction(renounceMintAuthSig, 'finalized');
+      // setAuthority() above already sent and confirmed at 'finalized'; no
+      // extra confirmTransaction needed.
     } catch (error) {
       console.error('Error renouncing mint authority:', error);
       throw new Error('Failed to renounce mint authority. Token creation aborted for safety.');
@@ -594,6 +595,10 @@ export async function createTokenWithMetaplex({
     return {
       tokenMint: mint.toString(),
       metadataUri,
+      // Arweave URI of the uploaded logo image (null when no logo). The
+      // launch report references this remotely instead of embedding the
+      // raw image, keeping the published report under the free-upload cap.
+      imageUri: imageUri || null,
       totalSupply: totalSupply,
       isSafe: metadataUpdateSuccess,
       mintAndFreezeAuthoritiesSafe: true,
@@ -683,7 +688,8 @@ export async function transferTokensAndSol({
           TOKEN_PROGRAM_ID
         );
         console.log('Token transfer signature:', tokenTxSignature);
-        await connection.confirmTransaction(tokenTxSignature, 'finalized');
+        // transfer() above already sent and confirmed at 'finalized'; no
+        // extra confirmTransaction needed.
         console.log('Token transfer confirmed');
         // Token decimals are hardcoded to 9 in createTokenWithMetaplex
         tokensTransferred = Number(tokenBalance) / Math.pow(10, 9);

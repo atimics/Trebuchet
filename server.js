@@ -46,6 +46,7 @@ import {
 } from './rpcConfig.js';
 
 import * as pendingWallets from './pendingWallets.js';
+import { createLaunchReportUmi, publishLaunchReport } from './launchReportService.js';
 import * as launchJournal from './launchJournal.js';
 import * as userPrefs from './userPrefs.js';
 import * as updateCheckBridge from './updateCheckBridge.js';
@@ -94,6 +95,80 @@ function markAirdropInFlight(walletPublicKey) {
 }
 function clearAirdropInFlight(walletPublicKey) {
   airdropsInFlight.delete(walletPublicKey);
+}
+
+// ---------------------------------------------------------------------------
+// Per-wallet launch-operation mutex.
+//
+// Every chain-touching launch operation (token creation, quote-token
+// acquisition, pool creation, resume, asset transfer) is long-running and
+// mutates the same ephemeral wallet's balances. Running two of them
+// concurrently for the same wallet is never correct:
+//
+//   - create-lp twice          -> duplicate pools, double-spent supply
+//   - create-lp + transfer     -> sweep pulls tokens out from under the
+//                                 launch mid-flight
+//   - acquire twice            -> double swap, double the SOL spent
+//   - create-lp + resume       -> two orchestrators fighting over the
+//                                 same positions
+//
+// How would a double-submit even happen, given the frontend disables its
+// buttons? The server runs in-process with Electron main, so a renderer
+// crash/reload mid-launch reloads the UI while the launch KEEPS RUNNING
+// in the background. The user then recovers the pending wallet and clicks
+// Create Pools (or Resume) again — and without this guard, a second
+// orchestrator starts against the same wallet while the first is still
+// going. A slow network double-click is the other path.
+//
+// Guarded endpoints check this map after resolving the wallet public key
+// and return HTTP 409 with code 'OP_IN_FLIGHT' if another operation is
+// already running. The frontend translates that into "an operation is
+// already running for this wallet — wait for it to finish" instead of
+// letting the user double-fire.
+//
+// In-memory only, like airdropsInFlight: if the app restarts, any
+// in-flight operation died with it, so a fresh map is the correct state.
+// Entries are cleared in try/finally so even an uncaught throw releases
+// the lock.
+const launchOpsInFlight = new Map(); // walletPublicKey -> { op, startedAt }
+
+function launchOpInFlight(walletPublicKey) {
+  return launchOpsInFlight.get(walletPublicKey) || null;
+}
+function markLaunchOpInFlight(walletPublicKey, op) {
+  launchOpsInFlight.set(walletPublicKey, { op, startedAt: Date.now() });
+}
+function clearLaunchOpInFlight(walletPublicKey) {
+  launchOpsInFlight.delete(walletPublicKey);
+}
+// Shared 409 rejection. Returns true if the request was rejected (caller
+// should return immediately); false if the wallet is free and the caller
+// has been marked as the current operation.
+function rejectOrClaimLaunchOp(res, walletPublicKey, op) {
+  const current = launchOpInFlight(walletPublicKey);
+  if (current) {
+    const runningForSec = Math.round((Date.now() - current.startedAt) / 1000);
+    console.warn(
+      `Rejecting ${op} for wallet ${walletPublicKey} — '${current.op}' has been ` +
+        `running for ${runningForSec}s on the same wallet.`,
+    );
+    res.status(409).json({
+      success: false,
+      code: 'OP_IN_FLIGHT',
+      op: current.op,
+      runningForSec,
+      error:
+        `Another launch operation ('${current.op}') is already running for this ` +
+        `wallet (started ${runningForSec}s ago). Launches can take several ` +
+        `minutes — wait for it to finish rather than retrying. Running two ` +
+        `operations on the same wallet at once can create duplicate pools or ` +
+        `sweep funds mid-launch. If you're certain the operation is dead ` +
+        `(not just slow), restarting the app clears this lock.`,
+    });
+    return true;
+  }
+  markLaunchOpInFlight(walletPublicKey, op);
+  return false;
 }
 
 // Live progress tracker for airdrops. Both the real executeAirdrop (in
@@ -953,6 +1028,94 @@ app.post('/api/user-prefs', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Permanent launch report (Arweave). Publishes the rendered HTML report plus a
+// machine-readable JSON record, signed by the launch wallet, tagged so the
+// report is discoverable from the token mint WITHOUT touching token metadata.
+// Called by the frontend at step 5 — while the launch wallet still exists in
+// the recovery store (it's swept at step 6). Opt-out via userPrefs; the launch
+// is already complete and safe before this runs, so it is never fatal.
+// ---------------------------------------------------------------------------
+const APP_VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version || null;
+  } catch (_) {
+    return null;
+  }
+})();
+
+app.post('/api/publish-launch-report', async (req, res) => {
+  if (isDemoMode()) return demoChainService.handlePublishLaunchReport(req, res);
+  try {
+    // Server-side opt-out enforcement: even if a client calls this, an
+    // opted-out user never publishes.
+    if (userPrefs.get().publishLaunchReport === false) {
+      return res.json({ success: true, skipped: true, reason: 'opted-out' });
+    }
+
+    const {
+      walletPublicKey,
+      tempWalletSecretKey,
+      signerMode,
+      mint,
+      quoteMint,
+      poolIds,
+      reportHtml,
+      launchData,
+    } = req.body || {};
+
+    if (!mint) {
+      return res.json({ success: true, skipped: true, reason: 'missing-mint' });
+    }
+
+    // Journal-backed idempotency: the report publishes during the transfer
+    // flow, which is re-runnable after a partial sweep failure — and the
+    // frontend's in-memory "already published" state doesn't survive an
+    // app restart. One permanent report per mint; re-requests get the
+    // recorded URIs back.
+    if (walletPublicKey) {
+      const prior = launchJournal.activeForWallet(walletPublicKey)?.reportPublish;
+      if (prior && prior.mint === mint && prior.jsonUri) {
+        console.log(`publish-launch-report: already published for ${mint} — returning recorded URIs`);
+        return res.json({ success: true, jsonUri: prior.jsonUri, htmlUri: prior.htmlUri || null, alreadyPublished: true });
+      }
+    }
+
+    // Sign with the launch wallet (resolved from the recovery store by pubkey,
+    // or inline for demo/unmigrated callers) — the same resolver the LP routes
+    // use. The signature is what lets a verifier trust a report keyed to this
+    // mint: it's owned by the on-chain creator.
+    const { secretKeyArr } = resolveSigner({ tempWalletSecretKey, walletPublicKey, signerMode });
+    const umi = createLaunchReportUmi({ secretKey: Uint8Array.from(secretKeyArr) });
+
+    const result = await publishLaunchReport({
+      enabled: true,
+      umi,
+      reportHtml,
+      launchData,
+      mint,
+      quoteMint: quoteMint || null,
+      poolIds: Array.isArray(poolIds) ? poolIds : [],
+      appVersion: APP_VERSION,
+    });
+    // Persist the publish record so re-runs return the same URIs instead
+    // of uploading a second copy. Only on a real success with a URI — a
+    // skipped/failed result must stay retryable.
+    if (walletPublicKey && result && result.jsonUri) {
+      launchJournal.upsertForWallet(
+        walletPublicKey,
+        { reportPublish: { mint, jsonUri: result.jsonUri, htmlUri: result.htmlUri || null, publishedAt: new Date().toISOString() } },
+        { stage: 'report_published', mint },
+      );
+    }
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    // Publishing must never look like a launch failure.
+    console.error('publish-launch-report failed:', err);
+    return res.json({ success: true, skipped: false, failed: true, error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Demo-mode endpoints (demo-only).
 //
 // /api/demo/status      — the frontend calls this on app load to learn
@@ -1204,6 +1367,11 @@ function applyLpEventToResults(results, event) {
     result.bootstrap = {
       nftMint: event.nftMint || null,
       locked: false,
+      // Tick range threaded through from the event (older events lack it;
+      // null keeps the shape consistent and the report renders ranges
+      // conditionally).
+      tickLower: Number.isFinite(event.tickLower) ? event.tickLower : null,
+      tickUpper: Number.isFinite(event.tickUpper) ? event.tickUpper : null,
       txIds: { open: event.txId || null, lock: null },
     };
     return true;
@@ -1213,6 +1381,7 @@ function applyLpEventToResults(results, event) {
     const pos = result.mainPositions?.[event.sliceIndex];
     if (!pos) return false;
     pos.locked = true;
+    pos.feeKeyNftMint = event.feeKeyNftMint || pos.feeKeyNftMint || null;
     pos.txIds = { ...(pos.txIds || {}), lock: event.txId || null };
     return true;
   }
@@ -1221,6 +1390,21 @@ function applyLpEventToResults(results, event) {
     const pos = result.ladderPositions?.[event.bandIndex];
     if (!pos) return false;
     pos.locked = true;
+    pos.feeKeyNftMint = event.feeKeyNftMint || pos.feeKeyNftMint || null;
+    pos.txIds = { ...(pos.txIds || {}), lock: event.txId || null };
+    return true;
+  }
+
+  // Support positions lock in Phase 3 like every other position type, but
+  // this handler was missing — a crash after a support lock left the
+  // journal showing locked: false, so a resume re-attempted the lock
+  // against a position NFT already in the lock program's escrow (spurious
+  // lockFailures) and the report misstated the lock state.
+  if (event.stage === 'support_lock_done') {
+    const pos = result.supportPositions?.[event.supportIndex];
+    if (!pos) return false;
+    pos.locked = true;
+    pos.feeKeyNftMint = event.feeKeyNftMint || pos.feeKeyNftMint || null;
     pos.txIds = { ...(pos.txIds || {}), lock: event.txId || null };
     return true;
   }
@@ -1228,6 +1412,7 @@ function applyLpEventToResults(results, event) {
   if (event.stage === 'bootstrap_lock_done') {
     if (!result.bootstrap) return false;
     result.bootstrap.locked = true;
+    result.bootstrap.feeKeyNftMint = event.feeKeyNftMint || result.bootstrap.feeKeyNftMint || null;
     result.bootstrap.txIds = { ...(result.bootstrap.txIds || {}), lock: event.txId || null };
     return true;
   }
@@ -1295,6 +1480,7 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
   // we reach here, so the demo handler can read the same fields.
   if (isDemoMode()) return demoChainService.handleCreateToken(req, res);
   let walletPublicKey = null;
+  let claimedLaunchOp = false;
   try {
     const {
       tempWalletSecretKey,
@@ -1347,6 +1533,13 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
         signerMode: req.body.signerMode,
       });
     walletPublicKey = resolvedWalletPublicKey;
+    // Per-wallet mutex — token creation runs several transactions over
+    // 30-60s. A duplicate submit would mint a second, orphaned token and
+    // double-spend the wallet's rent SOL.
+    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'create-token')) {
+      return;
+    }
+    claimedLaunchOp = true;
     launchJournal.upsertForWallet(
       walletPublicKey,
       {
@@ -1393,6 +1586,7 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
           totalSupply: normalizedTotalSupply,
           decimals: 9,
           metadataUri: result.metadataUri,
+          imageUri: result.imageUri || null,
           isSafe: result.isSafe,
           mintAuthorityRenounced: result.mintAuthorityRenounced,
           freezeAuthorityDisabled: result.freezeAuthorityDisabled,
@@ -1424,6 +1618,11 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
       );
     }
     res.status(500).json({ success: false, error: error.message });
+  } finally {
+    // Release the per-wallet operation lock if we claimed it.
+    if (claimedLaunchOp && walletPublicKey) {
+      clearLaunchOpInFlight(walletPublicKey);
+    }
   }
 });
 
@@ -1963,13 +2162,20 @@ app.post('/api/quote-token-info', async (req, res) => {
 // targetMarketCapUsd / 100). All-minimal launches don't need it.
 app.post('/api/estimate-lp-funding', async (req, res) => {
   try {
-    const { allocations, targetMarketCapUsd } = req.body;
+    const { allocations, targetMarketCapUsd, publishLaunchReport } = req.body;
     if (!Array.isArray(allocations) || allocations.length === 0) {
       throw new Error('allocations must be a non-empty array');
     }
+    // Whether to include the launch-report publish cost. Honour an explicit
+    // request flag (the live cost preview sends it so the estimate tracks the
+    // toggle without a persist race); otherwise fall back to the saved pref.
+    const reportEnabled = (typeof publishLaunchReport === 'boolean')
+      ? publishLaunchReport
+      : (userPrefs.get().publishLaunchReport !== false);
     const estimate = await estimateRequiredFunding({
       allocations,
       targetMarketCapUsd,
+      publishLaunchReport: reportEnabled,
     });
     res.json({ success: true, estimate });
   } catch (error) {
@@ -2034,7 +2240,7 @@ const acquireJobs = new Map();
 // to finish the funding step.
 const JOB_EXPIRY_MS = 10 * 60 * 1000;
 
-function startAcquireJob({ ownerKeypair, autoSwapPlan }) {
+function startAcquireJob({ ownerKeypair, autoSwapPlan, onFinished = null }) {
   const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const job = {
     jobId,
@@ -2059,6 +2265,13 @@ function startAcquireJob({ ownerKeypair, autoSwapPlan }) {
     job.status = 'done';
     job.finishedAt = Date.now();
     job.error = err.message;
+  }).finally(() => {
+    // Notify the caller the job is over (success OR failure) so it can
+    // release the per-wallet operation lock. Guarded so a callback
+    // throw can't surface as an unhandled rejection.
+    if (onFinished) {
+      try { onFinished(); } catch (_) { /* release is best-effort */ }
+    }
   });
 
   // Schedule cleanup. setTimeout's return value isn't used — we just
@@ -2258,7 +2471,22 @@ app.post('/api/acquire-quote-tokens', async (req, res) => {
         signerMode: req.body.signerMode,
       });
 
-    const jobId = startAcquireJob({ ownerKeypair, autoSwapPlan });
+    // Per-wallet mutex. The acquire job spends the wallet's SOL on swaps
+    // in the background — a duplicate job doubles the SOL spent, and an
+    // acquire racing a create-lp can drain the SOL the launch budgeted.
+    // Unlike the other guarded endpoints, the lock here must outlive the
+    // HTTP response (the job runs after we return), so startAcquireJob
+    // releases it via onFinished when the job completes.
+    const acquireWalletPk = ownerKeypair.publicKey.toBase58();
+    if (rejectOrClaimLaunchOp(res, acquireWalletPk, 'acquire-quote-tokens')) {
+      return;
+    }
+
+    const jobId = startAcquireJob({
+      ownerKeypair,
+      autoSwapPlan,
+      onFinished: () => clearLaunchOpInFlight(acquireWalletPk),
+    });
     res.json({ jobId });
   } catch (error) {
     console.error('[acquire] error starting job:', error);
@@ -2386,6 +2614,7 @@ app.post('/api/create-lp', async (req, res) => {
     }
   }
   let walletPublicKey = null;
+  let claimedLaunchOp = false;
   try {
     const {
       tempWalletSecretKey,
@@ -2407,6 +2636,19 @@ app.post('/api/create-lp', async (req, res) => {
         signerMode: req.body.signerMode,
       });
     walletPublicKey = resolvedWalletPublicKey;
+    // Per-wallet mutex: reject if any other launch operation is running
+    // for this wallet (a prior create-lp that's still going after a
+    // renderer reload, a transfer, an acquire job). See the long comment
+    // on launchOpsInFlight for why this matters. On rejection the
+    // response has already been sent — bail out without touching the
+    // journal (the running operation owns it). claimedLaunchOp tells the
+    // finally block whether WE hold the lock (and must release it) or
+    // someone else does (leave it alone).
+    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'create-lp')) {
+      walletPublicKey = null; // don't end the other op's progress tracker in finally
+      return;
+    }
+    claimedLaunchOp = true;
     const poolPlan = {
       tokenMint,
       tokenDecimals: tokenDecimals || 9,
@@ -2414,6 +2656,15 @@ app.post('/api/create-lp', async (req, res) => {
       targetMarketCapUsd,
       allocations,
       lockPositions: lockPositions !== false,
+      // The configured airdrop (recipients + token identity), journaled so
+      // a resume after an app restart can restore the plan — the transfer
+      // step otherwise builds it from frontend state that didn't survive.
+      // Plan data only; the airdrop executes in /api/transfer-assets.
+      airdropPlan: (req.body.airdrop
+        && Array.isArray(req.body.airdrop.recipients)
+        && req.body.airdrop.recipients.length > 0)
+        ? req.body.airdrop
+        : null,
     };
     launchJournal.upsertForWallet(
       walletPublicKey,
@@ -2539,6 +2790,12 @@ app.post('/api/create-lp', async (req, res) => {
       try { lpProgressEnd(walletPublicKey); }
       catch (_) { /* end is a best-effort cleanup */ }
     }
+    // Release the per-wallet operation lock — but only if WE claimed it.
+    // A 409 rejection path never sets claimedLaunchOp, so we don't
+    // release a lock owned by the still-running operation.
+    if (claimedLaunchOp && walletPublicKey) {
+      clearLaunchOpInFlight(walletPublicKey);
+    }
   }
 });
 
@@ -2557,6 +2814,7 @@ app.post('/api/create-lp', async (req, res) => {
 app.post('/api/resume-launch', async (req, res) => {
   if (isDemoMode()) return demoChainService.handleResumeLaunch(req, res);
   let walletPublicKey = null;
+  let claimedLaunchOp = false;
   try {
     const {
       tempWalletSecretKey,
@@ -2588,6 +2846,15 @@ app.post('/api/resume-launch', async (req, res) => {
         signerMode: req.body.signerMode,
       });
     walletPublicKey = resolvedWalletPublicKey;
+    // Per-wallet mutex — same protection as /api/create-lp. The classic
+    // hazard here: the original create-lp is still running after a UI
+    // reload, the user recovers the wallet and clicks Resume. Without
+    // this guard, two orchestrators would race over the same positions.
+    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'resume-launch')) {
+      walletPublicKey = null; // don't end the other op's progress tracker in finally
+      return;
+    }
+    claimedLaunchOp = true;
     launchJournal.upsertForWallet(
       walletPublicKey,
       {
@@ -2702,6 +2969,11 @@ app.post('/api/resume-launch', async (req, res) => {
     if (walletPublicKey) {
       try { lpProgressEnd(walletPublicKey); }
       catch (_) { /* end is a best-effort cleanup */ }
+    }
+    // Release the per-wallet operation lock if we claimed it (409
+    // rejections never claim, so they never release someone else's).
+    if (claimedLaunchOp && walletPublicKey) {
+      clearLaunchOpInFlight(walletPublicKey);
     }
   }
 });
@@ -2936,6 +3208,7 @@ app.post('/api/transfer-assets', async (req, res) => {
     });
   }
   let walletPublicKey = null;
+  let claimedLaunchOp = false;
   try {
     const {
       tempWalletSecretKey,
@@ -2955,6 +3228,14 @@ app.post('/api/transfer-assets', async (req, res) => {
         signerMode: req.body.signerMode,
       });
     walletPublicKey = resolvedWalletPublicKey;
+    // Per-wallet mutex — a sweep running concurrently with a still-running
+    // create-lp/resume would pull tokens and SOL out from under the launch
+    // mid-flight, guaranteeing a half-finished launch. Reject with 409 and
+    // let the running operation finish first.
+    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'transfer-assets')) {
+      return;
+    }
+    claimedLaunchOp = true;
     launchJournal.upsertForWallet(
       walletPublicKey,
       {
@@ -3013,52 +3294,98 @@ app.post('/api/transfer-assets', async (req, res) => {
           })),
         };
       } else {
+        // Per-recipient idempotency: the transfer endpoint is re-runnable
+        // after a partial failure, and the frontend re-sends the FULL
+        // airdrop payload each attempt. Filter out recipients the journal
+        // already records as delivered so a transfer retry can never
+        // double-pay. (parseAirdropCsv dedupes wallets client-side, so
+        // wallet address is a safe unique key.)
+        const priorAirdrop = launchJournal.activeForWallet(walletPublicKey)?.airdrop || null;
+        const priorDelivered = Array.isArray(priorAirdrop?.transferred)
+          ? priorAirdrop.transferred
+          : [];
+        const deliveredWallets = new Set(priorDelivered.map((t) => t.wallet));
+        const pendingRecipients = req.body.airdrop.recipients.filter(
+          (r) => !deliveredWallets.has(r.wallet),
+        );
+        if (priorDelivered.length > 0) {
+          console.log(
+            `Airdrop retry-safety: ${priorDelivered.length} recipient(s) already `
+            + `delivered per journal — sending to ${pendingRecipients.length} remaining.`,
+          );
+        }
+
+        if (pendingRecipients.length === 0) {
+          // Everything already delivered in a prior attempt — skip the
+          // execution entirely and report the journal's record so the
+          // frontend/report still see the full result.
+          airdropResult = { transferred: priorDelivered, failed: [] };
+          launchJournal.recordEvent(walletPublicKey, {
+            stage: 'airdrop_skipped_already_delivered',
+            delivered: priorDelivered.length,
+          });
+        } else {
         // Record airdrop start in the journal so a crashed-mid-airdrop
         // case is debuggable from the journal alone. recordEvent appends
         // to the wallet's event stream without mutating the top-level
         // status (the transfer is still active overall).
         launchJournal.recordEvent(walletPublicKey, {
           stage: 'airdrop_started',
-          recipients: req.body.airdrop.recipients.length,
+          recipients: pendingRecipients.length,
           tokenMint: req.body.airdrop.tokenMint,
         });
         markAirdropInFlight(walletPublicKey);
-        airdropProgressBegin(walletPublicKey, req.body.airdrop.recipients.length);
+        airdropProgressBegin(walletPublicKey, pendingRecipients.length);
         try {
           airdropResult = await executeAirdrop({
             tempWalletSecretKey: secretKeyArr,
             tokenMint: req.body.airdrop.tokenMint,
             tokenDecimals: req.body.airdrop.tokenDecimals,
             isToken2022: !!req.body.airdrop.isToken2022,
-            recipients: req.body.airdrop.recipients,
+            recipients: pendingRecipients,
             onProgress: (s) => airdropProgressStep(walletPublicKey, s),
           });
+          // Merge previously-delivered recipients back in so the response
+          // and the journal carry the COMPLETE picture, not just this
+          // attempt's slice.
+          airdropResult = {
+            transferred: [...priorDelivered, ...airdropResult.transferred],
+            failed: airdropResult.failed,
+          };
           console.log(
             `Airdrop summary: ${airdropResult.transferred.length} delivered, `
             + `${airdropResult.failed.length} failed`,
           );
           // Record completion. Includes a partial flag so the journal
           // viewer can distinguish a fully-clean airdrop from one that
-          // had per-recipient failures.
-          launchJournal.recordEvent(walletPublicKey, {
-            stage: 'airdrop_completed',
-            delivered: airdropResult.transferred.length,
-            failed: airdropResult.failed.length,
-            partial: airdropResult.failed.length > 0,
-          });
+          // had per-recipient failures. The full per-recipient record is
+          // persisted on journal.airdrop (the patch below) so transfer
+          // retries can skip delivered wallets and an app restart can
+          // restore the report's airdrop section and the retry button.
+          launchJournal.upsertForWallet(
+            walletPublicKey,
+            { airdrop: airdropResult },
+            {
+              stage: 'airdrop_completed',
+              delivered: airdropResult.transferred.length,
+              failed: airdropResult.failed.length,
+              partial: airdropResult.failed.length > 0,
+            },
+          );
         } catch (e) {
           // An UNEXPECTED airdrop failure (one that bypassed per-recipient
           // try/catch — likely a bad mint or connection init failure)
           // shouldn't abort the rest of the sweep. We log it and mark
-          // every recipient as failed so the user sees what happened.
+          // every remaining recipient as failed so the user sees what
+          // happened; previously-delivered recipients stay delivered.
           console.error('Airdrop step failed unexpectedly:', e.message);
           launchJournal.recordEvent(walletPublicKey, {
             stage: 'airdrop_crashed',
             error: e.message,
           });
           airdropResult = {
-            transferred: [],
-            failed: req.body.airdrop.recipients.map((r) => ({
+            transferred: priorDelivered,
+            failed: pendingRecipients.map((r) => ({
               wallet: r.wallet,
               tokens: r.tokens,
               amountRaw: null,
@@ -3074,6 +3401,7 @@ app.post('/api/transfer-assets', async (req, res) => {
           // poller sees the terminal state on its next call. The
           // tracker auto-clears itself after ~10s of being done.
           airdropProgressEnd(walletPublicKey);
+        }
         }
       }
     }
@@ -3129,7 +3457,13 @@ app.post('/api/transfer-assets', async (req, res) => {
     // future UI iterations can show per-token results.
     const tokensTransferred = tokenSweep.transferred.length;
     const solTransferred = solSweep.solTransferred;
-    const airdropFailedCount = airdropResult ? airdropResult.failed.length : 0;
+    const airdropFailedCount = airdropResult
+      ? airdropResult.failed.length
+      // No airdrop in this request (the new flow runs it as a separate
+      // /api/run-airdrop call before the sweep) — read the persistent
+      // record instead so failed recipients still mark the transfer
+      // partial, same as when the airdrop ran in-process.
+      : (launchJournal.activeForWallet(walletPublicKey)?.airdrop?.failed?.length || 0);
     const hasPartialFailure =
       !!solSweepError ||
       (tokenSweep.errors || []).length > 0 ||
@@ -3185,6 +3519,13 @@ app.post('/api/transfer-assets', async (req, res) => {
       );
     }
     res.status(500).json({ success: false, error: error.message });
+  } finally {
+    // Release the per-wallet operation lock if we claimed it. 409
+    // rejections never claim, so a rejected duplicate doesn't release
+    // the lock held by the operation that's actually running.
+    if (claimedLaunchOp && walletPublicKey) {
+      clearLaunchOpInFlight(walletPublicKey);
+    }
   }
 });
 
@@ -3206,7 +3547,7 @@ app.post('/api/transfer-assets', async (req, res) => {
 // have moved to your destination wallet — distribute manually from
 // there" message.
 // ---------------------------------------------------------------------------
-app.post('/api/retry-airdrop', async (req, res) => {
+async function runAirdropHandler(req, res) {
   if (isDemoMode()) {
     return demoChainService.handleRetryAirdrop(req, res, {
       airdropProgress: {
@@ -3217,6 +3558,7 @@ app.post('/api/retry-airdrop', async (req, res) => {
     });
   }
   let walletPublicKey = null;
+  let claimedLaunchOp = false;
   try {
     const {
       tempWalletSecretKey,
@@ -3253,6 +3595,16 @@ app.post('/api/retry-airdrop', async (req, res) => {
       });
     walletPublicKey = resolvedWalletPublicKey;
 
+    // Per-wallet launch-op mutex: the airdrop moves real tokens and can run
+    // for minutes (no recipient cap). Claiming the same mutex the other
+    // launch ops use means a journal resume or a transfer click can't start
+    // sweeping or locking out from under a running airdrop — and vice
+    // versa: this rejects if a create/resume/transfer is mid-flight.
+    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'run-airdrop')) {
+      return;
+    }
+    claimedLaunchOp = true;
+
     // Concurrency guard. Same reasoning as in /api/transfer-assets: a
     // second concurrent airdrop run could double-pay recipients whose
     // first-pass tx already landed. The retry path is especially
@@ -3272,45 +3624,106 @@ app.post('/api/retry-airdrop', async (req, res) => {
     markAirdropInFlight(walletPublicKey);
     airdropProgressBegin(walletPublicKey, recipients.length);
 
-    console.log(`Retrying airdrop to ${recipients.length} recipient(s)`);
+    // Same per-recipient idempotency as the transfer-assets airdrop step:
+    // drop any wallets the journal already records as delivered, so a
+    // retry can never double-pay (e.g. a stale retry click after a
+    // successful re-transfer already covered the failed rows).
+    const priorAirdrop = launchJournal.activeForWallet(walletPublicKey)?.airdrop || null;
+    const priorDelivered = Array.isArray(priorAirdrop?.transferred)
+      ? priorAirdrop.transferred
+      : [];
+    const deliveredWallets = new Set(priorDelivered.map((t) => t.wallet));
+    const pendingRecipients = recipients.filter((r) => !deliveredWallets.has(r.wallet));
+    if (pendingRecipients.length < recipients.length) {
+      console.log(
+        `Airdrop retry-safety: ${recipients.length - pendingRecipients.length} `
+        + `recipient(s) already delivered per journal — skipping them.`,
+      );
+    }
+
+    console.log(`Retrying airdrop to ${pendingRecipients.length} recipient(s)`);
     let airdropResult;
-    try {
-      airdropResult = await executeAirdrop({
-        tempWalletSecretKey: secretKeyArr,
-        tokenMint,
-        tokenDecimals,
-        isToken2022,
-        recipients,
-        onProgress: (s) => airdropProgressStep(walletPublicKey, s),
-      });
-    } finally {
+    if (pendingRecipients.length === 0) {
       clearAirdropInFlight(walletPublicKey);
       airdropProgressEnd(walletPublicKey);
+      airdropResult = { transferred: [], failed: [] };
+    } else {
+      try {
+        airdropResult = await executeAirdrop({
+          tempWalletSecretKey: secretKeyArr,
+          tokenMint,
+          tokenDecimals,
+          isToken2022,
+          recipients: pendingRecipients,
+          onProgress: (s) => airdropProgressStep(walletPublicKey, s),
+        });
+      } finally {
+        clearAirdropInFlight(walletPublicKey);
+        airdropProgressEnd(walletPublicKey);
+      }
     }
     console.log(
       `Retry summary: ${airdropResult.transferred.length} delivered, `
       + `${airdropResult.failed.length} still failed`,
     );
 
+    // Merge the retry outcome into the journal's persistent airdrop record:
+    // newly-delivered wallets join transferred; the failed list is rebuilt
+    // from this attempt's failures plus any prior failures NOT retried in
+    // this call (the frontend usually retries the full failed set, but a
+    // partial retry shouldn't erase the record of the rows it skipped).
+    const retriedWallets = new Set(pendingRecipients.map((r) => r.wallet));
+    const newlyDeliveredWallets = new Set(airdropResult.transferred.map((t) => t.wallet));
+    const priorFailed = Array.isArray(priorAirdrop?.failed) ? priorAirdrop.failed : [];
+    const mergedAirdrop = {
+      transferred: [...priorDelivered, ...airdropResult.transferred],
+      failed: [
+        ...priorFailed.filter(
+          (f) => !retriedWallets.has(f.wallet) && !newlyDeliveredWallets.has(f.wallet),
+        ),
+        ...airdropResult.failed,
+      ],
+    };
+
     // Record a retry event in the journal so the launch history shows
-    // the recovery attempt. We don't change the launch's overall status
-    // here — the journal entry is informational.
-    launchJournal.recordEvent(walletPublicKey, {
-      stage: 'airdrop_retry',
-      retried: recipients.length,
-      delivered: airdropResult.transferred.length,
-      stillFailed: airdropResult.failed.length,
-    });
+    // the recovery attempt, and persist the merged per-recipient record.
+    // We don't change the launch's overall status here.
+    launchJournal.upsertForWallet(
+      walletPublicKey,
+      { airdrop: mergedAirdrop },
+      {
+        stage: 'airdrop_retry',
+        retried: pendingRecipients.length,
+        delivered: airdropResult.transferred.length,
+        stillFailed: airdropResult.failed.length,
+      },
+    );
 
     res.json({
       success: true,
-      airdrop: airdropResult,
+      // The merged record, not just this attempt's slice — the frontend
+      // replaces lastAirdropResult wholesale with this.
+      airdrop: mergedAirdrop,
     });
   } catch (error) {
     console.error('Airdrop retry failed:', error);
     res.status(500).json({ success: false, error: error.message });
+  } finally {
+    // Release the launch-op mutex no matter how the handler exited. Only
+    // when WE claimed it — a 409 from rejectOrClaimLaunchOp means another
+    // op holds it and clearing here would release someone else's claim.
+    if (claimedLaunchOp && walletPublicKey) {
+      clearLaunchOpInFlight(walletPublicKey);
+    }
   }
-});
+}
+
+// First-pass airdrop (step 6a of the transfer flow) and the retry button
+// share this handler — both are "send to every recipient not yet marked
+// delivered in the journal". The two routes exist so the frontend code
+// reads honestly at each call site.
+app.post('/api/run-airdrop', runAirdropHandler);
+app.post('/api/retry-airdrop', runAirdropHandler);
 
 // ---------------------------------------------------------------------------
 // Recovery cache for temporary wallets.

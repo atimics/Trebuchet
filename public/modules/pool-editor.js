@@ -3291,7 +3291,7 @@ async function runCostPreview() {
     const resp = await fetch('/api/estimate-lp-funding', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc }),
+      body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc, publishLaunchReport: isLaunchReportEnabled() }),
     });
     // If a newer request started while this one was in flight, drop
     // our result. Without this guard, an out-of-order response could
@@ -3716,7 +3716,7 @@ bind('continueToFundingBtn', 'click', async () => {
         // targetMarketCapUsd is only used by the estimator when a custom-
         // mode bootstrap is present, but we send it unconditionally so the
         // server has it available regardless. All-minimal launches ignore it.
-        body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc }),
+        body: JSON.stringify({ allocations, targetMarketCapUsd: targetMc, publishLaunchReport: isLaunchReportEnabled() }),
       });
       const data = await resp.json();
       if (!data.success) throw new Error(data.error);
@@ -3896,6 +3896,7 @@ function resetForNewLaunch() {
   createdTokenInfo = null;
   lpResult = null;
   lastAirdropResult = null;
+  restoredAirdropPayload = null;
   if (typeof _resetCachedReport === 'function') _resetCachedReport();
   fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
   fundingWallet = null;
