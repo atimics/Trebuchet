@@ -74,6 +74,25 @@ test('app.js contains the Solflare browser wallet bridge', () => {
   );
 });
 
+test('app.js centralizes launch signer request fields', () => {
+  assert.ok(
+    appJs.includes('function buildLaunchSignerRequestFields'),
+    'launch signer request helper is missing from app.js',
+  );
+  assert.ok(
+    appJs.includes('SIGNER_MODE_BROWSER_WALLET'),
+    'browser-wallet signer mode constant is missing from app.js',
+  );
+  assert.ok(
+    appJs.includes('...buildLaunchSignerRequestFields()'),
+    'launch endpoint callers are not using the centralized signer helper',
+  );
+  assert.ok(
+    !appJs.includes("demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}"),
+    'launch endpoint callers still open-code inline demo secret handling',
+  );
+});
+
 test('app.js is not a truncated stale-module build', () => {
   // The full app.js is ~18k lines / ~830KB. A rebuild from the stale modules
   // produces ~12k lines / ~540KB. Guard against a regressed bundle slipping in.

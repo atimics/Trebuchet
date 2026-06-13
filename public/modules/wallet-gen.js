@@ -46,7 +46,10 @@ bind('generateWalletBtn', 'click', async () => {
       if (!data.success) throw new Error(data.error);
 
       // Reset all per-launch state so a regenerate starts truly fresh
-      tempWallet = data.wallet;
+      tempWallet = {
+        ...data.wallet,
+        signerMode: SIGNER_MODE_SERVER_WALLET,
+      };
       fundingWallet = null;
       fundingDetectionExhausted = false;
       lastSolBalance = 0;
@@ -255,4 +258,3 @@ bind('tokenLogo', 'change', async (e) => {
 });
 
 const poolList = document.getElementById('poolList');
-

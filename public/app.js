@@ -103,6 +103,77 @@ let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 //     failed:      [{wallet, tokens, amountRaw, error}, ...] }
 let lastAirdropResult = null;
 
+// ===========================================================================
+// Launch signer boundary
+// ===========================================================================
+//
+// Desktop mode currently uses a server-held launch wallet: the client sends the
+// public key and the server resolves the private key from pendingWallets. Demo
+// mode is the exception because demo wallets are intentionally not persisted, so
+// the throwaway secret still travels inline. Browser-wallet signing will plug in
+// at this boundary rather than scattering provider checks across every launch
+// endpoint caller.
+const SIGNER_MODE_SERVER_WALLET = 'server-wallet';
+const SIGNER_MODE_BROWSER_WALLET = 'browser-wallet';
+
+function getActiveLaunchSigner() {
+  if (tempWallet?.publicKey) {
+    return {
+      mode: tempWallet.signerMode || SIGNER_MODE_SERVER_WALLET,
+      publicKey: tempWallet.publicKey,
+      secretKey: tempWallet.secretKey || null,
+      provider: tempWallet.signerProvider || null,
+    };
+  }
+
+  const browserSigner = typeof window.getSolflareSigner === 'function'
+    ? window.getSolflareSigner()
+    : null;
+  if (browserSigner?.address) {
+    return {
+      mode: SIGNER_MODE_BROWSER_WALLET,
+      publicKey: browserSigner.address,
+      signer: browserSigner,
+      provider: 'solflare',
+    };
+  }
+
+  return null;
+}
+
+function buildLaunchSignerRequestFields({ allowBrowserWallet = false } = {}) {
+  const signer = getActiveLaunchSigner();
+  if (!signer?.publicKey) {
+    throw new Error('Launch wallet not available.');
+  }
+
+  if (signer.mode === SIGNER_MODE_BROWSER_WALLET) {
+    if (!allowBrowserWallet) {
+      throw new Error('Browser-wallet signing is not available for this launch step yet.');
+    }
+    return {
+      signerMode: SIGNER_MODE_BROWSER_WALLET,
+      walletProvider: signer.provider,
+      walletPublicKey: signer.publicKey,
+    };
+  }
+
+  const fields = {
+    signerMode: SIGNER_MODE_SERVER_WALLET,
+    walletPublicKey: signer.publicKey,
+  };
+  if (demoModeActive) {
+    if (!signer.secretKey) {
+      throw new Error('Demo launch wallet secret is not available.');
+    }
+    fields.tempWalletSecretKey = signer.secretKey;
+  }
+  return fields;
+}
+
+window.getActiveLaunchSigner = getActiveLaunchSigner;
+window.buildLaunchSignerRequestFields = buildLaunchSignerRequestFields;
+
 // Cache of resolved quote-token info, keyed by the canonical input the
 // user typed/picked (e.g. 'SOL', 'USDC', or a base58 mint address). Each
 // entry is the full info payload that resolvePoolQuote would otherwise
@@ -667,7 +738,6 @@ const STEP_TITLES = {
   5: 'Create Pools',
   6: 'Transfer Assets',
 };
-
 // ===========================================================================
 // Logging
 // ===========================================================================
@@ -1935,11 +2005,7 @@ bind('cancelConfirmProceedBtn', 'click', async () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          walletPublicKey: tempWallet.publicKey,
-          // F5: the server resolves the secret from its encrypted store using
-          // the public key for real launches; only demo mode (in-memory
-          // ledger, no server-side secret) still sends the key inline.
-          ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+          ...buildLaunchSignerRequestFields(),
           destinationWallet: dest,
           tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
         }),
@@ -2016,7 +2082,6 @@ bind('cancelConfirmProceedBtn', 'click', async () => {
 });
 
 bind('cancelBtn', 'click', openCancelConfirm);
-
 // ===========================================================================
 // Activity log toggle
 // ===========================================================================
@@ -2570,7 +2635,10 @@ bind('generateWalletBtn', 'click', async () => {
       if (!data.success) throw new Error(data.error);
 
       // Reset all per-launch state so a regenerate starts truly fresh
-      tempWallet = data.wallet;
+      tempWallet = {
+        ...data.wallet,
+        signerMode: SIGNER_MODE_SERVER_WALLET,
+      };
       fundingWallet = null;
       fundingDetectionExhausted = false;
       lastSolBalance = 0;
@@ -2779,7 +2847,6 @@ bind('tokenLogo', 'change', async (e) => {
 });
 
 const poolList = document.getElementById('poolList');
-
 // ===========================================================================
 // Solflare browser wallet
 // ===========================================================================
@@ -14600,11 +14667,7 @@ async function runAcquireFlow(planSubset, btn) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        walletPublicKey: tempWallet.publicKey,
-        // F5: the server resolves the secret from its encrypted store using
-        // the public key for real launches; only demo mode (in-memory
-        // ledger, no server-side secret) still sends the key inline.
-        ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+        ...buildLaunchSignerRequestFields(),
         autoSwapPlan: planSubset,
       }),
     });
@@ -15033,7 +15096,6 @@ bind('continueToTokenBtn', 'click', () => {
   setStepSummary(3, `funded`);
   activateStep(4);
 });
-
 // ===========================================================================
 // STEP 4: Create token
 // ===========================================================================
@@ -15046,12 +15108,11 @@ bind('createTokenBtn', 'click', async () => {
     try {
       log('Creating token...');
       const formData = new FormData();
-      // F5: send the public key; the server resolves the secret from its
-      // encrypted store for real launches. Demo has no server-side secret,
-      // so it still appends the throwaway secret inline.
-      formData.append('walletPublicKey', tempWallet.publicKey);
-      if (demoModeActive) {
-        formData.append('tempWalletSecretKey', JSON.stringify(tempWallet.secretKey));
+      const signerFields = buildLaunchSignerRequestFields();
+      formData.append('signerMode', signerFields.signerMode);
+      formData.append('walletPublicKey', signerFields.walletPublicKey);
+      if (signerFields.tempWalletSecretKey) {
+        formData.append('tempWalletSecretKey', JSON.stringify(signerFields.tempWalletSecretKey));
       }
       formData.append('name', document.getElementById('tokenName').value.trim());
       formData.append('symbol', document.getElementById('tokenSymbol').value.trim());
@@ -15541,11 +15602,7 @@ bind('createLpBtn', 'click', async () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            walletPublicKey: tempWallet.publicKey,
-            // F5: the server resolves the secret from its encrypted store using
-            // the public key for real launches; only demo mode (in-memory
-            // ledger, no server-side secret) still sends the key inline.
-            ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+            ...buildLaunchSignerRequestFields(),
             tokenMint: createdTokenInfo.mint,
             tokenDecimals: createdTokenInfo.decimals,
             tokenTotalSupply: createdTokenInfo.totalSupply,
@@ -16561,11 +16618,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          walletPublicKey: tempWallet.publicKey,
-          // F5: the server resolves the secret from its encrypted store using
-          // the public key for real launches; only demo mode (in-memory
-          // ledger, no server-side secret) still sends the key inline.
-          ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+          ...buildLaunchSignerRequestFields(),
           tokenMint: createdTokenInfo.mint,
           tokenDecimals: createdTokenInfo.decimals,
           tokenTotalSupply: createdTokenInfo.totalSupply,
@@ -17179,7 +17232,6 @@ function clearVanityCAs() {
   selectedVanityCA = null;
   renderVanityCAList();
 }
-
 // ===========================================================================
 // STEP 6: Transfer assets
 // ===========================================================================
@@ -17548,11 +17600,7 @@ async function runTransfer() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            walletPublicKey: tempWallet.publicKey,
-            // F5: the server resolves the secret from its encrypted store using
-            // the public key for real launches; only demo mode (in-memory
-            // ledger, no server-side secret) still sends the key inline.
-            ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+            ...buildLaunchSignerRequestFields(),
             destinationWallet: dest,
             tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
             // airdrop is optional — present only when applicable, omitted
@@ -17895,11 +17943,7 @@ async function runAirdropRetry() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          walletPublicKey: tempWallet.publicKey,
-          // F5: the server resolves the secret from its encrypted store using
-          // the public key for real launches; only demo mode (in-memory
-          // ledger, no server-side secret) still sends the key inline.
-          ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+          ...buildLaunchSignerRequestFields(),
           tokenMint: createdTokenInfo.mint,
           tokenDecimals: createdTokenInfo.decimals,
           isToken2022: false,
@@ -18186,6 +18230,7 @@ function canResumeLaunchJournal(journal, wallet) {
 
 function prepareRecoveredSessionFromJournal(journal, wallet) {
   tempWallet = {
+    signerMode: SIGNER_MODE_SERVER_WALLET,
     publicKey: wallet.publicKey,
     ...(wallet.secretKey ? { secretKey: wallet.secretKey } : {}),
     ...(wallet.secretKeyB58 ? { secretKeyB58: wallet.secretKeyB58 } : {}),
@@ -18438,6 +18483,7 @@ function buildLaunchJournalRow(journal, wallet) {
     if (typeof clearVanityCAs === 'function') clearVanityCAs();
 
     tempWallet = {
+      signerMode: SIGNER_MODE_SERVER_WALLET,
       publicKey: wallet.publicKey,
     };
 

@@ -366,11 +366,7 @@ async function runTransfer() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            walletPublicKey: tempWallet.publicKey,
-            // F5: the server resolves the secret from its encrypted store using
-            // the public key for real launches; only demo mode (in-memory
-            // ledger, no server-side secret) still sends the key inline.
-            ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+            ...buildLaunchSignerRequestFields(),
             destinationWallet: dest,
             tokenMint: createdTokenInfo ? createdTokenInfo.mint : '',
             // airdrop is optional — present only when applicable, omitted
@@ -713,11 +709,7 @@ async function runAirdropRetry() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          walletPublicKey: tempWallet.publicKey,
-          // F5: the server resolves the secret from its encrypted store using
-          // the public key for real launches; only demo mode (in-memory
-          // ledger, no server-side secret) still sends the key inline.
-          ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+          ...buildLaunchSignerRequestFields(),
           tokenMint: createdTokenInfo.mint,
           tokenDecimals: createdTokenInfo.decimals,
           isToken2022: false,

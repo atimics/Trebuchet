@@ -103,6 +103,77 @@ let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 //     failed:      [{wallet, tokens, amountRaw, error}, ...] }
 let lastAirdropResult = null;
 
+// ===========================================================================
+// Launch signer boundary
+// ===========================================================================
+//
+// Desktop mode currently uses a server-held launch wallet: the client sends the
+// public key and the server resolves the private key from pendingWallets. Demo
+// mode is the exception because demo wallets are intentionally not persisted, so
+// the throwaway secret still travels inline. Browser-wallet signing will plug in
+// at this boundary rather than scattering provider checks across every launch
+// endpoint caller.
+const SIGNER_MODE_SERVER_WALLET = 'server-wallet';
+const SIGNER_MODE_BROWSER_WALLET = 'browser-wallet';
+
+function getActiveLaunchSigner() {
+  if (tempWallet?.publicKey) {
+    return {
+      mode: tempWallet.signerMode || SIGNER_MODE_SERVER_WALLET,
+      publicKey: tempWallet.publicKey,
+      secretKey: tempWallet.secretKey || null,
+      provider: tempWallet.signerProvider || null,
+    };
+  }
+
+  const browserSigner = typeof window.getSolflareSigner === 'function'
+    ? window.getSolflareSigner()
+    : null;
+  if (browserSigner?.address) {
+    return {
+      mode: SIGNER_MODE_BROWSER_WALLET,
+      publicKey: browserSigner.address,
+      signer: browserSigner,
+      provider: 'solflare',
+    };
+  }
+
+  return null;
+}
+
+function buildLaunchSignerRequestFields({ allowBrowserWallet = false } = {}) {
+  const signer = getActiveLaunchSigner();
+  if (!signer?.publicKey) {
+    throw new Error('Launch wallet not available.');
+  }
+
+  if (signer.mode === SIGNER_MODE_BROWSER_WALLET) {
+    if (!allowBrowserWallet) {
+      throw new Error('Browser-wallet signing is not available for this launch step yet.');
+    }
+    return {
+      signerMode: SIGNER_MODE_BROWSER_WALLET,
+      walletProvider: signer.provider,
+      walletPublicKey: signer.publicKey,
+    };
+  }
+
+  const fields = {
+    signerMode: SIGNER_MODE_SERVER_WALLET,
+    walletPublicKey: signer.publicKey,
+  };
+  if (demoModeActive) {
+    if (!signer.secretKey) {
+      throw new Error('Demo launch wallet secret is not available.');
+    }
+    fields.tempWalletSecretKey = signer.secretKey;
+  }
+  return fields;
+}
+
+window.getActiveLaunchSigner = getActiveLaunchSigner;
+window.buildLaunchSignerRequestFields = buildLaunchSignerRequestFields;
+
 // Cache of resolved quote-token info, keyed by the canonical input the
 // user typed/picked (e.g. 'SOL', 'USDC', or a base58 mint address). Each
 // entry is the full info payload that resolvePoolQuote would otherwise
@@ -667,4 +738,3 @@ const STEP_TITLES = {
   5: 'Create Pools',
   6: 'Transfer Assets',
 };
-

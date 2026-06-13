@@ -10,12 +10,11 @@ bind('createTokenBtn', 'click', async () => {
     try {
       log('Creating token...');
       const formData = new FormData();
-      // F5: send the public key; the server resolves the secret from its
-      // encrypted store for real launches. Demo has no server-side secret,
-      // so it still appends the throwaway secret inline.
-      formData.append('walletPublicKey', tempWallet.publicKey);
-      if (demoModeActive) {
-        formData.append('tempWalletSecretKey', JSON.stringify(tempWallet.secretKey));
+      const signerFields = buildLaunchSignerRequestFields();
+      formData.append('signerMode', signerFields.signerMode);
+      formData.append('walletPublicKey', signerFields.walletPublicKey);
+      if (signerFields.tempWalletSecretKey) {
+        formData.append('tempWalletSecretKey', JSON.stringify(signerFields.tempWalletSecretKey));
       }
       formData.append('name', document.getElementById('tokenName').value.trim());
       formData.append('symbol', document.getElementById('tokenSymbol').value.trim());
@@ -505,11 +504,7 @@ bind('createLpBtn', 'click', async () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            walletPublicKey: tempWallet.publicKey,
-            // F5: the server resolves the secret from its encrypted store using
-            // the public key for real launches; only demo mode (in-memory
-            // ledger, no server-side secret) still sends the key inline.
-            ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+            ...buildLaunchSignerRequestFields(),
             tokenMint: createdTokenInfo.mint,
             tokenDecimals: createdTokenInfo.decimals,
             tokenTotalSupply: createdTokenInfo.totalSupply,
@@ -1525,11 +1520,7 @@ bind('retryBootstrapsBtn', 'click', async () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          walletPublicKey: tempWallet.publicKey,
-          // F5: the server resolves the secret from its encrypted store using
-          // the public key for real launches; only demo mode (in-memory
-          // ledger, no server-side secret) still sends the key inline.
-          ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
+          ...buildLaunchSignerRequestFields(),
           tokenMint: createdTokenInfo.mint,
           tokenDecimals: createdTokenInfo.decimals,
           tokenTotalSupply: createdTokenInfo.totalSupply,
@@ -2143,4 +2134,3 @@ function clearVanityCAs() {
   selectedVanityCA = null;
   renderVanityCAList();
 }
-

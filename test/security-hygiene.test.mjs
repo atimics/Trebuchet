@@ -78,3 +78,11 @@ test('splash debug endpoint is opt-in only', () => {
   assert.ok(gateStart >= 0, 'splash debug env gate missing');
   assert.ok(routeStart > gateStart, 'splash debug route must be inside the env-gated block');
 });
+
+test('server-signed endpoints reject browser-wallet signer mode', () => {
+  const server = read('server.js');
+
+  assert.match(server, /signerMode === 'browser-wallet'/);
+  assert.match(server, /browser-wallet signing is not supported by this server-signed endpoint yet/);
+  assert.match(server, /signerMode: req\.body\.signerMode/);
+});

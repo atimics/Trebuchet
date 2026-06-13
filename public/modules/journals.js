@@ -212,6 +212,7 @@ function canResumeLaunchJournal(journal, wallet) {
 
 function prepareRecoveredSessionFromJournal(journal, wallet) {
   tempWallet = {
+    signerMode: SIGNER_MODE_SERVER_WALLET,
     publicKey: wallet.publicKey,
     ...(wallet.secretKey ? { secretKey: wallet.secretKey } : {}),
     ...(wallet.secretKeyB58 ? { secretKeyB58: wallet.secretKeyB58 } : {}),
@@ -464,6 +465,7 @@ function buildLaunchJournalRow(journal, wallet) {
     if (typeof clearVanityCAs === 'function') clearVanityCAs();
 
     tempWallet = {
+      signerMode: SIGNER_MODE_SERVER_WALLET,
       publicKey: wallet.publicKey,
     };
 

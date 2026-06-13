@@ -1341,7 +1341,11 @@ app.post('/api/create-token', uploadLogo, async (req, res) => {
     }
 
     const { secretKeyArr: tempWalletSecretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
+      resolveSigner({
+        tempWalletSecretKey,
+        walletPublicKey: req.body.walletPublicKey,
+        signerMode: req.body.signerMode,
+      });
     walletPublicKey = resolvedWalletPublicKey;
     launchJournal.upsertForWallet(
       walletPublicKey,
@@ -2248,7 +2252,11 @@ app.post('/api/acquire-quote-tokens', async (req, res) => {
       return res.json({ jobId });
     }
     const { secretKeyArr, keypair: ownerKeypair } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
+      resolveSigner({
+        tempWalletSecretKey,
+        walletPublicKey: req.body.walletPublicKey,
+        signerMode: req.body.signerMode,
+      });
 
     const jobId = startAcquireJob({ ownerKeypair, autoSwapPlan });
     res.json({ jobId });
@@ -2393,7 +2401,11 @@ app.post('/api/create-lp', async (req, res) => {
     console.log('Allocations:', JSON.stringify(allocations, null, 2));
 
     const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
+      resolveSigner({
+        tempWalletSecretKey,
+        walletPublicKey: req.body.walletPublicKey,
+        signerMode: req.body.signerMode,
+      });
     walletPublicKey = resolvedWalletPublicKey;
     const poolPlan = {
       tokenMint,
@@ -2570,7 +2582,11 @@ app.post('/api/resume-launch', async (req, res) => {
     );
 
     const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
+      resolveSigner({
+        tempWalletSecretKey,
+        walletPublicKey: req.body.walletPublicKey,
+        signerMode: req.body.signerMode,
+      });
     walletPublicKey = resolvedWalletPublicKey;
     launchJournal.upsertForWallet(
       walletPublicKey,
@@ -2933,7 +2949,11 @@ app.post('/api/transfer-assets', async (req, res) => {
     console.log('Transferring assets to:', destinationWallet);
 
     const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
+      resolveSigner({
+        tempWalletSecretKey,
+        walletPublicKey: req.body.walletPublicKey,
+        signerMode: req.body.signerMode,
+      });
     walletPublicKey = resolvedWalletPublicKey;
     launchJournal.upsertForWallet(
       walletPublicKey,
@@ -3226,7 +3246,11 @@ app.post('/api/retry-airdrop', async (req, res) => {
     }
 
     const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
+      resolveSigner({
+        tempWalletSecretKey,
+        walletPublicKey: req.body.walletPublicKey,
+        signerMode: req.body.signerMode,
+      });
     walletPublicKey = resolvedWalletPublicKey;
 
     // Concurrency guard. Same reasoning as in /api/transfer-assets: a
@@ -3644,6 +3668,11 @@ function walletPubkeyFromSecretArray(secretKeyArr) {
 // public key, so the ephemeral secret no longer has to round-trip back
 // through the renderer on every launch step.
 //
+// Browser-wallet mode is intentionally rejected here: these endpoints still
+// perform server-side transaction construction and signing. Browser signing
+// needs a separate prepare/sign/submit API shape rather than falling through to
+// server secret lookup.
+//
 // Resolution order:
 //   1. walletPublicKey present and found in pendingWallets → use the stored
 //      (encrypted-at-rest) secret. This is the real-launch path: the secret
@@ -3658,7 +3687,11 @@ function walletPubkeyFromSecretArray(secretKeyArr) {
 // When both a public key and an inline secret arrive, the derived public key
 // must match the claimed one — a mismatch means a confused or tampered
 // request, so we refuse rather than sign with the wrong key.
-function resolveSigner({ tempWalletSecretKey, walletPublicKey } = {}) {
+function resolveSigner({ tempWalletSecretKey, walletPublicKey, signerMode } = {}) {
+  if (signerMode === 'browser-wallet') {
+    throw new Error('browser-wallet signing is not supported by this server-signed endpoint yet');
+  }
+
   let secretKeyArr = null;
   let source = null;
 
