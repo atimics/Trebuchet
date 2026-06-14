@@ -73,6 +73,10 @@ test('app.js contains the Solflare browser wallet bridge', () => {
     appJs.includes('getSolflareSigner'),
     'the Solflare signer bridge is missing from app.js',
   );
+  assert.ok(
+    appJs.includes('useSolflareAsLaunchWallet'),
+    'the Solflare launch-wallet bridge is missing from app.js',
+  );
 });
 
 test('app.js centralizes launch signer request fields', () => {

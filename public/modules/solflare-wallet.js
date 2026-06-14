@@ -178,9 +178,11 @@ function setSolflareStatus(message, type = 'light') {
 
 function syncSolflareButtons() {
   const connected = Boolean(solflareWallet?.publicKey);
+  const staticSpa = window.TREBUCHET_STATIC_SPA === true;
   document.getElementById('connectSolflareBtn')?.classList.toggle('hidden', connected);
   document.getElementById('disconnectSolflareBtn')?.classList.toggle('hidden', !connected);
   document.getElementById('useSolflareDestinationBtn')?.classList.toggle('hidden', !connected);
+  document.getElementById('useSolflareLaunchBtn')?.classList.toggle('hidden', !(connected && staticSpa));
 }
 
 function setConnectedSolflareWallet(provider, publicKey) {
@@ -199,9 +201,16 @@ function setConnectedSolflareWallet(provider, publicKey) {
 }
 
 function clearSolflareWallet(message = 'Not connected') {
+  const wasLaunchSigner = tempWallet?.signerMode === SIGNER_MODE_BROWSER_WALLET
+    && tempWallet?.signerProvider === 'solflare';
   solflareWallet = null;
   solflareWalletProvider = null;
   window.connectedSolflareWallet = null;
+  if (wasLaunchSigner) {
+    tempWallet = null;
+    setStepSummary(1, '');
+    updateCancelButtonState();
+  }
   setSolflareStatus(message, 'light');
   syncSolflareButtons();
 }
@@ -215,6 +224,70 @@ function fillDestinationFromSolflare({ silent = false } = {}) {
   if (!silent) {
     log(`Destination wallet set to Solflare: ${shortSolflareAddress(solflareWallet.publicKey)}`, 'success');
   }
+  return true;
+}
+
+function useSolflareAsLaunchWallet() {
+  if (!window.TREBUCHET_STATIC_SPA) {
+    log('Browser-wallet launch mode is only enabled in the static SPA build for now.', 'warning');
+    return false;
+  }
+  if (!solflareWallet?.publicKey || !getSolflareSigner()) {
+    log('Connect Solflare before using it for launch signing.', 'warning');
+    return false;
+  }
+
+  if (balancePollHandle) {
+    clearInterval(balancePollHandle);
+    balancePollHandle = null;
+  }
+
+  tempWallet = {
+    publicKey: solflareWallet.publicKey,
+    signerMode: SIGNER_MODE_BROWSER_WALLET,
+    signerProvider: 'solflare',
+  };
+  fundingWallet = solflareWallet.publicKey;
+  fundingDetectionExhausted = true;
+  lastSolBalance = 0;
+  createdTokenInfo = null;
+  lpResult = null;
+  lastAirdropResult = null;
+  fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
+
+  document.getElementById('walletInfo')?.classList.remove('hidden');
+  document.querySelector('#walletInfo .qr-code')?.classList.add('hidden');
+  const walletAddress = document.getElementById('walletAddress');
+  if (walletAddress) walletAddress.value = solflareWallet.publicKey;
+  document.getElementById('showPrivateKeyBtn')?.classList.add('hidden');
+  document.getElementById('privateKeyContainer')?.classList.add('hidden');
+  document.getElementById('tokenCreatedInfo')?.classList.add('hidden');
+  document.getElementById('createTokenBtn')?.classList.remove('hidden');
+  document.getElementById('createLpBtn')?.classList.remove('hidden');
+  document.getElementById('transferAssetsBtn')?.classList.remove('hidden');
+  setLpDoneVisible(false);
+  document.getElementById('lpFailInfo')?.classList.add('hidden');
+  document.getElementById('lpProgress')?.classList.add('hidden');
+  const progressTree = document.getElementById('lpProgressTree');
+  if (progressTree) progressTree.innerHTML = '';
+  document.getElementById('transferResult')?.classList.add('hidden');
+  document.getElementById('fundingWalletInfo')?.classList.add('hidden');
+  const destination = document.getElementById('destinationWallet');
+  if (destination) destination.value = solflareWallet.publicKey;
+
+  for (let i = 2; i <= 6; i++) setStepSummary(i, '');
+  document.body.classList.add('has-log');
+
+  if (pools.length === 0) {
+    rebuildPoolsFromSimple();
+  }
+  applySimpleConfigMode();
+
+  setStepSummary(1, `${solflareWallet.publicKey.slice(0, 8)}…${solflareWallet.publicKey.slice(-6)}`);
+  activateStep(2);
+  updateContinueToFundingState();
+  updateCancelButtonState();
+  log(`Solflare selected for launch signing: ${shortSolflareAddress(solflareWallet.publicKey)}`, 'success');
   return true;
 }
 
@@ -351,10 +424,12 @@ bind('useSolflareDestinationBtn', 'click', () => {
     log('Connect Solflare before using it as the destination wallet.', 'warning');
   }
 });
+bind('useSolflareLaunchBtn', 'click', useSolflareAsLaunchWallet);
 
 window.getConnectedSolflareWallet = () => solflareWallet;
 window.getSolflareSigner = getSolflareSigner;
 window.applySolflareDestinationWallet = fillDestinationFromSolflare;
+window.useSolflareAsLaunchWallet = useSolflareAsLaunchWallet;
 
 window.addEventListener?.('solana#initialized', () => {
   wireSolflareProviderEvents();

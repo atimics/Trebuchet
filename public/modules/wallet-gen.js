@@ -60,8 +60,10 @@ bind('generateWalletBtn', 'click', async () => {
 
       // Reset UI panels that may carry stale info from a previous attempt
       document.getElementById('walletInfo').classList.remove('hidden');
+      document.querySelector('#walletInfo .qr-code')?.classList.remove('hidden');
       document.getElementById('qrCode').src = data.wallet.qrCode;
       document.getElementById('walletAddress').value = data.wallet.publicKey;
+      document.getElementById('showPrivateKeyBtn')?.classList.remove('hidden');
       document.getElementById('privateKeyContainer').classList.add('hidden');
       document.getElementById('tokenCreatedInfo').classList.add('hidden');
       document.getElementById('createTokenBtn').classList.remove('hidden');
