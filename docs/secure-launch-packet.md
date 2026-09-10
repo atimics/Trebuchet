@@ -44,16 +44,25 @@ Manifest schema: `trebuchet-launch-packet/v1`. The runner MUST:
 
 ## Execution environment
 
-Recommended shape (matches how we already grind vanity keys on AWS):
+The sealed runner (`packages/runner`) is deployed **per-operator** on
+fly.io, not hosted by us:
 
-- A spot/on-demand EC2 instance (or Firecracker container), created
-  fresh per launch and destroyed after.
-- Ingress: none for the duration of the run. The packet arrives via a
-  one-shot channel (S3 pre-signed PUT, scp, or instance user-data).
-- Egress: allow-listed only — Solana RPC endpoints and nothing else.
-- Filesystem: work in a tmpfs (or encrypted instance store) that is
-  wiped when the instance terminates. No logs, no core dumps.
-- The runner process runs as its own user with no shell access.
+- `cd packages/runner && fly launch --no-deploy` accepts the fly.toml +
+  Dockerfile, `fly secrets set TREBUCHET_RUNNER_TOKEN=...`, `fly deploy`.
+- Machines scale to zero when idle and start on the first request, so an
+  idle runner costs ~nothing.
+- **No volumes**: packet state, generated wallets, and the launch
+  journal live in the machine's ephemeral filesystem and vanish with it.
+- The runner runs as an unprivileged user in a minimal image (Node +
+  Core source + runner source, nothing else).
+- Operators attach the static planner site to their own runner by pasting
+  their runner URL + token. Uploads go browser → runner directly; the
+  site only builds and hashes the packet.
+
+**Public web posture:** there is no hosted demo/try-it mode and no hosted
+custody anywhere in this architecture. The public site is static
+(Arweave / trebuchet.ratimics.com); every execution path runs on a
+runner the operator deployed and owns.
 
 ## Key lifecycle inside the runner
 
@@ -90,5 +99,10 @@ prepares and pins artifacts, it does not execute anything.
 ## Current status
 
 - `scripts/build-launch-packet.mjs` — builds and pins packets. Done.
-- Runner container image — not started, blocked on Core contracts.
+- `packages/runner` — sealed runner service: health/attach, bearer-token
+  auth, packet upload with full hash + Core plan-digest verification.
+  Deployable to fly.io (Dockerfile + fly.toml). Done.
+- Runner launch execution — gated behind the Core custody contracts and
+  the funded devnet recovery cycle (POST /v1/launches answers 503
+  NOT_READY until they land).
 - Devnet recovery cycle — not started.
