@@ -107,7 +107,7 @@ function completeProof() {
   return proof;
 }
 
-test('doctor emits one versioned JSON envelope and advertises read-only capability', async () => {
+test('doctor emits one versioned JSON envelope and advertises demo-execute capability', async () => {
   const result = await invoke(['doctor', '--json'], { nodeVersion: '22.12.0', platform: 'linux' });
   assert.equal(result.exitCode, CliExitCode.SUCCESS);
   assert.equal(result.stderr, '');
@@ -116,7 +116,16 @@ test('doctor emits one versioned JSON envelope and advertises read-only capabili
   assert.equal(payload.ok, true);
   assert.equal(payload.command, 'doctor');
   assert.equal(payload.data.transactionExecution, false);
-  assert.deepEqual(payload.data.capabilities, ['plan-build', 'plan-verify', 'estimate', 'proof-verify']);
+  assert.equal(payload.data.demoExecution, true);
+  assert.deepEqual(payload.data.capabilities, ['plan-build', 'plan-verify', 'estimate', 'proof-verify', 'demo-execute']);
+});
+
+test('execute rejects live networks with the stable not-ready exit code', async () => {
+  const result = await invoke(['execute', '--config', 'missing.json', '--network', 'mainnet', '--json']);
+  assert.equal(result.exitCode, CliExitCode.NOT_READY);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(payload.error.message, /Live execution/);
 });
 
 test('plan build, verify, and estimate share the Core integrity contract', async () => withTempDirectory(async (directory) => {
@@ -253,3 +262,28 @@ test('the packed root package bundles Core and runs the published CLI in isolati
   assert.equal(payload.ok, true);
   assert.equal(payload.data.transactionExecution, false);
 }));
+
+test('execute runs a complete demo-runtime launch with a disposable wallet', async () => withTempDirectory(async (directory) => {
+  const configPath = path.join(directory, 'launch.json');
+  const runPath = path.join(directory, 'run.json');
+  await writeFile(configPath, JSON.stringify(launchIntent));
+
+  const result = await invoke(['execute', '--config', configPath, '--out', runPath, '--timeout', '120', '--json']);
+  assert.equal(result.exitCode, CliExitCode.SUCCESS, result.stdout + result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.command, 'execute');
+  assert.equal(payload.data.runtime, 'demo');
+  assert.equal(payload.data.network, 'demo');
+  assert.ok(payload.data.walletPublicKey);
+  assert.ok(payload.data.tokenMint);
+  assert.equal(payload.data.poolCount, 1);
+
+  const run = JSON.parse(await readFile(runPath, 'utf8'));
+  assert.equal(run.schema, 'trebuchet-demo-launch-run/v1');
+  assert.equal(run.runtime, 'demo');
+  assert.ok(run.run.token.success);
+  assert.ok(run.run.liquidity.success);
+  // The disposable wallet secret must not leak into the CLI output file.
+  assert.equal(JSON.stringify(run).includes('secretKey'), false);
+}), { timeout: 180_000 });

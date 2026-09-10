@@ -9,6 +9,7 @@ import { parseCliArguments, CliArgumentError } from './arguments.js';
 import { CliExitCode, exitCodeForError } from './exit-codes.js';
 import { readJsonFile, writeJsonFileAtomic } from './files.js';
 import { CLI_HELP } from './help.js';
+import { runDemoExecute } from './execute.js';
 
 export const TREBUCHET_CLI_VERSION = '0.1.0';
 export const TREBUCHET_CLI_RESULT_SCHEMA = 'trebuchet-cli-result/v1';
@@ -125,8 +126,9 @@ export async function runCli(argv = [], {
         protocolVersion: core.protocolVersion,
         node: { ...node, supported: nodeVersionSupported(node) },
         platform: { name: platform, supported: platformSupported },
-        capabilities: ['plan-build', 'plan-verify', 'estimate', 'proof-verify'],
+        capabilities: ['plan-build', 'plan-verify', 'estimate', 'proof-verify', 'demo-execute'],
         transactionExecution: false,
+        demoExecution: true,
       };
       if (!data.node.supported || !data.platform.supported) {
         throw commandError(TrebuchetCoreErrorCode.NOT_READY, 'This runtime is not supported by the experimental CLI.', data);
@@ -198,6 +200,43 @@ export async function runCli(argv = [], {
         throw commandError(TrebuchetCoreErrorCode.INTEGRITY_MISMATCH, 'Trebuchet proof is invalid.', data);
       }
       humanOutput = () => humanVerification('Trebuchet proof', data, stdout, stderr);
+    } else if (positionals[0] === 'execute') {
+      const usage = 'trebuchet execute --config <launch.json> [--network demo] [--out <run.json>] [--server <server.js>] [--timeout <seconds>] [--json]';
+      requirePositionals(positionals, ['execute'], usage);
+      requireOptions(options, ['config', 'network', 'out', 'server', 'timeout', 'json'], usage);
+      if (!options.config) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--config is required.');
+      const network = options.network || 'demo';
+      if (network !== 'demo') {
+        throw commandError(
+          TrebuchetCoreErrorCode.NOT_READY,
+          `Live execution (${network}) is not available. The CLI can run demo-runtime launches only; mainnet/devnet execution stays blocked until custody, journal, idempotency, and non-interactive confirmation contracts move into Core and pass a funded devnet recovery cycle.`,
+        );
+      }
+      const timeoutMs = options.timeout
+        ? Math.max(5, Number(options.timeout)) * 1000
+        : 300_000;
+      if (!Number.isFinite(timeoutMs)) {
+        throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--timeout must be a number of seconds.');
+      }
+      const summary = await runDemoExecute({
+        configPath: options.config,
+        outPath: options.out || null,
+        serverPath: options.server || null,
+        timeoutMs,
+        onLog: (message) => {
+          if (!options.json) writeLine(stdout, message);
+        },
+      });
+      data = { network: 'demo', ...summary };
+      humanOutput = () => {
+        writeLine(stdout, 'Demo launch completed.');
+        writeLine(stdout, `Run: ${data.runId}`);
+        writeLine(stdout, `Wallet: ${data.walletPublicKey} (disposable — destroyed with the run)`);
+        writeLine(stdout, `Token mint: ${data.tokenMint}`);
+        writeLine(stdout, `Pools: ${data.poolCount}`);
+        writeLine(stdout, `Swept to: ${data.sweepDestination}`);
+        if (data.outputPath) writeLine(stdout, `Run result: ${data.outputPath}`);
+      };
     } else {
       throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `Unknown command: ${command}`);
     }
@@ -208,6 +247,8 @@ export async function runCli(argv = [], {
   } catch (error) {
     const normalized = error instanceof TrebuchetCoreError
       ? error
+      : error?.name === 'ExecuteError'
+        ? commandError(TrebuchetCoreErrorCode.RETRYABLE_DEPENDENCY, error.message, error.serverLog ? [error.serverLog.slice(-4000)] : null)
       : error instanceof CliArgumentError || error instanceof TypeError || error?.code === 'ENOENT'
         ? commandError(TrebuchetCoreErrorCode.INVALID_INPUT, error.message)
         : commandError(TrebuchetCoreErrorCode.INTERNAL, error.message || 'Unexpected CLI failure.');
