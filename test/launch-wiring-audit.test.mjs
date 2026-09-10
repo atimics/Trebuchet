@@ -9,7 +9,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..');
 const serverSrc = readFileSync(path.join(REPO, 'server.js'), 'utf8');
 const lpSrc = readFileSync(path.join(REPO, 'lpService.js'), 'utf8');
-const journalSrc = readFileSync(path.join(REPO, 'launchJournal.js'), 'utf8');
+// The journal contract moved into @trebuchet/core; the app-level
+// launchJournal.js is a thin adapter. Audit the Core module's source.
+const journalSrc = readFileSync(path.join(REPO, 'packages/core/src/launch-journal.js'), 'utf8');
 const transferSrc = readFileSync(path.join(REPO, 'public', 'modules', 'transfer.js'), 'utf8');
 const tokenConfigSrc = readFileSync(path.join(REPO, 'public', 'modules', 'token-config.js'), 'utf8');
 const journalsSrc = readFileSync(path.join(REPO, 'public', 'modules', 'journals.js'), 'utf8');
