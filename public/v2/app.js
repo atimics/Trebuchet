@@ -426,6 +426,7 @@ const state = {
   savedLaunches: [],
   loadedSavedLaunchId: null,
   flywheelPools: { meme: [], reserve: [] },
+  vortexControl: null,
   memeFlywheelMint: null,
   selectedVanityPublicKey: null,
   vanityAvailable: false,
@@ -5420,6 +5421,80 @@ function selectedClassicQuoteVenue() {
     return { ...venue, quoteToken: state.memeFlywheelMint, quoteMint: state.memeFlywheelMint };
   }
   return venue;
+}
+
+// --- Flywheel vortex ------------------------------------------------------
+// Presentation of the pool allocation as a vortex: the flywheel is the fast
+// core, quote pools are inner bands, the SOL market is the outer inflow, and
+// band thickness is share of supply. Dragging a boundary moves supply between
+// neighbouring bands. It reads and writes the same percentage fields the plan
+// builder already consumes, so nothing downstream changes.
+
+function vortexAllocationModel() {
+  const pools = [];
+  (state.customPools || []).forEach((pool, index) => {
+    pools.push({
+      id: `custom-${index}`,
+      symbol: String(pool.quoteSymbol || `Q${index + 1}`).toUpperCase(),
+      percent: Number(pool.supplyPercent || 0),
+      minPercent: 0,
+      feeTier: Number(pool.ammConfigIndex ?? 5),
+    });
+  });
+  const venue = selectedClassicQuoteVenue();
+  const isFlywheel = venue.key === 'meme' || venue.key === 'reserve';
+  pools.push({
+    id: 'sol',
+    symbol: 'SOL',
+    percent: Number($('#mainPoolPercent')?.value || 0),
+    minPercent: 10,
+    feeTier: 8,
+  });
+  const quotePercent = Number($('#quotePoolPercent')?.value || 0);
+  // Always present: a pool at 0% still needs a boundary to drag open.
+  if (isFlywheel || quotePercent > 0) {
+    pools.push({
+      id: 'quote',
+      symbol: isFlywheel ? (venue.key === 'meme' ? 'FLY' : 'RESERVE') : 'USDC',
+      percent: quotePercent,
+      minPercent: isFlywheel ? 10 : 0,
+      maxPercent: isFlywheel ? 30 : 100,
+      feeTier: 5,
+    });
+  }
+  return {
+    pools,
+    depositSol: Number($('#liquidityBudgetSol')?.value || $('#launchSol')?.value || 0),
+    sweepDestination: $('#sweepDestination')?.value || '',
+  };
+}
+
+function applyVortexAllocation(pools = []) {
+  for (const pool of pools) {
+    if (pool.id === 'sol') {
+      if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(pool.percent);
+    } else if (pool.id === 'quote') {
+      if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(pool.percent);
+    } else if (String(pool.id).startsWith('custom-')) {
+      const index = Number(String(pool.id).slice('custom-'.length));
+      if (state.customPools?.[index]) state.customPools[index].supplyPercent = pool.percent;
+    }
+  }
+  renderFlywheelPick();
+  scheduleLaunchAutoSave();
+}
+
+function renderVortexControl() {
+  const host = $('#vortexControl');
+  if (!host || !window.TrebuchetV2Vortex) return;
+  if (!state.vortexControl) {
+    state.vortexControl = window.TrebuchetV2Vortex.mount(host, {
+      read: vortexAllocationModel,
+      write: applyVortexAllocation,
+    });
+  } else {
+    state.vortexControl.render();
+  }
 }
 
 function renderFlywheelPick() {
@@ -18372,6 +18447,7 @@ function renderAll() {
   renderChartDeck();
   renderVanityCandidates();
   renderFlywheelPick();
+  renderVortexControl();
   renderPoolEditorPanel();
   renderAirdropPanel();
   renderReportPanel();
