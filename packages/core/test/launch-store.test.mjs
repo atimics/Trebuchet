@@ -34,7 +34,7 @@ function validConfig(overrides = {}) {
         ladder: { mode: 'off' },
         support: { mode: 'off' },
       }],
-      sweepDestination: '11111111111111111111111111111116',
+      sweepDestination: 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j',
     },
     vanity: { prefix: 'FLY', suffix: 'FLY', selectedPublicKey: 'FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY' },
     ...overrides,
@@ -144,7 +144,7 @@ test('updates preserve fields the launch form does not model', (t) => {
           },
           { quoteSymbol: 'MEME', quoteMint: 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r', supplyPercent: 10, ammConfigIndex: 5 },
         ],
-        sweepDestination: '11111111111111111111111111111116',
+        sweepDestination: 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j',
       },
     }),
   });
@@ -170,7 +170,7 @@ test('updates preserve fields the launch form does not model', (t) => {
           },
           { quoteSymbol: 'SOL', quoteMint: 'So11111111111111111111111111111111111111112', supplyPercent: 80, ammConfigIndex: 8 },
         ],
-        sweepDestination: '11111111111111111111111111111116',
+        sweepDestination: 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j',
       },
     }),
   });

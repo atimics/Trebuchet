@@ -62,7 +62,7 @@ const launchIntent = {
       ladder: { mode: 'off' },
       support: { mode: 'off' },
     }],
-    sweepDestination: '11111111111111111111111111111116',
+    sweepDestination: 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j',
   },
 };
 
@@ -96,7 +96,7 @@ function completeProof() {
     airdrop: { plannedRecipientCount: 0, deliveredCount: 0, failedCount: 0 },
     transfer: {
       status: 'completed',
-      destinationWallet: '11111111111111111111111111111116',
+      destinationWallet: 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j',
       walletEmpty: true,
       solTxId: 'sweep-sol-tx',
       tokenTransferErrors: [],

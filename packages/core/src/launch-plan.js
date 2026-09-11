@@ -868,12 +868,31 @@ function feeKeyRecipientIssues(pools = []) {
   return issues;
 }
 
+// Placeholder destinations used in examples and fixtures (the all-ones
+// system-program family). Sweeping there is unrecoverable: nobody can sign for
+// those addresses, so swept SOL, tokens, and the Fee Key NFTs are gone for
+// good and trading fees can never be claimed.
+const PLACEHOLDER_SWEEP_RE = /^1{20,}[1-9A-HJ-NP-Za-km-z]*$/;
+
 function sweepDestinationIssues(poolTopology = {}) {
   const destination = String(poolTopology.sweepDestination || '').trim();
-  if (!destination || isPlausibleSolanaAddress(destination)) return [];
-  return [{
-    detail: 'Sweep destination does not look like a valid Solana address.',
-  }];
+  if (!destination) return [];
+  if (!isPlausibleSolanaAddress(destination)) {
+    return [{
+      detail: 'Sweep destination does not look like a valid Solana address.',
+    }];
+  }
+  if (PLACEHOLDER_SWEEP_RE.test(destination)) {
+    return [{
+      state: 'danger',
+      blocksFreshLive: true,
+      detail:
+        'Sweep destination looks like a placeholder address (the 1111... family). ' +
+        'Swept SOL, tokens, and the Fee Key NFTs would be unrecoverable - trading fees could never be claimed. ' +
+        'Use a wallet you control.',
+    }];
+  }
+  return [];
 }
 
 function airdropRecipientIssues(airdrop = {}) {
