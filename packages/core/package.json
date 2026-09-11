@@ -6,6 +6,8 @@
   "description": "Headless planning, verification, and execution contracts for Trebuchet.",
   "exports": {
     ".": "./src/index.js",
+    "./confirmation": "./src/confirmation.js",
+    "./custody": "./src/custody.js",
     "./launch-journal": "./src/launch-journal.js",
     "./launch-plan": "./src/launch-plan.js",
     "./launch-recovery": "./src/launch-recovery.js",
