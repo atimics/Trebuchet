@@ -124,3 +124,61 @@ test('corrupt entries are skipped without breaking the list', (t) => {
   assert.equal(listed[0].name, 'Good');
 });
 
+
+test('updates preserve fields the launch form does not model', (t) => {
+  const store = makeStore(t);
+  const stored = store.save({
+    name: 'FLYBRAIN',
+    config: validConfig({
+      walletPublicKey: 'WalletPreserve11111111111111111111111111111',
+      poolTopology: {
+        targetMarketCapUsd: 250000,
+        pools: [
+          { quoteSymbol: 'SOL', quoteMint: 'So11111111111111111111111111111111111111112', supplyPercent: 80, ammConfigIndex: 8 },
+          {
+            quoteSymbol: 'HONEY',
+            quoteMint: '4vMsoUT2BWatFweudnQM1xedRLfJgJ7hswhcpz4xgBTy',
+            supplyPercent: 10,
+            ammConfigIndex: 3,
+            quoteUsdOverride: 0.001381717,
+          },
+          { quoteSymbol: 'MEME', quoteMint: 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r', supplyPercent: 10, ammConfigIndex: 5 },
+        ],
+        sweepDestination: '11111111111111111111111111111116',
+      },
+    }),
+  });
+
+  // Simulate an auto-save from the form: pools reordered, CA dropped,
+  // quote override absent, and no walletPublicKey.
+  const updated = store.save({
+    id: stored.id,
+    name: 'FLYBRAIN edited',
+    config: validConfig({
+      token: { name: 'FLYBRAIN edited', symbol: 'FLYBRAIN', supply: '54500000', description: '' },
+      walletPublicKey: undefined,
+      vanity: { prefix: 'FLY', suffix: 'FLY', selectedPublicKey: null },
+      poolTopology: {
+        targetMarketCapUsd: 250000,
+        pools: [
+          { quoteSymbol: 'MEME', quoteMint: 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r', supplyPercent: 10, ammConfigIndex: 5 },
+          {
+            quoteSymbol: 'HONEY',
+            quoteMint: '4vMsoUT2BWatFweudnQM1xedRLfJgJ7hswhcpz4xgBTy',
+            supplyPercent: 10,
+            ammConfigIndex: 3,
+          },
+          { quoteSymbol: 'SOL', quoteMint: 'So11111111111111111111111111111111111111112', supplyPercent: 80, ammConfigIndex: 8 },
+        ],
+        sweepDestination: '11111111111111111111111111111116',
+      },
+    }),
+  });
+
+  assert.equal(updated.name, 'FLYBRAIN edited');
+  assert.equal(updated.config.vanity.selectedPublicKey, 'FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY');
+  assert.equal(updated.config.walletPublicKey, 'WalletPreserve11111111111111111111111111111');
+  const honey = updated.config.poolTopology.pools.find((pool) => pool.quoteSymbol === 'HONEY');
+  assert.equal(honey.quoteUsdOverride, 0.001381717);
+  assert.equal(updated.config.poolTopology.pools.length, 3);
+});

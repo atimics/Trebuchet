@@ -44,6 +44,74 @@ function clone(value) {
 
 const SECRET_KEY_RE = /(secret|private|mnemonic)/i;
 
+// Fields the launch form does not model. When an existing saved launch is
+// updated from the form (auto-save), these must survive: losing the selected
+// vanity CA or a quote price override would silently change the launch.
+const PRESERVE_WHEN_ABSENT_TOP_LEVEL = ['walletPublicKey'];
+const PRESERVE_WHEN_ABSENT_VANITY = ['selectedPublicKey'];
+const PRESERVE_WHEN_ABSENT_POOL = [
+  'quoteUsdOverride',
+  'quoteDecimalsOverride',
+  'quotePriceSource',
+  'quoteCompatibility',
+];
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function poolIdentity(pool = {}) {
+  return String(pool.quoteMint || pool.quoteToken || pool.quoteSymbol || '').trim();
+}
+
+/**
+ * Merge a form-derived config over the previously stored one. The form is a
+ * lossy view of a launch: it has no field for the selected vanity CA or quote
+ * price overrides, so a naive replace silently degrades the saved launch.
+ * Preserve those specific fields when the incoming config omits them.
+ */
+export function mergeSavedLaunchConfig(stored, incoming) {
+  if (!isPlainObject(stored)) return incoming;
+  if (!isPlainObject(incoming)) return stored;
+  const merged = { ...stored, ...incoming };
+
+  for (const key of PRESERVE_WHEN_ABSENT_TOP_LEVEL) {
+    if ((incoming[key] === undefined || incoming[key] === null) && stored[key]) {
+      merged[key] = stored[key];
+    }
+  }
+
+  if (isPlainObject(stored.vanity) || isPlainObject(incoming.vanity)) {
+    const storedVanity = isPlainObject(stored.vanity) ? stored.vanity : {};
+    const incomingVanity = isPlainObject(incoming.vanity) ? incoming.vanity : {};
+    merged.vanity = { ...storedVanity, ...incomingVanity };
+    for (const key of PRESERVE_WHEN_ABSENT_VANITY) {
+      if (!incomingVanity[key] && storedVanity[key]) merged.vanity[key] = storedVanity[key];
+    }
+  }
+
+  const storedPools = stored.poolTopology?.pools;
+  const incomingPools = incoming.poolTopology?.pools;
+  if (Array.isArray(storedPools) && Array.isArray(incomingPools) && incomingPools.length) {
+    const storedByQuote = new Map(storedPools.map((pool) => [poolIdentity(pool), pool]));
+    merged.poolTopology = {
+      ...(isPlainObject(stored.poolTopology) ? stored.poolTopology : {}),
+      ...(isPlainObject(incoming.poolTopology) ? incoming.poolTopology : {}),
+      pools: incomingPools.map((pool, index) => {
+        const prior = storedByQuote.get(poolIdentity(pool)) || storedPools[index] || null;
+        if (!prior) return pool;
+        const next = { ...prior, ...pool };
+        for (const key of PRESERVE_WHEN_ABSENT_POOL) {
+          if (pool[key] === undefined && prior[key] !== undefined) next[key] = prior[key];
+        }
+        return next;
+      }),
+    };
+  }
+
+  return merged;
+}
+
 /**
  * Strip secret-like keys from a saved launch before it is persisted.
  * Unlike the journal sanitizer this does NOT truncate long strings: a saved
@@ -182,7 +250,7 @@ export function createLaunchStore({ filePath, onWarn = () => {}, onError = () =>
         list[existingIndex] = {
           ...existing,
           name: label,
-          config: sanitizeSavedLaunchConfig(normalizedConfig),
+          config: sanitizeSavedLaunchConfig(mergeSavedLaunchConfig(existing.config, normalizedConfig)),
           updatedAt: ts,
           source: String(source || existing.source || 'app'),
         };

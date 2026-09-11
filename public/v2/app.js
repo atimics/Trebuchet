@@ -5793,6 +5793,17 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   if ($('#tokenSupply') && token.supply != null) $('#tokenSupply').value = String(token.supply);
   if ($('#tokenDescription') && token.description != null) $('#tokenDescription').value = String(token.description).slice(0, 1000);
   if ($('#sealedLaunch')) $('#sealedLaunch').checked = token.sealedLaunch !== false;
+  // Restore the token art so the left-pane launch identity card comes back
+  // with a saved launch, the same way it appears after an upload.
+  if (token.logo && typeof token.logo === 'object' && token.logo.dataUrl) {
+    state.tokenLogo = {
+      dataUrl: token.logo.dataUrl,
+      mime: token.logo.mime || 'image/png',
+      name: token.logo.name || 'logo',
+      animated: token.logo.animated === true,
+    };
+    state.launchIdentity = null;
+  }
   if ($('#mintFormat')) $('#mintFormat').value = token.mintFormat === 'classic-spl'
     ? 'classic-spl'
     : 'token-2022';
@@ -6964,27 +6975,59 @@ function vanityAvailabilityMeta() {
   return { label: 'Static preview', detail: 'Open through the local Trebuchet app to run the native grinder.', className: 'warn', icon: 'fa-eye' };
 }
 
-function renderSavedLaunches() {
-  const host = $('#savedLaunches');
-  if (!host) return;
-  const launches = Array.isArray(state.savedLaunches) ? state.savedLaunches : [];
-  const rows = launches.map((entry) => {
-    const token = entry.config?.token || {};
-    const pools = Array.isArray(entry.config?.poolTopology?.pools) ? entry.config.poolTopology.pools : [];
-    const ca = entry.config?.vanity?.selectedPublicKey || '';
-    const isActive = state.loadedSavedLaunchId === entry.id;
-    return `<span class="saved-launch-row">`
-      + `<button class="vanity-candidate ${isActive ? 'is-active' : ''}" type="button" data-action="load-launch" data-launch-id="${escapeHtml(entry.id)}" title="${escapeHtml(entry.name)}">`
-      + `<span class="vanity-candidate-main"><code class="vanity-ca-address">${escapeHtml(token.symbol || '?')}</code>`
-      + `<small class="vanity-candidate-meta">${escapeHtml(entry.name)} · ${pools.length} pool${pools.length === 1 ? '' : 's'}${ca ? ` · ${escapeHtml(shortAddress(ca))}` : ''}</small></span>`
-      + `</button>`
-      + `<button class="pill-button" type="button" data-action="remove-launch" data-launch-id="${escapeHtml(entry.id)}" aria-label="Remove saved launch ${escapeHtml(entry.name)}">×</button>`
-      + `</span>`;
-  }).join('');
-  host.innerHTML = `<div class="saved-launch-strip">`
-    + (rows || '<span class="saved-launch-empty">No saved launches yet — Set one up, then Save launch.</span>')
-    + `<button class="pill-button" type="button" data-action="save-launch">Save launch</button>`
-    + `</div>`;
+const ACTIVE_LAUNCH_KEY = 'trebuchet-v2-active-launch';
+
+function rememberActiveLaunchId(id) {
+  try {
+    if (id) window.localStorage?.setItem(ACTIVE_LAUNCH_KEY, id);
+    else window.localStorage?.removeItem(ACTIVE_LAUNCH_KEY);
+  } catch {
+    // Local storage is optional in restricted contexts.
+  }
+}
+
+function rememberedActiveLaunchId() {
+  try {
+    return window.localStorage?.getItem(ACTIVE_LAUNCH_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+let launchAutoSaveTimer = null;
+
+// No save button: the current launch config is persisted automatically as it
+// is edited, so a restart never loses it. The entry appears in the left pane
+// the moment it exists.
+function scheduleLaunchAutoSave() {
+  if (!state.apiClient?.saveLaunch || state.apiStatus !== 'connected') return;
+  clearTimeout(launchAutoSaveTimer);
+  launchAutoSaveTimer = setTimeout(() => {
+    const config = currentLaunchConfig();
+    const token = config.token || {};
+    if (!token.name && !token.symbol) return;
+    const identity = `${token.symbol || ''}:${token.name || ''}`.toLowerCase();
+    const matching = (state.savedLaunches || []).find((item) => (
+      `${item.config?.token?.symbol || ''}:${item.config?.token?.name || ''}`.toLowerCase() === identity
+    ));
+    const targetId = state.loadedSavedLaunchId || matching?.id || null;
+    state.apiClient.saveLaunch({
+      id: targetId,
+      name: token.name || token.symbol,
+      config,
+    })
+      .then((payload) => {
+        const entry = payload?.launch;
+        if (!entry?.id) return;
+        state.loadedSavedLaunchId = entry.id;
+        rememberActiveLaunchId(entry.id);
+        const list = Array.isArray(state.savedLaunches) ? state.savedLaunches.slice() : [];
+        const index = list.findIndex((item) => item.id === entry.id);
+        if (index >= 0) list[index] = entry; else list.unshift(entry);
+        state.savedLaunches = list;
+      })
+      .catch(() => { /* auto-save is best-effort; the explicit errors surface elsewhere */ });
+  }, 900);
 }
 
 function renderVanityCandidates() {
@@ -18219,7 +18262,6 @@ function renderAll() {
   renderGuidedLaunchFlow();
   renderChartDeck();
   renderVanityCandidates();
-  renderSavedLaunches();
   renderPoolEditorPanel();
   renderAirdropPanel();
   renderReportPanel();
@@ -18569,7 +18611,6 @@ function refreshClassicPreview({ includePoolEditor = false } = {}) {
   renderTokenLogoPreview();
   renderChartDeck();
   renderVanityCandidates();
-  renderSavedLaunches();
   if (includePoolEditor) renderPoolEditorPanel();
   renderAirdropPanel();
   renderReportPanel();
@@ -20846,7 +20887,6 @@ async function startVanityGrind() {
     setLaunchWorkspace('configure');
     state.vanityInputError = 'Enter a Vanity CA start or end before grinding.';
     renderVanityCandidates();
-  renderSavedLaunches();
     const input = $('#vanityStart');
     input?.setAttribute('aria-invalid', 'true');
     window.requestAnimationFrame?.(() => input?.focus());
@@ -20860,7 +20900,6 @@ async function startVanityGrind() {
   if (estimate.invalid.length) {
     notify(`Vanity target contains invalid Base58 character${estimate.invalid.length === 1 ? '' : 's'}: ${estimate.invalid.join(', ')}`);
     renderVanityCandidates();
-  renderSavedLaunches();
     return;
   }
 
@@ -20962,7 +21001,6 @@ async function startVanityGrind() {
         return;
       }
       renderVanityCandidates();
-  renderSavedLaunches();
       renderClassicBridge();
     });
     source.addEventListener('error', () => {
@@ -22260,6 +22298,20 @@ function applyBootState(boot) {
   state.savedLaunches = Array.isArray(boot.savedLaunches?.launches)
     ? boot.savedLaunches.launches.filter((entry) => entry && entry.id && entry.config)
     : [];
+  // Auto-detect: a launch that was set up earlier comes back with the app,
+  // the same way saved vanity addresses do. Only fills a pristine form.
+  if (state.savedLaunches.length && !$('#tokenName')?.value?.trim() && !state.tokenLogo?.dataUrl) {
+    const rememberedId = rememberedActiveLaunchId();
+    const mostRecent = state.savedLaunches.find((entry) => entry.id === rememberedId) || state.savedLaunches[0];
+    if (restoreLaunchConfigFromJournal({
+      launchConfig: mostRecent.config,
+      token: { mint: mostRecent.config?.vanity?.selectedPublicKey || null },
+    })) {
+      state.loadedSavedLaunchId = mostRecent.id;
+      rememberActiveLaunchId(mostRecent.id);
+      state.restoredLaunchJournalId = null;
+    }
+  }
   state.vanityAvailable = boot.vanity?.available === true;
   state.vanityReason = boot.vanity?.reason || null;
   state.clmmFeeTiers = normalizeClmmFeeTiers(boot.feeTiers?.tiers);
@@ -22684,7 +22736,6 @@ function handleDynamicInput(event) {
     $('#vanityStart')?.removeAttribute('aria-invalid');
     $('#vanityEnd')?.removeAttribute('aria-invalid');
     renderVanityCandidates();
-  renderSavedLaunches();
   }
 
   if (event.target.classList?.contains('classic-artifact-text')) {
@@ -22940,55 +22991,6 @@ function handleClick(event) {
     state.verifyPanel = actionTarget.dataset.verifyPanel === 'audit' ? 'audit' : 'proof';
     renderClassicBridge();
     renderLaunchWorkspace();
-    return;
-  }
-
-  if (action === 'save-launch') {
-    if (!state.apiClient?.saveLaunch) {
-      notify('Local API unavailable; cannot save this launch');
-      return;
-    }
-    const config = currentLaunchConfig();
-    state.apiClient.saveLaunch({ name: config.token?.name || 'Untitled launch', config })
-      .then(() => state.apiClient.listSavedLaunches())
-      .then((payload) => {
-        state.savedLaunches = Array.isArray(payload?.launches) ? payload.launches : state.savedLaunches;
-        renderAll();
-        notify('Launch saved');
-      })
-      .catch((error) => notify(error.message || 'Failed to save launch'));
-    return;
-  }
-
-  if (action === 'load-launch') {
-    const id = actionTarget.dataset.launchId;
-    const entry = (state.savedLaunches || []).find((item) => item.id === id);
-    if (!entry) {
-      notify('Saved launch not found');
-      return;
-    }
-    const loaded = restoreLaunchConfigFromJournal({
-      launchConfig: entry.config,
-      token: { mint: entry.config?.vanity?.selectedPublicKey || null },
-    });
-    state.loadedSavedLaunchId = id;
-    renderAll();
-    notify(loaded ? `Loaded ${entry.name}` : 'Could not load that launch');
-    return;
-  }
-
-  if (action === 'remove-launch') {
-    const id = actionTarget.dataset.launchId;
-    if (!state.apiClient?.removeSavedLaunch) return;
-    state.apiClient.removeSavedLaunch(id)
-      .then(() => state.apiClient.listSavedLaunches())
-      .then((payload) => {
-        state.savedLaunches = Array.isArray(payload?.launches) ? payload.launches : [];
-        if (state.loadedSavedLaunchId === id) state.loadedSavedLaunchId = null;
-        renderAll();
-        notify('Saved launch removed');
-      })
-      .catch((error) => notify(error.message || 'Failed to remove launch'));
     return;
   }
 
@@ -23575,6 +23577,7 @@ function handleClick(event) {
 function bindEvents() {
   document.addEventListener('click', handleClick);
   document.addEventListener('input', handleDynamicInput);
+  document.addEventListener('input', scheduleLaunchAutoSave);
   document.addEventListener('keydown', (event) => {
     const operatorPromptGate = $('#operatorPromptGate');
     if (operatorPromptGate && !operatorPromptGate.hidden) {
