@@ -411,7 +411,7 @@ export async function runDevnetRecoveryDrills(env = process.env) {
       journalStage: journal?.stage || null,
       tokenMint: journal?.token?.mint || null,
       reachedLiquidityStage: Boolean(readiness && LIQUIDITY_ENDPOINTS.includes(readiness.nextEndpoint)),
-      liquidityStageNote: 'Raydium CLMM is mainnet-only; liquidity-stage recovery is covered by demo-chain drills and future local-validator drills.',
+      liquidityStageNote: 'Raydium CLMM is mainnet-only; liquidity-stage recovery is covered by the LP-stage resume tests, the PALM partial-result fixture, and future local-validator drills.',
       fundingTx,
       drillLog,
       recordedAt: new Date().toISOString(),

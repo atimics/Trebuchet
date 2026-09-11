@@ -120,9 +120,11 @@ so normal CI stays green and free.
 so `/api/create-lp` cannot execute on devnet. The drill covers the on-chain
 stages devnet can run for real (mint + metadata, authority revocation) and
 the recovery/idempotency machinery around them, then stops cleanly at the
-liquidity stage. The liquidity-stage recovery itself is covered by
-demo-chain crash simulation today, and by a future local-validator drill
-that clones the Raydium programs from mainnet.
+liquidity stage. The liquidity-stage recovery itself is covered today by the LP-stage
+resume tests (`test/launch-lifecycle.test.mjs`, "createSinglePool resumes a
+verified partial Phase 1 pool"), the PALM partial-result regression fixture,
+and the re-resume tx-id preservation tests — plus, later, a local-validator
+drill that clones the Raydium programs from mainnet.
 
 The runner additionally needs:
 
