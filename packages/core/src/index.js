@@ -2,6 +2,7 @@ export * from './confirmation.js';
 export * from './contracts.js';
 export * from './custody.js';
 export * from './flywheel-pools.js';
+export * from './flywheel-schedule.js';
 export * from './launch-journal.js';
 export * from './launch-plan.js';
 export * from './launch-recovery.js';
