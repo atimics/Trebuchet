@@ -14,6 +14,9 @@ Usage:
                     --max-spend-sol <n> [--wallet <pubkey>] [--expires-in <h>]
                     [--passphrase <p>] [--out <confirmation.json>] [--json]
   trebuchet confirmation verify <confirmation.json> [--expect-plan <plan.json>] [--json]
+  trebuchet launch save --config <launch.json> [--name <label>] [--config-dir <dir>] [--json]
+  trebuchet launch list [--config-dir <dir>] [--json]
+  trebuchet launch remove --id <id> [--config-dir <dir>] [--json]
 
 Global options:
   --json       Emit one versioned result envelope to stdout.

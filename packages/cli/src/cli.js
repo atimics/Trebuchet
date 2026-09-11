@@ -1,4 +1,5 @@
 import process from 'node:process';
+import path from 'node:path';
 import {
   createTrebuchetCore,
   TREBUCHET_CORE_VERSION,
@@ -23,6 +24,7 @@ import {
   openCustodySession,
   readCustodyKeyfileMeta,
 } from '@trebuchet/core/custody';
+import { createLaunchStore } from '@trebuchet/core/launch-store';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 
@@ -58,6 +60,18 @@ function nodeVersionSupported(node) {
 
 function commandError(code, message, details = null) {
   return new TrebuchetCoreError(code, message, { details });
+}
+
+// Saved-launch store resolution: explicit --config-dir, then the app's
+// TREBUCHET_CONFIG_DIR, then the current directory (matching the fallback the
+// root compat entrypoints use).
+function cliLaunchStore(configDirOption) {
+  const dir = configDirOption || process.env.TREBUCHET_CONFIG_DIR || process.cwd();
+  return createLaunchStore({
+    filePath: path.join(dir, 'launches.json'),
+    onWarn: () => {},
+    onError: (message) => { throw new Error(message); },
+  });
 }
 
 function requirePositionals(positionals, expected, usage) {
@@ -252,6 +266,63 @@ export async function runCli(argv = [], {
         writeLine(stdout, `Swept to: ${data.sweepDestination}`);
         if (data.outputPath) writeLine(stdout, `Run result: ${data.outputPath}`);
       };
+    } else if (positionals[0] === 'launch' && positionals[1] === 'save') {
+      const usage = 'trebuchet launch save --config <launch.json> [--name <label>] [--id <id>] [--config-dir <dir>] [--json]';
+      requirePositionals(positionals, ['launch', 'save'], usage);
+      requireOptions(options, ['config', 'name', 'id', 'config-dir', 'json'], usage);
+      if (!options.config) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--config is required.');
+      const input = await readJsonFile(options.config, 'Launch config');
+      const store = cliLaunchStore(options['config-dir']);
+      const saved = store.save({
+        id: options.id || null,
+        name: options.name || null,
+        config: input.value,
+        source: 'cli',
+      });
+      data = { id: saved.id, name: saved.name, createdAt: saved.createdAt, updatedAt: saved.updatedAt, storePath: store.filePath };
+      humanOutput = () => {
+        writeLine(stdout, `Saved launch: ${saved.name}`);
+        writeLine(stdout, `Id: ${saved.id}`);
+        writeLine(stdout, `Store: ${store.filePath}`);
+        writeLine(stdout, 'The app shows saved launches the same way it shows saved vanity addresses.');
+      };
+    } else if (positionals[0] === 'launch' && positionals[1] === 'list') {
+      const usage = 'trebuchet launch list [--config-dir <dir>] [--json]';
+      requirePositionals(positionals, ['launch', 'list'], usage);
+      requireOptions(options, ['config-dir', 'json'], usage);
+      const store = cliLaunchStore(options['config-dir']);
+      const launches = store.list().map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        symbol: entry.config?.token?.symbol ?? null,
+        supply: entry.config?.token?.supply ?? null,
+        pools: Array.isArray(entry.config?.poolTopology?.pools) ? entry.config.poolTopology.pools.length : 0,
+        vanity: entry.config?.vanity?.selectedPublicKey || null,
+        source: entry.source,
+        updatedAt: entry.updatedAt,
+      }));
+      data = { storePath: store.filePath, launches };
+      humanOutput = () => {
+        if (!launches.length) {
+          writeLine(stdout, `No saved launches in ${store.filePath}`);
+          return;
+        }
+        for (const entry of launches) {
+          writeLine(stdout, `${entry.id}  ${entry.symbol || '?'}  ${entry.name}  (${entry.pools} pools${entry.vanity ? `, CA ${entry.vanity}` : ''})`);
+        }
+      };
+    } else if (positionals[0] === 'launch' && positionals[1] === 'remove') {
+      const usage = 'trebuchet launch remove --id <id> [--config-dir <dir>] [--json]';
+      requirePositionals(positionals, ['launch', 'remove'], usage);
+      requireOptions(options, ['id', 'config-dir', 'json'], usage);
+      if (!options.id) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--id is required.');
+      const store = cliLaunchStore(options['config-dir']);
+      const removed = store.remove(options.id);
+      if (!removed) {
+        throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `No saved launch with id ${options.id}.`);
+      }
+      data = { id: options.id, removed: true };
+      humanOutput = () => writeLine(stdout, `Removed saved launch ${options.id}`);
     } else if (positionals[0] === 'custody' && positionals[1] === 'create') {
       const usage = 'trebuchet custody create [--from <keypair.json>] --out <custody.json> [--passphrase <p>] [--json]';
       requirePositionals(positionals, ['custody', 'create'], usage);
