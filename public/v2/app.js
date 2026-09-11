@@ -6994,6 +6994,26 @@ function rememberedActiveLaunchId() {
   }
 }
 
+const BASE58_SAFE_RE = /^[1-9A-HJ-NP-Za-km-z]*$/;
+
+// Auto-save is a background convenience: it must never fire a request that
+// the server would reject (that shows up as a console error), so validate
+// locally first and stay silent until the launch is coherent.
+function canAutoSaveLaunch(config) {
+  const token = config?.token || {};
+  const name = String(token.name || '').trim();
+  const symbol = String(token.symbol || '').trim();
+  const supply = String(token.supply || '').replace(/,/g, '').trim();
+  if (!name || !symbol) return false;
+  if (!/^[1-9]\d*$/.test(supply)) return false;
+  const pools = Array.isArray(config?.poolTopology?.pools) ? config.poolTopology.pools : [];
+  if (!pools.length) return false;
+  const prefix = String(config?.vanity?.prefix || '');
+  const suffix = String(config?.vanity?.suffix || '');
+  if (!BASE58_SAFE_RE.test(prefix) || !BASE58_SAFE_RE.test(suffix)) return false;
+  return true;
+}
+
 let launchAutoSaveTimer = null;
 
 // No save button: the current launch config is persisted automatically as it
@@ -7004,8 +7024,8 @@ function scheduleLaunchAutoSave() {
   clearTimeout(launchAutoSaveTimer);
   launchAutoSaveTimer = setTimeout(() => {
     const config = currentLaunchConfig();
+    if (!canAutoSaveLaunch(config)) return;
     const token = config.token || {};
-    if (!token.name && !token.symbol) return;
     const identity = `${token.symbol || ''}:${token.name || ''}`.toLowerCase();
     const matching = (state.savedLaunches || []).find((item) => (
       `${item.config?.token?.symbol || ''}:${item.config?.token?.name || ''}`.toLowerCase() === identity
