@@ -7014,6 +7014,27 @@ function canAutoSaveLaunch(config) {
   return true;
 }
 
+// The saved (server-side) launch is explicit user intent, so it is applied
+// after the local guided draft: a stale browser draft must not overwrite the
+// launch the operator actually saved.
+function restoreDetectedLaunch() {
+  if (!state.savedLaunches?.length) return false;
+  if ($('#tokenName')?.value?.trim() && !state.loadedSavedLaunchId) return false;
+  const rememberedId = rememberedActiveLaunchId();
+  const entry = state.savedLaunches.find((item) => item.id === rememberedId) || state.savedLaunches[0];
+  if (!entry) return false;
+  const loaded = restoreLaunchConfigFromJournal({
+    launchConfig: entry.config,
+    token: { mint: entry.config?.vanity?.selectedPublicKey || null },
+  });
+  if (!loaded) return false;
+  state.loadedSavedLaunchId = entry.id;
+  rememberActiveLaunchId(entry.id);
+  state.restoredLaunchJournalId = null;
+  persistGuidedDraft();
+  return true;
+}
+
 let launchAutoSaveTimer = null;
 
 // No save button: the current launch config is persisted automatically as it
@@ -22318,20 +22339,7 @@ function applyBootState(boot) {
   state.savedLaunches = Array.isArray(boot.savedLaunches?.launches)
     ? boot.savedLaunches.launches.filter((entry) => entry && entry.id && entry.config)
     : [];
-  // Auto-detect: a launch that was set up earlier comes back with the app,
-  // the same way saved vanity addresses do. Only fills a pristine form.
-  if (state.savedLaunches.length && !$('#tokenName')?.value?.trim() && !state.tokenLogo?.dataUrl) {
-    const rememberedId = rememberedActiveLaunchId();
-    const mostRecent = state.savedLaunches.find((entry) => entry.id === rememberedId) || state.savedLaunches[0];
-    if (restoreLaunchConfigFromJournal({
-      launchConfig: mostRecent.config,
-      token: { mint: mostRecent.config?.vanity?.selectedPublicKey || null },
-    })) {
-      state.loadedSavedLaunchId = mostRecent.id;
-      rememberActiveLaunchId(mostRecent.id);
-      state.restoredLaunchJournalId = null;
-    }
-  }
+  restoreDetectedLaunch();
   state.vanityAvailable = boot.vanity?.available === true;
   state.vanityReason = boot.vanity?.reason || null;
   state.clmmFeeTiers = normalizeClmmFeeTiers(boot.feeTiers?.tiers);
