@@ -5509,8 +5509,17 @@ function renderFlywheelPick() {
 
 // Draw a fresh memecoin from the flywheel pool (never repeating the current
 // pairing when the pool has alternatives).
+// The token being launched cannot be its own flywheel pairing: a pool with the
+// same mint on both sides is not tradable.
+function ownTokenMint() {
+  const fromVanity = String(state.selectedVanityPublicKey || '').trim();
+  const fromConfig = String(currentLaunchConfig()?.vanity?.selectedPublicKey || '').trim();
+  return fromVanity || fromConfig || null;
+}
+
 async function shuffleMemeFlywheel() {
-  const pool = state.flywheelPools?.meme || [];
+  const own = ownTokenMint();
+  const pool = (state.flywheelPools?.meme || []).filter((mint) => !own || mint !== own);
   if (!pool.length) {
     notify('No meme flywheel mints configured');
     return;
@@ -7149,6 +7158,13 @@ function canAutoSaveLaunch(config) {
   if (!/^[1-9]\d*$/.test(supply)) return false;
   const pools = Array.isArray(config?.poolTopology?.pools) ? config.poolTopology.pools : [];
   if (!pools.length) return false;
+  // A launch allocation must actually be complete: dragging the vortex (or
+  // clearing a field) must never auto-save a degenerate plan such as a single
+  // SOL pool at 0%, which cannot be launched and loses the flywheel pairing.
+  const totalSupplyPercent = pools.reduce((sum, pool) => sum + Number(pool?.supplyPercent || 0), 0);
+  if (totalSupplyPercent < 99.5 || totalSupplyPercent > 100.5) return false;
+  const solPool = pools.find((pool) => String(pool?.quoteSymbol || '').toUpperCase() === 'SOL');
+  if (solPool && Number(solPool.supplyPercent || 0) <= 0) return false;
   const prefix = String(config?.vanity?.prefix || '');
   const suffix = String(config?.vanity?.suffix || '');
   if (!BASE58_SAFE_RE.test(prefix) || !BASE58_SAFE_RE.test(suffix)) return false;
