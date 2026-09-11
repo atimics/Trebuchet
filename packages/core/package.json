@@ -9,6 +9,7 @@
     "./confirmation": "./src/confirmation.js",
     "./custody": "./src/custody.js",
     "./flywheel-pools": "./src/flywheel-pools.js",
+    "./flywheel-schedule": "./src/flywheel-schedule.js",
     "./launch-journal": "./src/launch-journal.js",
     "./launch-plan": "./src/launch-plan.js",
     "./launch-recovery": "./src/launch-recovery.js",

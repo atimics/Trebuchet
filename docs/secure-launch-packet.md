@@ -139,6 +139,12 @@ The runner additionally needs:
 Until those land, the packet builder is a packaging tool only: it
 prepares and pins artifacts, it does not execute anything.
 
+## Related
+
+- `docs/flywheel-rotation.md` — the plan for a *rotating* flywheel (keeper or
+  on-chain program). Rotation is opt-in and disclosed, and cannot apply to
+  locked positions.
+
 ## Current status
 
 - `scripts/build-launch-packet.mjs` — builds and pins packets. Done.
