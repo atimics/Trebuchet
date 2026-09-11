@@ -4,6 +4,10 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import {
+  v2TransferHasWalletEmptyFinalSweepEvidence as coreTransferWalletEmptyEvidence,
+  v2TransferSweepErrorCount as coreTransferSweepErrorCount,
+} from '../packages/core/src/v2-execution-context.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..');
@@ -12,6 +16,7 @@ const lpSrc = readFileSync(path.join(REPO, 'lpService.js'), 'utf8');
 // The journal contract moved into @trebuchet/core; the app-level
 // launchJournal.js is a thin adapter. Audit the Core module's source.
 const journalSrc = readFileSync(path.join(REPO, 'packages/core/src/launch-journal.js'), 'utf8');
+const coreExecSrc = readFileSync(path.join(REPO, 'packages/core/src/v2-execution-context.js'), 'utf8');
 const transferSrc = readFileSync(path.join(REPO, 'public', 'modules', 'transfer.js'), 'utf8');
 const tokenConfigSrc = readFileSync(path.join(REPO, 'public', 'modules', 'token-config.js'), 'utf8');
 const journalsSrc = readFileSync(path.join(REPO, 'public', 'modules', 'journals.js'), 'utf8');
@@ -22,7 +27,13 @@ function loadV2ServerFingerprintHarness() {
   const start = serverSrc.indexOf('function v2ProofPositionCount');
   const end = serverSrc.indexOf('\nfunction v2TransferFinalizationIssue', start);
   assert.ok(start >= 0 && end > start, 'v2 server fingerprint helpers must be extractable');
-  const sandbox = { String, Number, Array, JSON, Math };
+  // The transfer-evidence helpers moved into Core; seed the sandbox with the
+  // real implementations so the extracted slice resolves them.
+  const sandbox = {
+    String, Number, Array, JSON, Math,
+    v2TransferHasWalletEmptyFinalSweepEvidence: coreTransferWalletEmptyEvidence,
+    v2TransferSweepErrorCount: coreTransferSweepErrorCount,
+  };
   vm.runInNewContext(
     [
       serverSrc.slice(start, end),
@@ -62,7 +73,7 @@ function loadV2ServerFingerprintHarness() {
 
 test('journal replay covers support locks (and keys on supportIndex)', () => {
   assert.ok(
-    /if \(event\.stage === 'support_lock_done'[^)]*\) \{\r?\n\s*const pos = positionForIndex\(result\.supportPositions, 'supportIndex', event\.supportIndex\);/.test(serverSrc),
+    /if \(event\.stage === 'support_lock_done'[^)]*\) \{\r?\n\s*const pos = positionForIndex\(result\.supportPositions, 'supportIndex', event\.supportIndex\);/.test(coreExecSrc),
     'applyLpEventToResults must handle support_lock_done by supportIndex',
   );
 });
@@ -81,7 +92,7 @@ test('lock events carry feeKeyNftMint end to end', () => {
     assert.ok(re.test(lpSrc), `${stage} event must carry feeKeyNftMint`);
   }
   // Journal side: every lock handler applies it (4 handlers).
-  const applies = serverSrc.match(/feeKeyNftMint = event\.feeKeyNftMint \|\|/g) || [];
+  const applies = coreExecSrc.match(/feeKeyNftMint = event\.feeKeyNftMint \|\|/g) || [];
   assert.ok(applies.length >= 4, `journal handlers must apply feeKeyNftMint (found ${applies.length}/4)`);
 });
 
@@ -91,7 +102,7 @@ test('bootstrap_open_done keeps the tick range through the journal', () => {
     'bootstrap_open_done event must carry the tick range',
   );
   assert.ok(
-    /event\.stage === 'bootstrap_open_done'[\s\S]{0,600}?tickLower: Number\.isFinite\(event\.tickLower\)/.test(serverSrc),
+    /event\.stage === 'bootstrap_open_done'[\s\S]{0,600}?tickLower: Number\.isFinite\(event\.tickLower\)/.test(coreExecSrc),
     'journal handler must keep the bootstrap tick range',
   );
 });

@@ -15,6 +15,7 @@ const js = read('public/v2/app.js');
 const apiClientJs = read('public/v2/api-client.js');
 const gifOptimizerJs = read('public/gif-optimizer.js');
 const serverJs = read('server.js');
+const coreExecutionContextSrc = read('packages/core/src/v2-execution-context.js');
 const viewportSmokeJs = read('test/v2-viewport-smoke.mjs');
 const v2BrowserE2eJs = read('test/e2e/v2-flows.mjs');
 const v2ElectronSmokeJs = read('test/e2e/electron-v2-smoke.mjs');
@@ -6577,9 +6578,9 @@ test('v2 terminal recovery collapses into the completed proof panel', () => {
 });
 
 test('v2 interrupted mints finish safely before liquidity resumes', () => {
-  assert.match(serverJs, /launchJournal\.tokenCreationComplete\(journal, tokenMint\)/);
-  assert.match(serverJs, /const tokenNeedsFinish = Boolean\(tokenMint && !tokenCreationComplete\)/);
-  assert.match(serverJs, /tokenNeedsFinish,/);
+  assert.match(coreExecutionContextSrc, /tokenCreationComplete\(journal, tokenMint\)/);
+  assert.match(coreExecutionContextSrc, /const tokenNeedsFinish = Boolean\(tokenMint && !creationComplete\)/);
+  assert.match(coreExecutionContextSrc, /tokenNeedsFinish,/);
   assert.match(serverJs, /endpoint === '\/api\/finish-token-creation'/);
   assert.match(serverJs, /finishTokenCreationHandler/);
   assert.match(js, /Finish interrupted token/);
