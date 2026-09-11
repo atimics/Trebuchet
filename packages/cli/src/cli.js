@@ -10,6 +10,21 @@ import { CliExitCode, exitCodeForError } from './exit-codes.js';
 import { readJsonFile, writeJsonFileAtomic } from './files.js';
 import { CLI_HELP } from './help.js';
 import { runDemoExecute } from './execute.js';
+import {
+  CONFIRMATION_NETWORKS,
+  secretKeyToEd25519Material,
+  signConfirmation,
+  verifyConfirmation,
+} from '@trebuchet/core/confirmation';
+import {
+  CustodyError,
+  decryptCustodyKeyfile,
+  encryptCustodyKeyfile,
+  openCustodySession,
+  readCustodyKeyfileMeta,
+} from '@trebuchet/core/custody';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import fs from 'node:fs';
 
 export const TREBUCHET_CLI_VERSION = '0.1.0';
 export const TREBUCHET_CLI_RESULT_SCHEMA = 'trebuchet-cli-result/v1';
@@ -237,6 +252,120 @@ export async function runCli(argv = [], {
         writeLine(stdout, `Swept to: ${data.sweepDestination}`);
         if (data.outputPath) writeLine(stdout, `Run result: ${data.outputPath}`);
       };
+    } else if (positionals[0] === 'custody' && positionals[1] === 'create') {
+      const usage = 'trebuchet custody create [--from <keypair.json>] --out <custody.json> [--passphrase <p>] [--json]';
+      requirePositionals(positionals, ['custody', 'create'], usage);
+      requireOptions(options, ['from', 'out', 'passphrase', 'json'], usage);
+      if (!options.out) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--out <custody.json> is required.');
+      const passphrase = options.passphrase || process.env.TREBUCHET_CUSTODY_PASSPHRASE;
+      if (!passphrase) {
+        throw commandError(TrebuchetCoreErrorCode.CUSTODY_LOCKED, 'Provide --passphrase or set TREBUCHET_CUSTODY_PASSPHRASE.');
+      }
+      let secretKey;
+      if (options.from) {
+        const source = await readJsonFile(options.from, 'Source keypair');
+        secretKey = Uint8Array.from(source.value?.secretKey || []);
+        if (secretKey.length !== 64) {
+          throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, 'Source keypair must contain a 64-byte secretKey array.');
+        }
+      } else {
+        const seed = randomBytes(32);
+        const { rawPublicKey } = secretKeyToEd25519Material(seed);
+        secretKey = new Uint8Array([...seed, ...rawPublicKey]);
+      }
+      const keyfile = encryptCustodyKeyfile({ secretKey, passphrase });
+      const outputPath = await writeJsonFileAtomic(options.out, keyfile);
+      const publicKeyHex = Buffer.from(keyfile.publicKeyRaw).toString('hex');
+      data = {
+        outputPath,
+        publicKeyRaw: keyfile.publicKeyRaw,
+        publicKeyHex,
+        imported: Boolean(options.from),
+      };
+      humanOutput = () => {
+        writeLine(stdout, `Custody keyfile written: ${outputPath}`);
+        writeLine(stdout, `Public key (raw hex): ${publicKeyHex}`);
+        writeLine(stdout, data.imported ? 'Imported an existing keypair.' : 'Generated a fresh keypair.');
+        writeLine(stdout, 'Keep the passphrase safe: without it the key is unrecoverable.');
+      };
+    } else if (positionals[0] === 'confirm') {
+      const usage = 'trebuchet confirm --plan <plan.json> --keyfile <custody.json> --network <demo|devnet|mainnet> --max-spend-sol <n> [--wallet <pubkey>] [--expires-in <hours>] [--passphrase <p>] [--out <confirmation.json>] [--json]';
+      requirePositionals(positionals, ['confirm'], usage);
+      requireOptions(options, ['plan', 'keyfile', 'network', 'max-spend-sol', 'wallet', 'expires-in', 'passphrase', 'out', 'json'], usage);
+      if (!options.plan) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--plan is required.');
+      if (!options.keyfile) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--keyfile is required.');
+      if (!options.network) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `--network is required (one of: ${[...CONFIRMATION_NETWORKS].join(', ')}).`);
+      if (!options['max-spend-sol']) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--max-spend-sol is required.');
+      const passphrase = options.passphrase || process.env.TREBUCHET_CUSTODY_PASSPHRASE;
+      if (!passphrase) {
+        throw commandError(TrebuchetCoreErrorCode.CUSTODY_LOCKED, 'Provide --passphrase or set TREBUCHET_CUSTODY_PASSPHRASE.');
+      }
+      const planInput = await readJsonFile(options.plan, 'Launch plan');
+      const verification = core.verifyPlan(planInput.value);
+      if (!verification.valid) {
+        throw commandError(TrebuchetCoreErrorCode.INTEGRITY_MISMATCH, 'Launch plan is invalid; refusing to sign a confirmation.', verification.errors);
+      }
+      const keyfileInput = await readJsonFile(options.keyfile, 'Custody keyfile');
+      let decrypted;
+      try {
+        decrypted = decryptCustodyKeyfile(keyfileInput.value, { passphrase });
+      } catch (error) {
+        throw commandError(TrebuchetCoreErrorCode.CUSTODY_LOCKED, error.message);
+      }
+      const session = openCustodySession(decrypted);
+      const hours = options['expires-in'] ? Math.max(0.01, Number(options['expires-in'])) : 24;
+      const expiresAt = new Date(Date.now() + hours * 3600_000).toISOString();
+      let confirmation;
+      try {
+        confirmation = signConfirmation({
+          planDigest: verification.digest,
+          network: options.network,
+          maxSpendSol: Number(options['max-spend-sol']),
+          walletPublicKey: options.wallet || null,
+          expiresAt,
+          tool: `trebuchet-cli/${TREBUCHET_CLI_VERSION}`,
+        }, session.getSecretKey());
+      } finally {
+        session.lock();
+      }
+      const outputPath = options.out ? await writeJsonFileAtomic(options.out, confirmation) : null;
+      const signerHex = Buffer.from(confirmation.signerRawPublicKey).toString('hex');
+      data = { confirmation, outputPath, signerHex, planDigest: verification.digest };
+      humanOutput = () => {
+        writeLine(stdout, 'Confirmation signed.');
+        writeLine(stdout, `Plan digest: ${verification.digest}`);
+        writeLine(stdout, `Network: ${confirmation.payload.network} · max spend: ${confirmation.payload.maxSpendSol} SOL`);
+        writeLine(stdout, `Expires: ${confirmation.payload.expiresAt}`);
+        writeLine(stdout, `Signer (raw hex): ${signerHex}`);
+        if (outputPath) writeLine(stdout, `Confirmation: ${outputPath}`);
+      };
+    } else if (positionals[0] === 'confirmation' && positionals[1] === 'verify') {
+      const usage = 'trebuchet confirmation verify <confirmation.json> [--expect-plan <plan.json>] [--json]';
+      if (positionals.length !== 3) {
+        throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `Usage: ${usage}`);
+      }
+      requireOptions(options, ['expect-plan', 'json'], usage);
+      const input = await readJsonFile(positionals[2], 'Confirmation');
+      let expectPlanDigest;
+      if (options['expect-plan']) {
+        const planInput = await readJsonFile(options['expect-plan'], 'Launch plan');
+        const planVerification = core.verifyPlan(planInput.value);
+        if (!planVerification.valid) {
+          throw commandError(TrebuchetCoreErrorCode.INTEGRITY_MISMATCH, 'Expected launch plan is invalid.');
+        }
+        expectPlanDigest = planVerification.digest;
+      }
+      const result = verifyConfirmation(input.value, { expectPlanDigest });
+      data = { path: input.path, ...result };
+      if (!result.valid) {
+        throw commandError(TrebuchetCoreErrorCode.INTEGRITY_MISMATCH, 'Confirmation is invalid.', result.errors);
+      }
+      humanOutput = () => {
+        writeLine(stdout, 'Confirmation: valid');
+        writeLine(stdout, `Plan digest: ${result.payload.planDigest}`);
+        writeLine(stdout, `Network: ${result.payload.network} · max spend: ${result.payload.maxSpendSol} SOL`);
+        writeLine(stdout, `Expires: ${result.payload.expiresAt}`);
+      };
     } else {
       throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `Unknown command: ${command}`);
     }
@@ -249,6 +378,8 @@ export async function runCli(argv = [], {
       ? error
       : error?.name === 'ExecuteError'
         ? commandError(TrebuchetCoreErrorCode.RETRYABLE_DEPENDENCY, error.message, error.serverLog ? [error.serverLog.slice(-4000)] : null)
+      : error?.name === 'CustodyError'
+        ? commandError(TrebuchetCoreErrorCode.CUSTODY_LOCKED, error.message)
       : error instanceof CliArgumentError || error instanceof TypeError || error?.code === 'ENOENT'
         ? commandError(TrebuchetCoreErrorCode.INVALID_INPUT, error.message)
         : commandError(TrebuchetCoreErrorCode.INTERNAL, error.message || 'Unexpected CLI failure.');
