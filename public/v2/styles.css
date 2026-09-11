@@ -16818,3 +16818,27 @@ body[data-active-view="launch"] #view-launch .signature-panel {
 @media (prefers-reduced-motion: reduce) {
   .vortex-circulation { animation: none; }
 }
+
+/* Counter-rotation: adjacent sectors flow in opposite directions, like a
+   counter-rotating vortex pair feeding the same core. */
+.vortex-swirl {
+  animation: vortex-swirl-flow 4.5s linear infinite;
+}
+
+.vortex-swirl.is-reverse {
+  animation-direction: reverse;
+  animation-duration: 6s;
+}
+
+@keyframes vortex-swirl-flow {
+  to { stroke-dashoffset: -40; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vortex-swirl { animation: none; }
+}
+
+.vortex-mode[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
