@@ -132,3 +132,81 @@ test('mount renders the funnel, bands and draggable boundaries', () => {
   assert.match(host.innerHTML, /vortex-boundary/);
   assert.match(host.innerHTML, /role="slider"/);
 });
+
+// --- multi-token (ring) coverage -----------------------------------------
+
+function ringPools() {
+  return [
+    { id: 'sol', symbol: 'SOL', mint: 'So11111111111111111111111111111111111111112', percent: 70, minPercent: 10, feeTier: 8 },
+    { id: 'custom-0', symbol: 'MEME2', mint: '2vGfseKJFt6iakqFrWoeDdSz8dweWYk5xPXV9uvVXRAT', percent: 10, feeTier: 5 },
+    { id: 'custom-1', symbol: 'MEME3', mint: 'FLFLJp1XTPrY7iLoKXZ9ZVZHGfxZMQMdPZtZCxfjHtsm', percent: 10, feeTier: 5 },
+    { id: 'quote', symbol: 'FLY', mint: 'FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY', percent: 10, minPercent: 10, maxPercent: 30, feeTier: 5 },
+  ];
+}
+
+test('ring sectors tile a full turn in proportion to share', () => {
+  const vortex = loadVortex();
+  const ring = vortex.layoutRing(ringPools());
+  assert.equal(ring.length, 4);
+  const totalSweep = ring.reduce((sum, segment) => sum + segment.sweep, 0);
+  assert.ok(Math.abs(totalSweep - 360) < 0.01, 'sectors cover the whole ring');
+  // Consecutive sectors share a boundary (no gaps, no overlap).
+  for (let i = 1; i < ring.length; i += 1) {
+    assert.ok(Math.abs(ring[i].angleStart - ring[i - 1].angleEnd) < 1e-9);
+  }
+  // The largest holder gets the widest arc.
+  const sol = ring.find((segment) => segment.symbol === 'SOL');
+  const meme = ring.find((segment) => segment.symbol === 'MEME2');
+  assert.ok(sol.sweep > meme.sweep);
+});
+
+test('a zero-share token still gets a visible arc', () => {
+  const vortex = loadVortex();
+  const ring = vortex.layoutRing([
+    { id: 'sol', symbol: 'SOL', percent: 100, feeTier: 8 },
+    { id: 'a', symbol: 'A', percent: 0, feeTier: 5 },
+    { id: 'b', symbol: 'B', percent: 0, feeTier: 5 },
+  ]);
+  assert.equal(ring.length, 3);
+  for (const segment of ring) assert.ok(segment.sweep > 5, 'every token has an arc');
+  assert.ok(Math.abs(ring.reduce((sum, s) => sum + s.sweep, 0) - 360) < 0.01);
+});
+
+test('dragging a ring boundary moves supply between neighbours', () => {
+  const vortex = loadVortex();
+  const pools = ringPools();
+
+  // Boundary 0 sits where SOL ends: t = 0.7 of the turn.
+  const atCurrent = vortex.ringBoundaryDeltaForUpper(pools, 0, -90 + 0.7 * 360);
+  assert.ok(Math.abs(atCurrent) < 0.05, 'the current boundary needs no change');
+
+  // Rotating it clockwise (further along the turn) grows the band before it:
+  // SOL takes the share the next memecoin gives up.
+  const forward = vortex.ringBoundaryDeltaForUpper(pools, 0, -90 + 0.8 * 360);
+  assert.ok(forward > 0, 'clockwise grows the preceding band');
+  const grown = vortex.transferShare(pools, 0, forward);
+  assert.equal(grown[0].percent, 80);
+  assert.equal(grown[1].percent, 0);
+
+  // Rotating it anti-clockwise hands SOL's share to the next memecoin.
+  const backward = vortex.ringBoundaryDeltaForUpper(pools, 0, -90 + 0.6 * 360);
+  assert.ok(backward < 0, 'anti-clockwise shrinks the preceding band');
+  const given = vortex.transferShare(pools, 0, backward);
+  assert.equal(given[0].percent, 60);
+  assert.equal(given[1].percent, 20);
+});
+
+test('four-token ring renders sectors, hub, cascade and boundaries', () => {
+  const vortex = loadVortex();
+  const host = { innerHTML: '', querySelector: () => null, querySelectorAll: () => [] };
+  vortex.mount(host, { read: () => ({ pools: ringPools(), depositSol: 1.287 }) });
+  assert.match(host.innerHTML, /vortex-sector/);
+  assert.match(host.innerHTML, /vortex-hub/);
+  assert.match(host.innerHTML, /vortex-cascade/);
+  assert.match(host.innerHTML, /vortex-circulation/);
+  assert.match(host.innerHTML, /MEME2 10%/);
+  assert.match(host.innerHTML, /2vGf|2vGfseKJ/ , 'the mint is labelled');
+  assert.equal((host.innerHTML.match(/vortex-boundary/g) || []).length, 3, 'three draggable boundaries');
+  assert.match(host.innerHTML, /vortex-mode/, 'the funnel/ring switch is offered');
+  assert.match(host.innerHTML, /Tokens<\/small><strong>4/);
+});
