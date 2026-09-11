@@ -1,27 +1,28 @@
-// Vortex allocation control — 3D funnel edition.
+// Vortex allocation control.
 //
 // Informed by the Navier-Stokes result: a vortex that spirals inward and
 // stretches along its axis while its core shrinks, speeds up, and keeps total
-// energy finite. The control is that vortex, seen in perspective:
+// energy finite. The control is that vortex, in two topologies:
 //
-//   wide mouth (top)      -> the SOL market, the inflow
-//   inner rings           -> quote pools
-//   narrow throat         -> the flywheel pairing, the fast core
-//   ring span             -> share of supply
-//   colour / spin speed   -> fee tier (orange fast, teal slow)
-//   helix inside          -> the circulating flow
-//   "sink" at the throat  -> the sweep destination
-//   constant deposit      -> energy stays finite while you drag
+//   FUNNEL (2 bands)          RING (3+ bands)
+//   wide mouth = SOL inflow   quote memecoins on one annulus,
+//   rings      = quote pools  arranged in circulation order,
+//   throat     = flywheel     the launched token as the hub,
+//   sink       = sweep        arrows = the cascade into the core
 //
-// Rendering is an isometric funnel: each band is a frustum slice drawn with
-// elliptical caps (back rim darker, front rim lighter) so depth reads without
-// a CSS 3D transform. That matters for input — the pointer is mapped straight
-// into viewBox coordinates, so dragging is exact rather than approximated
-// through a projected transform.
+// Shared meaning:
+//   band span / arc   -> share of supply
+//   colour / spin     -> fee tier (orange fast, teal slow)
+//   the hub / throat  -> the launched token (the sink for captured fees)
+//   constant deposit  -> energy stays finite while you drag
 //
-// Dragging is direct manipulation: a boundary follows the pointer along the
-// funnel axis, so the ring you grab moves with the cursor instead of jumping
-// by a percentage per pixel.
+// The ring is the interesting case: with four tokens the allocation is a real
+// simplex (three boundaries), adjacent pairs can counter-rotate, and supply
+// cascades ring -> hub the way a stretched vortex feeds its core.
+//
+// Rendering is a plain SVG projection (isometric funnel, or annular sectors)
+// with no CSS 3D transform, so the pointer maps straight into viewBox
+// coordinates and dragging stays exact.
 //
 // Loaded as a classic script; exposes window.TrebuchetV2Vortex. Pure geometry
 // and share math are exercised by test/vortex-control.test.mjs in a VM sandbox.
@@ -30,76 +31,104 @@
   'use strict';
 
   const TAU = Math.PI * 2;
+  const DEG = Math.PI / 180;
   const VIEW = 360;
   const AXIS_X = VIEW / 2;
+  const AXIS_Y = VIEW / 2;
   const Y_TOP = 58;
   const Y_BOTTOM = 322;
   const R_TOP = 118;
   const R_BOTTOM = 30;
-  const PERSPECTIVE = 0.38; // ellipse squash: how much the funnel is tilted away
-  const MIN_VISUAL_SPAN = 0.045; // zero-share rings still need to be grabbable
+  const PERSPECTIVE = 0.38;
+  const MIN_VISUAL_SPAN = 0.045;
+  const RING_INNER = 62;
+  const RING_OUTER = 132;
+  const MIN_ARC_DEG = 14; // a 0% memecoin still needs a grabbable arc
 
-  function clamp(value, min, max) {
-    return Math.min(max, Math.max(min, value));
-  }
-
-  function roundPercent(value) {
-    return Math.round(value * 10) / 10;
-  }
+  const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+  const roundPercent = (value) => Math.round(value * 10) / 10;
 
   const yForT = (t) => Y_TOP + clamp(t, 0, 1) * (Y_BOTTOM - Y_TOP);
   const tForY = (y) => clamp((y - Y_TOP) / (Y_BOTTOM - Y_TOP), 0, 1);
   const radiusForT = (t) => R_TOP + (R_BOTTOM - R_TOP) * clamp(t, 0, 1);
+  const tForRingAngle = (deg) => ((((deg + 90) % 360) + 360) % 360) / 360;
 
-  /**
-   * Lay the pools out down the funnel, widest first. Each band gets the t
-   * range it occupies, its vertical extent, and its rim radii, so both the
-   * renderer and the drag handler work from one geometry.
-   *
-   * Zero-share bands are kept (with a minimum visual span) so there is always
-   * a boundary to grab: the vortex is how a pool gets opened in the first
-   * place.
-   */
-  function layoutBands(pools = []) {
-    const usable = pools.filter((pool) => pool && pool.id);
+  function sharesOf(pools) {
+    const usable = (Array.isArray(pools) ? pools : []).filter((pool) => pool && pool.id);
     const total = usable.reduce((sum, pool) => sum + Math.max(0, Number(pool.percent) || 0), 0);
-    const shares = usable.map((pool) => (
+    return usable.map((pool) => (
       total > 0 ? Math.max(0, Number(pool.percent) || 0) / total : 0
     ));
-    // Purely visual minimum so 0% rings stay visible and draggable.
-    const visualShares = shares.map((share) => Math.max(share, MIN_VISUAL_SPAN));
-    const visualTotal = visualShares.reduce((sum, value) => sum + value, 0) || 1;
+  }
+
+  /**
+   * Concentric funnel bands, mouth first. Zero-share bands keep a minimum
+   * visual span so there is always a boundary to grab.
+   */
+  function layoutBands(pools = []) {
+    const usable = (Array.isArray(pools) ? pools : []).filter((pool) => pool && pool.id);
+    const shares = sharesOf(usable);
+    const visual = shares.map((share) => Math.max(share, MIN_VISUAL_SPAN));
+    const visualTotal = visual.reduce((sum, value) => sum + value, 0) || 1;
 
     let t = 0;
     return usable.map((pool, index) => {
-      const realShare = shares[index];
-      const visual = visualShares[index] / visualTotal;
+      const span = visual[index] / visualTotal;
       const tTop = t;
-      const tBottom = index === usable.length - 1 ? 1 : Math.min(1, t + visual);
+      const tBottom = index === usable.length - 1 ? 1 : Math.min(1, t + span);
       t = tBottom;
-      const yTop = yForT(tTop);
-      const yBottom = yForT(tBottom);
       return {
         ...pool,
-        share: realShare,
+        share: shares[index],
         tTop,
         tBottom,
-        yTop,
-        yBottom,
+        yTop: yForT(tTop),
+        yBottom: yForT(tBottom),
         rTop: radiusForT(tTop),
         rBottom: radiusForT(tBottom),
-        midY: (yTop + yBottom) / 2,
+        midY: (yForT(tTop) + yForT(tBottom)) / 2,
         midRadius: (radiusForT(tTop) + radiusForT(tBottom)) / 2,
       };
     });
   }
 
   /**
+   * Annular sectors around the hub, in circulation order. Sectors always sum
+   * to a full turn; minimum arcs are normalised away so a 0% memecoin is
+   * visible without distorting the ring.
+   */
+  function layoutRing(pools = []) {
+    const usable = (Array.isArray(pools) ? pools : []).filter((pool) => pool && pool.id);
+    const shares = sharesOf(usable);
+    const raw = shares.map((share) => Math.max(share * 360, MIN_ARC_DEG));
+    const rawTotal = raw.reduce((sum, value) => sum + value, 0) || 360;
+
+    let angle = -90;
+    return usable.map((pool, index) => {
+      const sweep = (raw[index] / rawTotal) * 360;
+      const angleStart = angle;
+      const angleEnd = angle + sweep;
+      angle = angleEnd;
+      const mid = (angleStart + angleEnd) / 2;
+      return {
+        ...pool,
+        share: shares[index],
+        angleStart,
+        angleEnd,
+        sweep,
+        midAngle: mid,
+        labelX: AXIS_X + ((RING_INNER + RING_OUTER) / 2) * Math.cos(mid * DEG),
+        labelY: AXIS_Y + ((RING_INNER + RING_OUTER) / 2) * Math.sin(mid * DEG),
+      };
+    });
+  }
+
+  /**
    * Move `delta` points of share across the boundary between band `index` and
-   * `index + 1`, honouring each band's min/max. Positive grows the upper band.
+   * `index + 1`. Positive grows the upper/earlier band.
    */
   function transferShare(pools, index, delta) {
-    const next = pools.map((pool) => ({ ...pool, percent: Number(pool.percent) }));
+    const next = (Array.isArray(pools) ? pools : []).map((pool) => ({ ...pool, percent: Number(pool.percent) }));
     const upper = next[index];
     const lower = next[index + 1];
     if (!upper || !lower) return next;
@@ -119,15 +148,8 @@
   }
 
   /**
-   * How much the UPPER band must gain for the boundary to sit at `t`.
-   *
-   * The boundary between band `index` and everything below it sits at `t`
-   * (0 at the mouth, 1 at the throat). The supply below it must equal the
-   * remaining share `(1 - t) * 100`, so the upper band gains exactly the
-   * difference between what those bands hold now and what they should hold.
-   *
-   * Sign matches transferShare: positive grows the upper band, which is what
-   * dragging a ring *down* the funnel means (the mouth takes more supply).
+   * How much the bands before `index` must gain for the boundary to sit at `t`
+   * (0 = start of the order, 1 = end). Sign matches transferShare.
    */
   function boundaryDeltaForUpper(pools, index, t) {
     const bands = layoutBands(pools);
@@ -138,7 +160,11 @@
     return currentInner - desiredInner;
   }
 
-  /** Fee tier -> spin speed and band colour. */
+  /** Same, but the boundary position comes from an angle around the ring. */
+  function ringBoundaryDeltaForUpper(pools, index, deg) {
+    return boundaryDeltaForUpper(pools, index, tForRingAngle(deg));
+  }
+
   function spinForFeeTier(feeTier) {
     const tier = Number(feeTier);
     if (!Number.isFinite(tier)) return { speed: 1, color: '#4fd1c5' };
@@ -147,28 +173,42 @@
     return { speed: 0.9, color: '#4fd1c5' };
   }
 
-  /** Front half of the ellipse rim at (y) with radius r. */
+  const polar = (cx, cy, r, deg) => [cx + r * Math.cos(deg * DEG), cy + r * Math.sin(deg * DEG)];
+
   function frontArc(r, y) {
     const ry = r * PERSPECTIVE;
     return `M ${(AXIS_X - r).toFixed(2)} ${y.toFixed(2)} A ${r.toFixed(2)} ${ry.toFixed(2)} 0 0 0 ${(AXIS_X + r).toFixed(2)} ${y.toFixed(2)}`;
   }
 
-  /** Back half of the ellipse rim at (y) with radius r (the far rim). */
   function backArc(r, y) {
     const ry = r * PERSPECTIVE;
     return `M ${(AXIS_X - r).toFixed(2)} ${y.toFixed(2)} A ${r.toFixed(2)} ${ry.toFixed(2)} 0 0 1 ${(AXIS_X + r).toFixed(2)} ${y.toFixed(2)}`;
   }
 
-  /** One frustum slice: the visible surface of a band between two rims. */
+  /** One frustum slice of the funnel. */
   function funnelPath(band) {
     const { rTop, rBottom, yTop, yBottom } = band;
-    const ryTop = rTop * PERSPECTIVE;
-    const ryBottom = rBottom * PERSPECTIVE;
     return [
       `M ${(AXIS_X - rTop).toFixed(2)} ${yTop.toFixed(2)}`,
-      `A ${rTop.toFixed(2)} ${ryTop.toFixed(2)} 0 0 0 ${(AXIS_X + rTop).toFixed(2)} ${yTop.toFixed(2)}`,
+      `A ${rTop.toFixed(2)} ${(rTop * PERSPECTIVE).toFixed(2)} 0 0 0 ${(AXIS_X + rTop).toFixed(2)} ${yTop.toFixed(2)}`,
       `L ${(AXIS_X + rBottom).toFixed(2)} ${yBottom.toFixed(2)}`,
-      `A ${rBottom.toFixed(2)} ${ryBottom.toFixed(2)} 0 0 1 ${(AXIS_X - rBottom).toFixed(2)} ${yBottom.toFixed(2)}`,
+      `A ${rBottom.toFixed(2)} ${(rBottom * PERSPECTIVE).toFixed(2)} 0 0 1 ${(AXIS_X - rBottom).toFixed(2)} ${yBottom.toFixed(2)}`,
+      'Z',
+    ].join(' ');
+  }
+
+  /** One annular sector of the ring. */
+  function sectorPath(segment, rInner = RING_INNER, rOuter = RING_OUTER) {
+    const [x0, y0] = polar(AXIS_X, AXIS_Y, rOuter, segment.angleStart);
+    const [x1, y1] = polar(AXIS_X, AXIS_Y, rOuter, segment.angleEnd);
+    const [x2, y2] = polar(AXIS_X, AXIS_Y, rInner, segment.angleEnd);
+    const [x3, y3] = polar(AXIS_X, AXIS_Y, rInner, segment.angleStart);
+    const large = segment.sweep > 180 ? 1 : 0;
+    return [
+      `M ${x0.toFixed(2)} ${y0.toFixed(2)}`,
+      `A ${rOuter} ${rOuter} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`,
+      `L ${x2.toFixed(2)} ${y2.toFixed(2)}`,
+      `A ${rInner} ${rInner} 0 ${large} 0 ${x3.toFixed(2)} ${y3.toFixed(2)}`,
       'Z',
     ].join(' ');
   }
@@ -193,70 +233,152 @@
     }[ch]));
   }
 
+  function shortMint(mint) {
+    const value = String(mint || '').trim();
+    if (!value) return '';
+    return value.length <= 12 ? value : `${value.slice(0, 4)}…${value.slice(-4)}`;
+  }
+
   /**
    * Mount the control. `read()` returns
-   *   { pools: [{ id, symbol, percent, minPercent?, maxPercent?, feeTier? }],
-   *     depositSol?: number, sweepDestination?: string }
+   *   { pools: [{ id, symbol, mint?, percent, minPercent?, maxPercent?, feeTier? }],
+   *     depositSol?, sweepDestination?, symbol? }
    * and `write(pools)` receives the updated percentages.
    */
   function mount(host, { read, write } = {}) {
     if (!host || typeof read !== 'function') return null;
     let drag = null;
+    let mode = null; // 'ring' | 'funnel', chosen from the band count unless pinned
+    let pinnedMode = null;
 
     const poolState = () => {
       const model = read() || {};
       return Array.isArray(model.pools) ? model.pools : [];
     };
 
+    const currentMode = () => {
+      if (pinnedMode) return pinnedMode;
+      if (mode) return mode;
+      return poolState().length >= 3 ? 'ring' : 'funnel';
+    };
+
     const render = () => {
       const model = read() || {};
       const pools = Array.isArray(model.pools) ? model.pools : [];
-      const bands = layoutBands(pools);
+      mode = pools.length >= 3 ? 'ring' : 'funnel';
+      const activeMode = currentMode();
+      const bands = activeMode === 'ring' ? layoutRing(pools) : layoutBands(pools);
       const deposit = Number(model.depositSol);
-      const core = bands[bands.length - 1] || null;
-      const total = bands.reduce((sum, band) => sum + Math.max(0, Number(band.percent) || 0), 0);
+      const core = pools[pools.length - 1] || null;
+      const total = pools.reduce((sum, pool) => sum + Math.max(0, Number(pool.percent) || 0), 0);
 
-      const bandMarkup = bands.map((band, index) => {
-        const { color } = spinForFeeTier(band.feeTier);
-        const opacity = 0.16 + Math.min(0.34, (Number(band.percent) || 0) / 220);
-        const next = bands[index + 1];
-        return `
-          <g class="vortex-band" data-band="${index}">
-            <path class="vortex-slice" d="${funnelPath(band)}"
-                  fill="url(#vortexBand${index % 3})" fill-opacity="${opacity.toFixed(2)}"
-                  stroke="${color}" stroke-opacity="0.45" stroke-width="1"></path>
-            <path class="vortex-rim vortex-rim-back" d="${backArc(band.rTop, band.yTop)}"
-                  fill="none" stroke="${color}" stroke-opacity="0.25" stroke-width="1"></path>
-            <path class="vortex-rim vortex-rim-front" d="${frontArc(band.rBottom, band.yBottom)}"
-                  fill="none" stroke="${color}" stroke-opacity="0.55" stroke-width="1.25"></path>
-            <text class="vortex-band-label" x="${(AXIS_X + band.midRadius + 8).toFixed(2)}"
-                  y="${band.midY.toFixed(2)}" fill="${color}">
-              ${escapeHtml(band.symbol)} ${band.percent}%
-            </text>
-          </g>`;
-      }).join('');
+      const bandMarkup = activeMode === 'ring'
+        ? bands.map((segment, index) => {
+          const { color } = spinForFeeTier(segment.feeTier);
+          const opacity = 0.18 + Math.min(0.36, (Number(segment.percent) || 0) / 200);
+          return `
+            <g class="vortex-band" data-band="${index}">
+              <path class="vortex-sector" d="${sectorPath(segment)}"
+                    fill="${color}" fill-opacity="${opacity.toFixed(2)}"
+                    stroke="${color}" stroke-opacity="0.5" stroke-width="1">
+                <title>${escapeHtml(segment.symbol)} · ${segment.percent}%${segment.mint ? ` · ${escapeHtml(segment.mint)}` : ''}</title>
+              </path>
+              <text class="vortex-band-label" x="${segment.labelX.toFixed(2)}" y="${segment.labelY.toFixed(2)}"
+                    text-anchor="middle" fill="${color}">
+                ${escapeHtml(segment.symbol)} ${segment.percent}%
+              </text>
+              ${segment.mint ? `<text class="vortex-band-mint" x="${segment.labelX.toFixed(2)}" y="${(segment.labelY + 11).toFixed(2)}" text-anchor="middle">${escapeHtml(shortMint(segment.mint))}</text>` : ''}
+            </g>`;
+        }).join('')
+        : bands.map((band, index) => {
+          const { color } = spinForFeeTier(band.feeTier);
+          const opacity = 0.16 + Math.min(0.34, (Number(band.percent) || 0) / 220);
+          return `
+            <g class="vortex-band" data-band="${index}">
+              <path class="vortex-slice" d="${funnelPath(band)}"
+                    fill="url(#vortexBand${index % 3})" fill-opacity="${opacity.toFixed(2)}"
+                    stroke="${color}" stroke-opacity="0.45" stroke-width="1"></path>
+              <path class="vortex-rim vortex-rim-back" d="${backArc(band.rTop, band.yTop)}"
+                    fill="none" stroke="${color}" stroke-opacity="0.25" stroke-width="1"></path>
+              <path class="vortex-rim vortex-rim-front" d="${frontArc(band.rBottom, band.yBottom)}"
+                    fill="none" stroke="${color}" stroke-opacity="0.55" stroke-width="1.25"></path>
+              <text class="vortex-band-label" x="${(AXIS_X + band.midRadius + 8).toFixed(2)}"
+                    y="${band.midY.toFixed(2)}" fill="${color}">
+                ${escapeHtml(band.symbol)} ${band.percent}%
+              </text>
+            </g>`;
+        }).join('');
 
-      const handles = bands.slice(0, -1).map((band, index) => {
-        const y = band.yBottom;
-        const r = band.rBottom;
-        return `
-          <g class="vortex-boundary" data-boundary="${index}" role="slider" tabindex="0"
-             aria-label="Adjust the boundary between ${escapeHtml(band.symbol)} and ${escapeHtml(bands[index + 1]?.symbol || 'the core')}"
-             aria-valuenow="${band.percent}" aria-valuemin="0" aria-valuemax="100">
-            <ellipse class="vortex-handle-ring" cx="${AXIS_X}" cy="${y.toFixed(2)}"
-                     rx="${r.toFixed(2)}" ry="${(r * PERSPECTIVE).toFixed(2)}"></ellipse>
-            <circle class="vortex-handle" cx="${AXIS_X}" cy="${(y + r * PERSPECTIVE).toFixed(2)}" r="8"></circle>
-          </g>`;
-      }).join('');
+      // Cascade: each quote ring feeds the hub, the way a stretched vortex
+      // feeds its core.
+      const cascade = activeMode === 'ring'
+        ? bands.slice(0, -1).map((segment) => {
+          const [x1, y1] = polar(AXIS_X, AXIS_Y, RING_INNER - 2, segment.midAngle);
+          const [x2, y2] = polar(AXIS_X, AXIS_Y, RING_INNER * 0.42, segment.midAngle);
+          return `<path class="vortex-cascade" d="M ${x1.toFixed(2)} ${y1.toFixed(2)} L ${x2.toFixed(2)} ${y2.toFixed(2)}"
+            stroke="${spinForFeeTier(segment.feeTier).color}" stroke-opacity="0.35" stroke-width="1.1"
+            marker-end="url(#vortexArrow)"></path>`;
+        }).join('')
+        : '';
+
+      const handles = activeMode === 'ring'
+        ? bands.slice(0, -1).map((segment, index) => {
+          const [x, y] = polar(AXIS_X, AXIS_Y, (RING_INNER + RING_OUTER) / 2, segment.angleEnd);
+          return `
+            <g class="vortex-boundary" data-boundary="${index}" role="slider" tabindex="0"
+               aria-label="Adjust the boundary between ${escapeHtml(segment.symbol)} and ${escapeHtml(bands[index + 1]?.symbol || 'the core')}"
+               aria-valuenow="${segment.percent}" aria-valuemin="0" aria-valuemax="100">
+              <circle class="vortex-handle" cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="8"></circle>
+            </g>`;
+        }).join('')
+        : bands.slice(0, -1).map((band, index) => {
+          const y = band.yBottom;
+          const r = band.rBottom;
+          return `
+            <g class="vortex-boundary" data-boundary="${index}" role="slider" tabindex="0"
+               aria-label="Adjust the boundary between ${escapeHtml(band.symbol)} and ${escapeHtml(bands[index + 1]?.symbol || 'the core')}"
+               aria-valuenow="${band.percent}" aria-valuemin="0" aria-valuemax="100">
+              <ellipse class="vortex-handle-ring" cx="${AXIS_X}" cy="${y.toFixed(2)}"
+                       rx="${r.toFixed(2)}" ry="${(r * PERSPECTIVE).toFixed(2)}"></ellipse>
+              <circle class="vortex-handle" cx="${AXIS_X}" cy="${(y + r * PERSPECTIVE).toFixed(2)}" r="8"></circle>
+            </g>`;
+        }).join('');
+
+      const hubMarkup = activeMode === 'ring'
+        ? `
+          <circle class="vortex-hub" cx="${AXIS_X}" cy="${AXIS_Y}" r="${(RING_INNER * 0.42).toFixed(2)}"
+                  fill="url(#vortexThroat)"></circle>
+          <text class="vortex-hub-label" x="${AXIS_X}" y="${AXIS_Y - 2}" text-anchor="middle">
+            ${escapeHtml(core?.symbol || 'core')}</text>
+          <text class="vortex-hub-value" x="${AXIS_X}" y="${AXIS_Y + 12}" text-anchor="middle">
+            ${core ? `${core.percent}%` : '—'}</text>`
+        : `
+          <ellipse cx="${AXIS_X}" cy="${Y_BOTTOM}" rx="${(R_BOTTOM * 0.72).toFixed(2)}"
+                   ry="${(R_BOTTOM * 0.72 * PERSPECTIVE).toFixed(2)}" fill="url(#vortexThroat)"></ellipse>
+          <text class="vortex-sink" x="${AXIS_X}" y="${(Y_BOTTOM + 3).toFixed(2)}" text-anchor="middle"
+                fill="#1a202c" font-size="8.5">sink</text>
+          <text class="vortex-inflow" x="${AXIS_X}" y="${(Y_TOP - 10).toFixed(2)}" text-anchor="middle"
+                fill="rgba(255,255,255,0.55)" font-size="9">inflow</text>`;
+
+      const circulation = activeMode === 'ring'
+        ? `<circle class="vortex-circulation" cx="${AXIS_X}" cy="${AXIS_Y}"
+             r="${((RING_INNER + RING_OUTER) / 2).toFixed(2)}" fill="none"
+             stroke="rgba(255,255,255,0.32)" stroke-width="1" stroke-dasharray="6 10"></circle>`
+        : `<path class="vortex-helix" d="${helixPath()}" fill="none"
+             stroke="rgba(255,255,255,0.42)" stroke-width="1.1" stroke-dasharray="5 7"></path>`;
 
       host.innerHTML = `
         <div class="vortex-head">
           <span class="eyebrow">Flywheel vortex</span>
-          <strong>${core ? `${escapeHtml(core.symbol)} core at ${core.percent}%` : 'No pools configured'}</strong>
+          <span class="vortex-head-actions">
+            <strong>${core ? `${escapeHtml(core.symbol)} core at ${core.percent}%` : 'No pools configured'}</strong>
+            <button class="pill-button vortex-mode" type="button" data-vortex-mode="${activeMode === 'ring' ? 'funnel' : 'ring'}"
+                    title="Switch between the circulation ring and the funnel">${activeMode === 'ring' ? 'Funnel' : 'Ring'}</button>
+          </span>
         </div>
         <div class="vortex-stage">
           <svg class="vortex-svg" viewBox="0 0 ${VIEW} ${VIEW}" role="img"
-               aria-label="Pool allocation funnel: ${bands.map((b) => `${b.symbol} ${b.percent}%`).join(', ')}">
+               aria-label="Pool allocation ${activeMode}: ${pools.map((p) => `${p.symbol} ${p.percent}%`).join(', ')}">
             <defs>
               <linearGradient id="vortexBand0" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stop-color="#4fd1c5"></stop>
@@ -274,27 +396,26 @@
                 <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"></stop>
                 <stop offset="100%" stop-color="#f6ad55" stop-opacity="0.15"></stop>
               </radialGradient>
+              <marker id="vortexArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(255,255,255,0.55)"></path>
+              </marker>
             </defs>
-            <ellipse class="vortex-mouth" cx="${AXIS_X}" cy="${Y_TOP}" rx="${R_TOP}" ry="${(R_TOP * PERSPECTIVE).toFixed(2)}"
-                     fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1"></ellipse>
+            ${activeMode === 'funnel' ? `<ellipse class="vortex-mouth" cx="${AXIS_X}" cy="${Y_TOP}" rx="${R_TOP}" ry="${(R_TOP * PERSPECTIVE).toFixed(2)}" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1"></ellipse>` : ''}
             ${bandMarkup}
-            <path class="vortex-helix" d="${helixPath()}" fill="none"
-                  stroke="rgba(255,255,255,0.42)" stroke-width="1.1" stroke-dasharray="5 7"></path>
-            <ellipse cx="${AXIS_X}" cy="${Y_BOTTOM}" rx="${R_BOTTOM * 0.72}" ry="${(R_BOTTOM * 0.72 * PERSPECTIVE).toFixed(2)}"
-                     fill="url(#vortexThroat)"></ellipse>
-            <text class="vortex-sink" x="${AXIS_X}" y="${(Y_BOTTOM + 3).toFixed(2)}" text-anchor="middle"
-                  fill="#1a202c" font-size="8.5">sink</text>
+            ${cascade}
+            ${circulation}
+            ${hubMarkup}
             ${handles}
-            <text class="vortex-inflow" x="${AXIS_X}" y="${(Y_TOP - 10).toFixed(2)}" text-anchor="middle"
-                  fill="rgba(255,255,255,0.55)" font-size="9">inflow</text>
           </svg>
         </div>
         <div class="vortex-readout">
           <span><small>Deposit</small><strong>${Number.isFinite(deposit) ? `${deposit.toFixed(3)} SOL` : '—'}</strong></span>
-          <span><small>Bands</small><strong>${bands.length}</strong></span>
+          <span><small>Tokens</small><strong>${pools.length}</strong></span>
           <span><small>Total</small><strong>${total.toFixed(1)}%</strong></span>
         </div>
-        <p class="vortex-hint">Drag a ring down the funnel to send supply into the core. The throat spins fastest; total deposit stays finite.</p>
+        <p class="vortex-hint">${activeMode === 'ring'
+          ? 'Drag a boundary around the ring to move supply between memecoins. Arrows show the cascade into the core.'
+          : 'Drag a ring down the funnel to send supply into the core. The throat spins fastest; total deposit stays finite.'}</p>
       `;
       bindPointer();
     };
@@ -307,15 +428,16 @@
     };
 
     function bindPointer() {
+      const modeButton = host.querySelector('[data-vortex-mode]');
+      modeButton?.addEventListener('click', () => {
+        pinnedMode = modeButton.dataset.vortexMode;
+        render();
+      });
       if (!host.querySelector('.vortex-svg')) return;
 
-      // Pointer -> viewBox coordinates. The control is drawn in the SVG plane
-      // (no CSS 3D transform), so this mapping is exact.
-      //
-      // The SVG is re-queried on every call on purpose: each update re-renders
-      // the control, which replaces the SVG element. Measuring a detached
-      // element returns a zero-size rect, which used to map every later pointer
-      // position to the same edge of the funnel and made the drag snap back.
+      // The SVG is re-queried on every call: each update re-renders the
+      // control and replaces the element, and measuring a detached node
+      // returns a zero-size rect (which used to make the drag snap back).
       const pointFor = (event) => {
         const live = host.querySelector('.vortex-svg');
         if (!live) return null;
@@ -327,18 +449,17 @@
         };
       };
 
-      // Direct manipulation: the ring follows the pointer down the funnel, so
-      // supply flows into the core at the speed the operator drags rather than
-      // jumping by a percentage per pixel. Updates are coalesced to one per
-      // animation frame so a fast drag stays smooth.
       let frame = null;
-      let pendingPoint = null;
+      let pending = null;
       const flush = () => {
         frame = null;
-        if (!drag || !pendingPoint) return;
-        const point = pendingPoint;
-        pendingPoint = null;
-        const delta = boundaryDeltaForUpper(poolState(), drag.index, tForY(point.y));
+        if (!drag || !pending) return;
+        const point = pending;
+        pending = null;
+        const activeMode = currentMode();
+        const delta = activeMode === 'ring'
+          ? ringBoundaryDeltaForUpper(poolState(), drag.index, Math.atan2(point.y - AXIS_Y, point.x - AXIS_X) / DEG)
+          : boundaryDeltaForUpper(poolState(), drag.index, tForY(point.y));
         if (Math.abs(delta) < 0.05) return;
         applyDelta(drag.index, delta);
       };
@@ -347,13 +468,13 @@
         if (!drag) return;
         const point = pointFor(event);
         if (!point) return;
-        pendingPoint = point;
+        pending = point;
         if (frame == null) frame = global.requestAnimationFrame(flush);
       };
 
       const stop = () => {
         drag = null;
-        pendingPoint = null;
+        pending = null;
         if (frame != null && global.cancelAnimationFrame) global.cancelAnimationFrame(frame);
         frame = null;
         window.removeEventListener('pointermove', onMove);
@@ -386,20 +507,30 @@
     }
 
     render();
-    return { render };
+    return {
+      render: () => {
+        mode = null;
+        render();
+      },
+      get mode() { return currentMode(); },
+    };
   }
 
   global.TrebuchetV2Vortex = {
     layoutBands,
+    layoutRing,
     transferShare,
     boundaryDeltaForUpper,
+    ringBoundaryDeltaForUpper,
     spinForFeeTier,
     funnelPath,
+    sectorPath,
     helixPath,
     yForT,
     tForY,
     radiusForT,
+    tForRingAngle,
     mount,
-    constants: { VIEW, AXIS_X, Y_TOP, Y_BOTTOM, R_TOP, R_BOTTOM, PERSPECTIVE },
+    constants: { VIEW, AXIS_X, AXIS_Y, Y_TOP, Y_BOTTOM, R_TOP, R_BOTTOM, PERSPECTIVE, RING_INNER, RING_OUTER },
   };
 }(typeof window !== 'undefined' ? window : globalThis));

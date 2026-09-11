@@ -5436,6 +5436,7 @@ function vortexAllocationModel() {
     pools.push({
       id: `custom-${index}`,
       symbol: String(pool.quoteSymbol || `Q${index + 1}`).toUpperCase(),
+      mint: String(pool.quoteMint || ''),
       percent: Number(pool.supplyPercent || 0),
       minPercent: 0,
       feeTier: Number(pool.ammConfigIndex ?? 5),
@@ -5446,6 +5447,7 @@ function vortexAllocationModel() {
   pools.push({
     id: 'sol',
     symbol: 'SOL',
+    mint: 'So11111111111111111111111111111111111111112',
     percent: Number($('#mainPoolPercent')?.value || 0),
     minPercent: 10,
     feeTier: 8,
@@ -5456,6 +5458,7 @@ function vortexAllocationModel() {
     pools.push({
       id: 'quote',
       symbol: isFlywheel ? (venue.key === 'meme' ? 'FLY' : 'RESERVE') : 'USDC',
+      mint: isFlywheel ? (venue.quoteMint || '') : '',
       percent: quotePercent,
       minPercent: isFlywheel ? 10 : 0,
       maxPercent: isFlywheel ? 30 : 100,
@@ -5513,6 +5516,51 @@ function renderFlywheelPick() {
 
 // Draw a fresh memecoin from the flywheel pool (never repeating the current
 // pairing when the pool has alternatives).
+// Build a four-token vortex in one action: the flywheel pairing becomes the
+// hub and two more memecoins join SOL as circulating rings, 10% each.
+async function spinFlywheelVortex() {
+  const own = ownTokenMint();
+  const candidates = (state.flywheelPools?.meme || []).filter((mint) => !own || mint !== own);
+  if (candidates.length < 3) {
+    notify('The meme flywheel pool needs at least three mints for a four-token vortex');
+    return;
+  }
+  const drawn = [];
+  const rest = candidates.slice();
+  while (drawn.length < 3) {
+    drawn.push(rest.splice(Math.floor(Math.random() * rest.length), 1)[0]);
+  }
+  const quoteShare = 10;
+  const solShare = 100 - quoteShare * drawn.length;
+  if (solShare < 10) {
+    notify('Not enough supply for that many flywheel pools');
+    return;
+  }
+
+  state.memeFlywheelMint = drawn[0];
+  state.customPools = drawn.slice(1).map((mint, index) => ({
+    id: `flywheel-ring-${index + 2}`,
+    quoteSymbol: `MEME${index + 2}`,
+    quoteMint: mint,
+    supplyPercent: quoteShare,
+    ammConfigIndex: 5,
+    sliceShares: '100',
+    feeKeyRecipient: '',
+    ladderBands: 0,
+    ladderText: '',
+    supportSol: 0,
+    supportDepth: 12,
+  }));
+  if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(solShare);
+  if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(quoteShare);
+  if ($('#quotePoolVenue')) $('#quotePoolVenue').value = 'meme';
+
+  renderFlywheelPick();
+  renderVortexControl();
+  scheduleLaunchAutoSave();
+  notify(`Four-token vortex: SOL ${solShare}% + ${drawn.length} memecoins at ${quoteShare}%`);
+}
+
 // The token being launched cannot be its own flywheel pairing: a pool with the
 // same mint on both sides is not tradable.
 function ownTokenMint() {
@@ -23209,6 +23257,11 @@ function handleClick(event) {
 
   if (action === 'shuffle-flywheel') {
     shuffleMemeFlywheel();
+    return;
+  }
+
+  if (action === 'spin-flywheel-vortex') {
+    spinFlywheelVortex();
     return;
   }
 

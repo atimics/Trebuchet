@@ -16758,3 +16758,63 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   opacity: 0.6;
   line-height: 1.4;
 }
+
+/* Ring mode: with three or more tokens the vortex becomes a circulation ring —
+   memecoins on one annulus, the flywheel pairing as the hub, arrows showing
+   the cascade inward. */
+.vortex-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vortex-mode {
+  font-size: 10px;
+  padding: 2px 8px;
+}
+
+.vortex-sector {
+  transition: fill-opacity 140ms ease;
+}
+
+.vortex-cascade {
+  opacity: 0.85;
+}
+
+.vortex-band-mint {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 8px;
+  fill: rgba(255, 255, 255, 0.6);
+  pointer-events: none;
+}
+
+.vortex-hub {
+  filter: drop-shadow(0 0 6px rgba(246, 173, 85, 0.45));
+}
+
+.vortex-hub-label {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  fill: #1a202c;
+  letter-spacing: 0.06em;
+}
+
+.vortex-hub-value {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 9px;
+  fill: rgba(26, 32, 44, 0.75);
+}
+
+/* Circulation: the dashed ring rotates, implying flow around the vortex. */
+.vortex-circulation {
+  animation: vortex-circulate 16s linear infinite;
+  transform-origin: 180px 180px;
+}
+
+@keyframes vortex-circulate {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vortex-circulation { animation: none; }
+}
