@@ -5248,15 +5248,31 @@ function feeKeyRecipientIssues(pools = []) {
   return issues;
 }
 
+const PLACEHOLDER_SWEEP_RE = /^1{20,}[1-9A-HJ-NP-Za-km-z]*$/;
+
 function sweepDestinationIssues(topology = {}) {
   const destination = String(topology.sweepDestination || '').trim();
-  if (!destination || isProbablySolanaAddress(destination)) return [];
-  return [{
-    state: 'danger',
-    poolId: 'sweep-destination',
-    title: 'Sweep destination invalid',
-    detail: 'Sweep destination does not look like a valid Solana address.',
-  }];
+  if (!destination) return [];
+  if (!isProbablySolanaAddress(destination)) {
+    return [{
+      state: 'danger',
+      poolId: 'sweep-destination',
+      title: 'Sweep destination invalid',
+      detail: 'Sweep destination does not look like a valid Solana address.',
+    }];
+  }
+  // Only a real launch can lose assets: practice/demo runs sweep nothing, and
+  // the guided practice flow uses a placeholder destination on purpose.
+  const liveExecution = state.launchMode !== 'dry-run';
+  if (liveExecution && PLACEHOLDER_SWEEP_RE.test(destination)) {
+    return [{
+      state: 'warn',
+      poolId: 'sweep-destination',
+      title: 'Sweep destination looks like a placeholder',
+      detail: 'Swept SOL, tokens, and the Fee Key NFTs would be unrecoverable, and trading fees could never be claimed. Use a wallet you control.',
+    }];
+  }
+  return [];
 }
 
 function airdropRecipientIssues(topology = {}) {

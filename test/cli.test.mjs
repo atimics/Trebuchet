@@ -318,3 +318,26 @@ test('launch save/list/remove persist a launch configuration for the app', async
   const afterRemove = await invoke(['launch', 'list', '--config-dir', configDir, '--json']);
   assert.equal(JSON.parse(afterRemove.stdout).data.launches.length, 0);
 }), { timeout: 60_000 });
+
+test('confirm refuses to sign a placeholder sweep destination on a real network', async () => withTempDirectory(async (directory) => {
+  const keyfilePath = path.join(directory, 'custody.json');
+  const created = await invoke(['custody', 'create', '--out', keyfilePath, '--passphrase', 'test-pass', '--json']);
+  assert.equal(created.exitCode, CliExitCode.SUCCESS, created.stdout + created.stderr);
+
+  const configPath = path.join(directory, 'launch.json');
+  await writeFile(configPath, JSON.stringify({
+    ...launchIntent,
+    poolTopology: { ...launchIntent.poolTopology, sweepDestination: '11111111111111111111111111111116' },
+  }));
+  const planPath = path.join(directory, 'plan.json');
+  const built = await invoke(['plan', 'build', '--config', configPath, '--out', planPath]);
+  assert.equal(built.exitCode, CliExitCode.SUCCESS, built.stdout + built.stderr);
+
+  const refused = await invoke(['confirm', '--plan', planPath, '--keyfile', keyfilePath, '--network', 'mainnet', '--max-spend-sol', '1', '--passphrase', 'test-pass', '--json']);
+  assert.equal(refused.exitCode, CliExitCode.INVALID_INPUT, refused.stdout + refused.stderr);
+  assert.match(JSON.parse(refused.stdout).error.message, /placeholder address/);
+
+  // Demo confirmations are unaffected (practice never moves real assets).
+  const demo = await invoke(['confirm', '--plan', planPath, '--keyfile', keyfilePath, '--network', 'demo', '--max-spend-sol', '1', '--passphrase', 'test-pass', '--json']);
+  assert.equal(demo.exitCode, CliExitCode.SUCCESS, demo.stdout + demo.stderr);
+}), { timeout: 60_000 });

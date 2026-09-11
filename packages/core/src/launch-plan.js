@@ -868,35 +868,12 @@ function feeKeyRecipientIssues(pools = []) {
   return issues;
 }
 
-// Placeholder destinations used in examples and fixtures (the all-ones
-// system-program family). Sweeping there is unrecoverable: nobody can sign for
-// those addresses, so swept SOL, tokens, and the Fee Key NFTs are gone for
-// good and trading fees can never be claimed.
-const PLACEHOLDER_SWEEP_RE = /^1{20,}[1-9A-HJ-NP-Za-km-z]*$/;
-
-function sweepDestinationIssues(poolTopology = {}, { demoMode = false, mode = null } = {}) {
+function sweepDestinationIssues(poolTopology = {}) {
   const destination = String(poolTopology.sweepDestination || '').trim();
-  if (!destination) return [];
-  if (!isPlausibleSolanaAddress(destination)) {
-    return [{
-      detail: 'Sweep destination does not look like a valid Solana address.',
-    }];
-  }
-  // Practice/demo launches never move real assets (the guided practice flow
-  // uses a placeholder destination on purpose), so the guardrail only gates
-  // plans that can actually sign on-chain.
-  const realExecution = !demoMode && mode !== 'dry-run';
-  if (realExecution && PLACEHOLDER_SWEEP_RE.test(destination)) {
-    return [{
-      state: 'danger',
-      blocksFreshLive: true,
-      detail:
-        'Sweep destination looks like a placeholder address (the 1111... family). ' +
-        'Swept SOL, tokens, and the Fee Key NFTs would be unrecoverable - trading fees could never be claimed. ' +
-        'Use a wallet you control.',
-    }];
-  }
-  return [];
+  if (!destination || isPlausibleSolanaAddress(destination)) return [];
+  return [{
+    detail: 'Sweep destination does not look like a valid Solana address.',
+  }];
 }
 
 function airdropRecipientIssues(airdrop = {}) {
@@ -1309,7 +1286,7 @@ export function buildV2LaunchPlan(input = {}, options = {}) {
   const duplicatePoolRoutes = duplicatePoolRouteIssues(poolTopology.pools);
   const quoteSafetyRoutes = quoteTokenSafetyIssues(poolTopology.pools);
   const feeKeyRecipientRoutes = feeKeyRecipientIssues(poolTopology.pools);
-  const sweepDestinationRoutes = sweepDestinationIssues(poolTopology, { demoMode, mode: input?.mode || null });
+  const sweepDestinationRoutes = sweepDestinationIssues(poolTopology);
   const airdropRecipientRoutes = airdropRecipientIssues(poolTopology.airdrop);
   const ladderRoutes = ladderRouteIssues(poolTopology.pools);
   const poolCost = (poolCount * COST_POOL_RENT_SOL) + COST_TX_BUFFER_SOL;
