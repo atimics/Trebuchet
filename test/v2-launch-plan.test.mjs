@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import {
+  v2TransferHasWalletEmptyFinalSweepEvidence as coreTransferWalletEmptyEvidence,
+  v2TransferSweepErrorCount as coreTransferSweepErrorCount,
+} from '../packages/core/src/v2-execution-context.js';
 
 import {
   buildV2RecoveryAuthorizationPlan,
@@ -16,6 +20,7 @@ import {
 } from '../v2LaunchPlan.js';
 
 const serverSource = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+const coreExecutionContextSource = readFileSync(new URL('../packages/core/src/v2-execution-context.js', import.meta.url), 'utf8');
 const VALID_SWEEP_DESTINATION = '11111111111111111111111111111115';
 const VALID_ROUND_TRIP_DESTINATION = '11111111111111111111111111111116';
 const VALID_AIRDROP_WALLET_ONE = '11111111111111111111111111111117';
@@ -2195,7 +2200,10 @@ test('server v2 report publish requires a complete launch-config snapshot', () =
   const helperStart = serverSource.indexOf('function v2ProofPositionCount');
   const helperEnd = serverSource.indexOf('\nfunction v2AirdropCompletionStatus', helperStart);
   assert.ok(helperStart >= 0 && helperEnd > helperStart, 'v2 launch-data config snapshot helper should be extractable');
-  const sandbox = {};
+  const sandbox = {
+    v2TransferHasWalletEmptyFinalSweepEvidence: coreTransferWalletEmptyEvidence,
+    v2TransferSweepErrorCount: coreTransferSweepErrorCount,
+  };
   vm.runInNewContext(
     [
       serverSource.slice(helperStart, helperEnd),
@@ -2964,9 +2972,9 @@ test('server exposes the v2 launch-plan contract as an authenticated API route',
   assert.match(serverSource, /const logo = token\.logo && typeof token\.logo === 'object'/);
   assert.doesNotMatch(serverSource, /dataUrl: token\.logo/);
   assert.match(serverSource, /rpc: \{ activeUrl: getRpcConfig\(\)\.active \}/);
-  assert.match(serverSource, /const terminalTransfer = journal\?\.transfer \|\| body\.transfer \|\| null/);
-  assert.match(serverSource, /function v2TransferHasWalletEmptyFinalSweepEvidence\(transfer = null\)/);
-  assert.match(serverSource, /transferComplete: v2TransferHasWalletEmptyFinalSweepEvidence\(terminalTransfer\)/);
+  assert.match(coreExecutionContextSource, /const terminalTransfer = journal\?\.transfer \|\| body\.transfer \|\| null/);
+  assert.match(coreExecutionContextSource, /function v2TransferHasWalletEmptyFinalSweepEvidence\(transfer = null\)/);
+  assert.match(coreExecutionContextSource, /transferComplete: v2TransferHasWalletEmptyFinalSweepEvidence\(terminalTransfer\)/);
   assert.doesNotMatch(serverSource, /transferComplete: journal\?\.status === 'completed'/);
   assert.match(serverSource, /tokenSweep: tokenSweep \|\| \{ transferred: \[\], errors: \[\] \}/);
   assert.match(serverSource, /nftSweep: nftSweep \|\| \{ transferred: \[\], errors: \[\] \}/);

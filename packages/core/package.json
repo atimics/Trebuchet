@@ -11,6 +11,7 @@
     "./launch-journal": "./src/launch-journal.js",
     "./launch-plan": "./src/launch-plan.js",
     "./launch-recovery": "./src/launch-recovery.js",
+    "./v2-execution-context": "./src/v2-execution-context.js",
     "./proof-integrity": "./src/proof-integrity.js",
     "./validators": "./src/validators.js",
     "./lp-constants": "./src/lp-constants.js"

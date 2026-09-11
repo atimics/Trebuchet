@@ -8,4 +8,5 @@ export * from './lp-constants.js';
 export * from './proof-integrity.js';
 export * from './proof-verification.js';
 export * from './runtime.js';
+export * from './v2-execution-context.js';
 export * from './validators.js';
