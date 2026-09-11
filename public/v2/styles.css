@@ -16620,10 +16620,10 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   color: var(--accent, #ffb347);
 }
 
-/* Flywheel vortex: pool allocation as a vortex. Band thickness is share of
-   supply, the flywheel is the fast core, and the SOL market is the inflow.
-   Inspired by the inward-spiralling, axially-stretched vortex with finite
-   energy (see public/v2/vortex.js for the mapping). */
+/* Flywheel vortex: a 3D funnel. Band span is share of supply, the flywheel is
+   the fast throat, the SOL market is the wide mouth, and the helix is the
+   circulating flow. Inspired by the inward-spiralling, axially-stretched
+   vortex with finite energy (see public/v2/vortex.js for the mapping). */
 .vortex-panel {
   margin-top: 12px;
 }
@@ -16631,7 +16631,9 @@ body[data-active-view="launch"] #view-launch .signature-panel {
 .vortex-control {
   border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
   border-radius: 10px;
-  background: radial-gradient(circle at 50% 35%, rgba(246, 173, 85, 0.10), rgba(0, 0, 0, 0.18) 70%);
+  background:
+    radial-gradient(ellipse at 50% 18%, rgba(246, 173, 85, 0.14), rgba(0, 0, 0, 0.32) 68%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.12));
   padding: 10px 12px 12px;
 }
 
@@ -16640,7 +16642,7 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .vortex-head strong {
@@ -16648,65 +16650,100 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   color: var(--accent, #ffb347);
 }
 
+.vortex-stage {
+  position: relative;
+}
+
 .vortex-svg {
   width: 100%;
-  max-width: 320px;
+  max-width: 340px;
   margin: 0 auto;
   display: block;
   touch-action: none;
+  user-select: none;
 }
 
-.vortex-band {
-  transition: fill-opacity 160ms ease;
+/* Depth: each frustum slice carries a gradient, the far rim is dimmer than
+   the near rim, and the throat sits under a bright cap. */
+.vortex-slice {
+  transition: fill-opacity 140ms ease;
+}
+
+.vortex-rim-back {
+  opacity: 0.55;
+}
+
+.vortex-rim-front {
+  opacity: 0.95;
 }
 
 .vortex-band-label {
   font-size: 10px;
   font-family: var(--mono, ui-monospace, monospace);
   dominant-baseline: middle;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.55);
+  stroke-width: 2px;
 }
 
-.vortex-handle {
-  fill: rgba(255, 255, 255, 0.85);
-  stroke: #1a202c;
-  stroke-width: 1.5;
+.vortex-boundary {
   cursor: grab;
+  touch-action: none;
 }
 
-.vortex-handle:active {
+.vortex-boundary:active {
   cursor: grabbing;
 }
 
-.vortex-handle:focus-visible {
+.vortex-boundary:focus-visible {
   outline: 2px solid var(--accent, #ffb347);
-  outline-offset: 2px;
+  outline-offset: 3px;
 }
 
-.vortex-spiral {
-  animation: vortex-spin 24s linear infinite;
-  transform-origin: 50% 50%;
+.vortex-handle-ring {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.45);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
 }
 
-@keyframes vortex-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+.vortex-handle {
+  fill: rgba(255, 255, 255, 0.92);
+  stroke: #1a202c;
+  stroke-width: 1.5;
+}
+
+.vortex-boundary:hover .vortex-handle,
+.vortex-boundary:focus-visible .vortex-handle {
+  fill: var(--accent, #ffb347);
+}
+
+/* The helix is the circulating flow: dash offset animates down the funnel. */
+.vortex-helix {
+  animation: vortex-flow 5.5s linear infinite;
+}
+
+@keyframes vortex-flow {
+  to { stroke-dashoffset: -48; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .vortex-spiral { animation: none; }
+  .vortex-helix { animation: none; }
 }
 
-.vortex-sink {
+.vortex-sink,
+.vortex-inflow {
   font-family: var(--mono, ui-monospace, monospace);
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  pointer-events: none;
 }
 
 .vortex-readout {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 6px;
   font-size: 11px;
 }
 

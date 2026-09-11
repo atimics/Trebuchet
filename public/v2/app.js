@@ -5487,6 +5487,10 @@ function applyVortexAllocation(pools = []) {
 function renderVortexControl() {
   const host = $('#vortexControl');
   if (!host || !window.TrebuchetV2Vortex) return;
+  // Only render while the Configure pane is actually visible. Rendering a
+  // hidden pane does no useful work and churns layout during unrelated flows
+  // (it repeatedly detached elements other interactions were pointing at).
+  if (!host.offsetParent && state.vortexControl) return;
   if (!state.vortexControl) {
     state.vortexControl = window.TrebuchetV2Vortex.mount(host, {
       read: vortexAllocationModel,
@@ -6240,6 +6244,7 @@ function renderLaunchWorkspace() {
     panel.hidden = panel.dataset.classicWorkspace !== workspace;
   });
 
+  renderVortexControl();
   const selectedWorkspace = launchWorkspaces.find((item) => item.id === workspace);
   const viewport = $('#launchWorkspaceViewport');
   if (viewport && selectedWorkspace) {
@@ -22873,10 +22878,25 @@ function drawLaunchCanvas() {
   });
 }
 
+// Fields the vortex draws from. Editing one of these with the keyboard should
+// move the funnel immediately, not only on the next full render.
+const VORTEX_INPUT_IDS = new Set([
+  'mainPoolPercent',
+  'quotePoolPercent',
+  'quotePoolVenue',
+  'liquidityBudgetSol',
+  'launchSol',
+  'sweepDestination',
+]);
+
 function handleDynamicInput(event) {
   if (handleOperatorPromptInput(event)) return;
   if (handleRecoveryPinInput(event)) return;
   if (syncGuidedField(event.target)) return;
+
+  if (VORTEX_INPUT_IDS.has(event.target?.id)) {
+    renderVortexControl();
+  }
 
   if (event.target.id === 'discoverySearchInput') {
     state.discovery.query = event.target.value;
