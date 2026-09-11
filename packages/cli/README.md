@@ -33,6 +33,9 @@ required, `7` integrity mismatch, and `70` unexpected internal error.
 
 There are deliberately no wallet or live launch-execution commands yet.
 Demo-runtime execution is available via `trebuchet execute --network demo`.
-Mainnet/devnet execution stays blocked until custody, journal, idempotency,
-and non-interactive confirmation contracts move into Core and pass a
-complete funded devnet recovery cycle.
+Mainnet/devnet execution stays blocked until the funded devnet recovery
+cycle passes: the journal, recovery, confirmation, custody, and
+idempotency contracts are already in Core (see `docs/secure-launch-packet.md`
+for the gate table and the recovery drill); the remaining coverage is the
+liquidity-stage recovery drill, which needs a local validator with cloned
+Raydium programs because Raydium's CLMM is mainnet-only.
