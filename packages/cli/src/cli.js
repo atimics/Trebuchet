@@ -25,6 +25,7 @@ import {
   readCustodyKeyfileMeta,
 } from '@trebuchet/core/custody';
 import { createLaunchStore } from '@trebuchet/core/launch-store';
+import { createFlywheelPoolStore, isValidFlywheelMint } from '@trebuchet/core/flywheel-pools';
 import { isPlaceholderSweepDestination } from '@trebuchet/core/validators';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
@@ -66,6 +67,15 @@ function commandError(code, message, details = null) {
 // Saved-launch store resolution: explicit --config-dir, then the app's
 // TREBUCHET_CONFIG_DIR, then the current directory (matching the fallback the
 // root compat entrypoints use).
+function cliFlywheelStore(configDirOption) {
+  const dir = configDirOption || process.env.TREBUCHET_CONFIG_DIR || process.cwd();
+  return createFlywheelPoolStore({
+    filePath: path.join(dir, 'flywheelPools.json'),
+    onWarn: () => {},
+    onError: (message) => { throw new Error(message); },
+  });
+}
+
 function cliLaunchStore(configDirOption) {
   const dir = configDirOption || process.env.TREBUCHET_CONFIG_DIR || process.cwd();
   return createLaunchStore({
@@ -324,6 +334,54 @@ export async function runCli(argv = [], {
       }
       data = { id: options.id, removed: true };
       humanOutput = () => writeLine(stdout, `Removed saved launch ${options.id}`);
+    } else if (positionals[0] === 'flywheel' && positionals[1] === 'list') {
+      const usage = 'trebuchet flywheel list [--kind meme|reserve] [--config-dir <dir>] [--json]';
+      requirePositionals(positionals, ['flywheel', 'list'], usage);
+      requireOptions(options, ['kind', 'config-dir', 'json'], usage);
+      const store = cliFlywheelStore(options['config-dir']);
+      const kind = options.kind || 'meme';
+      const pools = store.all();
+      data = { storePath: store.filePath, kind, mints: pools[kind] || [], pools };
+      humanOutput = () => {
+        writeLine(stdout, `${kind} flywheel pool (${data.mints.length}):`);
+        for (const mint of data.mints) writeLine(stdout, `  ${mint}`);
+        writeLine(stdout, `Store: ${store.filePath}`);
+      };
+    } else if (positionals[0] === 'flywheel' && positionals[1] === 'pick') {
+      const usage = 'trebuchet flywheel pick [--kind meme|reserve] [--last <mint>] [--config-dir <dir>] [--json]';
+      requirePositionals(positionals, ['flywheel', 'pick'], usage);
+      requireOptions(options, ['kind', 'last', 'config-dir', 'json'], usage);
+      const store = cliFlywheelStore(options['config-dir']);
+      const kind = options.kind || 'meme';
+      const mint = store.pick(kind, { last: options.last || null });
+      data = { kind, mint };
+      humanOutput = () => writeLine(stdout, mint ? `Picked ${kind} flywheel: ${mint}` : `No ${kind} flywheel mints configured.`);
+    } else if (positionals[0] === 'flywheel' && positionals[1] === 'add') {
+      const usage = 'trebuchet flywheel add --mint <mint> [--kind meme|reserve] [--config-dir <dir>] [--json]';
+      requirePositionals(positionals, ['flywheel', 'add'], usage);
+      requireOptions(options, ['mint', 'kind', 'config-dir', 'json'], usage);
+      if (!options.mint) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--mint is required.');
+      if (!isValidFlywheelMint(options.mint)) {
+        throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `Not a valid Solana mint address: ${options.mint}`);
+      }
+      const store = cliFlywheelStore(options['config-dir']);
+      const kind = options.kind || 'meme';
+      const mints = store.add(kind, options.mint);
+      data = { kind, mints };
+      humanOutput = () => {
+        writeLine(stdout, `Added ${options.mint} to the ${kind} flywheel pool (${mints.length} mints).`);
+      };
+    } else if (positionals[0] === 'flywheel' && positionals[1] === 'remove') {
+      const usage = 'trebuchet flywheel remove --mint <mint> [--kind meme|reserve] [--config-dir <dir>] [--json]';
+      requirePositionals(positionals, ['flywheel', 'remove'], usage);
+      requireOptions(options, ['mint', 'kind', 'config-dir', 'json'], usage);
+      if (!options.mint) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--mint is required.');
+      const store = cliFlywheelStore(options['config-dir']);
+      const kind = options.kind || 'meme';
+      const removed = store.remove(kind, options.mint);
+      if (!removed) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `Mint not in the ${kind} flywheel pool.`);
+      data = { kind, removed, mints: store.get(kind) };
+      humanOutput = () => writeLine(stdout, `Removed ${options.mint} from the ${kind} flywheel pool.`);
     } else if (positionals[0] === 'custody' && positionals[1] === 'create') {
       const usage = 'trebuchet custody create [--from <keypair.json>] --out <custody.json> [--passphrase <p>] [--json]';
       requirePositionals(positionals, ['custody', 'create'], usage);

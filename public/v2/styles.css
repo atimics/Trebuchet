@@ -16593,3 +16593,29 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   }
 }
 
+
+/* Flywheel pairing: the meme flywheel draws from a curated memecoin pool. */
+.flywheel-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 11px;
+}
+
+.flywheel-pick-label {
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.flywheel-pick-mint {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent, #ffb347);
+}

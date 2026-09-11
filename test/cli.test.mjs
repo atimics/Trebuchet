@@ -341,3 +341,33 @@ test('confirm refuses to sign a placeholder sweep destination on a real network'
   const demo = await invoke(['confirm', '--plan', planPath, '--keyfile', keyfilePath, '--network', 'demo', '--max-spend-sol', '1', '--passphrase', 'test-pass', '--json']);
   assert.equal(demo.exitCode, CliExitCode.SUCCESS, demo.stdout + demo.stderr);
 }), { timeout: 60_000 });
+
+test('flywheel pool commands curate and draw from the memecoin pool', async () => withTempDirectory(async (directory) => {
+  const configDir = path.join(directory, 'config');
+  await mkdir(configDir, { recursive: true });
+
+  const listed = await invoke(['flywheel', 'list', '--config-dir', configDir, '--json']);
+  assert.equal(listed.exitCode, CliExitCode.SUCCESS, listed.stdout + listed.stderr);
+  const seeded = JSON.parse(listed.stdout).data.mints;
+  assert.equal(seeded.length, 4, 'seeded with the sample memecoins');
+  assert.ok(seeded.includes('FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY'));
+
+  const extra = 'So11111111111111111111111111111111111111112';
+  const added = await invoke(['flywheel', 'add', '--mint', extra, '--config-dir', configDir, '--json']);
+  assert.equal(added.exitCode, CliExitCode.SUCCESS);
+  assert.ok(JSON.parse(added.stdout).data.mints.includes(extra));
+
+  const picks = await invoke(['flywheel', 'pick', '--last', 'FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY', '--config-dir', configDir, '--json']);
+  assert.equal(picks.exitCode, CliExitCode.SUCCESS);
+  const picked = JSON.parse(picks.stdout).data.mint;
+  assert.ok(seeded.concat(extra).includes(picked));
+  assert.notEqual(picked, 'FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY', 'avoids repeating the last pick');
+
+  const removed = await invoke(['flywheel', 'remove', '--mint', extra, '--config-dir', configDir, '--json']);
+  assert.equal(removed.exitCode, CliExitCode.SUCCESS);
+  const after = await invoke(['flywheel', 'list', '--config-dir', configDir, '--json']);
+  assert.equal(JSON.parse(after.stdout).data.mints.includes(extra), false);
+
+  const badMint = await invoke(['flywheel', 'add', '--mint', 'not-a-mint', '--config-dir', configDir, '--json']);
+  assert.equal(badMint.exitCode, CliExitCode.INVALID_INPUT);
+}), { timeout: 60_000 });
