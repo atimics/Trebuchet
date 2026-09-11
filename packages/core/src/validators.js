@@ -68,6 +68,18 @@ export function normalizeWholeTokenSupply(value, decimals = TOKEN_DECIMALS) {
   return raw;
 }
 
+// Placeholder destinations used in examples, fixtures, and practice flows (the
+// all-ones system-program family). Sweeping there is unrecoverable: nobody can
+// sign for those addresses, so swept SOL, tokens, and Fee Key NFTs are lost and
+// trading fees can never be claimed. Exposed as a predicate so hosts can warn
+// or refuse without changing plan output.
+const PLACEHOLDER_SWEEP_RE = /^1{20,}[1-9A-HJ-NP-Za-km-z]*$/;
+
+export function isPlaceholderSweepDestination(value) {
+  const destination = String(value ?? '').trim();
+  return Boolean(destination) && PLACEHOLDER_SWEEP_RE.test(destination);
+}
+
 export function invalidBase58Characters(value) {
   return [...new Set([...String(value ?? '')].filter((ch) => !BASE58_CHARS.has(ch)))];
 }

@@ -21,8 +21,8 @@ import {
 
 const serverSource = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
 const coreExecutionContextSource = readFileSync(new URL('../packages/core/src/v2-execution-context.js', import.meta.url), 'utf8');
-const VALID_SWEEP_DESTINATION = '11111111111111111111111111111115';
-const VALID_ROUND_TRIP_DESTINATION = '11111111111111111111111111111116';
+const VALID_SWEEP_DESTINATION = 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j';
+const VALID_ROUND_TRIP_DESTINATION = 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j';
 const VALID_AIRDROP_WALLET_ONE = '11111111111111111111111111111117';
 const VALID_AIRDROP_WALLET_TWO = '11111111111111111111111111111118';
 const VALID_VANITY_PUBLIC_KEY = `MKT${'1'.repeat(26)}K1T`;

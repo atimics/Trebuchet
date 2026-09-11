@@ -25,6 +25,7 @@ import {
   readCustodyKeyfileMeta,
 } from '@trebuchet/core/custody';
 import { createLaunchStore } from '@trebuchet/core/launch-store';
+import { isPlaceholderSweepDestination } from '@trebuchet/core/validators';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 
@@ -375,6 +376,18 @@ export async function runCli(argv = [], {
       const verification = core.verifyPlan(planInput.value);
       if (!verification.valid) {
         throw commandError(TrebuchetCoreErrorCode.INTEGRITY_MISMATCH, 'Launch plan is invalid; refusing to sign a confirmation.', verification.errors);
+      }
+      // A placeholder sweep destination is unrecoverable: swept assets and the
+      // Fee Key NFTs would be lost forever. Never sign one for a real network.
+      const sweepDestination = planInput.value?.poolTopology?.sweepDestination;
+      if (String(options.network).toLowerCase() !== 'demo'
+        && isPlaceholderSweepDestination(sweepDestination)) {
+        throw commandError(
+          TrebuchetCoreErrorCode.INVALID_INPUT,
+          `Refusing to sign: sweep destination ${sweepDestination} is a placeholder address. `
+          + 'Swept SOL, tokens, and the Fee Key NFTs would be unrecoverable and trading fees could never be claimed. '
+          + 'Point the plan at a wallet you control.',
+        );
       }
       const keyfileInput = await readJsonFile(options.keyfile, 'Custody keyfile');
       let decrypted;

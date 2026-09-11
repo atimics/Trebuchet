@@ -7,7 +7,7 @@ const { Keypair } = await import('@solana/web3.js');
 const demoChainService = await import('../demoChainService.js');
 const { buildV2ExecutionReadiness } = await import('../v2LaunchPlan.js');
 
-const VALID_SWEEP_DESTINATION = '11111111111111111111111111111115';
+const VALID_SWEEP_DESTINATION = 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j';
 const VALID_AIRDROP_WALLET = '11111111111111111111111111111117';
 const VALID_FEE_RECIPIENT = '11111111111111111111111111111118';
 
