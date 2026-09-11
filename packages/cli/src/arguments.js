@@ -1,5 +1,5 @@
 const FLAG_OPTIONS = new Set(['json', 'help', 'version']);
-const VALUE_OPTIONS = new Set(['config', 'out', 'plan', 'network', 'server', 'timeout', 'keyfile', 'passphrase', 'from', 'expires-in', 'max-spend-sol', 'expect-plan', 'wallet']);
+const VALUE_OPTIONS = new Set(['config', 'out', 'plan', 'network', 'server', 'timeout', 'keyfile', 'passphrase', 'from', 'expires-in', 'max-spend-sol', 'expect-plan', 'wallet', 'name', 'id', 'config-dir']);
 
 export class CliArgumentError extends Error {
   constructor(message) {

@@ -287,3 +287,34 @@ test('execute runs a complete demo-runtime launch with a disposable wallet', asy
   // The disposable wallet secret must not leak into the CLI output file.
   assert.equal(JSON.stringify(run).includes('secretKey'), false);
 }), { timeout: 180_000 });
+
+test('launch save/list/remove persist a launch configuration for the app', async () => withTempDirectory(async (directory) => {
+  const configPath = path.join(directory, 'launch.json');
+  await writeFile(configPath, JSON.stringify(launchIntent));
+  const configDir = path.join(directory, 'config');
+  await mkdir(configDir, { recursive: true });
+
+  const saved = await invoke(['launch', 'save', '--config', configPath, '--name', 'CLI launch', '--config-dir', configDir, '--json']);
+  assert.equal(saved.exitCode, CliExitCode.SUCCESS, saved.stdout + saved.stderr);
+  const savedPayload = JSON.parse(saved.stdout);
+  assert.equal(savedPayload.ok, true);
+  assert.ok(savedPayload.data.id);
+  assert.equal(savedPayload.data.name, 'CLI launch');
+  const storePath = path.join(configDir, 'launches.json');
+  const stored = JSON.parse(await readFile(storePath, 'utf8'));
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].config.token.symbol, launchIntent.token.symbol);
+  assert.equal(stored[0].source, 'cli');
+
+  const listed = await invoke(['launch', 'list', '--config-dir', configDir, '--json']);
+  assert.equal(listed.exitCode, CliExitCode.SUCCESS);
+  const listPayload = JSON.parse(listed.stdout);
+  assert.equal(listPayload.data.launches.length, 1);
+  assert.equal(listPayload.data.launches[0].symbol, launchIntent.token.symbol);
+  assert.equal(listPayload.data.launches[0].pools, 1);
+
+  const removed = await invoke(['launch', 'remove', '--id', savedPayload.data.id, '--config-dir', configDir, '--json']);
+  assert.equal(removed.exitCode, CliExitCode.SUCCESS);
+  const afterRemove = await invoke(['launch', 'list', '--config-dir', configDir, '--json']);
+  assert.equal(JSON.parse(afterRemove.stdout).data.launches.length, 0);
+}), { timeout: 60_000 });

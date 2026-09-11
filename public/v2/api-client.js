@@ -22,6 +22,7 @@
   const CHECK_BALANCE_DETAILED_PATH = '/api/check-balance-detailed';
   const FIND_FUNDER_PATH = '/api/find-funder';
   const CANCEL_VANITY_GRIND_PATH = '/api/cancel-vanity-grind';
+  const SAVED_LAUNCHES_PATH = '/api/v2/launch-configs';
   const DIAGNOSE_LAUNCH_PATH = '/api/diagnose-launch';
   const LAUNCH_JOURNALS_PATH = '/api/launch-journals';
   const LP_PROGRESS_PATH = '/api/lp-progress';
@@ -43,6 +44,7 @@
     pendingWallets: PENDING_WALLETS_PATH,
     secretPin: `${SECRET_PIN_PATH}/status`,
     vanityCandidates: VANITY_CA_CANDIDATES_PATH,
+    savedLaunches: SAVED_LAUNCHES_PATH,
     v2Wallets: V2_WALLETS_PATH,
     feeTiers: CLMM_FEE_TIERS_PATH,
     viewportSmoke: V2_VIEWPORT_SMOKE_PROOF_PATH,
@@ -221,6 +223,9 @@
     const vanityCandidates = safeArray(
       endpoints.vanityCandidates?.ok ? endpoints.vanityCandidates.data?.candidates : [],
     );
+    const savedLaunches = safeArray(
+      endpoints.savedLaunches?.ok ? endpoints.savedLaunches.data?.launches : [],
+    );
     const viewportSmoke = normalizeViewportSmokeProof(
       endpoints.viewportSmoke?.ok ? endpoints.viewportSmoke.data : null,
       endpoints.viewportSmoke?.ok ? null : endpoints.viewportSmoke?.error,
@@ -302,6 +307,11 @@
         candidates: vanityCandidates,
         candidateCount: vanityCandidates.length,
         secretPinLocked: endpoints.vanityCandidates?.data?.secretPinLocked === true,
+      },
+      savedLaunches: {
+        launches: savedLaunches,
+        available: endpoints.savedLaunches?.ok === true,
+        error: endpoints.savedLaunches?.ok ? null : endpoints.savedLaunches?.error || null,
       },
       feeTiers: {
         tiers: feeTiers,
@@ -658,6 +668,24 @@
 
     async function cancelVanityGrind() {
       return request(CANCEL_VANITY_GRIND_PATH, { method: 'POST', body: {} });
+    }
+
+    async function listSavedLaunches() {
+      return request(SAVED_LAUNCHES_PATH, { method: 'GET' });
+    }
+
+    async function saveLaunch({ id = null, name = null, config }) {
+      return request(SAVED_LAUNCHES_PATH, {
+        method: 'POST',
+        body: { id, name, config },
+      });
+    }
+
+    async function removeSavedLaunch(id) {
+      return request(`${SAVED_LAUNCHES_PATH}/remove`, {
+        method: 'POST',
+        body: { id },
+      });
     }
 
     async function estimateClassicFunding({
@@ -1020,6 +1048,9 @@
       publishLaunchReport,
       revealPendingWallet,
       removeVanityCandidate,
+      listSavedLaunches,
+      saveLaunch,
+      removeSavedLaunch,
       removeDiscoveryWallet,
       resetSecretPin,
       retryAirdrop,

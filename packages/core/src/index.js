@@ -4,6 +4,7 @@ export * from './custody.js';
 export * from './launch-journal.js';
 export * from './launch-plan.js';
 export * from './launch-recovery.js';
+export * from './launch-store.js';
 export * from './lp-constants.js';
 export * from './proof-integrity.js';
 export * from './proof-verification.js';

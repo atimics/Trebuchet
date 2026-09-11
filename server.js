@@ -58,6 +58,7 @@ import * as vanityCaStore from './vanityCaStore.js';
 import * as secretStore from './secretStore.js';
 import { createLaunchReportUmi, publishLaunchReport } from './launchReportService.js';
 import * as launchJournal from './launchJournal.js';
+import * as launchStore from './launchStore.js';
 import * as userPrefs from './userPrefs.js';
 import * as discoveryStore from './discoveryStore.js';
 import * as brandShieldStore from './brandShieldStore.js';
@@ -2687,6 +2688,41 @@ app.post('/api/v2/execution-readiness', async (req, res) => {
       requireFundingBalance: true,
     });
     res.json({ success: true, readiness });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+// Saved launches: the operator's planned launch configuration, persisted so
+// it survives a restart and can be created programmatically (CLI / runner).
+// Distinct from the journal, which records what a launch actually did.
+app.get('/api/v2/launch-configs', (_req, res) => {
+  try {
+    res.json({ success: true, launches: launchStore.list() });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.post('/api/v2/launch-configs', (req, res) => {
+  try {
+    const saved = launchStore.save({
+      id: req.body?.id ? String(req.body.id) : null,
+      name: req.body?.name ? String(req.body.name) : null,
+      config: req.body?.config || {},
+      source: 'app',
+    });
+    res.json({ success: true, launch: saved });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.post('/api/v2/launch-configs/remove', (req, res) => {
+  try {
+    const id = String(req.body?.id || '').trim();
+    if (!id) return res.status(400).json({ success: false, error: 'id required' });
+    res.json({ success: true, removed: launchStore.remove(id) });
   } catch (error) {
     sendErrorResponse(res, error, 400);
   }

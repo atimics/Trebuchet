@@ -16,7 +16,19 @@ trebuchet estimate (--plan plan.json | --config launch.json) [--json]
 trebuchet proof verify proof.json [--json]
 trebuchet execute --config launch.json [--network demo] [--out run.json]
                 [--server server.js] [--timeout seconds] [--json]
+trebuchet custody create [--from keypair.json] --out custody.json [--passphrase p]
+trebuchet confirm --plan plan.json --keyfile custody.json --network n --max-spend-sol n
+trebuchet launch save --config launch.json [--name label] [--config-dir dir]
+trebuchet launch list [--config-dir dir]
+trebuchet launch remove --id id [--config-dir dir]
 ```
+
+`trebuchet launch save` persists a planned launch (`launches.json` in the
+config dir) so it survives an app restart and shows up in the desktop app's
+saved-launch list, exactly like saved vanity addresses. This is also how a
+launch can be created programmatically instead of being retyped in the UI.
+`--config-dir` defaults to `TREBUCHET_CONFIG_DIR`, then the current
+directory.
 
 `trebuchet execute` runs a complete launch on the built-in demo chain:
 the CLI boots the local Trebuchet server in an isolated temp config
