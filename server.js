@@ -5802,6 +5802,36 @@ async function createTokenHandler(req, res) {
   } catch (error) {
     console.error('Error creating token:', error);
     if (walletPublicKey) {
+      // A mint account can already exist on-chain when an earlier attempt
+      // created it but the launch did not finish (lost confirmation, crash,
+      // or a failure after the account landed). Without this, the app keeps
+      // retrying create-token and dies on "already in use" forever, even
+      // though the app can finish an existing mint. Adopt the known address
+      // so readiness routes to finish-token-creation instead.
+      const existingMint = String(error?.tokenMint || vanityCAPublicKey || '').trim();
+      const accountAlreadyInUse = /already in use|custom program error: 0x0/i.test(error?.message || '');
+      if (existingMint && accountAlreadyInUse) {
+        launchJournal.upsertForWallet(
+          walletPublicKey,
+          {
+            status: 'active',
+            stage: 'token_account_exists',
+            token: { mint: existingMint },
+            error: null,
+            errorDetails: null,
+          },
+          {
+            stage: 'token_account_adopted',
+            tokenMint: existingMint,
+            detail: 'Mint account already exists on-chain; adopting it so the interrupted token can be finished instead of re-created.',
+          },
+        );
+        sendErrorResponse(res, Object.assign(
+          new Error(`${error.message}\n\nTrebuchet found an existing mint at this address and switched to finishing it. Reload the launch view and run "Finish interrupted token" instead of creating.`),
+          { statusCode: error.statusCode, code: 'TOKEN_ACCOUNT_ALREADY_EXISTS', tokenMint: existingMint },
+        ));
+        return;
+      }
       launchJournal.upsertForWallet(
         walletPublicKey,
         {

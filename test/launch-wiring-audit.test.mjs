@@ -827,3 +827,17 @@ test('journal resume is gated on resolvability, not the mere presence of incompl
     'must treat two pools recorded for one allocation as unresolvable (ambiguous)',
   );
 });
+
+test('an existing mint account is adopted instead of re-created forever', () => {
+  const tokenServiceSrc = readFileSync(path.join(REPO, 'tokenService.js'), 'utf8');
+  // When create-token fails because the mint account already exists (an
+  // earlier attempt landed without finishing), the server must adopt the
+  // known address so readiness routes to finish-token-creation. Without this
+  // the launch dies on "already in use" on every retry.
+  assert.match(serverSrc, /const accountAlreadyInUse = \/already in use\|custom program error: 0x0\/i\.test/);
+  assert.match(serverSrc, /stage: 'token_account_adopted'/);
+  assert.match(serverSrc, /code: 'TOKEN_ACCOUNT_ALREADY_EXISTS'/);
+  assert.match(serverSrc, /token: \{ mint: existingMint \}/);
+  // The service surfaces the derived mint address when mint creation fails.
+  assert.match(tokenServiceSrc, /if \(derived && !mintError\.tokenMint\) mintError\.tokenMint = derived;/);
+});
