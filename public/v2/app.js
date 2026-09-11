@@ -22873,10 +22873,25 @@ function drawLaunchCanvas() {
   });
 }
 
+// Fields the vortex draws from. Editing one of these with the keyboard should
+// move the funnel immediately, not only on the next full render.
+const VORTEX_INPUT_IDS = new Set([
+  'mainPoolPercent',
+  'quotePoolPercent',
+  'quotePoolVenue',
+  'liquidityBudgetSol',
+  'launchSol',
+  'sweepDestination',
+]);
+
 function handleDynamicInput(event) {
   if (handleOperatorPromptInput(event)) return;
   if (handleRecoveryPinInput(event)) return;
   if (syncGuidedField(event.target)) return;
+
+  if (VORTEX_INPUT_IDS.has(event.target?.id)) {
+    renderVortexControl();
+  }
 
   if (event.target.id === 'discoverySearchInput') {
     state.discovery.query = event.target.value;

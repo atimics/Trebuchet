@@ -1,4 +1,4 @@
-// Pure-math coverage for the vortex allocation control. The module is a
+// Pure geometry and share math for the 3D vortex control. The module is a
 // classic browser script, so it is loaded in a VM sandbox the way the repo
 // tests public/v2/api-client.js.
 import test from 'node:test';
@@ -18,46 +18,88 @@ function loadVortex() {
   return sandbox.TrebuchetV2Vortex;
 }
 
-test('bands are concentric, outermost first, thickness proportional to share', () => {
+function pools(solPercent = 70, corePercent = 30) {
+  return [
+    { id: 'sol', symbol: 'SOL', percent: solPercent, minPercent: 10, feeTier: 8 },
+    { id: 'quote', symbol: 'FLY', percent: corePercent, minPercent: 10, maxPercent: 30, feeTier: 5 },
+  ];
+}
+
+test('bands stack down a funnel: wide mouth first, narrow throat last', () => {
   const vortex = loadVortex();
-  const bands = vortex.layoutBands([
-    { id: 'sol', symbol: 'SOL', percent: 70, feeTier: 8 },
-    { id: 'quote', symbol: 'FLY', percent: 30, feeTier: 5 },
-  ]);
+  const bands = vortex.layoutBands(pools());
   assert.equal(bands.length, 2);
   assert.equal(bands[0].symbol, 'SOL');
   assert.equal(bands[1].symbol, 'FLY');
-  assert.ok(bands[0].rOuter > bands[0].rInner);
-  // The core sits inside the outer band and never collapses past the minimum.
-  assert.ok(bands[1].rInner >= vortex.constants.MIN_RADIUS);
-  const solThickness = bands[0].rOuter - bands[0].rInner;
-  const flyThickness = bands[1].rOuter - bands[1].rInner;
-  assert.ok(solThickness > flyThickness, 'the larger share is the thicker band');
+
+  // The mouth is above the throat and wider than it.
+  assert.ok(bands[0].yTop < bands[1].yTop);
+  assert.ok(bands[0].rTop > bands[1].rBottom);
+  // Radii shrink monotonically toward the throat.
+  assert.ok(bands[0].rTop > bands[0].rBottom);
+  assert.ok(bands[0].rBottom >= bands[1].rBottom);
+  // Bands tile the funnel without gaps.
+  assert.equal(bands[0].yBottom, bands[1].yTop);
+  assert.equal(bands[1].yBottom, vortex.constants.Y_BOTTOM);
 });
 
-test('dragging a boundary moves share between neighbours and preserves the total', () => {
+test('the wider market occupies the taller span', () => {
   const vortex = loadVortex();
-  const pools = [
-    { id: 'sol', symbol: 'SOL', percent: 70, minPercent: 10 },
-    { id: 'quote', symbol: 'FLY', percent: 30, minPercent: 10, maxPercent: 30 },
-  ];
-  const total = (list) => list.reduce((sum, pool) => sum + pool.percent, 0);
+  const [sol, core] = vortex.layoutBands(pools(70, 30));
+  assert.ok((sol.yBottom - sol.yTop) > (core.yBottom - core.yTop));
+});
 
-  // Positive delta moves supply outward (grows the SOL band, shrinks the core).
-  const nudged = vortex.transferShare(pools, 0, 5);
+test('a zero-share pool still gets a visible, grabbable ring', () => {
+  const vortex = loadVortex();
+  const bands = vortex.layoutBands(pools(100, 0));
+  assert.equal(bands.length, 2, 'the 0% core is still rendered');
+  assert.ok(bands[1].yBottom - bands[1].yTop > 4, 'it has visual thickness');
+  assert.ok(bands[1].rTop > 0);
+});
+
+test('dragging a ring down grows the mouth and shrinks the throat', () => {
+  const vortex = loadVortex();
+  const model = pools();
+  // The boundary currently sits at t=0.7 (SOL holds 70%).
+  assert.ok(Math.abs(vortex.boundaryDeltaForUpper(model, 0, 0.7)) < 0.05, 'the current boundary needs no change');
+
+  // Dragging it down to t=0.9 must hand 20 points to SOL.
+  const down = vortex.boundaryDeltaForUpper(model, 0, 0.9);
+  assert.equal(Math.round(down), 20);
+  const opened = vortex.transferShare(model, 0, down);
+  assert.equal(opened[0].percent, 90);
+  assert.equal(opened[1].percent, 10);
+
+  // Dragging up is clamped by the core's 30% ceiling.
+  const up = vortex.boundaryDeltaForUpper(model, 0, 0.5);
+  assert.equal(Math.round(up), -20);
+  const clamped = vortex.transferShare(model, 0, up);
+  assert.equal(clamped[1].percent, 30);
+  assert.equal(clamped[0].percent, 70);
+});
+
+test('share moves between neighbours and the total is preserved', () => {
+  const vortex = loadVortex();
+  const model = pools();
+  const total = (list) => list.reduce((sum, pool) => sum + pool.percent, 0);
+  const nudged = vortex.transferShare(model, 0, 5);
   assert.equal(nudged[0].percent, 75);
   assert.equal(nudged[1].percent, 25);
-  assert.equal(total(nudged), total(pools));
+  assert.equal(total(nudged), total(model));
 
-  // The core cannot go below its 10% floor: supply stops flowing outward.
-  const floored = vortex.transferShare(pools, 0, 100);
-  assert.equal(floored[1].percent, 10);
+  const floored = vortex.transferShare(model, 0, 100);
+  assert.equal(floored[1].percent, 10, 'the core cannot go below its floor');
   assert.equal(floored[0].percent, 90);
+});
 
-  // Negative delta would push the core past its 30% ceiling: clamped to 0.
-  const capped = vortex.transferShare(pools, 0, -100);
-  assert.equal(capped[1].percent, 30);
-  assert.equal(capped[0].percent, 70);
+test('funnel paths close and trace elliptical rims', () => {
+  const vortex = loadVortex();
+  const [band] = vortex.layoutBands(pools());
+  const path = vortex.funnelPath(band);
+  assert.match(path, /^M /);
+  assert.match(path, /A /, 'uses elliptical arcs for the rims');
+  assert.match(path, /Z$/);
+  assert.match(vortex.helixPath(), /^M /, 'the helix is a path');
 });
 
 test('fee tiers map to spin speed and colour', () => {
@@ -67,15 +109,14 @@ test('fee tiers map to spin speed and colour', () => {
   assert.match(vortex.spinForFeeTier(undefined).color, /^#/);
 });
 
-test('mount renders the vortex and reports the core share', () => {
+test('mount renders the funnel, bands and draggable boundaries', () => {
   const vortex = loadVortex();
   const host = { innerHTML: '', querySelector: () => null, querySelectorAll: () => [] };
   const control = vortex.mount(host, {
     read: () => ({
       pools: [
-        { id: 'custom-0', symbol: 'HONEY', percent: 10, feeTier: 3 },
-        { id: 'sol', symbol: 'SOL', percent: 60, feeTier: 8 },
-        { id: 'quote', symbol: 'FLY', percent: 30, feeTier: 5 },
+        { id: 'sol', symbol: 'SOL', percent: 70, minPercent: 10, feeTier: 8 },
+        { id: 'quote', symbol: 'FLY', percent: 30, minPercent: 10, maxPercent: 30, feeTier: 5 },
       ],
       depositSol: 1.287,
     }),
@@ -83,53 +124,11 @@ test('mount renders the vortex and reports the core share', () => {
   assert.ok(control && typeof control.render === 'function');
   assert.match(host.innerHTML, /Flywheel vortex/);
   assert.match(host.innerHTML, /FLY core at 30%/);
-  assert.match(host.innerHTML, /SOL 60%/);
+  assert.match(host.innerHTML, /SOL 70%/);
   assert.match(host.innerHTML, /1\.287 SOL/);
-  assert.match(host.innerHTML, /vortex-handle/);
-});
-
-test('dragging through the mounted control writes back updated shares', () => {
-  const vortex = loadVortex();
-  let model = {
-    pools: [
-      { id: 'sol', symbol: 'SOL', percent: 70, minPercent: 10, feeTier: 8 },
-      { id: 'quote', symbol: 'FLY', percent: 30, minPercent: 10, maxPercent: 30, feeTier: 5 },
-    ],
-    depositSol: 1,
-  };
-  let written = null;
-  const host = {
-    innerHTML: '',
-    querySelector: () => null,
-    querySelectorAll: () => [],
-  };
-  const control = vortex.mount(host, {
-    read: () => model,
-    write: (pools) => { written = pools; model = { ...model, pools }; },
-  });
-  control.render();
-  // Drive the pure transition the pointer handler uses, then re-render.
-  const next = vortex.transferShare(model.pools, 0, 4);
-  written = next;
-  assert.equal(written[0].percent, 74);
-  assert.equal(written[1].percent, 26);
-});
-
-test('a zero-share pool still gets a band and a draggable boundary', () => {
-  const vortex = loadVortex();
-  const bands = vortex.layoutBands([
-    { id: 'sol', symbol: 'SOL', percent: 100, feeTier: 8 },
-    { id: 'quote', symbol: 'FLY', percent: 0, minPercent: 10, maxPercent: 30, feeTier: 5 },
-  ]);
-  assert.equal(bands.length, 2, 'the 0% core is still rendered');
-  assert.ok(bands[1].rOuter - bands[1].rInner > 0, 'it has visual thickness');
-  assert.ok(bands[1].rInner >= vortex.constants.MIN_RADIUS);
-
-  // Dragging it open moves supply from SOL into the flywheel core.
-  const opened = vortex.transferShare([
-    { id: 'sol', symbol: 'SOL', percent: 100, minPercent: 10 },
-    { id: 'quote', symbol: 'FLY', percent: 0, minPercent: 10, maxPercent: 30 },
-  ], 0, -12);
-  assert.equal(opened[1].percent, 12);
-  assert.equal(opened[0].percent, 88);
+  assert.match(host.innerHTML, /vortex-slice/);
+  assert.match(host.innerHTML, /vortex-rim/);
+  assert.match(host.innerHTML, /vortex-helix/);
+  assert.match(host.innerHTML, /vortex-boundary/);
+  assert.match(host.innerHTML, /role="slider"/);
 });
