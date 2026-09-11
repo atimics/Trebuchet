@@ -210,3 +210,95 @@ test('four-token ring renders sectors, hub, cascade and boundaries', () => {
   assert.match(host.innerHTML, /vortex-mode/, 'the funnel/ring switch is offered');
   assert.match(host.innerHTML, /Tokens<\/small><strong>4/);
 });
+
+// --- spin / balance coverage ---------------------------------------------
+
+test('balancing evens the memecoins and leaves the inflow alone', () => {
+  const vortex = loadVortex();
+  const pools = [
+    { id: 'sol', symbol: 'SOL', percent: 70, minPercent: 10 },
+    { id: 'a', symbol: 'MEME2', percent: 4.8, minPercent: 0 },
+    { id: 'b', symbol: 'MEME3', percent: 15.2, minPercent: 0 },
+    { id: 'quote', symbol: 'FLY', percent: 10, minPercent: 10, maxPercent: 30 },
+  ];
+  const balanced = vortex.balancedTargets(pools, { fixedIndex: 0 });
+  assert.equal(balanced[0].percent, 70, 'the SOL inflow is fixed');
+  assert.equal(balanced[1].percent, 10);
+  assert.equal(balanced[2].percent, 10);
+  assert.equal(balanced[3].percent, 10);
+  // The total is preserved.
+  assert.ok(Math.abs(balanced.reduce((sum, p) => sum + p.percent, 0) - 100) < 0.05);
+});
+
+test('balancing respects floors and ceilings by water-filling', () => {
+  const vortex = loadVortex();
+  const pools = [
+    { id: 'sol', symbol: 'SOL', percent: 40, minPercent: 10 },
+    { id: 'quote', symbol: 'FLY', percent: 50, minPercent: 10, maxPercent: 20 },
+    { id: 'a', symbol: 'MEME2', percent: 5, minPercent: 0 },
+    { id: 'b', symbol: 'MEME3', percent: 5, minPercent: 0 },
+  ];
+  const balanced = vortex.balancedTargets(pools, { fixedIndex: 0 });
+  const quote = balanced.find((p) => p.id === 'quote');
+  assert.equal(quote.percent, 20, 'the capped pool pins at its ceiling');
+  // Whatever is left is shared evenly by the two uncapped pools.
+  const others = balanced.filter((p) => ['a', 'b'].includes(p.id));
+  assert.equal(others[0].percent, others[1].percent);
+  assert.ok(Math.abs(balanced.reduce((sum, p) => sum + p.percent, 0) - 100) < 0.05);
+});
+
+test('the spin interpolates from the current split to the target', () => {
+  const vortex = loadVortex();
+  const from = [
+    { id: 'sol', symbol: 'SOL', percent: 70 },
+    { id: 'a', symbol: 'MEME2', percent: 0 },
+    { id: 'b', symbol: 'MEME3', percent: 30 },
+  ];
+  const to = vortex.balancedTargets(from, { fixedIndex: 0 });
+  const start = vortex.interpolateShares(from, to, 0);
+  const middle = vortex.interpolateShares(from, to, 0.5);
+  const end = vortex.interpolateShares(from, to, 1);
+  assert.deepEqual(start.map((p) => p.percent), from.map((p) => p.percent));
+  assert.equal(middle[1].percent, 7.5);
+  assert.equal(middle[2].percent, 22.5);
+  assert.deepEqual(end.map((p) => p.percent), to.map((p) => p.percent));
+});
+
+test('the ring offers the balance control and counter-rotating flow', () => {
+  const vortex = loadVortex();
+  const host = { innerHTML: '', querySelector: () => null, querySelectorAll: () => [] };
+  vortex.mount(host, { read: () => ({ pools: ringPools(), depositSol: 1 }) });
+  assert.match(host.innerHTML, /data-vortex-balance/);
+  assert.match(host.innerHTML, /vortex-swirl/);
+  assert.match(host.innerHTML, /class="vortex-swirl is-reverse"/, 'adjacent sectors counter-rotate');
+});
+
+test('balancing fixes SOL by identity and normalises an oversubscribed split', () => {
+  const vortex = loadVortex();
+  // Ring order: memecoins first, SOL third — index 0 is NOT the inflow.
+  const pools = [
+    { id: 'a', symbol: 'MEME2', percent: 10, minPercent: 0 },
+    { id: 'b', symbol: 'MEME3', percent: 10, minPercent: 0 },
+    { id: 'sol', symbol: 'SOL', percent: 90, minPercent: 10 },
+    { id: 'quote', symbol: 'FLY', percent: 10, minPercent: 10, maxPercent: 30 },
+  ];
+  const balanced = vortex.balancedTargets(pools, { fixedId: 'sol' });
+  const sol = balanced.find((p) => p.id === 'sol');
+  assert.equal(sol.percent, 90, 'SOL is fixed wherever it sits in the order');
+  const total = balanced.reduce((sum, p) => sum + p.percent, 0);
+  assert.ok(Math.abs(total - 100) < 0.05, `total normalises to 100 (got ${total})`);
+  // The capped flywheel pool pins at its floor and nothing overflows.
+  assert.equal(balanced.find((p) => p.id === 'quote').percent, 10);
+
+  // A normal split still evens out.
+  const even = vortex.balancedTargets([
+    { id: 'a', symbol: 'MEME2', percent: 4.8, minPercent: 0 },
+    { id: 'b', symbol: 'MEME3', percent: 15.2, minPercent: 0 },
+    { id: 'sol', symbol: 'SOL', percent: 70, minPercent: 10 },
+    { id: 'quote', symbol: 'FLY', percent: 10, minPercent: 10, maxPercent: 30 },
+  ], { fixedId: 'sol' });
+  assert.equal(even.find((p) => p.id === 'a').percent, 10);
+  assert.equal(even.find((p) => p.id === 'b').percent, 10);
+  assert.equal(even.find((p) => p.id === 'quote').percent, 10);
+  assert.equal(even.reduce((sum, p) => sum + p.percent, 0), 100);
+});

@@ -165,6 +165,70 @@
     return boundaryDeltaForUpper(pools, index, tForRingAngle(deg));
   }
 
+  /**
+   * Even out the pools around the ring, leaving `fixedIndex` (the inflow, SOL)
+   * alone. Minimums and maximums are honoured by water-filling: a pool that is
+   * pinned at its floor takes less, and the remainder is shared again.
+   */
+  function balancedTargets(pools, { fixedIndex = 0, fixedId = null } = {}) {
+    const list = (Array.isArray(pools) ? pools : []).map((pool) => ({ ...pool, percent: Number(pool.percent) }));
+    // Fix the inflow by identity when it is given: in the ring the memecoins
+    // come first, so "index 0" is not necessarily SOL.
+    const resolvedIndex = fixedId
+      ? Math.max(0, list.findIndex((pool) => pool.id === fixedId))
+      : fixedIndex;
+    const fixed = list[resolvedIndex];
+    const movable = list.filter((_, index) => index !== resolvedIndex);
+    if (!movable.length || !fixed) return list;
+
+    // Distribute the remainder around the fixed pool, so the result is a valid
+    // 100% allocation even if the incoming split did not add up.
+    const pool = Math.max(0, 100 - Math.max(0, Number(fixed.percent) || 0));
+    let remaining = pool;
+    let pending = movable.slice();
+    const pinned = new Map();
+
+    // Water-fill: repeatedly assign an equal share, pin anything outside its
+    // bounds, and redistribute what is left.
+    while (pending.length) {
+      const share = remaining / pending.length;
+      let pinnedThisPass = false;
+      for (const item of pending.slice()) {
+        const min = Number.isFinite(item.minPercent) ? item.minPercent : 0;
+        const max = Number.isFinite(item.maxPercent) ? item.maxPercent : Infinity;
+        if (share < min || share > max) {
+          const value = clamp(share, min, max);
+          pinned.set(item.id, roundPercent(value));
+          remaining -= value;
+          pending = pending.filter((candidate) => candidate.id !== item.id);
+          pinnedThisPass = true;
+        }
+      }
+      if (!pinnedThisPass) {
+        for (const item of pending) pinned.set(item.id, roundPercent(share));
+        pending = [];
+      }
+      if (remaining <= 0.0001) {
+        for (const item of pending) pinned.set(item.id, roundPercent(Number.isFinite(item.minPercent) ? item.minPercent : 0));
+        pending = [];
+      }
+    }
+
+    return list.map((item, index) => (
+      index === resolvedIndex ? { ...item, percent: roundPercent(Number(item.percent) || 0) } : { ...item, percent: pinned.get(item.id) ?? item.percent }
+    ));
+  }
+
+  /** Linear interpolation between two allocations, for the spin animation. */
+  function interpolateShares(from, to, progress) {
+    const t = clamp(progress, 0, 1);
+    return (Array.isArray(from) ? from : []).map((pool, index) => {
+      const start = Number(pool.percent) || 0;
+      const end = Number(to?.[index]?.percent ?? start) || 0;
+      return { ...pool, percent: roundPercent(start + (end - start) * t) };
+    });
+  }
+
   function spinForFeeTier(feeTier) {
     const tier = Number(feeTier);
     if (!Number.isFinite(tier)) return { speed: 1, color: '#4fd1c5' };
@@ -195,6 +259,15 @@
       `A ${rBottom.toFixed(2)} ${(rBottom * PERSPECTIVE).toFixed(2)} 0 0 1 ${(AXIS_X - rBottom).toFixed(2)} ${yBottom.toFixed(2)}`,
       'Z',
     ].join(' ');
+  }
+
+  /** Open arc at a radius, used for the per-sector swirl flow. */
+  function arcPath(r, angleStart, angleEnd) {
+    const [x0, y0] = polar(AXIS_X, AXIS_Y, r, angleStart);
+    const [x1, y1] = polar(AXIS_X, AXIS_Y, r, angleEnd);
+    const large = Math.abs(angleEnd - angleStart) > 180 ? 1 : 0;
+    const sweepFlag = angleEnd >= angleStart ? 1 : 0;
+    return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r.toFixed(2)} ${r.toFixed(2)} 0 ${large} ${sweepFlag} ${x1.toFixed(2)} ${y1.toFixed(2)}`;
   }
 
   /** One annular sector of the ring. */
@@ -250,6 +323,7 @@
     let drag = null;
     let mode = null; // 'ring' | 'funnel', chosen from the band count unless pinned
     let pinnedMode = null;
+    let preview = null; // transient allocation shown while the ring spins
 
     const poolState = () => {
       const model = read() || {};
@@ -264,7 +338,7 @@
 
     const render = () => {
       const model = read() || {};
-      const pools = Array.isArray(model.pools) ? model.pools : [];
+      const pools = preview || (Array.isArray(model.pools) ? model.pools : []);
       mode = pools.length >= 3 ? 'ring' : 'funnel';
       const activeMode = currentMode();
       const bands = activeMode === 'ring' ? layoutRing(pools) : layoutBands(pools);
@@ -282,6 +356,11 @@
                     fill="${color}" fill-opacity="${opacity.toFixed(2)}"
                     stroke="${color}" stroke-opacity="0.5" stroke-width="1">
                 <title>${escapeHtml(segment.symbol)} · ${segment.percent}%${segment.mint ? ` · ${escapeHtml(segment.mint)}` : ''}</title>
+              </path>
+              <path class="vortex-swirl ${index % 2 ? 'is-reverse' : ''}"
+                    d="${arcPath((RING_INNER + RING_OUTER) / 2, segment.angleStart + 3, Math.max(segment.angleStart + 4, segment.angleEnd - 3))}"
+                    fill="none" stroke="rgba(255,255,255,0.45)" stroke-width="1.3" stroke-dasharray="3 7">
+                <title>${escapeHtml(segment.symbol)} circulation</title>
               </path>
               <text class="vortex-band-label" x="${segment.labelX.toFixed(2)}" y="${segment.labelY.toFixed(2)}"
                     text-anchor="middle" fill="${color}">
@@ -372,6 +451,9 @@
           <span class="eyebrow">Flywheel vortex</span>
           <span class="vortex-head-actions">
             <strong>${core ? `${escapeHtml(core.symbol)} core at ${core.percent}%` : 'No pools configured'}</strong>
+            <button class="pill-button vortex-mode" type="button" data-vortex-balance
+                    title="Spin the ring until the memecoins hold equal shares"
+                    ${pools.length < 3 ? 'disabled' : ''}>Balance</button>
             <button class="pill-button vortex-mode" type="button" data-vortex-mode="${activeMode === 'ring' ? 'funnel' : 'ring'}"
                     title="Switch between the circulation ring and the funnel">${activeMode === 'ring' ? 'Funnel' : 'Ring'}</button>
           </span>
@@ -427,7 +509,33 @@
       render();
     };
 
+    // Spin the ring to an even split: the allocation animates, so the operator
+    // sees the supply move between memecoins before it is committed.
+    function spinToBalance() {
+      const from = poolState();
+      if (from.length < 3) return;
+      const target = balancedTargets(from, { fixedId: 'sol', fixedIndex: 0 });
+      const duration = 900;
+      const now = () => (global.performance?.now ? global.performance.now() : Date.now());
+      const started = now();
+      const step = () => {
+        const progress = clamp((now() - started) / duration, 0, 1);
+        preview = interpolateShares(from, target, progress);
+        render();
+        if (progress < 1) {
+          global.requestAnimationFrame(step);
+          return;
+        }
+        preview = null;
+        const settled = interpolateShares(from, target, 1);
+        if (typeof write === 'function') write(settled);
+        render();
+      };
+      global.requestAnimationFrame(step);
+    }
+
     function bindPointer() {
+      host.querySelector('[data-vortex-balance]')?.addEventListener('click', spinToBalance);
       const modeButton = host.querySelector('[data-vortex-mode]');
       modeButton?.addEventListener('click', () => {
         pinnedMode = modeButton.dataset.vortexMode;
@@ -522,6 +630,8 @@
     transferShare,
     boundaryDeltaForUpper,
     ringBoundaryDeltaForUpper,
+    balancedTargets,
+    interpolateShares,
     spinForFeeTier,
     funnelPath,
     sectorPath,
