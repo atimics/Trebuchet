@@ -7019,7 +7019,9 @@ function canAutoSaveLaunch(config) {
 // launch the operator actually saved.
 function restoreDetectedLaunch() {
   if (!state.savedLaunches?.length) return false;
-  if ($('#tokenName')?.value?.trim() && !state.loadedSavedLaunchId) return false;
+  // The saved launch is the authority: a browser-local guided draft must not
+  // shadow it (that is how the token art and the identity card went missing).
+  if (state.loadedSavedLaunchId) return false;
   const rememberedId = rememberedActiveLaunchId();
   const entry = state.savedLaunches.find((item) => item.id === rememberedId) || state.savedLaunches[0];
   if (!entry) return false;
