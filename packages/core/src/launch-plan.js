@@ -874,7 +874,7 @@ function feeKeyRecipientIssues(pools = []) {
 // good and trading fees can never be claimed.
 const PLACEHOLDER_SWEEP_RE = /^1{20,}[1-9A-HJ-NP-Za-km-z]*$/;
 
-function sweepDestinationIssues(poolTopology = {}) {
+function sweepDestinationIssues(poolTopology = {}, { demoMode = false, mode = null } = {}) {
   const destination = String(poolTopology.sweepDestination || '').trim();
   if (!destination) return [];
   if (!isPlausibleSolanaAddress(destination)) {
@@ -882,7 +882,11 @@ function sweepDestinationIssues(poolTopology = {}) {
       detail: 'Sweep destination does not look like a valid Solana address.',
     }];
   }
-  if (PLACEHOLDER_SWEEP_RE.test(destination)) {
+  // Practice/demo launches never move real assets (the guided practice flow
+  // uses a placeholder destination on purpose), so the guardrail only gates
+  // plans that can actually sign on-chain.
+  const realExecution = !demoMode && mode !== 'dry-run';
+  if (realExecution && PLACEHOLDER_SWEEP_RE.test(destination)) {
     return [{
       state: 'danger',
       blocksFreshLive: true,
@@ -1305,7 +1309,7 @@ export function buildV2LaunchPlan(input = {}, options = {}) {
   const duplicatePoolRoutes = duplicatePoolRouteIssues(poolTopology.pools);
   const quoteSafetyRoutes = quoteTokenSafetyIssues(poolTopology.pools);
   const feeKeyRecipientRoutes = feeKeyRecipientIssues(poolTopology.pools);
-  const sweepDestinationRoutes = sweepDestinationIssues(poolTopology);
+  const sweepDestinationRoutes = sweepDestinationIssues(poolTopology, { demoMode, mode: input?.mode || null });
   const airdropRecipientRoutes = airdropRecipientIssues(poolTopology.airdrop);
   const ladderRoutes = ladderRouteIssues(poolTopology.pools);
   const poolCost = (poolCount * COST_POOL_RENT_SOL) + COST_TX_BUFFER_SOL;

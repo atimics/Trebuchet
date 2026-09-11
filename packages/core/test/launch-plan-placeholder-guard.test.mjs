@@ -54,3 +54,18 @@ test('an empty sweep destination is not flagged as a placeholder', () => {
   const issue = (plan.guardrails || []).find((i) => /placeholder address/i.test(i.detail || ''));
   assert.equal(issue, undefined);
 });
+
+test('practice and dry-run plans are not gated by the placeholder guardrail', () => {
+  // The guided practice flow uses a placeholder destination on purpose;
+  // nothing real is swept, so it must keep working.
+  const practicePlan = buildV2LaunchPlan(
+    { ...intent('11111111111111111111111111111112'), mode: 'dry-run' },
+    { demoMode: true },
+  );
+  const practiceIssue = (practicePlan.guardrails || []).find((i) => /placeholder address/i.test(i.detail || ''));
+  assert.equal(practiceIssue, undefined, 'practice/demo plans must not be blocked');
+
+  const dryRunPlan = buildV2LaunchPlan({ ...intent('11111111111111111111111111111112'), mode: 'dry-run' });
+  const dryRunIssue = (dryRunPlan.guardrails || []).find((i) => /placeholder address/i.test(i.detail || ''));
+  assert.equal(dryRunIssue, undefined, 'dry-run plans must not be blocked');
+});
