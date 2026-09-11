@@ -425,6 +425,9 @@ const state = {
   vanityCandidates: [],
   savedLaunches: [],
   loadedSavedLaunchId: null,
+  flywheelPools: { meme: [], reserve: [] },
+  vortexControl: null,
+  memeFlywheelMint: null,
   selectedVanityPublicKey: null,
   vanityAvailable: false,
   vanityReason: null,
@@ -5411,7 +5414,124 @@ function customQuoteSafetySummary(topology = currentClassicModel()) {
 
 function selectedClassicQuoteVenue() {
   const key = String($('#quotePoolVenue')?.value || 'meme').trim().toLowerCase();
-  return CLASSIC_QUOTE_VENUES[key] || CLASSIC_QUOTE_VENUES.meme;
+  const venue = CLASSIC_QUOTE_VENUES[key] || CLASSIC_QUOTE_VENUES.meme;
+  // The meme flywheel draws its pairing from the curated pool instead of one
+  // baked-in mint.
+  if (venue.key === 'meme' && state.memeFlywheelMint) {
+    return { ...venue, quoteToken: state.memeFlywheelMint, quoteMint: state.memeFlywheelMint };
+  }
+  return venue;
+}
+
+// --- Flywheel vortex ------------------------------------------------------
+// Presentation of the pool allocation as a vortex: the flywheel is the fast
+// core, quote pools are inner bands, the SOL market is the outer inflow, and
+// band thickness is share of supply. Dragging a boundary moves supply between
+// neighbouring bands. It reads and writes the same percentage fields the plan
+// builder already consumes, so nothing downstream changes.
+
+function vortexAllocationModel() {
+  const pools = [];
+  (state.customPools || []).forEach((pool, index) => {
+    pools.push({
+      id: `custom-${index}`,
+      symbol: String(pool.quoteSymbol || `Q${index + 1}`).toUpperCase(),
+      percent: Number(pool.supplyPercent || 0),
+      minPercent: 0,
+      feeTier: Number(pool.ammConfigIndex ?? 5),
+    });
+  });
+  const venue = selectedClassicQuoteVenue();
+  const isFlywheel = venue.key === 'meme' || venue.key === 'reserve';
+  pools.push({
+    id: 'sol',
+    symbol: 'SOL',
+    percent: Number($('#mainPoolPercent')?.value || 0),
+    minPercent: 10,
+    feeTier: 8,
+  });
+  const quotePercent = Number($('#quotePoolPercent')?.value || 0);
+  // Always present: a pool at 0% still needs a boundary to drag open.
+  if (isFlywheel || quotePercent > 0) {
+    pools.push({
+      id: 'quote',
+      symbol: isFlywheel ? (venue.key === 'meme' ? 'FLY' : 'RESERVE') : 'USDC',
+      percent: quotePercent,
+      minPercent: isFlywheel ? 10 : 0,
+      maxPercent: isFlywheel ? 30 : 100,
+      feeTier: 5,
+    });
+  }
+  return {
+    pools,
+    depositSol: Number($('#liquidityBudgetSol')?.value || $('#launchSol')?.value || 0),
+    sweepDestination: $('#sweepDestination')?.value || '',
+  };
+}
+
+function applyVortexAllocation(pools = []) {
+  for (const pool of pools) {
+    if (pool.id === 'sol') {
+      if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(pool.percent);
+    } else if (pool.id === 'quote') {
+      if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(pool.percent);
+    } else if (String(pool.id).startsWith('custom-')) {
+      const index = Number(String(pool.id).slice('custom-'.length));
+      if (state.customPools?.[index]) state.customPools[index].supplyPercent = pool.percent;
+    }
+  }
+  renderFlywheelPick();
+  scheduleLaunchAutoSave();
+}
+
+function renderVortexControl() {
+  const host = $('#vortexControl');
+  if (!host || !window.TrebuchetV2Vortex) return;
+  if (!state.vortexControl) {
+    state.vortexControl = window.TrebuchetV2Vortex.mount(host, {
+      read: vortexAllocationModel,
+      write: applyVortexAllocation,
+    });
+  } else {
+    state.vortexControl.render();
+  }
+}
+
+function renderFlywheelPick() {
+  const host = $('#flywheelPick');
+  const mintEl = $('#flywheelPickMint');
+  if (!host || !mintEl) return;
+  const venueKey = String($('#quotePoolVenue')?.value || 'meme').trim().toLowerCase();
+  host.hidden = venueKey !== 'meme';
+  mintEl.textContent = state.memeFlywheelMint ? shortAddress(state.memeFlywheelMint) : '—';
+  mintEl.title = state.memeFlywheelMint || '';
+}
+
+// Draw a fresh memecoin from the flywheel pool (never repeating the current
+// pairing when the pool has alternatives).
+async function shuffleMemeFlywheel() {
+  const pool = state.flywheelPools?.meme || [];
+  if (!pool.length) {
+    notify('No meme flywheel mints configured');
+    return;
+  }
+  let mint = null;
+  try {
+    const result = await state.apiClient?.pickFlywheelMint?.({ kind: 'meme', last: state.memeFlywheelMint });
+    mint = result?.mint || null;
+  } catch (error) {
+    notify(error.message || 'Could not draw a flywheel mint');
+    return;
+  }
+  if (!mint) {
+    const options = pool.filter((entry) => entry !== state.memeFlywheelMint);
+    const from = options.length ? options : pool;
+    mint = from[Math.floor(Math.random() * from.length)];
+  }
+  state.memeFlywheelMint = mint;
+  renderFlywheelPick();
+  scheduleLaunchAutoSave();
+  notify(`Flywheel pairing drawn: ${shortAddress(mint)}`);
 }
 
 function launchBudgetRecommendation(value) {
@@ -5867,6 +5987,11 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   if ($('#airdropSupplyPercent')) $('#airdropSupplyPercent').value = String(Number(airdrop.requestedSupplyPercent ?? airdrop.supplyPercent ?? 0));
   if ($('#airdropAutoFit')) $('#airdropAutoFit').checked = airdrop.autoFit !== false;
 
+  if (state.flywheelPools?.meme?.length) {
+    const memePool = pools.find((pool) => String(pool.quoteSymbol || '').toUpperCase() === 'MEME'
+      || String(pool.quoteMint || '') === state.memeFlywheelMint);
+    if (memePool?.quoteMint) state.memeFlywheelMint = String(memePool.quoteMint);
+  }
   if ($('#vanityStart')) $('#vanityStart').value = String(config.vanity?.prefix || '');
   if ($('#vanityEnd')) $('#vanityEnd').value = String(config.vanity?.suffix || '');
   state.selectedVanityPublicKey = String(config.vanity?.selectedPublicKey || journal?.token?.mint || '').trim() || null;
@@ -18321,6 +18446,8 @@ function renderAll() {
   renderGuidedLaunchFlow();
   renderChartDeck();
   renderVanityCandidates();
+  renderFlywheelPick();
+  renderVortexControl();
   renderPoolEditorPanel();
   renderAirdropPanel();
   renderReportPanel();
@@ -22357,6 +22484,10 @@ function applyBootState(boot) {
   state.savedLaunches = Array.isArray(boot.savedLaunches?.launches)
     ? boot.savedLaunches.launches.filter((entry) => entry && entry.id && entry.config)
     : [];
+  state.flywheelPools = {
+    meme: Array.isArray(boot.flywheelPools?.pools?.meme) ? boot.flywheelPools.pools.meme : [],
+    reserve: Array.isArray(boot.flywheelPools?.pools?.reserve) ? boot.flywheelPools.pools.reserve : [],
+  };
   restoreDetectedLaunch();
   state.vanityAvailable = boot.vanity?.available === true;
   state.vanityReason = boot.vanity?.reason || null;
@@ -23037,6 +23168,11 @@ function handleClick(event) {
     state.verifyPanel = actionTarget.dataset.verifyPanel === 'audit' ? 'audit' : 'proof';
     renderClassicBridge();
     renderLaunchWorkspace();
+    return;
+  }
+
+  if (action === 'shuffle-flywheel') {
+    shuffleMemeFlywheel();
     return;
   }
 

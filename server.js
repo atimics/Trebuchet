@@ -59,6 +59,7 @@ import * as secretStore from './secretStore.js';
 import { createLaunchReportUmi, publishLaunchReport } from './launchReportService.js';
 import * as launchJournal from './launchJournal.js';
 import * as launchStore from './launchStore.js';
+import * as launchFlywheels from './launchFlywheels.js';
 import * as userPrefs from './userPrefs.js';
 import * as discoveryStore from './discoveryStore.js';
 import * as brandShieldStore from './brandShieldStore.js';
@@ -2723,6 +2724,46 @@ app.post('/api/v2/launch-configs/remove', (req, res) => {
     const id = String(req.body?.id || '').trim();
     if (!id) return res.status(400).json({ success: false, error: 'id required' });
     res.json({ success: true, removed: launchStore.remove(id) });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+// Flywheel pools: the meme flywheel draws a random pairing from a curated
+// pool of memecoins instead of one hardcoded mint. Operators can curate it.
+app.get('/api/v2/flywheel-pools', (_req, res) => {
+  try {
+    res.json({ success: true, pools: launchFlywheels.all() });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.post('/api/v2/flywheel-pools/add', (req, res) => {
+  try {
+    const kind = String(req.body?.kind || 'meme');
+    const mints = launchFlywheels.add(kind, req.body?.mint);
+    res.json({ success: true, kind, mints });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.post('/api/v2/flywheel-pools/remove', (req, res) => {
+  try {
+    const kind = String(req.body?.kind || 'meme');
+    const removed = launchFlywheels.remove(kind, req.body?.mint);
+    res.json({ success: true, kind, removed, mints: launchFlywheels.list(kind) });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.post('/api/v2/flywheel-pools/pick', (req, res) => {
+  try {
+    const kind = String(req.body?.kind || 'meme');
+    const mint = launchFlywheels.pick(kind, { last: req.body?.last || null });
+    res.json({ success: true, kind, mint });
   } catch (error) {
     sendErrorResponse(res, error, 400);
   }

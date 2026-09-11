@@ -8,6 +8,7 @@
     ".": "./src/index.js",
     "./confirmation": "./src/confirmation.js",
     "./custody": "./src/custody.js",
+    "./flywheel-pools": "./src/flywheel-pools.js",
     "./launch-journal": "./src/launch-journal.js",
     "./launch-plan": "./src/launch-plan.js",
     "./launch-recovery": "./src/launch-recovery.js",

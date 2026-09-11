@@ -23,6 +23,7 @@
   const FIND_FUNDER_PATH = '/api/find-funder';
   const CANCEL_VANITY_GRIND_PATH = '/api/cancel-vanity-grind';
   const SAVED_LAUNCHES_PATH = '/api/v2/launch-configs';
+  const FLYWHEEL_POOLS_PATH = '/api/v2/flywheel-pools';
   const DIAGNOSE_LAUNCH_PATH = '/api/diagnose-launch';
   const LAUNCH_JOURNALS_PATH = '/api/launch-journals';
   const LP_PROGRESS_PATH = '/api/lp-progress';
@@ -45,6 +46,7 @@
     secretPin: `${SECRET_PIN_PATH}/status`,
     vanityCandidates: VANITY_CA_CANDIDATES_PATH,
     savedLaunches: SAVED_LAUNCHES_PATH,
+    flywheelPools: FLYWHEEL_POOLS_PATH,
     v2Wallets: V2_WALLETS_PATH,
     feeTiers: CLMM_FEE_TIERS_PATH,
     viewportSmoke: V2_VIEWPORT_SMOKE_PROOF_PATH,
@@ -226,6 +228,9 @@
     const savedLaunches = safeArray(
       endpoints.savedLaunches?.ok ? endpoints.savedLaunches.data?.launches : [],
     );
+    const flywheelPools = endpoints.flywheelPools?.ok && endpoints.flywheelPools.data?.pools
+      ? endpoints.flywheelPools.data.pools
+      : {};
     const viewportSmoke = normalizeViewportSmokeProof(
       endpoints.viewportSmoke?.ok ? endpoints.viewportSmoke.data : null,
       endpoints.viewportSmoke?.ok ? null : endpoints.viewportSmoke?.error,
@@ -307,6 +312,14 @@
         candidates: vanityCandidates,
         candidateCount: vanityCandidates.length,
         secretPinLocked: endpoints.vanityCandidates?.data?.secretPinLocked === true,
+      },
+      flywheelPools: {
+        pools: {
+          meme: safeArray(flywheelPools.meme),
+          reserve: safeArray(flywheelPools.reserve),
+        },
+        available: endpoints.flywheelPools?.ok === true,
+        error: endpoints.flywheelPools?.ok ? null : endpoints.flywheelPools?.error || null,
       },
       savedLaunches: {
         launches: savedLaunches,
@@ -681,6 +694,22 @@
       });
     }
 
+    async function pickFlywheelMint({ kind = 'meme', last = null } = {}) {
+      return request(`${FLYWHEEL_POOLS_PATH}/pick`, { method: 'POST', body: { kind, last } });
+    }
+
+    async function listFlywheelPools() {
+      return request(FLYWHEEL_POOLS_PATH, { method: 'GET' });
+    }
+
+    async function addFlywheelMint({ kind = 'meme', mint }) {
+      return request(`${FLYWHEEL_POOLS_PATH}/add`, { method: 'POST', body: { kind, mint } });
+    }
+
+    async function removeFlywheelMint({ kind = 'meme', mint }) {
+      return request(`${FLYWHEEL_POOLS_PATH}/remove`, { method: 'POST', body: { kind, mint } });
+    }
+
     async function removeSavedLaunch(id) {
       return request(`${SAVED_LAUNCHES_PATH}/remove`, {
         method: 'POST',
@@ -1051,6 +1080,10 @@
       listSavedLaunches,
       saveLaunch,
       removeSavedLaunch,
+      pickFlywheelMint,
+      listFlywheelPools,
+      addFlywheelMint,
+      removeFlywheelMint,
       removeDiscoveryWallet,
       resetSecretPin,
       retryAirdrop,
