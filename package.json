@@ -131,7 +131,7 @@
     "gifenc": "^1.0.3",
     "gifuct-js": "^2.1.2",
     "marked": "^14.1.4",
-    "multer": "^2.2.0",
+    "multer": "^2.3.0",
     "qrcode": "^1.5.4"
   },
   "bundleDependencies": [
@@ -147,13 +147,14 @@
     "pngjs": "^7.0.0"
   },
   "overrides": {
+    "@xmldom/xmldom": "^0.8.15",
     "axios": "^1.18.0",
     "brace-expansion@<1.1.18": "1.1.18",
     "brace-expansion@>=2.0.0 <2.1.4": "2.1.4",
     "brace-expansion@>=3.0.0 <5.0.8": "5.0.8",
     "bn.js": "^5.2.3",
     "form-data": "^4.0.6",
-    "js-yaml": "^4.3.0",
+    "js-yaml": "^4.3.2",
     "tar": "^7.5.20",
     "tmp": "^0.2.7",
     "@electron/get": {
