@@ -673,16 +673,26 @@ export async function createTokenWithMetaplex({
 
     // Compatibility profile: classic SPL Token + Metaplex metadata PDA.
     console.log('Creating SPL token mint...');
-    const mint = await createMint(
-      connection,
-      tempWallet,
-      tempWallet.publicKey, // mint authority
-      null, // freeze authority (null = no freeze)
-      9, // decimals
-      mintKeypair ?? undefined, // searched keypair, or undefined for random
-      { commitment: 'finalized' },
-      TOKEN_PROGRAM_ID
-    );
+    let mint;
+    try {
+      mint = await createMint(
+        connection,
+        tempWallet,
+        tempWallet.publicKey, // mint authority
+        null, // freeze authority (null = no freeze)
+        9, // decimals
+        mintKeypair ?? undefined, // searched keypair, or undefined for random
+        { commitment: 'finalized' },
+        TOKEN_PROGRAM_ID
+      );
+    } catch (mintError) {
+      // The mint address is known before the transaction lands, so surface it
+      // on failure: an account that already exists can then be adopted and
+      // finished instead of re-created.
+      const derived = mintKeypair?.publicKey?.toBase58?.() || null;
+      if (derived && !mintError.tokenMint) mintError.tokenMint = derived;
+      throw mintError;
+    }
     console.log('Mint created:', mint.toString());
     progress({ stage: 'mint_created', tokenMint: mint.toString() });
     
