@@ -133,7 +133,7 @@ export function cancelVanityGrind() {
   return true;
 }
 
-export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onProgress } = {}) {
+export function generateVanityKeypair({ prefix, suffix, threads, onProgress } = {}) {
   try {
     ({ prefix, suffix } = normalizeVanityTargetBase58(prefix, suffix));
   } catch (error) {
@@ -187,9 +187,6 @@ export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onPr
 
     if (threads && threads > 0) {
       args.push('--threads', String(threads));
-    }
-    if (blockhash) {
-      args.push('--vrf-blockhash', blockhash);
     }
 
     // spawn() can throw synchronously (e.g. ENOENT before the 'error'
@@ -258,12 +255,6 @@ export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onPr
           return;
         }
         const keypair = Keypair.fromSecretKey(Uint8Array.from(result.secretKey));
-        const vrfFields = {};
-        if (result.vrfProof) {
-          vrfFields.vrfProof = result.vrfProof;
-          vrfFields.vrfPk = result.vrfPk;
-          vrfFields.vrfBlockhash = result.vrfBlockhash;
-        }
         resolve({
           publicKey: result.publicKey,
           secretKey: result.secretKey,
@@ -277,7 +268,6 @@ export function generateVanityKeypair({ prefix, suffix, threads, blockhash, onPr
           prefix: result.prefix,
           suffix: result.suffix,
           targetLen: result.targetLen,
-          ...vrfFields,
         });
       } catch (err) {
         reject(new Error(`Parse error: ${err.message}`));

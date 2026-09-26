@@ -17,7 +17,7 @@ INCLUDES   = -I. -I$(VENDOR_DIR) -I$(VENDOR_DIR)/tweetnacl
 TWEETNACL_SRCS = $(VENDOR_DIR)/tweetnacl/tweetnacl.c \
                  $(VENDOR_DIR)/tweetnacl/randombytes.c
 
-VANITY_SRCS = vanity_keygen/vanity_keygen.c vrf_ed25519.c $(TWEETNACL_SRCS)
+VANITY_SRCS = vanity_keygen/vanity_keygen.c $(TWEETNACL_SRCS)
 VANITY_BIN  = $(BUILD_DIR)/vanity_keygen
 VANITY_BIN_FAST = $(BUILD_DIR)/vanity_keygen_fast
 

@@ -1893,7 +1893,7 @@ app.post('/api/vanity-ca-candidates/remove', (req, res) => {
 
 // SSE streaming endpoint for vanity CA grind progress
 app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
-  let { prefix, suffix, threads, blockhash, token, client } = req.query;
+  let { prefix, suffix, threads, token, client } = req.query;
   prefix = typeof prefix === 'string' ? prefix.trim() : '';
   suffix = typeof suffix === 'string' ? suffix.trim() : '';
 
@@ -1941,57 +1941,6 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
     threads = Math.min(Math.max(1, Number(threads)), 32);
   }
 
-  // Auto-fetch a recent Solana blockhash for VRF seed binding.
-  // The VRF proves the seed was bound to a known-past blockhash,
-  // preventing the grinder from cherry-picking seeds across re-rolls.
-  //
-  // This is an OPTIONAL auditability feature. If we can't reach the
-  // RPC or the response is unusable, we proceed without VRF — the
-  // keypair is still cryptographically secure via the system CSPRNG;
-  // only the proof-of-non-precomputation feature is skipped.
-  if (!blockhash) {
-    let fetchFailReason = null;
-    try {
-      const blockhashResp = await fetch(getRpcUrl(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: 1,
-          method: 'getLatestBlockhash',
-          params: [{ commitment: 'confirmed' }],
-        }),
-      });
-      if (!blockhashResp.ok) {
-        fetchFailReason = `RPC returned HTTP ${blockhashResp.status}`;
-      } else {
-        const bhJson = await blockhashResp.json();
-        if (bhJson?.result?.value?.blockhash) {
-          blockhash = Buffer.from(bs58.decode(bhJson.result.value.blockhash)).toString('hex');
-        } else {
-          // RPC succeeded at the HTTP level but didn't return what we
-          // expected — most often a JSON-RPC error body (rate-limit,
-          // malformed request, etc.). Previously this path was silent;
-          // the user would lose VRF with no indication.
-          fetchFailReason = bhJson?.error?.message
-            ? `RPC error: ${bhJson.error.message}`
-            : 'RPC response did not include a blockhash';
-        }
-      }
-    } catch (e) {
-      // Network-level failure (DNS, connection refused, timeout).
-      fetchFailReason = e?.message || 'network error';
-    }
-    if (fetchFailReason) {
-      console.warn(
-        '[vanity] Skipping optional VRF audit proof — couldn\'t fetch a recent blockhash '
-        + `(${fetchFailReason}). The generated keypair is still cryptographically secure; `
-        + 'only the proof-of-non-precomputation feature is unavailable for this grind. '
-        + 'Configure a dedicated RPC endpoint in settings if you want VRF every time '
-        + '(the default public RPC frequently rate-limits this kind of request).',
-      );
-    }
-  }
-
   const target = prefix && suffix ? `${prefix}...${suffix}` : (prefix || suffix);
   const targetLen = prefix.length + suffix.length;
   const expected = Math.pow(58, targetLen);
@@ -2034,7 +1983,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
   try {
     const vanityMod = await import('./vanityKeygen.js');
     const result = await vanityMod.generateVanityKeypair({
-      prefix, suffix, threads, blockhash,
+      prefix, suffix, threads,
       onProgress: ({ attempts, key }) => {
         // Throttle to ~4 updates/sec
         const now = Date.now();
@@ -2098,11 +2047,6 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
         suffix: suffix || null,
         mode: vanityMode,
         persisted: !demoMode,
-        ...(result.vrfProof ? {
-          vrfProof: result.vrfProof,
-          vrfPk: result.vrfPk,
-          vrfBlockhash: result.vrfBlockhash,
-        } : {}),
       },
     })}\n\n`);
 

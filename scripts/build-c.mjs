@@ -32,7 +32,6 @@ const buildDir = path.join(cDir, 'build');
 // compiler's diagnostic messages readable.
 const sources = [
   path.join('vanity_keygen', 'vanity_keygen.c'),
-  'vrf_ed25519.c',
   path.join('vendor', 'tweetnacl', 'tweetnacl.c'),
   path.join('vendor', 'tweetnacl', 'randombytes.c'),
 ];

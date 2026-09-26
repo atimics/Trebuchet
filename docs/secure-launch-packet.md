@@ -67,8 +67,9 @@ runner the operator deployed and owns.
 ## Key lifecycle inside the runner
 
 1. Generate the funding wallet, mint authority, and (optional) vanity
-   CA inside the container, using the same CSPRNG path as the app
-   (`vanity_keygen` already emits VRF-bound grind proofs).
+   CA inside the container, using the same CSPRNG path as the app.
+   `vanity_keygen` seeds only from the system CSPRNG and emits no seed
+   material or proof that could reconstruct a key.
 2. Fund the wallet from the operator out-of-band (SOL transfer).
 3. Execute the plan stages (mint, metadata, revoke authorities, create
    pools, lock liquidity, sweep) journaling each step locally.
