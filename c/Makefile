@@ -12,12 +12,13 @@ endif
 BUILD_DIR = build
 
 VENDOR_DIR = vendor
-INCLUDES   = -I. -I$(VENDOR_DIR) -I$(VENDOR_DIR)/tweetnacl
+INCLUDES   = -I. -I$(VENDOR_DIR) -I$(VENDOR_DIR)/tweetnacl -I$(VENDOR_DIR)/ed25519-ref10
 
 TWEETNACL_SRCS = $(VENDOR_DIR)/tweetnacl/tweetnacl.c \
                  $(VENDOR_DIR)/tweetnacl/randombytes.c
 
-VANITY_SRCS = vanity_keygen/vanity_keygen.c $(TWEETNACL_SRCS)
+REF10_SRCS = $(VENDOR_DIR)/ed25519-ref10/fe.c $(VENDOR_DIR)/ed25519-ref10/ge.c
+VANITY_SRCS = vanity_keygen/vanity_keygen.c $(TWEETNACL_SRCS) $(REF10_SRCS)
 VANITY_BIN  = $(BUILD_DIR)/vanity_keygen
 VANITY_BIN_FAST = $(BUILD_DIR)/vanity_keygen_fast
 
@@ -30,7 +31,7 @@ VANITY_BIN_FAST = $(BUILD_DIR)/vanity_keygen_fast
 SODIUM_PREFIX ?= $(shell brew --prefix libsodium 2>/dev/null || echo /usr)
 all: $(BUILD_DIR)
 	$(CC) -O3 -flto -DTREBUCHET_SODIUM -I$(SODIUM_PREFIX)/include -Wall -Wextra -Wpedantic -Wno-sign-compare \
-	  vanity_keygen/vanity_keygen.c -o $(VANITY_BIN) -I. -I$(VENDOR_DIR) -lpthread $(SODIUM_PREFIX)/lib/libsodium.a
+	  vanity_keygen/vanity_keygen.c $(REF10_SRCS) -o $(VANITY_BIN) -I. -I$(VENDOR_DIR) -I$(VENDOR_DIR)/ed25519-ref10 -lpthread $(SODIUM_PREFIX)/lib/libsodium.a
 
 portable: $(VANITY_BIN)
 

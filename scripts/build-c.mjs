@@ -32,12 +32,15 @@ const buildDir = path.join(cDir, 'build');
 // compiler's diagnostic messages readable.
 const sources = [
   path.join('vanity_keygen', 'vanity_keygen.c'),
+  // ref10 field/group arithmetic for the split-key walk (zlib, see vendor README).
+  path.join('vendor', 'ed25519-ref10', 'fe.c'),
+  path.join('vendor', 'ed25519-ref10', 'ge.c'),
   path.join('vendor', 'tweetnacl', 'tweetnacl.c'),
   path.join('vendor', 'tweetnacl', 'randombytes.c'),
 ];
 
 // Include paths, same set as the Makefile's INCLUDES variable.
-const includes = ['.', 'vendor', path.join('vendor', 'tweetnacl')];
+const includes = ['.', 'vendor', path.join('vendor', 'tweetnacl'), path.join('vendor', 'ed25519-ref10')];
 
 // Try a compiler by probing with --version. Returns the name if usable,
 // null otherwise. Uses shell: true on Windows so the search obeys
