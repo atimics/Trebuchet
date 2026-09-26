@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Verify Wallet · Trebuchet</title>
+  <style>
+    :root { --bg: #080a0c; --panel: #0d1114; --ink: #e9edf0; --muted: #8b969f; --line: #20272d; --green: #79d99b; --red: #e07164; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--ink); font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    main { width: min(440px, 100%); padding: 28px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
+    h1 { margin: 0 0 8px; font-size: 16px; letter-spacing: 0.08em; text-transform: uppercase; }
+    p { margin: 0 0 18px; color: var(--muted); }
+    .wallets { display: grid; gap: 8px; }
+    button { width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+    button:hover, button:focus-visible { border-color: var(--green); color: var(--green); }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #status { margin-top: 18px; min-height: 1.5em; color: var(--muted); word-break: break-all; }
+    #status.ok { color: var(--green); }
+    #status.error { color: var(--red); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Verify a return wallet</h1>
+    <p>Sign a message with the wallet that should receive your launch assets. Signing is free and sends no transaction.</p>
+    <div class="wallets" id="wallets"></div>
+    <div id="status" role="status" aria-live="polite"></div>
+  </main>
+  <script src="./sign.js"></script>
+</body>
+</html>

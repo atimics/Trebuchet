@@ -786,6 +786,13 @@ function createWindow() {
   attachContextMenu(win.webContents);
 
   win.webContents.setWindowOpenHandler(({ url }) => {
+    // The wallet-signing page must open in the user's browser, where their
+    // wallet extension lives. It is the only local page allowed out.
+    const signingPage = `http://127.0.0.1:${serverPort}/v2/sign.html`;
+    if (url === signingPage) {
+      shell.openExternal(signingPage);
+      return { action: 'deny' };
+    }
     openExternalSafe(url);
     return { action: 'deny' };
   });

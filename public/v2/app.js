@@ -454,6 +454,9 @@ const state = {
     error: null,
     lastUpdatedAt: null,
   },
+  // Wallets proven to be the user's: the on-chain funder of the launch wallet
+  // and wallets that signed a Trebuchet challenge.
+  destinations: { funder: null, signed: [], launchWallet: null, checkedAt: 0, waiting: false },
   fundingWallet: {
     walletPublicKey: null,
     funder: null,
@@ -760,8 +763,12 @@ function applyGuidedRecipe({ refresh = true } = {}) {
   $('#airdropWallets').value = '0';
   $('#airdropSupplyPercent').value = '0';
   $('#airdropAutoFit').checked = true;
-  $('#feeKeyRecipient').value = destination;
-  $('#sweepDestination').value = destination;
+  // Live launches return to the funding wallet unless a signed wallet is
+  // chosen; only practice uses the built-in placeholder destination.
+  $('#feeKeyRecipient').value = '';
+  $('#sweepDestination').value = practiceEnvironmentSelected() || state.destinations.signed.includes(destination)
+    ? destination
+    : '';
   state.selectedVanityPublicKey = null;
   state.customPools = [];
   state.baseManualLadderText = '';
@@ -5330,6 +5337,14 @@ function sweepDestinationIssues(topology = {}) {
   // Only a real launch can lose assets: practice/demo runs sweep nothing, and
   // the guided practice flow uses a placeholder destination on purpose.
   const liveExecution = state.launchMode !== 'dry-run';
+  if (liveExecution && returnWalletStatus().kind === 'unverified') {
+    return [{
+      state: 'danger',
+      poolId: 'sweep-destination',
+      title: 'Return wallet not verified',
+      detail: 'Launch assets only go to the funding wallet or a wallet that signed in Trebuchet. Sign with this wallet or use the funding wallet.',
+    }];
+  }
   if (liveExecution && (PLACEHOLDER_SWEEP_RE.test(destination) || destination === '1nc1nerator11111111111111111111111111111111')) {
     return [{
       state: 'danger',
@@ -5742,7 +5757,9 @@ function currentClassicModel() {
   const sliceShares = parseSliceShares($('#sliceShares').value);
   const ladderBands = clampNumber(parsePositiveInteger($('#ladderBands').value, 0), 0, CLASSIC_LADDER_MAX_BANDS);
   const supportSol = Math.max(0, parseNumericInput($('#supportSol').value, 0));
-  const feeKeyRecipient = $('#feeKeyRecipient').value.trim();
+  // Fee Keys stay in the launch wallet and sweep to the verified return
+  // wallet. Per-slice recipients were typed addresses, so they are not used.
+  const feeKeyRecipient = '';
   const sweepDestination = $('#sweepDestination').value.trim();
   const targetMarketCapUsd = Math.max(0, parseNumericInput($('#targetMarketCapUsd').value, 250000));
   const manualBands = parseManualLadderBands(state.baseManualLadderText);
@@ -5814,7 +5831,7 @@ function currentClassicModel() {
       ammConfigIndex: Math.floor(parseNumericInput(pool.ammConfigIndex, 5)),
       distribution: parseSliceShares(pool.sliceShares || '100').map((sharePercent, sliceIndex) => ({
         sharePercent,
-        recipient: sliceIndex === 0 && pool.feeKeyRecipient ? String(pool.feeKeyRecipient).trim() : null,
+        recipient: null, // Fee Keys follow the sweep to the verified return wallet.
       })),
       bootstrap: { mode: 'minimal' },
       ladder: customManualBands.length
@@ -7582,7 +7599,6 @@ function renderSupplyEditor() {
       ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`)}
       ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`)}
       ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="number" min="0" step="0.05" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`)}
-      ${field('Fee Key owner', '', `<input data-custom-pool-field="feeKeyRecipient" data-pool-id="${id}" data-supply-key="${key}:feekey" value="${escapeHtml(pool.feeKeyRecipient || '')}" placeholder="Same as return wallet" autocomplete="off" spellcheck="false">`)}
       <label class="supply-field supply-field-wide"><span>Custom ladder</span><textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea><small>Replaces ladder bands when set.</small></label>
       <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
       <div class="supply-field-wide">${renderCustomQuoteInfoPanel(pool)}</div>`;
@@ -7628,17 +7644,7 @@ function renderSupplyEditor() {
       <small>${Math.abs(remainder) <= 0.05 ? `${compactAmount(supply)} tokens` : remainder > 0 ? `${pct(remainder)} unassigned` : `${pct(-remainder)} over`}</small>
     </div>`;
 
-  const payoutHint = $('#payoutHint');
-  if (payoutHint) {
-    const funder = state.fundingWallet?.funder;
-    payoutHint.textContent = $('#sweepDestination')?.value.trim()
-      ? 'Team tokens, LP fee keys, and leftover SOL go to this wallet instead of the funding wallet.'
-      : funder
-        ? `Blank sends team tokens, LP fee keys, and leftover SOL back to the funding wallet (${shortAddress(funder)}).`
-        : 'Blank sends team tokens, LP fee keys, and leftover SOL back to the wallet that funds the launch.';
-  }
-  const feeKeyOwner = $('#feeKeyRecipient');
-  if (feeKeyOwner?.value.trim()) feeKeyOwner.closest('details')?.setAttribute('open', '');
+  renderReturnWalletCard();
 
   if (focusKey) {
     const next = target.querySelector(`[data-supply-key="${CSS.escape(focusKey)}"]`);
@@ -7670,7 +7676,6 @@ function renderPoolEditorPanel() {
           <label><span>Supply %</span><input data-custom-pool-field="supplyPercent" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="100" step="0.1" value="${escapeHtml(pool.supplyPercent ?? 5)}"></label>
           <label><span>Fee tier</span><select data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(pool.id)}">${feeTierOptionsHtml(pool.ammConfigIndex ?? 5)}</select></label>
           <label><span>Slices</span><input data-custom-pool-field="sliceShares" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.sliceShares || '100')}" autocomplete="off"></label>
-          <label><span>Fee Key recipient</span><input data-custom-pool-field="feeKeyRecipient" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.feeKeyRecipient || '')}" placeholder="Optional wallet" autocomplete="off"></label>
           <label><span>Ladder bands</span><input data-custom-pool-field="ladderBands" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" value="${escapeHtml(pool.ladderBands ?? 0)}"></label>
           <label><span>Support SOL</span><input data-custom-pool-field="supportSol" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" step="0.05" value="${escapeHtml(pool.supportSol ?? 0)}"></label>
         </div>
@@ -14495,9 +14500,10 @@ function renderClassicBridge() {
   const liquidityCanRun = canExecuteNext && ['/api/create-lp', '/api/resume-launch'].includes(readiness?.nextEndpoint);
   const revealCanRun = canExecuteNext && readiness?.nextEndpoint === '/api/reveal-sealed-metadata';
   const finishCanRun = canExecuteNext && readiness?.nextEndpoint === '/api/transfer-assets';
-  const finishDestination = String(topology.sweepDestination || '').trim();
-  const finishDestinationReady = isProbablySolanaAddress(finishDestination)
-    && finishDestination !== walletPublicKey;
+  const finishReturn = returnWalletStatus();
+  const finishDestinationReady = finishReturn.kind !== 'unverified'
+    && Boolean(finishReturn.address)
+    && finishReturn.address !== walletPublicKey;
   const fundingNeed = !estimate
     ? {
       eyebrow: 'Next step',
@@ -14694,11 +14700,11 @@ function renderClassicBridge() {
       <section class="launch-step-guide" aria-labelledby="fundStepTitle">
         <div>
           <h2 id="fundStepTitle">Fund</h2>
-          <p>Set the return wallet, estimate, send, then verify.</p>
+          <p>Estimate, send, then verify.</p>
         </div>
         <aside><i class="fa-solid ${fundingReady ? 'fa-circle-check' : 'fa-arrow-down'}" aria-hidden="true"></i><span>${escapeHtml(fundingReady ? 'Funding verified.' : 'No funds move during estimation.')}</span></aside>
       </section>
-      ${finishDestinationReady ? fundingPanel : renderFundingWalletHint({ compact: true })}
+      ${finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
       ${estimate && (routeCount || manualQuoteCount) ? `<details class="drawer funding-extra"><summary><span>Additional token funding</span><strong>${routeCount + manualQuoteCount} item${routeCount + manualQuoteCount === 1 ? '' : 's'}</strong></summary>${renderQuoteAcquirePanel()}</details>` : ''}
       <div class="launch-phase-actions launch-phase-actions-split">
         <button class="text-button" type="button" data-launch-workspace="configure"><i class="fa-solid fa-arrow-left"></i><span>Token &amp; pools</span></button>
@@ -14771,9 +14777,9 @@ function renderClassicBridge() {
           <h2 id="finishStepTitle">${finalSweepComplete ? 'Launch complete' : 'Finish launch'}</h2>
           <p>${finalSweepComplete ? 'Assets swept and launch wallet verified empty.' : 'Distribute, sweep remaining assets, and save proof.'}</p>
         </div>
-        <aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Proof is ready.' : !finishDestinationReady ? 'Set a return wallet.' : finishCanRun ? 'Ready for final sweep.' : 'Resolve the requirement below.'}</span></aside>
+        <aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Proof is ready.' : !finishDestinationReady ? 'Return wallet not proven yet.' : finishCanRun ? 'Ready for final sweep.' : 'Resolve the requirement below.'}</span></aside>
       </section>
-      ${!finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true, action: 'set-finish-return-wallet' }) : ''}
+      ${!finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
       ${!finalSweepComplete && finishDestinationReady ? readinessPanel({
         title: 'Finish distribution and sweep',
         detail: 'The destination is checked again before Trebuchet transfers Fee Keys, airdrops, token balances, and SOL.',
@@ -18829,42 +18835,25 @@ function selectedFundingWalletHint() {
   return state.fundingWallet;
 }
 
-function renderFundingWalletHint({ compact = false, action = 'edit-return-wallet' } = {}) {
+function renderFundingWalletHint({ compact = false } = {}) {
   const walletPublicKey = selectedLaunchWalletPublicKey();
   const hint = selectedFundingWalletHint();
-  const destination = String(document.getElementById('sweepDestination')?.value || '').trim();
-  const destinationValid = isProbablySolanaAddress(destination);
-  const destinationInvalid = Boolean(destination) && !destinationValid;
+  const status = returnWalletStatus();
   const isAvailable = state.apiStatus === 'connected' && Boolean(walletPublicKey) && Boolean(state.apiClient?.findFundingWallet);
-  const title = destinationInvalid
-    ? 'Return wallet needs correction'
-    : destinationValid
-      ? 'Return wallet set'
-      : hint.funder
-        ? 'Funding wallet detected'
-        : hint.error
-          ? 'Could not check wallet history'
-          : hint.exhausted
-            ? 'Choose a return wallet'
-            : 'Return wallet not set';
-  const detail = destinationInvalid
-    ? 'Enter a complete Solana wallet address before launch.'
-    : destinationValid
-      ? `${shortAddress(destination)} will receive Fee Keys, remaining tokens, and leftover SOL after launch.`
-      : hint.funder
-        ? `${shortAddress(hint.funder)} funded this launch wallet${hint.amount != null ? ` with ${Number(hint.amount).toFixed(4)} SOL` : ''}. Use it as the return wallet or choose another.`
-        : hint.error
-          ? 'Choose the wallet that should receive all remaining assets. You can set it manually without wallet-history detection.'
-          : hint.exhausted
-            ? 'Trebuchet could not infer a wallet from this address history. Set the wallet that should receive everything remaining after launch.'
-            : 'Choose the wallet that should receive Fee Keys, remaining tokens, and leftover SOL after launch.';
-  const detectLabel = hint.checking ? 'Checking history' : hint.exhausted || hint.error ? 'Check again' : 'Find from history';
-  const className = destinationInvalid || (!destinationValid && hint.error)
-    ? 'danger'
-    : destinationValid
-      ? ''
-      : 'warn';
-  const showDetect = !destinationValid && !hint.funder;
+  const title = status.kind === 'unverified'
+    ? 'Return wallet not verified'
+    : status.kind === 'signed'
+      ? 'Signed return wallet'
+      : status.address
+        ? 'Returning to the funding wallet'
+        : 'Funding wallet not found yet';
+  const detail = status.kind === 'unverified'
+    ? `${shortAddress(status.address)} was typed, not proven. Sign with it or use the funding wallet.`
+    : status.address
+      ? `${shortAddress(status.address)} receives Fee Keys, remaining tokens, and leftover SOL.`
+      : 'Fund the launch wallet from your own wallet. That wallet receives everything after launch.';
+  const className = status.kind === 'unverified' ? 'danger' : status.address ? '' : 'warn';
+  const detectLabel = hint.checking ? 'Checking history' : 'Find funding wallet';
   return `<div class="funding-wallet-hint ${className} ${compact ? 'compact' : ''}">
     <span>
       <small>Final asset return</small>
@@ -18872,11 +18861,9 @@ function renderFundingWalletHint({ compact = false, action = 'edit-return-wallet
       <em>${escapeHtml(detail)}</em>
     </span>
     <div class="operator-toolbar compact">
-      <button class="${destinationValid ? 'pill-button' : 'primary-button compact'}" type="button" data-action="${escapeHtml(action)}">
-        ${destinationInvalid ? 'Fix return wallet' : destinationValid ? 'Edit return wallet' : 'Set return wallet'}
-      </button>
-      ${hint.funder && !destinationValid ? '<button class="pill-button" type="button" data-action="use-funding-wallet-sweep">Use detected wallet</button>' : ''}
-      ${showDetect ? `<button class="pill-button" type="button" data-action="detect-funding-wallet" ${isAvailable && !hint.checking ? '' : 'disabled'}>${escapeHtml(detectLabel)}</button>` : ''}
+      <button class="pill-button" type="button" data-action="sign-return-wallet">Sign with another wallet</button>
+      ${status.kind === 'unverified' ? '<button class="pill-button" type="button" data-action="use-funding-wallet-sweep">Use funding wallet</button>' : ''}
+      ${!status.address ? `<button class="pill-button" type="button" data-action="detect-funding-wallet" ${isAvailable && !hint.checking ? '' : 'disabled'}>${escapeHtml(detectLabel)}</button>` : ''}
     </div>
   </div>`;
 }
@@ -19010,23 +18997,9 @@ async function disconnectSolflareWallet() {
   }
 }
 
-function applySolflareAsSweepDestination({ silent = false } = {}) {
-  if (!state.solflare.publicKey) {
-    if (!silent) notify('Connect Solflare first');
-    return false;
-  }
-  const input = document.getElementById('sweepDestination');
-  if (!input) {
-    if (!silent) notify('Sweep destination input is unavailable');
-    return false;
-  }
-  input.value = state.solflare.publicKey;
-  invalidateClassicOutputs();
-  refreshClassicPreview({ includePoolEditor: true });
-  state.executionReadiness = null;
-  state.lastReportPublish = null;
-  renderAll();
-  if (!silent) notify('Solflare filled as sweep destination. Verify before launch.');
+function applySolflareAsSweepDestination() {
+  // A connected wallet still has to sign before it can receive assets.
+  openWalletSigning();
   return true;
 }
 
@@ -21587,86 +21560,125 @@ async function resolveCustomQuoteToken(poolId) {
   }
 }
 
+// Return wallet. Launch assets only go to a proven wallet: the funder of the
+// launch wallet (blank = funder), or a wallet that signed a Trebuchet
+// challenge in the browser. Addresses are never typed in.
+function returnWalletStatus() {
+  const address = String($('#sweepDestination')?.value || '').trim();
+  const funder = state.destinations.funder || state.fundingWallet?.funder || null;
+  if (!address) return { kind: 'funder', address: funder };
+  if (state.destinations.signed.includes(address)) return { kind: 'signed', address };
+  if (funder && address === funder) return { kind: 'funder', address };
+  return { kind: 'unverified', address };
+}
+
+async function refreshDestinations({ force = false } = {}) {
+  if (state.apiStatus !== 'connected' || !state.apiClient?.listDestinations) return null;
+  const launchWallet = selectedLaunchWalletPublicKey() || '';
+  const fresh = state.destinations.launchWallet === launchWallet
+    && Date.now() - state.destinations.checkedAt < 15000;
+  if (fresh && !force) return state.destinations;
+  try {
+    const result = await state.apiClient.listDestinations(launchWallet);
+    state.destinations = {
+      ...state.destinations,
+      funder: result?.funder || null,
+      signed: (result?.signed || []).map((entry) => entry.address),
+      launchWallet,
+      checkedAt: Date.now(),
+    };
+  } catch (_error) {
+    state.destinations = { ...state.destinations, launchWallet, checkedAt: Date.now() };
+  }
+  renderReturnWalletCard();
+  renderReportPanel();
+  return state.destinations;
+}
+
+function setReturnWallet(address) {
+  const input = $('#sweepDestination');
+  if (!input) return;
+  input.value = String(address || '');
+  state.guidedIntent.destinationWallet = input.value;
+  state.executionReadiness = null;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  renderAll();
+}
+
+// Opens the signing page in the browser (where wallet extensions live) and
+// watches for the newly signed wallet.
+function openWalletSigning() {
+  if (state.apiStatus !== 'connected') {
+    notify('Wallet signing needs the local Trebuchet app');
+    return;
+  }
+  window.open(`${window.location.origin}/v2/sign.html`, '_blank', 'noopener');
+  const before = new Set(state.destinations.signed);
+  const deadline = Date.now() + 5 * 60 * 1000;
+  state.destinations.waiting = true;
+  renderReturnWalletCard();
+  notify('Sign with your wallet in the browser window that just opened');
+  const poll = async () => {
+    await refreshDestinations({ force: true });
+    const added = state.destinations.signed.find((address) => !before.has(address));
+    if (added) {
+      state.destinations.waiting = false;
+      setReturnWallet(added);
+      notify(`Return wallet verified: ${shortAddress(added)}`);
+      return;
+    }
+    if (Date.now() < deadline && state.destinations.waiting) {
+      window.setTimeout(poll, 3000);
+    } else {
+      state.destinations.waiting = false;
+      renderReturnWalletCard();
+    }
+  };
+  window.setTimeout(poll, 3000);
+}
+
+function renderReturnWalletCard() {
+  const card = $('#returnWalletCard');
+  if (!card) return;
+  const status = returnWalletStatus();
+  const others = state.destinations.signed.filter((address) => address !== status.address);
+  const title = status.kind === 'signed' ? 'Signed wallet' : status.kind === 'funder' ? 'Funding wallet' : 'Not verified';
+  const badge = status.kind === 'signed'
+    ? '<span class="risk-badge">Signed</span>'
+    : status.kind === 'funder'
+      ? `<span class="risk-badge ${status.address ? '' : 'warn'}">${status.address ? 'Proven by funding' : 'After funding'}</span>`
+      : '<span class="risk-badge danger">Not verified</span>';
+  const address = status.address
+    ? `<code>${escapeHtml(status.address)}</code>`
+    : '<small>The wallet you fund the launch wallet from. Detected once the SOL arrives.</small>';
+  const warning = status.kind === 'unverified'
+    ? '<p class="return-wallet-warning">This address was typed, not proven. Assets will not be sent to it. Sign with it, or use the funding wallet.</p>'
+    : '';
+  card.innerHTML = `
+    <div class="return-wallet-head"><span>Return wallet</span>${badge}</div>
+    <strong>${escapeHtml(title)}</strong>
+    ${address}
+    ${warning}
+    <p class="return-wallet-note">Team tokens, LP fee keys, and leftover SOL go here when the launch finishes.</p>
+    <div class="operator-toolbar compact">
+      <button class="pill-button" type="button" data-action="sign-return-wallet" ${state.destinations.waiting ? 'disabled' : ''}>
+        ${state.destinations.waiting ? 'Waiting for signature…' : 'Sign with another wallet'}
+      </button>
+      ${status.kind !== 'funder' || String($('#sweepDestination')?.value || '').trim()
+        ? '<button class="pill-button" type="button" data-action="use-funding-wallet-sweep">Use funding wallet</button>'
+        : ''}
+      ${others.map((other) => `<button class="pill-button" type="button" data-action="use-signed-wallet" data-address="${escapeHtml(other)}">Use ${escapeHtml(shortAddress(other))}</button>`).join('')}
+    </div>`;
+}
+
 function editReturnWallet() {
-  state.guidedErrors = {};
   setView('launch');
   setLaunchWorkspace('configure');
-
-  if (state.experienceMode === 'guided') {
-    state.guidedStep = 2;
-    persistGuidedDraft();
-    renderGuidedLaunchFlow();
-    renderGuidedRunShell();
-  }
-
   window.requestAnimationFrame(() => {
-    const input = state.experienceMode === 'guided'
-      ? document.querySelector('[data-guided-field="destinationWallet"]')
-      : document.getElementById('sweepDestination');
-    if (!input) return;
-    input.closest('details')?.setAttribute('open', '');
-    input.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    input.focus({ preventScroll: true });
-    input.select?.();
+    const card = $('#returnWalletCard');
+    card?.closest('details')?.setAttribute('open', '');
+    card?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   });
-  notify('Set the return wallet that should receive remaining assets after launch.');
-}
-
-async function setFinishReturnWallet() {
-  const launchWallet = selectedLaunchWalletPublicKey();
-  const existing = String(currentLaunchConfig().poolTopology.sweepDestination || '').trim();
-  const destination = await openOperatorPrompt({
-    eyebrow: 'Final asset return',
-    title: 'Set return wallet',
-    detail: 'Fee Keys, remaining tokens, and leftover SOL will be sent here during the final sweep.',
-    label: 'Solana wallet address',
-    placeholder: existing || 'Paste the wallet that should receive everything remaining',
-    value: existing,
-    confirmLabel: 'Use return wallet',
-    message: 'This can be a personal wallet or treasury wallet. It must not be the temporary launch wallet.',
-    validate: (value) => {
-      const candidate = String(value || '').trim();
-      if (!isProbablySolanaAddress(candidate)) return 'Enter a complete Solana wallet address.';
-      if (launchWallet && candidate === launchWallet) return 'Return wallet must be different from the launch wallet.';
-      return null;
-    },
-  });
-  if (!destination) return false;
-
-  const input = document.getElementById('sweepDestination');
-  if (!input) {
-    notify('Return wallet control is unavailable');
-    return false;
-  }
-  input.value = String(destination).trim();
-  state.guidedIntent.destinationWallet = input.value;
-  state.advancedDraft = captureAdvancedDraft();
-  invalidateClassicOutputs();
-  refreshClassicPreview({ includePoolEditor: true });
-  setLaunchWorkspace('finish');
-  renderAll();
-  notify('Return wallet set. Checking the final sweep now.');
-  await checkExecutionReadiness();
-  return true;
-}
-
-function applyFundingWalletAsSweepDestination() {
-  const hint = selectedFundingWalletHint();
-  if (!hint.funder) {
-    notify('No detected funding wallet to use');
-    return false;
-  }
-  const input = document.getElementById('sweepDestination');
-  if (!input) {
-    notify('Sweep destination input is unavailable');
-    return false;
-  }
-  input.value = hint.funder;
-  invalidateClassicOutputs();
-  refreshClassicPreview({ includePoolEditor: true });
-  renderAll();
-  notify('Detected funding wallet set as the return wallet. Verify it before launch.');
-  return true;
 }
 
 async function detectFundingWallet({ quiet = false } = {}) {
@@ -21700,12 +21712,13 @@ async function detectFundingWallet({ quiet = false } = {}) {
       exhausted: !funder,
       error: null,
     };
-    // The funder is the default destination; the return wallet field stays
-    // an explicit override, so detection does not write into it.
+    // The funder is the default destination; detection never writes an
+    // address into the return wallet.
+    if (funder) state.destinations = { ...state.destinations, funder };
     if (funder) {
       if (!quiet) notify(`Funding wallet detected: ${shortAddress(funder)}`);
     } else if (!quiet) {
-      notify('Wallet history could not identify a funder. Set a return wallet before the final sweep.');
+      notify('Wallet history could not identify a funder. Sign with your wallet before the final sweep.');
     }
     return state.fundingWallet;
   } catch (error) {
@@ -22844,6 +22857,7 @@ async function bootLocalApi() {
   }
   if (state.discovery.scanning) schedulePersonalDiscoveryPoll();
   if (boot.api?.available) {
+    refreshDestinations({ force: true });
     // The one-step card is the static web host's launcher. On the desktop it
     // duplicates the guided launch and hides the saved launch below it.
     const quickCard = $('.quick-launch-card');
@@ -22866,6 +22880,8 @@ async function pollLiveOps() {
     return;
   }
   const walletPublicKey = selectedLaunchWalletPublicKey();
+  // Keep the proven return wallets current (throttled inside).
+  refreshDestinations().catch(() => null);
   if (walletPublicKey !== state.liveOps.walletPublicKey) {
     state.liveOps.walletPublicKey = walletPublicKey;
     state.liveOps.lp = null;
@@ -23539,7 +23555,7 @@ function handleClick(event) {
   }
 
   if (action === 'set-finish-return-wallet') {
-    setFinishReturnWallet().catch((error) => notify(error.message || 'Return wallet could not be set'));
+    openWalletSigning();
     return;
   }
 
@@ -23549,7 +23565,18 @@ function handleClick(event) {
   }
 
   if (action === 'use-funding-wallet-sweep') {
-    applyFundingWalletAsSweepDestination();
+    setReturnWallet('');
+    notify('Assets return to the funding wallet');
+    return;
+  }
+
+  if (action === 'sign-return-wallet') {
+    openWalletSigning();
+    return;
+  }
+
+  if (action === 'use-signed-wallet') {
+    setReturnWallet(actionTarget.dataset.address);
     return;
   }
 

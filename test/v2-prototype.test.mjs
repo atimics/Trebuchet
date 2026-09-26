@@ -2226,9 +2226,9 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="launchSettingsEnvironment"/);
   assert.match(html, /id="launchSettingsExperience"/);
   assert.match(combined, /Launch wallet/);
-  assert.match(combined, /Set the return wallet, estimate, send, then verify/);
+  assert.match(combined, /Estimate, send, then verify/);
   assert.match(combined, /I funded it · check balance/);
-  assert.match(combined, /finishDestinationReady \? fundingPanel : renderFundingWalletHint/);
+  assert.match(combined, /finishReturn\.kind === 'unverified' \? renderFundingWalletHint\(\{ compact: true \}\) : fundingPanel/);
   assert.match(combined, /class="drawer phase-options"/);
   assert.doesNotMatch(js, /class="launch-guidance-list"/);
   assert.doesNotMatch(js, /Verify funding to continue/);
@@ -2863,8 +2863,8 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /journals remain the source of truth/);
   assert.match(js, /renderFundingWalletHint/);
   assert.match(js, /detectFundingWallet/);
-  assert.match(js, /applyFundingWalletAsSweepDestination/);
-  assert.match(js, /function applyFundingWalletAsSweepDestination\(\)[\s\S]*invalidateClassicOutputs\(\)/);
+  assert.match(js, /function openWalletSigning/);
+  assert.match(js, /function setReturnWallet\(address\)[\s\S]*state.executionReadiness = null/);
   assert.match(js, /getConnectedSolflareWallet/);
   assert.match(js, /applySolflareDestinationWallet/);
   assert.match(js, /runFullLaunch/);
@@ -2890,8 +2890,8 @@ test('v2 guided launch is a focused first-launch wizard over the guarded plan', 
   assert.match(js, /supportSol'\)\.value = String\(strategy\.supportSol\)/);
   assert.match(combined, /Minimum[\s\S]*1 SOL[\s\S]*10 SOL[\s\S]*100 SOL/);
   assert.match(js, /function launchBudgetRecommendation/);
-  assert.match(js, /feeKeyRecipient'\)\.value = destination/);
-  assert.match(js, /sweepDestination'\)\.value = destination/);
+  assert.match(js, /feeKeyRecipient'\)\.value = ''/);
+  assert.match(js, /sweepDestination'\)\.value = practiceEnvironmentSelected\(\)/);
   assert.match(js, /data-action="guided-practice"/);
   assert.match(js, /function startGuidedPractice/);
   assert.match(js, /await generateManagedWallet\(\)/);
@@ -3296,7 +3296,12 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /Auto acquire/);
   assert.match(js, /Manual prefund checklist/);
   assert.match(js, /Final asset return/);
-  assert.match(js, /Return wallet not set/);
+  assert.match(js, /Return wallet not verified/);
+  // Return wallets are proven (funder or signature), never typed.
+  assert.match(html, /<input id="sweepDestination" type="hidden"/);
+  assert.match(html, /<input id="feeKeyRecipient" type="hidden"/);
+  assert.match(js, /data-action="sign-return-wallet"/);
+  assert.doesNotMatch(js, /openOperatorPrompt\(\{\s*eyebrow: 'Final asset return'/);
   assert.match(js, /edit-return-wallet/);
   assert.match(js, /detect-funding-wallet/);
   assert.match(js, /use-funding-wallet-sweep/);

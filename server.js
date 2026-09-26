@@ -83,6 +83,7 @@ import {
   normalizeWholeTokenSupply,
 } from './validators.js';
 import { unsafeSweepDestinationReason } from '@trebuchet/core/validators';
+import * as destinationProofStore from './destinationProofStore.js';
 import { normalizeDistribution } from './lpDistribution.js';
 import { isWalletEffectivelyEmpty } from './walletRecovery.js';
 import {
@@ -2634,6 +2635,40 @@ app.post('/api/v2/execution-readiness', async (req, res) => {
       requireFundingBalance: true,
     });
     res.json({ success: true, readiness });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+// Verified destinations. A wallet proves control by signing a one-time
+// challenge; the funding wallet is proven on-chain and needs no signature.
+app.get('/api/v2/destinations', async (req, res) => {
+  try {
+    const launchWallet = String(req.query?.launchWallet || '').trim();
+    const funder = launchWallet
+      ? (await findFundingWallet(launchWallet).catch(() => null))?.funder || null
+      : null;
+    res.json({ success: true, funder, signed: destinationProofStore.listSignedDestinations() });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.post('/api/v2/destinations/challenge', (req, res) => {
+  try {
+    res.json({ success: true, ...destinationProofStore.issueChallenge(req.body?.address) });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.post('/api/v2/destinations/verify', (req, res) => {
+  try {
+    const verified = destinationProofStore.verifyChallenge({
+      nonce: req.body?.nonce,
+      signature: req.body?.signature,
+    });
+    res.json({ success: true, ...verified });
   } catch (error) {
     sendErrorResponse(res, error, 400);
   }
@@ -6945,6 +6980,23 @@ async function createLpHandler(req, res) {
     const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
       resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
     walletPublicKey = resolvedWalletPublicKey;
+    // Fee Keys sent to a slice recipient leave the launch wallet for good, so
+    // each recipient must be a proven wallet, like the final sweep.
+    const feeKeyRecipients = [...new Set((Array.isArray(allocations) ? allocations : [])
+      .flatMap((allocation) => (Array.isArray(allocation?.distribution) ? allocation.distribution : []))
+      .map((slice) => String(slice?.recipient || '').trim())
+      .filter(Boolean))];
+    if (feeKeyRecipients.length) {
+      const funder = (await findFundingWallet(walletPublicKey).catch(() => null))?.funder || null;
+      for (const recipient of feeKeyRecipients) {
+        const reason = unsafeSweepDestinationReason(recipient, { launchWallet: walletPublicKey })
+          || await unverifiedDestinationReason(recipient, walletPublicKey, { funder });
+        if (reason) {
+          walletPublicKey = null;
+          return res.status(400).json({ success: false, error: `Refusing to send Fee Keys: ${reason}` });
+        }
+      }
+    }
     // Per-wallet mutex: reject if any other launch operation is running
     // for this wallet (a prior create-lp that's still going after a
     // renderer reload, a transfer, an acquire job). See the long comment
@@ -7713,6 +7765,20 @@ function validateTransferAirdropPayload(airdrop) {
   });
 }
 
+// Launch assets only go to a proven wallet: the one that funded the launch
+// wallet (on-chain), or one that signed a Trebuchet challenge. Returns why an
+// address is not allowed, or null.
+async function unverifiedDestinationReason(address, launchWallet, { funder } = {}) {
+  const destination = String(address || '').trim();
+  if (!destination) return 'No destination.';
+  if (destinationProofStore.isSignedDestination(destination)) return null;
+  const fundingWallet = funder !== undefined
+    ? funder
+    : (await findFundingWallet(launchWallet).catch(() => null))?.funder || null;
+  if (fundingWallet && fundingWallet === destination) return null;
+  return `${destination} is not verified. Launch assets only go to the wallet that funded the launch wallet, or to a wallet that has signed in Trebuchet.`;
+}
+
 async function transferAssetsHandler(req, res) {
   if (isDemoMode()) {
     return demoChainService.handleTransferAssets(req, res, {
@@ -7759,21 +7825,29 @@ async function transferAssetsHandler(req, res) {
 
     // No return wallet set: everything goes back to the wallet that funded
     // the launch wallet. Never sweep to a guess.
+    let resolvedFromFunder = false;
     if (!destinationWallet) {
       const funding = await findFundingWallet(walletPublicKey).catch(() => null);
       destinationWallet = String(funding?.funder || '').trim();
       if (!destinationWallet) {
         return res.status(400).json({
           success: false,
-          error: 'destinationWallet required: no return wallet is set and the wallet that funded this launch wallet could not be found. Set a return wallet and retry.',
+          error: 'destinationWallet required: no return wallet is set and the wallet that funded this launch wallet could not be found. Sign with your wallet in Trebuchet, then retry.',
         });
       }
+      resolvedFromFunder = true;
       console.log('No return wallet set; returning assets to the funding wallet:', destinationWallet);
     }
     // Last line of defense: this is where assets actually leave the wallet.
     const unsafeDestination = unsafeSweepDestinationReason(destinationWallet, { launchWallet: walletPublicKey });
     if (unsafeDestination) {
       return res.status(400).json({ success: false, error: `Refusing to sweep: ${unsafeDestination}` });
+    }
+    const unverifiedDestination = resolvedFromFunder
+      ? null
+      : await unverifiedDestinationReason(destinationWallet, walletPublicKey);
+    if (unverifiedDestination) {
+      return res.status(400).json({ success: false, error: `Refusing to sweep: ${unverifiedDestination}` });
     }
 
     console.log('Transferring assets to:', destinationWallet);

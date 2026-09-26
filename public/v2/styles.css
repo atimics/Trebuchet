@@ -17329,3 +17329,50 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   width: 16px;
   height: 16px;
 }
+
+/* Return wallet: proven by funding or by signature, never typed. */
+.return-wallet {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.return-wallet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.return-wallet > strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.return-wallet code {
+  color: var(--muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.return-wallet small,
+.return-wallet-note {
+  margin: 0;
+  color: var(--subtle);
+  font-size: 11px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.return-wallet-warning {
+  margin: 0;
+  color: var(--red);
+  font-size: 12px;
+}

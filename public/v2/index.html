@@ -413,19 +413,10 @@
                     <input id="ladderBands" type="number" value="0" min="0" max="20" step="1">
                     <input id="supportSol" type="number" value="0" min="0" step="0.05">
                     <div class="pool-editor-panel" id="poolEditorPanel"></div>
+                    <input id="sweepDestination" type="hidden" value="">
+                    <input id="feeKeyRecipient" type="hidden" value="">
                   </div>
-                  <label class="payout-wallet">
-                    <span>Return wallet <em>optional</em></span>
-                    <input id="sweepDestination" type="text" value="" placeholder="Funding wallet" autocomplete="off" spellcheck="false">
-                    <small id="payoutHint">Blank sends team tokens, LP fee keys, and leftover SOL back to the wallet that funds the launch.</small>
-                  </label>
-                  <details class="fee-key-override">
-                    <summary>Send LP fee keys to a different wallet</summary>
-                    <label>
-                      <span>Fee Key owner</span>
-                      <input id="feeKeyRecipient" type="text" value="" placeholder="Same as return wallet" autocomplete="off" spellcheck="false">
-                    </label>
-                  </details>
+                  <section class="return-wallet" id="returnWalletCard" aria-label="Return wallet"></section>
                 </form>
 
                 <details class="drawer-section" id="airdropSection" aria-label="Airdrop CSV import">

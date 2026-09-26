@@ -687,6 +687,11 @@
       return request(SAVED_LAUNCHES_PATH, { method: 'GET' });
     }
 
+    async function listDestinations(launchWallet = '') {
+      const query = launchWallet ? `?launchWallet=${encodeURIComponent(launchWallet)}` : '';
+      return request(`/api/v2/destinations${query}`);
+    }
+
     async function saveLaunch({ id = null, name = null, config }) {
       return request(SAVED_LAUNCHES_PATH, {
         method: 'POST',
@@ -1053,6 +1058,7 @@
       estimateClassicFunding,
       executeNextRunOperation,
       findFundingWallet,
+      listDestinations,
       getClmmFeeTiers,
       getQuoteTokenInfo,
       getAirdropProgress,
