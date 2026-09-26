@@ -2,7 +2,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
 const views = {
-  launch: { eyebrow: 'Launch in five steps', title: 'Launch a token' },
+  launch: { eyebrow: '', title: 'Launch a token' },
   wallet: { eyebrow: 'Wallet', title: 'Signer & asset custody' },
   discovery: { eyebrow: 'Tokens & wallets', title: 'Discovery' },
   history: { eyebrow: 'History', title: 'Execution journal' },
@@ -2212,6 +2212,37 @@ function parsePercentInput(value, fallback = 0) {
 function parsePositiveInteger(value, fallback = 0) {
   const parsed = Math.floor(parseNumericInput(value, fallback));
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+// The most recent completed journal for the launch being edited: same token
+// identity. Survives restarts (journals are on disk), unlike browser proof.
+function completedLaunchJournal(config = currentLaunchConfig()) {
+  const token = config?.token || {};
+  const same = (journal) => {
+    const other = journal?.launchConfig?.token || {};
+    return String(other.symbol || '').toUpperCase() === String(token.symbol || '').toUpperCase()
+      && String(other.name || '') === String(token.name || '');
+  };
+  return (state.recovery?.journals || [])
+    .filter((journal) => String(journal?.status || '').toLowerCase() === 'completed' && journal?.token?.mint && same(journal))
+    .sort((a, b) => Date.parse(b.completedAt || b.updatedAt || 0) - Date.parse(a.completedAt || a.updatedAt || 0))[0] || null;
+}
+
+function renderLaunchCompleteCard(journal) {
+  const transfer = journal.transfer || {};
+  const facts = [
+    ['Token', journal.token.mint],
+    ['Returned to', transfer.destinationWallet || '—'],
+    ['SOL returned', Number.isFinite(Number(transfer.solTransferred)) ? `${Number(transfer.solTransferred).toFixed(4)} SOL` : '—'],
+    ['Fee Keys', transfer.nftsTransferred ?? '—'],
+  ];
+  return `
+    <section class="launch-complete-card">
+      <span class="eyebrow">Launch complete</span>
+      <strong>${escapeHtml(journal.launchConfig?.token?.name || 'Token')} is live</strong>
+      <dl>${facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd><code>${escapeHtml(String(value))}</code></dd></div>`).join('')}</dl>
+      <small>Completed ${escapeHtml(new Date(journal.completedAt || journal.updatedAt).toLocaleString())}. Nothing left to fund or sweep.</small>
+    </section>`;
 }
 
 function isTerminalJournal(journal) {
@@ -5699,7 +5730,6 @@ function launchBudgetRecommendation(value) {
       supportSol: 0,
       ladderBands: 0,
       structure: '1 simple market',
-      riskPosture: 'Add liquidity later',
     };
   }
   if (budgetSol <= 1) {
@@ -5711,7 +5741,6 @@ function launchBudgetRecommendation(value) {
       supportSol: 0,
       ladderBands: 0,
       structure: '1 core band',
-      riskPosture: 'Maximum minimalism',
     };
   }
   if (budgetSol < 50) {
@@ -5724,7 +5753,6 @@ function launchBudgetRecommendation(value) {
       supportSol,
       ladderBands: 1,
       structure: '3 purposeful bands',
-      riskPosture: 'Trebuchet recommended',
     };
   }
   const supportSol = Number((budgetSol * 0.15).toFixed(4));
@@ -5736,7 +5764,6 @@ function launchBudgetRecommendation(value) {
     supportSol,
     ladderBands: 1,
     structure: '3 deep bands',
-    riskPosture: 'Depth over complexity',
   };
 }
 
@@ -5753,7 +5780,7 @@ function renderLaunchBudgetRecommendation() {
     <span class="recommended-band"><small>Recommended band</small><strong>${escapeHtml(strategy.label)}</strong></span>
     <span><small>Core liquidity</small><strong>${fmtSol(strategy.coreSol)}</strong></span>
     <span><small>Structure</small><strong>${escapeHtml(strategy.structure)}</strong></span>
-    <span><small>Defensive support</small><strong>${strategy.supportSol > 0 ? fmtSol(strategy.supportSol) : strategy.riskPosture}</strong></span>
+    <span><small>Buy support</small><strong>${strategy.supportSol > 0 ? fmtSol(strategy.supportSol) : 'None'}</strong></span>
   `;
   target.title = strategy.detail;
 }
@@ -6637,7 +6664,12 @@ function renderLaunchIdentity() {
   const mintLabel = model.mint ? shortAddress(model.mint) : 'Mint address pending';
   const phaseDetail = `${model.phase.title} / ${model.status}`;
 
-  if (dock) {
+  // The sidebar card and header chip already show the token; the large dock
+  // only appears on the first step, where the artwork is being set.
+  if (dock && !hero) {
+    dock.hidden = true;
+    dock.innerHTML = '';
+  } else if (dock) {
     dock.hidden = false;
     dock.className = `launch-identity-dock ${hero ? 'is-hero' : 'is-compact'} ${animated ? 'is-animated' : ''}`;
     dock.style.setProperty('--identity-progress', `${Math.max(0, Math.min(100, model.progress)) * 3.6}deg`);
@@ -14630,6 +14662,7 @@ function renderClassicBridge() {
   const revealCanRun = canExecuteNext && readiness?.nextEndpoint === '/api/reveal-sealed-metadata';
   const finishCanRun = canExecuteNext && readiness?.nextEndpoint === '/api/transfer-assets';
   const finishReturn = returnWalletStatus();
+  const completedJournal = completedLaunchJournal(config);
   const finishDestinationReady = finishReturn.kind !== 'unverified'
     && Boolean(finishReturn.address)
     && finishReturn.address !== walletPublicKey;
@@ -14710,6 +14743,7 @@ function renderClassicBridge() {
       && Boolean(finalizationIssue)
       && /report|dossier|proof/i.test(String(finalizationIssue));
     const recoveryDoesNotNeedFreshEstimate = [
+      '/api/create-lp', // only ever next after the token exists
       '/api/finish-token-creation',
       '/api/resume-launch',
       '/api/reveal-sealed-metadata',
@@ -14803,9 +14837,7 @@ function renderClassicBridge() {
       <section class="launch-step-guide" aria-labelledby="walletStepTitle">
         <div>
           <h2 id="walletStepTitle">Launch wallet</h2>
-          <p>A temporary signer for this launch.</p>
         </div>
-        <aside><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>Your wallet only funds and receives the final sweep.</span></aside>
       </section>
       <button class="launch-wallet-choice ${walletReady ? 'is-ready' : 'needs-action'}" type="button" data-action="unlock-wallet-and-continue" aria-label="${walletReady ? 'Continue with' : 'Unlock'} ${escapeHtml(walletPublicKey ? selectedWallet.name : 'a launch wallet')}">
         <span class="launch-wallet-choice-icon"><i class="fa-solid ${walletPublicKey ? 'fa-key' : 'fa-wallet'}"></i></span>
@@ -14831,11 +14863,10 @@ function renderClassicBridge() {
       <section class="launch-step-guide" aria-labelledby="fundStepTitle">
         <div>
           <h2 id="fundStepTitle">Fund</h2>
-          <p>Estimate, send, then verify.</p>
         </div>
-        <aside><i class="fa-solid ${fundingReady ? 'fa-circle-check' : 'fa-arrow-down'}" aria-hidden="true"></i><span>${escapeHtml(fundingReady ? 'Funding verified.' : 'No funds move during estimation.')}</span></aside>
+        ${fundingReady ? '<aside><i class="fa-solid fa-circle-check" aria-hidden="true"></i><span>Funding verified.</span></aside>' : ''}
       </section>
-      ${finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
+      ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
       ${estimate && (routeCount || manualQuoteCount) ? `<details class="drawer funding-extra" open><summary><span>Pair tokens</span><strong>${routeCount + manualQuoteCount} item${routeCount + manualQuoteCount === 1 ? '' : 's'}</strong></summary>${renderQuoteAcquirePanel()}</details>` : ''}
       <div class="launch-phase-actions launch-phase-actions-split">
         <button class="text-button" type="button" data-launch-workspace="configure"><i class="fa-solid fa-arrow-left"></i><span>Token &amp; pools</span></button>
@@ -14874,15 +14905,14 @@ function renderClassicBridge() {
       <section class="launch-step-guide irreversible" aria-labelledby="liquidityStepTitle">
         <div>
           <h2 id="liquidityStepTitle">Create &amp; lock liquidity</h2>
-          <p>Creates the saved pools and locks every position.</p>
         </div>
         <aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Permanent.</strong> Interrupted runs resume missing work only.</span></aside>
       </section>
       <div class="launch-fact-grid">
         <span><small>Pools</small><strong>${poolCount}</strong></span>
-        <span><small>Main slices</small><strong>${sliceCount}</strong></span>
-        <span><small>Ladder bands</small><strong>${ladderCount}</strong></span>
-        <span><small>Support</small><strong>${topology.pools.some((pool) => pool.support?.enabled) ? 'On' : 'Off'}</strong></span>
+        <span><small>Positions</small><strong>${sliceCount}</strong></span>
+        ${ladderCount ? `<span><small>Extra price bands</small><strong>${ladderCount}</strong></span>` : ''}
+        ${topology.pools.some((pool) => pool.support?.enabled) ? '<span><small>Buy support</small><strong>On</strong></span>' : ''}
       </div>
       ${readinessPanel({
         title: metadataRevealPending ? 'Reveal the committed token identity' : liquidityComplete ? 'Liquidity and lock proof recorded' : 'Create and lock liquidity',
@@ -14910,7 +14940,8 @@ function renderClassicBridge() {
         </div>
         <aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Proof is ready.' : !finishDestinationReady ? 'Return wallet not proven yet.' : finishCanRun ? 'Ready for final sweep.' : 'Resolve the requirement below.'}</span></aside>
       </section>
-      ${!finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
+      ${completedJournal && !finalSweepComplete ? renderLaunchCompleteCard(completedJournal) : ''}
+      ${!completedJournal && !finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
       ${!finalSweepComplete && finishDestinationReady ? readinessPanel({
         title: 'Finish distribution and sweep',
         detail: 'The destination is checked again before Trebuchet transfers Fee Keys, airdrops, token balances, and SOL.',
@@ -15686,8 +15717,12 @@ function fundingEstimateAllocationsForTopology(topology = {}) {
   const pools = Array.isArray(topology.pools) ? topology.pools : [];
   return pools.map((pool) => {
     const quoteDecimalsOverride = optionalDecimals(pool.quoteDecimalsOverride ?? pool.quoteDecimals);
-    const quoteUsdOverride = Number.isFinite(Number(pool.quoteUsdOverride ?? pool.quotePriceUsd)) && Number(pool.quoteUsdOverride ?? pool.quotePriceUsd) > 0
-      ? Number(pool.quoteUsdOverride ?? pool.quotePriceUsd)
+    // Only a hand-set price is part of the plan. The live price from the
+    // pair-token check changes every minute; including it made every
+    // re-check mark the estimate stale (and mid-launch, sent the user back
+    // to Fund). The server probes live prices itself.
+    const quoteUsdOverride = Number.isFinite(Number(pool.quoteUsdOverride)) && Number(pool.quoteUsdOverride) > 0
+      ? Number(pool.quoteUsdOverride)
       : undefined;
     return {
       quoteToken: pool.quoteToken,
@@ -18867,7 +18902,14 @@ function renderHistoryPanes() {
   });
 }
 
+function renderLaunchRunningBar() {
+  const bar = $('#launchRunningBar');
+  if (bar) bar.hidden = state.realExecutionRunning !== true;
+  document.body.dataset.launchRunning = state.realExecutionRunning === true ? 'true' : 'false';
+}
+
 function renderAll() {
+  renderLaunchRunningBar();
   renderCustodySignal();
   renderLaunchPreview();
   renderLaunchIdentity();
@@ -22236,6 +22278,7 @@ async function executeNextRunOperation() {
   }
 
   state.realExecutionRunning = true;
+  renderLaunchRunningBar();
   const ledgerId = startExecutionLedgerEntry({
     kind: 'endpoint',
     endpoint: readiness.nextEndpoint,
@@ -22302,6 +22345,7 @@ async function executeNextRunOperation() {
     notify(error.message || 'Execution failed');
   } finally {
     state.realExecutionRunning = false;
+    renderLaunchRunningBar();
     renderAll();
   }
 }
@@ -22784,7 +22828,13 @@ async function runLaunchEnvelope() {
     await stageTransactions({ openApproval: true, announce: false });
     return;
   }
-  const fundingEstimate = recoveryEndpoint ? null : currentClassicFundingEstimateForConfig(config);
+  // Once the token exists (next step is liquidity or later), funding is
+  // committed: arm with the estimate the launch started from, never send
+  // the user back to Fund to re-estimate from half-spent balances.
+  const midLaunch = state.executionReadiness?.nextEndpoint === '/api/create-lp';
+  const fundingEstimate = recoveryEndpoint
+    ? null
+    : currentClassicFundingEstimateForConfig(config) || (midLaunch ? state.classicFundingEstimate : null);
   if (!recoveryEndpoint && !fundingEstimate) {
     notify('Run a current funding estimate before arming');
     setLaunchWorkspace('fund', { focus: true });

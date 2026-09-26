@@ -2188,7 +2188,6 @@ test('v2 launch page presents an agentic control panel instead of instruction wa
   assert.match(combined, /data-action="discard-wallet"/);
   assert.match(combined, /Ready to build the launch plan/);
   assert.match(combined, /Next move/);
-  assert.match(combined, /Six guided phases/);
   assert.match(combined, /Trebuchet holds the launch key locally/);
   assert.match(combined, /Review run plan/);
   assert.match(combined, /Guided launch/);
@@ -2231,7 +2230,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="launchSettingsEnvironment"/);
   assert.match(html, /id="launchSettingsExperience"/);
   assert.match(combined, /Launch wallet/);
-  assert.match(combined, /Estimate, send, then verify/);
+  assert.doesNotMatch(combined, /Estimate, send, then verify/);
   assert.match(combined, /I funded it · check balance/);
   assert.match(combined, /finishReturn\.kind === 'unverified' \? renderFundingWalletHint\(\{ compact: true \}\) : fundingPanel/);
   assert.match(combined, /class="drawer phase-options"/);
@@ -11275,7 +11274,7 @@ test('completed liquidity recovery opens Finish without replaying resume or fund
   assert.match(js, /state\.launchWorkspace = 'finish'/);
   assert.match(js, /function recoveryAuthorizationEndpoint\(\)/);
   assert.match(js, /function stageRecoveryAuthorization/);
-  assert.match(js, /const fundingEstimate = recoveryEndpoint \? null/);
+  assert.match(js, /const fundingEstimate = recoveryEndpoint\s*\?\s*null/);
   assert.match(js, /title: 'Finish launch'/);
   assert.match(js, /Final saved step/);
   assert.match(js, /Arming sends nothing/);

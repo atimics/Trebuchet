@@ -146,6 +146,12 @@ function writeCacheStatic(mint, { symbol, decimals, programId, name, uri }) {
 //
 // Stored under separate keys (friendlyName / imageUrl) to avoid colliding
 // with the on-chain name/uri tracked by writeCacheStatic.
+// Logo/name lookups are cosmetic and public gateways rate-limit them (HTTP
+// 429) routinely; log failures only with TREBUCHET_DEBUG_TOKEN_INFO=1.
+function displayMetaDebug(message) {
+  if (process.env.TREBUCHET_DEBUG_TOKEN_INFO === '1') console.warn(message);
+}
+
 function writeCacheDisplayMeta(mint, { imageUrl, name }) {
   const existing = cache.get(mint) || {};
   cache.set(mint, {
@@ -621,9 +627,7 @@ async function fetchDisplayMetaFromMetaplexUri(uri) {
       signal: controller.signal,
     });
     if (!resp.ok) {
-      console.warn(
-        `tokenInfoService: Metaplex URI HTTP ${resp.status} for ${url}`,
-      );
+      displayMetaDebug(`tokenInfoService: Metaplex URI HTTP ${resp.status} for ${url}`);
       return null;
     }
     const json = await resp.json();
@@ -645,9 +649,9 @@ async function fetchDisplayMetaFromMetaplexUri(uri) {
     // AbortError is the timeout case; everything else is network or
     // JSON-parse error. We treat all the same — fall through to indexers.
     if (e.name !== 'AbortError') {
-      console.warn(`tokenInfoService: Metaplex URI fetch error for ${url}:`, e.message);
+      displayMetaDebug(`tokenInfoService: Metaplex URI fetch error for ${url}: ${e.message}`);
     } else {
-      console.warn(`tokenInfoService: Metaplex URI timeout for ${url}`);
+      displayMetaDebug(`tokenInfoService: Metaplex URI timeout for ${url}`);
     }
     return null;
   } finally {
@@ -708,9 +712,7 @@ async function fetchDisplayMetaFromGecko(mintAddress) {
     });
     if (!resp.ok) {
       if (resp.status >= 500 || resp.status === 429) {
-        console.warn(
-          `tokenInfoService: GeckoTerminal /info HTTP ${resp.status} for ${mintAddress}`,
-        );
+        displayMetaDebug(`tokenInfoService: GeckoTerminal /info HTTP ${resp.status} for ${mintAddress}`);
       }
       return null;
     }

@@ -17536,3 +17536,71 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   padding-left: 16px;
   color: var(--ink);
 }
+
+/* Live run in progress: always visible, bottom of the window. */
+.launch-running-bar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: color-mix(in srgb, var(--red) 88%, #000);
+  color: #fff;
+  font-size: 13px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+body[data-launch-running="true"] .workspace {
+  padding-bottom: 48px;
+}
+
+/* A finished launch replaces the funding/sweep panels. */
+.launch-complete-card {
+  display: grid;
+  gap: 8px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--green) 55%, var(--line));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--green) 6%, var(--panel));
+}
+
+.launch-complete-card > strong {
+  color: var(--ink);
+  font-size: 18px;
+}
+
+.launch-complete-card dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.launch-complete-card dt {
+  color: var(--subtle);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.launch-complete-card dd {
+  margin: 2px 0 0;
+  word-break: break-all;
+}
+
+.launch-complete-card small {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.eyebrow:empty {
+  display: none;
+}

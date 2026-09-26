@@ -51,6 +51,7 @@ export function classifySwapError(err) {
 
   if (
     msg.includes('blockhash') ||
+    msg.includes('block height exceeded') ||
     msg.includes('timeout') ||
     msg.includes('timed out') ||
     msg.includes('aborted') ||

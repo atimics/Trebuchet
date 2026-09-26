@@ -652,6 +652,15 @@ const __dirname = path.dirname(__filename);
 const AUTOSWAP_CONCURRENCY = 1;
 
 export function createLocalApiApp() {
+// The Raydium SDK prints every simulated transaction ("simulate tx
+// string: [<base64>...]") with a bare console.log. It is noise in the app
+// log; drop just that message.
+const sdkConsoleLog = console.log.bind(console);
+console.log = (...args) => {
+  if (args[0] === 'simulate tx string:') return;
+  sdkConsoleLog(...args);
+};
+
 const app = express();
 installServerLogCapture();
 
@@ -7055,7 +7064,7 @@ async function createLpHandler(req, res) {
     } = req.body;
 
     console.log('Creating LP for token:', tokenMint);
-    console.log('Allocations:', JSON.stringify(allocations, null, 2));
+    console.log(`Allocations: ${(allocations || []).map((allocation) => `${allocation.quoteSymbolOverride || allocation.quoteToken || '?'} ${allocation.supplyPercent}%`).join(', ')}`);
 
     if (await rejectIfTokenIncompleteForLiquidity(res, {
       tokenMint,

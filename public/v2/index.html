@@ -56,11 +56,8 @@
     <main class="workspace">
       <section class="terminal-tape" aria-label="Trebuchet terminal status">
         <span class="terminal-ident"><i aria-hidden="true"></i><strong>TREBUCHET</strong></span>
-        <span><small>CHAIN</small><strong>SOLANA</strong></span>
         <span><small>ENV</small><strong id="environmentLabel">CHECKING</strong></span>
-        <span><small>SIGNER</small><strong>LOCAL</strong></span>
-        <span class="terminal-tape-wide"><small>CUSTODY SIGNAL</small><strong id="custodySignalLabel">CHECKING ENVIRONMENT</strong></span>
-        <span class="terminal-tape-end"><small>KEY CUSTODY</small><strong>ON DEVICE</strong></span>
+        <span class="terminal-tape-wide"><small>CUSTODY</small><strong id="custodySignalLabel">CHECKING ENVIRONMENT</strong></span>
       </section>
       <header class="topbar">
         <div class="topbar-copy">
@@ -71,7 +68,7 @@
               <small>makesometokens.com</small>
             </span>
           </span>
-          <span class="eyebrow" id="viewEyebrow">Six guided phases</span>
+          <span class="eyebrow" id="viewEyebrow"></span>
           <h1 id="viewTitle">Launch a token</h1>
         </div>
         <div class="topbar-actions">
@@ -91,7 +88,7 @@
       <section class="view is-active" id="view-launch" aria-labelledby="viewTitle">
         <div class="launch-grid launch-cockpit">
           <section class="surface surface-main" aria-label="Trebuchet launch mechanism">
-            <div class="section-heading cockpit-heading">
+            <div class="section-heading cockpit-heading" hidden>
               <div>
                 <span class="eyebrow">Token being launched</span>
                 <h2 id="launchName">Untitled token launch</h2>
@@ -707,6 +704,10 @@
         </div>
       </section>
     </main>
+    <div class="launch-running-bar" id="launchRunningBar" role="status" aria-live="polite" hidden>
+      <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
+      <span><strong>Launch in progress.</strong> Keep Trebuchet open. Funding figures are frozen until it finishes.</span>
+    </div>
   </div>
 
   <section class="recovery-pin-gate" id="recoveryPinGate" role="dialog" aria-modal="true" aria-labelledby="recoveryPinTitle" aria-describedby="recoveryPinDetail recoveryPinMessage" aria-hidden="true" data-status="idle" hidden>
