@@ -66,6 +66,9 @@
 #include "tweetnacl.h" /* portable fallback; libsodium builds do not link it */
 #endif
 #include "base58.h"
+/* ref10 field/group arithmetic (vendor/ed25519-ref10) for the split-key walk. */
+#include "ge.h"
+#include "precomp_data.h" /* Bi[0] is the base point G in precomputed form */
 
 #if defined(TREBUCHET_SODIUM)
 #include <sodium.h>
@@ -232,6 +235,10 @@ typedef struct {
     int          suffix_len;
     int          case_sensitive;
     int          address_length;   /* 0 = any length */
+    /* Split-key mode: walk A + k*G for a customer point A; report k only. */
+    int          split_mode;
+    ge_p3        split_A;
+    uint8_t      result_offset[32];
     atomic_ullong total_attempts;
     atomic_int   running_threads;
     uint8_t      master_seed[32];
@@ -367,6 +374,132 @@ static inline void progress_sample(grind_state_t *gs, const uint8_t pk[32]) {
         base58_encode(pk, 32, gs->last_pk, sizeof(gs->last_pk));
         atomic_store_explicit(&gs->last_pk_ready, 1, memory_order_release);
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Split-key walk                                                      */
+/* ------------------------------------------------------------------ */
+
+/* The customer keeps a secret scalar a and gives us A = a*G. We search
+ * offsets k until A + k*G encodes to the target, and report only k: the
+ * mint's secret a + k never exists here. Each step is one mixed point
+ * addition (P += G); SPLIT_BATCH points share one field inversion
+ * (Montgomery's trick) for the affine encoding. */
+#define SPLIT_BATCH 256
+
+static void add_u64_le(uint8_t out[32], const uint8_t base[32], uint64_t add) {
+    unsigned int carry = 0;
+    for (int i = 0; i < 32; i++) {
+        unsigned int sum = (unsigned int)base[i] + (unsigned int)(add & 0xFF) + carry;
+        out[i] = (uint8_t)sum;
+        carry = sum >> 8;
+        add >>= 8;
+    }
+}
+
+static void *split_walk_thread(void *arg) {
+    thread_arg_t *ta = (thread_arg_t *)arg;
+    grind_state_t *gs = ta->state;
+    (void)base; /* precomp_data.h also defines the full base table */
+
+    /* Independent random start per thread. k0 < 2^254 keeps k0 + index
+     * below 2^255, as ge_scalarmult_base requires. */
+    uint8_t k0[32];
+    if (getentropy(k0, 32) != 0) {
+        atomic_fetch_sub(&gs->running_threads, 1);
+        return NULL;
+    }
+    k0[31] &= 0x3F;
+
+    ge_p3 K, P;
+    ge_cached kc;
+    ge_p1p1 t;
+    ge_scalarmult_base(&K, k0);
+    ge_p3_to_cached(&kc, &K);
+    ge_add(&t, &gs->split_A, &kc);
+    ge_p1p1_to_p3(&P, &t);
+
+    ge_p3 pts[SPLIT_BATCH];
+    fe acc[SPLIT_BATCH];
+    fe zinv, zj, x, y;
+    uint8_t pk[32];
+    char b58[48];
+    uint64_t index = 0;
+    uint64_t local_attempts = 0;
+    int use_fast = gs->use_fast_match;
+
+    while (!atomic_load_explicit(&gs->found, memory_order_relaxed)) {
+        for (int j = 0; j < SPLIT_BATCH; j++) {
+            pts[j] = P;
+            ge_madd(&t, &P, &Bi[0]);
+            ge_p1p1_to_p3(&P, &t);
+        }
+        fe_copy(acc[0], pts[0].Z);
+        for (int j = 1; j < SPLIT_BATCH; j++) fe_mul(acc[j], acc[j - 1], pts[j].Z);
+        fe_invert(zinv, acc[SPLIT_BATCH - 1]);
+
+        for (int j = SPLIT_BATCH - 1; j >= 0; j--) {
+            if (j > 0) {
+                fe_mul(zj, zinv, acc[j - 1]);   /* 1 / Z_j */
+                fe_mul(zinv, zinv, pts[j].Z);   /* 1 / (Z_0 ... Z_{j-1}) */
+            } else {
+                fe_copy(zj, zinv);
+            }
+            fe_mul(x, pts[j].X, zj);
+            fe_mul(y, pts[j].Y, zj);
+            fe_tobytes(pk, y);
+            pk[31] ^= (uint8_t)(fe_isnegative(x) << 7);
+
+            int matched = 0;
+            if (use_fast) {
+                uint64_t rem = pk_mod64(pk, gs->fast_mod);
+                int hit = 0;
+                for (int v = 0; v < gs->fast_num_variants; v++) {
+                    if (rem == gs->fast_target_vals[v]) { hit = 1; break; }
+                }
+                if (hit) {
+                    size_t b58_len = base58_encode(pk, 32, b58, sizeof(b58));
+                    matched = b58_len > 0 && check_match(b58, b58_len, gs->prefix, gs->prefix_len,
+                                                         gs->suffix, gs->suffix_len,
+                                                         gs->case_sensitive, gs->address_length);
+                }
+            } else {
+                size_t b58_len = base58_encode(pk, 32, b58, sizeof(b58));
+                matched = b58_len > 0 && check_match(b58, b58_len, gs->prefix, gs->prefix_len,
+                                                     gs->suffix, gs->suffix_len,
+                                                     gs->case_sensitive, gs->address_length);
+            }
+            if (matched) {
+                bool expected = false;
+                if (atomic_compare_exchange_strong(&gs->found, &expected, true)) {
+                    memcpy(gs->result_pk, pk, 32);
+                    add_u64_le(gs->result_offset, k0, index + (uint64_t)j);
+                    base58_encode(pk, 32, gs->result_b58, sizeof(gs->result_b58));
+                }
+                break;
+            }
+        }
+        if ((index & 0xFFFF) == 0) progress_sample(gs, pk);
+        index += SPLIT_BATCH;
+        local_attempts += SPLIT_BATCH;
+        if (local_attempts >= FLUSH_INTERVAL) {
+            atomic_fetch_add(&gs->total_attempts, local_attempts);
+            local_attempts = 0;
+        }
+    }
+    if (local_attempts > 0) atomic_fetch_add(&gs->total_attempts, local_attempts);
+    atomic_fetch_sub(&gs->running_threads, 1);
+    return NULL;
+}
+
+static int hex_to_bytes32(const char *hex, uint8_t out[32]) {
+    if (!hex || strlen(hex) != 64) return -1;
+    for (int i = 0; i < 32; i++) {
+        unsigned int v;
+        if (sscanf(hex + 2 * i, "%2x", &v) != 1) return -1;
+        out[i] = (uint8_t)v;
+    }
+    return 0;
 }
 
 static void *grind_thread(void *arg) {
@@ -505,6 +638,8 @@ static void print_usage(const char *prog) {
         "  --out FILE            Output JSON keypair file (default: stdout)\n"
         "  --case-insensitive    Case-insensitive matching\n"
         "  --length N            Only accept addresses of exactly N characters (32-44)\n"
+        "  --split-point HEX     Split-key mode: search offsets k for the customer point\n"
+        "                        A (64 hex chars); outputs k, never a secret key\n"
         "  --quiet               Suppress progress output\n"
         "\n"
         "Output JSON:\n"
@@ -588,6 +723,7 @@ int main(int argc, char **argv) {
     int thread_count = 0;
     int case_sensitive = 1;
     int address_length = 0;
+    const char *split_point_hex = NULL;
     int quiet = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -601,6 +737,8 @@ int main(int argc, char **argv) {
             out_path = argv[++i];
         } else if (strcmp(argv[i], "--case-insensitive") == 0) {
             case_sensitive = 0;
+        } else if (strcmp(argv[i], "--split-point") == 0 && i + 1 < argc) {
+            split_point_hex = argv[++i];
         } else if (strcmp(argv[i], "--length") == 0 && i + 1 < argc) {
             address_length = atoi(argv[++i]);
             if (address_length < 32 || address_length > 44) {
@@ -719,6 +857,27 @@ int main(int argc, char **argv) {
     gs.prefix            = prefix_str;
     gs.prefix_len        = prefix_len;
     gs.address_length    = address_length;
+    if (split_point_hex) {
+        /* Decode A. ref10 decodes to -A; negate back. Reject anything that
+         * does not round-trip to the same canonical encoding. */
+        uint8_t a_bytes[32], check[32];
+        ge_p3 neg;
+        if (hex_to_bytes32(split_point_hex, a_bytes) != 0
+            || ge_frombytes_negate_vartime(&neg, a_bytes) != 0) {
+            fprintf(stderr, "Error: --split-point must be a 64-hex-char Ed25519 point\n");
+            return 1;
+        }
+        fe_neg(gs.split_A.X, neg.X);
+        fe_copy(gs.split_A.Y, neg.Y);
+        fe_copy(gs.split_A.Z, neg.Z);
+        fe_neg(gs.split_A.T, neg.T);
+        ge_p3_tobytes(check, &gs.split_A);
+        if (memcmp(check, a_bytes, 32) != 0) {
+            fprintf(stderr, "Error: --split-point is not a canonical Ed25519 point\n");
+            return 1;
+        }
+        gs.split_mode = 1;
+    }
     gs.suffix            = suffix_str;
     gs.suffix_len        = suffix_len;
     gs.case_sensitive    = case_sensitive;
@@ -742,7 +901,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < thread_count; i++) {
         args[i].id = i;
         args[i].state = &gs;
-        pthread_create(&threads[i], NULL, grind_thread, &args[i]);
+        pthread_create(&threads[i], NULL, gs.split_mode ? split_walk_thread : grind_thread, &args[i]);
     }
 
     uint64_t last_attempts = 0;
@@ -800,12 +959,20 @@ int main(int argc, char **argv) {
     char json_buf[8192];
     int off = 0;
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "{");
-    off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "\"secretKey\":[");
-    for (int i = 0; i < 64; i++)
+    if (gs.split_mode) {
+        /* Only the offset: the key is a + k and a stays with the customer. */
+        off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "\"splitPoint\":\"%s\",\"offset\":\"", split_point_hex);
+        for (int i = 0; i < 32; i++)
+            off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "%02x", gs.result_offset[i]);
+        off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "\",\"publicKey\":\"%s\"", pk_b58_output);
+    } else {
+        off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off, "\"secretKey\":[");
+        for (int i = 0; i < 64; i++)
+            off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
+                            "%s%d", i > 0 ? "," : "", gs.result_sk[i]);
         off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
-                        "%s%d", i > 0 ? "," : "", gs.result_sk[i]);
-    off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
-        "],\"publicKey\":\"%s\"", pk_b58_output);
+            "],\"publicKey\":\"%s\"", pk_b58_output);
+    }
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
         ",\"attempts\":%llu", (unsigned long long)total_attempts);
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
