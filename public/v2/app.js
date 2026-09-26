@@ -7266,7 +7266,11 @@ function canAutoSaveLaunch(config) {
   // A launch allocation must actually be complete: dragging the vortex (or
   // clearing a field) must never auto-save a degenerate plan such as a single
   // SOL pool at 0%, which cannot be launched and loses the flywheel pairing.
-  const totalSupplyPercent = pools.reduce((sum, pool) => sum + Number(pool?.supplyPercent || 0), 0);
+  // Same total as Core's buildLaunchPlan: pools + team share + airdrop.
+  const topology = config?.poolTopology || {};
+  const totalSupplyPercent = pools.reduce((sum, pool) => sum + Number(pool?.supplyPercent || 0), 0)
+    + Number(topology.preallocation?.supplyPercent || 0)
+    + (topology.airdrop?.enabled ? Number(topology.airdrop.supplyPercent || 0) : 0);
   if (totalSupplyPercent < 99.5 || totalSupplyPercent > 100.5) return false;
   const solPool = pools.find((pool) => String(pool?.quoteSymbol || '').toUpperCase() === 'SOL');
   if (solPool && Number(solPool.supplyPercent || 0) <= 0) return false;
@@ -22637,6 +22641,7 @@ async function bootLocalApi() {
       },
     });
     renderAll();
+    refreshQuickLaunchPrice();
     return;
   }
 
@@ -22667,7 +22672,15 @@ async function bootLocalApi() {
     requestGuidedFundingEstimate().catch(() => null);
   }
   if (state.discovery.scanning) schedulePersonalDiscoveryPoll();
-  if (boot.api?.available) notify('Local API connected');
+  if (boot.api?.available) {
+    // The one-step card is the static web host's launcher. On the desktop it
+    // duplicates the guided launch and hides the saved launch below it.
+    const quickCard = $('.quick-launch-card');
+    if (quickCard) quickCard.hidden = true;
+    notify('Local API connected');
+  } else {
+    refreshQuickLaunchPrice();
+  }
 }
 
 async function refreshLocalApiState() {
@@ -23964,16 +23977,14 @@ function renderQuickLaunchCost() {
   if (!cost) return;
   const quote = $('#quickQuote')?.value || 'SOL';
   const ledger = quickLaunchLedger(quote);
-  const { bps, treasury } = quickFeeParams();
+  const { bps, treasury } = quickLaunchFeeParams();
   if (bps > 0) {
-    if (bps > 0) {
     ledger.lines.push({
       label: treasury
         ? `Swap fees ${(bps / 100).toFixed(2)}% → treasury`
         : 'Swap fees (% rate set)',
       sol: 0,
     });
-  }
   }
   const rows = ledger.lines.map((line) => (
     `<div class="quick-cost-row"><span>${escapeHtml(line.label)}</span><strong>${line.sol.toFixed(4)} SOL</strong></div>`
@@ -24174,7 +24185,6 @@ function bindEvents() {
   $('#quickFee')?.addEventListener('change', renderQuickLaunchCost);
   $('#quickTreasury')?.addEventListener('input', renderQuickLaunchCost);
   renderQuickLaunchCost();
-  refreshQuickLaunchPrice();
 
   $('#newVaultButton').addEventListener('click', () => {
     generateManagedWallet().catch((error) => notify(error.message || 'Wallet generation failed'));
