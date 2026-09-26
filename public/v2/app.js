@@ -7399,6 +7399,14 @@ function scheduleLaunchAutoSave() {
 }
 
 function renderVanityCandidates() {
+  // A running grind cannot change mode: lock the toggle to what is running.
+  const caseToggle = $('#vanityCaseInsensitive');
+  if (caseToggle) {
+    caseToggle.disabled = state.vanityRunning === true;
+    if (state.vanityRunning && state.vanityProgressStats) {
+      caseToggle.checked = state.vanityProgressStats.caseInsensitive === true;
+    }
+  }
   const selected = state.vanityCandidates.find((item) => item.publicKey === state.selectedVanityPublicKey) || null;
   const meta = vanityAvailabilityMeta();
   const vanity = currentVanityConfig();
@@ -21531,6 +21539,11 @@ async function startVanityGrind() {
           samples: [],
           caseInsensitive: data.caseInsensitive === true,
         };
+        // An older server ignores the flag and grinds exact case. Say so
+        // instead of silently running the slower grind.
+        if (vanity.caseInsensitive && data.caseInsensitive !== true) {
+          notify('This grind is exact case: the app server predates Any case. Quit and reopen Trebuchet, then grind again.');
+        }
       } else if (data.type === 'progress') {
         const attempts = Number(data.attempts || 0).toLocaleString();
         const pct = clampPercent(Number(data.epoch || 0) * 100);

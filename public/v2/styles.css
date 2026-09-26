@@ -17494,3 +17494,8 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   letter-spacing: normal;
   text-transform: none;
 }
+
+.vanity-case-toggle:has(input:disabled) {
+  cursor: default;
+  opacity: 0.6;
+}
