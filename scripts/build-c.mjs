@@ -18,7 +18,7 @@
 //   - Cross-compilation: builds for the host platform only.
 
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, chmodSync } from 'fs';
+import { existsSync, mkdirSync, chmodSync, renameSync, rmSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -113,6 +113,9 @@ function build(compiler) {
   // the same code path works on every platform.
   const outName = process.platform === 'win32' ? 'vanity_keygen.exe' : 'vanity_keygen';
   const outPath = path.join(buildDir, outName);
+  // Build beside the target, then rename over it: a grind already running
+  // keeps its old binary instead of crashing when the file is rewritten.
+  const tmpPath = path.join(buildDir, `.${outName}.building`);
 
   // Platform/arch-aware flags.
   //
@@ -198,7 +201,7 @@ function build(compiler) {
     '-Wall', '-Wextra', '-Wpedantic', '-Wno-sign-compare',
     // libsodium replaces tweetnacl entirely (their headers and randombytes clash).
     ...(sodium ? sources.filter((file) => !file.includes('tweetnacl')) : sources),
-    '-o', outPath,
+    '-o', tmpPath,
     ...includes.flatMap((i) => ['-I', i]),
     ...opensslLibs,
     ...linkLibs,
@@ -220,9 +223,11 @@ function build(compiler) {
     process.exit(1);
   }
   if (result.status !== 0) {
+    rmSync(tmpPath, { force: true });
     console.error(`\n${compiler} exited with status ${result.status}.`);
     process.exit(result.status || 1);
   }
+  renameSync(tmpPath, outPath);
 
   // On Unix, ensure the executable bit is set. The compiler sets it
   // automatically when -o targets a non-existent file, but on some
