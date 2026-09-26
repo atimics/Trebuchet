@@ -1,21 +1,29 @@
 // ===========================================================================
 // Initial state
 // ===========================================================================
-log('Trebuchet is ready. Click "Generate Wallet" to begin.');
-loadRpcConfig();
-startRpcHealthPolling();
-loadFeeTiers();
-bindStepHeaders();
-updateCancelButtonState();
-// Render the simple-config UI right away so it's visible from page load
-// (even before the user generates a wallet). The pool list inside the
-// customize-mode container starts empty and stays empty until pools[]
-// gets populated — by wallet generation, by recovery, or by manual add.
-applySimpleConfigMode();
-// Initial paint of the token-preview card. With the default values
-// pre-filled in the supply and market-cap inputs, the user sees the
-// placeholder name + a populated tech line right away.
-renderTokenPreview();
+// Defer all initialisation that makes fetch() calls until the event loop
+// settles. Calling fetch() during module evaluation can race with the
+// API session wrapper initialisation, freezing the renderer — the splash
+// video stalls on its first frame and the app becomes unresponsive.
+setTimeout(function () {
+  log('Trebuchet is ready. Click "Generate Wallet" to begin.');
+  loadRpcConfig();
+  startRpcHealthPolling();
+  loadLaunchJournals();
+  loadRecentLaunches();
+  loadFeeTiers();
+  bindStepHeaders();
+  updateCancelButtonState();
+  // Render the simple-config UI right away so it's visible from page load
+  // (even before the user generates a wallet). The pool list inside the
+  // customize-mode container starts empty and stays empty until pools[]
+  // gets populated — by wallet generation, by recovery, or by manual add.
+  applySimpleConfigMode();
+  // Initial paint of the token-preview card. With the default values
+  // pre-filled in the supply and market-cap inputs, the user sees the
+  // placeholder name + a populated tech line right away.
+  renderTokenPreview();
+}, 0);
 
 // ---------------------------------------------------------------------------
 // Tab-close / reload guard
@@ -1232,7 +1240,28 @@ function applyVanityAvailabilityUi(vanity) {
 
 setupSecretPinGate();
 
-// Final gate evaluation. setupDisclaimer(), setupSplashScreen(), and the
-// Recovery PIN gate have run by this point. If any of them gated itself,
-// this call is a no-op; the trigger will fire when the last blocker clears.
-_evaluateStartupGates();
+// Final gate evaluation. Both setupDisclaimer() and setupSplashScreen()
+// have run by this point. If either gated itself (showed a modal or
+// played the splash), the gate is currently false and this call is a
+// no-op — the trigger will fire later when the user dismisses
+// whichever is still blocking. If NEITHER gated (returning user +
+// splash element missing), both gates are still default-true and this
+// is the only place the trigger ever fires.
+setTimeout(function () {
+  _evaluateStartupGates();
+
+  // ── Devnet indicator ───────────────────────────────────────────────────
+
+  (function setupDevnetIndicator() {
+    fetch('/api/rpc-config/status')
+      .then(r => r.json())
+      .then(data => {
+        const isDevnet = data && data.network === 'devnet';
+        const banner = document.getElementById('devnetBanner');
+        const notice = document.getElementById('devnetFundingNotice');
+        if (banner) banner.style.display = isDevnet ? 'block' : 'none';
+        if (notice) notice.classList.toggle('hidden', !isDevnet);
+      })
+      .catch(() => {});
+  })();
+}, 0);

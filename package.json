@@ -49,6 +49,7 @@
     "test:electron:v2": "node test/e2e/electron-v2-smoke.mjs",
     "test:electron:v2:packaged": "node test/e2e/electron-v2-smoke.mjs --packaged",
     "test:v2:viewport": "node test/v2-viewport-smoke.mjs",
+    "devnet-launch": "node scripts/devnet-launch.mjs",
     "test:visual": "node scripts/visual-diff.mjs",
     "test:visual:golden": "node scripts/visual-diff.mjs --golden",
     "test:visual:golden:linux": "node scripts/visual-diff.mjs --golden --platform linux",
@@ -80,6 +81,7 @@
     "tokenService.js",
     "tokenInfoService.js",
     "tokenMetadataLayout.js",
+    "tokenRegistry.js",
     "lpService.js",
     "chainRetry.js",
     "lpMath.js",
@@ -197,6 +199,7 @@
       "tokenService.js",
       "tokenInfoService.js",
       "tokenMetadataLayout.js",
+      "tokenRegistry.js",
       "lpService.js",
       "chainRetry.js",
       "lpMath.js",
@@ -258,7 +261,8 @@
       "target": [
         "dmg"
       ],
-      "artifactName": "Trebuchet-${version}-${arch}.${ext}"
+      "artifactName": "Trebuchet-${version}-${arch}.${ext}",
+      "hardenedRuntime": false
     },
     "win": {
       "icon": "build/icon.ico",

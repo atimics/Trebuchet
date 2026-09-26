@@ -37,12 +37,13 @@ import {
   percentAmount,
   publicKey as umiPublicKey,
   none,
-  some
+  some,
+  createSignerFromKeypair,
 } from '@metaplex-foundation/umi';
 import QRCode from 'qrcode';
 import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
-import { getRpcUrl } from './rpcConfig.js';
+import { getRpcUrl, getNetwork } from './rpcConfig.js';
 import { generateVanityKeypair } from './vanityKeygen.js';
 import {
   createTokenMetadataUmi,
@@ -94,10 +95,10 @@ function hasPermanentSelfMetadataPointer(mintInfo, mint) {
 // in the UI — server.js calls refreshConnection() after a successful change.
 function makeConnection() {
   const url = getRpcUrl();
-  console.log('Using RPC endpoint:', redactUrl(url));
+  console.log('Using RPC endpoint:', redactUrl(url), `(network: ${getNetwork()})`);
   return new Connection(url, {
     commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 60000,
+    confirmTransactionInitialTimeout: 60_000,
   });
 }
 
@@ -111,9 +112,21 @@ async function withRpcRetry(fn, { maxRetries = 5, baseDelayMs = 1000 } = {}) {
       return await fn();
     } catch (err) {
       lastError = err;
-      if (err.name === 'TokenAccountNotFoundError' && attempt < maxRetries) {
+      const msg = (err.message || '').toLowerCase();
+      const isRetryable =
+        err.name === 'TokenAccountNotFoundError' ||
+        msg.includes('fetch failed') ||
+        msg.includes('econnrefused') ||
+        msg.includes('econnreset') ||
+        msg.includes('etimedout') ||
+        msg.includes('network io suspended') ||
+        msg.includes('429') ||
+        msg.includes('too many requests') ||
+        msg.includes('503') ||
+        msg.includes('502');
+      if (isRetryable && attempt < maxRetries) {
         const delay = baseDelayMs * Math.pow(2, attempt);
-        console.log(`RPC retry ${attempt + 1}/${maxRetries} after TokenAccountNotFoundError, waiting ${delay}ms...`);
+        console.log(`RPC retry ${attempt + 1}/${maxRetries} after ${err.name || 'network error'}, waiting ${delay}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
@@ -173,7 +186,6 @@ async function detectMintProgramId(mint, commitment = 'finalized') {
 let _connectionFactory = makeConnection;
 let _umiFactory = createTokenMetadataUmi;
 let _uploadMetadata = uploadTokenMetadata;
-
 let connection = _connectionFactory();
 
 export function refreshConnection() {
@@ -287,7 +299,10 @@ export async function checkWalletBalance(publicKey) {
     // If it's a connection error, try with public RPC
     if (error.message && error.message.includes('fetch')) {
       console.log('Trying public RPC endpoint...');
-      const publicConnection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
+      const fallbackUrl = (getNetwork && getNetwork()) === 'devnet'
+        ? 'https://api.devnet.solana.com'
+        : 'https://api.mainnet-beta.solana.com';
+      const publicConnection = new Connection(fallbackUrl, 'confirmed');
       try {
         const balance = await publicConnection.getBalance(pubKey);
         return balance / LAMPORTS_PER_SOL;
@@ -574,6 +589,12 @@ async function createToken2022WithOnMintMetadata({
   return result;
 }
 
+// Devnet has sparse validators and 'finalized' can take minutes; use
+// 'processed' there so the UI stays responsive.
+function txCommitment() {
+  return getNetwork() === 'devnet' ? 'processed' : 'finalized';
+}
+
 // Create a token. New launches use Token-2022 inline metadata by default;
 // the classic SPL + Metaplex profile remains available for compatibility.
 export async function createTokenWithMetaplex({
@@ -682,7 +703,7 @@ export async function createTokenWithMetaplex({
         null, // freeze authority (null = no freeze)
         9, // decimals
         mintKeypair ?? undefined, // searched keypair, or undefined for random
-        { commitment: 'finalized' },
+        { commitment: txCommitment() },
         TOKEN_PROGRAM_ID
       );
     } catch (mintError) {
@@ -699,7 +720,11 @@ export async function createTokenWithMetaplex({
     // Now create the metadata account for the existing mint
     console.log('Creating metadata account...');
     
-    // Convert the mint public key to Umi format
+    // Convert the mint public key to Umi format.
+    // When a vanity-ground mint keypair is available, wrap it as a UMI Signer
+    // BEFORE createV1 so the builder knows the mint must sign.  This ensures
+    // the instruction includes the SPL Token program and marks the mint as a
+    // required signer in the compiled message — no post-build surgery needed.
     const mintPubkey = umiPublicKey(mint.toString());
     
     // Create metadata for the existing token
@@ -734,7 +759,7 @@ export async function createTokenWithMetaplex({
       tempWallet.publicKey,
       false,
       'finalized',
-      { commitment: 'finalized' },
+      { commitment: txCommitment() },
       TOKEN_PROGRAM_ID,
       ASSOCIATED_TOKEN_PROGRAM_ID
     ));
@@ -752,7 +777,7 @@ export async function createTokenWithMetaplex({
       tempWallet.publicKey,
       totalTokens,
       [],
-      { commitment: 'finalized' },
+      { commitment: txCommitment() },
       TOKEN_PROGRAM_ID
     );
     
@@ -777,7 +802,7 @@ export async function createTokenWithMetaplex({
         AuthorityType.MintTokens,
         null, // New authority (null = renounce)
         [],
-        { commitment: 'finalized' },
+        { commitment: txCommitment() },
         TOKEN_PROGRAM_ID
       );
       console.log('Mint authority renounced:', renounceMintAuthSig);
@@ -831,8 +856,8 @@ export async function createTokenWithMetaplex({
         newUpdateAuthority: some(systemProgramAddress),
         isMutable: some(false),
       }).sendAndConfirm(umi, {
-        send: { commitment: 'finalized' },
-        confirm: { commitment: 'finalized' }
+        send: { commitment: txCommitment() },
+        confirm: { commitment: txCommitment() }
       });
       
       console.log('Metadata made immutable and update authority retired.');
@@ -878,8 +903,8 @@ export async function createTokenWithMetaplex({
           primarySaleHappened: none(),
           isMutable: some(false),
         }).sendAndConfirm(umi, {
-          send: { commitment: 'finalized' },
-          confirm: { commitment: 'finalized' }
+          send: { commitment: txCommitment() },
+          confirm: { commitment: txCommitment() }
         });
         
         console.log('Update authority revoked and metadata made immutable!');
@@ -909,8 +934,8 @@ export async function createTokenWithMetaplex({
             authority: umi.identity,
             newUpdateAuthority: some(systemProgramAddress),
           }).sendAndConfirm(umi, { 
-            send: { commitment: 'finalized' },
-            confirm: { commitment: 'finalized' }
+            send: { commitment: txCommitment() },
+            confirm: { commitment: txCommitment() }
           });
           
           console.log('Successfully revoked update authority in final attempt!');
@@ -1637,7 +1662,7 @@ export async function transferTokensAndSol({
         tempWallet.publicKey,
         false,
         'finalized',
-        { commitment: 'finalized' },
+        { commitment: txCommitment() },
         tokenProgramId,
         ASSOCIATED_TOKEN_PROGRAM_ID
       );
@@ -1651,7 +1676,7 @@ export async function transferTokensAndSol({
         destinationPubkey, // Owner
         false,
         'finalized',
-        { commitment: 'finalized' },
+        { commitment: txCommitment() },
         tokenProgramId,
         ASSOCIATED_TOKEN_PROGRAM_ID
       );
@@ -1678,7 +1703,7 @@ export async function transferTokensAndSol({
           tempWallet.publicKey,
           tokenBalance,
           [],
-          { commitment: 'finalized' },
+          { commitment: txCommitment() },
           tokenProgramId
         );
         console.log('Token transfer signature:', tokenTxSignature);
@@ -1714,7 +1739,7 @@ export async function transferTokensAndSol({
       const solTxSignature = await connection.sendTransaction(
         transaction,
         [tempWallet],
-        { commitment: 'finalized' }
+        { commitment: txCommitment() }
       );
       console.log('SOL transfer signature:', solTxSignature);
       await connection.confirmTransaction(solTxSignature, 'finalized');

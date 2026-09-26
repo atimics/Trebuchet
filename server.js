@@ -51,6 +51,8 @@ import {
   addSavedRpc,
   removeSavedRpc,
   testRpc,
+  getNetwork,
+  setNetwork,
 } from './rpcConfig.js';
 
 import * as pendingWallets from './pendingWallets.js';
@@ -2255,6 +2257,28 @@ app.post('/api/check-balance-detailed', async (req, res) => {
   }
 });
 
+// Return the launch journal state for a wallet.  The client uses this
+// to resume a launch after a crash or close — it reads the token mint,
+// decimals, supply, LP pool info, and current stage, then jumps to the
+// appropriate step without starting over.
+app.get('/api/launch-state', (req, res) => {
+  try {
+    const { walletPublicKey } = req.query;
+    if (!walletPublicKey) {
+      return res.status(400).json({ success: false, error: 'walletPublicKey is required' });
+    }
+    const journal = launchJournal.activeForWallet(walletPublicKey);
+    if (!journal) {
+      return res.json({ success: true, state: null });
+    }
+    // Return everything except raw events (too verbose) and secrets.
+    const { events, ...rest } = journal;
+    res.json({ success: true, state: rest });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // RPC config endpoints
 // ---------------------------------------------------------------------------
@@ -2301,6 +2325,34 @@ app.post('/api/rpc-config/add', (req, res) => {
 app.post('/api/rpc-config/remove', (req, res) => {
   try {
     removeSavedRpc(req.body.url);
+    refreshTokenServiceConnection();
+    res.json({ success: true, config: getRpcConfig() });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
+
+// Return current network and RPC config for the UI.
+app.get('/api/rpc-config/status', (_req, res) => {
+  try {
+    const config = getRpcConfig();
+    res.json({ success: true, config, network: getNetwork() });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Switch the active network.  Updates the active RPC to the first
+// saved endpoint for the new network, and persists the choice to
+// userPrefs so it survives restarts.
+app.post('/api/rpc-config/set-network', (req, res) => {
+  try {
+    const { network } = req.body;
+    if (network !== 'mainnet' && network !== 'devnet') {
+      return res.status(400).json({ success: false, error: 'Network must be "mainnet" or "devnet"' });
+    }
+    setNetwork(network);
+    userPrefs.set({ network });
     refreshTokenServiceConnection();
     res.json({ success: true, config: getRpcConfig() });
   } catch (e) {
@@ -5145,7 +5197,7 @@ app.get('/api/rpc-health', async (_req, res) => {
 // ---------------------------------------------------------------------------
 
 function uploadLogo(req, res, next) {
-  upload.single('logo')(req, res, (err) => {
+  upload.single('logo')(req, res, async (err) => {
     if (err) {
       return res.status(400).json({ success: false, error: err.message });
     }
@@ -5707,6 +5759,8 @@ async function createTokenHandler(req, res) {
       vanityCAPublicKey,
       sealedLaunch,
       mintFormat,
+      allocations: allocationsRaw,
+      targetMarketCapUsd,
     } = req.body;
 
     const useSealedLaunch = sealedLaunch === true || sealedLaunch === 'true' || sealedLaunch === '1';
@@ -5781,6 +5835,8 @@ async function createTokenHandler(req, res) {
           sealedLaunch: useSealedLaunch,
           sealedMetadataPending: useSealedLaunch,
         },
+        vanityPrefix: vanityPrefix || null,
+        vanitySuffix: vanitySuffix || null,
       },
       {
         stage: 'token_create_started',
@@ -5823,35 +5879,59 @@ async function createTokenHandler(req, res) {
       vanityCaStore.remove(vanityCAPublicKey);
     }
 
+    // Parse pool allocations if the frontend sent them, so the
+    // crash-resume path can pick up the pool plan from the journal.
+    let poolPlan = null;
+    let allocations = null;
+    if (allocationsRaw) {
+      try { allocations = JSON.parse(allocationsRaw); } catch (_) {}
+    }
+    if (allocations && Array.isArray(allocations) && allocations.length > 0) {
+      poolPlan = {
+        tokenMint: result.tokenMint,
+        tokenDecimals: 9,
+        tokenTotalSupply: normalizedTotalSupply,
+        targetMarketCapUsd: targetMarketCapUsd ? String(targetMarketCapUsd) : undefined,
+        allocations,
+        lockPositions: true,
+      };
+    }
+
+    const journalPatch = {
+      status: 'active',
+      stage: 'token_created',
+      error: null,
+      token: {
+        mint: result.tokenMint,
+        name: normalizedName,
+        symbol: normalizedSymbol,
+        totalSupply: normalizedTotalSupply,
+        decimals: 9,
+        metadataUri: result.metadataUri,
+        metadataHash: result.metadataHash || null,
+        imageUri: result.imageUri || null,
+        onChainMetadataUri: result.onChainMetadataUri || result.metadataUri,
+        mintFormat: result.mintFormat,
+        tokenProgram: result.tokenProgram,
+        metadataStandard: result.metadataStandard,
+        metadataPointerAuthorityRevoked: result.metadataPointerAuthorityRevoked,
+        isSafe: result.isSafe,
+        mintAuthorityRenounced: result.mintAuthorityRenounced,
+        freezeAuthorityDisabled: result.freezeAuthorityDisabled,
+        metadataUpdateAuthorityRevoked: result.metadataUpdateAuthorityRevoked,
+        metadataImmutable: result.metadataImmutable,
+        sealedLaunch: result.sealedLaunch === true,
+        sealedMetadataPending: result.sealedMetadataPending === true,
+      },
+    };
+    // Keep a pool plan saved before the mint; only fill one in when missing.
+    if (poolPlan && !launchJournal.activeForWallet(walletPublicKey)?.poolPlan) {
+      journalPatch.poolPlan = poolPlan;
+    }
+
     launchJournal.upsertForWallet(
       walletPublicKey,
-      {
-        status: 'active',
-        stage: 'token_created',
-        error: null,
-        token: {
-          mint: result.tokenMint,
-          name: normalizedName,
-          symbol: normalizedSymbol,
-          totalSupply: normalizedTotalSupply,
-          decimals: 9,
-          metadataUri: result.metadataUri,
-          metadataHash: result.metadataHash || null,
-          imageUri: result.imageUri || null,
-          onChainMetadataUri: result.onChainMetadataUri || result.metadataUri,
-          mintFormat: result.mintFormat,
-          tokenProgram: result.tokenProgram,
-          metadataStandard: result.metadataStandard,
-          metadataPointerAuthorityRevoked: result.metadataPointerAuthorityRevoked,
-          isSafe: result.isSafe,
-          mintAuthorityRenounced: result.mintAuthorityRenounced,
-          freezeAuthorityDisabled: result.freezeAuthorityDisabled,
-          metadataUpdateAuthorityRevoked: result.metadataUpdateAuthorityRevoked,
-          metadataImmutable: result.metadataImmutable,
-          sealedLaunch: result.sealedLaunch === true,
-          sealedMetadataPending: result.sealedMetadataPending === true,
-        },
-      },
+      journalPatch,
       { stage: 'token_created', tokenMint: result.tokenMint, metadataUri: result.metadataUri },
     );
 
@@ -8880,8 +8960,39 @@ app.post('/api/pending-wallets/dismiss', (req, res) => {
   } catch (error) {
     console.error('Error dismissing pending wallet:', error);
     res.status(500).json({ success: false, error: error.message });
+
   }
 });
+
+
+
+// Return recent launch journals for the "Recent Launches" panel.
+app.get('/api/recent-launches', (_req, res) => {
+  try {
+    const journals = launchJournal.list({ includeCompleted: true });
+    const launches = journals
+      .filter(j => j.status !== 'archived')
+      .map(j => ({
+        id: j.id,
+        walletPublicKey: j.walletPublicKey,
+        stage: j.stage || 'wallet_generated',
+        createdAt: j.createdAt,
+        token: j.token ? {
+          name: j.token.name || '',
+          symbol: j.token.symbol || '',
+          mint: j.token.mint || '',
+        } : null,
+        lp: j.lp && Array.isArray(j.lp.results)
+          ? { poolCount: j.lp.results.length }
+          : null,
+        transfer: j.transfer ? { destination: j.transfer.destinationWallet || '' } : null,
+      }));
+    res.json({ success: true, launches });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 
 // ---------------------------------------------------------------------------
 // Helpers for the transfer-assets verification step.

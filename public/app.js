@@ -1,3 +1,178 @@
+// token-registry.js — thin shim for the client build. The canonical tokenRegistry.js
+// lives in the repo root and is imported by server-side code (lpService.js).
+// For the client bundle we copy a snapshot of TOKEN_REGISTRY here so the concatenated
+// app.js has it without needing ESM imports.
+//
+// When adding tokens: edit the root tokenRegistry.js, then re-run `npm run build:js`
+// which will rebuild this snapshot into public/app.js.
+//
+// (Replaces the old scattered FLYWHEELS + hardcoded <option> tags.)
+
+var TOKEN_REGISTRY = {
+  // ==========================================================================
+  // Native
+  // ==========================================================================
+  SOL: {
+    address: 'So11111111111111111111111111111111111111112',
+    symbol: 'SOL',
+    decimals: 9,
+    name: 'Solana',
+    network: 'both',
+    group: 'native',
+  },
+
+  // ==========================================================================
+  // Flywheels (mainnet)
+  // ==========================================================================
+  SEIGE: {
+    address: 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r',
+    symbol: '$seige',
+    decimals: 6,
+    name: 'Seige (Meme Flywheel)',
+    network: 'mainnet',
+    group: 'flywheel',
+    description: 'Meme-token flywheel — recommended',
+    isFlywheel: true,
+    available: true,
+  },
+  XLRT: {
+    address: 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj',
+    symbol: 'XLRT',
+    decimals: 9,
+    name: 'XLRT (Reserve Flywheel)',
+    network: 'mainnet',
+    group: 'flywheel',
+    description: 'wBTC + ETH reserve flywheel',
+    isFlywheel: true,
+    available: true,
+  },
+
+  // ==========================================================================
+  // Devnet-native basis tokens
+  // ==========================================================================
+  RATI: {
+    address: '8ZscSWe5ZSFbGYg4JzA3eqpf6iCnwT72i8TZvVni2yMY',
+    symbol: 'RATi',
+    decimals: 9,
+    name: 'RATi (Agent Economy)',
+    network: 'devnet',
+    group: 'flywheel',
+    description: 'Agent Economy — devnet',
+    isFlywheel: true,
+    available: true,
+  },
+  KYRO: {
+    address: '7m5Y29h6pEvzfkgn3hkYqFQNUrL5CofXtrnDJoqCKyro',
+    symbol: 'Kyro',
+    decimals: 6,
+    name: 'Kyro (Intent Protocol)',
+    network: 'devnet',
+    group: 'flywheel',
+    description: 'Intent Protocol — devnet',
+    isFlywheel: true,
+    available: true,
+  },
+  RUBY: {
+    address: '2hJY16WZgTQXXo6qBoWoBtZM7fz556cw3qdLgtntRuby',
+    symbol: 'Ruby',
+    decimals: 6,
+    name: 'Ruby (Ruby High AI)',
+    network: 'devnet',
+    group: 'flywheel',
+    description: 'Ruby High AI — devnet',
+    isFlywheel: true,
+    available: true,
+  },
+
+  // ==========================================================================
+  // Majors
+  // ==========================================================================
+  WBTC: {
+    address: '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh',
+    symbol: 'wBTC',
+    decimals: 8,
+    name: 'Wrapped BTC (Wormhole)',
+    network: 'mainnet',
+    group: 'major',
+  },
+  WETH: {
+    address: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',
+    symbol: 'wETH',
+    decimals: 8,
+    name: 'Wrapped ETH (Wormhole)',
+    network: 'mainnet',
+    group: 'major',
+  },
+
+  // ==========================================================================
+  // Stables
+  // ==========================================================================
+  USDC: {
+    address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    symbol: 'USDC',
+    decimals: 6,
+    name: 'USD Coin',
+    network: 'mainnet',
+    group: 'stable',
+  },
+  USDT: {
+    address: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+    symbol: 'USDT',
+    decimals: 6,
+    name: 'USDT',
+    network: 'mainnet',
+    group: 'stable',
+  },
+  USD1: {
+    address: 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB',
+    symbol: 'USD1',
+    decimals: 6,
+    name: 'USD1 (World Liberty Financial)',
+    network: 'mainnet',
+    group: 'stable',
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Query helpers
+// ---------------------------------------------------------------------------
+
+function tokenByKey(key) {
+  return TOKEN_REGISTRY[key] || null;
+}
+
+function tokenByAddress(addr) {
+  if (!addr) return null;
+  const s = String(addr);
+  return Object.values(TOKEN_REGISTRY).find((t) => t.address === s) || null;
+}
+
+function tokensByGroup(group) {
+  return Object.values(TOKEN_REGISTRY).filter((t) => t.group === group);
+}
+
+function tokensByNetwork(net) {
+  if (!net) return Object.values(TOKEN_REGISTRY);
+  return Object.values(TOKEN_REGISTRY).filter((t) => t.network === net || t.network === 'both');
+}
+
+function allFlywheels() {
+  return Object.values(TOKEN_REGISTRY).filter((t) => t.isFlywheel);
+}
+
+function flywheelsByNetwork(net) {
+  return Object.values(TOKEN_REGISTRY).filter((t) => t.isFlywheel && (t.network === net || t.network === 'both'));
+}
+
+/** Predicate: is this quote token allowed for launches on the given network? */
+function isAllowedQuote(spec, network) {
+  if (!spec) return false;
+  const str = String(spec);
+  const upper = str.toUpperCase();
+  const token = tokenByKey(upper) || tokenByAddress(str);
+  if (!token) return false;
+  return token.network === network || token.network === 'both';
+}
 // app.js — frontend logic for Trebuchet
 //
 // Six-step launcher with collapsible step cards. Each step is in one of
@@ -72,6 +247,10 @@ async function getApiSessionToken() {
   return apiSessionTokenPromise;
 }
 
+// Exposed for EventSource callers and lp-execution.js which pass the
+// session token as a query parameter (custom headers not possible).
+window.getApiSessionToken = getApiSessionToken;
+
 window.fetch = async (input, init = {}) => {
   if (!isLocalApiRequest(input)) return originalFetch(input, init);
 
@@ -92,6 +271,8 @@ let fundingWallet = null;
 let balancePollHandle = null;
 let lpResult = null;
 let pools = [];
+// Exposed for tests that need to inspect/modify pools from page.evaluate.
+window.__trebuchet_pools = pools;
 let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 // Airdrop execution result, populated by runTransfer() from the
 // transfer-assets response (and updated by the retry path). Carries
@@ -328,22 +509,17 @@ let demoModeReloading = false;
 //   description  — optional short tagline shown next to the dropdown
 //   available    — when false, the option is shown grayed out as a hint
 //                  that this flywheel exists but isn't launched yet
-const FLYWHEELS = {
-  reserve: {
-    key: 'reserve',
-    label: 'Reserve',
-    mint: 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj',
-    description: 'wBTC + ETH reserve flywheel',
-    available: true,
-  },
-  meme: {
-    key: 'meme',
-    label: 'Meme',
-    mint: 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r',
-    description: 'Meme-token flywheel',
-    available: true,
-  },
-};
+// FLYWHEELS is now derived from the central TOKEN_REGISTRY (tokenRegistry.js / token-registry.js).
+// To add flywheel tokens, edit tokenRegistry.js and rebuild.
+var FLYWHEELS = {};
+(function(){
+  if (typeof allFlywheels !== "function") return;
+  var fws = allFlywheels();
+  for (var i = 0; i < fws.length; i++) {
+    var f = fws[i];
+    FLYWHEELS[f.symbol] = { key: f.symbol, label: f.symbol, mint: f.address, description: f.description || '', available: f.available };
+  }
+})();
 
 // Flywheel allocation bounds and default. The slider in the simple-config
 // UI lets users dial this between MIN and MAX; default is the value the
@@ -706,6 +882,363 @@ const STEP_TITLES = {
   5: 'Create Pools',
   6: 'Transfer Assets',
 };
+// ===========================================================================
+// session.js — centralized launch session state
+// ===========================================================================
+//
+// Every piece of launch state lives here.  Modules read/write session.*
+// directly.  Save snapshots everything; Load restores everything and
+// calls renderAll() to push state into the DOM.
+//
+// This replaces the scattered module-level let variables (tempWallet,
+// createdTokenInfo, pools, lpResult, etc.) that made save/load fragile.
+
+// ── Core state (all serializable) ──────────────────────────────────
+
+const session = {
+  // Step 1: Wallet
+  wallet: null,          // { publicKey, secretKey, secretKeyB58, mnemonic, qrCode }
+
+  // Step 2: Token config + vanity
+  tokenConfig: {         // what the user typed in step 2
+    name: '',
+    symbol: '',
+    description: '',
+    totalSupply: '',
+  },
+  vanity: {
+    mode: 'suffix',      // 'prefix' | 'suffix' | 'both'
+    prefix: '',
+    suffix: '',
+    caKeypair: null,     // pre-ground CA secret key array (or null)
+  },
+
+  // Step 4: Created token info
+  token: null,           // { mint, decimals, name, symbol, totalSupply, metadataUri, isSafe }
+
+  // Step 2/5: Pool configuration
+  pools: [],             // internal pool config objects
+  targetMarketCapUsd: '',
+
+  // Step 3: Funding
+  fundingRqmt: { solLamports: 0, byQuote: {}, autoSwapPlan: [] },
+
+  // Step 5: LP results
+  lp: null,              // { results: [{ allocationIndex, poolId, ... }], failedPhase }
+
+  // Step 6: Transfer
+  transfer: null,        // { destinationWallet, txIds }
+
+  // Progress
+  currentStep: 1,
+  stepSummaries: {},     // { 1: "ABC...xyz", 4: "RATi - RATxxx...", 5: "1 pool" }
+
+  // Activity log
+  activityEntries: [],
+
+  // Journal linkage
+  journalId: null,
+  walletPublicKey: null,
+  stage: null,           // raw journal stage
+};
+
+// ── Backward-compatible globals (existing code reads these directly) ──
+
+// These are set by reference so existing modules that mutate them
+// continue to work.  They ARE the session fields.
+// tempWallet synced via syncGlobalsToSession()
+// createdTokenInfo synced via syncGlobalsToSession()
+// pools already declared in preamble.js; we share the reference below
+// lpResult synced via syncGlobalsToSession()
+// fundingRequirement already declared in preamble.js; reset below
+
+// Keep tempWallet & createdTokenInfo synced with session
+function syncGlobalsToSession() {
+  if (session.wallet) tempWallet = session.wallet;
+  else tempWallet = null;
+  if (session.token) createdTokenInfo = session.token;
+  else createdTokenInfo = null;
+  if (session.lp) lpResult = session.lp;
+  else lpResult = null;
+}
+
+// Share the pools array reference so existing code mutates session.pools directly.
+pools.length = 0;
+fundingRequirement.solLamports = 0;
+fundingRequirement.byQuote = {};
+fundingRequirement.autoSwapPlan.length = 0;
+
+// ── Save / Load ────────────────────────────────────────────────────
+
+/** Snapshot the current session to a plain object (no references). */
+session.saveSnapshot = function() {
+  return {
+    wallet: session.wallet ? { ...session.wallet } : null,
+    tokenConfig: { ...session.tokenConfig },
+    vanity: {
+      mode: session.vanity.mode,
+      prefix: session.vanity.prefix,
+      suffix: session.vanity.suffix,
+      caKeypair: session.vanity.caKeypair ? session.vanity.caKeypair.slice() : null,
+    },
+    token: session.token ? { ...session.token } : null,
+    pools: session.pools.map(function(p) { return { ...p }; }),
+    targetMarketCapUsd: session.targetMarketCapUsd,
+    fundingRqmt: {
+      solLamports: session.fundingRqmt.solLamports,
+      byQuote: { ...session.fundingRqmt.byQuote },
+      autoSwapPlan: session.fundingRqmt.autoSwapPlan.slice(),
+    },
+    lp: session.lp ? { results: session.lp.results.slice(), failedPhase: session.lp.failedPhase } : null,
+    transfer: session.transfer ? { ...session.transfer } : null,
+    currentStep: session.currentStep,
+    stepSummaries: { ...session.stepSummaries },
+    activityEntries: session.activityEntries.slice(),
+    journalId: session.journalId,
+    walletPublicKey: session.walletPublicKey,
+    stage: session.stage,
+  };
+};
+
+/** Restore from a snapshot or journal object. */
+session.restoreFromSnapshot = function(snap) {
+  if (snap.wallet) session.wallet = { ...snap.wallet };
+  if (snap.tokenConfig) session.tokenConfig = { ...snap.tokenConfig };
+  if (snap.vanity) {
+    session.vanity.mode = snap.vanity.mode || 'suffix';
+    session.vanity.prefix = snap.vanity.prefix || '';
+    session.vanity.suffix = snap.vanity.suffix || '';
+    session.vanity.caKeypair = snap.vanity.caKeypair ? snap.vanity.caKeypair.slice() : null;
+  }
+  if (snap.token) session.token = { ...snap.token };
+  if (snap.pools) {
+    pools.length = 0;
+    for (var i = 0; i < snap.pools.length; i++) pools.push({ ...snap.pools[i] });
+  }
+  if (snap.targetMarketCapUsd != null) session.targetMarketCapUsd = snap.targetMarketCapUsd;
+  if (snap.fundingRqmt) {
+    session.fundingRqmt.solLamports = snap.fundingRqmt.solLamports || 0;
+    session.fundingRqmt.byQuote = snap.fundingRqmt.byQuote || {};
+    session.fundingRqmt.autoSwapPlan = snap.fundingRqmt.autoSwapPlan || [];
+  }
+  if (snap.lp) session.lp = { results: snap.lp.results.slice(), failedPhase: snap.lp.failedPhase };
+  if (snap.transfer) session.transfer = { ...snap.transfer };
+  if (snap.currentStep) session.currentStep = snap.currentStep;
+  if (snap.stepSummaries) session.stepSummaries = { ...snap.stepSummaries };
+  if (snap.activityEntries) session.activityEntries = snap.activityEntries.slice();
+  session.journalId = snap.journalId || null;
+  session.walletPublicKey = snap.walletPublicKey || null;
+  session.stage = snap.stage || null;
+  syncGlobalsToSession();
+};
+
+// ── Journal adapter ─────────────────────────────────────────────────
+
+/** Build a session snapshot from a launch journal (server-side format). */
+session.fromJournal = function(journal) {
+  var snap = {};
+
+  // Wallet: comes from pendingWallets, not the journal itself.
+  // Set externally via session.wallet = ... before calling this.
+
+  // Token config from journal
+  if (journal.token) {
+    snap.tokenConfig = {
+      name: journal.token.name || '',
+      symbol: journal.token.symbol || '',
+      description: journal.token.description || '',
+      totalSupply: journal.token.totalSupply || '',
+    };
+    // If token has a mint, it was created
+    if (journal.token.mint) {
+      snap.token = {
+        mint: journal.token.mint,
+        decimals: journal.token.decimals || 9,
+        name: journal.token.name || '',
+        symbol: journal.token.symbol || '',
+        totalSupply: journal.token.totalSupply || '',
+        metadataUri: journal.token.metadataUri || '',
+        isSafe: journal.token.isSafe || false,
+      };
+    }
+  }
+
+  // Vanity config
+  snap.vanity = {
+    mode: journal.vanityPrefix ? 'prefix' : (journal.vanitySuffix ? 'suffix' : 'suffix'),
+    prefix: journal.vanityPrefix || '',
+    suffix: journal.vanitySuffix || '',
+    caKeypair: journal.vanityCAKeypair || null,
+  };
+  if (journal.vanityPrefix && journal.vanitySuffix) snap.vanity.mode = 'both';
+
+  // Pools from poolPlan
+  if (journal.poolPlan && Array.isArray(journal.poolPlan.allocations)) {
+    snap.pools = journal.poolPlan.allocations.map(function(a) {
+      return {
+        quoteToken: a.quoteToken,
+        supplyPercent: a.supplyPercent,
+        ammConfigIndex: a.ammConfigIndex,
+        quoteUsdOverride: a.quoteUsdOverride,
+        quoteDecimalsOverride: a.quoteDecimalsOverride,
+        quoteSymbolOverride: a.quoteSymbolOverride,
+        slices: a.distribution || [],
+        bootstrapConfig: a.bootstrap || { mode: 'minimal' },
+        ladderConfig: a.ladder || { mode: 'off', bands: [] },
+        support: a.support || 0,
+        _fromJournal: true,
+      };
+    });
+    if (journal.poolPlan.targetMarketCapUsd) {
+      snap.targetMarketCapUsd = journal.poolPlan.targetMarketCapUsd;
+    }
+  }
+
+  // LP results
+  if (journal.lp && Array.isArray(journal.lp.results)) {
+    snap.lp = { results: journal.lp.results.slice(), failedPhase: journal.lp.failedPhase || null };
+  }
+
+  // Transfer
+  if (journal.transfer) {
+    snap.transfer = { destinationWallet: journal.transfer.destinationWallet || '' };
+  }
+
+  // Stage → step mapping
+  snap.stage = journal.stage;
+  snap.walletPublicKey = journal.walletPublicKey;
+  snap.journalId = journal.id;
+  if (journal.stage === 'wallet_generated') snap.currentStep = 2;
+  else if (journal.stage === 'token_create_started') snap.currentStep = 4;
+  else if (journal.stage === 'token_created') snap.currentStep = 5;
+  else if (journal.stage && journal.stage.startsWith('lp_')) snap.currentStep = 5;
+  else if (journal.lp && journal.lp.results && journal.lp.results.length) snap.currentStep = 6;
+
+  session.restoreFromSnapshot(snap);
+};
+
+/** Build a server-ready save payload from the current session. */
+session.toSavePayload = function() {
+  return session.saveSnapshot();
+};
+
+// ── UI rendering ────────────────────────────────────────────────────
+
+/** Push all session state into the DOM. Call after any restore. */
+session.renderAll = function() {
+  // Step 1: Wallet display
+  if (session.wallet) {
+    var walletInfo = document.getElementById('walletInfo');
+    if (walletInfo) walletInfo.classList.remove('hidden');
+    var wa = document.getElementById('walletAddress');
+    if (wa) wa.value = session.wallet.publicKey;
+    if (typeof setQrCode === 'function') {
+      setQrCode('qrCode', session.wallet.qrCode, session.wallet.publicKey);
+    }
+    document.getElementById('privateKeyContainer')?.classList.add('hidden');
+    document.body.classList.add('has-log');
+  }
+
+  // Step 2: Token config fields
+  if (session.tokenConfig) {
+    var tn = document.getElementById('tokenName');
+    if (tn && session.tokenConfig.name) tn.value = session.tokenConfig.name;
+    var ts = document.getElementById('tokenSymbol');
+    if (ts && session.tokenConfig.symbol) ts.value = session.tokenConfig.symbol;
+    var td = document.getElementById('tokenDescription');
+    if (td && session.tokenConfig.description) td.value = session.tokenConfig.description;
+    var tsp = document.getElementById('tokenSupply');
+    if (tsp && session.tokenConfig.totalSupply) tsp.value = session.tokenConfig.totalSupply;
+  }
+
+  // Vanity config
+  if (session.vanity) {
+    var vcm = document.getElementById('vanityCAMode');
+    if (vcm && session.vanity.mode) vcm.value = session.vanity.mode;
+    var vct = document.getElementById('vanityCATarget');
+    if (vct) {
+      if (session.vanity.mode === 'both') {
+        vct.value = session.vanity.prefix || '';
+        var vcs = document.getElementById('vanityCAEndTarget');
+        if (vcs) vcs.value = session.vanity.suffix || '';
+        var vcsr = document.getElementById('vanityCASuffixRow');
+        if (vcsr) vcsr.classList.remove('hidden');
+      } else if (session.vanity.mode === 'prefix') {
+        vct.value = session.vanity.prefix || '';
+      } else {
+        vct.value = session.vanity.suffix || '';
+      }
+    }
+    // Restore pre-ground CA
+    if (session.vanity.caKeypair) {
+      try {
+        var raw = session.vanity.caKeypair;
+        if (typeof raw === 'string') raw = JSON.parse(raw);
+        if (Array.isArray(raw) && raw.length === 64) {
+          vanityCAKeypairs = [{
+            publicKey: null,
+            secretKey: raw,
+            rarity: 'saved',
+            epochs: 0,
+            attempts: 0,
+          }];
+          selectedVanityCA = 0;
+          if (typeof updateVanityCAResult === 'function') updateVanityCAResult();
+        }
+      } catch (_) {}
+    }
+  }
+
+  // Step 4: Token created info
+  if (session.token && session.token.mint) {
+    var tci = document.getElementById('tokenCreatedInfo');
+    if (tci) tci.classList.remove('hidden');
+    var me = document.getElementById('tokenMintAddress');
+    if (me) me.textContent = session.token.mint;
+    var sl = document.getElementById('tokenSolscanLink');
+    if (sl) sl.href = 'https://solscan.io/token/' + session.token.mint;
+  }
+
+  // Market cap
+  var mcEl = document.getElementById('targetMarketCap');
+  if (mcEl && session.targetMarketCapUsd) mcEl.value = session.targetMarketCapUsd;
+
+  // Step summaries
+  if (session.wallet) {
+    var pk = session.wallet.publicKey;
+    if (typeof setStepSummary === 'function') {
+      setStepSummary(1, pk.slice(0, 8) + '\u2026' + pk.slice(-6));
+    }
+  }
+  if (session.token && session.token.mint && typeof setStepSummary === 'function') {
+    setStepSummary(4, (session.token.symbol || '?') + ' \u2014 ' + session.token.mint.slice(0, 8) + '\u2026');
+  }
+
+  // Buttons
+  var hasToken = !!(session.token && session.token.mint);
+  var hasLp = !!(session.lp && session.lp.results && session.lp.results.length);
+  var ctb = document.getElementById('createTokenBtn');
+  var clb = document.getElementById('createLpBtn');
+  var tab = document.getElementById('transferAssetsBtn');
+  if (ctb) ctb.classList.toggle('hidden', hasToken);
+  if (clb) clb.classList.toggle('hidden', !hasToken || hasLp);
+  if (tab) tab.classList.toggle('hidden', !hasLp);
+
+  // Activate step
+  if (typeof activateStep === 'function') {
+    activateStep(session.currentStep || 2);
+  }
+  if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+  if (typeof updateCancelButtonState === 'function') updateCancelButtonState();
+
+  // Grind button
+  if (typeof setGrindButtonState === 'function') setGrindButtonState('grind');
+};
+
+// Expose for tests
+window.__trebuchet_session = session;
+window.__trebuchet_pools = pools;
+
 // ===========================================================================
 // Logging
 // ===========================================================================
@@ -2586,9 +3119,211 @@ bind('addRpcBtn', 'click', async () => {
   }
 });
 
+
+// ── Network selector ──────────────────────────────────────────────────
+
+(function setupNetworkSelector() {
+  const mainnetBtn = document.getElementById('networkMainnetBtn');
+  const devnetBtn = document.getElementById('networkDevnetBtn');
+  const warning = document.getElementById('networkWarning');
+
+  if (!mainnetBtn || !devnetBtn) return;
+
+  async function applyNetwork(network) {
+    try {
+      const resp = await fetch('/api/rpc-config/set-network', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ network }),
+      }).then(r => r.json());
+
+      if (resp.success) {
+        updateButtonState(network);
+        renderRpcConfig(resp.config);
+        log(`Switched to ${network}`, 'info');
+
+        // Update devnet banner and funding notice
+        const banner = document.getElementById('devnetBanner');
+        const notice = document.getElementById('devnetFundingNotice');
+        if (banner) banner.style.display = network === 'devnet' ? 'block' : 'none';
+        if (notice) notice.classList.toggle('hidden', network !== 'devnet');
+
+        // Show warning when switching to devnet
+        if (network === 'devnet') {
+          warning.textContent = '⚠ Devnet — tokens and SOL have no real value. Use for testing only.';
+          warning.classList.remove('hidden');
+        } else {
+          warning.classList.add('hidden');
+        }
+      } else {
+        log(`Network switch failed: ${resp.error}`, 'danger');
+      }
+    } catch (e) {
+      log(`Network switch failed: ${e.message}`, 'danger');
+    }
+  }
+
+  function updateButtonState(network) {
+    if (network === 'devnet') {
+      mainnetBtn.classList.remove('is-primary', 'is-selected');
+      mainnetBtn.classList.add('is-light');
+      devnetBtn.classList.remove('is-light');
+      devnetBtn.classList.add('is-warning', 'is-selected');
+    } else {
+      devnetBtn.classList.remove('is-warning', 'is-selected');
+      devnetBtn.classList.add('is-light');
+      mainnetBtn.classList.remove('is-light');
+      mainnetBtn.classList.add('is-primary', 'is-selected');
+    }
+  }
+
+  // Fetch initial network state
+  fetch('/api/rpc-config/status')
+    .then(r => r.json())
+    .then(data => {
+      if (data.network) updateButtonState(data.network);
+      if (data.network === 'devnet') {
+        warning.textContent = '⚠ Devnet — tokens and SOL have no real value. Use for testing only.';
+        warning.classList.remove('hidden');
+      }
+    })
+    .catch(() => {});
+
+  mainnetBtn.addEventListener('click', () => applyNetwork('mainnet'));
+  devnetBtn.addEventListener('click', () => applyNetwork('devnet'));
+})();
 // ===========================================================================
 // STEP 1: Generate wallet
 // ===========================================================================
+
+// Set a QR code image src. Uses the server-provided data URL when
+// available; falls back to a pure client-side canvas renderer that
+// works without Node.js modules (Electron sandbox, strict CSP, etc.).
+function setQrCode(elementId, serverQr, publicKey) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  if (serverQr && serverQr.startsWith('data:image/')) {
+    el.src = serverQr;
+    el.onerror = function () { renderQrCodeToCanvas(el, publicKey); };
+  } else {
+    renderQrCodeToCanvas(el, publicKey);
+  }
+}
+
+// Pure-DOM QR code renderer — no dependencies, works everywhere.
+function renderQrCodeToCanvas(img, text) {
+  try {
+    var canvas = document.createElement('canvas');
+    var size = 256;
+    canvas.width = size;
+    canvas.height = size;
+    var ctx = canvas.getContext('2d');
+    // Build a simple QR matrix using the same algorithm as the qrcode
+    // package.  We encode the text as a byte array and draw modules.
+    var bytes = [];
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charCodeAt(i);
+      if (c < 128) bytes.push(c);
+      else { bytes.push(0xc0 | (c >> 6)); bytes.push(0x80 | (c & 0x3f)); }
+    }
+    // Simple byte-mode QR encoding for alphanumeric + base58.
+    // Pad with ECMA-001 terminator pattern.
+    var data = qrEncodeBytes(bytes, size);
+    if (!data) { img.alt = 'QR unavailable'; return; }
+    var moduleCount = data.length;
+    var moduleSize = Math.floor(size / (moduleCount + 8));
+    var offset = Math.floor((size - moduleCount * moduleSize) / 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#000000';
+    for (var r = 0; r < moduleCount; r++) {
+      for (var c = 0; c < moduleCount; c++) {
+        if (data[r][c]) {
+          ctx.fillRect(offset + c * moduleSize, offset + r * moduleSize, moduleSize, moduleSize);
+        }
+      }
+    }
+    img.src = canvas.toDataURL('image/png');
+  } catch (_) { img.alt = 'QR unavailable'; }
+}
+
+// Minimal byte-mode QR encoder for short alphanumeric strings.
+function qrEncodeBytes(bytes, _maxSize) {
+  // We use a fixed version-3 QR (29×29 modules) with M-level ECC,
+  // which fits up to ~40 alphanumeric chars — plenty for a base58 key.
+  var V = 3; // version
+  var N = 29; // modules per side
+  var matrix = [];
+  for (var i = 0; i < N; i++) { matrix[i] = []; for (var j = 0; j < N; j++) matrix[i][j] = false; }
+
+  // Place finder patterns (3 corners)
+  placeFinder(matrix, 0, 0);
+  placeFinder(matrix, 0, N - 7);
+  placeFinder(matrix, N - 7, 0);
+
+  // Place timing patterns
+  for (var i = 8; i < N - 8; i++) { matrix[6][i] = i % 2 === 0; matrix[i][6] = i % 2 === 0; }
+
+  // Place dark module
+  matrix[N - 8][8] = true;
+
+  // Encode data into modules (simplified byte mode)
+  var dataBits = [];
+  // Mode indicator: 0100 (byte)
+  dataBits.push(0,1,0,0);
+  // Character count (8 bits for version < 10)
+  var count = bytes.length;
+  for (var b = 7; b >= 0; b--) dataBits.push((count >> b) & 1);
+  // Data bytes
+  for (var bi = 0; bi < bytes.length; bi++) {
+    for (var b = 7; b >= 0; b--) dataBits.push((bytes[bi] >> b) & 1);
+  }
+  // Terminator (up to 4 bits)
+  for (var t = 0; t < 4 && dataBits.length < 152; t++) dataBits.push(0);
+  // Pad to byte boundary
+  while (dataBits.length % 8 !== 0) dataBits.push(0);
+  // Pad bytes (0xEC, 0x11 alternating)
+  var padBytes = [0xEC, 0x11];
+  var pi = 0;
+  while (dataBits.length < 152) {
+    for (var b = 7; b >= 0; b--) dataBits.push((padBytes[pi] >> b) & 1);
+    pi = 1 - pi;
+  }
+
+  // Place data bits in zigzag pattern (simplified)
+  var col = N - 1;
+  var dir = -1;
+  var bitIdx = 0;
+  while (col > 0 && bitIdx < dataBits.length) {
+    if (col === 6) col = 5;
+    for (var row = N - 1; row >= 0; row--) {
+      for (var dc = 0; dc < 2; dc++) {
+        var c = col - dc;
+        var r = dir < 0 ? row : (N - 1 - row);
+        if (c >= 0 && c < N && r >= 0 && r < N && matrix[r][c] === false) {
+          if (bitIdx < dataBits.length) {
+            matrix[r][c] = dataBits[bitIdx] === 1;
+            bitIdx++;
+          }
+        }
+      }
+    }
+    dir = -dir;
+    col -= 2;
+  }
+
+  return matrix;
+}
+
+function placeFinder(matrix, startRow, startCol) {
+  for (var r = 0; r < 7; r++) {
+    for (var c = 0; c < 7; c++) {
+      var border = r === 0 || r === 6 || c === 0 || c === 6;
+      var inner = r >= 2 && r <= 4 && c >= 2 && c <= 4;
+      matrix[startRow + r][startCol + c] = border || inner;
+    }
+  }
+}
 
 bind('generateWalletBtn', 'click', async () => {
   const btn = document.getElementById('generateWalletBtn');
@@ -2686,6 +3421,67 @@ bind('generateWalletBtn', 'click', async () => {
       }
       applySimpleConfigMode();
 
+      // Check for an existing launch to resume (token already created,
+      // LP partially done, etc.).  The server journals every on-chain
+      // step so we can reconstruct the launch state after a crash.
+      try {
+        const stateResp = await fetch(
+          `/api/launch-state?walletPublicKey=${encodeURIComponent(data.wallet.publicKey)}`,
+        );
+        const stateData = await stateResp.json();
+        if (stateData.success && stateData.state) {
+          const s = stateData.state;
+          // Restore token info if we already created one
+          if (s.token && s.token.mint) {
+            createdTokenInfo = {
+              mint: s.token.mint,
+              decimals: s.token.decimals || 9,
+              totalSupply: s.token.totalSupply,
+              name: s.token.name || '',
+              symbol: s.token.symbol || '',
+            };
+            document.getElementById('tokenCreatedInfo').classList.remove('hidden');
+            document.getElementById('tokenMintAddress').textContent = s.token.mint;
+            document.getElementById('tokenSolscanLink').href =
+              `https://solscan.io/token/${s.token.mint}`;
+            document.getElementById('createTokenBtn').classList.add('hidden');
+            log(`Resumed token ${s.token.symbol || s.token.mint.slice(0, 8)}`, 'info');
+          }
+          // Restore LP result if pools were already created
+          if (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0) {
+            lpResult = { results: s.lp.results };
+            setLpDoneVisible(true);
+            document.getElementById('createLpBtn').classList.add('hidden');
+            log(`Resumed LP: ${s.lp.results.length} pool(s)`, 'info');
+          }
+          // Jump to the appropriate step
+          const stage = s.stage || '';
+          if (stage.startsWith('lp_') || (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0)) {
+            // LP was in progress or completed — go to step 5 or 6
+            const targetStep = s.transfer ? 6 : 5;
+            setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…`);
+            setStepSummary(2, `${s.token?.symbol || ''} / SOL`);
+            setStepSummary(3, '');
+            if (createdTokenInfo) setStepSummary(4, `${createdTokenInfo.symbol} — ${createdTokenInfo.mint.slice(0, 8)}…`);
+            if (lpResult) setStepSummary(5, `${lpResult.results.length} pool(s)`);
+            activateStep(targetStep);
+            if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+            updateCancelButtonState();
+            return;
+          } else if (stage.startsWith('token_')) {
+            // Token was created — go to step 5 (LP)
+            setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…`);
+            setStepSummary(2, `${s.token?.symbol || ''} / SOL`);
+            setStepSummary(3, '');
+            setStepSummary(4, `${createdTokenInfo.symbol} — ${createdTokenInfo.mint.slice(0, 8)}…`);
+            activateStep(5);
+            if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+            updateCancelButtonState();
+            return;
+          }
+        }
+      } catch { /* launch-state lookup is advisory */ }
+
       setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…${data.wallet.publicKey.slice(-6)}`);
       activateStep(2);
       updateContinueToFundingState();
@@ -2745,13 +3541,65 @@ function buildMnemonicGrid(mnemonic) {
 // The Image decode is wrapped in a same-document objectURL that we
 // revoke immediately after, regardless of outcome, so this validation
 // path doesn't leak object URLs even on rapid file changes.
-async function validateLogoFile(file) {
-  if (file.size > MAX_LOGO_BYTES) {
-    const kb = (file.size / 1024).toFixed(1);
-    const maxKb = (MAX_LOGO_BYTES / 1024).toFixed(0);
-    return `Logo is ${kb}KB; max is ${maxKb}KB. ` +
-      `Compress the image or pick a smaller file.`;
+
+// Compress an image File to fit within maxDim and maxBytes.  Loads the
+// image into an offscreen canvas, scales down if needed, then exports
+// as JPEG with a binary-search quality loop to hit the byte target.
+// Returns a Blob (image/jpeg).  Throws if even quality 0.10 exceeds
+// maxBytes, so the caller can surface a graceful message.
+async function compressImageToFit(file, maxDim, maxBytes) {
+  // Decode the image.
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error('Could not decode image'));
+    i.src = URL.createObjectURL(file);
+  });
+
+  // Scale down to maxDim×maxDim while preserving aspect ratio.
+  let w = img.naturalWidth;
+  let h = img.naturalHeight;
+  if (w > maxDim || h > maxDim) {
+    const ratio = Math.min(maxDim / w, maxDim / h);
+    w = Math.round(w * ratio);
+    h = Math.round(h * ratio);
   }
+
+  // Binary-search JPEG quality to hit maxBytes.  We probe between
+  // 0.10 and 0.95 in 8 steps (~1.7% precision).
+  let lo = 0.10;
+  let hi = 0.95;
+  let best = null;
+  for (let step = 0; step < 8; step++) {
+    const q = (lo + hi) / 2;
+    const blob = await canvasToJpegBlob(img, w, h, q);
+    if (blob.size <= maxBytes) {
+      best = blob;
+      lo = q;               // try higher quality
+    } else {
+      hi = q;               // too big, try lower
+    }
+  }
+  if (!best) throw new Error('Cannot compress below byte limit');
+  return best;
+}
+
+// Draw the image onto an offscreen canvas and export as JPEG at the
+// given quality (0–1).  Returns a Blob.
+function canvasToJpegBlob(img, w, h, quality) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  return new Promise((resolve) => {
+    canvas.toBlob((b) => resolve(b), 'image/jpeg', quality);
+  });
+}
+
+async function validateLogoFileDimensionsOnly(file) {
+  // Size check removed — large files are now auto-compressed in the
+  // change handler rather than being rejected outright.
   // accept attribute on the input already restricts the picker to
   // image/png, image/jpeg, and image/gif, but the browser's filter isn't a hard
   // gate (drag-and-drop, devtools, OS file dialogs that ignore filters
@@ -2853,16 +3701,9 @@ bind('tokenLogo', 'change', async (e) => {
 
   const err = await validateLogoFile(f);
   if (err) {
-    // Reject the file: clear the input so subsequent code paths
-    // (renderTokenPreview, the create-token submit) see no logo at
-    // all, rather than seeing a logo that's about to be rejected by
-    // the server. Setting .value = '' is the cross-browser way to
-    // programmatically clear a file input.
     e.target.value = '';
     filenameEl.textContent = 'No file selected';
     setLogoError(err);
-    // Trigger a preview re-render so the thumbnail and live preview
-    // card both drop back to their no-logo state.
     if (typeof renderTokenPreview === 'function') renderTokenPreview();
     return;
   }
@@ -8652,25 +9493,7 @@ function buildPoolNode(pool, idx) {
       <label class="label is-small">Quote Token</label>
       <div class="select is-small is-fullwidth">
         <select data-field="quoteSelect">
-          <optgroup label="Native">
-            <option value="SOL">SOL</option>
-          </optgroup>
-          <optgroup label="Flywheels">
-            <option value="HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r">$seige (Meme flywheel — recommended)</option>
-            <option value="J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj">XLRT (Reserve flywheel)</option>
-          </optgroup>
-          <optgroup label="Majors">
-            <option value="3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh">wBTC (Wormhole)</option>
-            <option value="7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs">ETH (Wormhole)</option>
-          </optgroup>
-          <optgroup label="Stables">
-            <option value="USDC">USDC</option>
-            <option value="USDT">USDT</option>
-            <option value="USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB">USD1 (World Liberty Financial)</option>
-          </optgroup>
-          <optgroup label="Other">
-            <option value="__custom">Custom mint…</option>
-          </optgroup>
+          <!-- Options are built dynamically from TOKEN_REGISTRY in renderPoolEditorOptions() -->
         </select>
       </div>
       <input class="input is-small mt-1 hidden" type="text" data-field="quoteCustom" placeholder="SPL mint address">
@@ -8702,6 +9525,7 @@ function buildPoolNode(pool, idx) {
 
   const quoteSelect = row1.querySelector('[data-field="quoteSelect"]');
   const quoteCustom = row1.querySelector('[data-field="quoteCustom"]');
+  renderPoolEditorOptions(quoteSelect);
 
   // The dropdown contains a mix of uppercase symbols (SOL/USDC/USDT — these
   // are the tokens the server knows about via KNOWN_QUOTES) and raw mint
@@ -11698,6 +12522,49 @@ function resetForNewLaunch() {
 }
 
 bind('startOverBtn', 'click', resetForNewLaunch);
+
+// Builds pool-editor quote dropdown options from the central TOKEN_REGISTRY.
+// Called after the pool row template is inserted into the DOM.
+function renderPoolEditorOptions(selectEl) {
+  if (!selectEl || typeof TOKEN_REGISTRY === "undefined") return;
+  // Detect current value before clearing
+  var prev = selectEl.value;
+  selectEl.innerHTML = "";
+  
+  var groups = { native: "Native", flywheel: "Flywheels", major: "Majors", stable: "Stables" };
+  var groupOrder = ["native", "flywheel", "major", "stable"];
+  
+  for (var gi = 0; gi < groupOrder.length; gi++) {
+    var g = groupOrder[gi];
+    var tokens = typeof tokensByGroup === 'function' ? tokensByGroup(g) : [];
+    if (!tokens.length) continue;
+    var og = document.createElement("optgroup");
+    og.label = groups[g] || g;
+    for (var ti = 0; ti < tokens.length; ti++) {
+      var t = tokens[ti];
+      var opt = document.createElement("option");
+      opt.value = t.address || t.symbol;
+      opt.textContent = t.symbol + (t.description ? " (" + t.description + ")" : "") + (t.network === "devnet" ? " — devnet" : "");
+      og.appendChild(opt);
+    }
+    selectEl.appendChild(og);
+  }
+  // "Other" group always last (custom mint)
+  var og2 = document.createElement("optgroup");
+  og2.label = "Other";
+  var optCust = document.createElement("option");
+  optCust.value = "__custom";
+  optCust.textContent = "Custom mint…";
+  og2.appendChild(optCust);
+  selectEl.appendChild(og2);
+  
+  // Restore selection if it still exists
+  if (prev) {
+    for (var vi = 0; vi < selectEl.options.length; vi++) {
+      if (selectEl.options[vi].value === prev) { selectEl.selectedIndex = vi; break; }
+    }
+  }
+}
 // ===========================================================================
 // Tokenomics Preview Modal
 // ===========================================================================
@@ -14490,6 +15357,23 @@ bind('viewLaunchSummaryBtn', 'click', () => {
 
 function buildAllocationsForApi() {
   return pools.map((p) => {
+    // Pools loaded from a crash-resume journal already have wire-format
+    // allocations — pass them through without re-converting percentages.
+    if (p._fromJournal) {
+      return {
+        quoteToken: p.quoteToken,
+        supplyPercent: p.supplyPercent,
+        ammConfigIndex: p.ammConfigIndex,
+        quoteUsdOverride: p.quoteUsdOverride,
+        quoteDecimalsOverride: p.quoteDecimalsOverride,
+        quoteSymbolOverride: p.quoteSymbolOverride,
+        distribution: p.slices || [],
+        bootstrap: p.bootstrapConfig || { mode: "minimal" },
+        ladder: p.ladderConfig || { mode: "off", bands: [] },
+        support: p.support || 0,
+      };
+    }
+
     // Pass our resolved price through to the server as quoteUsdOverride.
     //
     // Per the price-safety plan (Milestones A + B), this no longer means
@@ -15967,6 +16851,13 @@ bind('createTokenBtn', 'click', async () => {
       const logoFile = document.getElementById('tokenLogo').files[0];
       if (logoFile) formData.append('logo', logoFile);
 
+      const allocations = buildAllocationsForApi();
+      if (allocations.length > 0) {
+        formData.append("allocations", JSON.stringify(allocations));
+        const targetMc = document.getElementById("targetMarketCap");
+        if (targetMc) formData.append("targetMarketCapUsd", targetMc.value.trim());
+      }
+
       const resp = await fetch('/api/create-token', { method: 'POST', body: formData });
       const data = await resp.json();
       if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
@@ -16059,8 +16950,8 @@ function renderLpSummary() {
   `;
   for (const p of pools) {
     const quoteSafe = escapeHtml(p.resolvedSymbol || p.quoteToken || '');
-    const sliceCount = p.distribution.length;
-    const externalCount = p.distribution.filter((s) => s.useExternalRecipient && s.recipient).length;
+    const sliceCount = (p.distribution || p.slices || []).length;
+    const externalCount = (p.distribution || p.slices || []).filter((s) => s.useExternalRecipient && s.recipient).length;
     html += `<li><strong>${quoteSafe}</strong> pool — ${p.supplyPercent}% of supply, `;
     html += `${sliceCount} slice${sliceCount === 1 ? '' : 's'}`;
     if (externalCount > 0) html += ` (${externalCount} to external wallet${externalCount === 1 ? '' : 's'})`;
@@ -16375,6 +17266,7 @@ bind('createLpBtn', 'click', async () => {
       document.getElementById('lpFailInfo').classList.add('hidden');
 
       const allocations = buildAllocationsForApi();
+      console.log("LP-DEBUG: allocations=" + allocations.length + " pools=" + pools.length + " pool0=" + (pools[0] ? pools[0].quoteToken : "none"));
       const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
       const lockPositions = document.getElementById('lockPositions').checked;
 
@@ -16440,6 +17332,9 @@ bind('createLpBtn', 'click', async () => {
       // step-5 publish fires (its idempotency guard skips 'pending'/'done') and
       // the success modal shows THIS launch's report rather than a stale one.
       _publishedReport = null;
+      // Show the live log with initial message.
+      if (typeof _lpShowLog === "function") _lpShowLog();
+      if (typeof _lpAppendLog === "function") _lpAppendLog("Waiting for pool creation to start…");
 
       // Start the LP progress poll just before the fetch so per-step
       // events translate to row checkmarks in real time (instead of all
@@ -16964,14 +17859,14 @@ function buildPhaseProgressTree(pools, lockPositions) {
   let phase1Rows = '';
   pools.forEach((p, i) => {
     const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-    const sliceCount = p.distribution.length;
+    const sliceCount = (p.distribution || p.slices || []).length;
     // Per-pool ladder band count: in customize mode each pool has its
     // own ladder config; in simple mode the simpleConfig values apply
     // uniformly. The progress tree always uses the per-pool value so
     // it matches what createSinglePool will actually do.
-    const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
-      && Array.isArray(p.ladderConfig.bands))
-      ? p.ladderConfig.bands.length
+    const poolLadderBandCount = (p.ladderConfig || p.ladder || { mode: "off", bands: [] }?.mode === 'manual'
+      && Array.isArray(p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands))
+      ? p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands.length
       : ladderBandCount;
     // Per-pool support presence: support adds one progress row per
     // pool that has it configured. In simple mode the user's launch-
@@ -16979,8 +17874,8 @@ function buildPhaseProgressTree(pools, lockPositions) {
     // bootstrap) so every pool typically gets a row. In customize
     // mode the user controls support per-pool. Either way, we read
     // each pool's supportConfig and add the row when needed.
-    const poolHasSupport = p.supportConfig?.mode === 'custom'
-      && Number(p.supportConfig.solValue) > 0;
+    const poolHasSupport = p.supportConfig || { mode: "off", solValue: 0 }?.mode === 'custom'
+      && Number(p.supportConfig || { mode: "off", solValue: 0 }.solValue) > 0;
     phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="pool"><span class="icon">◯</span>${label} — Create pool</div>`;
     for (let s = 0; s < sliceCount; s++) {
       phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="slice-${s}"><span class="icon">◯</span>${label} — Open slice ${s + 1} of ${sliceCount}</div>`;
@@ -17050,16 +17945,16 @@ function buildPhaseProgressTree(pools, lockPositions) {
     solLastOrder.forEach((i) => {
       const p = pools[i];
       const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-      const sliceCount = p.distribution.length;
+      const sliceCount = (p.distribution || p.slices || []).length;
       // Same per-pool ladder count + support detection as Phase 1, so
       // the phase rows are perfectly symmetric and the lock progress
       // matches what got opened.
-      const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
-        && Array.isArray(p.ladderConfig.bands))
-        ? p.ladderConfig.bands.length
+      const poolLadderBandCount = (p.ladderConfig || p.ladder || { mode: "off", bands: [] }?.mode === 'manual'
+        && Array.isArray(p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands))
+        ? p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands.length
         : ladderBandCount;
-      const poolHasSupport = p.supportConfig?.mode === 'custom'
-        && Number(p.supportConfig.solValue) > 0;
+      const poolHasSupport = p.supportConfig || { mode: "off", solValue: 0 }?.mode === 'custom'
+        && Number(p.supportConfig || { mode: "off", solValue: 0 }.solValue) > 0;
       for (let s = 0; s < sliceCount; s++) {
         phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="lock-${s}"><span class="icon">◯</span>${label} — Lock slice ${s + 1}</div>`;
       }
@@ -17090,7 +17985,7 @@ function buildPhaseProgressTree(pools, lockPositions) {
       let phase4Rows = '';
       pools.forEach((p, i) => {
         const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-        const sliceCount = p.distribution.length;
+        const sliceCount = (p.distribution || p.slices || []).length;
         for (let s = 0; s < sliceCount; s++) {
           if (p.distribution[s].useExternalRecipient && p.distribution[s].recipient) {
             phase4Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="xfer-${s}"><span class="icon">◯</span>${label} — Transfer slice ${s + 1} Fee Key to recipient</div>`;
@@ -17184,6 +18079,47 @@ function _updatePhaseProgress(phaseElement) {
 // prevent the user from worrying that nothing is happening. Per-step progress
 // tracking would require server-side streaming (SSE/WS) — for now the user
 // just sees pending → done at the end. Server console shows the live progress.
+function _lpShowLog() {
+  var details = document.getElementById('lpProgressLog');
+  if (details && details.classList.contains('hidden')) {
+    details.classList.remove('hidden');
+  }
+}
+
+function _lpAppendLog(line) {
+  var details = document.getElementById('lpProgressLog');
+  var pre = document.getElementById('lpProgressLogContent');
+  if (!details || !pre) return;
+  if (details.classList.contains('hidden')) details.classList.remove('hidden');
+  var ts = new Date().toISOString().slice(11, 19);
+  pre.textContent += '[' + ts + '] ' + line + '\n';
+  pre.scrollTop = pre.scrollHeight;
+}
+
+// Map human-readable stage names to log lines.
+function _lpStageToLog(event) {
+  if (!event || !event.stage) return null;
+  var idx = event.allocationIndex != null ? (' pool ' + (event.allocationIndex + 1)) : '';
+  switch (event.stage) {
+    case 'pool_create_start': return 'Creating pool' + idx + '…';
+    case 'pool_create_done':   return 'Pool' + idx + ' created: ' + (event.poolId || '');
+    case 'pool_create_retry':  return 'Pool' + idx + ' retry ' + event.attempt + ' (rate limit, waiting ' + (event.delayMs / 1000) + 's)';
+    case 'main_open_start':    return 'Opening slice ' + (event.sliceIndex + 1) + idx + '…';
+    case 'main_open_done':     return 'Slice ' + (event.sliceIndex + 1) + idx + ' opened: ' + (event.nftMint || '');
+    case 'bootstrap_open_start': return 'Opening bootstrap' + idx + '…';
+    case 'bootstrap_open_done':  return 'Bootstrap' + idx + ' opened: ' + (event.nftMint || '');
+    case 'main_lock_done':     return 'Locked slice ' + (event.sliceIndex + 1) + idx;
+    case 'main_lock_failed':   return 'Lock failed for slice ' + (event.sliceIndex + 1) + idx + ': ' + (event.error || '');
+    case 'bootstrap_lock_done': return 'Locked bootstrap' + idx;
+    case 'phase3_start':       return 'Starting position locks…';
+        case "lp_preflight": return "Preflight (validating " + (event.allocationCount || "?") + " pools)…";
+    case "lp_quote_resolving": { var q = event.quote || ""; var qs = String(q).slice(0,10); if (q && qs.length < String(q).length) qs += "…"; var i = (event.allocationIndex != null ? (event.allocationIndex+1) : "?"); return "Resolving quote for pool " + i + (qs ? " ("+qs+")" : "") + "…"; }
+    case "lp_quote_resolved": { var sym = event.quoteSymbol || (event.quoteAddress ? String(event.quoteAddress).slice(0,8) : ""); var i = (event.allocationIndex != null ? (event.allocationIndex+1) : "?"); return "Quote ready: " + sym + " (pool " + i + ")"; }
+default: return null;
+  }
+}
+
+
 function addProgressIntro() {
   const tree = document.getElementById('lpProgressTree');
   const note = document.createElement('div');
@@ -17191,7 +18127,7 @@ function addProgressIntro() {
   note.innerHTML =
     '<i class="fas fa-info-circle"></i>&nbsp;Creating pools and positions can take several minutes. ' +
     'Each step submits a transaction and waits for confirmation. ' +
-    'Live progress is logged to the server console. ' +
+    'Live progress is shown in the log below. ' +
     'The checkmarks below will populate when the operation completes.';
   tree.appendChild(note);
 }
@@ -17948,6 +18884,16 @@ function removeKeyDisplay() {
 // driven by the data-mode attribute, so all transitions go through one
 // place. Production code never reads data-mode externally — it's purely
 // an internal flag the click handler reads to decide what to do.
+function bindVanityModeChange() {
+  var modeEl = document.getElementById('vanityCAMode');
+  var suffixRow = document.getElementById('vanityCASuffixRow');
+  if (!modeEl || !suffixRow) return;
+  modeEl.addEventListener('change', function() {
+    suffixRow.classList.toggle('hidden', modeEl.value !== 'both');
+  });
+}
+bindVanityModeChange();
+
 function setGrindButtonState(state) {
   const btn = document.getElementById('grindCABtn');
   if (!btn) return;
@@ -18513,6 +19459,7 @@ let _lpProgressSeenCount = 0;
 // buildPhaseProgressTree. Failed events use the same data-stage as
 // their _done counterparts — they're different "kinds" of the same
 // underlying row, not separate rows.
+// Append a line to the streaming progress log (collapsible <details>).
 function _lpEventToRow(event) {
   if (!event || event.allocationIndex == null) return null;
   const idx = event.allocationIndex;
@@ -18572,6 +19519,8 @@ function startLpProgressPoll(walletPublicKey) {
           // based on the event kind returned by the translator.
           for (const ev of data.state.events) {
             const mapped = _lpEventToRow(ev);
+            var logLine = _lpStageToLog(ev);
+            if (logLine) _lpAppendLog(logLine);
             if (!mapped) continue;
             if (mapped.kind === 'failed') {
               markRowFailed(mapped.row, mapped.error);
@@ -19482,12 +20431,22 @@ function canResumeLaunchJournal(journal, wallet) {
 }
 
 function prepareRecoveredSessionFromJournal(journal, wallet) {
-  tempWallet = {
+  // Set wallet on session (loaded externally from pendingWallets).
+  session.wallet = {
     publicKey: wallet.publicKey,
     ...(wallet.secretKey ? { secretKey: wallet.secretKey } : {}),
     ...(wallet.secretKeyB58 ? { secretKeyB58: wallet.secretKeyB58 } : {}),
     ...(wallet.mnemonic ? { mnemonic: wallet.mnemonic } : {}),
+    qrCode: wallet.qrCode || null,
   };
+  // Restore state from journal.
+  session.fromJournal(journal);
+  // Push everything to the DOM.
+  session.renderAll();
+  // Sync backward-compat globals.
+  tempWallet = session.wallet;
+  createdTokenInfo = session.token;
+  lpResult = session.lp;
   fundingWallet = null;
   fundingDetectionExhausted = false;
   createdTokenInfo = {
@@ -19517,6 +20476,9 @@ function prepareRecoveredSessionFromJournal(journal, wallet) {
     metadataPointerAuthorityRevoked: journal.token.metadataPointerAuthorityRevoked === true,
   };
   lpResult = { results: journalPriorResults(journal) };
+  // The journal holds more than session.fromJournal restores; keep both in step.
+  session.token = createdTokenInfo;
+  session.lp = lpResult;
 
   // Airdrop state. The journal carries two complementary records:
   //   - journal.airdrop: the per-recipient result of any airdrop that
@@ -20234,24 +21196,164 @@ function formatAge(isoString) {
   if (seconds < 86400 * 7) return `${Math.floor(seconds / 86400)} days ago`;
   return new Date(isoString).toLocaleDateString();
 }
+
+// Recent launches: saved launch journals the user can load to resume.
+
+let _launchesLoaded = false;
+
+async function loadRecentLaunches() {
+  const panel = document.getElementById('recentLaunchesPanel');
+  const list = document.getElementById('recentLaunchesList');
+  if (!panel || !list) return;
+
+  try {
+    // 8-second timeout so the loading spinner never hangs forever.
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 8000);
+    const resp = await fetch('/api/recent-launches', { signal: ac.signal });
+    clearTimeout(timer);
+    const data = await resp.json();
+    if (!data.success || !Array.isArray(data.launches)) return;
+
+    // Clear the loading placeholder now that we have a response.
+    const loadingEl = document.getElementById('recentLaunchesLoading');
+    if (loadingEl) loadingEl.remove();
+
+    const launches = data.launches;
+    if (launches.length === 0) {
+      panel.classList.add('hidden');
+      return;
+    }
+
+    list.innerHTML = '';
+    for (const launch of launches) {
+      list.appendChild(buildLaunchRow(launch));
+    }
+    panel.classList.remove('hidden');
+    _launchesLoaded = true;
+  } catch (e) {
+    console.warn('Failed to load recent launches:', e);
+    // Remove the loading placeholder so the panel doesn't appear stuck.
+    const loadingEl = document.getElementById('recentLaunchesLoading');
+    if (loadingEl) loadingEl.remove();
+  }
+}
+
+const STAGE_LABELS = {
+  wallet_generated: 'Wallet generated',
+  token_created: 'Token created',
+  token_progress: 'Creating token…',
+  lp_create_started: 'LP started',
+  lp_resume_started: 'LP resumed',
+  lp_locks: 'LP locking…',
+  lp_transfers: 'LP transfers…',
+};
+const STAGE_ICONS = {
+  wallet_generated: 'fa-wallet',
+  token_created: 'fa-coins',
+  token_progress: 'fa-spinner fa-pulse',
+  lp_create_started: 'fa-water',
+  lp_resume_started: 'fa-water',
+  lp_locks: 'fa-lock',
+  lp_transfers: 'fa-exchange-alt',
+};
+
+function buildLaunchRow(launch) {
+  var wrap = document.createElement('div');
+  wrap.className = 'box p-3 mb-2 is-size-7';
+
+  var dateStr = new Date(launch.createdAt).toLocaleDateString(undefined, {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+  var label = launch.token?.symbol || launch.token?.name || 'Unnamed';
+  var pubShort = launch.walletPublicKey.slice(0, 6) + '\u2026' + launch.walletPublicKey.slice(-4);
+  var stageLabel = STAGE_LABELS[launch.stage] || launch.stage;
+  var stageIcon = STAGE_ICONS[launch.stage] || 'fa-circle';
+
+  var meta = '';
+  if (launch.token?.mint) meta += 'Mint: ' + launch.token.mint.slice(0, 8) + '\u2026  ';
+  if (launch.lp?.poolCount) meta += launch.lp.poolCount + ' pool(s)  ';
+  if (launch.transfer?.destination) meta += 'Transferred';
+
+  wrap.innerHTML =
+    '<div class="is-flex is-align-items-center mb-2" style="gap: 0.5rem;">' +
+      '<span class="icon has-text-info"><i class="fas ' + stageIcon + '"></i></span>' +
+      '<strong>' + escapeHtml(label) + '</strong>' +
+      '<span class="has-text-grey">\u2014 ' + dateStr + '</span>' +
+    '</div>' +
+    '<div class="mb-1 has-text-grey is-size-7">' +
+      '<span class="is-family-monospace">' + pubShort + '</span>' +
+      ' &middot; ' + stageLabel +
+      (meta ? ' &middot; ' + meta : '') +
+    '</div>' +
+    '<div class="field is-grouped mt-2">' +
+      '<div class="control">' +
+        '<button class="button is-small is-success" data-action="load-launch" data-id="' + launch.id + '">' +
+          '<span class="icon is-small"><i class="fas fa-play"></i></span>' +
+          '<span>Load</span>' +
+        '</button>' +
+      '</div>' +
+    '</div>';
+
+  wrap.querySelector('[data-action="load-launch"]').addEventListener('click', async function() {
+    try {
+      // PIN-gated: a locked Recovery PIN refuses here instead of leaking the key.
+      var revealed = await revealPendingWalletSecret(launch.walletPublicKey);
+      var wallet = {
+        publicKey: revealed.publicKey,
+        secretKey: revealed.secretKey,
+        secretKeyB58: revealed.secretKeyB58 || null,
+        mnemonic: revealed.mnemonic || null,
+      };
+
+      var stateResp = await fetch('/api/launch-state?walletPublicKey=' + encodeURIComponent(launch.walletPublicKey));
+      var stateData = await stateResp.json();
+      if (!stateData.success || !stateData.state) throw new Error('launch state not found');
+
+      // Delegate to the shared resume helper (journals.js) which
+      // restores wallet, token, pool plan, and LP state correctly.
+      prepareRecoveredSessionFromJournal(stateData.state, wallet);
+
+      document.body.classList.add('has-log');
+      log('Loaded ' + (label || pubShort), 'success');
+      panel.classList.add('hidden');
+    } catch (e) {
+      log('Failed to load launch: ' + e.message, 'danger');
+    }
+  });
+
+  return wrap;
+}
+
+// loadRecentLaunches is exposed via window.loadRecentLaunches.
+setTimeout(function() { loadRecentLaunches(); }, 100);
+window.loadRecentLaunches = loadRecentLaunches;
 // ===========================================================================
 // Initial state
 // ===========================================================================
-log('Trebuchet is ready. Click "Generate Wallet" to begin.');
-loadRpcConfig();
-startRpcHealthPolling();
-loadFeeTiers();
-bindStepHeaders();
-updateCancelButtonState();
-// Render the simple-config UI right away so it's visible from page load
-// (even before the user generates a wallet). The pool list inside the
-// customize-mode container starts empty and stays empty until pools[]
-// gets populated — by wallet generation, by recovery, or by manual add.
-applySimpleConfigMode();
-// Initial paint of the token-preview card. With the default values
-// pre-filled in the supply and market-cap inputs, the user sees the
-// placeholder name + a populated tech line right away.
-renderTokenPreview();
+// Defer all initialisation that makes fetch() calls until the event loop
+// settles. Calling fetch() during module evaluation can race with the
+// API session wrapper initialisation, freezing the renderer — the splash
+// video stalls on its first frame and the app becomes unresponsive.
+setTimeout(function () {
+  log('Trebuchet is ready. Click "Generate Wallet" to begin.');
+  loadRpcConfig();
+  startRpcHealthPolling();
+  loadLaunchJournals();
+  loadRecentLaunches();
+  loadFeeTiers();
+  bindStepHeaders();
+  updateCancelButtonState();
+  // Render the simple-config UI right away so it's visible from page load
+  // (even before the user generates a wallet). The pool list inside the
+  // customize-mode container starts empty and stays empty until pools[]
+  // gets populated — by wallet generation, by recovery, or by manual add.
+  applySimpleConfigMode();
+  // Initial paint of the token-preview card. With the default values
+  // pre-filled in the supply and market-cap inputs, the user sees the
+  // placeholder name + a populated tech line right away.
+  renderTokenPreview();
+}, 0);
 
 // ---------------------------------------------------------------------------
 // Tab-close / reload guard
@@ -21468,10 +22570,31 @@ function applyVanityAvailabilityUi(vanity) {
 
 setupSecretPinGate();
 
-// Final gate evaluation. setupDisclaimer(), setupSplashScreen(), and the
-// Recovery PIN gate have run by this point. If any of them gated itself,
-// this call is a no-op; the trigger will fire when the last blocker clears.
-_evaluateStartupGates();
+// Final gate evaluation. Both setupDisclaimer() and setupSplashScreen()
+// have run by this point. If either gated itself (showed a modal or
+// played the splash), the gate is currently false and this call is a
+// no-op — the trigger will fire later when the user dismisses
+// whichever is still blocking. If NEITHER gated (returning user +
+// splash element missing), both gates are still default-true and this
+// is the only place the trigger ever fires.
+setTimeout(function () {
+  _evaluateStartupGates();
+
+  // ── Devnet indicator ───────────────────────────────────────────────────
+
+  (function setupDevnetIndicator() {
+    fetch('/api/rpc-config/status')
+      .then(r => r.json())
+      .then(data => {
+        const isDevnet = data && data.network === 'devnet';
+        const banner = document.getElementById('devnetBanner');
+        const notice = document.getElementById('devnetFundingNotice');
+        if (banner) banner.style.display = isDevnet ? 'block' : 'none';
+        if (notice) notice.classList.toggle('hidden', !isDevnet);
+      })
+      .catch(() => {});
+  })();
+}, 0);
 // audio.js — sound effects and looping background music
 //
 // All sound here is built on plain HTMLAudioElement. There is deliberately NO

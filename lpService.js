@@ -102,6 +102,7 @@ import {
   TxVersion,
   CLMM_PROGRAM_ID,
   LockClPositionLayoutV2,
+  DEVNET_PROGRAM_ID,
 } from '@raydium-io/raydium-sdk-v2';
 import {
   TOKEN_PROGRAM_ID,
@@ -112,6 +113,7 @@ import {
   ExtensionType,
 } from '@solana/spl-token';
 import { transferTokenWithProgram } from './walletHelpers.js';
+import { tokenByKey, tokenByAddress, isAllowedQuote } from './tokenRegistry.js';
 import { discoverSwapRoute, probeRaydiumPriceStrict } from './swapService.js';
 import {
   computeBootstrapTicks,
@@ -127,7 +129,7 @@ import {
 } from './lpMath.js';
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
-import { getRpcUrl } from './rpcConfig.js';
+import { getRpcUrl, getNetwork } from './rpcConfig.js';
 // Token metadata + USD price helpers. Imported (not just re-exported below) so
 // they're bound in THIS module's scope — estimateRequiredFunding and the quote
 // USD lookups call getUsdPrice directly. A bare `export { ... } from` is only a
@@ -500,6 +502,24 @@ export const KNOWN_QUOTES = {
   },
 };
 
+// --- Devnet quote tokens for realistic pool testing on devnet ---
+// RATi, Kyro, Ruby are curated devnet-native tokens usable as quote/basis tokens.
+// Add new entries as you create devnet pool tokens.
+// Also add matching <option> entries in pool-editor.js and app.js for UI visibility.
+// DEPRECATED — use tokenRegistry.js (isAllowedQuote(spec, 'devnet')) instead.
+// Kept for backward compatibility during transition; will be removed.
+export const DEVNET_ALLOWED_QUOTES = {
+  RATI: { address: '8ZscSWe5ZSFbGYg4JzA3eqpf6iCnwT72i8TZvVni2yMY', symbol: 'RATi', decimals: 9, name: 'RATi (Agent Economy)' },
+  KYRO: { address: '7m5Y29h6pEvzfkgn3hkYqFQNUrL5CofXtrnDJoqCKyro', symbol: 'Kyro', decimals: 6, name: 'Kyro (Intent Protocol)' },
+  RUBY: { address: '2hJY16WZgTQXXo6qBoWoBtZM7fz556cw3qdLgtntRuby', symbol: 'Ruby', decimals: 6, name: 'Ruby (Ruby High AI)' },
+};
+
+// Thin wrapper — the real network-scoped allowlist lives in tokenRegistry.js.
+export function isAllowedDevnetQuote(spec) {
+  return isAllowedQuote(spec, 'devnet');
+}
+
+
 // Tokens we trust at compile time. The /api/quote-token-info endpoint
 // skips the on-chain authority audit (mint/freeze authority checks) AND
 // the Step 2 Raydium-route probe for any address in this set. These are
@@ -646,6 +666,14 @@ export async function getClmmFeeTiers() {
  * can also override just the Connection construction (when they want the
  * real Raydium.load with a fake RPC) via setConnectionFactoryForTests.
  */
+// Return the CLMM program ID for the active network.
+function getClmmProgramId() {
+  const network = getNetwork();
+  return network === 'devnet'
+    ? DEVNET_PROGRAM_ID.CLMM_PROGRAM_ID
+    : CLMM_PROGRAM_ID;
+}
+
 async function initSdk(ownerKeypair) {
   if (__sdkFactoryOverride) return __sdkFactoryOverride(ownerKeypair);
   const connection = __connectionFactoryOverride
@@ -654,10 +682,11 @@ async function initSdk(ownerKeypair) {
         commitment: 'confirmed',
         confirmTransactionInitialTimeout: 60_000,
       });
+  const network = getNetwork();
   return Raydium.load({
     owner: ownerKeypair,
     connection,
-    cluster: 'mainnet',
+    cluster: network === 'devnet' ? 'devnet' : 'mainnet',
     disableFeatureCheck: true,
     disableLoadToken: true, // skip the multi-MB token-list fetch
     blockhashCommitment: 'finalized',
@@ -932,6 +961,23 @@ async function resolveQuoteToken(connection, spec, overrides = {}) {
     }
     if (overrides.symbol) base.symbol = overrides.symbol;
     return base;
+  }
+
+  // Central token registry lookup (tokenRegistry.js). Covers SOL, flywheels, majors, stables,
+  // and devnet-native tokens (RATi, Kyro, Ruby, etc.) across both networks.
+  // Returns a friendly symbol + decimals early so downstream avoids extra RPC roundtrips.
+  const _hit = tokenByKey(upper) || tokenByAddress(spec);
+  if (_hit) {
+    var _base = {
+      address: _hit.address,
+      programId: TOKEN_PROGRAM_ID.toBase58(),
+      decimals: _hit.decimals,
+      symbol: _hit.symbol,
+      name: _hit.name,
+    };
+    if (overrides.decimals !== undefined && overrides.decimals !== null) _base.decimals = Number(overrides.decimals);
+    if (overrides.symbol) _base.symbol = overrides.symbol;
+    return _base;
   }
 
   // Treat as a mint address.
@@ -1241,7 +1287,7 @@ async function createSinglePool({
     progress({ stage: 'pool_create_start' });
 
     const createRes = await raydium.clmm.createPool({
-      programId: CLMM_PROGRAM_ID,
+      programId: getClmmProgramId(),
       mint1: launchedToken,
       mint2: quoteToken,
       ammConfig,
@@ -1250,7 +1296,10 @@ async function createSinglePool({
       computeBudgetConfig: await lpComputeBudgetConfig(raydium),
     });
 
-    createTx = await createRes.execute({ sendAndConfirm: true });
+    createTx = await withRateLimitBackoff(
+      () => createRes.execute({ sendAndConfirm: true }),
+      { onRetry: (info) => progress({ stage: 'pool_create_retry', attempt: info.attempt, delayMs: info.delayMs }) },
+    );
     // extInfo.address.id is already a base58 string (SDK calls .toString() internally
     // when building the extInfo). Don't call toBase58() on it.
     poolId = createRes.extInfo.address.id;
@@ -2579,6 +2628,79 @@ async function feeKeyIsAtRecipient(raydium, feeKeyMint, recipient) {
 // Mutates the results in place: each `mainPositions[i].locked` and
 // `mainPositions[i].txIds.lock` get set, same for the bootstrap.
 // ---------------------------------------------------------------------------
+
+// ── Rate-limit recovery ─────────────────────────────────────────────
+
+/**
+ * Detect whether an error is a transient RPC rate limit that should be
+ * retried with backoff rather than failing the launch immediately.
+ */
+function isRetryableRateLimit(err) {
+  if (!err) return false;
+  const msg = (err.message || String(err)).toLowerCase();
+  // HTTP 429
+  if (msg.includes('429') || msg.includes('too many requests')) return true;
+  // Solana RPC rate limit messages
+  if (msg.includes('rate limit') || msg.includes('ratelimit')) return true;
+  if (msg.includes('throttled') || msg.includes('try again')) return true;
+  // Web3.js retry exhaustion
+  if (msg.includes('was not confirmed') && msg.includes('retries')) return true;
+  // Generic HTTP 5xx server errors (transient)
+  if (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('504')) return true;
+  // Network errors
+  if (msg.includes('fetch failed') || msg.includes('econnrefused') || msg.includes('econnreset')) return true;
+  if (msg.includes('etimedout') || msg.includes('enotfound')) return true;
+  return false;
+}
+
+/**
+ * Human-readable summary of why a launch phase failed, for the UI.
+ */
+function describeFailure(err, phase) {
+  const msg = (err.message || String(err)).toLowerCase();
+  if (msg.includes('429') || msg.includes('too many requests') || msg.includes('rate limit')) {
+    return 'RPC rate limit — wait 30s and click Resume to retry. Consider using a dedicated RPC endpoint (Helius, Triton, QuickNode).';
+  }
+  if (msg.includes('fetch failed') || msg.includes('econnrefused') || msg.includes('etimedout')) {
+    return 'Network error reaching RPC — check your connection and retry.';
+  }
+  if (msg.includes('0x1')) return 'Insufficient SOL in the launch wallet to cover rent and fees. Fund the wallet and retry.';
+  if (msg.includes('0x86')) return 'Mint must sign the metadata transaction — this is a bug, please report.';
+  if (msg.includes('simulation failed')) {
+    return 'Transaction simulation failed — the pool parameters may be invalid. Try adjusting your configuration.';
+  }
+  // Return the original error, truncated
+  const short = err.message || String(err);
+  return short.length > 200 ? short.slice(0, 197) + '...' : short;
+}
+
+/**
+ * Execute an async function with exponential backoff on rate-limit errors.
+ * Returns the function result or throws on non-retryable errors / exhaustion.
+ */
+async function withRateLimitBackoff(fn, {
+  maxRetries = 4,
+  baseDelayMs = 2000,
+  maxDelayMs = 30000,
+  onRetry = null,       // called with { attempt, delayMs, error }
+} = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (!isRetryableRateLimit(err) || attempt >= maxRetries) throw err;
+      const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
+      const jitter = delay * (0.5 + Math.random() * 0.5); // 50%-100% of delay
+      if (onRetry) onRetry({ attempt: attempt + 1, delayMs: Math.round(jitter), error: err });
+      console.warn(`Rate limit hit, retrying in ${Math.round(jitter / 1000)}s (attempt ${attempt + 1}/${maxRetries})...`);
+      await new Promise(r => setTimeout(r, jitter));
+    }
+  }
+  throw lastError;
+}
+
 // Inter-tx pacing for Phase 3 (locks) and Phase 4 (transfers).
 //
 // sendAndConfirm is the natural floor between transactions because it
@@ -3320,6 +3442,23 @@ export async function preflightCreatePoolsAndPositions({
   targetMarketCapUsd,
   allocations,
 }) {
+  onProgress && onProgress({ stage: "lp_preflight", allocationCount: allocations.length });
+  var _pnet = (typeof getNetwork === "function") ? getNetwork() : null;
+  if (_pnet === "devnet") {
+    var _pbad = allocations.filter(function(a) {
+      var q = a.quoteToken || a.quoteSymbolOverride || "";
+      return !isAllowedDevnetQuote(q);
+    });
+    if (_pbad.length > 0) {
+      var _pnames = _pbad.map(function(a) { return a.quoteSymbolOverride || (a.quoteToken ? a.quoteToken.slice(0, 8) : "custom"); }).join(", ");
+      var _perr = new Error(
+        "Devnet launches only support SOL or curated devnet pool tokens (non-allowed: " + _pnames + "). " +
+        "Add the token to tokenRegistry.js (TOKEN_REGISTRY) and re-import, or restrict to SOL / RATi / Kyro / Ruby / other allowed basis tokens. No SOL was spent."
+      );
+      _perr.failedPhase = "pre_flight";
+      throw _perr;
+    }
+  }
   if (!Array.isArray(allocations) || allocations.length === 0) {
     const e = new Error('No allocations provided');
     e.failedPhase = 'pre_flight';
@@ -3389,6 +3528,7 @@ export async function preflightCreatePoolsAndPositions({
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
     const alloc = allocations[allocIdx];
     try {
+      onProgress && onProgress({ stage: "lp_quote_resolving", allocationIndex: allocIdx, quote: alloc.quoteToken || alloc.quoteSymbolOverride || "custom" });
       const quoteToken = await resolveQuoteToken(connection, alloc.quoteToken, {
         decimals: alloc.quoteDecimalsOverride,
         symbol: alloc.quoteSymbolOverride,
@@ -3481,6 +3621,27 @@ export async function createPoolsAndPositions({
   // each retry only attempting the work that didn't complete before.
   priorResults = [],
 }) {
+  onProgress && onProgress({ stage: "lp_preflight", allocationCount: allocations.length });
+  var _net = (typeof getNetwork === "function") ? getNetwork() : null;
+  if (_net === "devnet") {
+    var _bad = allocations.filter(function(a) {
+      var q = a.quoteToken || a.quoteSymbolOverride || "";
+      return !isAllowedDevnetQuote(q);
+    });
+    if (_bad.length > 0) {
+      var _names = _bad.map(function(a) { return a.quoteSymbolOverride || (a.quoteToken ? a.quoteToken.slice(0, 8) : "custom"); }).join(", ");
+      var _err = new Error(
+        "Devnet launches only support SOL or curated devnet pool tokens (see tokenRegistry.js — RATi, Kyro, Ruby + your additions). " +
+        "Non-allowed quotes on devnet: " + _names + ". " +
+        "Add the mint to the allowlist (and a pool editor dropdown entry) or use only allowed quotes. No SOL was spent."
+      );
+      _err.failedPhase = "pre_flight";
+      _err.partialResults = priorResults || [];
+      throw _err;
+    }
+    var _curated = Object.keys(DEVNET_ALLOWED_QUOTES || {}).join(", ") || "(none)";
+    console.log("Devnet: pools restricted to SOL + curated quotes (" + _curated + ").");
+  }
   console.log(`\n=== Creating pools and positions for ${tokenMint} ===`);
   console.log(`Total supply: ${tokenTotalSupply}, target MC: $${targetMarketCapUsd}`);
   console.log(`Allocations: ${allocations.length}, lock: ${lockPositions}`);
@@ -3853,8 +4014,22 @@ export async function createPoolsAndPositions({
   // -----------------------------------------------------------------------
   // 4. Fetch CLMM AmmConfigs once (used per-pool)
   // -----------------------------------------------------------------------
-  const allConfigs = await raydium.api.getClmmConfigs();
-  console.log(`Loaded ${allConfigs.length} AmmConfigs from Raydium API`);
+  let allConfigs;
+  try {
+    allConfigs = await raydium.api.getClmmConfigs();
+    console.log(`Loaded ${allConfigs.length} AmmConfigs from Raydium API`);
+  } catch {
+    // Hardcoded fallback — the four standard Raydium CLMM fee tiers.
+    // Used when the Raydium API is unreachable or when running on
+    // devnet (the API only serves mainnet data).
+    allConfigs = [
+      { id: '100',  index: 0, tickSpacing: 1,   tradeFeeRate: 100,   protocolFeeRate: 120000, fundFeeRate: 40000 },
+      { id: '500',  index: 1, tickSpacing: 10,  tradeFeeRate: 500,   protocolFeeRate: 120000, fundFeeRate: 40000 },
+      { id: '2500', index: 2, tickSpacing: 60,  tradeFeeRate: 2500,  protocolFeeRate: 120000, fundFeeRate: 40000 },
+      { id: '10000',index: 3, tickSpacing: 200, tradeFeeRate: 10000, protocolFeeRate: 120000, fundFeeRate: 40000 },
+    ];
+    console.log(`Using hardcoded fallback: ${allConfigs.length} fee tiers`);
+  }
 
   // -----------------------------------------------------------------------
   // 5. Build the launched-token info object the SDK expects
@@ -3898,7 +4073,8 @@ export async function createPoolsAndPositions({
       console.log(
         `  [${i}] ${quoteToken.symbol} -> ${programLabel}${extLabel} [ok]`,
       );
-      resolvedAllocs.push({ alloc, quoteToken });
+
+      onProgress && onProgress({ stage: "lp_quote_resolved", allocationIndex: i, quoteSymbol: quoteToken.symbol, quoteAddress: quoteToken.address });      resolvedAllocs.push({ alloc, quoteToken });
     } catch (err) {
       // Annotate with which allocation failed so the caller can highlight
       // the right row in the UI. partialResults preserves any priorResults

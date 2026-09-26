@@ -71,6 +71,9 @@ const DEFAULTS = Object.freeze({
   // without chain risk. Practice-first is the safe onboarding default; users
   // must explicitly switch to Live before Trebuchet can send transactions.
   demoMode: true,
+  // Network selector: 'mainnet' or 'devnet'. Controls RPC endpoints, Raydium
+  // program IDs, and devnet-only features. Default is mainnet.
+  network: 'mainnet',
   // Intro splash video. The short animation that plays on startup. On by
   // default; can be turned off in settings so the app opens straight to the
   // UI (handy once the novelty wears off, or on slow hardware). Read by the

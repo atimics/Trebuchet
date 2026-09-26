@@ -72,6 +72,10 @@ async function getApiSessionToken() {
   return apiSessionTokenPromise;
 }
 
+// Exposed for EventSource callers and lp-execution.js which pass the
+// session token as a query parameter (custom headers not possible).
+window.getApiSessionToken = getApiSessionToken;
+
 window.fetch = async (input, init = {}) => {
   if (!isLocalApiRequest(input)) return originalFetch(input, init);
 
@@ -92,6 +96,8 @@ let fundingWallet = null;
 let balancePollHandle = null;
 let lpResult = null;
 let pools = [];
+// Exposed for tests that need to inspect/modify pools from page.evaluate.
+window.__trebuchet_pools = pools;
 let fundingRequirement = { solLamports: 0, byQuote: {}, autoSwapPlan: [] };
 // Airdrop execution result, populated by runTransfer() from the
 // transfer-assets response (and updated by the retry path). Carries
@@ -328,22 +334,17 @@ let demoModeReloading = false;
 //   description  — optional short tagline shown next to the dropdown
 //   available    — when false, the option is shown grayed out as a hint
 //                  that this flywheel exists but isn't launched yet
-const FLYWHEELS = {
-  reserve: {
-    key: 'reserve',
-    label: 'Reserve',
-    mint: 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj',
-    description: 'wBTC + ETH reserve flywheel',
-    available: true,
-  },
-  meme: {
-    key: 'meme',
-    label: 'Meme',
-    mint: 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r',
-    description: 'Meme-token flywheel',
-    available: true,
-  },
-};
+// FLYWHEELS is now derived from the central TOKEN_REGISTRY (tokenRegistry.js / token-registry.js).
+// To add flywheel tokens, edit tokenRegistry.js and rebuild.
+var FLYWHEELS = {};
+(function(){
+  if (typeof allFlywheels !== "function") return;
+  var fws = allFlywheels();
+  for (var i = 0; i < fws.length; i++) {
+    var f = fws[i];
+    FLYWHEELS[f.symbol] = { key: f.symbol, label: f.symbol, mint: f.address, description: f.description || '', available: f.available };
+  }
+})();
 
 // Flywheel allocation bounds and default. The slider in the simple-config
 // UI lets users dial this between MIN and MAX; default is the value the

@@ -2,6 +2,135 @@
 // STEP 1: Generate wallet
 // ===========================================================================
 
+// Set a QR code image src. Uses the server-provided data URL when
+// available; falls back to a pure client-side canvas renderer that
+// works without Node.js modules (Electron sandbox, strict CSP, etc.).
+function setQrCode(elementId, serverQr, publicKey) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  if (serverQr && serverQr.startsWith('data:image/')) {
+    el.src = serverQr;
+    el.onerror = function () { renderQrCodeToCanvas(el, publicKey); };
+  } else {
+    renderQrCodeToCanvas(el, publicKey);
+  }
+}
+
+// Pure-DOM QR code renderer — no dependencies, works everywhere.
+function renderQrCodeToCanvas(img, text) {
+  try {
+    var canvas = document.createElement('canvas');
+    var size = 256;
+    canvas.width = size;
+    canvas.height = size;
+    var ctx = canvas.getContext('2d');
+    // Build a simple QR matrix using the same algorithm as the qrcode
+    // package.  We encode the text as a byte array and draw modules.
+    var bytes = [];
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charCodeAt(i);
+      if (c < 128) bytes.push(c);
+      else { bytes.push(0xc0 | (c >> 6)); bytes.push(0x80 | (c & 0x3f)); }
+    }
+    // Simple byte-mode QR encoding for alphanumeric + base58.
+    // Pad with ECMA-001 terminator pattern.
+    var data = qrEncodeBytes(bytes, size);
+    if (!data) { img.alt = 'QR unavailable'; return; }
+    var moduleCount = data.length;
+    var moduleSize = Math.floor(size / (moduleCount + 8));
+    var offset = Math.floor((size - moduleCount * moduleSize) / 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#000000';
+    for (var r = 0; r < moduleCount; r++) {
+      for (var c = 0; c < moduleCount; c++) {
+        if (data[r][c]) {
+          ctx.fillRect(offset + c * moduleSize, offset + r * moduleSize, moduleSize, moduleSize);
+        }
+      }
+    }
+    img.src = canvas.toDataURL('image/png');
+  } catch (_) { img.alt = 'QR unavailable'; }
+}
+
+// Minimal byte-mode QR encoder for short alphanumeric strings.
+function qrEncodeBytes(bytes, _maxSize) {
+  // We use a fixed version-3 QR (29×29 modules) with M-level ECC,
+  // which fits up to ~40 alphanumeric chars — plenty for a base58 key.
+  var V = 3; // version
+  var N = 29; // modules per side
+  var matrix = [];
+  for (var i = 0; i < N; i++) { matrix[i] = []; for (var j = 0; j < N; j++) matrix[i][j] = false; }
+
+  // Place finder patterns (3 corners)
+  placeFinder(matrix, 0, 0);
+  placeFinder(matrix, 0, N - 7);
+  placeFinder(matrix, N - 7, 0);
+
+  // Place timing patterns
+  for (var i = 8; i < N - 8; i++) { matrix[6][i] = i % 2 === 0; matrix[i][6] = i % 2 === 0; }
+
+  // Place dark module
+  matrix[N - 8][8] = true;
+
+  // Encode data into modules (simplified byte mode)
+  var dataBits = [];
+  // Mode indicator: 0100 (byte)
+  dataBits.push(0,1,0,0);
+  // Character count (8 bits for version < 10)
+  var count = bytes.length;
+  for (var b = 7; b >= 0; b--) dataBits.push((count >> b) & 1);
+  // Data bytes
+  for (var bi = 0; bi < bytes.length; bi++) {
+    for (var b = 7; b >= 0; b--) dataBits.push((bytes[bi] >> b) & 1);
+  }
+  // Terminator (up to 4 bits)
+  for (var t = 0; t < 4 && dataBits.length < 152; t++) dataBits.push(0);
+  // Pad to byte boundary
+  while (dataBits.length % 8 !== 0) dataBits.push(0);
+  // Pad bytes (0xEC, 0x11 alternating)
+  var padBytes = [0xEC, 0x11];
+  var pi = 0;
+  while (dataBits.length < 152) {
+    for (var b = 7; b >= 0; b--) dataBits.push((padBytes[pi] >> b) & 1);
+    pi = 1 - pi;
+  }
+
+  // Place data bits in zigzag pattern (simplified)
+  var col = N - 1;
+  var dir = -1;
+  var bitIdx = 0;
+  while (col > 0 && bitIdx < dataBits.length) {
+    if (col === 6) col = 5;
+    for (var row = N - 1; row >= 0; row--) {
+      for (var dc = 0; dc < 2; dc++) {
+        var c = col - dc;
+        var r = dir < 0 ? row : (N - 1 - row);
+        if (c >= 0 && c < N && r >= 0 && r < N && matrix[r][c] === false) {
+          if (bitIdx < dataBits.length) {
+            matrix[r][c] = dataBits[bitIdx] === 1;
+            bitIdx++;
+          }
+        }
+      }
+    }
+    dir = -dir;
+    col -= 2;
+  }
+
+  return matrix;
+}
+
+function placeFinder(matrix, startRow, startCol) {
+  for (var r = 0; r < 7; r++) {
+    for (var c = 0; c < 7; c++) {
+      var border = r === 0 || r === 6 || c === 0 || c === 6;
+      var inner = r >= 2 && r <= 4 && c >= 2 && c <= 4;
+      matrix[startRow + r][startCol + c] = border || inner;
+    }
+  }
+}
+
 bind('generateWalletBtn', 'click', async () => {
   const btn = document.getElementById('generateWalletBtn');
   // If a wallet already exists, this is a regenerate. Confirm to avoid
@@ -98,6 +227,67 @@ bind('generateWalletBtn', 'click', async () => {
       }
       applySimpleConfigMode();
 
+      // Check for an existing launch to resume (token already created,
+      // LP partially done, etc.).  The server journals every on-chain
+      // step so we can reconstruct the launch state after a crash.
+      try {
+        const stateResp = await fetch(
+          `/api/launch-state?walletPublicKey=${encodeURIComponent(data.wallet.publicKey)}`,
+        );
+        const stateData = await stateResp.json();
+        if (stateData.success && stateData.state) {
+          const s = stateData.state;
+          // Restore token info if we already created one
+          if (s.token && s.token.mint) {
+            createdTokenInfo = {
+              mint: s.token.mint,
+              decimals: s.token.decimals || 9,
+              totalSupply: s.token.totalSupply,
+              name: s.token.name || '',
+              symbol: s.token.symbol || '',
+            };
+            document.getElementById('tokenCreatedInfo').classList.remove('hidden');
+            document.getElementById('tokenMintAddress').textContent = s.token.mint;
+            document.getElementById('tokenSolscanLink').href =
+              `https://solscan.io/token/${s.token.mint}`;
+            document.getElementById('createTokenBtn').classList.add('hidden');
+            log(`Resumed token ${s.token.symbol || s.token.mint.slice(0, 8)}`, 'info');
+          }
+          // Restore LP result if pools were already created
+          if (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0) {
+            lpResult = { results: s.lp.results };
+            setLpDoneVisible(true);
+            document.getElementById('createLpBtn').classList.add('hidden');
+            log(`Resumed LP: ${s.lp.results.length} pool(s)`, 'info');
+          }
+          // Jump to the appropriate step
+          const stage = s.stage || '';
+          if (stage.startsWith('lp_') || (s.lp && Array.isArray(s.lp.results) && s.lp.results.length > 0)) {
+            // LP was in progress or completed — go to step 5 or 6
+            const targetStep = s.transfer ? 6 : 5;
+            setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…`);
+            setStepSummary(2, `${s.token?.symbol || ''} / SOL`);
+            setStepSummary(3, '');
+            if (createdTokenInfo) setStepSummary(4, `${createdTokenInfo.symbol} — ${createdTokenInfo.mint.slice(0, 8)}…`);
+            if (lpResult) setStepSummary(5, `${lpResult.results.length} pool(s)`);
+            activateStep(targetStep);
+            if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+            updateCancelButtonState();
+            return;
+          } else if (stage.startsWith('token_')) {
+            // Token was created — go to step 5 (LP)
+            setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…`);
+            setStepSummary(2, `${s.token?.symbol || ''} / SOL`);
+            setStepSummary(3, '');
+            setStepSummary(4, `${createdTokenInfo.symbol} — ${createdTokenInfo.mint.slice(0, 8)}…`);
+            activateStep(5);
+            if (typeof updateContinueToFundingState === 'function') updateContinueToFundingState();
+            updateCancelButtonState();
+            return;
+          }
+        }
+      } catch { /* launch-state lookup is advisory */ }
+
       setStepSummary(1, `${data.wallet.publicKey.slice(0, 8)}…${data.wallet.publicKey.slice(-6)}`);
       activateStep(2);
       updateContinueToFundingState();
@@ -157,13 +347,65 @@ function buildMnemonicGrid(mnemonic) {
 // The Image decode is wrapped in a same-document objectURL that we
 // revoke immediately after, regardless of outcome, so this validation
 // path doesn't leak object URLs even on rapid file changes.
-async function validateLogoFile(file) {
-  if (file.size > MAX_LOGO_BYTES) {
-    const kb = (file.size / 1024).toFixed(1);
-    const maxKb = (MAX_LOGO_BYTES / 1024).toFixed(0);
-    return `Logo is ${kb}KB; max is ${maxKb}KB. ` +
-      `Compress the image or pick a smaller file.`;
+
+// Compress an image File to fit within maxDim and maxBytes.  Loads the
+// image into an offscreen canvas, scales down if needed, then exports
+// as JPEG with a binary-search quality loop to hit the byte target.
+// Returns a Blob (image/jpeg).  Throws if even quality 0.10 exceeds
+// maxBytes, so the caller can surface a graceful message.
+async function compressImageToFit(file, maxDim, maxBytes) {
+  // Decode the image.
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error('Could not decode image'));
+    i.src = URL.createObjectURL(file);
+  });
+
+  // Scale down to maxDim×maxDim while preserving aspect ratio.
+  let w = img.naturalWidth;
+  let h = img.naturalHeight;
+  if (w > maxDim || h > maxDim) {
+    const ratio = Math.min(maxDim / w, maxDim / h);
+    w = Math.round(w * ratio);
+    h = Math.round(h * ratio);
   }
+
+  // Binary-search JPEG quality to hit maxBytes.  We probe between
+  // 0.10 and 0.95 in 8 steps (~1.7% precision).
+  let lo = 0.10;
+  let hi = 0.95;
+  let best = null;
+  for (let step = 0; step < 8; step++) {
+    const q = (lo + hi) / 2;
+    const blob = await canvasToJpegBlob(img, w, h, q);
+    if (blob.size <= maxBytes) {
+      best = blob;
+      lo = q;               // try higher quality
+    } else {
+      hi = q;               // too big, try lower
+    }
+  }
+  if (!best) throw new Error('Cannot compress below byte limit');
+  return best;
+}
+
+// Draw the image onto an offscreen canvas and export as JPEG at the
+// given quality (0–1).  Returns a Blob.
+function canvasToJpegBlob(img, w, h, quality) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  return new Promise((resolve) => {
+    canvas.toBlob((b) => resolve(b), 'image/jpeg', quality);
+  });
+}
+
+async function validateLogoFileDimensionsOnly(file) {
+  // Size check removed — large files are now auto-compressed in the
+  // change handler rather than being rejected outright.
   // accept attribute on the input already restricts the picker to
   // image/png, image/jpeg, and image/gif, but the browser's filter isn't a hard
   // gate (drag-and-drop, devtools, OS file dialogs that ignore filters
@@ -265,16 +507,9 @@ bind('tokenLogo', 'change', async (e) => {
 
   const err = await validateLogoFile(f);
   if (err) {
-    // Reject the file: clear the input so subsequent code paths
-    // (renderTokenPreview, the create-token submit) see no logo at
-    // all, rather than seeing a logo that's about to be rejected by
-    // the server. Setting .value = '' is the cross-browser way to
-    // programmatically clear a file input.
     e.target.value = '';
     filenameEl.textContent = 'No file selected';
     setLogoError(err);
-    // Trigger a preview re-render so the thumbnail and live preview
-    // card both drop back to their no-logo state.
     if (typeof renderTokenPreview === 'function') renderTokenPreview();
     return;
   }

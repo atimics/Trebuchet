@@ -277,12 +277,22 @@ function canResumeLaunchJournal(journal, wallet) {
 }
 
 function prepareRecoveredSessionFromJournal(journal, wallet) {
-  tempWallet = {
+  // Set wallet on session (loaded externally from pendingWallets).
+  session.wallet = {
     publicKey: wallet.publicKey,
     ...(wallet.secretKey ? { secretKey: wallet.secretKey } : {}),
     ...(wallet.secretKeyB58 ? { secretKeyB58: wallet.secretKeyB58 } : {}),
     ...(wallet.mnemonic ? { mnemonic: wallet.mnemonic } : {}),
+    qrCode: wallet.qrCode || null,
   };
+  // Restore state from journal.
+  session.fromJournal(journal);
+  // Push everything to the DOM.
+  session.renderAll();
+  // Sync backward-compat globals.
+  tempWallet = session.wallet;
+  createdTokenInfo = session.token;
+  lpResult = session.lp;
   fundingWallet = null;
   fundingDetectionExhausted = false;
   createdTokenInfo = {
@@ -312,6 +322,9 @@ function prepareRecoveredSessionFromJournal(journal, wallet) {
     metadataPointerAuthorityRevoked: journal.token.metadataPointerAuthorityRevoked === true,
   };
   lpResult = { results: journalPriorResults(journal) };
+  // The journal holds more than session.fromJournal restores; keep both in step.
+  session.token = createdTokenInfo;
+  session.lp = lpResult;
 
   // Airdrop state. The journal carries two complementary records:
   //   - journal.airdrop: the per-recipient result of any airdrop that

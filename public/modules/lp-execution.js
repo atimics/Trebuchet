@@ -51,6 +51,13 @@ bind('createTokenBtn', 'click', async () => {
       const logoFile = document.getElementById('tokenLogo').files[0];
       if (logoFile) formData.append('logo', logoFile);
 
+      const allocations = buildAllocationsForApi();
+      if (allocations.length > 0) {
+        formData.append("allocations", JSON.stringify(allocations));
+        const targetMc = document.getElementById("targetMarketCap");
+        if (targetMc) formData.append("targetMarketCapUsd", targetMc.value.trim());
+      }
+
       const resp = await fetch('/api/create-token', { method: 'POST', body: formData });
       const data = await resp.json();
       if (resp.status === 409 && data.code === 'OP_IN_FLIGHT') {
@@ -143,8 +150,8 @@ function renderLpSummary() {
   `;
   for (const p of pools) {
     const quoteSafe = escapeHtml(p.resolvedSymbol || p.quoteToken || '');
-    const sliceCount = p.distribution.length;
-    const externalCount = p.distribution.filter((s) => s.useExternalRecipient && s.recipient).length;
+    const sliceCount = (p.distribution || p.slices || []).length;
+    const externalCount = (p.distribution || p.slices || []).filter((s) => s.useExternalRecipient && s.recipient).length;
     html += `<li><strong>${quoteSafe}</strong> pool — ${p.supplyPercent}% of supply, `;
     html += `${sliceCount} slice${sliceCount === 1 ? '' : 's'}`;
     if (externalCount > 0) html += ` (${externalCount} to external wallet${externalCount === 1 ? '' : 's'})`;
@@ -459,6 +466,7 @@ bind('createLpBtn', 'click', async () => {
       document.getElementById('lpFailInfo').classList.add('hidden');
 
       const allocations = buildAllocationsForApi();
+      console.log("LP-DEBUG: allocations=" + allocations.length + " pools=" + pools.length + " pool0=" + (pools[0] ? pools[0].quoteToken : "none"));
       const targetMc = parseNumberInput(document.getElementById('targetMarketCap'));
       const lockPositions = document.getElementById('lockPositions').checked;
 
@@ -524,6 +532,9 @@ bind('createLpBtn', 'click', async () => {
       // step-5 publish fires (its idempotency guard skips 'pending'/'done') and
       // the success modal shows THIS launch's report rather than a stale one.
       _publishedReport = null;
+      // Show the live log with initial message.
+      if (typeof _lpShowLog === "function") _lpShowLog();
+      if (typeof _lpAppendLog === "function") _lpAppendLog("Waiting for pool creation to start…");
 
       // Start the LP progress poll just before the fetch so per-step
       // events translate to row checkmarks in real time (instead of all
@@ -1048,14 +1059,14 @@ function buildPhaseProgressTree(pools, lockPositions) {
   let phase1Rows = '';
   pools.forEach((p, i) => {
     const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-    const sliceCount = p.distribution.length;
+    const sliceCount = (p.distribution || p.slices || []).length;
     // Per-pool ladder band count: in customize mode each pool has its
     // own ladder config; in simple mode the simpleConfig values apply
     // uniformly. The progress tree always uses the per-pool value so
     // it matches what createSinglePool will actually do.
-    const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
-      && Array.isArray(p.ladderConfig.bands))
-      ? p.ladderConfig.bands.length
+    const poolLadderBandCount = (p.ladderConfig || p.ladder || { mode: "off", bands: [] }?.mode === 'manual'
+      && Array.isArray(p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands))
+      ? p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands.length
       : ladderBandCount;
     // Per-pool support presence: support adds one progress row per
     // pool that has it configured. In simple mode the user's launch-
@@ -1063,8 +1074,8 @@ function buildPhaseProgressTree(pools, lockPositions) {
     // bootstrap) so every pool typically gets a row. In customize
     // mode the user controls support per-pool. Either way, we read
     // each pool's supportConfig and add the row when needed.
-    const poolHasSupport = p.supportConfig?.mode === 'custom'
-      && Number(p.supportConfig.solValue) > 0;
+    const poolHasSupport = p.supportConfig || { mode: "off", solValue: 0 }?.mode === 'custom'
+      && Number(p.supportConfig || { mode: "off", solValue: 0 }.solValue) > 0;
     phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="pool"><span class="icon">◯</span>${label} — Create pool</div>`;
     for (let s = 0; s < sliceCount; s++) {
       phase1Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="slice-${s}"><span class="icon">◯</span>${label} — Open slice ${s + 1} of ${sliceCount}</div>`;
@@ -1134,16 +1145,16 @@ function buildPhaseProgressTree(pools, lockPositions) {
     solLastOrder.forEach((i) => {
       const p = pools[i];
       const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-      const sliceCount = p.distribution.length;
+      const sliceCount = (p.distribution || p.slices || []).length;
       // Same per-pool ladder count + support detection as Phase 1, so
       // the phase rows are perfectly symmetric and the lock progress
       // matches what got opened.
-      const poolLadderBandCount = (p.ladderConfig?.mode === 'manual'
-        && Array.isArray(p.ladderConfig.bands))
-        ? p.ladderConfig.bands.length
+      const poolLadderBandCount = (p.ladderConfig || p.ladder || { mode: "off", bands: [] }?.mode === 'manual'
+        && Array.isArray(p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands))
+        ? p.ladderConfig || p.ladder || { mode: "off", bands: [] }.bands.length
         : ladderBandCount;
-      const poolHasSupport = p.supportConfig?.mode === 'custom'
-        && Number(p.supportConfig.solValue) > 0;
+      const poolHasSupport = p.supportConfig || { mode: "off", solValue: 0 }?.mode === 'custom'
+        && Number(p.supportConfig || { mode: "off", solValue: 0 }.solValue) > 0;
       for (let s = 0; s < sliceCount; s++) {
         phase3Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="lock-${s}"><span class="icon">◯</span>${label} — Lock slice ${s + 1}</div>`;
       }
@@ -1174,7 +1185,7 @@ function buildPhaseProgressTree(pools, lockPositions) {
       let phase4Rows = '';
       pools.forEach((p, i) => {
         const label = `Pool ${i + 1} (${p.resolvedSymbol || p.quoteToken})`;
-        const sliceCount = p.distribution.length;
+        const sliceCount = (p.distribution || p.slices || []).length;
         for (let s = 0; s < sliceCount; s++) {
           if (p.distribution[s].useExternalRecipient && p.distribution[s].recipient) {
             phase4Rows += `<div class="progress-step pending" data-pool-idx="${i}" data-stage="xfer-${s}"><span class="icon">◯</span>${label} — Transfer slice ${s + 1} Fee Key to recipient</div>`;
@@ -1268,6 +1279,47 @@ function _updatePhaseProgress(phaseElement) {
 // prevent the user from worrying that nothing is happening. Per-step progress
 // tracking would require server-side streaming (SSE/WS) — for now the user
 // just sees pending → done at the end. Server console shows the live progress.
+function _lpShowLog() {
+  var details = document.getElementById('lpProgressLog');
+  if (details && details.classList.contains('hidden')) {
+    details.classList.remove('hidden');
+  }
+}
+
+function _lpAppendLog(line) {
+  var details = document.getElementById('lpProgressLog');
+  var pre = document.getElementById('lpProgressLogContent');
+  if (!details || !pre) return;
+  if (details.classList.contains('hidden')) details.classList.remove('hidden');
+  var ts = new Date().toISOString().slice(11, 19);
+  pre.textContent += '[' + ts + '] ' + line + '\n';
+  pre.scrollTop = pre.scrollHeight;
+}
+
+// Map human-readable stage names to log lines.
+function _lpStageToLog(event) {
+  if (!event || !event.stage) return null;
+  var idx = event.allocationIndex != null ? (' pool ' + (event.allocationIndex + 1)) : '';
+  switch (event.stage) {
+    case 'pool_create_start': return 'Creating pool' + idx + '…';
+    case 'pool_create_done':   return 'Pool' + idx + ' created: ' + (event.poolId || '');
+    case 'pool_create_retry':  return 'Pool' + idx + ' retry ' + event.attempt + ' (rate limit, waiting ' + (event.delayMs / 1000) + 's)';
+    case 'main_open_start':    return 'Opening slice ' + (event.sliceIndex + 1) + idx + '…';
+    case 'main_open_done':     return 'Slice ' + (event.sliceIndex + 1) + idx + ' opened: ' + (event.nftMint || '');
+    case 'bootstrap_open_start': return 'Opening bootstrap' + idx + '…';
+    case 'bootstrap_open_done':  return 'Bootstrap' + idx + ' opened: ' + (event.nftMint || '');
+    case 'main_lock_done':     return 'Locked slice ' + (event.sliceIndex + 1) + idx;
+    case 'main_lock_failed':   return 'Lock failed for slice ' + (event.sliceIndex + 1) + idx + ': ' + (event.error || '');
+    case 'bootstrap_lock_done': return 'Locked bootstrap' + idx;
+    case 'phase3_start':       return 'Starting position locks…';
+        case "lp_preflight": return "Preflight (validating " + (event.allocationCount || "?") + " pools)…";
+    case "lp_quote_resolving": { var q = event.quote || ""; var qs = String(q).slice(0,10); if (q && qs.length < String(q).length) qs += "…"; var i = (event.allocationIndex != null ? (event.allocationIndex+1) : "?"); return "Resolving quote for pool " + i + (qs ? " ("+qs+")" : "") + "…"; }
+    case "lp_quote_resolved": { var sym = event.quoteSymbol || (event.quoteAddress ? String(event.quoteAddress).slice(0,8) : ""); var i = (event.allocationIndex != null ? (event.allocationIndex+1) : "?"); return "Quote ready: " + sym + " (pool " + i + ")"; }
+default: return null;
+  }
+}
+
+
 function addProgressIntro() {
   const tree = document.getElementById('lpProgressTree');
   const note = document.createElement('div');
@@ -1275,7 +1327,7 @@ function addProgressIntro() {
   note.innerHTML =
     '<i class="fas fa-info-circle"></i>&nbsp;Creating pools and positions can take several minutes. ' +
     'Each step submits a transaction and waits for confirmation. ' +
-    'Live progress is logged to the server console. ' +
+    'Live progress is shown in the log below. ' +
     'The checkmarks below will populate when the operation completes.';
   tree.appendChild(note);
 }
@@ -2032,6 +2084,16 @@ function removeKeyDisplay() {
 // driven by the data-mode attribute, so all transitions go through one
 // place. Production code never reads data-mode externally — it's purely
 // an internal flag the click handler reads to decide what to do.
+function bindVanityModeChange() {
+  var modeEl = document.getElementById('vanityCAMode');
+  var suffixRow = document.getElementById('vanityCASuffixRow');
+  if (!modeEl || !suffixRow) return;
+  modeEl.addEventListener('change', function() {
+    suffixRow.classList.toggle('hidden', modeEl.value !== 'both');
+  });
+}
+bindVanityModeChange();
+
 function setGrindButtonState(state) {
   const btn = document.getElementById('grindCABtn');
   if (!btn) return;
