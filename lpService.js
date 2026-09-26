@@ -112,7 +112,7 @@ import {
   ExtensionType,
 } from '@solana/spl-token';
 import { transferTokenWithProgram } from './walletHelpers.js';
-import { discoverRaydiumRoute, probeRaydiumPriceStrict } from './swapService.js';
+import { discoverSwapRoute, probeRaydiumPriceStrict } from './swapService.js';
 import {
   computeBootstrapTicks,
   computeLadderTicks,
@@ -4755,7 +4755,8 @@ function _estGetUsdPrice(mint) {
   return __estPriceOracleForTests ? __estPriceOracleForTests(mint) : getUsdPrice(mint);
 }
 function _estDiscoverRaydiumRoute(opts) {
-  return __estRouteDiscoveryForTests ? __estRouteDiscoveryForTests(opts) : discoverRaydiumRoute(opts);
+  // Raydium first, then Jupiter (PumpSwap-only tokens route there).
+  return __estRouteDiscoveryForTests ? __estRouteDiscoveryForTests(opts) : discoverSwapRoute(opts);
 }
 
 function resolveTickSpacingForConfig(ammConfigIndex) {
@@ -5395,6 +5396,9 @@ export async function estimateRequiredFunding({
           // makes that explicit in any logs the value flows into.
           poolId: 'trade-api',
           poolKind: 'route',
+          // Which aggregator routed the probe (raydium | jupiter). The swap
+          // itself tries Raydium then Jupiter regardless.
+          routeProvider: route?.provider || 'raydium',
           estSolSpend: estSolSpend + supportSolSpend,
           // sizingMultiplier and bootstrapMode propagate the estimator's
           // mode-aware budget choices down to the actual swap execution.

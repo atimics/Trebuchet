@@ -30,7 +30,11 @@ export function classifySwapError(err) {
     msg.includes('no route') ||
     msg.includes('cannot find route') ||
     msg.includes('route not found') ||
-    msg.includes('no liquidity')
+    msg.includes('no liquidity') ||
+    // Raydium Trade API codes and Jupiter's no-route code.
+    msg.includes('route_not_found') ||
+    msg.includes('insufficient_liquidity') ||
+    msg.includes('could_not_find_any_route')
   ) {
     return 'no_route';
   }

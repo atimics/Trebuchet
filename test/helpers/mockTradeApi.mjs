@@ -18,7 +18,7 @@ import { Transaction, VersionedTransaction, PublicKey } from '@solana/web3.js';
 // payer. The transaction has no instructions (just fee payer + blockhash)
 // which is enough for signAndSendTradeApiTx to deserialize + sign + submit.
 // ---------------------------------------------------------------------------
-function makeBase64TxForWallet(walletPubkey) {
+export function makeBase64TxForWallet(walletPubkey) {
   const payer = new PublicKey(walletPubkey);
   const tx = new Transaction();
   tx.feePayer = payer;
@@ -89,4 +89,30 @@ export function makeMockTradeApi({
   }
 
   return { fetchQuote, fetchTransactions };
+}
+
+/**
+ * Fake Jupiter API (quote + swap). Quote shape mirrors Jupiter's:
+ * { inputMint, outputMint, inAmount, outAmount, routePlan }.
+ *   - quoteResult: 'success' (default) | 'no-route' | 'overspend'
+ */
+export function makeMockJupiterApi({ quoteResult = 'success', quoteOutputAmount = '500000' } = {}) {
+  let quoteCalls = 0;
+  let txCalls = 0;
+  async function fetchQuote({ inputMint, outputMint, amountLamports }) {
+    quoteCalls += 1;
+    if (quoteResult === 'no-route') throw new Error('Jupiter quote failed: no route (COULD_NOT_FIND_ANY_ROUTE)');
+    return {
+      inputMint,
+      outputMint,
+      inAmount: quoteResult === 'overspend' ? String(BigInt(String(amountLamports)) * 2n) : String(amountLamports),
+      outAmount: quoteOutputAmount,
+      routePlan: [{ swapInfo: { label: 'Pump.fun Amm' } }],
+    };
+  }
+  async function fetchTransactions({ walletPubkey }) {
+    txCalls += 1;
+    return [makeBase64TxForWallet(walletPubkey)];
+  }
+  return { fetchQuote, fetchTransactions, get quoteCalls() { return quoteCalls; }, get txCalls() { return txCalls; } };
 }

@@ -18,10 +18,15 @@ import { Keypair } from '@solana/web3.js';
 
 import * as swapService from '../swapService.js';
 import { makeFakeConnection } from './helpers/mockSolana.mjs';
-import { makeMockTradeApi } from './helpers/mockTradeApi.mjs';
+import { makeBase64TxForWallet, makeMockJupiterApi, makeMockTradeApi } from './helpers/mockTradeApi.mjs';
 
 const OWNER_KP = Keypair.generate();
 const QUOTE_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+// Unit tests never reach the real Jupiter API: default to "no route".
+test.beforeEach(() => {
+  swapService.setJupiterApiForTests(makeMockJupiterApi({ quoteResult: 'no-route' }));
+});
 
 test.afterEach(() => {
   swapService.resetTestFactories();
@@ -316,4 +321,56 @@ test('swapSolForQuote: mid-retry idempotency — previous tx landed, balance now
   assert.equal(result.txId, null, 'no tx sent — discovered on recheck');
   assert.equal(result.attemptsTried, 2, 'one failed attempt, one idempotent recheck');
   assert.ok(result.finalBalanceRaw.gtn(0), 'balance reflects the discovered tokens');
+});
+
+// ---------------------------------------------------------------------------
+// Jupiter fallback (PumpSwap-only tokens that Raydium cannot route)
+// ---------------------------------------------------------------------------
+
+test('swapSolForQuote: falls back to Jupiter when Raydium has no route', async () => {
+  swapService.setConnectionFactoryForTests(() => makeFakeConnection());
+  swapService.setTradeApiForTests(makeMockTradeApi({ quoteResult: 'no-route' }));
+  const jupiter = makeMockJupiterApi();
+  swapService.setJupiterApiForTests(jupiter);
+  let tokenReads = 0;
+  swapService.setBalanceReaderForTests({
+    async readTokenBalanceRaw() { tokenReads += 1; return tokenReads >= 4 ? new BN(2_000_000) : new BN(0); },
+    async readSolBalanceLamports() { return new BN(5_000_000_000n); },
+  });
+  const result = await swapService.swapSolForQuote({
+    ownerKeypair: OWNER_KP,
+    quoteMint: QUOTE_MINT,
+    targetRaw: new BN(1_000_000),
+    minRaw: new BN(1_000),
+    quoteUsd: new Decimal(1),
+    solUsd: new Decimal(150),
+    quoteDecimals: 6,
+  });
+  assert.equal(result.succeeded, true);
+  assert.equal(jupiter.txCalls, 1, 'the swap was built by Jupiter');
+});
+
+test('swapSolForQuote: refuses a Jupiter quote that spends more than budgeted', async () => {
+  swapService.setConnectionFactoryForTests(() => makeFakeConnection());
+  swapService.setTradeApiForTests(makeMockTradeApi({ quoteResult: 'no-route' }));
+  const jupiter = makeMockJupiterApi({ quoteResult: 'overspend' });
+  swapService.setJupiterApiForTests(jupiter);
+  swapService.setBalanceReaderForTests(makeBalanceReader());
+  await assert.rejects(() => swapService.swapSolForQuote({
+    ownerKeypair: OWNER_KP,
+    quoteMint: QUOTE_MINT,
+    targetRaw: new BN(1_000_000),
+    quoteUsd: new Decimal(1),
+    solUsd: new Decimal(150),
+    quoteDecimals: 6,
+  }), /ALL_ATTEMPTS_FAILED/);
+  assert.equal(jupiter.txCalls, 0, 'nothing was built from an over-budget quote');
+});
+
+test('assertSwapTxShape: only the launch wallet may pay and sign', async () => {
+  const { VersionedTransaction } = await import('@solana/web3.js');
+  const ok = VersionedTransaction.deserialize(Buffer.from(makeBase64TxForWallet(OWNER_KP.publicKey.toBase58()), 'base64'));
+  assert.doesNotThrow(() => swapService.assertSwapTxShape(ok, OWNER_KP.publicKey));
+  const other = VersionedTransaction.deserialize(Buffer.from(makeBase64TxForWallet(Keypair.generate().publicKey.toBase58()), 'base64'));
+  assert.throws(() => swapService.assertSwapTxShape(other, OWNER_KP.publicKey), /launch wallet only/);
 });

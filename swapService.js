@@ -93,6 +93,11 @@ const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 // instead of per-pool-type SDK swap methods.
 const RAYDIUM_SWAP_API = 'https://transaction-v1.raydium.io';
 
+// Jupiter aggregator (keyless tier). Fallback route when Raydium has none:
+// pump.fun tokens that only trade on PumpSwap (the pump.fun AMM) are not
+// routable through Raydium's Trade API but are through Jupiter.
+const JUPITER_SWAP_API = 'https://lite-api.jup.ag/swap/v1';
+
 // Probe amount used to verify Raydium can route a SOL→token swap and
 // to derive an effective price. 0.01 SOL — small enough to be cheap,
 // large enough to clear any "amount too small" floor in the routing
@@ -154,6 +159,7 @@ const routeDiscoveryCache = new Map();
 
 let __connectionFactoryOverride = null;
 let __tradeApiOverride = null;
+let __jupiterApiOverride = null;
 let __balanceReaderOverride = null;
 
 /**
@@ -172,6 +178,10 @@ export function setConnectionFactoryForTests(factory) {
  *   fetchQuote({ inputMint, outputMint, amountLamports, slippageBps })
  *   fetchTransactions({ swapResponse, walletPubkey, priorityFeeMicroLamports })
  */
+export function setJupiterApiForTests(api) {
+  __jupiterApiOverride = api;
+}
+
 export function setTradeApiForTests(api) {
   __tradeApiOverride = api;
 }
@@ -193,6 +203,7 @@ export function setBalanceReaderForTests(reader) {
 export function resetTestFactories() {
   __connectionFactoryOverride = null;
   __tradeApiOverride = null;
+  __jupiterApiOverride = null;
   __balanceReaderOverride = null;
 }
 
@@ -241,6 +252,45 @@ function obtainTradeApiQuote(args) {
 function obtainTradeApiTransactions(args) {
   if (__tradeApiOverride) return __tradeApiOverride.fetchTransactions(args);
   return fetchTradeApiTransactions(args);
+}
+
+function obtainJupiterQuote(args) {
+  if (__jupiterApiOverride) return __jupiterApiOverride.fetchQuote(args);
+  return fetchJupiterQuote(args);
+}
+
+function obtainJupiterTransactions(args) {
+  if (__jupiterApiOverride) return __jupiterApiOverride.fetchTransactions(args);
+  return fetchJupiterTransactions(args);
+}
+
+// Swap routes in preference order. Each quote is checked before any
+// transaction is built: it must be SOL -> the requested mint and spend no
+// more than the budgeted lamports.
+const SWAP_PROVIDERS = [
+  {
+    name: 'raydium',
+    label: 'Raydium',
+    quote: obtainTradeApiQuote,
+    build: obtainTradeApiTransactions,
+    quoteSummary: (q) => ({ inputMint: q?.data?.inputMint, outputMint: q?.data?.outputMint, inAmount: q?.data?.inputAmount }),
+  },
+  {
+    name: 'jupiter',
+    label: 'Jupiter',
+    quote: obtainJupiterQuote,
+    build: obtainJupiterTransactions,
+    quoteSummary: (q) => ({ inputMint: q?.inputMint, outputMint: q?.outputMint, inAmount: q?.inAmount }),
+  },
+];
+
+function assertQuoteWithinBudget(provider, quote, { outputMint, maxInLamports }) {
+  const { inputMint, outputMint: quotedOut, inAmount } = provider.quoteSummary(quote);
+  if (inputMint && inputMint !== WSOL_MINT) throw new Error(`${provider.label} quote input is not SOL`);
+  if (quotedOut && quotedOut !== outputMint) throw new Error(`${provider.label} quote output mint mismatch`);
+  if (inAmount !== undefined && new BN(String(inAmount)).gt(maxInLamports)) {
+    throw new Error(`${provider.label} quote spends more than budgeted`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +434,45 @@ export async function discoverRaydiumRoute({
 //
 // On success returns { effectiveQuoteUsd: Decimal, inputLamports,
 // outputRaw } so callers can log diagnostics if they want.
+/**
+ * Route discovery through Jupiter for tokens Raydium cannot route (e.g.
+ * PumpSwap-only pump.fun tokens). Same probe and price math as
+ * discoverRaydiumRoute. Returns { available, effectiveQuoteUsd, provider }
+ * or null.
+ */
+export async function discoverJupiterRoute({ quoteMint, quoteDecimals, solUsd, forceFresh = false }) {
+  if (quoteMint === WSOL_MINT) return null;
+  const cacheKey = `jupiter:${quoteMint}:${quoteDecimals}`;
+  if (!forceFresh && routeDiscoveryCache.has(cacheKey)) return routeDiscoveryCache.get(cacheKey);
+  let result = null;
+  try {
+    const quote = await obtainJupiterQuote({
+      inputMint: WSOL_MINT,
+      outputMint: quoteMint,
+      amountLamports: ROUTE_PROBE_LAMPORTS,
+      slippageBps: 500,
+    });
+    const inputAmount = new Decimal(quote.inAmount || 0);
+    const outputAmount = new Decimal(quote.outAmount || 0);
+    if (inputAmount.gt(0) && outputAmount.gt(0)) {
+      const solWhole = inputAmount.div(new Decimal(10).pow(9));
+      const tokensWhole = outputAmount.div(new Decimal(10).pow(quoteDecimals));
+      result = { available: true, effectiveQuoteUsd: solWhole.mul(solUsd).div(tokensWhole), provider: 'jupiter' };
+    }
+  } catch (e) {
+    console.log(`discoverJupiterRoute: ${quoteMint} -> ${e.message}`);
+  }
+  if (!forceFresh) routeDiscoveryCache.set(cacheKey, result);
+  return result;
+}
+
+/** Raydium first, then Jupiter. */
+export async function discoverSwapRoute(opts) {
+  const raydium = await discoverRaydiumRoute(opts);
+  if (raydium) return { ...raydium, provider: 'raydium' };
+  return discoverJupiterRoute(opts);
+}
+
 export async function probeRaydiumPriceStrict({
   quoteMint,
   quoteDecimals,
@@ -621,12 +710,64 @@ async function fetchTradeApiTransactions({
 }
 
 /**
+ * Jupiter quote: GET /quote. Jupiter answers "no route" with a 4xx and an
+ * errorCode such as COULD_NOT_FIND_ANY_ROUTE; the message keeps "no route"
+ * so classifySwapError tags it.
+ */
+async function fetchJupiterQuote({ inputMint, outputMint, amountLamports, slippageBps }) {
+  const url = new URL(`${JUPITER_SWAP_API}/quote`);
+  url.searchParams.set('inputMint', inputMint);
+  url.searchParams.set('outputMint', outputMint);
+  url.searchParams.set('amount', amountLamports.toString());
+  url.searchParams.set('slippageBps', String(slippageBps));
+  url.searchParams.set('restrictIntermediateTokens', 'true');
+  const resp = await fetchWithTimeout(url.toString(), { headers: { Accept: 'application/json' } });
+  const json = await resp.json().catch(() => null);
+  if (!resp.ok || !json || !Array.isArray(json.routePlan) || json.routePlan.length === 0) {
+    const code = json?.errorCode || json?.error || `HTTP ${resp.status}`;
+    throw new Error(`Jupiter quote failed: no route (${code})`);
+  }
+  return json;
+}
+
+/** Jupiter transaction: POST /swap with the quote. Returns [base64 tx]. */
+async function fetchJupiterTransactions({ swapResponse, walletPubkey, priorityFeeMicroLamports }) {
+  const resp = await fetchWithTimeout(`${JUPITER_SWAP_API}/swap`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      quoteResponse: swapResponse,
+      userPublicKey: walletPubkey,
+      wrapAndUnwrapSol: true,
+      dynamicComputeUnitLimit: true,
+      computeUnitPriceMicroLamports: Number(priorityFeeMicroLamports),
+    }),
+  });
+  const json = await resp.json().catch(() => null);
+  if (!resp.ok || typeof json?.swapTransaction !== 'string') {
+    throw new Error(`Jupiter build failed: ${json?.error || `HTTP ${resp.status}`}`);
+  }
+  return [json.swapTransaction];
+}
+
+// A swap transaction built by a third-party API must be paid for and signed
+// by the launch wallet alone; anything else is refused before signing.
+export function assertSwapTxShape(tx, ownerPk) {
+  const header = tx?.message?.header;
+  const payer = tx?.message?.staticAccountKeys?.[0];
+  if (!header || header.numRequiredSignatures !== 1 || !payer || !payer.equals(ownerPk)) {
+    throw new Error('Swap transaction must be paid for and signed by the launch wallet only');
+  }
+}
+
+/**
  * Sign and submit a single Trade-API-built transaction, then wait for
  * confirmation under a bounded timeout. Throws on any failure.
  */
 async function signAndSendTradeApiTx(connection, ownerKeypair, base64Tx) {
   const txBuf = Buffer.from(base64Tx, 'base64');
   const tx = VersionedTransaction.deserialize(txBuf);
+  assertSwapTxShape(tx, ownerKeypair.publicKey);
   tx.sign([ownerKeypair]);
 
   const signature = await connection.sendTransaction(tx, {
@@ -811,10 +952,13 @@ export async function swapSolForQuote({
       `to acquire ~${missingWhole.toFixed(6)} ${quoteMint.slice(0, 6)}...`,
   );
 
-  // 6. Retry ladder against the Trade API.
+  // 6. Retry ladder per swap provider: Raydium first, then Jupiter when
+  //    Raydium has no route (e.g. PumpSwap-only tokens) or keeps failing.
   const attemptErrors = [];
   let attemptsTried = 0;
+  const noRouteProviders = [];
 
+  providers: for (const provider of SWAP_PROVIDERS) {
   for (let rungIdx = 0; rungIdx < RETRY_LADDER.length; rungIdx++) {
     const rung = RETRY_LADDER[rungIdx];
     attemptsTried++;
@@ -849,21 +993,22 @@ export async function swapSolForQuote({
           `prio=${rung.priorityFeeMicroLamports}uL`,
       );
 
-      // 6a. Fetch quote.
-      const swapResponse = await obtainTradeApiQuote({
+      // 6a. Fetch quote, and check it before building anything.
+      const swapResponse = await provider.quote({
         inputMint: WSOL_MINT,
         outputMint: quoteMint,
         amountLamports: spendLamports,
         slippageBps: rung.slippageBps,
       });
+      assertQuoteWithinBudget(provider, swapResponse, { outputMint: quoteMint, maxInLamports: spendLamports });
 
       // 6b. Build serialized transaction(s).
-      const txs = await obtainTradeApiTransactions({
+      const txs = await provider.build({
         swapResponse,
         walletPubkey: ownerPk.toBase58(),
         priorityFeeMicroLamports: rung.priorityFeeMicroLamports,
       });
-      console.log(`    Trade API returned ${txs.length} tx(s) to sign`);
+      console.log(`    ${provider.label} returned ${txs.length} tx(s) to sign`);
 
       // 6c. Sign and send each tx in order. Multi-tx responses happen
       //     when the route needs setup (ATA creation) that can't fit
@@ -915,7 +1060,7 @@ export async function swapSolForQuote({
       };
     } catch (e) {
       const kind = classifySwapError(e);
-      const summary = `${kind}: ${e.message}`;
+      const summary = `${provider.name} ${kind}: ${e.message}`;
       attemptErrors.push(`attempt ${attemptsTried}: ${summary}`);
       console.warn(`    failed (${summary})`);
 
@@ -924,17 +1069,23 @@ export async function swapSolForQuote({
         throw new Error(`INSUFFICIENT_SOL: ${e.message}`);
       }
       if (kind === 'no_route') {
-        // Trade API said it can't route this. Climbing the slippage
-        // ladder won't change that. Bail to manual fallback.
-        throw new Error(
-          `NO_USABLE_POOL: Raydium can't route SOL->${quoteMint.slice(0, 8)}... (${e.message})`,
-        );
+        // This provider can't route it; the slippage ladder won't change
+        // that. Try the next provider.
+        noRouteProviders.push(provider.label);
+        continue providers;
       }
       // 'transient' or 'unknown' — climb the retry ladder.
       if (rungIdx < RETRY_LADDER.length - 1) {
         await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS));
       }
     }
+  }
+  }
+
+  if (noRouteProviders.length === SWAP_PROVIDERS.length) {
+    throw new Error(
+      `NO_USABLE_POOL: neither Raydium nor Jupiter can route SOL->${quoteMint.slice(0, 8)}... (${attemptErrors.join(' | ')})`,
+    );
   }
 
   // All rungs exhausted.
