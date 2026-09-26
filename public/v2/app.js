@@ -7567,22 +7567,55 @@ function renderSupplyEditor() {
   if (!target) return;
   const active = document.activeElement;
   const focusKey = target.contains(active) ? active?.dataset?.supplyKey || null : null;
-  const selection = focusKey && typeof active.selectionStart === 'number'
-    ? [active.selectionStart, active.selectionEnd]
-    : null;
 
   const supply = parseWholeNumber($('#tokenSupply').value) || 1000000000;
   const rows = supplyEditorRows();
-  const total = Math.round(rows.reduce((sum, row) => sum + row.percent, 0) * 10) / 10;
-  const remainder = Math.round((100 - total) * 10) / 10;
+  const total = Math.round(rows.reduce((sum, row) => sum + row.percent, 0) * 100) / 100;
+  const remainder = Math.round((100 - total) * 100) / 100;
   const pools = rows.filter((row) => row.kind === 'pool');
   const poolPercent = pools.reduce((sum, row) => sum + row.percent, 0);
-  const pct = (value) => `${Number(value.toFixed(1))}%`;
+  const pct = (value) => `${Number(value.toFixed(2))}%`;
 
   const segments = rows.filter((row) => row.percent > 0).map((row) => (
     `<span style="flex:${row.percent} 0 0;background:${row.color}" title="${escapeHtml(`${row.label} ${pct(row.percent)}`)}"></span>`
   )).join('');
   const gap = remainder > 0 ? `<span class="supply-bar-gap" style="flex:${remainder} 0 0" title="${pct(remainder)} unassigned"></span>` : '';
+
+  const totalHtml = `<div class="supply-total ${Math.abs(remainder) > 0.05 ? 'is-off' : ''}">
+      <span>Total</span>
+      <strong>${pct(total)}</strong>
+      <small>${Math.abs(remainder) <= 0.05 ? `${compactAmount(supply)} tokens` : remainder > 0 ? `${pct(remainder)} unassigned` : `${pct(-remainder)} over`}</small>
+    </div>`;
+
+  // While a field in the table has focus, only the figures around it update.
+  // Rewriting the field itself would move the cursor and reformat what the
+  // user is still typing (e.g. "6." or "6.66"). The full refresh happens
+  // when focus leaves the table.
+  const editing = target.dataset.rendered === '1'
+    && target.contains(active)
+    && active.matches?.('input, textarea, select');
+  if (editing) {
+    target.querySelector('.supply-bar').innerHTML = segments + gap;
+    const poolsHead = target.querySelector('[data-supply-pools-head]');
+    if (poolsHead) poolsHead.textContent = `${pools.length} · ${pct(poolPercent)}`;
+    rows.forEach((row) => {
+      const amount = target.querySelector(`[data-supply-amount="${CSS.escape(row.key)}"]`);
+      if (amount) amount.textContent = compactAmount(supply * row.percent / 100);
+    });
+    target.querySelector('.supply-total')?.replaceWith(
+      document.createRange().createContextualFragment(totalHtml),
+    );
+    renderReturnWalletCard();
+    return;
+  }
+  if (!target.dataset.bound) {
+    target.dataset.bound = '1';
+    target.addEventListener('focusout', () => {
+      window.setTimeout(() => {
+        if (!target.contains(document.activeElement)) renderSupplyEditor();
+      }, 0);
+    });
+  }
 
   const field = (label, hint, control) => (
     `<label class="supply-field"><span>${escapeHtml(label)}</span>${control}${hint ? `<small>${escapeHtml(hint)}</small>` : ''}</label>`
@@ -7591,9 +7624,9 @@ function renderSupplyEditor() {
     if (row.key === 'sol') {
       return `
         ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-supply-target="#sliceShares" data-supply-key="sol:slices" value="${escapeHtml($('#sliceShares').value)}" autocomplete="off">`)}
-        ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`)}
-        ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="number" min="0" step="0.05" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`)}
-        ${field('Support depth %', 'How far below the start price support reaches.', `<input type="number" min="1" max="50" step="1" data-base-field="baseSupportDepth" data-supply-key="sol:depth" value="${escapeHtml(state.baseSupportDepth)}">`)}
+        ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="text" inputmode="numeric" autocomplete="off" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`)}
+        ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`)}
+        ${field('Support depth %', 'How far below the start price support reaches.', `<input type="text" inputmode="numeric" autocomplete="off" data-base-field="baseSupportDepth" data-supply-key="sol:depth" value="${escapeHtml(state.baseSupportDepth)}">`)}
         <label class="supply-field supply-field-wide"><span>Custom ladder</span><textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea><small>Replaces ladder bands when set.</small></label>
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>`;
     }
@@ -7604,8 +7637,8 @@ function renderSupplyEditor() {
     return `
       ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? 5)}</select>`)}
       ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`)}
-      ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`)}
-      ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="number" min="0" step="0.05" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`)}
+      ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`)}
+      ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`)}
       <label class="supply-field supply-field-wide"><span>Custom ladder</span><textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea><small>Replaces ladder bands when set.</small></label>
       <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
       <div class="supply-field-wide">${renderCustomQuoteInfoPanel(pool)}</div>`;
@@ -7628,8 +7661,8 @@ function renderSupplyEditor() {
       <li class="supply-row">
         <i class="supply-swatch" style="background:${row.color}"></i>
         <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
-        <span class="supply-amount">${compactAmount(supply * row.percent / 100)}</span>
-        <label class="supply-percent"><input type="number" min="0" max="100" step="0.1" value="${escapeHtml(String(row.percent))}" ${input} data-supply-key="${escapeHtml(row.key)}" aria-label="${escapeHtml(row.label)} percent of supply"><span>%</span></label>
+        <span class="supply-amount" data-supply-amount="${escapeHtml(row.key)}">${compactAmount(supply * row.percent / 100)}</span>
+        <label class="supply-percent"><input type="text" inputmode="decimal" autocomplete="off" value="${escapeHtml(String(row.percent))}" ${input} data-supply-key="${escapeHtml(row.key)}" aria-label="${escapeHtml(row.label)} percent of supply"><span>%</span></label>
         ${row.kind === 'pool'
           ? `<button class="supply-gear ${state.supplyOpenRow === row.key ? 'is-open' : ''}" type="button" data-action="supply-toggle-settings" data-supply-row="${escapeHtml(row.key)}" aria-expanded="${state.supplyOpenRow === row.key}" aria-label="${escapeHtml(row.label)} settings"><i class="fa-solid fa-sliders"></i></button>`
           : '<span class="supply-remove-spacer"></span>'}
@@ -7640,26 +7673,15 @@ function renderSupplyEditor() {
 
   target.innerHTML = `
     <div class="supply-bar" role="img" aria-label="Supply split">${segments}${gap}</div>
-    <div class="supply-group-head"><span>Pools</span><span>${pools.length} · ${pct(poolPercent)}</span></div>
+    <div class="supply-group-head"><span>Pools</span><span data-supply-pools-head>${pools.length} · ${pct(poolPercent)}</span></div>
     <ol class="supply-list">${pools.map(rowHtml).join('')}</ol>
     <button class="supply-add" type="button" data-action="add-custom-pool"><i class="fa-solid fa-plus"></i> Add pair</button>
     <div class="supply-group-head"><span>Held back</span></div>
     <ol class="supply-list">${rows.filter((row) => row.kind === 'hold').map(rowHtml).join('')}</ol>
-    <div class="supply-total ${Math.abs(remainder) > 0.05 ? 'is-off' : ''}">
-      <span>Total</span>
-      <strong>${pct(total)}</strong>
-      <small>${Math.abs(remainder) <= 0.05 ? `${compactAmount(supply)} tokens` : remainder > 0 ? `${pct(remainder)} unassigned` : `${pct(-remainder)} over`}</small>
-    </div>`;
+    ${totalHtml}`;
 
+  target.dataset.rendered = '1';
   renderReturnWalletCard();
-
-  if (focusKey) {
-    const next = target.querySelector(`[data-supply-key="${CSS.escape(focusKey)}"]`);
-    next?.focus({ preventScroll: true });
-    if (next && selection) {
-      try { next.setSelectionRange(selection[0], selection[1]); } catch (_error) { /* number inputs */ }
-    }
-  }
 }
 
 function renderPoolEditorPanel() {
