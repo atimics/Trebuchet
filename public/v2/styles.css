@@ -17025,7 +17025,7 @@ body[data-active-view="launch"] #view-launch .signature-panel {
 
 .supply-row {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) 72px 96px 28px;
+  grid-template-columns: 10px minmax(0, 1fr) 72px 96px 28px 28px;
   align-items: center;
   gap: 12px;
   min-height: 48px;
@@ -17171,24 +17171,161 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   text-transform: uppercase;
 }
 
-.pool-advanced {
-  margin-top: 16px;
-  border-top: 1px solid var(--line);
-  padding-top: 10px;
+/* Pool settings open under their row. */
+.supply-gear {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--subtle);
+  cursor: pointer;
 }
 
-.pool-advanced > summary {
+.supply-gear:hover,
+.supply-gear:focus-visible,
+.supply-gear.is-open {
+  background: var(--panel-strong);
+  color: var(--green);
+}
+
+.supply-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+  padding: 14px 16px 16px 38px;
+  border-top: 1px dashed var(--line);
+  background: color-mix(in srgb, var(--panel-strong) 60%, transparent);
+}
+
+.supply-field {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+}
+
+.supply-field > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.supply-field > small {
+  color: var(--subtle);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.supply-field-wide {
+  grid-column: 1 / -1;
+}
+
+.supply-settings-empty {
+  margin: 0;
+  color: var(--subtle);
+  font-size: 12px;
+}
+
+/* Payout wallet, airdrop, report. */
+.payout-wallet {
+  grid-column: 1 / -1;
+}
+
+.payout-wallet small {
+  color: var(--subtle);
+  font-size: 11px;
+}
+
+.fee-key-override {
+  grid-column: 1 / -1;
+}
+
+.fee-key-override > summary,
+.drawer-section > summary {
   color: var(--muted);
   font-size: 12px;
   cursor: pointer;
 }
 
+.fee-key-override[open] > summary {
+  margin-bottom: 8px;
+}
+
+.drawer-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.drawer-section > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.drawer-section[open] > summary {
+  margin-bottom: 12px;
+}
+
+.drawer-section textarea {
+  width: 100%;
+}
+
 @media (max-width: 640px) {
   .supply-row {
-    grid-template-columns: 10px minmax(0, 1fr) 84px 28px;
+    grid-template-columns: 10px minmax(0, 1fr) 84px 28px 28px;
+  }
+
+  .supply-settings {
+    grid-template-columns: 1fr;
   }
 
   .supply-amount {
     display: none;
   }
+}
+
+.drawer-section > summary > .risk-badge {
+  margin-left: auto;
+  margin-right: 12px;
+}
+
+.supply-field > small,
+.payout-wallet small,
+.fee-key-override > summary {
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.supply-field select {
+  min-height: 34px;
+}
+
+#airdropSection .airdrop-budget-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+#airdropSection .toggle-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+#airdropSection .toggle-line input {
+  width: 16px;
+  height: 16px;
 }

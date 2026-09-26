@@ -7560,6 +7560,34 @@ function renderSupplyEditor() {
   )).join('');
   const gap = remainder > 0 ? `<span class="supply-bar-gap" style="flex:${remainder} 0 0" title="${pct(remainder)} unassigned"></span>` : '';
 
+  const field = (label, hint, control) => (
+    `<label class="supply-field"><span>${escapeHtml(label)}</span>${control}${hint ? `<small>${escapeHtml(hint)}</small>` : ''}</label>`
+  );
+  const settingsHtml = (row) => {
+    if (row.key === 'sol') {
+      return `
+        ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-supply-target="#sliceShares" data-supply-key="sol:slices" value="${escapeHtml($('#sliceShares').value)}" autocomplete="off">`)}
+        ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`)}
+        ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="number" min="0" step="0.05" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`)}
+        ${field('Support depth %', 'How far below the start price support reaches.', `<input type="number" min="1" max="50" step="1" data-base-field="baseSupportDepth" data-supply-key="sol:depth" value="${escapeHtml(state.baseSupportDepth)}">`)}
+        <label class="supply-field supply-field-wide"><span>Custom ladder</span><textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea><small>Replaces ladder bands when set.</small></label>
+        <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>`;
+    }
+    const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
+    if (!pool) return '<p class="supply-settings-empty">This pool uses the default settings.</p>';
+    const id = escapeHtml(pool.id);
+    const key = escapeHtml(row.key);
+    return `
+      ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? 5)}</select>`)}
+      ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`)}
+      ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`)}
+      ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="number" min="0" step="0.05" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`)}
+      ${field('Fee Key owner', '', `<input data-custom-pool-field="feeKeyRecipient" data-pool-id="${id}" data-supply-key="${key}:feekey" value="${escapeHtml(pool.feeKeyRecipient || '')}" placeholder="Same as your wallet" autocomplete="off" spellcheck="false">`)}
+      <label class="supply-field supply-field-wide"><span>Custom ladder</span><textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea><small>Replaces ladder bands when set.</small></label>
+      <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
+      <div class="supply-field-wide">${renderCustomQuoteInfoPanel(pool)}</div>`;
+  };
+
   const rowHtml = (row) => {
     const input = row.poolId
       ? `data-custom-pool-field="supplyPercent" data-pool-id="${escapeHtml(row.poolId)}"`
@@ -7579,8 +7607,12 @@ function renderSupplyEditor() {
         <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
         <span class="supply-amount">${compactAmount(supply * row.percent / 100)}</span>
         <label class="supply-percent"><input type="number" min="0" max="100" step="0.1" value="${escapeHtml(String(row.percent))}" ${input} data-supply-key="${escapeHtml(row.key)}" aria-label="${escapeHtml(row.label)} percent of supply"><span>%</span></label>
+        ${row.kind === 'pool'
+          ? `<button class="supply-gear ${state.supplyOpenRow === row.key ? 'is-open' : ''}" type="button" data-action="supply-toggle-settings" data-supply-row="${escapeHtml(row.key)}" aria-expanded="${state.supplyOpenRow === row.key}" aria-label="${escapeHtml(row.label)} settings"><i class="fa-solid fa-sliders"></i></button>`
+          : '<span class="supply-remove-spacer"></span>'}
         ${remove}
-      </li>`;
+      </li>
+      ${row.kind === 'pool' && state.supplyOpenRow === row.key ? `<li class="supply-settings">${settingsHtml(row)}</li>` : ''}`;
   };
 
   target.innerHTML = `
@@ -7595,6 +7627,9 @@ function renderSupplyEditor() {
       <strong>${pct(total)}</strong>
       <small>${Math.abs(remainder) <= 0.05 ? `${compactAmount(supply)} tokens` : remainder > 0 ? `${pct(remainder)} unassigned` : `${pct(-remainder)} over`}</small>
     </div>`;
+
+  const feeKeyOwner = $('#feeKeyRecipient');
+  if (feeKeyOwner?.value.trim()) feeKeyOwner.closest('details')?.setAttribute('open', '');
 
   if (focusKey) {
     const next = target.querySelector(`[data-supply-key="${CSS.escape(focusKey)}"]`);
@@ -23619,6 +23654,13 @@ function handleClick(event) {
 
   if (action === 'resolve-custom-quote') {
     resolveCustomQuoteToken(actionTarget.dataset.poolId).catch((error) => notify(error.message || 'Quote-token verification failed'));
+    return;
+  }
+
+  if (action === 'supply-toggle-settings') {
+    const row = actionTarget.dataset.supplyRow;
+    state.supplyOpenRow = state.supplyOpenRow === row ? null : row;
+    renderSupplyEditor();
     return;
   }
 

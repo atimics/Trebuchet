@@ -2243,7 +2243,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="mainPoolPercent"/);
   assert.match(html, /id="sliceShares"/);
   assert.match(html, /id="ladderBands" type="number" value="0" min="0" max="20"/);
-  assert.match(html, /Round slices to 100%/);
+  assert.match(js, /Round slices to 100%/);
   assert.match(html, /Starts &amp; Ends With/);
   assert.match(combined, /Diagnostics/);
   assert.match(combined, /System status/);

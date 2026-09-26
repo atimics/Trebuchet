@@ -409,84 +409,60 @@
                       <code class="flywheel-pick-mint" id="flywheelPickMint">—</code>
                     </div>
                     <input id="preallocationSupplyPercent" type="number" value="0" min="0" max="99" step="0.1">
-                  </div>
-                  <h4 class="classic-subhead">SOL pool</h4>
-                  <label>
-                    <span>Position slices</span>
                     <input id="sliceShares" type="text" value="100" autocomplete="off">
-                  </label>
-                  <label>
-                    <span>Ladder bands</span>
                     <input id="ladderBands" type="number" value="0" min="0" max="20" step="1">
-                  </label>
-                  <label>
-                    <span>Support SOL</span>
                     <input id="supportSol" type="number" value="0" min="0" step="0.05">
-                  </label>
-                  <h4 class="classic-subhead">Wallets</h4>
-                  <label>
-                    <span>Fee Key owner</span>
-                    <input id="feeKeyRecipient" type="text" value="" placeholder="Wallet address" autocomplete="off">
-                  </label>
-                  <label>
-                    <span>Return wallet</span>
-                    <input id="sweepDestination" type="text" value="" placeholder="Wallet address" autocomplete="off">
-                  </label>
-                </form>
-                <details class="pool-advanced">
-                  <summary>Per-pool settings</summary>
-                  <div class="operator-toolbar" aria-label="Pool configuration actions">
-                    <button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button>
+                    <div class="pool-editor-panel" id="poolEditorPanel"></div>
                   </div>
-                  <div class="pool-editor-panel" id="poolEditorPanel" aria-label="Per-pool settings"></div>
+                  <label class="payout-wallet">
+                    <span>Your wallet</span>
+                    <input id="sweepDestination" type="text" value="" placeholder="Solana address" autocomplete="off" spellcheck="false">
+                    <small>Gets the team tokens, the LP fee keys, and any SOL left over when the launch finishes.</small>
+                  </label>
+                  <details class="fee-key-override">
+                    <summary>Send LP fee keys to a different wallet</summary>
+                    <label>
+                      <span>Fee Key owner</span>
+                      <input id="feeKeyRecipient" type="text" value="" placeholder="Same as your wallet" autocomplete="off" spellcheck="false">
+                    </label>
+                  </details>
+                </form>
+
+                <details class="drawer-section" id="airdropSection" aria-label="Airdrop CSV import">
+                  <summary><span>Airdrop</span><span class="risk-badge warn" id="airdropSummary">Off</span></summary>
+                  <label class="supply-field" for="airdropCsvText"><span>CSV recipients</span></label>
+                  <textarea id="airdropCsvText" rows="4" spellcheck="false" placeholder="wallet,tokens&#10;Recipient111...,1000"></textarea>
+                  <div class="airdrop-budget-controls">
+                    <label>
+                      <span>Budget %</span>
+                      <input id="airdropSupplyPercent" type="number" value="2" min="0" max="99" step="0.1">
+                    </label>
+                    <label>
+                      <span>Airdrop wallets</span>
+                      <input id="airdropWallets" type="number" value="0" min="0" step="1">
+                    </label>
+                    <label class="toggle-line">
+                      <input id="airdropAutoFit" type="checkbox" checked>
+                      <span>Auto-fit</span>
+                    </label>
+                  </div>
+                  <div class="operator-toolbar compact">
+                    <button class="pill-button" type="button" data-action="sample-airdrop">Sample CSV</button>
+                    <button class="pill-button" type="button" data-action="fit-airdrop-budget">Fit budget</button>
+                    <button class="pill-button" type="button" data-action="clear-airdrop">Clear</button>
+                  </div>
+                  <div class="airdrop-budget-panel" id="airdropBudgetPanel"></div>
+                  <div class="mini-table" id="airdropRecipientPreview"></div>
                 </details>
-                <div class="airdrop-report-grid">
-                  <section class="operator-subpanel" aria-label="Airdrop CSV import">
-                    <div class="subpanel-head">
-                      <span>
-                        <span class="eyebrow">Airdrop</span>
-                        <h3>CSV recipients</h3>
-                      </span>
-                      <span class="risk-badge warn" id="airdropSummary">Off</span>
-                    </div>
-                    <div class="airdrop-budget-controls">
-                      <label>
-                        <span>Airdrop wallets</span>
-                        <input id="airdropWallets" type="number" value="0" min="0" step="1">
-                      </label>
-                      <label>
-                        <span>Budget %</span>
-                        <input id="airdropSupplyPercent" type="number" value="2" min="0" max="99" step="0.1">
-                      </label>
-                      <label class="toggle-line">
-                        <input id="airdropAutoFit" type="checkbox" checked>
-                        <span>Auto-fit</span>
-                      </label>
-                    </div>
-                    <textarea id="airdropCsvText" rows="4" spellcheck="false" placeholder="wallet,tokens&#10;Recipient111...,1000"></textarea>
-                    <div class="operator-toolbar compact">
-                      <button class="pill-button" type="button" data-action="sample-airdrop">Sample CSV</button>
-                      <button class="pill-button" type="button" data-action="fit-airdrop-budget">Fit budget</button>
-                      <button class="pill-button" type="button" data-action="clear-airdrop">Clear</button>
-                    </div>
-                    <div class="airdrop-budget-panel" id="airdropBudgetPanel"></div>
-                    <div class="mini-table" id="airdropRecipientPreview"></div>
-                  </section>
-                  <section class="operator-subpanel" aria-label="Launch report export">
-                    <div class="subpanel-head">
-                      <span>
-                        <span class="eyebrow">Final phase</span>
-                        <h3>Report and sweep</h3>
-                      </span>
-                      <span class="risk-badge" id="reportSummary">Draft</span>
-                    </div>
-                    <div class="mini-table" id="reportPreview"></div>
-                    <div class="operator-toolbar compact">
-                      <button class="pill-button" type="button" data-action="toggle-report-publish">Toggle publish</button>
-                      <button class="pill-button" type="button" data-action="download-report-preview">Download preview</button>
-                    </div>
-                  </section>
-                </div>
+
+                <details class="drawer-section" id="reportSection" aria-label="Launch report export">
+                  <summary><span>Launch report</span><span class="risk-badge" id="reportSummary">Draft</span></summary>
+                  <div class="mini-table" id="reportPreview"></div>
+                  <div class="operator-toolbar compact">
+                    <button class="pill-button" type="button" data-action="toggle-report-publish">Toggle publish</button>
+                    <button class="pill-button" type="button" data-action="download-report-preview">Download preview</button>
+                  </div>
+                </details>
               </details>
               <div class="launch-phase-actions launch-phase-actions-split configure-phase-actions">
                 <button class="text-button" type="button" data-launch-workspace="wallet"><i class="fa-solid fa-arrow-left"></i><span>Wallet</span></button>
