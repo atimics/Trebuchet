@@ -279,3 +279,43 @@ export function normalizeLogoImageMime(buffer) {
   if (!mime) throw new Error('Logo must be a PNG, JPG, or GIF image');
   return mime;
 }
+
+// The logo is embedded in the on-chain metadata JSON and the launch report,
+// whose sponsored Arweave upload caps near 95KB. A 200x200 ceiling plus a
+// byte cap keeps every copy inside that budget.
+export const LOGO_MAX_DIMENSION_PX = 200;
+export const LOGO_MAX_BYTES = 100 * 1024;
+
+/** { width, height } of a PNG, JPEG, or GIF; throws when unreadable. */
+export function readImageDimensions(buffer) {
+  normalizeLogoImageMime(buffer);
+  const dimensions = detectLogoImageDimensions(buffer);
+  if (!dimensions) throw new Error('Logo image is corrupt (no frame header found)');
+  return dimensions;
+}
+
+/** Type, byte size, and pixel limits. The server's authoritative check. */
+export function assertLogoConstraints(buffer, {
+  maxDimension = LOGO_MAX_DIMENSION_PX,
+  maxBytes = LOGO_MAX_BYTES,
+} = {}) {
+  const mime = normalizeLogoImageMime(buffer);
+  if (buffer.length > maxBytes) {
+    throw new Error(
+      `Logo file is ${Math.ceil(buffer.length / 1024)}KB — the maximum is `
+      + `${Math.floor(maxBytes / 1024)}KB. Export it at ${maxDimension}×${maxDimension} `
+      + 'pixels or smaller and try again.',
+    );
+  }
+  const { width, height } = readImageDimensions(buffer);
+  if (!(width > 0) || !(height > 0)) {
+    throw new Error('Logo image reports zero size — the file appears corrupt');
+  }
+  if (width > maxDimension || height > maxDimension) {
+    throw new Error(
+      `Logo is ${width}×${height} pixels — the maximum is `
+      + `${maxDimension}×${maxDimension}. Resize it and try again.`,
+    );
+  }
+  return { mime, width, height };
+}

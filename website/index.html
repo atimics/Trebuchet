@@ -978,6 +978,13 @@
       color: var(--green);
     }
 
+    .os-note {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.5;
+    }
+
     .os-trust-note {
       min-height: 0 !important;
       margin: 15px 0 0;
@@ -1564,6 +1571,7 @@
             <p>Use the AppImage on most distributions, or install the Debian package on Ubuntu/Debian systems.</p>
             <a class="button button-primary os-primary" href="https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases/download/v__TREBUCHET_VERSION__/Trebuchet-__TREBUCHET_VERSION__-x86_64.AppImage">AppImage ↓</a>
             <a class="os-secondary" href="https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases/download/v__TREBUCHET_VERSION__/trebuchet-desktop___TREBUCHET_VERSION___amd64.deb">Debian .deb</a>
+            <p class="os-note"><strong>Ubuntu 24.04+ / Debian:</strong> use the .deb; it installs the sandbox security profile. The AppImage needs <code>libfuse2t64</code> and the execute bit: <code>chmod +x Trebuchet-*.AppImage</code>.</p>
             <p class="os-trust-note is-warning">Unsigned package. Verify the SHA-256 checksum against the GitHub release before installing.</p>
           </article>
         </div>

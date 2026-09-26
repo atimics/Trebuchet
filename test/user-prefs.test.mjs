@@ -36,8 +36,10 @@ test('returns defaults when no preferences file exists', async (t) => {
   // checkForUpdatesOnStartup defaults to true — opt-out, not opt-in.
   // If users had to opt in they'd never discover the feature exists.
   assert.equal(prefs.checkForUpdatesOnStartup, true);
-  assert.equal(prefs.medievalCursor, false);
-  assert.equal(prefs.medievalCursorOptIn, false);
+  // Custom cursor is ON by default (product decision, Sept 2026). Both
+  // fields default true because the renderer requires the pair.
+  assert.equal(prefs.medievalCursor, true);
+  assert.equal(prefs.medievalCursorOptIn, true);
   assert.equal(prefs.playBackgroundMusic, false);
   assert.equal(prefs.demoMode, true);
 
@@ -77,7 +79,7 @@ test('round-trips multiple writes without losing or duplicating fields', async (
   const onDisk = JSON.parse(readFileSync(path.join(configDir, 'userPrefs.json'), 'utf8'));
   assert.deepEqual(
     Object.keys(onDisk).sort(),
-    ['checkForUpdatesOnStartup', 'coinPreview', 'coinPreviewParked', 'demoMode', 'medievalCursor', 'medievalCursorOptIn', 'network', 'playIntroVideo', 'playSoundEffects', 'playBackgroundMusic', 'publishLaunchReport'].sort(),
+    ['checkForUpdatesOnStartup', 'coinPreview', 'coinPreviewParked', 'demoMode', 'medievalCursor', 'medievalCursorOptIn', 'network', 'playIntroVideo', 'playSoundEffects', 'playBackgroundMusic', 'showWelcomeCard', 'publishLaunchReport'].sort(),
   );
   assert.equal(onDisk.checkForUpdatesOnStartup, false);
 });
@@ -115,7 +117,7 @@ test('rejects unknown keys without corrupting existing state', async (t) => {
   const onDisk = JSON.parse(readFileSync(path.join(configDir, 'userPrefs.json'), 'utf8'));
   assert.deepEqual(
     Object.keys(onDisk).sort(),
-    ['checkForUpdatesOnStartup', 'coinPreview', 'coinPreviewParked', 'demoMode', 'medievalCursor', 'medievalCursorOptIn', 'network', 'playIntroVideo', 'playSoundEffects', 'playBackgroundMusic', 'publishLaunchReport'].sort(),
+    ['checkForUpdatesOnStartup', 'coinPreview', 'coinPreviewParked', 'demoMode', 'medievalCursor', 'medievalCursorOptIn', 'network', 'playIntroVideo', 'playSoundEffects', 'playBackgroundMusic', 'showWelcomeCard', 'publishLaunchReport'].sort(),
   );
 });
 
@@ -199,7 +201,9 @@ test('fills missing keys from defaults when the file has partial data', async (t
   const userPrefs = await importFreshUserPrefs(configDir);
   const prefs = userPrefs.get();
   assert.equal(prefs.checkForUpdatesOnStartup, true);
-  assert.equal(prefs.medievalCursor, false);
-  assert.equal(prefs.medievalCursorOptIn, false);
+  // Custom cursor is ON by default (product decision, Sept 2026). Both
+  // fields default true because the renderer requires the pair.
+  assert.equal(prefs.medievalCursor, true);
+  assert.equal(prefs.medievalCursorOptIn, true);
   assert.equal(prefs.playBackgroundMusic, false);
 });

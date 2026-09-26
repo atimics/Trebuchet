@@ -1,6 +1,11 @@
 name: CI
 
 on:
+  # Direct pushes to main must run the suite too — as a solo-dev repo,
+  # most commits land on main without a PR, and pull_request alone means
+  # those ship untested.
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -74,12 +79,29 @@ jobs:
       - name: Blocking dependency audit policy
         run: npm run check:audit
 
+      # Dependency audit gate. Replaces the previous pair of steps (a
+      # blocking `--audit-level=critical` plus a non-blocking
+      # `--audit-level=high`). That arrangement documented an invariant —
+      # "the sole high finding is bigint-buffer" — that nothing enforced, and
+      # it drifted to sixteen high-severity findings, including fixable ones
+      # in the Electron/electron-builder toolchain, unnoticed until an
+      # unrelated critical (node-tar) tripped the other gate.
+      #
+      # The gate script fails on ANY critical, and on any high that is not on
+      # its reviewed allowlist. Allowlisted residuals are printed with the
+      # reason they cannot be fixed. See scripts/audit-gate.mjs and the
+      # residuals section of SECURITY.md.
+      - name: Dependency audit gate
+        run: node scripts/audit-gate.mjs
+
   build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
-      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      # ELECTRON_BUILDER_CACHE is set by the "Locate electron-builder cache"
+      # step below, not here: it must live OUTSIDE the workspace (see that
+      # step), which needs the runner context — unavailable at job level.
     strategy:
       fail-fast: false
       matrix:
@@ -106,6 +128,16 @@ jobs:
         with:
           node-version: 22.12.0
           cache: npm
+
+      # electron-builder downloads CommonJS helper tools (the icons bundle's
+      # icon-tool.js) into its cache and runs them with node. A cache under
+      # the workspace inherits package.json's "type": "module" and the tools
+      # fail with "require is not defined in ES module scope" (release
+      # 1.0.49). Keep the cache outside the workspace. Done as a step rather
+      # than job-level env because `runner.temp` is only available here.
+      - name: Locate electron-builder cache
+        shell: bash
+        run: echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/electron-builder-cache" >> "$GITHUB_ENV"
 
       - name: Restore Electron caches
         uses: actions/cache@v5

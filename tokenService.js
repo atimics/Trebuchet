@@ -7,14 +7,18 @@ import {
   LAMPORTS_PER_SOL,
   sendAndConfirmTransaction
 } from '@solana/web3.js';
+// NOTE: the spl-token convenience wrappers (createMint, mintTo, setAuthority,
+// getOrCreateAssociatedTokenAccount, transfer) are deliberately NOT used here
+// anymore. They build and send their transactions internally, with no way to
+// attach ComputeBudget (priority fee) instructions — which left every mint/
+// metadata/transfer tx in this file bidding zero priority and being the first
+// to drop during congestion. We now build the same instructions explicitly
+// (the *Instruction builders below are what those wrappers use internally)
+// and send them through sendIxsWithPriority(), which prepends a sampled
+// priority fee. See priorityFees.js.
 import { 
-  createMint,
-  mintTo,
   getMint,
   getAccount,
-  getOrCreateAssociatedTokenAccount,
-  transfer,
-  setAuthority,
   AuthorityType,
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
@@ -27,7 +31,13 @@ import {
   tokenMetadataInitializeWithRentTransfer,
   tokenMetadataUpdateFieldWithRentTransfer,
   tokenMetadataUpdateAuthority,
-  ASSOCIATED_TOKEN_PROGRAM_ID
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  MINT_SIZE,
+  createMintToInstruction,
+  createSetAuthorityInstruction,
+  createAssociatedTokenAccountIdempotentInstruction,
+  createTransferCheckedInstruction,
+  getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import { 
   createMetadataAccountV3,
@@ -88,6 +98,17 @@ function hasPermanentSelfMetadataPointer(mintInfo, mint) {
     && pointer.metadataAddress?.equals(mint),
   );
 }
+
+import {
+  samplePriorityFeeMicroLamports,
+  computeBudgetIxs,
+  priorityFeeLamports,
+  umiComputeBudgetIxs,
+  CU_SOL_TRANSFER,
+  CU_MINT_OPS,
+  CU_METADATA_OPS,
+  SWEEP_FEE_PAD_LAMPORTS,
+} from './priorityFees.js';
 
 // The RPC URL is sourced from rpcConfig.js, which seeds itself with a
 // public-mainnet default on first run and persists user-selected RPCs to
@@ -221,6 +242,68 @@ export function resetMetadataFactoriesForTests() {
   _uploadMetadata = uploadTokenMetadata;
 }
 
+// ---------------------------------------------------------------------------
+// Priority-fee transaction helpers
+// ---------------------------------------------------------------------------
+
+// Build a transaction from `instructions` with a freshly-sampled priority
+// fee prepended, sign with [payer, ...signers], send, and confirm at
+// 'finalized' (the commitment every replaced spl-token wrapper used).
+// The fee is sampled per-send so retries and later steps reflect current
+// conditions rather than a stale bid.
+async function sendIxsWithPriority({ payer, instructions, signers = [], units = CU_MINT_OPS, label = 'tx' }) {
+  const microLamports = await samplePriorityFeeMicroLamports(connection);
+  const tx = new Transaction().add(
+    ...computeBudgetIxs({ units, microLamports }),
+    ...instructions,
+  );
+  const sig = await sendAndConfirmTransaction(connection, tx, [payer, ...signers], {
+    commitment: 'finalized',
+  });
+  console.log(`  ${label}: ${sig} (prio ${microLamports} uL/CU)`);
+  return sig;
+}
+
+// Ensure an associated token account exists for (mint, owner), payer pays.
+// Replaces getOrCreateAssociatedTokenAccount: the idempotent-create
+// instruction is a no-op when the ATA already exists, so we always send
+// (with priority) instead of read-then-maybe-create — one fewer RPC read
+// and no read/create race. Returns { address } to match the shape the
+// call sites already consume.
+async function ensureAta({ payer, mint, owner, programId = TOKEN_PROGRAM_ID }) {
+  const address = getAssociatedTokenAddressSync(
+    mint,
+    owner,
+    /* allowOwnerOffCurve */ false,
+    programId,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
+  await sendIxsWithPriority({
+    payer,
+    units: CU_MINT_OPS,
+    label: `ensure ATA ${address.toBase58().slice(0, 8)}…`,
+    instructions: [
+      createAssociatedTokenAccountIdempotentInstruction(
+        payer.publicKey, // payer
+        address,
+        owner,
+        mint,
+        programId,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+      ),
+    ],
+  });
+  return { address };
+}
+
+// Sampled ComputeBudget instructions in umi shape, for prepending to the
+// Metaplex metadata builders (which otherwise send at zero
+// priority). Sampled fresh per call, same rationale as sendIxsWithPriority.
+async function umiPriorityIxs() {
+  const microLamports = await samplePriorityFeeMicroLamports(connection);
+  return umiComputeBudgetIxs({ units: CU_METADATA_OPS, microLamports });
+}
+
 // Generate a temporary wallet, with a BIP39 recovery phrase.
 //
 // We generate the mnemonic first (with bip39's CSPRNG) and derive the
@@ -351,6 +434,9 @@ async function grindVanityKeypair({ vanityPrefix, vanitySuffix }) {
   return result.keypair;
 }
 
+// Metadata-only instruction for a mint that already exists: unlike createV1
+// it never tries to initialize the mint. Returns the builder so callers can
+// prepend priority-fee instructions.
 function createMetadataForExistingMint(umi, {
   mint,
   name,
@@ -376,9 +462,6 @@ function createMetadataForExistingMint(umi, {
     },
     isMutable: true,
     collectionDetails: none(),
-  }).sendAndConfirm(umi, {
-    send: { commitment: 'finalized' },
-    confirm: { commitment: 'finalized' },
   });
 }
 
@@ -474,42 +557,31 @@ async function createToken2022WithOnMintMetadata({
     sealedMetadataPending: sealedLaunch === true,
   });
 
-  const tokenAccount = await withRpcRetry(() => getOrCreateAssociatedTokenAccount(
-    connection,
-    tempWallet,
+  const tokenAccount = await withRpcRetry(() => ensureAta({
+    payer: tempWallet,
     mint,
-    tempWallet.publicKey,
-    false,
-    'finalized',
-    { commitment: 'finalized' },
+    owner: tempWallet.publicKey,
     programId,
-    ASSOCIATED_TOKEN_PROGRAM_ID,
-  ));
+  }));
   const totalTokens = BigInt(totalSupply) * (10n ** 9n);
-  const mintSupplyTx = await mintTo(
-    connection,
-    tempWallet,
-    mint,
-    tokenAccount.address,
-    tempWallet.publicKey,
-    totalTokens,
-    [],
-    { commitment: 'finalized' },
-    programId,
-  );
+  const mintSupplyTx = await sendIxsWithPriority({
+    payer: tempWallet,
+    units: CU_MINT_OPS,
+    label: 'mint supply',
+    instructions: [
+      createMintToInstruction(mint, tokenAccount.address, tempWallet.publicKey, totalTokens, [], programId),
+    ],
+  });
   progress({ stage: 'supply_minted', tokenMint: mint.toBase58(), txId: mintSupplyTx });
 
-  const revokeMintTx = await setAuthority(
-    connection,
-    tempWallet,
-    mint,
-    tempWallet.publicKey,
-    AuthorityType.MintTokens,
-    null,
-    [],
-    { commitment: 'finalized' },
-    programId,
-  );
+  const revokeMintTx = await sendIxsWithPriority({
+    payer: tempWallet,
+    units: CU_MINT_OPS,
+    label: 'renounce mint authority',
+    instructions: [
+      createSetAuthorityInstruction(mint, tempWallet.publicKey, AuthorityType.MintTokens, null, [], programId),
+    ],
+  });
   progress({ stage: 'mint_authority_revoked', tokenMint: mint.toBase58(), txId: revokeMintTx });
 
   let metadataUpdateAuthorityRevoked = false;
@@ -610,6 +682,15 @@ export async function createTokenWithMetaplex({
   vanityCAKeypair,
   sealedLaunch = false,
   mintFormat = MINT_FORMAT_TOKEN_2022,
+  // Opt-out of the metadata update-authority revoke. Default false = the
+  // long-standing behavior: metadata (name, symbol, logo URI) is frozen
+  // forever. When true, the authority is NOT revoked here — it stays with
+  // the launch wallet, and MUST be handed to the user's destination wallet
+  // during the final sweep (transferMetadataAuthority below), because the
+  // launch wallet is destroyed at the end of step 6. An authority left on
+  // a destroyed key is revocation in effect but unverifiable in form —
+  // the worst of both options.
+  keepMetadataAuthority = false,
 }) {
   try {
     const progress = (event) => {
@@ -693,24 +774,61 @@ export async function createTokenWithMetaplex({
     }
 
     // Compatibility profile: classic SPL Token + Metaplex metadata PDA.
+    // Create mint using standard SPL token first. Two instructions in one
+    // tx (exactly what spl-token's createMint wrapper did internally),
+    // plus the priority fee the wrapper couldn't carry: fund + allocate
+    // the mint account, then initialize it.
+    //
+    // landTxWithRetry hardening (this and every chain step below): the
+    // fresh-create path used bare sends while only finishTokenCreation had
+    // retry + idempotency probes — yet a confirm-timeout-that-landed or a
+    // dropped blockhash is just as likely on the FIRST attempt. The probes
+    // matter doubly here: a blind re-send of this tx after it actually
+    // landed fails with "account already in use", and for a vanity CA the
+    // mint keypair is irreplaceable — the step must adopt on-chain reality
+    // rather than error out.
     console.log('Creating SPL token mint...');
-    let mint;
+    const effectiveMintKeypair = mintKeypair ?? Keypair.generate();
+    const mint = effectiveMintKeypair.publicKey;
+    const mintRent = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
     try {
-      mint = await createMint(
-        connection,
-        tempWallet,
-        tempWallet.publicKey, // mint authority
-        null, // freeze authority (null = no freeze)
-        9, // decimals
-        mintKeypair ?? undefined, // searched keypair, or undefined for random
-        { commitment: txCommitment() },
-        TOKEN_PROGRAM_ID
-      );
+      await landTxWithRetry({
+        label: 'create mint',
+        alreadyDone: async () => {
+          // getMint throws while the account doesn't exist / isn't initialized.
+          try {
+            await getMint(connection, mint, 'finalized', TOKEN_PROGRAM_ID);
+            return true;
+          } catch (_) { return false; }
+        },
+        send: () => sendIxsWithPriority({
+          payer: tempWallet,
+          signers: [effectiveMintKeypair], // new account must co-sign its creation
+          units: CU_MINT_OPS,
+          label: 'create mint',
+          instructions: [
+            SystemProgram.createAccount({
+              fromPubkey: tempWallet.publicKey,
+              newAccountPubkey: effectiveMintKeypair.publicKey,
+              space: MINT_SIZE,
+              lamports: mintRent,
+              programId: TOKEN_PROGRAM_ID,
+            }),
+            createInitializeMint2Instruction(
+              effectiveMintKeypair.publicKey,
+              9, // decimals
+              tempWallet.publicKey, // mint authority
+              null, // freeze authority (null = no freeze)
+              TOKEN_PROGRAM_ID,
+            ),
+          ],
+        }),
+      });
     } catch (mintError) {
       // The mint address is known before the transaction lands, so surface it
       // on failure: an account that already exists can then be adopted and
       // finished instead of re-created.
-      const derived = mintKeypair?.publicKey?.toBase58?.() || null;
+      const derived = mint.toBase58();
       if (derived && !mintError.tokenMint) mintError.tokenMint = derived;
       throw mintError;
     }
@@ -721,18 +839,25 @@ export async function createTokenWithMetaplex({
     console.log('Creating metadata account...');
     
     // Convert the mint public key to Umi format.
-    // When a vanity-ground mint keypair is available, wrap it as a UMI Signer
-    // BEFORE createV1 so the builder knows the mint must sign.  This ensures
-    // the instruction includes the SPL Token program and marks the mint as a
-    // required signer in the compiled message — no post-build surgery needed.
     const mintPubkey = umiPublicKey(mint.toString());
     
-    // Create metadata for the existing token
-    await createMetadataForExistingMint(umi, {
-      mint: mintPubkey,
-      name: onChainMetadataName,
-      symbol: onChainMetadataSymbol,
-      uri: onChainMetadataUri,
+    // Create metadata for the existing token. Priority fee prepended —
+    // Metaplex builders otherwise send at zero priority (see umiPriorityIxs).
+    // Same retry + probe as finishTokenCreation: adopt the metadata account
+    // if a confirm-timeout landed it, retry on transient weather.
+    const createMetadataPda = deriveMetadataPda(mint);
+    await landTxWithRetry({
+      label: 'create metadata account',
+      alreadyDone: async () => {
+        const a = await connection.getAccountInfo(createMetadataPda, 'finalized');
+        return !!(a && a.data && a.data.length > 0);
+      },
+      send: async () => createMetadataForExistingMint(umi, {
+        mint: mintPubkey,
+        name: onChainMetadataName,
+        symbol: onChainMetadataSymbol,
+        uri: onChainMetadataUri,
+      }).prepend(await umiPriorityIxs()).sendAndConfirm(umi),
     });
     
     console.log('Metadata account created successfully');
@@ -750,42 +875,49 @@ export async function createTokenWithMetaplex({
     // Small delay to ensure metadata account is fully propagated
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // Create associated token account (with RPC retry for stale reads)
+    // Create associated token account (idempotent — with RPC retry for
+    // transient send failures)
     console.log('Creating associated token account...');
-    const tokenAccount = await withRpcRetry(() => getOrCreateAssociatedTokenAccount(
-      connection,
-      tempWallet,
+    const tokenAccount = await withRpcRetry(() => ensureAta({
+      payer: tempWallet,
       mint,
-      tempWallet.publicKey,
-      false,
-      'finalized',
-      { commitment: txCommitment() },
-      TOKEN_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    ));
+      owner: tempWallet.publicKey,
+    }));
     console.log('Token account created:', tokenAccount.address.toString());
     
-    // Mint the total supply
+    // Mint the total supply. The alreadyDone probe is the double-mint guard:
+    // if a prior attempt landed but threw on confirmation, a blind re-send
+    // would mint the supply twice — the probe adopts the landed state instead.
     console.log('Minting total supply...');
     const totalTokens = BigInt(totalSupply) * (10n ** 9n);
-    
-    const mintSig = await mintTo(
-      connection,
-      tempWallet,
-      mint,
-      tokenAccount.address,
-      tempWallet.publicKey,
-      totalTokens,
-      [],
-      { commitment: txCommitment() },
-      TOKEN_PROGRAM_ID
-    );
+
+    const mintRes = await landTxWithRetry({
+      label: 'mint supply',
+      alreadyDone: async () => {
+        const info = await getMint(connection, mint, 'finalized', TOKEN_PROGRAM_ID);
+        return info.supply >= totalTokens;
+      },
+      send: () => sendIxsWithPriority({
+        payer: tempWallet,
+        units: CU_MINT_OPS,
+        label: 'mint supply',
+        instructions: [
+          createMintToInstruction(
+            mint,
+            tokenAccount.address,
+            tempWallet.publicKey, // mint authority
+            totalTokens,
+            [],
+            TOKEN_PROGRAM_ID,
+          ),
+        ],
+      }),
+    });
+    const mintSig = mintRes.skipped ? '(supply already minted)' : mintRes.value;
     
     console.log('Mint transaction signature:', mintSig);
     progress({ stage: 'supply_minted', tokenMint: mint.toString(), txId: mintSig });
     
-    // mintTo() above already sent and confirmed at 'finalized', so a second
-    // confirmTransaction here would just be a redundant RPC round-trip.
     console.log('Tokens minted successfully');
     
     // SAFETY STEP: Renounce all authorities to make the token safe
@@ -794,25 +926,35 @@ export async function createTokenWithMetaplex({
     // 1. Renounce mint authority (no more tokens can be minted)
     console.log('Renouncing mint authority...');
     try {
-      const renounceMintAuthSig = await setAuthority(
-        connection,
-        tempWallet,
-        mint,
-        tempWallet.publicKey, // Current authority
-        AuthorityType.MintTokens,
-        null, // New authority (null = renounce)
-        [],
-        { commitment: txCommitment() },
-        TOKEN_PROGRAM_ID
-      );
+      const renounceRes = await landTxWithRetry({
+        label: 'renounce mint authority',
+        alreadyDone: async () => {
+          const info = await getMint(connection, mint, 'finalized', TOKEN_PROGRAM_ID);
+          return info.mintAuthority === null;
+        },
+        send: () => sendIxsWithPriority({
+          payer: tempWallet,
+          units: CU_MINT_OPS,
+          label: 'renounce mint authority',
+          instructions: [
+            createSetAuthorityInstruction(
+              mint,
+              tempWallet.publicKey, // Current authority
+              AuthorityType.MintTokens,
+              null, // New authority (null = renounce)
+              [],
+              TOKEN_PROGRAM_ID,
+            ),
+          ],
+        }),
+      });
+      const renounceMintAuthSig = renounceRes.skipped ? '(already renounced)' : renounceRes.value;
       console.log('Mint authority renounced:', renounceMintAuthSig);
       progress({
         stage: 'mint_authority_revoked',
         tokenMint: mint.toString(),
         txId: renounceMintAuthSig,
       });
-      // setAuthority() above already sent and confirmed at 'finalized'; no
-      // extra confirmTransaction needed.
     } catch (error) {
       console.error('Error renouncing mint authority:', error);
       throw new Error('Failed to renounce mint authority. Token creation aborted for safety.');
@@ -821,9 +963,12 @@ export async function createTokenWithMetaplex({
     // 2. Freeze authority is already null (set during mint creation)
     console.log('Freeze authority already disabled (was set to null during creation)');
     
-    // 3. Renounce metadata update authority and make immutable
-    console.log('Renouncing metadata update authority and making immutable...');
-    
+    // 3. Renounce metadata update authority and make immutable — unless the
+    // user opted to keep the authority so they can change the name/logo
+    // later. In that case it stays with the launch wallet FOR NOW and is
+    // handed to the destination wallet during the step-6 sweep (see
+    // transferMetadataAuthority). Mint and freeze authorities above are NOT
+    // optional — supply-cap safety is non-negotiable either way.
     let metadataUpdateSuccess = false;
     let metadataImmutableSuccess = false;
 
@@ -838,6 +983,10 @@ export async function createTokenWithMetaplex({
         sealedLaunch: true,
         sealedMetadataPending: true,
       });
+    } else if (keepMetadataAuthority) {
+      console.log('Keeping metadata update authority (user opted out of revoke); '
+        + 'it will be transferred to the destination wallet at the final sweep.');
+      progress({ stage: 'metadata_authority_kept', tokenMint: mint.toString(), metadataAuthorityKept: true });
     } else {
     try {
       // Create the System Program public key in Umi format
@@ -849,15 +998,28 @@ export async function createTokenWithMetaplex({
       // after authority retirement the launch wallet can no longer sign the
       // follow-up immutability update.
       console.log('Making metadata immutable and retiring its update authority...');
-      
-      await updateV1(umi, {
-        mint: mintPubkey,
-        authority: umi.identity,
-        newUpdateAuthority: some(systemProgramAddress),
-        isMutable: some(false),
-      }).sendAndConfirm(umi, {
-        send: { commitment: txCommitment() },
-        confirm: { commitment: txCommitment() }
+
+      await landTxWithRetry({
+        label: 'revoke update authority',
+        alreadyDone: async () => {
+          // Metadata layout: byte 0 is the account key; bytes 1..33 are the
+          // update authority. Revoked == the (all-zero) System Program.
+          const a = await connection.getAccountInfo(createMetadataPda, 'finalized');
+          if (!a || !a.data || a.data.length < 33) return false;
+          try {
+            return new PublicKey(a.data.subarray(1, 33)).toBase58()
+              === '11111111111111111111111111111111';
+          } catch (_) { return false; }
+        },
+        send: async () => updateV1(umi, {
+          mint: mintPubkey,
+          authority: umi.identity,
+          newUpdateAuthority: some(systemProgramAddress),
+          isMutable: some(false),
+        }).prepend(await umiPriorityIxs()).sendAndConfirm(umi, {
+          send: { commitment: txCommitment() },
+          confirm: { commitment: txCommitment() }
+        }),
       });
       
       console.log('Metadata made immutable and update authority retired.');
@@ -902,7 +1064,7 @@ export async function createTokenWithMetaplex({
           newUpdateAuthority: some(systemProgramAddress),
           primarySaleHappened: none(),
           isMutable: some(false),
-        }).sendAndConfirm(umi, {
+        }).prepend(await umiPriorityIxs()).sendAndConfirm(umi, {
           send: { commitment: txCommitment() },
           confirm: { commitment: txCommitment() }
         });
@@ -933,7 +1095,7 @@ export async function createTokenWithMetaplex({
             mint: mintPubkey,
             authority: umi.identity,
             newUpdateAuthority: some(systemProgramAddress),
-          }).sendAndConfirm(umi, { 
+          }).prepend(await umiPriorityIxs()).sendAndConfirm(umi, { 
             send: { commitment: txCommitment() },
             confirm: { commitment: txCommitment() }
           });
@@ -952,7 +1114,7 @@ export async function createTokenWithMetaplex({
         }
       }
     }
-    }
+    } // end sealed / keep-authority else
     
     // Verify all authorities are properly renounced
     console.log('Verifying token safety...');
@@ -966,6 +1128,9 @@ export async function createTokenWithMetaplex({
     console.log('Token has been made safe! No new tokens can be minted, accounts cannot be frozen.');
     if (sealedLaunch) {
       console.log('Metadata identity remains sealed; reveal is required after liquidity lock.');
+    } else if (keepMetadataAuthority) {
+      console.log('Metadata update authority deliberately kept (user option); '
+        + 'transfer to destination happens at the final sweep.');
     } else if (metadataUpdateSuccess) {
       console.log('Metadata update authority has been revoked (set to System Program).');
     } else {
@@ -982,6 +1147,7 @@ export async function createTokenWithMetaplex({
       metadataImmutable: metadataImmutableSuccess,
       sealedLaunch: sealedLaunch === true,
       sealedMetadataPending: sealedLaunch === true,
+      metadataAuthorityKept: keepMetadataAuthority === true,
     });
     
     // Verify the balance
@@ -1024,7 +1190,7 @@ export async function createTokenWithMetaplex({
       // raw image, keeping the published report under the free-upload cap.
       imageUri: imageUri || null,
       totalSupply: totalSupply,
-      isSafe: sealedLaunch ? true : metadataUpdateSuccess,
+      isSafe: (sealedLaunch || keepMetadataAuthority) ? true : metadataUpdateSuccess,
       mintAndFreezeAuthoritiesSafe: true,
       mintAuthorityRenounced: true,
       freezeAuthorityDisabled: true,
@@ -1032,9 +1198,12 @@ export async function createTokenWithMetaplex({
       metadataImmutable: metadataImmutableSuccess,
       sealedLaunch: sealedLaunch === true,
       sealedMetadataPending: sealedLaunch === true,
+      metadataAuthorityKept: keepMetadataAuthority === true,
       warning: sealedLaunch
         ? 'Token supply is fixed. Final identity remains sealed until liquidity is locked.'
-        : metadataUpdateSuccess ? null : 'Metadata update authority could not be revoked. Please verify token safety on Solscan.'
+        : (keepMetadataAuthority || metadataUpdateSuccess)
+          ? null
+          : 'Metadata update authority could not be revoked. Please verify token safety on Solscan.'
     };
   } catch (error) {
     console.error('Error in createTokenWithMetaplex:', error);
@@ -1143,6 +1312,10 @@ export async function finishTokenCreation({
   onProgress,
   journalEvents,
   sealedLaunch = false,
+  // Mirrors createTokenWithMetaplex: when the user opted to keep the
+  // metadata update authority, the resume path must not "helpfully"
+  // revoke it. Read from the launch journal's token record by the caller.
+  keepMetadataAuthority = false,
 }) {
   const progress = (event) => {
     if (!onProgress) return;
@@ -1219,7 +1392,9 @@ export async function finishTokenCreation({
     };
     flag('supply mint', 'supply_minted', status.supplyMinted);
     flag('mint authority renounce', 'mint_authority_revoked', status.mintAuthorityRenounced);
-    flag('metadata update-authority revoke', 'metadata_update_authority_revoked', status.updateAuthorityRevoked);
+    if (!keepMetadataAuthority) {
+      flag('metadata update-authority revoke', 'metadata_update_authority_revoked', status.updateAuthorityRevoked);
+    }
   }
   for (const s of status.sanity) console.warn('finish-token sanity:', s);
 
@@ -1262,12 +1437,12 @@ export async function finishTokenCreation({
           const a = await connection.getAccountInfo(metadataPda, 'finalized');
           return !!(a && a.data && a.data.length > 0);
         },
-        send: () => createMetadataForExistingMint(umi, {
+        send: async () => createMetadataForExistingMint(umi, {
           mint: mintPubkey,
           name,
           symbol,
           uri: metadataUri,
-        }),
+        }).prepend(await umiPriorityIxs()).sendAndConfirm(umi),
       });
     }
     status.metadataExists = true;
@@ -1277,17 +1452,12 @@ export async function finishTokenCreation({
 
   // --- 2. ATA + supply (hard idempotency guard: never double-mint) ---
   if (!status.supplyMinted) {
-    const tokenAccount = await withRpcRetry(() => getOrCreateAssociatedTokenAccount(
-      connection,
-      tempWallet,
+    const tokenAccount = await withRpcRetry(() => ensureAta({
+      payer: tempWallet,
       mint,
-      tempWallet.publicKey,
-      false,
-      'finalized',
-      { commitment: 'finalized' },
+      owner: tempWallet.publicKey,
       programId,
-      ASSOCIATED_TOKEN_PROGRAM_ID,
-    ));
+    }));
     // A freshly-created ATA can be returned by one RPC node before the node
     // chosen for transaction simulation has observed the same finalized
     // account state. Prove both accounts decode correctly first; only then is
@@ -1307,17 +1477,21 @@ export async function finishTokenCreation({
         const info = await getMint(connection, mint, 'finalized', programId);
         return info.supply >= totalTokens;
       },
-      send: () => mintTo(
-        connection,
-        tempWallet,
-        mint,
-        tokenAccount.address,
-        tempWallet.publicKey,
-        totalTokens,
-        [],
-        { commitment: 'finalized' },
-        programId,
-      ),
+      send: () => sendIxsWithPriority({
+        payer: tempWallet,
+        units: CU_MINT_OPS,
+        label: 'finish: mint supply',
+        instructions: [
+          createMintToInstruction(
+            mint,
+            tokenAccount.address,
+            tempWallet.publicKey,
+            totalTokens,
+            [],
+            programId,
+          ),
+        ],
+      }),
       retryIf: (error) => isFreshTokenAccountPropagationError(error),
       settleMs: 2500,
     });
@@ -1334,17 +1508,21 @@ export async function finishTokenCreation({
         const info = await getMint(connection, mint, 'finalized', programId);
         return info.mintAuthority === null;
       },
-      send: () => setAuthority(
-        connection,
-        tempWallet,
-        mint,
-        tempWallet.publicKey,
-        AuthorityType.MintTokens,
-        null,
-        [],
-        { commitment: 'finalized' },
-        programId,
-      ),
+      send: () => sendIxsWithPriority({
+        payer: tempWallet,
+        units: CU_MINT_OPS,
+        label: 'finish: renounce mint authority',
+        instructions: [
+          createSetAuthorityInstruction(
+            mint,
+            tempWallet.publicKey,
+            AuthorityType.MintTokens,
+            null,
+            [],
+            programId,
+          ),
+        ],
+      }),
     });
     status.mintAuthorityRenounced = true;
     status.steps.push(r.skipped ? 'mint authority already renounced (adopted)' : 'renounced mint authority');
@@ -1354,7 +1532,12 @@ export async function finishTokenCreation({
   // --- 4. Revoke metadata update authority (best-effort, mirrors creation) ---
   // Non-fatal: the decisive safety property is the mint-authority renounce
   // above. If this can't complete we surface it but still return a status.
-  if (!status.updateAuthorityRevoked && !sealedLaunch) {
+  if (keepMetadataAuthority) {
+    // Deliberately kept — the authority is handed to the destination
+    // wallet at the final sweep (transferMetadataAuthority), not revoked.
+    status.steps.push('metadata update authority kept (user option)');
+    progress({ stage: 'metadata_authority_kept', tokenMint, metadataAuthorityKept: true });
+  } else if (!status.updateAuthorityRevoked && !sealedLaunch) {
     try {
       if (isToken2022) {
         await tokenMetadataUpdateAuthority(
@@ -1376,12 +1559,12 @@ export async function finishTokenCreation({
             if (!a || !a.data || a.data.length < 33) return false;
             try { return new PublicKey(a.data.subarray(1, 33)).toBase58() === SYSTEM_PROGRAM_ADDRESS; } catch (_) { return false; }
           },
-          send: () => updateV1(umi, {
+          send: async () => updateV1(umi, {
             mint: mintPubkey,
             authority: umi.identity,
             newUpdateAuthority: some(systemProgramAddress),
             isMutable: some(false),
-          }).sendAndConfirm(umi, { send: { commitment: 'finalized' }, confirm: { commitment: 'finalized' } }),
+          }).prepend(await umiPriorityIxs()).sendAndConfirm(umi, { send: { commitment: 'finalized' }, confirm: { commitment: 'finalized' } }),
         });
       }
       status.updateAuthorityRevoked = true;
@@ -1655,31 +1838,21 @@ export async function transferTokensAndSol({
       const mintPubkey = new PublicKey(tokenMint);
       const tokenProgramId = await detectMintProgramId(mintPubkey);
       // Get source token account
-      const sourceTokenAccount = await getOrCreateAssociatedTokenAccount(
-        connection,
-        tempWallet,
-        mintPubkey,
-        tempWallet.publicKey,
-        false,
-        'finalized',
-        { commitment: txCommitment() },
-        tokenProgramId,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
+      const sourceTokenAccount = await ensureAta({
+        payer: tempWallet,
+        mint: mintPubkey,
+        owner: tempWallet.publicKey,
+        programId: tokenProgramId,
+      });
       console.log('Source token account:', sourceTokenAccount.address.toString());
 
-      // Get or create destination token account
-      const destinationTokenAccount = await getOrCreateAssociatedTokenAccount(
-        connection,
-        tempWallet, // Payer
-        mintPubkey,
-        destinationPubkey, // Owner
-        false,
-        'finalized',
-        { commitment: txCommitment() },
-        tokenProgramId,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
+      // Get or create destination token account (temp wallet pays rent)
+      const destinationTokenAccount = await ensureAta({
+        payer: tempWallet,
+        mint: mintPubkey,
+        owner: destinationPubkey,
+        programId: tokenProgramId,
+      });
       console.log('Destination token account:', destinationTokenAccount.address.toString());
 
       // Get token balance
@@ -1695,20 +1868,27 @@ export async function transferTokensAndSol({
       // Transfer all tokens
       if (tokenBalance > 0n) {
         console.log('Transferring tokens...');
-        const tokenTxSignature = await transfer(
-          connection,
-          tempWallet,
-          sourceTokenAccount.address,
-          destinationTokenAccount.address,
-          tempWallet.publicKey,
-          tokenBalance,
-          [],
-          { commitment: txCommitment() },
-          tokenProgramId
-        );
+        // TransferChecked (rather than plain Transfer) verifies mint and
+        // decimals on chain — same hardening as walletHelpers. Decimals are
+        // hardcoded to 9 in createTokenWithMetaplex.
+        const tokenTxSignature = await sendIxsWithPriority({
+          payer: tempWallet,
+          units: CU_MINT_OPS,
+          label: 'transfer launched token',
+          instructions: [
+            createTransferCheckedInstruction(
+              sourceTokenAccount.address,
+              mintPubkey,
+              destinationTokenAccount.address,
+              tempWallet.publicKey,
+              tokenBalance,
+              9,
+              [],
+              tokenProgramId,
+            ),
+          ],
+        });
         console.log('Token transfer signature:', tokenTxSignature);
-        // transfer() above already sent and confirmed at 'finalized'; no
-        // extra confirmTransaction needed.
         console.log('Token transfer confirmed');
         // Token decimals are hardcoded to 9 in createTokenWithMetaplex
         tokensTransferred = Number(tokenBalance) / Math.pow(10, 9);
@@ -1720,7 +1900,14 @@ export async function transferTokensAndSol({
     // ----- SOL sweep (always runs, regardless of whether token was created)
     const solBalance = await connection.getBalance(tempWallet.publicKey);
     const minRentExemption = await connection.getMinimumBalanceForRentExemption(0);
-    const transferAmount = solBalance - minRentExemption - 5000; // leave 5000 lamports for fees
+    // Reserve = base fee (5000/signature) + the priority fee THIS tx will
+    // pay. A sweep that reserves only the base fee fails with
+    // "insufficient lamports" the moment a priority fee is attached.
+    const sweepMicroLamports = await samplePriorityFeeMicroLamports(connection);
+    const sweepFeeReserve = 5000
+      + priorityFeeLamports(CU_SOL_TRANSFER, sweepMicroLamports)
+      + SWEEP_FEE_PAD_LAMPORTS; // never reserve exactly-enough; see priorityFees.js
+    const transferAmount = solBalance - minRentExemption - sweepFeeReserve;
 
     console.log('SOL balance:', solBalance / LAMPORTS_PER_SOL);
     console.log('SOL to transfer:', transferAmount / LAMPORTS_PER_SOL);
@@ -1729,6 +1916,7 @@ export async function transferTokensAndSol({
     if (transferAmount > 0) {
       console.log('Transferring SOL...');
       const transaction = new Transaction().add(
+        ...computeBudgetIxs({ units: CU_SOL_TRANSFER, microLamports: sweepMicroLamports }),
         SystemProgram.transfer({
           fromPubkey: tempWallet.publicKey,
           toPubkey: destinationPubkey,
@@ -1851,4 +2039,52 @@ export async function findFundingWallet(publicKey) {
     console.error('Error finding funding wallet:', error);
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Metadata update-authority handoff (final sweep, keep-authority launches)
+// ---------------------------------------------------------------------------
+// When a token was created with keepMetadataAuthority, the update authority
+// sits on the TEMPORARY launch wallet — which the final sweep destroys. This
+// hands it to the user's destination wallet first, so "I can change the
+// name/logo later" is actually true afterwards. Called by /api/transfer-assets
+// BEFORE any sweeping starts, and it THROWS on failure: at that point nothing
+// has moved and the wallet is still recoverable, so aborting the transfer and
+// letting the user retry beats silently destroying the only key that can ever
+// update the metadata.
+export async function transferMetadataAuthority({
+  tempWalletSecretKey,
+  tokenMint,
+  newAuthority,
+}) {
+  const tempWallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
+  const umi = _umiFactory(tempWallet);
+  const mint = new PublicKey(tokenMint);
+  const mintPubkey = umiPublicKey(tokenMint);
+  const destPk = new PublicKey(newAuthority); // validates the address early
+  const metadataPda = deriveMetadataPda(mint);
+
+  await landTxWithRetry({
+    label: 'transfer metadata update authority',
+    alreadyDone: async () => {
+      // Metadata layout: byte 0 is the account key; bytes 1..33 are the
+      // update authority. Done == it already reads as the destination
+      // (a prior attempt landed but threw on confirmation).
+      const a = await connection.getAccountInfo(metadataPda, 'finalized');
+      if (!a || !a.data || a.data.length < 33) return false;
+      try {
+        return new PublicKey(a.data.subarray(1, 33)).equals(destPk);
+      } catch (_) { return false; }
+    },
+    send: async () => updateV1(umi, {
+      mint: mintPubkey,
+      authority: umi.identity,
+      newUpdateAuthority: some(umiPublicKey(newAuthority)),
+    }).prepend(await umiPriorityIxs()).sendAndConfirm(umi, {
+      send: { commitment: 'finalized' },
+      confirm: { commitment: 'finalized' },
+    }),
+  });
+  console.log(`Metadata update authority transferred to ${newAuthority}`);
+  return { transferred: true, newAuthority };
 }

@@ -26,3 +26,5 @@ test/ui/diffs/*.png
 
 # Cloudflare wrangler local state
 /.wrangler
+docs/LAUNCH-RISK-BACKLOG.md
+docs/RELEASE-AUDIT-BACKLOG.md
