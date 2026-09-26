@@ -17640,3 +17640,10 @@ body[data-launch-running="true"] .workspace {
   grid-template-columns: minmax(0, 1fr);
   max-width: 960px;
 }
+
+/* The sidebar card already names the active launch on desktop. */
+@media (min-width: 901px) {
+  #launchIdentityChip {
+    display: none !important;
+  }
+}

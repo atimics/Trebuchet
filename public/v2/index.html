@@ -285,11 +285,7 @@
               </div>
               <section class="guided-launch-flow" id="guidedLaunchFlow" aria-live="polite"></section>
               <div class="advanced-launch-controls" id="advancedLaunchControls">
-              <section class="launch-step-guide configure-step-guide" aria-labelledby="configureStepTitle">
-                <div>
-                  <h2 id="configureStepTitle">Token &amp; pools</h2>
-                </div>
-              </section>
+              <h2 class="visually-hidden" id="configureStepTitle">Token &amp; pools</h2>
               <div class="launch-workbench compact-workbench">
                 <form class="config-grid" id="launchConfig" aria-label="Launch configuration">
                   <label>
@@ -358,7 +354,7 @@
                 <details class="vanity-panel vanity-details">
                   <summary>
                     <span>Contract address</span>
-                    <strong>Random address · recommended</strong>
+                    <strong id="vanitySummary">Random address · recommended</strong>
                   </summary>
                   <div class="vanity-details-body" aria-label="Optional Vanity CA grinder">
                   <div class="manifest-head">

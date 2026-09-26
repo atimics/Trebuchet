@@ -87,6 +87,7 @@ async function smokeViewport(browser, viewport) {
       return {
         experienceMode: document.body.dataset.experienceMode,
         welcomeText: document.querySelector('#guidedLaunchFlow')?.textContent || '',
+        setupHelp: document.querySelector('#setupHelp')?.textContent || '',
         scrollWidth: document.documentElement.scrollWidth,
         clientWidth: document.documentElement.clientWidth,
         sidebarVisible: Boolean(document.querySelector('.sidebar')?.getClientRects().length),
@@ -99,13 +100,14 @@ async function smokeViewport(browser, viewport) {
         ].filter((selector) => document.querySelector(selector)?.getClientRects().length),
         rects: {
           flow: rectFor('#guidedLaunchFlow'),
-          welcome: rectFor('.guided-welcome'),
+          welcome: rectFor('.guided-form-card'),
         },
       };
     });
     assert.equal(guidedMetrics.experienceMode, 'guided', `${viewport.name}: guided launch is not the default experience`);
-    assert.match(guidedMetrics.welcomeText, /Your first launch/);
-    assert.match(guidedMetrics.welcomeText, /sends no transaction, and spends no SOL/);
+    assert.match(guidedMetrics.welcomeText, /What are you launching\?/);
+    assert.match(guidedMetrics.welcomeText, /Continue to liquidity pairs/);
+    assert.match(guidedMetrics.setupHelp, /no transaction · 0 SOL/i);
     assert.equal(guidedMetrics.sidebarVisible, false, `${viewport.name}: Guided Mode still shows the app sidebar`);
     assert.equal(guidedMetrics.topbarVisible, false, `${viewport.name}: Guided Mode still shows the terminal header`);
     assert.deepEqual(
@@ -121,11 +123,8 @@ async function smokeViewport(browser, viewport) {
       assertRectVisible(guidedMetrics.rects[selector], `guided ${selector}`, viewport);
     }
 
-    await page.click('[data-action="guided-next"]');
     await page.fill('[data-guided-field="name"]', 'First Launch');
     await page.fill('[data-guided-field="symbol"]', 'FIRST');
-    await page.click('[data-action="guided-next"]');
-    await page.fill('[data-guided-field="destinationWallet"]', '11111111111111111111111111111112');
     await page.click('[data-action="guided-next"]');
     const guidedConsoleSkin = await page.evaluate(() => {
       const bodyStyle = getComputedStyle(document.body);
@@ -143,7 +142,8 @@ async function smokeViewport(browser, viewport) {
     assert.equal(guidedConsoleSkin.formShadow, 'none', `${viewport.name}: Guided Mode still uses floating card shadows`);
     assert.ok(guidedConsoleSkin.strategyFontSize <= 12, `${viewport.name}: Step 3 strategy copy is oversized`);
     await page.click('[data-action="guided-value-preset"][data-value="100000"]');
-    await page.click('[data-action="guided-next"]');
+    // Review, then Fund, then Launch.
+    for (let step = 0; step < 3; step += 1) await page.click('[data-action="guided-next"]');
 
     const guidedReview = await page.evaluate(() => {
       const visibleAdvancedPanes = Array.from(document.querySelectorAll('[data-launch-pane]'))
@@ -165,7 +165,7 @@ async function smokeViewport(browser, viewport) {
         visibleAdvancedPanes,
       };
     });
-    assert.match(guidedReview.text, /Ready to practice/);
+    assert.match(guidedReview.text, /Ready to launch/);
     assert.match(guidedReview.runLabel, /Start practice launch/);
     assertRectVisible(guidedReview.actionRect, 'guided practice action', viewport);
     assert.deepEqual(guidedReview.visibleAdvancedPanes, [], `${viewport.name}: guided review exposes advanced wallet operations`);
@@ -338,6 +338,11 @@ async function smokeViewport(browser, viewport) {
     if (viewport.name === 'desktop') {
       await page.click('.launch-workspace-tab[data-launch-workspace="finish"]');
       const terminalMetrics = await page.evaluate(() => {
+        // Measure the workspace itself, not a layout squeezed by the Plan drawer.
+        document.querySelector('.launch-summary-drawer')?.removeAttribute('open');
+        // The desktop hides the static host's one-step card once the API connects.
+        const quickCard = document.querySelector('.quick-launch-card');
+        if (quickCard) quickCard.hidden = true;
         const bridge = document.querySelector('#classicBridge');
         bridge.classList.add('has-recovery-notice', 'is-terminal-launch');
         bridge.innerHTML = `

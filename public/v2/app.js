@@ -960,7 +960,7 @@ function guidedFundingStep() {
     ? `${Number(funding.requiredSol || 0).toFixed(3)} SOL`
     : status === 'loading'
       ? 'Calculating…'
-      : 'Estimated on the previous step';
+      : 'Not estimated';
   const costValue = status === 'ready' ? `${Number(funding.launchCostsSol || 0).toFixed(3)} SOL` : '—';
   return `
     <div class="guided-step-layout">
@@ -973,6 +973,7 @@ function guidedFundingStep() {
         <div class="guided-funding-summary">
           <span><small>Total to fund</small><strong>${fundValue}</strong></span>
           <span><small>Launch costs</small><strong>${costValue}</strong></span>
+          ${status === 'error' ? '<button class="pill-button" type="button" data-action="guided-retry-estimate">Retry estimate</button>' : ''}
         </div>
         <p class="guided-funding-note">Funding also parks your liquidity for the pool. A live run starts only after you approve the launch on the next step.</p>
       </div>
@@ -1012,12 +1013,12 @@ function guidedReviewStep() {
     ? `${Number(funding.launchCostsSol || 0).toFixed(3)} SOL`
     : funding.status === 'loading'
       ? 'Calculating…'
-      : 'Estimate in Funding';
+      : 'Not estimated';
   return `
     <div class="guided-review">
       <div class="guided-step-copy">
         <span class="eyebrow">Step 4 of 4</span>
-        <h2>${practice ? 'Ready to practice' : 'Ready to prepare the live launch'}</h2>
+        <h2>Review the launch</h2>
         <p>${practice
           ? 'Trebuchet will simulate the complete recipe locally. It creates no usable token or pool and spends no SOL.'
           : 'Review the derived recipe and funding requirement. Nothing goes on-chain until the isolated wallet is funded and you approve the final run.'}</p>
@@ -1030,7 +1031,7 @@ function guidedReviewStep() {
         ${[
           ['fa-coins', practice ? 'Simulate a fixed token' : 'Create a fixed token', `${practice ? 'Preview' : 'Create'} a one-billion supply and ${practice ? 'verify the recipe removes' : 'remove'} mint and freeze authority.`],
           ['fa-water', `${practice ? 'Simulate' : 'Open'} ${strategy.label.toLowerCase()} liquidity`, `${liquidityBudgetSol} SOL liquidity budget · ${strategy.structure.toLowerCase()} · ${practice ? 'preview required locks' : 'lock every position'}.`],
-          ['fa-file-shield', practice ? 'Create a local practice record' : 'Finish with verifiable proof', `${practice ? 'Simulate returning' : 'Return'} assets to ${destination === GUIDED_PRACTICE_DESTINATION ? 'the practice destination' : shortAddress(destination)}${practice ? '; nothing is published publicly' : state.prefs.publishLaunchReport === false ? ' and download local proof' : ' and publish the launch report'}.`],
+          ['fa-file-shield', practice ? 'Create a local practice record' : 'Finish with verifiable proof', `${practice ? 'Simulate returning' : 'Return'} assets to ${practice || destination === GUIDED_PRACTICE_DESTINATION ? 'the practice wallet' : destination ? shortAddress(destination) : 'your funding wallet'}${practice ? '; nothing is published publicly' : state.prefs.publishLaunchReport === false ? ' and download local proof' : ' and publish the launch report'}.`],
         ].map(([icon, title, detail]) => `<article><i class="fa-solid ${icon}"></i><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(detail)}</small></span><i class="fa-solid fa-check"></i></article>`).join('')}
       </div>
       <section class="guided-funding-summary ${funding.status === 'error' ? 'has-error' : ''}" aria-live="polite">
@@ -1043,7 +1044,7 @@ function guidedReviewStep() {
         ? `${practice ? 'Practice still spends 0 SOL. The live estimate includes' : 'Includes'} rent, network fees, publishing, and safety buffer. ${strategy.coreSol > 0 ? `${fmtSol(strategy.coreSol)} is reserved for core liquidity.` : 'This minimum recipe adds no discretionary liquidity.'}`
         : funding.status === 'error'
           ? `The local estimator did not respond: ${escapeHtml(funding.error || 'unknown error')}. You can retry or continue to the Funding phase.`
-          : 'Trebuchet is calculating the launch costs separately from your liquidity allocation.'}</p>
+          : funding.status === 'loading' ? 'Calculating launch costs.' : ''}</p>
       <details class="guided-technical-details">
         <summary>Technical details <span>optional</span></summary>
         <div><span>Recipe</span><strong>${GUIDED_RECIPE_ID}</strong></div>
@@ -1152,12 +1153,18 @@ function renderGuidedLaunchFlow() {
   else if (state.guidedStep === 2) body = guidedReviewStep();
   else if (state.guidedStep === 3) body = guidedFundingStep();
   else body = guidedLaunchStep();
+  // One source for the step counter: the rail's step list.
+  body = body.replace(
+    /<span class="eyebrow">Step \d+ of \d+<\/span>/,
+    `<span class="eyebrow">Step ${state.guidedStep + 1} of ${guidedSteps.length}</span>`,
+  );
 
-  const controls = state.guidedStep === 0 ? '' : `
+  const nextLabel = ['Continue to liquidity pairs', 'Continue to review', 'Continue to funding', 'Review launch'][state.guidedStep] || 'Continue';
+  const controls = `
     <div class="guided-navigation">
-      <button class="secondary-button" type="button" data-action="guided-back"><i class="fa-solid fa-arrow-left"></i> Back</button>
+      ${state.guidedStep === 0 ? '<span></span>' : '<button class="secondary-button" type="button" data-action="guided-back"><i class="fa-solid fa-arrow-left"></i> Back</button>'}
       ${state.guidedStep < guidedSteps.length - 1
-        ? `<button class="primary-button" type="button" data-action="guided-next">${state.guidedStep === 1 ? 'Continue to review' : state.guidedStep === 2 ? 'Continue to funding' : 'Review launch'} <i class="fa-solid fa-arrow-right"></i></button>`
+        ? `<button class="primary-button" type="button" data-action="guided-next">${nextLabel} <i class="fa-solid fa-arrow-right"></i></button>`
         : practice
           ? '<button class="primary-button" type="button" data-action="guided-practice"><i class="fa-solid fa-flask"></i> Start practice launch</button>'
           : '<button class="primary-button custody-action" type="button" data-action="guided-live-handoff"><i class="fa-solid fa-shield-halved"></i> Set up live launch wallet</button>'}
@@ -1301,7 +1308,11 @@ function moveGuidedStep(direction) {
   renderGuidedRunShell();
   renderLaunchWorkspace();
   settleGuidedStepPosition();
-  if (state.guidedStep === guidedSteps.length - 1) {
+  // Review, Fund, and Launch all show the estimate; fetch it on reaching
+  // Review, and later only if it is still missing.
+  const reviewIndex = guidedSteps.findIndex((step) => step.id === 'review');
+  if ((direction > 0 && state.guidedStep === reviewIndex)
+      || (state.guidedStep > reviewIndex && state.guidedFunding.status !== 'ready')) {
     requestGuidedFundingEstimate().catch(() => null);
   }
 }
@@ -5787,11 +5798,15 @@ function renderLaunchBudgetRecommendation() {
   if (!target || !budgetInput) return;
   const budgetSol = Math.max(0, parseNumericInput(budgetInput.value, 0));
   const strategy = launchBudgetRecommendation(budgetSol);
+  let presetSelected = false;
   $$('.launch-budget-presets button').forEach((button) => {
-    button.classList.toggle('is-selected', Number(button.dataset.budget) === budgetSol);
+    const selected = Number(button.dataset.budget) === budgetSol;
+    presetSelected ||= selected;
+    button.classList.toggle('is-selected', selected);
   });
+  // A selected preset already names the band; only a custom amount needs it.
   target.innerHTML = `
-    <span class="recommended-band"><small>Recommended band</small><strong>${escapeHtml(strategy.label)}</strong></span>
+    ${presetSelected ? '' : `<span class="recommended-band"><small>Band</small><strong>${escapeHtml(strategy.label)}</strong></span>`}
     <span><small>Core liquidity</small><strong>${fmtSol(strategy.coreSol)}</strong></span>
     <span><small>Structure</small><strong>${escapeHtml(strategy.structure)}</strong></span>
     <span><small>Buy support</small><strong>${strategy.supportSol > 0 ? fmtSol(strategy.supportSol) : 'None'}</strong></span>
@@ -6762,7 +6777,7 @@ function renderLaunchPreview() {
   if (state.experienceMode === 'guided') {
     $('#setupSummary').textContent = state.guidedStep === 0
       ? `${practiceEnvironmentSelected() ? 'Practice' : 'Prepare'} a complete token launch`
-      : `Step ${Math.min(state.guidedStep, 4)} of 4`;
+      : guidedSteps[state.guidedStep]?.label || 'Launch';
     $('#setupHelp').textContent = state.environmentReady
       ? practiceEnvironmentSelected()
         ? 'Practice · no transaction · 0 SOL'
@@ -14851,22 +14866,28 @@ function renderClassicBridge() {
   `;
   };
 
+  // With no wallet the row creates one; with wallets but none selected it
+  // opens the picker.
+  const hasManagedWallets = state.managedWallets.length > 0;
+  const walletChoiceAction = walletPublicKey
+    ? 'unlock-wallet-and-continue'
+    : hasManagedWallets ? 'choose-launch-wallet' : 'generate-wallet';
+  const walletChoiceLabel = walletPublicKey
+    ? selectedWallet.name
+    : hasManagedWallets ? 'Choose a launch wallet' : 'Create launch wallet';
+
   classicBridge.innerHTML = `
     ${restoredPlanNotice}
     <section class="classic-workspace-section launch-phase-workspace" data-classic-workspace="wallet">
-      <section class="launch-step-guide" aria-labelledby="walletStepTitle">
-        <div>
-          <h2 id="walletStepTitle">Launch wallet</h2>
-        </div>
-      </section>
-      <button class="launch-wallet-choice ${walletReady ? 'is-ready' : 'needs-action'}" type="button" data-action="unlock-wallet-and-continue" aria-label="${walletReady ? 'Continue with' : 'Unlock'} ${escapeHtml(walletPublicKey ? selectedWallet.name : 'a launch wallet')}">
-        <span class="launch-wallet-choice-icon"><i class="fa-solid ${walletPublicKey ? 'fa-key' : 'fa-wallet'}"></i></span>
+      <h2 class="visually-hidden" id="walletStepTitle">Launch wallet</h2>
+      <button class="launch-wallet-choice ${walletReady ? 'is-ready' : 'needs-action'}" type="button" data-action="${walletChoiceAction}" aria-label="${escapeHtml(walletChoiceLabel)}">
+        <span class="launch-wallet-choice-icon"><i class="fa-solid ${walletPublicKey ? 'fa-key' : 'fa-plus'}"></i></span>
         <span class="launch-wallet-choice-copy">
-          <small>${walletPublicKey ? 'Selected launch wallet' : 'No launch wallet selected'}</small>
-          <strong>${escapeHtml(walletPublicKey ? selectedWallet.name : 'Create or select a wallet')}</strong>
-          <code>${escapeHtml(walletPublicKey || 'Trebuchet will generate and encrypt a fresh keypair.')}</code>
+          <small>${walletPublicKey ? 'Launch wallet' : 'No launch wallet yet'}</small>
+          <strong>${escapeHtml(walletChoiceLabel)}</strong>
+          <code>${escapeHtml(walletPublicKey || 'A fresh keypair, encrypted on this device.')}</code>
         </span>
-        <span class="risk-badge ${walletReady ? '' : 'warn'}">${walletReady ? 'Continue' : walletPublicKey ? 'Unlock' : 'Required'}</span>
+        <span class="risk-badge ${walletReady ? '' : 'warn'}">${walletReady ? 'Continue' : walletPublicKey ? 'Unlock' : hasManagedWallets ? 'Choose' : 'Create'}</span>
       </button>
       <details class="drawer phase-options">
         <summary><span>Wallet options</span><strong>Copy · lock · manage</strong></summary>
@@ -14874,18 +14895,13 @@ function renderClassicBridge() {
           ${walletPublicKey
             ? `<button class="secondary-button" type="button" data-action="copy-wallet-address"><i class="fa-solid fa-copy"></i><span>Copy address</span></button>
                <button class="secondary-button" type="button" data-action="${walletReady ? 'toggle-wallet' : 'unlock-wallet-and-continue'}"><i class="fa-solid ${walletReady ? 'fa-lock' : 'fa-unlock'}"></i><span>${walletReady ? 'Lock wallet' : 'Unlock'}</span></button>`
-            : '<button class="primary-button" type="button" data-action="generate-wallet"><i class="fa-solid fa-plus"></i><span>Create launch wallet</span></button>'}
+            : ''}
           <button class="secondary-button" type="button" data-view="wallet"><i class="fa-solid fa-wallet"></i><span>Manage wallets</span></button>
         </div>
       </details>
     </section>
     <section class="classic-workspace-section classic-workspace-fund" data-classic-workspace="fund">
-      <section class="launch-step-guide" aria-labelledby="fundStepTitle">
-        <div>
-          <h2 id="fundStepTitle">Fund</h2>
-        </div>
-        ${fundingReady ? '<aside><i class="fa-solid fa-circle-check" aria-hidden="true"></i><span>Funding verified.</span></aside>' : ''}
-      </section>
+      <h2 class="visually-hidden" id="fundStepTitle">Fund</h2>
       ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
       ${estimate && (routeCount || manualQuoteCount) ? `<details class="drawer funding-extra" open><summary><span>Pair tokens</span><strong>${routeCount + manualQuoteCount} item${routeCount + manualQuoteCount === 1 ? '' : 's'}</strong></summary>${renderQuoteAcquirePanel()}</details>` : ''}
       <div class="launch-phase-actions launch-phase-actions-split">
@@ -14958,7 +14974,7 @@ function renderClassicBridge() {
           <h2 id="finishStepTitle">${finalSweepComplete ? 'Launch complete' : 'Finish launch'}</h2>
           <p>${finalSweepComplete ? 'Assets swept and launch wallet verified empty.' : 'Distribute, sweep remaining assets, and save proof.'}</p>
         </div>
-        <aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Proof is ready.' : !finishDestinationReady ? 'Return wallet not proven yet.' : finishCanRun ? 'Ready for final sweep.' : 'Resolve the requirement below.'}</span></aside>
+        <aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Proof is ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for final sweep.' : 'Resolve the requirement below.'}</span></aside>
       </section>
       ${completedJournal && !finalSweepComplete ? renderLaunchCompleteCard(completedJournal) : ''}
       ${!completedJournal && !finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
@@ -18112,8 +18128,8 @@ function renderSettings() {
         <p>${escapeHtml(pinMeta.detail)}</p>
       </span>
       <span class="secret-pin-meta">
-        <small>${escapeHtml(state.secretPin.kdf || 'no-kdf')}</small>
-        <strong>${state.secretPin.deviceSecretProtected ? 'Device protected' : 'Local fallback'}</strong>
+        <small>Device key</small>
+        <strong>${state.secretPin.deviceSecretProtected ? 'OS keychain' : 'This device only'}</strong>
       </span>
       <span class="secret-pin-actions">
         <button class="pill-button" type="button" data-action="${escapeHtml(pinMeta.primaryAction)}" ${pinMeta.disabled || state.secretPin.busy ? 'disabled' : ''}>
@@ -18612,6 +18628,16 @@ function renderRecoveryWizard(model) {
   const active = model.active;
   const actions = active.actions.map(recoveryWizardActionButton).join('');
   const openCount = model.screens.filter((screen) => screen.state !== 'pass').length;
+  if (active.state === 'pass' && openCount === 0 && !actions) {
+    return `
+      <section class="recovery-wizard-panel pass" aria-label="Recovery next action">
+        <div class="recovery-wizard-head">
+          <strong>Nothing to recover.</strong>
+          <span class="risk-badge">Clear</span>
+        </div>
+      </section>
+    `;
+  }
   return `
     <section class="recovery-wizard-panel ${escapeHtml(active.state)}" aria-label="Recovery next action">
       <div class="recovery-wizard-head">
@@ -18922,6 +18948,14 @@ function renderHistoryPanes() {
   });
 }
 
+function renderVanitySummary() {
+  const summary = $('#vanitySummary');
+  if (!summary) return;
+  summary.textContent = state.selectedVanityPublicKey
+    ? `${shortAddress(state.selectedVanityPublicKey)} · vanity`
+    : 'Random address · recommended';
+}
+
 function renderLaunchRunningBar() {
   const bar = $('#launchRunningBar');
   if (bar) bar.hidden = state.realExecutionRunning !== true;
@@ -18930,6 +18964,7 @@ function renderLaunchRunningBar() {
 
 function renderAll() {
   renderLaunchRunningBar();
+  renderVanitySummary();
   renderCustodySignal();
   renderLaunchPreview();
   renderLaunchIdentity();
@@ -24260,6 +24295,11 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'choose-launch-wallet') {
+    setView('wallet');
+    return;
+  }
+
   if (action === 'unlock-wallet-and-continue') {
     unlockLaunchWalletAndContinue().catch((error) => notify(error.message || 'Wallet unlock failed'));
     return;
@@ -24568,6 +24608,8 @@ function quickLaunchLedger(quoteSymbol) {
 }
 
 async function refreshQuickLaunchPrice() {
+  // A page opened from disk has no server to ask.
+  if (globalThis.location?.protocol === 'file:') return;
   try {
     const response = await fetch('/api/price', { signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined });
     if (!response.ok || !response.json) return;
