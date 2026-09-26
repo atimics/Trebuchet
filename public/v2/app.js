@@ -2194,6 +2194,15 @@ function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+// Unknown decimals must stay undefined so the server reads them from the
+// mint. Number(null) is 0, which would be sent as a real override and skip
+// the lookup (a 6-decimal token planned as 0 decimals).
+function optionalDecimals(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : undefined;
+}
+
 function parsePercentInput(value, fallback = 0) {
   return clampNumber(parseNumericInput(value, fallback), 0, 100);
 }
@@ -5817,7 +5826,7 @@ function currentClassicModel() {
       quoteToken: quoteMint || quoteSymbol,
       quoteMint: quoteMint || null,
       quoteSymbol,
-      quoteDecimals: Number.isFinite(Number(resolvedInfo?.decimals)) ? Number(resolvedInfo.decimals) : null,
+      quoteDecimals: optionalDecimals(resolvedInfo?.decimals) ?? optionalDecimals(pool.quoteDecimals) ?? null,
       quotePriceUsd: resolvedInfo?.priceUsd ?? null,
       quotePriceSource: resolvedInfo?.priceSource || null,
       quoteCompatibility: resolvedInfo ? {
@@ -5853,9 +5862,7 @@ function currentClassicModel() {
   const heldReservePercent = preallocation.supplyPercent + airdrop.supplyPercent;
   const reservePercent = clampNumber(100 - totalPoolPercent - heldReservePercent, 0, 100);
   const allocations = pools.map((pool) => {
-    const quoteDecimalsOverride = Number.isFinite(Number(pool.quoteDecimals))
-      ? Math.max(0, Math.floor(Number(pool.quoteDecimals)))
-      : undefined;
+    const quoteDecimalsOverride = optionalDecimals(pool.quoteDecimals);
     const quoteUsdOverride = Number.isFinite(Number(pool.quotePriceUsd)) && Number(pool.quotePriceUsd) > 0
       ? Number(pool.quotePriceUsd)
       : undefined;
@@ -14557,8 +14564,9 @@ function renderClassicBridge() {
           <button class="secondary-button compact" type="button" data-action="copy-wallet-address"><i class="fa-solid fa-copy"></i><span>Copy address</span></button>
         </div>
       ` : ''}
+      ${estimate ? renderFundingReceipt(estimate) : ''}
       <div class="funding-task-action">
-        ${fundingNeed.action ? `<button class="primary-button" type="button" data-action="${escapeHtml(fundingNeed.action)}" ${state.manualPrefund.polling ? 'disabled' : ''}><span>${escapeHtml(fundingNeed.actionLabel)}</span><i class="fa-solid ${estimate ? 'fa-rotate' : 'fa-calculator'}"></i></button>` : '<span class="risk-badge">Ready</span>'}
+        ${fundingNeed.action ? `<button class="primary-button" type="button" data-action="${escapeHtml(fundingNeed.action)}" ${state.manualPrefund.polling || (fundingNeed.action === 'estimate-funding' && state.fundingEstimating) ? 'disabled' : ''}><span>${escapeHtml(fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'Estimating…' : fundingNeed.actionLabel)}</span><i class="fa-solid ${fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'fa-spinner fa-spin' : estimate ? 'fa-rotate' : 'fa-calculator'}"></i></button>` : '<span class="risk-badge">Ready</span>'}
       </div>
     </section>
   `;
@@ -14705,7 +14713,7 @@ function renderClassicBridge() {
         <aside><i class="fa-solid ${fundingReady ? 'fa-circle-check' : 'fa-arrow-down'}" aria-hidden="true"></i><span>${escapeHtml(fundingReady ? 'Funding verified.' : 'No funds move during estimation.')}</span></aside>
       </section>
       ${finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
-      ${estimate && (routeCount || manualQuoteCount) ? `<details class="drawer funding-extra"><summary><span>Additional token funding</span><strong>${routeCount + manualQuoteCount} item${routeCount + manualQuoteCount === 1 ? '' : 's'}</strong></summary>${renderQuoteAcquirePanel()}</details>` : ''}
+      ${estimate && (routeCount || manualQuoteCount) ? `<details class="drawer funding-extra" open><summary><span>Pair tokens</span><strong>${routeCount + manualQuoteCount} item${routeCount + manualQuoteCount === 1 ? '' : 's'}</strong></summary>${renderQuoteAcquirePanel()}</details>` : ''}
       <div class="launch-phase-actions launch-phase-actions-split">
         <button class="text-button" type="button" data-launch-workspace="configure"><i class="fa-solid fa-arrow-left"></i><span>Token &amp; pools</span></button>
         ${fundingReady ? '<button class="primary-button" type="button" data-launch-workspace="mint"><span>Continue to create token</span><i class="fa-solid fa-arrow-right"></i></button>' : ''}
@@ -15554,9 +15562,7 @@ function stableFundingFingerprintValue(value) {
 function fundingEstimateAllocationsForTopology(topology = {}) {
   const pools = Array.isArray(topology.pools) ? topology.pools : [];
   return pools.map((pool) => {
-    const quoteDecimalsOverride = Number.isFinite(Number(pool.quoteDecimalsOverride ?? pool.quoteDecimals))
-      ? Math.max(0, Math.floor(Number(pool.quoteDecimalsOverride ?? pool.quoteDecimals)))
-      : undefined;
+    const quoteDecimalsOverride = optionalDecimals(pool.quoteDecimalsOverride ?? pool.quoteDecimals);
     const quoteUsdOverride = Number.isFinite(Number(pool.quoteUsdOverride ?? pool.quotePriceUsd)) && Number(pool.quoteUsdOverride ?? pool.quotePriceUsd) > 0
       ? Number(pool.quoteUsdOverride ?? pool.quotePriceUsd)
       : undefined;
@@ -18835,6 +18841,63 @@ function selectedFundingWalletHint() {
   return state.fundingWallet;
 }
 
+// Where the funded SOL goes, grouped from the estimate's line items. Always
+// shown with the total: the total alone hides that most of it is rent.
+const FUNDING_RECEIPT_GROUPS = [
+  { key: 'token', label: 'Create the token', test: /^Token creation/ },
+  { key: 'pools', label: 'Pool accounts', test: /: pool creation$/ },
+  { key: 'rent', label: 'Price-range rent', test: /: price-range rent/ },
+  { key: 'positions', label: 'Locked positions (Fee Keys)', test: /NFT mint \+ lock/ },
+  { key: 'buy', label: 'Buy pair tokens', test: /auto-swap/ },
+  { key: 'support', label: 'Support liquidity', test: /support position/ },
+  { key: 'fees', label: 'Network fees and report', test: /network\/priority fees|Launch report|SOL, dust|[Aa]irdrop/ },
+  { key: 'buffer', label: 'Safety buffer (returned if unused)', test: /^Safety buffer/ },
+];
+
+function renderFundingReceipt(estimate) {
+  const lines = Array.isArray(estimate?.solBreakdown) ? estimate.solBreakdown : [];
+  if (!lines.length) return '';
+  const groups = FUNDING_RECEIPT_GROUPS.map((group) => ({ ...group, sol: 0, count: 0 }));
+  const other = [];
+  lines.forEach((line) => {
+    const group = groups.find((item) => item.test.test(String(line.label || '')));
+    if (group) {
+      group.sol += Number(line.sol || 0);
+      group.count += 1;
+    } else {
+      other.push(line);
+    }
+  });
+  const poolCount = groups.find((group) => group.key === 'pools').count;
+  const detail = {
+    pools: `${poolCount} pool${poolCount === 1 ? '' : 's'}`,
+    rent: 'Raydium tick accounts',
+    positions: `${groups.find((group) => group.key === 'positions').count} positions`,
+    buy: `${groups.find((group) => group.key === 'buy').count} auto-buy${groups.find((group) => group.key === 'buy').count === 1 ? '' : 's'}`,
+  };
+  const row = (label, sol, note = '') => `
+    <li><span>${escapeHtml(label)}${note ? `<small>${escapeHtml(note)}</small>` : ''}</span><strong>${Number(sol).toFixed(4)}</strong></li>`;
+  const rows = [
+    ...groups.filter((group) => group.sol > 0).map((group) => row(group.label, group.sol, detail[group.key] || '')),
+    ...other.map((line) => row(line.label, line.sol)),
+  ].join('');
+  const manual = Array.isArray(estimate.quoteBreakdown) ? estimate.quoteBreakdown : [];
+  const manualHtml = manual.length ? `
+    <div class="funding-receipt-manual">
+      <small>Tokens you send yourself (no swap route)</small>
+      <ul>${manual.map((item) => `<li><span>${escapeHtml(item.symbol || shortAddress(item.mint))}</span><strong>${escapeHtml(Number(item.amount || 0).toLocaleString('en-US', { maximumFractionDigits: 2 }))}</strong></li>`).join('')}</ul>
+    </div>` : '';
+  const perPool = lines.filter((line) => /^Pool \d+/.test(String(line.label || '')));
+  return `
+    <div class="funding-receipt">
+      <small>Where the ${Number(estimate.totalSol || 0).toFixed(4)} SOL goes</small>
+      <ul>${rows}</ul>
+      <div class="funding-receipt-total"><span>Total</span><strong>${Number(estimate.totalSol || 0).toFixed(4)} SOL</strong></div>
+      ${manualHtml}
+      ${perPool.length ? `<details class="funding-receipt-lines"><summary>Every line (${lines.length})</summary><ul>${lines.map((line) => row(line.label, line.sol)).join('')}</ul></details>` : ''}
+    </div>`;
+}
+
 function renderFundingWalletHint({ compact = false } = {}) {
   const walletPublicKey = selectedLaunchWalletPublicKey();
   const hint = selectedFundingWalletHint();
@@ -21479,7 +21542,23 @@ async function startVanityGrind() {
   }
 }
 
-async function estimateClassicFunding() {
+// One estimate at a time: repeat clicks join the running request instead of
+// queuing more RPC-heavy estimates behind it.
+let fundingEstimateInFlight = null;
+
+function estimateClassicFunding() {
+  if (fundingEstimateInFlight) return fundingEstimateInFlight;
+  state.fundingEstimating = true;
+  renderAll();
+  fundingEstimateInFlight = runClassicFundingEstimate().finally(() => {
+    fundingEstimateInFlight = null;
+    state.fundingEstimating = false;
+    renderAll();
+  });
+  return fundingEstimateInFlight;
+}
+
+async function runClassicFundingEstimate() {
   const config = currentLaunchConfig();
   const fundingRequest = classicFundingEstimateRequest(config);
   if (state.apiStatus === 'connected' && state.apiClient?.estimateClassicFunding) {
@@ -21533,7 +21612,7 @@ async function resolveCustomQuoteToken(poolId) {
     const info = await state.apiClient.getQuoteTokenInfo(query);
     if (info?.address) pool.quoteMint = info.address;
     if (info?.symbol) pool.quoteSymbol = String(info.symbol).toUpperCase();
-    if (Number.isFinite(Number(info?.decimals))) pool.quoteDecimals = Number(info.decimals);
+    if (optionalDecimals(info?.decimals) !== undefined) pool.quoteDecimals = optionalDecimals(info.decimals);
     state.quoteTokenInfo[poolId] = {
       query: customQuoteLookupValue(pool),
       loading: false,

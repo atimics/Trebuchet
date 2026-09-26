@@ -295,8 +295,12 @@ export async function discoverRaydiumRoute({
   // Cache lookup. Skipped when forceFresh is true. The cache stores
   // both `null` (no route) and result objects (route found), so
   // check via has() not value-truthiness.
-  if (!forceFresh && routeDiscoveryCache.has(quoteMint)) {
-    return routeDiscoveryCache.get(quoteMint);
+  // The cached price is per whole token, so it depends on the decimals it
+  // was computed with. Keying by mint alone served a stale price after the
+  // decimals changed (off by 10^decimals).
+  const cacheKey = `${quoteMint}:${quoteDecimals}`;
+  if (!forceFresh && routeDiscoveryCache.has(cacheKey)) {
+    return routeDiscoveryCache.get(cacheKey);
   }
 
   const url = new URL(`${RAYDIUM_SWAP_API}/compute/swap-base-in`);
@@ -343,7 +347,7 @@ export async function discoverRaydiumRoute({
   // point-in-time snapshot for pool creation; it shouldn't poison the
   // cache that other callers (funding-estimate refreshes) rely on.
   if (!forceFresh) {
-    routeDiscoveryCache.set(quoteMint, result);
+    routeDiscoveryCache.set(cacheKey, result);
   }
   return result;
 }

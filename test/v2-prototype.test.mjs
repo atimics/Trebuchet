@@ -65,6 +65,9 @@ function jsonResponse(data, status = 200) {
   };
 }
 
+// app.js helpers that harness slices call but do not contain.
+const optionalDecimalsSource = js.match(/function optionalDecimals\(value\) \{[\s\S]*?\n\}/)[0];
+
 function loadClassicComparisonHarness() {
   const statusSource = js.match(/function classicComparisonStatusFromCounts[\s\S]*?\n}\n/)?.[0];
   const proofCountStart = js.indexOf('function proofPositions');
@@ -1018,6 +1021,7 @@ function loadClassicRetirementGateHarness() {
   vm.runInNewContext(
     [
       demoProofHelper,
+      optionalDecimalsSource,
       js.slice(demoConfigStart, demoConfigEnd),
       js.slice(txEvidenceStart, txEvidenceEnd),
       js.slice(reportStart, reportEnd),
@@ -1783,6 +1787,7 @@ function loadQuoteAcquireHarness() {
   };
   vm.runInNewContext(
     [
+      optionalDecimalsSource,
       js.slice(stableStart, stableEnd),
       js.slice(quoteStart, quoteEnd),
       'globalThis.classicFundingEstimateFingerprint = classicFundingEstimateFingerprint;',
@@ -3277,7 +3282,7 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /normalizeAllSlices/);
   assert.match(js, /addCustomPool/);
   assert.match(js, /estimateClassicFunding/);
-  assert.match(js, /const quoteDecimalsOverride = Number\.isFinite\(Number\(pool\.quoteDecimals\)\)/);
+  assert.match(js, /const quoteDecimalsOverride = optionalDecimals\(pool\.quoteDecimals\)/);
   assert.match(js, /const quoteUsdOverride = Number\.isFinite\(Number\(pool\.quotePriceUsd\)\)/);
   assert.match(js, /quoteDecimalsOverride,/);
   assert.match(js, /quoteUsdOverride,/);

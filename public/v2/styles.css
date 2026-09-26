@@ -17376,3 +17376,90 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   color: var(--red);
   font-size: 12px;
 }
+
+/* Funding receipt: where the SOL goes, always under the total. */
+.funding-receipt {
+  grid-column: 1 / -1;
+  order: 10;
+  display: grid;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.funding-receipt > small,
+.funding-receipt-manual > small {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.funding-receipt ul {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.funding-receipt li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 13px;
+}
+
+.funding-receipt li > span {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  color: var(--ink);
+}
+
+.funding-receipt li small {
+  color: var(--subtle);
+  font-size: 11px;
+}
+
+.funding-receipt li > strong {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.funding-receipt-total {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 4px;
+  font-size: 14px;
+}
+
+.funding-receipt-total strong {
+  color: var(--green);
+  font-variant-numeric: tabular-nums;
+}
+
+.funding-receipt-manual {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line));
+  border-radius: var(--radius);
+}
+
+.funding-receipt-lines > summary {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.funding-receipt-lines li {
+  font-size: 11px;
+}
