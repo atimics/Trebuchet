@@ -81,6 +81,29 @@ export function isPlaceholderSweepDestination(value) {
   return Boolean(destination) && PLACEHOLDER_SWEEP_RE.test(destination);
 }
 
+// The Solana incinerator: tokens and NFTs sent here are burned.
+export const INCINERATOR_ADDRESS = '1nc1nerator11111111111111111111111111111111';
+
+/**
+ * Why a sweep must not go to this address, or null when it is safe.
+ * Covers the placeholder family, the incinerator, and the launch wallet
+ * itself (sweeping to yourself moves nothing and looks like success).
+ */
+export function unsafeSweepDestinationReason(value, { launchWallet = null } = {}) {
+  const destination = String(value ?? '').trim();
+  if (!destination) return null;
+  if (isPlaceholderSweepDestination(destination)) {
+    return `${destination} is a placeholder address. Nobody can sign for it, so swept SOL, tokens, and Fee Keys would be lost.`;
+  }
+  if (destination === INCINERATOR_ADDRESS) {
+    return 'The destination is the Solana incinerator. Swept tokens and Fee Keys would be burned.';
+  }
+  if (launchWallet && destination === String(launchWallet).trim()) {
+    return 'The destination is the launch wallet itself, so nothing would move.';
+  }
+  return null;
+}
+
 export function invalidBase58Characters(value) {
   return [...new Set([...String(value ?? '')].filter((ch) => !BASE58_CHARS.has(ch)))];
 }

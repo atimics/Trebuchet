@@ -721,16 +721,21 @@ test('run-airdrop claims the per-wallet launch-op mutex', () => {
   );
 });
 
-test('transfer-assets validates destination before resolving a saved signer', () => {
+test('transfer-assets validates an explicit destination before resolving a saved signer', () => {
   const handlerStart = serverSrc.indexOf('async function transferAssetsHandler(');
-  const handler = serverSrc.slice(handlerStart, handlerStart + 2500);
-  const requiredIndex = handler.indexOf('destinationWallet required');
+  const handler = serverSrc.slice(handlerStart, handlerStart + 4000);
   const validIndex = handler.indexOf('destinationWallet must be a valid Solana address');
   const signerIndex = handler.indexOf('resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey })');
-  assert.ok(requiredIndex >= 0, 'transfer-assets must reject missing destinationWallet');
+  const funderIndex = handler.indexOf('findFundingWallet(walletPublicKey)');
+  const requiredIndex = handler.indexOf('destinationWallet required');
+  const unsafeIndex = handler.indexOf('unsafeSweepDestinationReason(destinationWallet');
+  const sweepIndex = handler.indexOf('sweepNftsToDestination(');
   assert.ok(validIndex >= 0, 'transfer-assets must reject malformed destinationWallet');
   assert.ok(signerIndex >= 0, 'transfer-assets signer resolution anchor missing');
-  assert.ok(requiredIndex < signerIndex && validIndex < signerIndex, 'destination validation must happen before signer resolution');
+  assert.ok(validIndex < signerIndex, 'malformed destination must be rejected before signer resolution');
+  // A blank destination resolves to the funding wallet, which needs the signer's address.
+  assert.ok(signerIndex < funderIndex && funderIndex < requiredIndex, 'blank destination resolves to the funder, else is rejected');
+  assert.ok(unsafeIndex > funderIndex && (sweepIndex < 0 || unsafeIndex < sweepIndex), 'unsafe destinations are refused before any sweep');
 });
 
 test('transfer-assets response exposes authoritative sweep verification', () => {

@@ -82,6 +82,7 @@ import {
   normalizeVanityTargetBase58,
   normalizeWholeTokenSupply,
 } from './validators.js';
+import { unsafeSweepDestinationReason } from '@trebuchet/core/validators';
 import { normalizeDistribution } from './lpDistribution.js';
 import { isWalletEffectivelyEmpty } from './walletRecovery.js';
 import {
@@ -7733,22 +7734,20 @@ async function transferAssetsHandler(req, res) {
       // sweepAllTokensToDestination picks up every fungible token, not
       // just the launched mint. The frontend still passes it.
     } = req.body;
-    const destinationWallet = String(rawDestinationWallet || '').trim();
-    if (!destinationWallet) {
-      return res.status(400).json({ success: false, error: 'destinationWallet required' });
-    }
-    try {
-      new PublicKey(destinationWallet);
-    } catch {
-      return res.status(400).json({ success: false, error: 'destinationWallet must be a valid Solana address' });
+    let destinationWallet = String(rawDestinationWallet || '').trim();
+    // A malformed explicit destination is rejected before the signer loads.
+    if (destinationWallet) {
+      try {
+        new PublicKey(destinationWallet);
+      } catch {
+        return res.status(400).json({ success: false, error: 'destinationWallet must be a valid Solana address' });
+      }
     }
     try {
       validateTransferAirdropPayload(req.body.airdrop);
     } catch (error) {
       return res.status(400).json({ success: false, error: error.message });
     }
-
-    console.log('Transferring assets to:', destinationWallet);
 
     if (req.body.walletPublicKey
         && rejectIfSecretPinLocked(res, 'transferring assets with a saved launch wallet')) {
@@ -7757,6 +7756,27 @@ async function transferAssetsHandler(req, res) {
     const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
       resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
     walletPublicKey = resolvedWalletPublicKey;
+
+    // No return wallet set: everything goes back to the wallet that funded
+    // the launch wallet. Never sweep to a guess.
+    if (!destinationWallet) {
+      const funding = await findFundingWallet(walletPublicKey).catch(() => null);
+      destinationWallet = String(funding?.funder || '').trim();
+      if (!destinationWallet) {
+        return res.status(400).json({
+          success: false,
+          error: 'destinationWallet required: no return wallet is set and the wallet that funded this launch wallet could not be found. Set a return wallet and retry.',
+        });
+      }
+      console.log('No return wallet set; returning assets to the funding wallet:', destinationWallet);
+    }
+    // Last line of defense: this is where assets actually leave the wallet.
+    const unsafeDestination = unsafeSweepDestinationReason(destinationWallet, { launchWallet: walletPublicKey });
+    if (unsafeDestination) {
+      return res.status(400).json({ success: false, error: `Refusing to sweep: ${unsafeDestination}` });
+    }
+
+    console.log('Transferring assets to:', destinationWallet);
     // Per-wallet mutex — a sweep running concurrently with a still-running
     // create-lp/resume would pull tokens and SOL out from under the launch
     // mid-flight, guaranteeing a half-finished launch. Reject with 409 and

@@ -1988,8 +1988,8 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
     warnings.push(readinessIssue({
       id: 'destination-missing',
       phase: 'sweep',
-      title: 'Sweep destination missing',
-      detail: 'Final asset sweep needs a destination wallet after LP work completes.',
+      title: 'Assets return to the funding wallet',
+      detail: 'No return wallet is set, so the final sweep sends everything to the wallet that funded the launch wallet.',
       severity: 'warning',
     }));
   }
@@ -2097,11 +2097,10 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
     nextAction = 'Reveal sealed identity';
   } else if (!hardBlocked && tokenCreated && liquidityComplete && transferComplete) {
     nextAction = 'Launch complete';
-  } else if (!hardBlocked && tokenCreated && liquidityComplete && plan.poolTopology.sweepDestination) {
-    nextEndpoint = CLASSIC_ENDPOINTS.transferAssets;
-    nextAction = 'Sweep assets';
   } else if (!hardBlocked && tokenCreated && liquidityComplete) {
-    nextAction = 'Set sweep destination';
+    // A blank destination is resolved by the host to the funding wallet.
+    nextEndpoint = CLASSIC_ENDPOINTS.transferAssets;
+    nextAction = plan.poolTopology.sweepDestination ? 'Sweep assets' : 'Return assets to the funding wallet';
   }
   const completed = !hardBlocked && tokenCreated && liquidityComplete && transferComplete && !nextEndpoint;
   const completionStatus = hardBlocked ? 'blocked' : completed ? 'complete' : 'pending';

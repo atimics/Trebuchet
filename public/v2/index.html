@@ -415,15 +415,15 @@
                     <div class="pool-editor-panel" id="poolEditorPanel"></div>
                   </div>
                   <label class="payout-wallet">
-                    <span>Your wallet</span>
-                    <input id="sweepDestination" type="text" value="" placeholder="Solana address" autocomplete="off" spellcheck="false">
-                    <small>Gets the team tokens, the LP fee keys, and any SOL left over when the launch finishes.</small>
+                    <span>Return wallet <em>optional</em></span>
+                    <input id="sweepDestination" type="text" value="" placeholder="Funding wallet" autocomplete="off" spellcheck="false">
+                    <small id="payoutHint">Blank sends team tokens, LP fee keys, and leftover SOL back to the wallet that funds the launch.</small>
                   </label>
                   <details class="fee-key-override">
                     <summary>Send LP fee keys to a different wallet</summary>
                     <label>
                       <span>Fee Key owner</span>
-                      <input id="feeKeyRecipient" type="text" value="" placeholder="Same as your wallet" autocomplete="off" spellcheck="false">
+                      <input id="feeKeyRecipient" type="text" value="" placeholder="Same as return wallet" autocomplete="off" spellcheck="false">
                     </label>
                   </details>
                 </form>

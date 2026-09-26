@@ -782,7 +782,7 @@ function guidedStepErrors(step = state.guidedStep) {
   }
   if (step === 2) {
     const destination = String(state.guidedIntent.destinationWallet || '').trim();
-    if (!isProbablySolanaAddress(destination)) errors.destinationWallet = 'Enter a complete Solana wallet address.';
+    if (destination && !isProbablySolanaAddress(destination)) errors.destinationWallet = 'Enter a complete Solana wallet address.';
     if (!practiceEnvironmentSelected() && destination === GUIDED_PRACTICE_DESTINATION) {
       errors.destinationWallet = 'Choose the real wallet that should receive ownership and remaining assets.';
     }
@@ -5330,9 +5330,9 @@ function sweepDestinationIssues(topology = {}) {
   // Only a real launch can lose assets: practice/demo runs sweep nothing, and
   // the guided practice flow uses a placeholder destination on purpose.
   const liveExecution = state.launchMode !== 'dry-run';
-  if (liveExecution && PLACEHOLDER_SWEEP_RE.test(destination)) {
+  if (liveExecution && (PLACEHOLDER_SWEEP_RE.test(destination) || destination === '1nc1nerator11111111111111111111111111111111')) {
     return [{
-      state: 'warn',
+      state: 'danger',
       poolId: 'sweep-destination',
       title: 'Sweep destination looks like a placeholder',
       detail: 'Swept SOL, tokens, and the Fee Key NFTs would be unrecoverable, and trading fees could never be claimed. Use a wallet you control.',
@@ -7582,7 +7582,7 @@ function renderSupplyEditor() {
       ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`)}
       ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`)}
       ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="number" min="0" step="0.05" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`)}
-      ${field('Fee Key owner', '', `<input data-custom-pool-field="feeKeyRecipient" data-pool-id="${id}" data-supply-key="${key}:feekey" value="${escapeHtml(pool.feeKeyRecipient || '')}" placeholder="Same as your wallet" autocomplete="off" spellcheck="false">`)}
+      ${field('Fee Key owner', '', `<input data-custom-pool-field="feeKeyRecipient" data-pool-id="${id}" data-supply-key="${key}:feekey" value="${escapeHtml(pool.feeKeyRecipient || '')}" placeholder="Same as return wallet" autocomplete="off" spellcheck="false">`)}
       <label class="supply-field supply-field-wide"><span>Custom ladder</span><textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea><small>Replaces ladder bands when set.</small></label>
       <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
       <div class="supply-field-wide">${renderCustomQuoteInfoPanel(pool)}</div>`;
@@ -7628,6 +7628,15 @@ function renderSupplyEditor() {
       <small>${Math.abs(remainder) <= 0.05 ? `${compactAmount(supply)} tokens` : remainder > 0 ? `${pct(remainder)} unassigned` : `${pct(-remainder)} over`}</small>
     </div>`;
 
+  const payoutHint = $('#payoutHint');
+  if (payoutHint) {
+    const funder = state.fundingWallet?.funder;
+    payoutHint.textContent = $('#sweepDestination')?.value.trim()
+      ? 'Team tokens, LP fee keys, and leftover SOL go to this wallet instead of the funding wallet.'
+      : funder
+        ? `Blank sends team tokens, LP fee keys, and leftover SOL back to the funding wallet (${shortAddress(funder)}).`
+        : 'Blank sends team tokens, LP fee keys, and leftover SOL back to the wallet that funds the launch.';
+  }
   const feeKeyOwner = $('#feeKeyRecipient');
   if (feeKeyOwner?.value.trim()) feeKeyOwner.closest('details')?.setAttribute('open', '');
 
@@ -13192,9 +13201,10 @@ function buildV2LaunchReportHtml({ proof = currentLaunchProof(), config = curren
 function renderReportPanel() {
   const topology = currentClassicModel();
   const destination = topology.sweepDestination;
+  const funder = state.fundingWallet?.funder || null;
   const destinationState = destination
-    ? isProbablySolanaAddress(destination) ? 'Looks valid' : 'Check address'
-    : 'Missing';
+    ? isProbablySolanaAddress(destination) ? shortAddress(destination) : 'Check address'
+    : funder ? `Funding wallet · ${shortAddress(funder)}` : 'Funding wallet';
   const publish = topology.report.publish;
   const summary = $('#reportSummary');
   summary.textContent = publish ? 'Publish on' : 'Local only';
@@ -13203,7 +13213,7 @@ function renderReportPanel() {
     <div class="mini-row"><span>Report</span><strong>${publish ? 'Arweave + local' : 'Local download'}</strong></div>
     <div class="mini-row ${destination && !isProbablySolanaAddress(destination) ? 'danger' : ''}"><span>Sweep destination</span><strong>${escapeHtml(destinationState)}</strong></div>
     <div class="mini-row"><span>Airdrop rows</span><strong>${topology.airdrop.recipients.length || topology.airdrop.recipientCount}</strong></div>
-    <div class="mini-row"><span>Fee Key recipient</span><strong>${topology.feeKeyRecipient ? escapeHtml(shortAddress(topology.feeKeyRecipient)) : 'Launch wallet'}</strong></div>
+    <div class="mini-row"><span>Fee Key recipient</span><strong>${topology.feeKeyRecipient ? escapeHtml(shortAddress(topology.feeKeyRecipient)) : 'Same as sweep'}</strong></div>
   `;
 }
 
@@ -21690,15 +21700,12 @@ async function detectFundingWallet({ quiet = false } = {}) {
       exhausted: !funder,
       error: null,
     };
+    // The funder is the default destination; the return wallet field stays
+    // an explicit override, so detection does not write into it.
     if (funder) {
-      const input = document.getElementById('sweepDestination');
-      if (input && !input.value.trim()) {
-        input.value = funder;
-        state.executionReadiness = null;
-      }
       if (!quiet) notify(`Funding wallet detected: ${shortAddress(funder)}`);
     } else if (!quiet) {
-      notify('Wallet history could not identify a funder. Set the return wallet manually.');
+      notify('Wallet history could not identify a funder. Set a return wallet before the final sweep.');
     }
     return state.fundingWallet;
   } catch (error) {
