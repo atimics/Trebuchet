@@ -17516,3 +17516,23 @@ body[data-active-view="launch"] #view-launch .signature-panel {
 .vanity-length-select select {
   min-width: 150px;
 }
+
+.pair-token-checks {
+  grid-column: 1 / -1;
+  order: 11;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pair-token-checks.has-problems {
+  border-color: color-mix(in srgb, var(--red) 55%, var(--line));
+}
+
+.pair-token-checks ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: var(--ink);
+}

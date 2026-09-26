@@ -33,7 +33,7 @@ import {
   KNOWN_SAFE_QUOTES,
 } from './lpService.js';
 
-import { swapSolForQuote, probeRaydiumPriceStrict } from './swapService.js';
+import { swapSolForQuote, probeRaydiumPriceStrict, discoverJupiterRoute } from './swapService.js';
 import { estimateAirdropExecutionCostSol } from './lpConstants.js';
 
 import {
@@ -6352,6 +6352,7 @@ app.post('/api/quote-token-info', async (req, res) => {
 
       if (isSafeQuote) {
         infoOut.raydiumTradeable = 'yes';
+        infoOut.swapRoute = 'raydium';
       } else if (needsProbe) {
         // Cache lookup with TTL check.
         const cachedProbe = step2ProbeCache.get(infoOut.address);
@@ -6359,8 +6360,17 @@ app.post('/api/quote-token-info', async (req, res) => {
         if (cachedProbe && cachedProbe.expiresAt > now) {
           // Translate the cache verdict ('tradeable' | 'no-route') into
           // the API contract value ('yes' | 'no' | 'unknown').
-          if (cachedProbe.verdict === 'tradeable') {
+          if (cachedProbe.verdict === 'jupiter') {
+            // No Raydium route, but the auto-buy routes it through Jupiter.
+            infoOut.raydiumTradeable = 'no';
+            infoOut.swapRoute = 'jupiter';
+            if (cachedProbe.priceUsd) {
+              infoOut.priceUsd = cachedProbe.priceUsd;
+              infoOut.priceSource = 'jupiter-probe (cached)';
+            }
+          } else if (cachedProbe.verdict === 'tradeable') {
             infoOut.raydiumTradeable = 'yes';
+            infoOut.swapRoute = 'raydium';
             if (cachedProbe.priceUsd) {
               // Prefer the probe-derived price over the aggregator price.
               // The probe IS the price the pool will be created at later;
@@ -6371,6 +6381,7 @@ app.post('/api/quote-token-info', async (req, res) => {
             }
           } else if (cachedProbe.verdict === 'no-route') {
             infoOut.raydiumTradeable = 'no';
+            infoOut.swapRoute = 'none';
           } else {
             // Future-proof: unknown verdict in cache → treat as unknown
             // and force a fresh probe by not short-circuiting.
@@ -6405,11 +6416,33 @@ app.post('/api/quote-token-info', async (req, res) => {
                 expiresAt: now + STEP2_PROBE_TTL_MS,
               });
               infoOut.raydiumTradeable = 'yes';
+              infoOut.swapRoute = 'raydium';
               infoOut.priceUsd = priceStr;
               infoOut.priceSource = 'raydium-probe';
             } catch (probeErr) {
               const code = probeErr.code || 'UNKNOWN';
-              if (code === 'NO_ROUTE') {
+              // Raydium has no route: the auto-buy falls back to Jupiter
+              // (e.g. PumpSwap-only tokens), so check that before blocking.
+              const jupiterRoute = code === 'NO_ROUTE'
+                ? await discoverJupiterRoute({
+                  quoteMint: infoOut.address,
+                  quoteDecimals: infoOut.decimals,
+                  solUsd: solUsdForProbe,
+                  forceFresh: true,
+                }).catch(() => null)
+                : null;
+              if (jupiterRoute?.available) {
+                const priceStr = jupiterRoute.effectiveQuoteUsd.toString();
+                step2ProbeCache.set(infoOut.address, {
+                  verdict: 'jupiter',
+                  priceUsd: priceStr,
+                  expiresAt: now + STEP2_PROBE_TTL_MS,
+                });
+                infoOut.raydiumTradeable = 'no';
+                infoOut.swapRoute = 'jupiter';
+                infoOut.priceUsd = priceStr;
+                infoOut.priceSource = 'jupiter-probe';
+              } else if (code === 'NO_ROUTE') {
                 // Cache the verdict — the user typing the same mint
                 // 10 times in a row shouldn't probe 10 times.
                 step2ProbeCache.set(infoOut.address, {
@@ -6418,6 +6451,7 @@ app.post('/api/quote-token-info', async (req, res) => {
                   expiresAt: now + STEP2_PROBE_TTL_MS,
                 });
                 infoOut.raydiumTradeable = 'no';
+                infoOut.swapRoute = 'none';
                 // Raydium has no pool, but we may already have an
                 // aggregator price from getTokenMetadata earlier in
                 // this function. Label its source so the frontend

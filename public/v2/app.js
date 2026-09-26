@@ -5261,14 +5261,21 @@ function customQuoteInfoBadge(pool = {}) {
   if (!info) return { label: 'Unverified', className: 'warn', detail: 'Verify the quote token before executing this custom pool.' };
   if (info.compatible === false) return { label: 'Incompatible', className: 'danger', detail: 'Token is not compatible with the Raydium CLMM launch path.' };
   if (info.freezeAuthorityBlock === true) return { label: 'Freeze block', className: 'danger', detail: 'Quote token freeze authority can strand launch-wallet balances.' };
-  if (info.raydiumTradeable === 'no') return { label: 'No route', className: 'danger', detail: 'Raydium could not route this quote token during the Step 2 probe.' };
-  if (info.compatible == null || info.raydiumTradeable === 'unknown' || info.freezeAuthorityBlock == null) {
+  // The auto-buy tries Raydium, then Jupiter (PumpSwap-only tokens route
+  // there), so only "no route anywhere" blocks.
+  const swapRoute = info.swapRoute || (info.raydiumTradeable === 'yes' ? 'raydium' : info.raydiumTradeable === 'no' ? 'none' : 'unknown');
+  if (swapRoute === 'none') return { label: 'No route', className: 'danger', detail: 'Neither Raydium nor Jupiter can swap SOL into this token, so it cannot be auto-bought.' };
+  if (info.compatible == null || swapRoute === 'unknown' || info.freezeAuthorityBlock == null) {
     return { label: 'Verify warning', className: 'warn', detail: 'Metadata resolved, but route or authority safety could not be fully verified.' };
   }
   if (info.mintAuthorityWarning === true) {
     return { label: 'Mint warning', className: 'warn', detail: 'Quote token mint authority is still active; supply can be inflated.' };
   }
-  return { label: 'Verified', className: '', detail: 'Quote-token metadata, compatibility, authority, and route checks passed.' };
+  return {
+    label: 'Verified',
+    className: '',
+    detail: `Quote-token metadata, compatibility, authority, and route checks passed (auto-buy via ${swapRoute === 'jupiter' ? 'Jupiter' : 'Raydium'}).`,
+  };
 }
 
 function poolQuoteRouteKey(pool = {}) {
@@ -7734,7 +7741,7 @@ function renderSupplyEditor() {
       ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`)}
       <label class="supply-field supply-field-wide"><span>Custom ladder</span><textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea><small>Replaces ladder bands when set.</small></label>
       <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
-      <div class="supply-field-wide">${renderCustomQuoteInfoPanel(pool)}</div>`;
+`;
   };
 
   const rowHtml = (row) => {
@@ -14680,6 +14687,7 @@ function renderClassicBridge() {
         </div>
       ` : ''}
       ${estimate ? renderFundingReceipt(estimate) : ''}
+      ${renderPairTokenChecks()}
       <div class="funding-task-action">
         ${fundingNeed.action ? `<button class="primary-button" type="button" data-action="${escapeHtml(fundingNeed.action)}" ${state.manualPrefund.polling || (fundingNeed.action === 'estimate-funding' && state.fundingEstimating) ? 'disabled' : ''}><span>${escapeHtml(fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'Estimating…' : fundingNeed.actionLabel)}</span><i class="fa-solid ${fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'fa-spinner fa-spin' : estimate ? 'fa-rotate' : 'fa-calculator'}"></i></button>` : '<span class="risk-badge">Ready</span>'}
       </div>
@@ -21711,6 +21719,7 @@ function estimateClassicFunding() {
 }
 
 async function runClassicFundingEstimate() {
+  await autoVerifyQuoteTokens();
   const config = currentLaunchConfig();
   const fundingRequest = classicFundingEstimateRequest(config);
   if (state.apiStatus === 'connected' && state.apiClient?.estimateClassicFunding) {
@@ -21733,20 +21742,75 @@ async function runClassicFundingEstimate() {
   notify('Funding estimates require the authenticated local Trebuchet app');
 }
 
-async function resolveCustomQuoteToken(poolId) {
+// Pair tokens are checked as part of funding, automatically: before every
+// estimate and readiness check, each pair with a mint and no current result
+// is verified quietly. No clicking through per-token verify buttons.
+let quoteVerifyInFlight = null;
+
+function pairTokensNeedingCheck() {
+  return state.customPools.filter((pool) => {
+    if (!String(pool.quoteMint || '').trim() || !customQuoteLookupValue(pool)) return false;
+    const record = customQuoteInfoRecord(pool);
+    return !record || (!record.loading && !record.info);
+  });
+}
+
+function autoVerifyQuoteTokens() {
+  if (quoteVerifyInFlight) return quoteVerifyInFlight;
+  if (state.apiStatus !== 'connected' || !state.apiClient?.getQuoteTokenInfo) return Promise.resolve();
+  const pending = pairTokensNeedingCheck();
+  if (!pending.length) return Promise.resolve();
+  quoteVerifyInFlight = (async () => {
+    for (const pool of pending) {
+      await resolveCustomQuoteToken(pool.id, { quiet: true }).catch(() => null);
+    }
+  })().finally(() => {
+    quoteVerifyInFlight = null;
+    renderAll();
+  });
+  return quoteVerifyInFlight;
+}
+
+// Summary for the Fund page: every pair token and how it will be bought.
+function renderPairTokenChecks() {
+  const pools = state.customPools.filter((pool) => String(pool.quoteMint || '').trim());
+  if (!pools.length) return '';
+  const rows = pools.map((pool) => {
+    const badge = customQuoteInfoBadge(pool);
+    const info = customQuoteResolvedInfo(pool);
+    const symbol = info?.symbol || pool.quoteSymbol || shortAddress(pool.quoteMint);
+    return { symbol, badge, route: info?.swapRoute || null };
+  });
+  const problems = rows.filter((row) => row.badge.className === 'danger');
+  const checking = rows.some((row) => ['Checking', 'Unverified'].includes(row.badge.label));
+  const viaJupiter = rows.filter((row) => row.route === 'jupiter').length;
+  const summary = problems.length
+    ? `${problems.length} pair token${problems.length === 1 ? '' : 's'} cannot be used`
+    : checking
+      ? 'Checking pair tokens…'
+      : `All ${rows.length} pair tokens verified${viaJupiter ? ` (${viaJupiter} bought via Jupiter)` : ''}`;
+  return `
+    <div class="pair-token-checks ${problems.length ? 'has-problems' : ''}">
+      <small>${escapeHtml(summary)}</small>
+      ${problems.length ? `<ul>${problems.map((row) => `<li><strong>${escapeHtml(row.symbol)}</strong> ${escapeHtml(row.badge.label)}: ${escapeHtml(row.badge.detail)}</li>`).join('')}</ul>` : ''}
+    </div>`;
+}
+
+async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
+  const say = quiet ? () => {} : notify;
   const pool = state.customPools.find((item) => item.id === poolId);
   if (!pool) {
-    notify('Custom pool is unavailable');
+    say('Custom pool is unavailable');
     return null;
   }
   const query = customQuoteLookupValue(pool);
   const symbol = String(pool.quoteSymbol || '').trim().toUpperCase();
   if (!query || (!pool.quoteMint && !KNOWN_SAFE_QUOTE_SYMBOLS.has(symbol))) {
-    notify('Enter a quote mint before verifying this custom pool');
+    say('Enter a quote mint before verifying this custom pool');
     return null;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.getQuoteTokenInfo) {
-    notify('Quote-token verification requires the local Trebuchet app');
+    say('Quote-token verification requires the local Trebuchet app');
     return null;
   }
 
@@ -21775,7 +21839,7 @@ async function resolveCustomQuoteToken(poolId) {
     invalidateClassicOutputs();
     refreshClassicPreview({ includePoolEditor: true });
     const badge = customQuoteInfoBadge(pool);
-    notify(badge.className === 'danger' ? 'Quote token blocked by safety check' : 'Quote token verified');
+    say(badge.className === 'danger' ? 'Quote token blocked by safety check' : 'Quote token verified');
     return info;
   } catch (error) {
     state.quoteTokenInfo[poolId] = {
@@ -21786,7 +21850,7 @@ async function resolveCustomQuoteToken(poolId) {
       checkedAt: new Date().toISOString(),
     };
     refreshClassicPreview({ includePoolEditor: true });
-    notify(state.quoteTokenInfo[poolId].error);
+    say(state.quoteTokenInfo[poolId].error);
     return null;
   }
 }
@@ -21970,6 +22034,7 @@ async function detectFundingWallet({ quiet = false } = {}) {
 }
 
 async function checkExecutionReadiness() {
+  await autoVerifyQuoteTokens();
   const config = currentLaunchConfig();
   const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
   state.executionChecking = true;
@@ -23089,6 +23154,7 @@ async function bootLocalApi() {
   if (state.discovery.scanning) schedulePersonalDiscoveryPoll();
   if (boot.api?.available) {
     refreshDestinations({ force: true });
+    autoVerifyQuoteTokens();
     // The one-step card is the static web host's launcher. On the desktop it
     // duplicates the guided launch and hides the saved launch below it.
     const quickCard = $('.quick-launch-card');
