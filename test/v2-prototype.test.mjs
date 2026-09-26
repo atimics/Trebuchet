@@ -2002,7 +2002,7 @@ test('v2 is the Electron default with an explicit tested Classic fallback', () =
 test('v2 Discovery combines a personal wallet graph with live evidence and no social mechanics', () => {
   const combined = `${html}\n${css}\n${js}`;
 
-  assert.match(js, /discovery: \{ eyebrow: 'Tokens & wallets', title: 'Discovery' \}/);
+  assert.match(js, /discovery: \{ eyebrow: '', title: 'Discovery' \}/);
   assert.doesNotMatch(html, /<h2>Discovery<\/h2>/);
   assert.doesNotMatch(html, /Wallets → on-chain|Token discovery|Manual evidence registry/);
   assert.match(combined, /data-discovery-pane="tokens"[\s\S]*?<strong>Tokens<\/strong>/);

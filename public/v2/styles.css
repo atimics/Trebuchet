@@ -17604,3 +17604,39 @@ body[data-launch-running="true"] .workspace {
 .eyebrow:empty {
   display: none;
 }
+
+/* Cleanup: view titles carry no prefix marker. */
+.topbar-copy .eyebrow::before {
+  content: none;
+}
+
+/* The spaced wordmark fits the sidebar without truncating. */
+.brand strong {
+  letter-spacing: .12em;
+  text-overflow: clip;
+}
+
+/* Disclosure summaries read as quiet labels, not headlines. */
+.drawer summary strong {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+/* Status badges keep their natural width. */
+.execution-readiness .risk-badge {
+  justify-self: end;
+  width: auto;
+  max-width: max-content;
+}
+
+.global-strip[hidden],
+.surface[hidden] {
+  display: none !important;
+}
+
+#view-settings .two-column {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 960px;
+}

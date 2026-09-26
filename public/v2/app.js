@@ -3,10 +3,10 @@ const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selec
 
 const views = {
   launch: { eyebrow: '', title: 'Launch a token' },
-  wallet: { eyebrow: 'Wallet', title: 'Signer & asset custody' },
-  discovery: { eyebrow: 'Tokens & wallets', title: 'Discovery' },
-  history: { eyebrow: 'History', title: 'Execution journal' },
-  settings: { eyebrow: 'Settings', title: 'Runtime policy' },
+  wallet: { eyebrow: '', title: 'Wallet' },
+  discovery: { eyebrow: '', title: 'Discovery' },
+  history: { eyebrow: '', title: 'History' },
+  settings: { eyebrow: '', title: 'Settings' },
 };
 
 const launchWorkspaces = [
@@ -6472,13 +6472,19 @@ function renderGlobalStrip() {
     : state.apiStatus === 'loading'
       ? 'Checking local API'
       : 'Static preview';
-  const recoveryLabel = `${state.recovery.activeJournalCount} active / ${state.recovery.pendingWalletCount} wallets`;
-  $('#globalStrip').innerHTML = [
-    ['Wallet', walletIsUnlocked() ? `${current.name} ${current.address}` : 'Locked'],
-    ['Run', `${signed}/${total} done / ${pending} queued`],
-    ['API', apiLabel],
-    ['Recovery', recoveryLabel],
-  ].map(([label, value]) => `
+  const recoveryCount = state.recovery.activeJournalCount + state.recovery.pendingWalletCount;
+  // Only what needs attention; a healthy idle app shows no strip.
+  const metrics = [
+    walletIsUnlocked() ? ['Wallet', `${current.name} ${current.address}`] : null,
+    state.realExecutionRunning ? ['Run', `${signed}/${total} done / ${pending} queued`] : null,
+    state.apiStatus === 'connected' ? null : ['API', apiLabel],
+    recoveryCount > 0
+      ? ['Recovery', `${state.recovery.activeJournalCount} active / ${state.recovery.pendingWalletCount} wallets`]
+      : null,
+  ].filter(Boolean);
+  const strip = $('#globalStrip');
+  strip.hidden = metrics.length === 0;
+  strip.innerHTML = metrics.map(([label, value]) => `
     <span class="global-metric">
       <span>${escapeHtml(label)}</span>
       <strong>${escapeHtml(value)}</strong>
@@ -6940,7 +6946,7 @@ function custodySignalState() {
     }
     : {
       id: 'live',
-      label: 'LIVE / AWAITING FUNDS',
+      label: managedWallet ? 'LIVE / AWAITING FUNDS' : 'LIVE / NO WALLET',
       detail: 'Live execution is selected, but no controlled funds are currently observed.',
     };
 }
@@ -14615,7 +14621,7 @@ function renderClassicBridge() {
   const readinessDetail = quoteSafety.blockers[0]?.detail
     || blockers[0]?.detail
     || readinessNextDetail
-    || (state.apiStatus === 'connected' ? 'Check the next safe action.' : 'Open the local Trebuchet app to continue.');
+    || (state.apiStatus === 'connected' ? '' : 'Open the local Trebuchet app to continue.');
   const demoRunLabel = state.demoLaunchRunning
     ? 'Running demo'
     : state.lastDemoLaunchRun
@@ -14802,7 +14808,7 @@ function renderClassicBridge() {
     const panelDetail = complete
       ? detail
       : needsFunding
-        ? 'Open Fund for the amount, address, and balance check.'
+        ? 'Send the estimated SOL on the Fund step.'
         : finalizationIssue
           ? String(finalizationIssue)
         : needsRunEnvelope
@@ -14941,7 +14947,7 @@ function renderClassicBridge() {
         primary: true,
       })}
       <details class="drawer phase-tree-drawer">
-        <summary><span>Position-by-position progress</span><strong>${poolCount} pool${poolCount === 1 ? '' : 's'} / ${sliceCount} slice${sliceCount === 1 ? '' : 's'}</strong></summary>
+        <summary><span>Progress by position</span><strong>${poolCount} pool${poolCount === 1 ? '' : 's'} / ${sliceCount} position${sliceCount === 1 ? '' : 's'}</strong></summary>
         <div class="phase-tree">${renderClassicPhaseTree(topology)}</div>
       </details>
       <div class="launch-phase-secondary"><button class="text-button" type="button" data-launch-workspace="mint"><i class="fa-solid fa-arrow-left"></i> Back to token</button></div>
