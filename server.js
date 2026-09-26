@@ -82,7 +82,7 @@ import {
   normalizeVanityTargetBase58,
   normalizeWholeTokenSupply,
 } from './validators.js';
-import { unsafeSweepDestinationReason } from '@trebuchet/core/validators';
+import { expectedVanityAttempts, unsafeSweepDestinationReason } from '@trebuchet/core/validators';
 import * as destinationProofStore from './destinationProofStore.js';
 import { normalizeDistribution } from './lpDistribution.js';
 import { isWalletEffectivelyEmpty } from './walletRecovery.js';
@@ -1896,6 +1896,7 @@ app.post('/api/vanity-ca-candidates/remove', (req, res) => {
 // SSE streaming endpoint for vanity CA grind progress
 app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
   let { prefix, suffix, threads, token, client } = req.query;
+  const caseInsensitive = ['1', 'true'].includes(String(req.query.caseInsensitive || '').toLowerCase());
   prefix = typeof prefix === 'string' ? prefix.trim() : '';
   suffix = typeof suffix === 'string' ? suffix.trim() : '';
 
@@ -1945,7 +1946,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
 
   const target = prefix && suffix ? `${prefix}...${suffix}` : (prefix || suffix);
   const targetLen = prefix.length + suffix.length;
-  const expected = Math.pow(58, targetLen);
+  const expected = expectedVanityAttempts(prefix, suffix, { caseInsensitive });
   const vanityMode = prefix && suffix ? 'both' : (prefix ? 'prefix' : 'suffix');
 
   // SSE headers
@@ -1977,6 +1978,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
     prefix: prefix || null,
     suffix: suffix || null,
     mode: vanityMode,
+    caseInsensitive,
   })}\n\n`);
 
   let lastAttempts = 0;
@@ -1985,7 +1987,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
   try {
     const vanityMod = await import('./vanityKeygen.js');
     const result = await vanityMod.generateVanityKeypair({
-      prefix, suffix, threads,
+      prefix, suffix, threads, caseInsensitive,
       onProgress: ({ attempts, key }) => {
         // Throttle to ~4 updates/sec
         const now = Date.now();
@@ -2021,6 +2023,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
         prefix: prefix || null,
         suffix: suffix || null,
         mode: vanityMode,
+        caseInsensitive,
       });
     }
 
@@ -2048,6 +2051,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
         prefix: prefix || null,
         suffix: suffix || null,
         mode: vanityMode,
+        caseInsensitive,
         persisted: !demoMode,
       },
     })}\n\n`);

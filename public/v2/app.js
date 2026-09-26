@@ -590,6 +590,7 @@ const GUIDED_ADVANCED_FIELD_IDS = Object.freeze([
   'liquidityBudgetSol',
   'vanityStart',
   'vanityEnd',
+  'vanityCaseInsensitive',
   'mainPoolPercent',
   'quotePoolPercent',
   'preallocationSupplyPercent',
@@ -5160,10 +5161,13 @@ function currentVanityConfig() {
   const prefix = $('#vanityStart').value.trim();
   const suffix = $('#vanityEnd').value.trim();
   const selected = state.vanityCandidates.find((item) => item.publicKey === state.selectedVanityPublicKey) || null;
+  // A saved any-case address stays valid even if the toggle is off now.
+  const caseInsensitive = $('#vanityCaseInsensitive')?.checked === true || selected?.caseInsensitive === true;
   return {
     mode: prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : 'random',
     prefix,
     suffix,
+    ...(caseInsensitive ? { caseInsensitive: true } : {}),
     selectedPublicKey: selected?.publicKey || null,
     candidateCount: state.vanityCandidates.length,
     candidates: state.vanityCandidates.map((item) => ({
@@ -5172,6 +5176,7 @@ function currentVanityConfig() {
       prefix: item.prefix || null,
       suffix: item.suffix || null,
       mode: item.mode || null,
+      caseInsensitive: item.caseInsensitive === true,
       rarity: item.rarity || null,
       attempts: item.attempts || null,
       persisted: item.persisted === true,
@@ -6132,6 +6137,7 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   }
   if ($('#vanityStart')) $('#vanityStart').value = String(config.vanity?.prefix || '');
   if ($('#vanityEnd')) $('#vanityEnd').value = String(config.vanity?.suffix || '');
+  if ($('#vanityCaseInsensitive')) $('#vanityCaseInsensitive').checked = config.vanity?.caseInsensitive === true;
   state.selectedVanityPublicKey = String(config.vanity?.selectedPublicKey || journal?.token?.mint || '').trim() || null;
   state.guidedIntent.destinationWallet = String(topology.sweepDestination || '');
   state.guidedIntent.startingMarketCapUsd = Number(topology.targetMarketCapUsd || 250000);
@@ -7154,6 +7160,13 @@ function formatVanityAttempts(value) {
   }).format(number);
 }
 
+// Three significant figures ("716K"): a steady rate should read steady.
+function formatVanityRate(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return '0';
+  return new Intl.NumberFormat('en-US', { notation: 'compact', maximumSignificantDigits: 3 }).format(number);
+}
+
 function formatVanityDuration(seconds) {
   const value = Number(seconds);
   if (!Number.isFinite(value) || value <= 0) return 'now';
@@ -7173,12 +7186,28 @@ function vanityPatternDifficulty(prefix, suffix) {
   return 'extreme';
 }
 
+// Mirror of expectedVanityAttempts in packages/core/src/validators.js: any
+// case accepts every base58 case variant of a letter at each position.
+const VANITY_RATE_WINDOW_MS = 10000;
+
+function vanityExpectedAttempts(start, end, caseInsensitive) {
+  let attempts = 1;
+  for (const ch of `${start}${end}`) {
+    const variants = caseInsensitive
+      ? new Set([ch.toLowerCase(), ch.toUpperCase()].filter((c) => VANITY_BASE58_ALPHABET.includes(c))).size || 1
+      : 1;
+    attempts *= 58 / variants;
+  }
+  return Math.round(attempts);
+}
+
 function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats) {
   const start = String(prefix || '').trim();
   const end = String(suffix || '').trim();
   const targetLength = start.length + end.length;
   const invalid = [...`${start}${end}`].filter((ch) => !VANITY_BASE58_ALPHABET.includes(ch));
-  const expectedAttempts = targetLength > 0 ? Math.pow(58, targetLength) : 0;
+  const caseInsensitive = stats?.caseInsensitive ?? ($('#vanityCaseInsensitive')?.checked === true);
+  const expectedAttempts = targetLength > 0 ? vanityExpectedAttempts(start, end, caseInsensitive) : 0;
   const p50 = expectedAttempts * Math.log(2);
   const p95 = expectedAttempts * -Math.log(0.05);
   const liveRate = Number(stats?.rate);
@@ -7220,7 +7249,7 @@ function vanityEstimateSummary(prefix, suffix) {
     };
   }
   const live = estimate.rate
-    ? `Live ${formatVanityAttempts(estimate.rate)}/s, ETA ${formatVanityDuration(estimate.liveEtaSeconds)}`
+    ? `Live ${formatVanityRate(estimate.rate)}/s, ETA ${formatVanityDuration(estimate.liveEtaSeconds)}`
     : `At ${formatVanityAttempts(VANITY_PLANNING_RATE)}/s: ~${formatVanityDuration(estimate.planningSeconds)}`;
   return {
     label: `${estimate.difficulty[0].toUpperCase()}${estimate.difficulty.slice(1)} pattern`,
@@ -21471,13 +21500,21 @@ async function startVanityGrind() {
 
   state.vanityRunning = true;
   state.vanityProgress = 'Starting';
-  state.vanityProgressStats = { expectedAttempts: estimate.expectedAttempts, startedAt: Date.now(), attempts: 0, rate: null };
+  state.vanityProgressStats = {
+    expectedAttempts: estimate.expectedAttempts,
+    startedAt: Date.now(),
+    attempts: 0,
+    rate: null,
+    samples: [],
+    caseInsensitive: vanity.caseInsensitive === true,
+  };
   renderAll();
 
   try {
     const token = await state.apiClient.getSessionToken();
     const params = new URLSearchParams({ token, client: 'v2' });
     if (vanity.prefix) params.set('prefix', vanity.prefix);
+    if (vanity.caseInsensitive) params.set('caseInsensitive', '1');
     if (vanity.suffix) params.set('suffix', vanity.suffix);
     const source = new EventSource(`/api/generate-vanity-wallet-stream?${params.toString()}`);
     state.vanitySource = source;
@@ -21486,25 +21523,43 @@ async function startVanityGrind() {
       try { data = JSON.parse(event.data); } catch { return; }
       if (data.type === 'start') {
         state.vanityProgress = `Target ${data.target}`;
-        state.vanityProgressStats = { expectedAttempts: Number(data.expected || estimate.expectedAttempts), startedAt: Date.now(), attempts: 0, rate: null };
+        state.vanityProgressStats = {
+          expectedAttempts: Number(data.expected || estimate.expectedAttempts),
+          startedAt: Date.now(),
+          attempts: 0,
+          rate: null,
+          samples: [],
+          caseInsensitive: data.caseInsensitive === true,
+        };
       } else if (data.type === 'progress') {
         const attempts = Number(data.attempts || 0).toLocaleString();
         const pct = clampPercent(Number(data.epoch || 0) * 100);
         state.vanityProgress = `${attempts} tries / ${pct}% expected`;
+        // The grinder reports in per-thread bursts (every 16,384 tries), so
+        // burst-to-burst rates swing wildly. Rate over a rolling window.
         const now = Date.now();
         const prior = state.vanityProgressStats || {};
-        const priorAttempts = Number(prior.attempts || 0);
-        const priorAt = Number(prior.updatedAt || prior.startedAt || now);
-        const deltaSeconds = Math.max(0.001, (now - priorAt) / 1000);
-        const rate = Number(data.attempts) > priorAttempts
-          ? (Number(data.attempts) - priorAttempts) / deltaSeconds
-          : Number(prior.rate || 0);
+        // Sample only when the count moves, and measure first burst to
+        // latest burst: measuring to "now" dips between bursts.
+        const attemptsNow = Number(data.attempts || prior.attempts || 0);
+        const priorSamples = prior.samples || [];
+        const moved = attemptsNow > Number(priorSamples[priorSamples.length - 1]?.attempts ?? -1);
+        const samples = (moved ? [...priorSamples, { at: now, attempts: attemptsNow }] : priorSamples)
+          .filter((sample) => now - sample.at <= VANITY_RATE_WINDOW_MS);
+        const oldest = samples[0];
+        const newest = samples[samples.length - 1];
+        const windowSeconds = oldest && newest ? (newest.at - oldest.at) / 1000 : 0;
+        const rate = windowSeconds >= 2
+          ? (newest.attempts - oldest.attempts) / windowSeconds
+          : Number(prior.rate || 0) || null;
         state.vanityProgressStats = {
           expectedAttempts: Number(prior.expectedAttempts || estimate.expectedAttempts),
           startedAt: Number(prior.startedAt || now),
           updatedAt: now,
-          attempts: Number(data.attempts || priorAttempts),
+          attempts: attemptsNow,
           rate,
+          samples,
+          caseInsensitive: prior.caseInsensitive === true,
         };
       } else if (data.type === 'done') {
         source.close();
@@ -21518,6 +21573,7 @@ async function startVanityGrind() {
           prefix: data.wallet.prefix || vanity.prefix || null,
           suffix: data.wallet.suffix || vanity.suffix || null,
           mode: data.wallet.mode || vanity.mode,
+          caseInsensitive: data.wallet.caseInsensitive === true,
           rarity: data.wallet.rarity || null,
           attempts: data.wallet.attempts || null,
           persisted: data.wallet.persisted === true,
@@ -24548,6 +24604,7 @@ function bindEvents() {
     'targetMarketCapUsd',
     'vanityStart',
     'vanityEnd',
+    'vanityCaseInsensitive',
     'mainPoolPercent',
     'quotePoolPercent',
     'preallocationSupplyPercent',

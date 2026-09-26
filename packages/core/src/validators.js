@@ -104,6 +104,23 @@ export function unsafeSweepDestinationReason(value, { launchWallet = null } = {}
   return null;
 }
 
+/**
+ * Average attempts to grind a vanity address. Case-insensitive matching
+ * accepts every base58 case variant of a letter ("R" or "r"), which
+ * multiplies the odds per position; letters with one valid case in base58
+ * (e.g. "L", "o", digits) gain nothing.
+ */
+export function expectedVanityAttempts(prefix = '', suffix = '', { caseInsensitive = false } = {}) {
+  let attempts = 1;
+  for (const ch of `${prefix}${suffix}`) {
+    const variants = caseInsensitive
+      ? new Set([ch.toLowerCase(), ch.toUpperCase()].filter((c) => BASE58_CHARS.has(c))).size || 1
+      : 1;
+    attempts *= 58 / variants;
+  }
+  return Math.round(attempts);
+}
+
 export function invalidBase58Characters(value) {
   return [...new Set([...String(value ?? '')].filter((ch) => !BASE58_CHARS.has(ch)))];
 }

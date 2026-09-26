@@ -133,7 +133,7 @@ export function cancelVanityGrind() {
   return true;
 }
 
-export function generateVanityKeypair({ prefix, suffix, threads, onProgress } = {}) {
+export function generateVanityKeypair({ prefix, suffix, threads, caseInsensitive = false, onProgress } = {}) {
   try {
     ({ prefix, suffix } = normalizeVanityTargetBase58(prefix, suffix));
   } catch (error) {
@@ -187,6 +187,9 @@ export function generateVanityKeypair({ prefix, suffix, threads, onProgress } = 
 
     if (threads && threads > 0) {
       args.push('--threads', String(threads));
+    }
+    if (caseInsensitive === true) {
+      args.push('--case-insensitive');
     }
 
     // spawn() can throw synchronously (e.g. ENOENT before the 'error'

@@ -639,16 +639,21 @@ function normalizeVanity(input = {}) {
   if (selectedPublicKey && !SOLANA_ADDRESS_RE.test(selectedPublicKey)) {
     throw new Error('Selected Vanity CA public key does not look like a valid Solana address');
   }
-  if (selectedPublicKey && prefix && !selectedPublicKey.startsWith(prefix)) {
+  // Case-insensitive grinds match "rUg" for "RUG"; compare the same way.
+  const caseInsensitive = input.caseInsensitive === true;
+  const fold = (value) => (caseInsensitive ? value.toLowerCase() : value);
+  if (selectedPublicKey && prefix && !fold(selectedPublicKey).startsWith(fold(prefix))) {
     throw new Error(`Selected Vanity CA does not start with ${prefix}`);
   }
-  if (selectedPublicKey && suffix && !selectedPublicKey.endsWith(suffix)) {
+  if (selectedPublicKey && suffix && !fold(selectedPublicKey).endsWith(fold(suffix))) {
     throw new Error(`Selected Vanity CA does not end with ${suffix}`);
   }
   return {
     mode: prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : 'random',
     prefix,
     suffix,
+    // Only present when on, so existing plan fingerprints do not change.
+    ...(caseInsensitive ? { caseInsensitive: true } : {}),
     selectedPublicKey,
     candidateCount: Math.max(0, Math.floor(numeric(input.candidateCount, 0))),
   };

@@ -39,6 +39,7 @@ function decodeEntry(raw) {
     prefix: typeof raw.prefix === 'string' ? raw.prefix : null,
     suffix: typeof raw.suffix === 'string' ? raw.suffix : null,
     mode: typeof raw.mode === 'string' ? raw.mode : null,
+    caseInsensitive: raw.caseInsensitive === true,
   };
 
   if (typeof raw.secretKeyEnc === 'string') {
@@ -66,6 +67,7 @@ function encodeEntry(entry) {
     prefix: entry.prefix || null,
     suffix: entry.suffix || null,
     mode: entry.mode || null,
+    caseInsensitive: entry.caseInsensitive === true,
   };
   if (Array.isArray(entry.secretKey)) {
     out.secretKeyEnc = secretStore.encryptString(JSON.stringify(entry.secretKey));
@@ -125,6 +127,7 @@ function metadata(entry) {
     prefix: entry.prefix,
     suffix: entry.suffix,
     mode: entry.mode,
+    caseInsensitive: entry.caseInsensitive === true,
     hasSecretKey: Array.isArray(entry.secretKey),
     decryptionFailed: !Array.isArray(entry.secretKey),
     persisted: true,
@@ -149,6 +152,7 @@ export function add(entry) {
     prefix: entry.prefix || null,
     suffix: entry.suffix || null,
     mode: entry.mode || null,
+    caseInsensitive: entry.caseInsensitive === true,
   };
   if (idx >= 0) list[idx] = { ...list[idx], ...next, createdAt: list[idx].createdAt || next.createdAt };
   else list.push(next);
