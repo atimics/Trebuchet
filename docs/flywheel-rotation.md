@@ -5,6 +5,10 @@ into the paired memecoin, re-weight the pools — instead of a static split.
 This is the plan for later work. Today the flywheel is a one-time allocation;
 nothing rotates, and nothing spends.
 
+There are two kinds of running flywheel. **Fee routing** spends only the
+claimed fees and never moves liquidity. **Rotation** re-weights the pools and
+does move liquidity. Fee routing comes first; rotation is deferred.
+
 Read alongside `docs/secure-launch-packet.md` (packet + sealed runner) and
 `packages/core/src/flywheel-schedule.js` (the policy contract that already
 exists and is tested).
@@ -40,6 +44,40 @@ lock program.** A rotating flywheel therefore keeps its rotational share in an
 unlocked vault position (Path B) or an unlocked hub position the keeper owns
 (Path A). Only the non-rotating share stays locked. The plan must say which
 share is which, and the report must show it.
+
+## Fee routing first
+
+Burn & Earn lets the Fee Key holder claim trading fees from a *locked*
+position. So a flywheel that only spends claimed fees never needs to move
+liquidity, and every position stays locked. The launch's core promise is
+untouched.
+
+**Crank sequence** (one journal entry per step, idempotent at each boundary):
+
+1. `claim` — collect fees with the Fee Keys.
+2. `route` — split the claimed fees across the configured outputs.
+3. `report` — append the crank to the launch proof trail.
+
+**Outputs** (percentages must sum to 100):
+
+- `buyback-burn` — swap into the launched token, bounded by `slippageBps`,
+  then burn it.
+- `transfer` — send to a named wallet (for example, the team).
+- `holders` — distribute pro-rata to token holders from a snapshot taken at
+  crank time (airdrop rows or a Merkle claim, with delivery proof).
+
+**No `add` output.** An output that adds fees back into a pool creates a new
+position that is either locked or unlocked. That brings back the
+rotational-vs-locked split (milestone 2). Fee routing stays clean only while
+it never adds liquidity.
+
+**Trigger.** Fee routing has no target weights, so drift is not a trigger.
+It cranks when claimable fees exceed a threshold, under the same interval,
+spend, crank-count, slippage, cooldown, and kill-switch limits.
+
+**Custody disclosure.** Today Fee Keys are transferred to their configured
+recipients. A fee-routing flywheel needs the keeper to hold them, or the
+recipient runs the keeper. The plan and report must say who holds them.
 
 ## The policy contract (exists today)
 
@@ -134,15 +172,18 @@ decision about upgrade authority (immutable vs upgradeable-with-timelock).
 | # | Milestone | Depends on | Done when |
 |---|---|---|---|
 | 0 | Policy contract in Core | — | ✅ `flywheel-schedule.js` + 8 tests |
-| 1 | Schedule surfaced in plan and report | 0 | plan/report name the mode, targets, cadence, keeper; `static` stays default |
-| 2 | Rotational vs locked split made explicit | 1 | plan shows which share rotates and which is locked, and the lock record matches |
-| 3 | Path A keeper in the sealed runner | 2, devnet drills | acceptance criteria above pass on devnet, twice |
+| 1 | Schedule surfaced in plan and report | 0 | plan/report name the mode, outputs or targets, cadence, keeper, and Fee Key holder; `static` stays default |
+| 1b | Fee-routing mode in the policy contract | 0 | `mode: "fee-routing"` with outputs summing to 100, no `add` output, and a claimable-fees trigger; tested |
+| 2 | Rotational vs locked split made explicit | 1 | **Rotation only; deferred.** Not needed for fee routing. Plan shows which share rotates and which is locked, and the lock record matches |
+| 3 | Path A keeper in the sealed runner | 1, 1b, devnet drills (2 as well for rotation) | acceptance criteria above pass on devnet, twice |
 | 4 | Path A on mainnet behind disclosure | 3 | first live crank with proof trail and reconciled balances |
 | 5 | Path B program | 4, audit | `crank()` permissionless on devnet, rules enforced on-chain, events reconcile the report |
 | 6 | Rotate locked positions | 5 | only if the lock program ever supports delegated rotation — otherwise out of scope by design |
 
 ## Explicit non-goals
 
+- No `add` output in fee routing. Adding liquidity is rotation, and rotation
+  waits for milestone 2.
 - No rotation of locked positions. If the lock cannot move, the liquidity
   cannot either; pretending otherwise would break the launch's promise.
 - No automatic rotation without disclosure. A flywheel that moves is a
