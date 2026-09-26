@@ -120,14 +120,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install OpenSSL for the vanity grinder
-        # build:c links libcrypto statically; without it the grinder would
-        # fall back to the ~50x slower portable build (and build:c refuses).
+      - name: Install libsodium for the vanity grinder
+        # build:c links libsodium statically; without it (or OpenSSL) the
+        # grinder would be the ~50x slower portable build (build:c refuses).
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3; fi
-          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update && sudo apt-get install -y libssl-dev; fi
+          if [ "$RUNNER_OS" = "macOS" ]; then brew list libsodium >/dev/null 2>&1 || brew install libsodium; fi
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update && sudo apt-get install -y libsodium-dev; fi
 
       - name: Build vanity keygen binary
         # Same rationale as release.yml: c/build/ is gitignored, the

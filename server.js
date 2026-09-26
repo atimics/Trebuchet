@@ -1893,6 +1893,44 @@ app.post('/api/vanity-ca-candidates/remove', (req, res) => {
   }
 });
 
+// Import a vanity CA ground elsewhere (e.g. on rented machines) into the
+// encrypted store. The public key is derived from the secret, never trusted
+// from the request, and must match the requested pattern. The response
+// carries metadata only.
+app.post('/api/vanity-ca-candidates/import', (req, res) => {
+  try {
+    if (!isDemoMode() && rejectIfSecretPinLocked(res, 'importing a Vanity CA')) return;
+    const secret = req.body?.secretKey;
+    const bytes = Array.isArray(secret) ? Uint8Array.from(secret) : null;
+    if (!bytes || bytes.length !== 64) {
+      return res.status(400).json({ success: false, error: 'secretKey must be a 64-byte array' });
+    }
+    const publicKey = Keypair.fromSecretKey(bytes).publicKey.toBase58();
+    const { prefix, suffix } = normalizeVanityTargetBase58(req.body?.prefix || '', req.body?.suffix || '');
+    const caseInsensitive = req.body?.caseInsensitive === true;
+    const fold = (value) => (caseInsensitive ? value.toLowerCase() : value);
+    if ((prefix && !fold(publicKey).startsWith(fold(prefix))) || (suffix && !fold(publicKey).endsWith(fold(suffix)))) {
+      return res.status(400).json({ success: false, error: `${publicKey} does not match the requested pattern` });
+    }
+    const mode = prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : null;
+    vanityCaStore.add({
+      publicKey,
+      secretKey: Array.from(bytes),
+      attempts: Number.isFinite(Number(req.body?.attempts)) ? Number(req.body.attempts) : null,
+      expectedAttempts: expectedVanityAttempts(prefix, suffix, { caseInsensitive }),
+      target: prefix && suffix ? `${prefix}...${suffix}` : (prefix || suffix || null),
+      prefix: prefix || null,
+      suffix: suffix || null,
+      mode,
+      caseInsensitive,
+    });
+    const saved = vanityCaStore.listMetadata().find((item) => item.publicKey === publicKey);
+    res.json({ success: true, candidate: saved });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
 // SSE streaming endpoint for vanity CA grind progress
 app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
   let { prefix, suffix, threads, token, client } = req.query;

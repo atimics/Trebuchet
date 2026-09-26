@@ -23,13 +23,14 @@ VANITY_BIN_FAST = $(BUILD_DIR)/vanity_keygen_fast
 
 .PHONY: all clean dev fast portable
 
-# Default: OpenSSL-backed grinder with libcrypto linked statically, so the
-# binary runs without OpenSSL installed. Set OPENSSL_PREFIX if it is not
-# under Homebrew. `make portable` builds the slow tweetnacl-only binary.
-OPENSSL_PREFIX ?= $(shell brew --prefix openssl@3 2>/dev/null || echo /usr)
-all: CFLAGS = -O3 -flto -DTREBUCHET_OPENSSL_FAST -I$(OPENSSL_PREFIX)/include -Wall -Wextra -Wpedantic -Wno-sign-compare
-all: LDLIBS += $(OPENSSL_PREFIX)/lib/libcrypto.a
-all: $(VANITY_BIN)
+# Default: libsodium-backed grinder, linked statically so the binary runs
+# without libsodium installed. libsodium scales across cores; OpenSSL 3 does
+# not (`make fast`). Set SODIUM_PREFIX if it is not under Homebrew.
+# `make portable` builds the slow tweetnacl-only binary.
+SODIUM_PREFIX ?= $(shell brew --prefix libsodium 2>/dev/null || echo /usr)
+all: $(BUILD_DIR)
+	$(CC) -O3 -flto -DTREBUCHET_SODIUM -I$(SODIUM_PREFIX)/include -Wall -Wextra -Wpedantic -Wno-sign-compare \
+	  vanity_keygen/vanity_keygen.c -o $(VANITY_BIN) -I. -I$(VENDOR_DIR) -lpthread $(SODIUM_PREFIX)/lib/libsodium.a
 
 portable: $(VANITY_BIN)
 

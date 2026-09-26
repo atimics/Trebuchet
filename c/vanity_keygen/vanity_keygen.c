@@ -60,10 +60,14 @@
   #include <sys/random.h>
 #endif
 
-#include "tweetnacl.h"
+#ifndef TREBUCHET_SODIUM
+#include "tweetnacl.h" /* portable fallback; libsodium builds do not link it */
+#endif
 #include "base58.h"
 
-#ifdef TREBUCHET_OPENSSL_FAST
+#if defined(TREBUCHET_SODIUM)
+#include <sodium.h>
+#elif defined(TREBUCHET_OPENSSL_FAST)
 #include <openssl/evp.h>
 #include <string.h>
 #endif
@@ -80,7 +84,14 @@
  */
 static inline int keypair_from_seed(uint8_t pk[32], uint8_t sk[64], const uint8_t seed[32])
 {
-#ifdef TREBUCHET_OPENSSL_FAST
+#if defined(TREBUCHET_SODIUM)
+    /* libsodium: same RFC 8032 derivation (sk = seed || pk), no global
+     * locks. OpenSSL 3 looks up the Ed25519 implementation in a shared
+     * store on every EVP_PKEY_new_raw_private_key call, which stops it
+     * scaling: ~52K keys/s on one core but ~12K/s per core at 192 threads.
+     * libsodium measured ~82K/s per core and scales linearly. */
+    return crypto_sign_seed_keypair(pk, sk, seed);
+#elif defined(TREBUCHET_OPENSSL_FAST)
     memcpy(sk, seed, 32);
     EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL, seed, 32);
     if (!pkey) return -1;
@@ -474,6 +485,12 @@ static void b58_of(const uint8_t bytes[32], char out[48]) {
 }
 
 int main(int argc, char **argv) {
+#if defined(TREBUCHET_SODIUM)
+    if (sodium_init() < 0) {
+        fprintf(stderr, "libsodium failed to initialize\n");
+        return 1;
+    }
+#endif
 #if defined(_WIN32)
     /* Switch stdout to binary mode so the C runtime doesn't translate
      * \n into \r\n. Today's JSON output is single-line, so the Node
