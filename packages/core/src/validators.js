@@ -104,21 +104,69 @@ export function unsafeSweepDestinationReason(value, { launchWallet = null } = {}
   return null;
 }
 
-/**
- * Average attempts to grind a vanity address. Case-insensitive matching
- * accepts every base58 case variant of a letter ("R" or "r"), which
- * multiplies the odds per position; letters with one valid case in base58
- * (e.g. "L", "o", digits) gain nothing.
- */
-export function expectedVanityAttempts(prefix = '', suffix = '', { caseInsensitive = false } = {}) {
-  let attempts = 1;
-  for (const ch of `${prefix}${suffix}`) {
-    const variants = caseInsensitive
-      ? new Set([ch.toLowerCase(), ch.toUpperCase()].filter((c) => BASE58_CHARS.has(c))).size || 1
-      : 1;
-    attempts *= 58 / variants;
+const B58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const KEY_SPACE = 2n ** 256n;
+// Keys below 2^248 have a zero first byte and encode with a leading '1'.
+const NO_ZERO_BYTE_FLOOR = 2n ** 248n;
+
+function caseVariants(text, caseInsensitive) {
+  let variants = [''];
+  for (const ch of text) {
+    const options = caseInsensitive
+      ? [...new Set([ch, ch.toLowerCase(), ch.toUpperCase()])].filter((c) => BASE58_CHARS.has(c))
+      : [ch];
+    variants = variants.flatMap((head) => options.map((option) => head + option));
   }
-  return Math.round(attempts);
+  return variants;
+}
+
+function overlap(lo, hi) {
+  const from = lo > NO_ZERO_BYTE_FLOOR ? lo : NO_ZERO_BYTE_FLOOR;
+  const to = hi < KEY_SPACE ? hi : KEY_SPACE;
+  return to > from ? to - from : 0n;
+}
+
+// Keys (out of 2^256) whose address has `length` characters (any length when
+// null) and starts with `prefix`. An address is base58 of a 256-bit number,
+// so the first character is far from uniform: a 44-character address can
+// only start with 1-9, A-H or J, and "R..." needs a 43-character address
+// (1 in ~989, not 1 in 58). Addresses starting with '1' (zero first byte)
+// are approximated as uniform.
+function prefixKeyCount(prefix, length) {
+  const lengths = length ? [length] : Array.from({ length: 44 - 31 }, (_, i) => 32 + i);
+  if (prefix.startsWith('1')) {
+    const perLength = KEY_SPACE / (58n ** BigInt(prefix.length));
+    return length ? perLength / 17n : perLength;
+  }
+  let value = 0n;
+  for (const ch of prefix) value = value * 58n + BigInt(B58_ALPHABET.indexOf(ch));
+  let count = 0n;
+  for (const total of lengths) {
+    if (total < prefix.length) continue;
+    const scale = 58n ** BigInt(total - prefix.length);
+    if (prefix) {
+      count += overlap(value * scale, (value + 1n) * scale);
+    } else {
+      count += overlap(58n ** BigInt(total - 1), 58n ** BigInt(total));
+    }
+  }
+  return count;
+}
+
+/**
+ * Average attempts to grind a vanity address with the given prefix, suffix,
+ * optional exact address length, and case mode. Case-insensitive matching
+ * accepts every base58 case variant of each letter.
+ */
+export function expectedVanityAttempts(prefix = '', suffix = '', { caseInsensitive = false, length = null } = {}) {
+  const prefixKeys = !prefix && !length
+    ? KEY_SPACE
+    : caseVariants(prefix, caseInsensitive).reduce((sum, variant) => sum + prefixKeyCount(variant, length), 0n);
+  if (prefixKeys === 0n) return Infinity;
+  const suffixVariants = caseVariants(suffix, caseInsensitive).length;
+  const suffixOdds = 58 ** suffix.length / suffixVariants;
+  const prefixOdds = Number(KEY_SPACE * 1000000n / prefixKeys) / 1e6;
+  return Math.round(prefixOdds * suffixOdds);
 }
 
 export function invalidBase58Characters(value) {

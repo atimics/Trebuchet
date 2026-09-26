@@ -133,7 +133,7 @@ export function cancelVanityGrind() {
   return true;
 }
 
-export function generateVanityKeypair({ prefix, suffix, threads, caseInsensitive = false, onProgress } = {}) {
+export function generateVanityKeypair({ prefix, suffix, threads, caseInsensitive = false, length = null, onProgress } = {}) {
   try {
     ({ prefix, suffix } = normalizeVanityTargetBase58(prefix, suffix));
   } catch (error) {
@@ -174,8 +174,8 @@ export function generateVanityKeypair({ prefix, suffix, threads, caseInsensitive
     }
 
     const args = [];
-    if (!prefix && !suffix) {
-      safeReject(new Error('Must specify either prefix or suffix'));
+    if (!prefix && !suffix && !length) {
+      safeReject(new Error('Must specify a prefix, a suffix, or a length'));
       return;
     }
     if (prefix) {
@@ -190,6 +190,9 @@ export function generateVanityKeypair({ prefix, suffix, threads, caseInsensitive
     }
     if (caseInsensitive === true) {
       args.push('--case-insensitive');
+    }
+    if (Number.isInteger(length) && length >= 32 && length <= 44) {
+      args.push('--length', String(length));
     }
 
     // spawn() can throw synchronously (e.g. ENOENT before the 'error'

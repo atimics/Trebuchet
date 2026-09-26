@@ -16,6 +16,8 @@
  * Usage:   ./c/build/vanity_keygen --prefix RAT --suffix i --threads 16
  */
 
+#include <ctype.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -229,6 +231,7 @@ typedef struct {
     const char  *suffix;
     int          suffix_len;
     int          case_sensitive;
+    int          address_length;   /* 0 = any length */
     atomic_ullong total_attempts;
     atomic_int   running_threads;
     uint8_t      master_seed[32];
@@ -273,9 +276,87 @@ static int check_part(const char *b58, size_t b58_len,
 static int check_match(const char *b58, size_t b58_len,
                        const char *prefix, int prefix_len,
                        const char *suffix, int suffix_len,
-                       int case_sensitive) {
-    return check_part(b58, b58_len, prefix, prefix_len, 1, case_sensitive)
+                       int case_sensitive, int address_length) {
+    return (address_length == 0 || b58_len == (size_t)address_length)
+        && check_part(b58, b58_len, prefix, prefix_len, 1, case_sensitive)
         && check_part(b58, b58_len, suffix, suffix_len, 0, case_sensitive);
+}
+
+/* ------------------------------------------------------------------ */
+/* Exact odds                                                          */
+/* ------------------------------------------------------------------ */
+
+/* An address is base58 of a 256-bit number, so its first character is far
+ * from uniform: a 44-char address can only start with 1-9, A-H or J, and
+ * "R..." needs a 43-char address (1 in ~989, not 1 in 58). These return the
+ * fraction of keys matching a prefix at a given length (0 = any), the same
+ * model as expectedVanityAttempts in packages/core/src/validators.js. */
+static const char B58_ALPHABET_STR[] =
+    "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+static long double prefix_fraction_exact(const char *prefix, int plen, int length) {
+    const long double space = ldexpl(1.0L, 256);
+    const long double floor_ = ldexpl(1.0L, 248); /* below: zero first byte, leading '1' */
+    if (plen == 0 && length == 0) return 1.0L;
+    if (plen > 0 && prefix[0] == '1') {
+        long double f = powl(58.0L, -plen);
+        return length ? f / 17.0L : f;
+    }
+    long double value = 0.0L;
+    for (int i = 0; i < plen; i++) {
+        const char *at = strchr(B58_ALPHABET_STR, prefix[i]);
+        value = value * 58.0L + (long double)(at - B58_ALPHABET_STR);
+    }
+    long double count = 0.0L;
+    for (int total = 32; total <= 44; total++) {
+        if ((length && total != length) || total < plen) continue;
+        long double lo, hi;
+        if (plen) {
+            long double scale = powl(58.0L, total - plen);
+            lo = value * scale;
+            hi = (value + 1.0L) * scale;
+        } else {
+            lo = powl(58.0L, total - 1);
+            hi = powl(58.0L, total);
+        }
+        if (lo < floor_) lo = floor_;
+        if (hi > space) hi = space;
+        if (hi > lo) count += hi - lo;
+    }
+    return count / space;
+}
+
+/* Sum over every accepted case variant of the prefix. */
+static long double prefix_fraction(const char *prefix, int plen, int length,
+                                   int case_sensitive, char *buf, int pos) {
+    if (pos == plen) return prefix_fraction_exact(buf, plen, length);
+    char options[3] = { prefix[pos], 0, 0 };
+    int n = 1;
+    if (!case_sensitive) {
+        char other = (char)(isupper((unsigned char)prefix[pos]) ? tolower((unsigned char)prefix[pos])
+                                                                : toupper((unsigned char)prefix[pos]));
+        if (other != prefix[pos] && strchr(B58_ALPHABET_STR, other)) options[n++] = other;
+    }
+    long double sum = 0.0L;
+    for (int k = 0; k < n; k++) {
+        buf[pos] = options[k];
+        sum += prefix_fraction(prefix, plen, length, case_sensitive, buf, pos + 1);
+    }
+    return sum;
+}
+
+static long double suffix_fraction(const char *suffix, int slen, int case_sensitive) {
+    long double f = 1.0L;
+    for (int i = 0; i < slen; i++) {
+        int variants = 1;
+        if (!case_sensitive) {
+            char other = (char)(isupper((unsigned char)suffix[i]) ? tolower((unsigned char)suffix[i])
+                                                                  : toupper((unsigned char)suffix[i]));
+            if (other != suffix[i] && strchr(B58_ALPHABET_STR, other)) variants = 2;
+        }
+        f *= (long double)variants / 58.0L;
+    }
+    return f;
 }
 
 /* CAS-guarded progress sample: encode pk for the display line */
@@ -334,7 +415,7 @@ static void *grind_thread(void *arg) {
                     matched = check_match(b58, b58_len,
                                           gs->prefix, gs->prefix_len,
                                           gs->suffix, gs->suffix_len,
-                                          gs->case_sensitive);
+                                          gs->case_sensitive, gs->address_length);
                 }
             }
             if ((local_attempts & 0xFFF) == 0)
@@ -356,7 +437,7 @@ static void *grind_thread(void *arg) {
                 matched = check_match(b58, b58_len,
                                       gs->prefix, gs->prefix_len,
                                       gs->suffix, gs->suffix_len,
-                                      gs->case_sensitive);
+                                      gs->case_sensitive, gs->address_length);
             }
         }
 
@@ -413,7 +494,7 @@ static rarity_tier_t classify_rarity(uint64_t attempts, double expected) {
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
-        "Usage: %s [--prefix <PREFIX>] [--suffix <SUFFIX>]\n"
+        "Usage: %s [--prefix <PREFIX>] [--suffix <SUFFIX>] [--length <N>]\n"
         "       [--threads <N>] [--out <FILE>]\n"
         "       [--case-insensitive] [--quiet]\n"
         "\n"
@@ -423,6 +504,7 @@ static void print_usage(const char *prog) {
         "  --threads N           Worker threads (default: CPU count)\n"
         "  --out FILE            Output JSON keypair file (default: stdout)\n"
         "  --case-insensitive    Case-insensitive matching\n"
+        "  --length N            Only accept addresses of exactly N characters (32-44)\n"
         "  --quiet               Suppress progress output\n"
         "\n"
         "Output JSON:\n"
@@ -505,6 +587,7 @@ int main(int argc, char **argv) {
     const char *out_path = NULL;
     int thread_count = 0;
     int case_sensitive = 1;
+    int address_length = 0;
     int quiet = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -518,6 +601,12 @@ int main(int argc, char **argv) {
             out_path = argv[++i];
         } else if (strcmp(argv[i], "--case-insensitive") == 0) {
             case_sensitive = 0;
+        } else if (strcmp(argv[i], "--length") == 0 && i + 1 < argc) {
+            address_length = atoi(argv[++i]);
+            if (address_length < 32 || address_length > 44) {
+                fprintf(stderr, "Error: --length must be between 32 and 44\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--vrf-blockhash") == 0 && i + 1 < argc) {
             /* Retired: the VRF output was the grind seed and the proof
              * revealed it. Accepted and ignored so older callers still run. */
@@ -535,8 +624,8 @@ int main(int argc, char **argv) {
     }
 
     if ((!prefix_str || prefix_str[0] == '\0') &&
-        (!suffix_str || suffix_str[0] == '\0')) {
-        fprintf(stderr, "Error: --prefix or --suffix is required\n");
+        (!suffix_str || suffix_str[0] == '\0') && address_length == 0) {
+        fprintf(stderr, "Error: --prefix, --suffix, or --length is required\n");
         print_usage(argv[0]); return 1;
     }
 
@@ -557,9 +646,16 @@ int main(int argc, char **argv) {
     if (thread_count <= 0) thread_count = get_cpu_count();
     if (thread_count > 256) thread_count = 256;
 
-    double prob = 1.0;
-    for (int i = 0; i < target_len; i++) prob /= 58.0;
-    double expected = 1.0 / prob;
+    char variant_buf[48];
+    long double prob = prefix_fraction(prefix_str, prefix_len, address_length,
+                                       case_sensitive, variant_buf, 0)
+                     * suffix_fraction(suffix_str, suffix_len, case_sensitive);
+    if (prob <= 0.0L) {
+        fprintf(stderr, "Error: no address of %d characters can start with \"%s\"\n",
+                address_length, prefix_str ? prefix_str : "");
+        return 1;
+    }
+    double expected = (double)(1.0L / prob);
 
     /* Precompute fast-match constants for suffix mode.
      * For case-sensitive: one numeric value.  For case-insensitive:
@@ -601,8 +697,10 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Vanity Keygen -- grinding for %s: \"%s\"\n",
                     prefix_str ? "prefix" : "suffix",
                     prefix_str ? prefix_str : suffix_str);
-        fprintf(stderr, "  Threads: %d  Expected: 1 in 58^%d (%.0f attempts)\n",
-                thread_count, target_len, expected);
+        fprintf(stderr, "  Threads: %d  Expected: %.0f attempts (first-character odds and length included)\n",
+                thread_count, expected);
+        if (address_length)
+            fprintf(stderr, "  Address length: exactly %d characters\n", address_length);
         fprintf(stderr, "  Rarity tiers: Common <=%.0f  Rare <=%.0f  Legendary <=%.0f  Mythic >%.0f\n",
                 expected, expected * 2, expected * 3, expected * 3);
         if (use_fast_match) {
@@ -620,6 +718,7 @@ int main(int argc, char **argv) {
     atomic_init(&gs.running_threads, thread_count);
     gs.prefix            = prefix_str;
     gs.prefix_len        = prefix_len;
+    gs.address_length    = address_length;
     gs.suffix            = suffix_str;
     gs.suffix_len        = suffix_len;
     gs.case_sensitive    = case_sensitive;

@@ -591,6 +591,7 @@ const GUIDED_ADVANCED_FIELD_IDS = Object.freeze([
   'vanityStart',
   'vanityEnd',
   'vanityCaseInsensitive',
+  'vanityLength',
   'mainPoolPercent',
   'quotePoolPercent',
   'preallocationSupplyPercent',
@@ -5163,11 +5164,13 @@ function currentVanityConfig() {
   const selected = state.vanityCandidates.find((item) => item.publicKey === state.selectedVanityPublicKey) || null;
   // A saved any-case address stays valid even if the toggle is off now.
   const caseInsensitive = $('#vanityCaseInsensitive')?.checked === true || selected?.caseInsensitive === true;
+  const length = Number($('#vanityLength')?.value) || selected?.addressLength || null;
   return {
     mode: prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : 'random',
     prefix,
     suffix,
     ...(caseInsensitive ? { caseInsensitive: true } : {}),
+    ...(length ? { length } : {}),
     selectedPublicKey: selected?.publicKey || null,
     candidateCount: state.vanityCandidates.length,
     candidates: state.vanityCandidates.map((item) => ({
@@ -5177,6 +5180,7 @@ function currentVanityConfig() {
       suffix: item.suffix || null,
       mode: item.mode || null,
       caseInsensitive: item.caseInsensitive === true,
+      addressLength: item.addressLength || null,
       rarity: item.rarity || null,
       attempts: item.attempts || null,
       persisted: item.persisted === true,
@@ -6138,6 +6142,7 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   if ($('#vanityStart')) $('#vanityStart').value = String(config.vanity?.prefix || '');
   if ($('#vanityEnd')) $('#vanityEnd').value = String(config.vanity?.suffix || '');
   if ($('#vanityCaseInsensitive')) $('#vanityCaseInsensitive').checked = config.vanity?.caseInsensitive === true;
+  if ($('#vanityLength')) $('#vanityLength').value = config.vanity?.length ? String(config.vanity.length) : '';
   state.selectedVanityPublicKey = String(config.vanity?.selectedPublicKey || journal?.token?.mint || '').trim() || null;
   state.guidedIntent.destinationWallet = String(topology.sweepDestination || '');
   state.guidedIntent.startingMarketCapUsd = Number(topology.targetMarketCapUsd || 250000);
@@ -7177,28 +7182,64 @@ function formatVanityDuration(seconds) {
   return `${Math.ceil(value / 31536000)}y`;
 }
 
-function vanityPatternDifficulty(prefix, suffix) {
-  const targetLength = String(prefix || '').length + String(suffix || '').length;
-  if (targetLength <= 0) return 'random';
-  if (targetLength <= 3) return 'easy';
-  if (targetLength <= 5) return 'moderate';
-  if (targetLength <= 7) return 'hard';
+// From the real odds, not the pattern length: "A" and "R" differ ~60x.
+function vanityPatternDifficulty(expectedAttempts) {
+  if (!expectedAttempts) return 'random';
+  if (!Number.isFinite(expectedAttempts)) return 'impossible';
+  if (expectedAttempts <= 1e6) return 'easy';
+  if (expectedAttempts <= 1e9) return 'moderate';
+  if (expectedAttempts <= 1e11) return 'hard';
   return 'extreme';
 }
 
-// Mirror of expectedVanityAttempts in packages/core/src/validators.js: any
-// case accepts every base58 case variant of a letter at each position.
-const VANITY_RATE_WINDOW_MS = 10000;
+// Mirror of expectedVanityAttempts in packages/core/src/validators.js.
+// An address is base58 of a 256-bit number, so the first character is not
+// uniform: "R..." needs a 43-character address (~1 in 989, not 1 in 58).
+const VANITY_KEY_SPACE = 2n ** 256n;
+const VANITY_NO_ZERO_BYTE_FLOOR = 2n ** 248n;
 
-function vanityExpectedAttempts(start, end, caseInsensitive) {
-  let attempts = 1;
-  for (const ch of `${start}${end}`) {
-    const variants = caseInsensitive
-      ? new Set([ch.toLowerCase(), ch.toUpperCase()].filter((c) => VANITY_BASE58_ALPHABET.includes(c))).size || 1
-      : 1;
-    attempts *= 58 / variants;
+function vanityCaseVariants(text, caseInsensitive) {
+  let variants = [''];
+  for (const ch of text) {
+    const options = caseInsensitive
+      ? [...new Set([ch, ch.toLowerCase(), ch.toUpperCase()])].filter((c) => VANITY_BASE58_ALPHABET.includes(c))
+      : [ch];
+    variants = variants.flatMap((head) => options.map((option) => head + option));
   }
-  return Math.round(attempts);
+  return variants;
+}
+
+function vanityPrefixKeyCount(prefix, length) {
+  const clip = (lo, hi) => {
+    const from = lo > VANITY_NO_ZERO_BYTE_FLOOR ? lo : VANITY_NO_ZERO_BYTE_FLOOR;
+    const to = hi < VANITY_KEY_SPACE ? hi : VANITY_KEY_SPACE;
+    return to > from ? to - from : 0n;
+  };
+  if (prefix.startsWith('1')) {
+    const perLength = VANITY_KEY_SPACE / (58n ** BigInt(prefix.length));
+    return length ? perLength / 17n : perLength;
+  }
+  let value = 0n;
+  for (const ch of prefix) value = value * 58n + BigInt(VANITY_BASE58_ALPHABET.indexOf(ch));
+  let count = 0n;
+  for (let total = 32; total <= 44; total++) {
+    if ((length && total !== length) || total < prefix.length) continue;
+    const scale = 58n ** BigInt(total - prefix.length);
+    count += prefix
+      ? clip(value * scale, (value + 1n) * scale)
+      : clip(58n ** BigInt(total - 1), 58n ** BigInt(total));
+  }
+  return count;
+}
+
+function vanityExpectedAttempts(start, end, caseInsensitive, length = null) {
+  if ([...`${start}${end}`].some((ch) => !VANITY_BASE58_ALPHABET.includes(ch))) return 0;
+  const prefixKeys = !start && !length
+    ? VANITY_KEY_SPACE
+    : vanityCaseVariants(start, caseInsensitive).reduce((sum, variant) => sum + vanityPrefixKeyCount(variant, length), 0n);
+  if (prefixKeys === 0n) return Infinity;
+  const suffixOdds = 58 ** end.length / vanityCaseVariants(end, caseInsensitive).length;
+  return Math.round((Number(VANITY_KEY_SPACE * 1000000n / prefixKeys) / 1e6) * suffixOdds);
 }
 
 function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats) {
@@ -7207,7 +7248,8 @@ function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats
   const targetLength = start.length + end.length;
   const invalid = [...`${start}${end}`].filter((ch) => !VANITY_BASE58_ALPHABET.includes(ch));
   const caseInsensitive = stats?.caseInsensitive ?? ($('#vanityCaseInsensitive')?.checked === true);
-  const expectedAttempts = targetLength > 0 ? vanityExpectedAttempts(start, end, caseInsensitive) : 0;
+  const length = stats ? (stats.length || null) : (Number($('#vanityLength')?.value) || null);
+  const expectedAttempts = targetLength > 0 || length ? vanityExpectedAttempts(start, end, caseInsensitive, length) : 0;
   const p50 = expectedAttempts * Math.log(2);
   const p95 = expectedAttempts * -Math.log(0.05);
   const liveRate = Number(stats?.rate);
@@ -7228,7 +7270,7 @@ function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats
     rate: Number.isFinite(liveRate) ? liveRate : null,
     planningSeconds,
     liveEtaSeconds,
-    difficulty: invalid.length ? 'invalid' : vanityPatternDifficulty(start, end),
+    difficulty: invalid.length ? 'invalid' : vanityPatternDifficulty(expectedAttempts),
   };
 }
 
@@ -7238,6 +7280,13 @@ function vanityEstimateSummary(prefix, suffix) {
     return {
       label: 'Invalid Base58',
       detail: `Remove ${estimate.invalid.map((ch) => `"${ch}"`).join(', ')}; Solana addresses cannot contain 0, O, I, or l.`,
+      className: 'danger',
+    };
+  }
+  if (estimate.difficulty === 'impossible') {
+    return {
+      label: 'Impossible',
+      detail: `No address of that length can start with "${estimate.prefix}". Choose 43 characters or Any.`,
       className: 'danger',
     };
   }
@@ -7401,6 +7450,13 @@ function scheduleLaunchAutoSave() {
 function renderVanityCandidates() {
   // A running grind cannot change mode: lock the toggle to what is running.
   const caseToggle = $('#vanityCaseInsensitive');
+  const lengthSelect = $('#vanityLength');
+  if (lengthSelect) {
+    lengthSelect.disabled = state.vanityRunning === true;
+    if (state.vanityRunning && state.vanityProgressStats) {
+      lengthSelect.value = state.vanityProgressStats.length ? String(state.vanityProgressStats.length) : '';
+    }
+  }
   if (caseToggle) {
     caseToggle.disabled = state.vanityRunning === true;
     if (state.vanityRunning && state.vanityProgressStats) {
@@ -21515,6 +21571,7 @@ async function startVanityGrind() {
     rate: null,
     samples: [],
     caseInsensitive: vanity.caseInsensitive === true,
+    length: vanity.length || null,
   };
   renderAll();
 
@@ -21523,6 +21580,7 @@ async function startVanityGrind() {
     const params = new URLSearchParams({ token, client: 'v2' });
     if (vanity.prefix) params.set('prefix', vanity.prefix);
     if (vanity.caseInsensitive) params.set('caseInsensitive', '1');
+    if (vanity.length) params.set('length', String(vanity.length));
     if (vanity.suffix) params.set('suffix', vanity.suffix);
     const source = new EventSource(`/api/generate-vanity-wallet-stream?${params.toString()}`);
     state.vanitySource = source;
@@ -21538,6 +21596,7 @@ async function startVanityGrind() {
           rate: null,
           samples: [],
           caseInsensitive: data.caseInsensitive === true,
+          length: data.length || null,
         };
         // An older server ignores the flag and grinds exact case. Say so
         // instead of silently running the slower grind.
@@ -21573,6 +21632,7 @@ async function startVanityGrind() {
           rate,
           samples,
           caseInsensitive: prior.caseInsensitive === true,
+          length: prior.length || null,
         };
       } else if (data.type === 'done') {
         source.close();
@@ -21587,6 +21647,7 @@ async function startVanityGrind() {
           suffix: data.wallet.suffix || vanity.suffix || null,
           mode: data.wallet.mode || vanity.mode,
           caseInsensitive: data.wallet.caseInsensitive === true,
+          addressLength: data.wallet.addressLength || null,
           rarity: data.wallet.rarity || null,
           attempts: data.wallet.attempts || null,
           persisted: data.wallet.persisted === true,
@@ -24618,6 +24679,7 @@ function bindEvents() {
     'vanityStart',
     'vanityEnd',
     'vanityCaseInsensitive',
+    'vanityLength',
     'mainPoolPercent',
     'quotePoolPercent',
     'preallocationSupplyPercent',

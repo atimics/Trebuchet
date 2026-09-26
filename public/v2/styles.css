@@ -17499,3 +17499,20 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   cursor: default;
   opacity: 0.6;
 }
+
+.vanity-length-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.vanity-length-select span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.vanity-length-select select {
+  min-width: 150px;
+}

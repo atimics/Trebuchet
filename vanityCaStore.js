@@ -40,6 +40,7 @@ function decodeEntry(raw) {
     suffix: typeof raw.suffix === 'string' ? raw.suffix : null,
     mode: typeof raw.mode === 'string' ? raw.mode : null,
     caseInsensitive: raw.caseInsensitive === true,
+    addressLength: Number.isInteger(raw.addressLength) ? raw.addressLength : null,
   };
 
   if (typeof raw.secretKeyEnc === 'string') {
@@ -68,6 +69,7 @@ function encodeEntry(entry) {
     suffix: entry.suffix || null,
     mode: entry.mode || null,
     caseInsensitive: entry.caseInsensitive === true,
+    addressLength: Number.isInteger(entry.addressLength) ? entry.addressLength : null,
   };
   if (Array.isArray(entry.secretKey)) {
     out.secretKeyEnc = secretStore.encryptString(JSON.stringify(entry.secretKey));
@@ -128,6 +130,7 @@ function metadata(entry) {
     suffix: entry.suffix,
     mode: entry.mode,
     caseInsensitive: entry.caseInsensitive === true,
+    addressLength: Number.isInteger(entry.addressLength) ? entry.addressLength : null,
     hasSecretKey: Array.isArray(entry.secretKey),
     decryptionFailed: !Array.isArray(entry.secretKey),
     persisted: true,
@@ -153,6 +156,7 @@ export function add(entry) {
     suffix: entry.suffix || null,
     mode: entry.mode || null,
     caseInsensitive: entry.caseInsensitive === true,
+    addressLength: Number.isInteger(entry.addressLength) ? entry.addressLength : null,
   };
   if (idx >= 0) list[idx] = { ...list[idx], ...next, createdAt: list[idx].createdAt || next.createdAt };
   else list.push(next);

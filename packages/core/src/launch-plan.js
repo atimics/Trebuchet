@@ -648,12 +648,17 @@ function normalizeVanity(input = {}) {
   if (selectedPublicKey && suffix && !fold(selectedPublicKey).endsWith(fold(suffix))) {
     throw new Error(`Selected Vanity CA does not end with ${suffix}`);
   }
+  const length = Number.isInteger(input.length) && input.length >= 32 && input.length <= 44 ? input.length : null;
+  if (selectedPublicKey && length && selectedPublicKey.length !== length) {
+    throw new Error(`Selected Vanity CA is not ${length} characters long`);
+  }
   return {
     mode: prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : 'random',
     prefix,
     suffix,
     // Only present when on, so existing plan fingerprints do not change.
     ...(caseInsensitive ? { caseInsensitive: true } : {}),
+    ...(length ? { length } : {}),
     selectedPublicKey,
     candidateCount: Math.max(0, Math.floor(numeric(input.candidateCount, 0))),
   };

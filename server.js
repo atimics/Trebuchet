@@ -1935,6 +1935,8 @@ app.post('/api/vanity-ca-candidates/import', (req, res) => {
 app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
   let { prefix, suffix, threads, token, client } = req.query;
   const caseInsensitive = ['1', 'true'].includes(String(req.query.caseInsensitive || '').toLowerCase());
+  const lengthParam = Number.parseInt(String(req.query.length || ''), 10);
+  const addressLength = lengthParam >= 32 && lengthParam <= 44 ? lengthParam : null;
   prefix = typeof prefix === 'string' ? prefix.trim() : '';
   suffix = typeof suffix === 'string' ? suffix.trim() : '';
 
@@ -1955,8 +1957,8 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
     return;
   }
 
-  if (!prefix && !suffix) {
-    return res.status(400).json({ success: false, error: 'prefix or suffix required' });
+  if (!prefix && !suffix && !addressLength) {
+    return res.status(400).json({ success: false, error: 'prefix, suffix, or length required' });
   }
   try {
     ({ prefix, suffix } = normalizeVanityTargetBase58(prefix, suffix));
@@ -1984,7 +1986,10 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
 
   const target = prefix && suffix ? `${prefix}...${suffix}` : (prefix || suffix);
   const targetLen = prefix.length + suffix.length;
-  const expected = expectedVanityAttempts(prefix, suffix, { caseInsensitive });
+  const expected = expectedVanityAttempts(prefix, suffix, { caseInsensitive, length: addressLength });
+  if (!Number.isFinite(expected)) {
+    return res.status(400).json({ success: false, error: `No ${addressLength}-character address can start with ${prefix}` });
+  }
   const vanityMode = prefix && suffix ? 'both' : (prefix ? 'prefix' : 'suffix');
 
   // SSE headers
@@ -2017,6 +2022,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
     suffix: suffix || null,
     mode: vanityMode,
     caseInsensitive,
+    length: addressLength,
   })}\n\n`);
 
   let lastAttempts = 0;
@@ -2025,7 +2031,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
   try {
     const vanityMod = await import('./vanityKeygen.js');
     const result = await vanityMod.generateVanityKeypair({
-      prefix, suffix, threads, caseInsensitive,
+      prefix, suffix, threads, caseInsensitive, length: addressLength,
       onProgress: ({ attempts, key }) => {
         // Throttle to ~4 updates/sec
         const now = Date.now();
@@ -2062,6 +2068,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
         suffix: suffix || null,
         mode: vanityMode,
         caseInsensitive,
+        addressLength,
       });
     }
 
@@ -2090,6 +2097,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
         suffix: suffix || null,
         mode: vanityMode,
         caseInsensitive,
+        addressLength,
         persisted: !demoMode,
       },
     })}\n\n`);

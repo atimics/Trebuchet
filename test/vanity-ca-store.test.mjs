@@ -71,6 +71,7 @@ test('persists vanity CA candidates without exposing secret metadata in listMeta
         suffix: '111',
         mode: 'both',
         caseInsensitive: false,
+        addressLength: null,
         hasSecretKey: true,
         decryptionFailed: false,
         persisted: true,
