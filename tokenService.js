@@ -1748,69 +1748,79 @@ export async function transferTokensAndSol({
 //           first tx didn't contain a SystemProgram transfer we can parse.
 //           Caller should retry on a later poll.
 //   { funder, amount, signature } → success.
+// Transfers below this never count as funding. Address-poisoning attacks
+// send dust (often 0 SOL) from a lookalike of the real funder right after
+// it funds the wallet, hoping a tool or a person copies the wrong address.
+export const MIN_FUNDING_LAMPORTS = 10_000_000; // 0.01 SOL
+const MAX_SIGNATURE_PAGES = 20; // 20k signatures; launch wallets have far fewer
+
+// Results are immutable once found: the earliest funding transfer never
+// changes. Cached per process so sweeps and readiness checks agree.
+const fundingWalletCache = new Map();
+
+/**
+ * The funding transfer among parsed transactions ordered OLDEST first: the
+ * earliest successful inbound SOL transfer of at least MIN_FUNDING_LAMPORTS.
+ */
+export function pickFundingTransfer(parsedTxsOldestFirst, publicKey) {
+  for (const { signature, tx } of parsedTxsOldestFirst) {
+    if (!tx || !tx.meta || tx.meta.err) continue;
+    const allInstructions = [...(tx.transaction?.message?.instructions || [])];
+    for (const inner of tx.meta.innerInstructions || []) allInstructions.push(...(inner.instructions || []));
+    for (const instruction of allInstructions) {
+      if (
+        instruction.program === 'system'
+        && instruction.parsed?.type === 'transfer'
+        && instruction.parsed.info.destination === publicKey
+        && Number(instruction.parsed.info.lamports) >= MIN_FUNDING_LAMPORTS
+      ) {
+        return {
+          funder: instruction.parsed.info.source,
+          amount: Number(instruction.parsed.info.lamports) / LAMPORTS_PER_SOL,
+          signature,
+        };
+      }
+    }
+  }
+  return null;
+}
+
 export async function findFundingWallet(publicKey) {
+  if (fundingWalletCache.has(publicKey)) return fundingWalletCache.get(publicKey);
   try {
     const pubKey = new PublicKey(publicKey);
 
-    // Pull a small window of signatures. Solana RPC returns these
-    // newest-first, but for a fresh wallet there's typically just 1-3
-    // here when this is called (right after funding lands). We use
-    // limit: 50 to be safe in case detection is delayed and other txs
-    // accumulate first.
-    const signatures = await connection.getSignaturesForAddress(pubKey, { limit: 50 });
+    // The whole history, oldest first. A launch wallet has hundreds of
+    // transactions by the final sweep; reading only the newest 50 missed
+    // the original funding entirely.
+    const signatures = [];
+    let before;
+    for (let page = 0; page < MAX_SIGNATURE_PAGES; page++) {
+      const batch = await connection.getSignaturesForAddress(pubKey, { limit: 1000, before });
+      signatures.push(...batch);
+      if (batch.length < 1000) break;
+      before = batch[batch.length - 1].signature;
+    }
     if (signatures.length === 0) return null;
 
-    // Walk signatures from OLDEST to NEWEST, returning the first one
-    // that has a parseable inbound SystemProgram transfer. Used to give
-    // up after inspecting only the oldest signature, but that fails in
-    // edge cases like:
-    //   - Wallet was initialized with a non-transfer first tx (rare but
-    //     possible — some indexers or front-ends do this).
-    //   - The "first" tx is a CEX withdrawal via a non-standard CPI
-    //     pattern that our parsed-instruction walk doesn't recognize.
-    // In both cases there's usually a normal transfer further along
-    // that we should surface. Cap at ~10 inspections so we don't fan
-    // out RPC calls indefinitely for a heavily-active wallet.
-    const MAX_INSPECTIONS = 10;
-    const inspectOrder = signatures.slice().reverse(); // oldest first
-    let inspections = 0;
-
-    for (const sig of inspectOrder) {
-      if (inspections++ >= MAX_INSPECTIONS) break;
-
+    // The funder is the source of the EARLIEST real inbound SOL transfer.
+    // Poisoners always come after the genuine funding (they copy it), and
+    // dust transfers are ignored. Top-level and inner (CEX CPI) transfers
+    // both count.
+    for (const sig of signatures.slice().reverse()) {
+      if (sig.err) continue;
       const tx = await connection.getParsedTransaction(sig.signature, {
         maxSupportedTransactionVersion: 0,
       });
-      if (!tx || !tx.meta || tx.meta.err) continue;
-
-      // The funding could be a top-level SystemProgram transfer (typical case:
-      // someone sending from Phantom or another wallet) or an inner instruction
-      // (typical case: CEX withdrawal where a withdrawal program does the
-      // transfer via CPI). Walk both.
-      const allInstructions = [...(tx.transaction.message.instructions || [])];
-      for (const inner of tx.meta.innerInstructions || []) {
-        allInstructions.push(...(inner.instructions || []));
-      }
-
-      for (const instruction of allInstructions) {
-        if (
-          instruction.program === 'system' &&
-          instruction.parsed?.type === 'transfer' &&
-          instruction.parsed.info.destination === publicKey
-        ) {
-          return {
-            funder: instruction.parsed.info.source,
-            amount: Number(instruction.parsed.info.lamports) / LAMPORTS_PER_SOL,
-            signature: sig.signature,
-          };
-        }
+      const result = pickFundingTransfer([{ signature: sig.signature, tx }], publicKey);
+      if (result) {
+        fundingWalletCache.set(publicKey, result);
+        return result;
       }
     }
 
-    // Inspected everything (or hit the cap) without finding a recognizable
-    // inbound SystemProgram transfer. Most likely the wallet was funded
-    // by an unusual on-chain pattern we can't auto-detect. The user can
-    // still paste their destination manually in the cancel/transfer flow.
+    // No real funding transfer yet (or an unusual pattern). Not cached:
+    // the funding may still be landing.
     return null;
   } catch (error) {
     console.error('Error finding funding wallet:', error);

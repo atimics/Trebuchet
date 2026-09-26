@@ -20515,14 +20515,37 @@ async function startQuoteAcquire() {
     return;
   }
   if (!state.demoActive) {
-    const ok = await confirmOperatorAction({
-      title: 'Acquire quote tokens',
-      detail: `Acquire ${routes.length} route${routes.length === 1 ? '' : 's'} from the selected managed wallet. This can spend real SOL.`,
-      confirmLabel: 'Acquire tokens',
-      danger: true,
-      confirmationText: 'SPEND SOL',
+    // Buying signs with the launch wallet: unlock first, then carry on.
+    if (!walletIsUnlocked()) {
+      const unlocked = await unlockSecretPin({ reason: 'unlock' });
+      if (!unlocked || !walletIsUnlocked()) return;
+    }
+    // Only confirm a spend when something is actually missing. The job
+    // still covers every route; the server re-checks each balance and
+    // spends nothing on tokens already in the wallet.
+    const balance = await refreshManualPrefundBalance({ quiet: true });
+    const heldRaw = (mint) => {
+      try { return BigInt(String(balance?.tokens?.[mint]?.amountRaw || '0')); } catch { return 0n; }
+    };
+    const missing = routes.filter((route) => {
+      let needRaw = 0n;
+      try { needRaw = BigInt(String(route.minRaw || route.targetRaw || '0')); } catch { needRaw = 0n; }
+      return heldRaw(route.quoteMint) < needRaw;
     });
-    if (!ok) return;
+    if (missing.length) {
+      const maxSol = missing.reduce((sum, route) => sum + Math.max(0, Number(route.estSolSpend || 0)), 0);
+      const ok = await confirmOperatorAction({
+        title: 'Buy pair tokens',
+        detail: `Buy ${missing.map((route) => route.quoteSymbol || shortAddress(route.quoteMint)).join(', ')} with up to ${maxSol.toFixed(4)} SOL from the launch wallet.`
+          + (missing.length < routes.length ? ` ${routes.length - missing.length} already in the wallet.` : ''),
+        confirmLabel: 'Buy tokens',
+        danger: true,
+        confirmationText: 'SPEND SOL',
+      });
+      if (!ok) return;
+    } else {
+      notify(`All ${routes.length} pair tokens are already in the launch wallet; confirming balances`);
+    }
   }
 
   const v2QuoteAcquireFingerprint = quoteAcquireFingerprint(currentLaunchConfig(), walletPublicKey);
