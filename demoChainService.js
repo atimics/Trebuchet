@@ -519,6 +519,7 @@ export async function handleCreateToken(req, res) {
       symbol = 'DEMO',
       totalSupply = 1000000000,
       vanityCAKeypair: vanityCAKeypairRaw,
+      vanityCAPublicKey,
       vanityPrefix,
       vanitySuffix,
       mintFormat = 'token-2022',
@@ -547,7 +548,12 @@ export async function handleCreateToken(req, res) {
     //      chose the prefix — overriding with 'Demo' would defeat it.
     //   3. No vanity — generic Demo-prefixed address.
     let mint;
-    if (vanityCAKeypairRaw) {
+    if (!vanityCAKeypairRaw && typeof vanityCAPublicKey === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(vanityCAPublicKey)) {
+      // A saved vanity CA chosen by address (the v2 client keeps secrets
+      // server-side, and split-key CAs have no seed keypair at all).
+      mint = vanityCAPublicKey;
+      console.log(`[demo] honoring saved vanity CA: ${mint}`);
+    } else if (vanityCAKeypairRaw) {
       try {
         const secretKeyArr = typeof vanityCAKeypairRaw === 'string'
           ? JSON.parse(vanityCAKeypairRaw)

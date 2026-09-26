@@ -44,6 +44,7 @@ import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
 import { getRpcUrl } from './rpcConfig.js';
 import { generateVanityKeypair } from './vanityKeygen.js';
+import { scalarPublicKey, signWithScalar } from '@trebuchet/core/split-key';
 import {
   createTokenMetadataUmi,
   SEALED_TOKEN_NAME,
@@ -367,6 +368,41 @@ function createMetadataForExistingMint(umi, {
   });
 }
 
+// A split-key vanity CA is a raw Ed25519 scalar (a + k), not a seed
+// keypair. It signs exactly one transaction: the create-mint below.
+export function scalarMintSigner(scalar) {
+  const bytes = Uint8Array.from(scalar);
+  return { publicKey: new PublicKey(scalarPublicKey(bytes)), scalar: bytes };
+}
+
+// Sign with the payer, then add the mint's signature from its scalar, and
+// refuse to send anything that does not verify.
+export function signWithScalarMint(transaction, payer, mintSigner) {
+  transaction.feePayer = payer.publicKey;
+  transaction.partialSign(payer);
+  transaction.addSignature(
+    mintSigner.publicKey,
+    Buffer.from(signWithScalar(mintSigner.scalar, transaction.serializeMessage())),
+  );
+  if (!transaction.verifySignatures()) throw new Error('Create-mint signatures do not verify');
+  return transaction;
+}
+
+async function sendMintTransaction(transaction, payer, mintSigner, commitment) {
+  if (!mintSigner.scalar) {
+    return sendAndConfirmTransaction(connection, transaction, [payer, mintSigner], { commitment });
+  }
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash(commitment);
+  transaction.recentBlockhash = blockhash;
+  signWithScalarMint(transaction, payer, mintSigner);
+  const signature = await connection.sendRawTransaction(transaction.serialize(), { preflightCommitment: commitment });
+  const confirmation = await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, commitment);
+  if (confirmation.value.err) {
+    throw new Error(`Create-mint transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+  }
+  return signature;
+}
+
 async function createToken2022WithOnMintMetadata({
   tempWallet,
   mintKeypair,
@@ -402,12 +438,7 @@ async function createToken2022WithOnMintMetadata({
     createInitializeMetadataPointerInstruction(mint, null, mint, programId),
     createInitializeMint2Instruction(mint, 9, tempWallet.publicKey, null, programId),
   );
-  const mintCreateTx = await sendAndConfirmTransaction(
-    connection,
-    initializeMint,
-    [tempWallet, mintSigner],
-    { commitment: 'finalized' },
-  );
+  const mintCreateTx = await sendMintTransaction(initializeMint, tempWallet, mintSigner, 'finalized');
   console.log('Token-2022 mint created:', mint.toBase58());
   progress({
     stage: 'mint_created',
@@ -587,6 +618,7 @@ export async function createTokenWithMetaplex({
   vanityPrefix,
   vanitySuffix,
   vanityCAKeypair,
+  vanityCAScalar = null,
   sealedLaunch = false,
   mintFormat = MINT_FORMAT_TOKEN_2022,
 }) {
@@ -643,7 +675,10 @@ export async function createTokenWithMetaplex({
     // detects which side the launched token lands on after pool creation
     // and branches every downstream calculation accordingly.
     let mintKeypair = null;
-    if (vanityCAKeypair) {
+    if (vanityCAScalar) {
+      mintKeypair = scalarMintSigner(vanityCAScalar);
+      console.log(`Using split-key vanity CA: ${mintKeypair.publicKey.toBase58()}`);
+    } else if (vanityCAKeypair) {
       mintKeypair = Keypair.fromSecretKey(Uint8Array.from(vanityCAKeypair));
       console.log(`Using pre-ground vanity CA: ${mintKeypair.publicKey.toBase58()}`);
     } else if (vanityPrefix || vanitySuffix) {
@@ -672,6 +707,11 @@ export async function createTokenWithMetaplex({
     }
 
     // Compatibility profile: classic SPL Token + Metaplex metadata PDA.
+    if (mintKeypair?.scalar) {
+      // createMint needs a seed Keypair; split-key CAs only sign in the
+      // Token-2022 path above.
+      throw new Error('Split-key vanity CAs need the Token-2022 mint format.');
+    }
     console.log('Creating SPL token mint...');
     let mint;
     try {

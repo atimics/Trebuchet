@@ -133,7 +133,7 @@ export function cancelVanityGrind() {
   return true;
 }
 
-export function generateVanityKeypair({ prefix, suffix, threads, caseInsensitive = false, length = null, onProgress } = {}) {
+export function generateVanityKeypair({ prefix, suffix, threads, caseInsensitive = false, length = null, splitPoint = null, onProgress } = {}) {
   try {
     ({ prefix, suffix } = normalizeVanityTargetBase58(prefix, suffix));
   } catch (error) {
@@ -193,6 +193,15 @@ export function generateVanityKeypair({ prefix, suffix, threads, caseInsensitive
     }
     if (Number.isInteger(length) && length >= 32 && length <= 44) {
       args.push('--length', String(length));
+    }
+    // Split-key mode: the grinder only ever sees the customer's public point
+    // and returns an offset; no secret exists in this process.
+    if (splitPoint) {
+      if (!/^[0-9a-f]{64}$/.test(String(splitPoint))) {
+        safeReject(new Error('splitPoint must be 64 lowercase hex chars'));
+        return;
+      }
+      args.push('--split-point', splitPoint);
     }
 
     // spawn() can throw synchronously (e.g. ENOENT before the 'error'
@@ -256,6 +265,26 @@ export function generateVanityKeypair({ prefix, suffix, threads, caseInsensitive
       }
       try {
         const result = JSON.parse(stdout.trim());
+        if (splitPoint) {
+          if (!/^[0-9a-f]{64}$/.test(String(result.offset)) || !result.publicKey || result.secretKey) {
+            reject(new Error('Split grind output must be an offset and a public key only'));
+            return;
+          }
+          resolve({
+            publicKey: result.publicKey,
+            offset: result.offset,
+            attempts: result.attempts,
+            rarity: result.rarity,
+            epochs: result.epochs,
+            expectedAttempts: result.expectedAttempts,
+            elapsedSec: result.elapsedSec,
+            target: result.target,
+            prefix: result.prefix,
+            suffix: result.suffix,
+            targetLen: result.targetLen,
+          });
+          return;
+        }
         if (!result.secretKey || !result.publicKey) {
           reject(new Error('Output missing secretKey or publicKey'));
           return;

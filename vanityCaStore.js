@@ -4,6 +4,12 @@
 // app restart. Secret keys use the same secretStore wrapper as pending launch
 // wallets: OS-keychain-backed encryption in the desktop build, with the same
 // explicit plaintext fallback in web/dev mode.
+//
+// Two key types:
+//   seed   — a standard 64-byte Solana keypair (seed || public key).
+//   scalar — a 32-byte Ed25519 scalar from a split-key grind (a + k). Wallet
+//            apps cannot import it; Trebuchet signs the create-mint
+//            transaction with it directly (packages/core/src/split-key.js).
 
 import fs from 'fs';
 import path from 'path';
@@ -41,16 +47,22 @@ function decodeEntry(raw) {
     mode: typeof raw.mode === 'string' ? raw.mode : null,
     caseInsensitive: raw.caseInsensitive === true,
     addressLength: Number.isInteger(raw.addressLength) ? raw.addressLength : null,
+    keyType: raw.keyType === 'scalar' ? 'scalar' : 'seed',
   };
 
+  let secret;
   if (typeof raw.secretKeyEnc === 'string') {
     const json = secretStore.decryptString(raw.secretKeyEnc);
     if (json) {
-      try { out.secretKey = JSON.parse(json); }
-      catch { /* corrupted entry: leave secretKey undefined */ }
+      try { secret = JSON.parse(json); }
+      catch { /* corrupted entry: leave the secret undefined */ }
     }
   } else if (Array.isArray(raw.secretKey)) {
-    out.secretKey = raw.secretKey;
+    secret = raw.secretKey;
+  }
+  if (Array.isArray(secret)) {
+    if (out.keyType === 'scalar') out.scalar = secret;
+    else out.secretKey = secret;
   }
 
   return out;
@@ -70,9 +82,11 @@ function encodeEntry(entry) {
     mode: entry.mode || null,
     caseInsensitive: entry.caseInsensitive === true,
     addressLength: Number.isInteger(entry.addressLength) ? entry.addressLength : null,
+    keyType: entry.keyType === 'scalar' ? 'scalar' : 'seed',
   };
-  if (Array.isArray(entry.secretKey)) {
-    out.secretKeyEnc = secretStore.encryptString(JSON.stringify(entry.secretKey));
+  const secret = entry.keyType === 'scalar' ? entry.scalar : entry.secretKey;
+  if (Array.isArray(secret)) {
+    out.secretKeyEnc = secretStore.encryptString(JSON.stringify(secret));
   }
   return out;
 }
@@ -107,7 +121,7 @@ function load() {
   const hasReencryptableTokens = raw.some((entry) =>
     secretStore.shouldReencryptToken(entry.secretKeyEnc));
   const hasReencryptFailure = raw.some((entry, idx) =>
-    secretStore.shouldReencryptToken(entry.secretKeyEnc) && !Array.isArray(decodedAll[idx]?.secretKey));
+    secretStore.shouldReencryptToken(entry.secretKeyEnc) && !hasSecret(decodedAll[idx]));
   if (hasLegacyPlaintext || (hasReencryptableTokens && !hasReencryptFailure)) {
     persist(decoded);
   } else if (hasReencryptableTokens && hasReencryptFailure) {
@@ -115,6 +129,10 @@ function load() {
   }
 
   return decoded;
+}
+
+function hasSecret(entry) {
+  return Array.isArray(entry?.secretKey) || Array.isArray(entry?.scalar);
 }
 
 function metadata(entry) {
@@ -131,21 +149,26 @@ function metadata(entry) {
     mode: entry.mode,
     caseInsensitive: entry.caseInsensitive === true,
     addressLength: Number.isInteger(entry.addressLength) ? entry.addressLength : null,
-    hasSecretKey: Array.isArray(entry.secretKey),
-    decryptionFailed: !Array.isArray(entry.secretKey),
+    keyType: entry.keyType === 'scalar' ? 'scalar' : 'seed',
+    hasSecretKey: hasSecret(entry),
+    decryptionFailed: !hasSecret(entry),
     persisted: true,
   };
 }
 
 export function add(entry) {
-  if (!entry || typeof entry.publicKey !== 'string' || !Array.isArray(entry.secretKey)) {
-    throw new TypeError('vanityCaStore.add expects { publicKey, secretKey }');
+  const scalarKey = entry?.keyType === 'scalar';
+  const validSecret = scalarKey
+    ? Array.isArray(entry.scalar) && entry.scalar.length === 32
+    : Array.isArray(entry?.secretKey);
+  if (!entry || typeof entry.publicKey !== 'string' || !validSecret) {
+    throw new TypeError('vanityCaStore.add expects { publicKey, secretKey } or { publicKey, keyType: "scalar", scalar }');
   }
   const list = load();
   const idx = list.findIndex((item) => item.publicKey === entry.publicKey);
   const next = {
     publicKey: entry.publicKey,
-    secretKey: entry.secretKey,
+    ...(scalarKey ? { keyType: 'scalar', scalar: entry.scalar } : { keyType: 'seed', secretKey: entry.secretKey }),
     createdAt: entry.createdAt || new Date().toISOString(),
     rarity: entry.rarity || 'Common',
     epochs: entry.epochs ?? null,

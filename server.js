@@ -84,6 +84,8 @@ import {
 } from './validators.js';
 import { expectedVanityAttempts, unsafeSweepDestinationReason } from '@trebuchet/core/validators';
 import * as destinationProofStore from './destinationProofStore.js';
+import * as splitJobStore from './splitJobStore.js';
+import { combineSplitKey, createSplitSecret, matchesVanityPattern } from '@trebuchet/core/split-key';
 import { normalizeDistribution } from './lpDistribution.js';
 import { isWalletEffectivelyEmpty } from './walletRecovery.js';
 import {
@@ -1676,6 +1678,7 @@ app.post('/api/secret-pin/reset', (req, res) => {
     const removed = {
       pendingWallets: pendingWallets.removePinEncrypted(),
       vanityCAs: vanityCaStore.removePinEncrypted(),
+      splitJobs: splitJobStore.removePinEncrypted(),
     };
     const status = secretStore.resetSecretPin();
     res.json({ success: true, status, removed });
@@ -1897,6 +1900,108 @@ app.post('/api/vanity-ca-candidates/remove', (req, res) => {
 // encrypted store. The public key is derived from the secret, never trusted
 // from the request, and must match the requested pattern. The response
 // carries metadata only.
+// Split-key vanity grinding. Trebuchet keeps the secret scalar a; a grinder
+// (local, rented, or a service) only ever receives A = a*G and returns an
+// offset k. Completing a job forms the mint key a + k here, checks it against
+// the pattern, and stores it encrypted as a scalar vanity CA.
+function createSplitJob({ prefix, suffix, caseInsensitive, addressLength }) {
+  const { secretScalar, publicPoint } = createSplitSecret();
+  const expectedAttempts = expectedVanityAttempts(prefix, suffix, { caseInsensitive, length: addressLength });
+  if (!Number.isFinite(expectedAttempts)) {
+    throw new Error(`No ${addressLength}-character address can start with ${prefix}`);
+  }
+  return splitJobStore.create({
+    secretScalar: Array.from(secretScalar),
+    publicPoint: Buffer.from(publicPoint).toString('hex'),
+    prefix,
+    suffix,
+    caseInsensitive,
+    addressLength,
+    expectedAttempts,
+  });
+}
+
+function completeSplitJob(jobId, offsetHex, { attempts = null, rarity = null, epochs = null, store = true } = {}) {
+  const job = splitJobStore.getWithSecret(jobId);
+  if (!job) throw new Error('Split job not found');
+  if (!Array.isArray(job.secretScalar)) throw new Error('Split job secret could not be decrypted');
+  if (!/^[0-9a-f]{64}$/.test(String(offsetHex))) throw new Error('offset must be 64 hex chars');
+  const key = combineSplitKey({
+    secretScalar: Uint8Array.from(job.secretScalar),
+    publicPoint: Buffer.from(job.publicPoint, 'hex'),
+    offset: Buffer.from(offsetHex, 'hex'),
+  });
+  const pattern = {
+    prefix: job.prefix || '',
+    suffix: job.suffix || '',
+    caseInsensitive: job.caseInsensitive,
+    length: job.addressLength,
+  };
+  if (!matchesVanityPattern(key.address, pattern)) {
+    throw new Error(`${key.address} does not match the job's pattern`);
+  }
+  const mode = job.prefix && job.suffix ? 'both' : job.prefix ? 'prefix' : job.suffix ? 'suffix' : null;
+  if (store) {
+    vanityCaStore.add({
+      publicKey: key.address,
+      keyType: 'scalar',
+      scalar: Array.from(key.scalar),
+      attempts,
+      rarity: rarity || 'Common',
+      epochs,
+      expectedAttempts: job.expectedAttempts,
+      target: job.prefix && job.suffix ? `${job.prefix}...${job.suffix}` : (job.prefix || job.suffix || null),
+      prefix: job.prefix,
+      suffix: job.suffix,
+      mode,
+      caseInsensitive: job.caseInsensitive,
+      addressLength: job.addressLength,
+    });
+  }
+  splitJobStore.remove(jobId);
+  return { publicKey: key.address, mode, job };
+}
+
+// API for external grinders: create a job (hands out only A), then complete
+// it with the offset they found.
+app.post('/api/vanity-split/jobs', (req, res) => {
+  try {
+    if (!isDemoMode() && rejectIfSecretPinLocked(res, 'creating a split vanity job')) return;
+    const { prefix, suffix } = normalizeVanityTargetBase58(req.body?.prefix || '', req.body?.suffix || '');
+    const length = Number.parseInt(String(req.body?.length || ''), 10);
+    const addressLength = length >= 32 && length <= 44 ? length : null;
+    if (!prefix && !suffix && !addressLength) {
+      return res.status(400).json({ success: false, error: 'prefix, suffix, or length required' });
+    }
+    const job = createSplitJob({ prefix, suffix, caseInsensitive: req.body?.caseInsensitive === true, addressLength });
+    res.json({ success: true, job });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/vanity-split/jobs', (_req, res) => {
+  res.json({ success: true, jobs: splitJobStore.list() });
+});
+
+app.post('/api/vanity-split/jobs/complete', (req, res) => {
+  try {
+    if (!isDemoMode() && rejectIfSecretPinLocked(res, 'completing a split vanity job')) return;
+    const { publicKey } = completeSplitJob(String(req.body?.id || ''), String(req.body?.offset || '').toLowerCase(), {
+      attempts: Number.isFinite(Number(req.body?.attempts)) ? Number(req.body.attempts) : null,
+    });
+    const candidate = vanityCaStore.listMetadata().find((item) => item.publicKey === publicKey);
+    res.json({ success: true, candidate });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/vanity-split/jobs/remove', (req, res) => {
+  splitJobStore.remove(String(req.body?.id || ''));
+  res.json({ success: true });
+});
+
 app.post('/api/vanity-ca-candidates/import', (req, res) => {
   try {
     if (!isDemoMode() && rejectIfSecretPinLocked(res, 'importing a Vanity CA')) return;
@@ -1937,6 +2042,10 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
   const caseInsensitive = ['1', 'true'].includes(String(req.query.caseInsensitive || '').toLowerCase());
   const lengthParam = Number.parseInt(String(req.query.length || ''), 10);
   const addressLength = lengthParam >= 32 && lengthParam <= 44 ? lengthParam : null;
+  // Split-key grinds (v2 only): the grinder receives only A = a*G and the
+  // mint key is formed here from the stored secret. Classic still needs a
+  // seed keypair it can render.
+  const splitMode = client === 'v2' && ['1', 'true'].includes(String(req.query.split || '').toLowerCase());
   prefix = typeof prefix === 'string' ? prefix.trim() : '';
   suffix = typeof suffix === 'string' ? suffix.trim() : '';
 
@@ -2028,10 +2137,13 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
   let lastAttempts = 0;
   let lastSend = Date.now();
 
+  let splitJob = null;
   try {
+    if (splitMode) splitJob = createSplitJob({ prefix, suffix, caseInsensitive, addressLength });
     const vanityMod = await import('./vanityKeygen.js');
     const result = await vanityMod.generateVanityKeypair({
       prefix, suffix, threads, caseInsensitive, length: addressLength,
+      splitPoint: splitJob ? splitJob.publicPoint : null,
       onProgress: ({ attempts, key }) => {
         // Throttle to ~4 updates/sec
         const now = Date.now();
@@ -2042,6 +2154,43 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
         res.write(`data: ${JSON.stringify({ type: 'progress', attempts, epoch, key })}\n\n`);
       },
     });
+
+    if (splitJob) {
+      const completed = completeSplitJob(splitJob.id, result.offset, {
+        attempts: result.attempts,
+        rarity: result.rarity,
+        epochs: result.epochs,
+        store: !demoMode,
+      });
+      splitJob = null;
+      if (completed.publicKey !== result.publicKey) throw new Error('Split result does not match the grinder address');
+      if (demoMode) demoChainService.registerWallet(completed.publicKey);
+      const qrCode = await getWalletQRCode(completed.publicKey);
+      res.write(`data: ${JSON.stringify({
+        type: 'done',
+        success: true,
+        wallet: {
+          publicKey: completed.publicKey,
+          keyType: 'scalar',
+          mnemonic: null,
+          vanity: true,
+          qrCode,
+          attempts: result.attempts,
+          rarity: result.rarity,
+          epochs: result.epochs,
+          expectedAttempts: result.expectedAttempts,
+          target,
+          prefix: prefix || null,
+          suffix: suffix || null,
+          mode: vanityMode,
+          caseInsensitive,
+          addressLength,
+          persisted: !demoMode,
+        },
+      })}\n\n`);
+      res.end();
+      return;
+    }
 
     const walletInfo = {
       publicKey: result.publicKey,
@@ -2104,6 +2253,8 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
 
     res.end();
   } catch (error) {
+    // An unfinished split job's secret is useless without its offset.
+    if (splitJob) splitJobStore.remove(splitJob.id);
     // CANCELLED is a structured error code surfaced by vanityKeygen.js
     // when cancelVanityGrind() was called. It's an expected event — the
     // user clicked Cancel — so emit a dedicated {type:'cancelled'}
@@ -5782,18 +5933,26 @@ async function createTokenHandler(req, res) {
     );
 
     let vanityCAKeypair = vanityCAKeypairRaw ? JSON.parse(vanityCAKeypairRaw) : null;
+    let vanityCAScalar = null;
     if (!vanityCAKeypair && vanityCAPublicKey) {
       const candidate = vanityCaStore.get(vanityCAPublicKey);
       if (!candidate) {
         return res.status(404).json({ success: false, error: 'Saved Vanity CA not found' });
       }
-      if (!Array.isArray(candidate.secretKey)) {
-        return res.status(409).json({
-          success: false,
-          error: 'Saved Vanity CA secret could not be decrypted',
-        });
+      if (candidate.keyType === 'scalar') {
+        if (!Array.isArray(candidate.scalar)) {
+          return res.status(409).json({ success: false, error: 'Saved Vanity CA secret could not be decrypted' });
+        }
+        vanityCAScalar = candidate.scalar;
+      } else {
+        if (!Array.isArray(candidate.secretKey)) {
+          return res.status(409).json({
+            success: false,
+            error: 'Saved Vanity CA secret could not be decrypted',
+          });
+        }
+        vanityCAKeypair = candidate.secretKey;
       }
-      vanityCAKeypair = candidate.secretKey;
     }
 
     const result = await createTokenWithMetaplex({
@@ -5806,6 +5965,7 @@ async function createTokenHandler(req, res) {
       vanityPrefix: normalizedVanityPrefix || null,
       vanitySuffix: normalizedVanitySuffix || null,
       vanityCAKeypair,
+      vanityCAScalar,
       sealedLaunch: useSealedLaunch,
       mintFormat: normalizedMintFormat,
       onProgress: (event) => recordTokenJournalProgress(walletPublicKey, event),

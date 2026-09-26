@@ -5181,6 +5181,7 @@ function currentVanityConfig() {
       mode: item.mode || null,
       caseInsensitive: item.caseInsensitive === true,
       addressLength: item.addressLength || null,
+      keyType: item.keyType || 'seed',
       rarity: item.rarity || null,
       attempts: item.attempts || null,
       persisted: item.persisted === true,
@@ -5340,6 +5341,18 @@ function feeKeyRecipientIssues(pools = []) {
 }
 
 const PLACEHOLDER_SWEEP_RE = /^1{20,}[1-9A-HJ-NP-Za-km-z]*$/;
+
+// A split-key vanity CA signs only in the Token-2022 create-mint path.
+function splitKeyMintFormatIssues() {
+  const selected = state.vanityCandidates.find((item) => item.publicKey === state.selectedVanityPublicKey);
+  if (selected?.keyType !== 'scalar' || $('#mintFormat')?.value !== 'classic-spl') return [];
+  return [{
+    state: 'danger',
+    poolId: 'vanity-ca',
+    title: 'Split-key address needs Token-2022',
+    detail: 'This vanity address came from a split-key grind. Switch the mint standard to Token-2022, or pick another address.',
+  }];
+}
 
 function sweepDestinationIssues(topology = {}) {
   const destination = String(topology.sweepDestination || '').trim();
@@ -5502,6 +5515,7 @@ function customQuoteSafetySummary(topology = currentClassicModel()) {
   feeKeyRecipientIssues(topology.pools).forEach((issue) => issues.push(issue));
   sweepDestinationIssues(topology).forEach((issue) => issues.push(issue));
   airdropRecipientIssues(topology).forEach((issue) => issues.push(issue));
+  splitKeyMintFormatIssues().forEach((issue) => issues.push(issue));
   return {
     blockers: issues.filter((item) => item.state === 'danger'),
     warnings: issues.filter((item) => item.state === 'warn'),
@@ -21581,6 +21595,8 @@ async function startVanityGrind() {
     if (vanity.prefix) params.set('prefix', vanity.prefix);
     if (vanity.caseInsensitive) params.set('caseInsensitive', '1');
     if (vanity.length) params.set('length', String(vanity.length));
+    // Split-key: the grinder only sees a public point; ~30x faster too.
+    params.set('split', '1');
     if (vanity.suffix) params.set('suffix', vanity.suffix);
     const source = new EventSource(`/api/generate-vanity-wallet-stream?${params.toString()}`);
     state.vanitySource = source;
@@ -21648,6 +21664,7 @@ async function startVanityGrind() {
           mode: data.wallet.mode || vanity.mode,
           caseInsensitive: data.wallet.caseInsensitive === true,
           addressLength: data.wallet.addressLength || null,
+          keyType: data.wallet.keyType || 'seed',
           rarity: data.wallet.rarity || null,
           attempts: data.wallet.attempts || null,
           persisted: data.wallet.persisted === true,
