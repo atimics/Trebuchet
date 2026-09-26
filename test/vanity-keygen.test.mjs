@@ -76,3 +76,49 @@ test('grind returns a keypair matching both requested start and end', async () =
   assert.equal(result.prefix, 'R');
   assert.equal(result.suffix, '1');
 });
+
+// Regression: the grinder once seeded from a "VRF proof" it published, and
+// chained each candidate's seed from the previous candidate's public key.
+// Either leak let anyone rebuild the winning secret key. The seed now comes
+// only from the CSPRNG and candidates are independent.
+test('the retired --vrf-blockhash flag changes nothing and emits no proof', () => {
+  const out = execFileSync(
+    BINARY,
+    ['--prefix', 'R', '--threads', '2', '--quiet', '--vrf-blockhash', 'cd'.repeat(32)],
+    { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  const result = JSON.parse(out.trim());
+  for (const field of ['vrfProof', 'vrfPk', 'vrfBlockhash']) {
+    assert.equal(result[field], undefined, `output must not include ${field}`);
+  }
+  // No hex field long enough to carry key material either.
+  for (const [k, v] of Object.entries(result)) {
+    if (typeof v === 'string') {
+      assert.ok(!/^[0-9a-f]{64,}$/i.test(v), `field "${k}" is a long hex string`);
+    }
+  }
+});
+
+test('public keys seen during a grind do not lead to the winning key', async () => {
+  const { Keypair } = await import('@solana/web3.js');
+  const samples = new Set();
+  const result = await generateVanityKeypair({
+    suffix: 'Ab',
+    threads: 1,
+    onProgress: ({ key }) => {
+      // An empty Key: field lets the wrapper's regex pick up the next word.
+      if (key && b58decode(key)?.length === 32) samples.add(key);
+    },
+  });
+  assert.ok(samples.size > 0, 'the grind should report at least one progress key');
+  // Replay the old chaining (next seed = previous public key) from every
+  // key the progress stream showed. It must never reach the winner.
+  for (const sample of samples) {
+    let seed = Uint8Array.from(b58decode(sample));
+    for (let step = 0; step <= result.attempts + 1; step++) {
+      const next = Keypair.fromSeed(seed).publicKey;
+      assert.notEqual(next.toBase58(), result.publicKey, `progress key ${sample} leads to the winner`);
+      seed = next.toBytes();
+    }
+  }
+});
