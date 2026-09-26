@@ -2218,7 +2218,8 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="airdropAutoFit"/);
   assert.match(html, /id="airdropBudgetPanel"/);
   assert.match(html, /id="reportPreview"/);
-  assert.match(html, /Liquidity and distribution recipe/);
+  assert.match(html, /Supply and pools/);
+  assert.match(html, /id="supplyEditor"/);
   assert.doesNotMatch(html, /Classic parity controls/);
   assert.match(html, /class="launch-toolbar"/);
   assert.match(html, /class="launch-settings-drawer"/);
@@ -3160,18 +3161,19 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   const combined = `${html}\n${css}\n${js}\n${apiClientJs}`;
 
   assert.match(combined, /Launch phase workspace/);
-  assert.match(combined, /Liquidity and distribution recipe/);
+  assert.match(combined, /Supply and pools/);
   assert.doesNotMatch(html, /Classic parity controls/);
-  assert.match(combined, /SOL pool %/);
-  assert.match(combined, /Quote pool %/);
-  assert.match(combined, /Quote venue/);
+  assert.match(html, /id="mainPoolPercent"/);
+  assert.match(html, /id="quotePoolPercent"/);
+  assert.match(html, /id="quotePoolVenue"/);
+  assert.match(js, /function renderSupplyEditor/);
   assert.match(combined, /Meme flywheel/);
   assert.match(combined, /Reserve flywheel/);
   assert.match(combined, /Stable USDC/);
   assert.match(js, /CLASSIC_QUOTE_VENUES/);
   assert.match(js, /selectedClassicQuoteVenue/);
   assert.match(js, /HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r/);
-  assert.match(combined, /Main slices/);
+  assert.match(combined, /Position slices/);
   assert.match(combined, /Ladder bands/);
   assert.match(combined, /Support SOL/);
   assert.match(combined, /Airdrop wallets/);

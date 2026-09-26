@@ -7158,7 +7158,8 @@ body[data-experience-mode="guided"] #launchWorkspaceViewport > details.drawer {
 
 .guided-progress {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 0;
   margin: 4px 0 22px;
   padding: 0;
@@ -16977,3 +16978,217 @@ body[data-active-view="launch"] #view-launch .signature-panel {
 .quick-launch-log li { padding: 3px 0; }
 .quick-launch-log li.is-done { color: var(--green); }
 .quick-launch-log li.is-todo { color: var(--subtle); }
+
+/* Supply editor: one bar for the whole supply, one row per destination. */
+.supply-editor {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0 18px;
+}
+
+.supply-bar {
+  display: flex;
+  height: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.supply-bar > span + span {
+  box-shadow: inset 1px 0 0 var(--bg);
+}
+
+.supply-bar-gap {
+  background: repeating-linear-gradient(135deg, transparent 0 4px, var(--line) 4px 5px);
+}
+
+.supply-group-head {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.supply-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.supply-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) 72px 96px 28px;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 6px 10px 6px 14px;
+}
+
+.supply-row + .supply-row {
+  border-top: 1px solid var(--line);
+}
+
+.supply-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.supply-name {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.supply-name strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.supply-name small {
+  color: var(--subtle);
+  font-size: 11px;
+}
+
+.supply-name .supply-mint {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.supply-amount {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.supply-percent {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.supply-percent input {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.supply-percent span {
+  color: var(--subtle);
+  font-size: 12px;
+}
+
+.supply-remove {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--subtle);
+  cursor: pointer;
+}
+
+.supply-remove:hover,
+.supply-remove:focus-visible {
+  background: var(--panel-strong);
+  color: var(--red);
+}
+
+.supply-add {
+  justify-self: start;
+  padding: 6px 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.supply-add:hover,
+.supply-add:focus-visible {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.supply-total {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  padding: 10px 14px 0;
+  border-top: 1px solid var(--line-strong);
+}
+
+.supply-total span {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.supply-total strong {
+  color: var(--green);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.supply-total small {
+  grid-column: 2;
+  color: var(--subtle);
+  font-size: 11px;
+  text-align: right;
+}
+
+.supply-total.is-off strong,
+.supply-total.is-off small {
+  color: var(--amber);
+}
+
+.classic-subhead {
+  grid-column: 1 / -1;
+  margin: 10px 0 0;
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pool-advanced {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.pool-advanced > summary {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .supply-row {
+    grid-template-columns: 10px minmax(0, 1fr) 84px 28px;
+  }
+
+  .supply-amount {
+    display: none;
+  }
+}

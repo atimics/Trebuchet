@@ -278,7 +278,7 @@
             <section class="setup-dock" data-launch-pane="configure" aria-label="Launch setup dock">
               <div class="setup-dock-head">
                 <span>
-                  <span class="eyebrow">Trebuchet first launch</span>
+                  <span class="eyebrow">Launch</span>
                   <strong id="setupSummary">Your first launch</strong>
                 </span>
                 <span class="setup-head-actions">
@@ -291,12 +291,7 @@
               <section class="launch-step-guide configure-step-guide" aria-labelledby="configureStepTitle">
                 <div>
                   <h2 id="configureStepTitle">Token &amp; pools</h2>
-                  <p>Set the permanent identity and liquidity budget.</p>
                 </div>
-                <aside>
-                  <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-                  <span>Review permanent details before funding.</span>
-                </aside>
               </section>
               <div class="launch-workbench compact-workbench">
                 <form class="config-grid" id="launchConfig" aria-label="Launch configuration">
@@ -395,44 +390,29 @@
                 </details>
               </div>
 
-              <details class="drawer classic-controls launch-design-details">
+              <details class="drawer classic-controls launch-design-details" open>
                 <summary>
-                  <span>Liquidity and distribution recipe</span>
+                  <span>Supply and pools</span>
                   <strong id="classicSummary">Simple SOL pool · no allocation</strong>
                 </summary>
-                <div class="launch-design-intro">
-                  <strong>The default recipe is ready for a straightforward launch.</strong>
-                  <p>Open this only when you need multiple pools, a token allocation, an airdrop, or a different Fee Key destination.</p>
-                </div>
-                <form class="classic-grid" id="classicConfig" aria-label="Liquidity and distribution configuration">
-                  <div class="launch-control-group-heading">
-                    <span class="eyebrow">Liquidity recipe</span>
-                    <strong>How much supply enters the market?</strong>
-                    <small>The SOL pool is the primary market. Quote pools, slices, ladder bands, and support are optional.</small>
-                  </div>
-                  <label>
-                    <span>SOL pool %</span>
+                <section class="supply-editor" id="supplyEditor" aria-label="Supply split"></section>
+                <form class="classic-grid" id="classicConfig" aria-label="Pool options">
+                  <div class="classic-hidden-fields" hidden>
                     <input id="mainPoolPercent" type="number" value="100" min="0" max="100" step="0.1">
-                  </label>
-                  <label>
-                    <span>Quote pool %</span>
                     <input id="quotePoolPercent" type="number" value="0" min="0" max="100" step="0.1">
-                  </label>
-                  <label>
-                    <span>Quote venue</span>
                     <select id="quotePoolVenue">
                       <option value="meme" selected>Meme flywheel</option>
                       <option value="reserve">Reserve flywheel</option>
                       <option value="usdc">Stable USDC</option>
                     </select>
-                  </label>
-                  <div class="flywheel-pick" id="flywheelPick">
-                    <span class="flywheel-pick-label">Meme flywheel pairing</span>
-                    <code class="flywheel-pick-mint" id="flywheelPickMint">—</code>
-                    <button class="pill-button" type="button" data-action="shuffle-flywheel" title="Draw another memecoin from the flywheel pool">Shuffle</button>
+                    <div class="flywheel-pick" id="flywheelPick">
+                      <code class="flywheel-pick-mint" id="flywheelPickMint">—</code>
+                    </div>
+                    <input id="preallocationSupplyPercent" type="number" value="0" min="0" max="99" step="0.1">
                   </div>
+                  <h4 class="classic-subhead">SOL pool</h4>
                   <label>
-                    <span>Main slices</span>
+                    <span>Position slices</span>
                     <input id="sliceShares" type="text" value="100" autocomplete="off">
                   </label>
                   <label>
@@ -443,33 +423,23 @@
                     <span>Support SOL</span>
                     <input id="supportSol" type="number" value="0" min="0" step="0.05">
                   </label>
+                  <h4 class="classic-subhead">Wallets</h4>
                   <label>
-                    <span>Fee Key recipient</span>
-                    <input id="feeKeyRecipient" type="text" value="" placeholder="Final owner wallet" autocomplete="off">
-                  </label>
-                  <div class="launch-control-group-heading">
-                    <span class="eyebrow">Distribution and destination</span>
-                    <strong>What stays outside liquidity, and where does it go?</strong>
-                    <small>Allocated and airdropped supply never enters a pool. The sweep destination receives every remaining asset at the end.</small>
-                  </div>
-                  <label>
-                    <span>Preallocation %</span>
-                    <input id="preallocationSupplyPercent" type="number" value="0" min="0" max="99" step="0.1">
-                  </label>
-                  <label>
-                    <span>Airdrop wallets</span>
-                    <input id="airdropWallets" type="number" value="0" min="0" step="1">
+                    <span>Fee Key owner</span>
+                    <input id="feeKeyRecipient" type="text" value="" placeholder="Wallet address" autocomplete="off">
                   </label>
                   <label>
                     <span>Return wallet</span>
-                    <input id="sweepDestination" type="text" value="" placeholder="Wallet receiving remaining assets" autocomplete="off">
+                    <input id="sweepDestination" type="text" value="" placeholder="Wallet address" autocomplete="off">
                   </label>
                 </form>
-                <div class="operator-toolbar" aria-label="Pool configuration actions">
-                  <button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button>
-                  <button class="pill-button" type="button" data-action="add-custom-pool">Add quote pool</button>
-                </div>
-                <div class="pool-editor-panel" id="poolEditorPanel" aria-label="Custom pool editor"></div>
+                <details class="pool-advanced">
+                  <summary>Per-pool settings</summary>
+                  <div class="operator-toolbar" aria-label="Pool configuration actions">
+                    <button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button>
+                  </div>
+                  <div class="pool-editor-panel" id="poolEditorPanel" aria-label="Per-pool settings"></div>
+                </details>
                 <div class="airdrop-report-grid">
                   <section class="operator-subpanel" aria-label="Airdrop CSV import">
                     <div class="subpanel-head">
@@ -480,6 +450,10 @@
                       <span class="risk-badge warn" id="airdropSummary">Off</span>
                     </div>
                     <div class="airdrop-budget-controls">
+                      <label>
+                        <span>Airdrop wallets</span>
+                        <input id="airdropWallets" type="number" value="0" min="0" step="1">
+                      </label>
                       <label>
                         <span>Budget %</span>
                         <input id="airdropSupplyPercent" type="number" value="2" min="0" max="99" step="0.1">

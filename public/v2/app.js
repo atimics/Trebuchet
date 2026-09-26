@@ -973,6 +973,7 @@ function guidedFundingStep() {
 
 function guidedLaunchStep() {
   const token = guidedTokenDraft();
+  const practice = practiceEnvironmentSelected();
   const identity = `${token.name || 'Untitled'} · $${token.symbol || 'TOK'}`;
   return `
     <div class="guided-step-layout">
@@ -7299,6 +7300,11 @@ function restoreDetectedLaunch() {
   state.loadedSavedLaunchId = entry.id;
   rememberActiveLaunchId(entry.id);
   state.restoredLaunchJournalId = null;
+  // A saved launch opens in the editor. The guided wizard only knows one
+  // SOL pool, and its final step would replace the saved pools and splits.
+  state.experienceMode = 'advanced';
+  state.advancedDraft = null;
+  setLaunchWorkspace('configure');
   persistGuidedDraft();
   return true;
 }
@@ -7478,6 +7484,125 @@ function renderCustomQuoteInfoPanel(pool) {
       </button>
     </div>
   `;
+}
+
+// Amber and violet are reserved for Team and Airdrop.
+const SUPPLY_PAIR_COLORS = ['#78a8ff', '#e07ab0', '#5fc7c7', '#f08a5d', '#8fd06a', '#6fd3ff', '#d68fe0', '#c9d86a'];
+
+// One row per place the supply goes. Pool % inputs write through to the
+// existing form fields (or custom pool state), so the launch model is unchanged.
+function supplyEditorRows() {
+  const topology = currentClassicModel();
+  const rows = [];
+  const solPool = topology.pools.find((pool) => pool.id === 'sol-main');
+  rows.push({
+    key: 'sol', kind: 'pool', label: 'SOL', detail: 'Main market',
+    percent: parsePercentInput($('#mainPoolPercent').value, 0), color: 'var(--green)',
+    target: '#mainPoolPercent', locked: true, present: Boolean(solPool) || true,
+  });
+  const quotePercent = parsePercentInput($('#quotePoolPercent').value, 0);
+  if (quotePercent > 0) {
+    const venue = selectedClassicQuoteVenue();
+    rows.push({
+      key: 'quote', kind: 'pool', label: venue.symbol, detail: venue.quoteMint ? shortAddress(venue.quoteMint) : venue.label || '',
+      percent: quotePercent, target: '#quotePoolPercent', removeTarget: '#quotePoolPercent',
+    });
+  }
+  state.customPools.forEach((pool) => {
+    const info = customQuoteResolvedInfo(pool);
+    const symbol = String(info?.symbol || pool.quoteSymbol || '').trim().toUpperCase();
+    const mint = String(info?.address || pool.quoteMint || '').trim();
+    rows.push({
+      key: `custom:${pool.id}`, kind: 'pool', label: symbol && symbol !== 'QUOTE' ? symbol : 'New pair',
+      detail: mint ? shortAddress(mint) : '', needsMint: !mint, poolId: pool.id, mint,
+      percent: parsePercentInput(pool.supplyPercent, 0),
+    });
+  });
+  let pairIndex = 0;
+  rows.forEach((row) => {
+    if (row.kind === 'pool' && !row.color) row.color = SUPPLY_PAIR_COLORS[pairIndex++ % SUPPLY_PAIR_COLORS.length];
+  });
+  rows.push({
+    key: 'team', kind: 'hold', label: 'Team', detail: 'Held by the launch wallet',
+    percent: parsePercentInput($('#preallocationSupplyPercent').value, 0), color: 'var(--amber)',
+    target: '#preallocationSupplyPercent',
+  });
+  const airdrop = currentAirdropPlan();
+  if (airdrop.enabled) {
+    rows.push({
+      key: 'airdrop', kind: 'hold', label: 'Airdrop',
+      detail: `${airdrop.recipientCount} wallet${airdrop.recipientCount === 1 ? '' : 's'}`,
+      percent: Number(airdrop.supplyPercent || 0), color: 'var(--violet)', target: '#airdropSupplyPercent',
+    });
+  }
+  return rows;
+}
+
+function renderSupplyEditor() {
+  const target = $('#supplyEditor');
+  if (!target) return;
+  const active = document.activeElement;
+  const focusKey = target.contains(active) ? active?.dataset?.supplyKey || null : null;
+  const selection = focusKey && typeof active.selectionStart === 'number'
+    ? [active.selectionStart, active.selectionEnd]
+    : null;
+
+  const supply = parseWholeNumber($('#tokenSupply').value) || 1000000000;
+  const rows = supplyEditorRows();
+  const total = Math.round(rows.reduce((sum, row) => sum + row.percent, 0) * 10) / 10;
+  const remainder = Math.round((100 - total) * 10) / 10;
+  const pools = rows.filter((row) => row.kind === 'pool');
+  const poolPercent = pools.reduce((sum, row) => sum + row.percent, 0);
+  const pct = (value) => `${Number(value.toFixed(1))}%`;
+
+  const segments = rows.filter((row) => row.percent > 0).map((row) => (
+    `<span style="flex:${row.percent} 0 0;background:${row.color}" title="${escapeHtml(`${row.label} ${pct(row.percent)}`)}"></span>`
+  )).join('');
+  const gap = remainder > 0 ? `<span class="supply-bar-gap" style="flex:${remainder} 0 0" title="${pct(remainder)} unassigned"></span>` : '';
+
+  const rowHtml = (row) => {
+    const input = row.poolId
+      ? `data-custom-pool-field="supplyPercent" data-pool-id="${escapeHtml(row.poolId)}"`
+      : `data-supply-target="${row.target}"`;
+    const remove = row.poolId
+      ? `<button class="supply-remove" type="button" data-action="remove-custom-pool" data-pool-id="${escapeHtml(row.poolId)}" aria-label="Remove ${escapeHtml(row.label)}"><i class="fa-solid fa-xmark"></i></button>`
+      : row.removeTarget
+        ? `<button class="supply-remove" type="button" data-action="supply-clear" data-supply-target="${row.removeTarget}" aria-label="Remove ${escapeHtml(row.label)}"><i class="fa-solid fa-xmark"></i></button>`
+        : '<span class="supply-remove-spacer"></span>';
+    const editingMint = row.poolId && (row.needsMint || focusKey === `${row.key}:mint`);
+    const detail = editingMint
+      ? `<input class="supply-mint" data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(row.poolId)}" data-supply-key="${escapeHtml(row.key)}:mint" value="${escapeHtml(row.mint || '')}" placeholder="Paste token mint" autocomplete="off" spellcheck="false">`
+      : `<small>${escapeHtml(row.detail)}</small>`;
+    return `
+      <li class="supply-row">
+        <i class="supply-swatch" style="background:${row.color}"></i>
+        <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
+        <span class="supply-amount">${compactAmount(supply * row.percent / 100)}</span>
+        <label class="supply-percent"><input type="number" min="0" max="100" step="0.1" value="${escapeHtml(String(row.percent))}" ${input} data-supply-key="${escapeHtml(row.key)}" aria-label="${escapeHtml(row.label)} percent of supply"><span>%</span></label>
+        ${remove}
+      </li>`;
+  };
+
+  target.innerHTML = `
+    <div class="supply-bar" role="img" aria-label="Supply split">${segments}${gap}</div>
+    <div class="supply-group-head"><span>Pools</span><span>${pools.length} · ${pct(poolPercent)}</span></div>
+    <ol class="supply-list">${pools.map(rowHtml).join('')}</ol>
+    <button class="supply-add" type="button" data-action="add-custom-pool"><i class="fa-solid fa-plus"></i> Add pair</button>
+    <div class="supply-group-head"><span>Held back</span></div>
+    <ol class="supply-list">${rows.filter((row) => row.kind === 'hold').map(rowHtml).join('')}</ol>
+    <div class="supply-total ${Math.abs(remainder) > 0.05 ? 'is-off' : ''}">
+      <span>Total</span>
+      <strong>${pct(total)}</strong>
+      <small>${Math.abs(remainder) <= 0.05 ? `${compactAmount(supply)} tokens` : remainder > 0 ? `${pct(remainder)} unassigned` : `${pct(-remainder)} over`}</small>
+    </div>`;
+
+  if (focusKey) {
+    const next = target.querySelector(`[data-supply-key="${CSS.escape(focusKey)}"]`);
+    next?.focus({ preventScroll: true });
+    if (next && selection) {
+      try { next.setSelectionRange(selection[0], selection[1]); } catch (_error) { /* number inputs */ }
+    }
+  }
 }
 
 function renderPoolEditorPanel() {
@@ -14280,7 +14405,8 @@ function renderClassicBridge() {
     && state.apiStatus === 'connected'
     && Boolean(armedRunEnvelopeId)
     && quoteSafety.blockers.length === 0;
-  $('#classicSummary').textContent = `${poolCount} pool${poolCount === 1 ? '' : 's'} · ${sliceCount} slice${sliceCount === 1 ? '' : 's'} · ${ladderCount} ladder`;
+  const heldPercent = currentPreallocationPlan().supplyPercent + (currentAirdropPlan().enabled ? currentAirdropPlan().supplyPercent : 0);
+  $('#classicSummary').textContent = `${poolCount} pool${poolCount === 1 ? '' : 's'}${heldPercent > 0 ? ` · ${Number(heldPercent.toFixed(1))}% held back` : ''}`;
 
   const walletPublicKey = selectedLaunchWalletPublicKey();
   const selectedWallet = account();
@@ -18574,6 +18700,7 @@ function renderAll() {
   renderFlywheelPick();
   renderVortexControl();
   renderPoolEditorPanel();
+  renderSupplyEditor();
   renderAirdropPanel();
   renderReportPanel();
   renderGuidedRunShell();
@@ -18923,6 +19050,7 @@ function refreshClassicPreview({ includePoolEditor = false } = {}) {
   renderChartDeck();
   renderVanityCandidates();
   if (includePoolEditor) renderPoolEditorPanel();
+  renderSupplyEditor();
   renderAirdropPanel();
   renderReportPanel();
   renderClassicBridge();
@@ -18948,7 +19076,7 @@ function addCustomPool() {
   });
   invalidateClassicOutputs();
   renderAll();
-  notify('Custom quote pool added');
+  notify('Pair added');
 }
 
 function removeCustomPool(poolId) {
@@ -18956,7 +19084,7 @@ function removeCustomPool(poolId) {
   delete state.quoteTokenInfo[poolId];
   invalidateClassicOutputs();
   renderAll();
-  notify('Custom quote pool removed');
+  notify('Pair removed');
 }
 
 function normalizeAllSlices() {
@@ -21381,6 +21509,7 @@ async function resolveCustomQuoteToken(poolId) {
     checkedAt: null,
   };
   renderPoolEditorPanel();
+  renderSupplyEditor();
 
   try {
     const info = await state.apiClient.getQuoteTokenInfo(query);
@@ -23003,6 +23132,15 @@ const VORTEX_INPUT_IDS = new Set([
 ]);
 
 function handleDynamicInput(event) {
+  const supplyInput = event.target.closest?.('[data-supply-target]');
+  if (supplyInput && supplyInput.tagName === 'INPUT') {
+    const field = $(supplyInput.dataset.supplyTarget);
+    if (field) {
+      field.value = supplyInput.value;
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    return;
+  }
   if (handleOperatorPromptInput(event)) return;
   if (handleRecoveryPinInput(event)) return;
   if (syncGuidedField(event.target)) return;
@@ -23481,6 +23619,15 @@ function handleClick(event) {
 
   if (action === 'resolve-custom-quote') {
     resolveCustomQuoteToken(actionTarget.dataset.poolId).catch((error) => notify(error.message || 'Quote-token verification failed'));
+    return;
+  }
+
+  if (action === 'supply-clear') {
+    const field = $(actionTarget.dataset.supplyTarget);
+    if (field) {
+      field.value = '0';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    }
     return;
   }
 
@@ -24044,6 +24191,13 @@ function bindEvents() {
   document.addEventListener('click', handleClick);
   document.addEventListener('input', handleDynamicInput);
   document.addEventListener('input', scheduleLaunchAutoSave);
+  // A pasted pair mint resolves its symbol as soon as the field is left.
+  document.addEventListener('change', (event) => {
+    const mint = event.target.closest?.('.supply-mint');
+    if (mint?.value.trim()) {
+      resolveCustomQuoteToken(mint.dataset.poolId).catch((error) => notify(error.message || 'Token lookup failed'));
+    }
+  });
   document.addEventListener('keydown', (event) => {
     const operatorPromptGate = $('#operatorPromptGate');
     if (operatorPromptGate && !operatorPromptGate.hidden) {
