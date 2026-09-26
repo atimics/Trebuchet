@@ -60,6 +60,31 @@ function detectCompiler() {
   return probe('gcc') || probe('clang') || null;
 }
 
+// OpenSSL backend. The portable tweetnacl key derivation runs ~2K keys/s
+// per core; OpenSSL's Ed25519 is ~30-50x faster, which is the difference
+// between a 6-character grind taking weeks and taking hours. Keypairs are
+// byte-identical (RFC 8032). libcrypto is linked statically so the shipped
+// binary does not need OpenSSL installed on the user's machine.
+function findOpenSSL() {
+  const prefixes = [];
+  if (process.env.OPENSSL_PREFIX) prefixes.push(process.env.OPENSSL_PREFIX);
+  for (const formula of ['openssl@3', 'openssl']) {
+    const brew = spawnSync('brew', ['--prefix', formula], { stdio: 'pipe' });
+    if (brew.status === 0) prefixes.push(String(brew.stdout).trim());
+  }
+  prefixes.push('/usr/local', '/usr', '/opt/homebrew/opt/openssl@3', '/usr/local/opt/openssl@3');
+
+  const multiarch = process.arch === 'arm64' ? 'aarch64-linux-gnu' : 'x86_64-linux-gnu';
+  for (const prefix of prefixes) {
+    const include = path.join(prefix, 'include');
+    if (!existsSync(path.join(include, 'openssl', 'evp.h'))) continue;
+    const libDirs = [path.join(prefix, 'lib'), path.join(prefix, 'lib64'), path.join(prefix, 'lib', multiarch)];
+    const staticLib = libDirs.map((dir) => path.join(dir, 'libcrypto.a')).find((file) => existsSync(file));
+    if (staticLib) return { include, staticLib };
+  }
+  return null;
+}
+
 function build(compiler) {
   // Output name. gcc/clang on Windows append .exe automatically when
   // the -o argument has no extension, so we can pass the bare name and
@@ -122,20 +147,40 @@ function build(compiler) {
     ? ['-static-libgcc', '-Wl,-Bstatic', '-lpthread', '-Wl,-Bdynamic', '-lbcrypt']
     : ['-pthread'];
 
+  const openssl = findOpenSSL();
+  const opensslFlags = openssl ? ['-DTREBUCHET_OPENSSL_FAST', '-I', openssl.include] : [];
+  const opensslLibs = openssl
+    ? [openssl.staticLib, ...(process.platform === 'linux' ? ['-ldl'] : [])]
+    : [];
+  if (!openssl) {
+    if (process.platform !== 'win32') {
+      console.error('OpenSSL 3 (headers and static libcrypto.a) was not found.');
+      console.error('The vanity grinder needs it: the portable build is ~30-50x slower.');
+      console.error('  macOS:  brew install openssl@3');
+      console.error('  Linux:  sudo apt-get install -y libssl-dev');
+      console.error('  Or set OPENSSL_PREFIX to an OpenSSL 3 install.');
+      process.exit(1);
+    }
+    console.warn('WARNING: OpenSSL not found; building the slow portable grinder (Windows only).');
+  }
+
   const args = [
     '-O3', '-flto',
     ...archFlags,
     ...platformDefines,
+    ...opensslFlags,
     '-Wall', '-Wextra', '-Wpedantic', '-Wno-sign-compare',
     ...sources,
     '-o', outPath,
     ...includes.flatMap((i) => ['-I', i]),
+    ...opensslLibs,
     ...linkLibs,
   ];
 
   console.log(`Building vanity_keygen with ${compiler}`);
   console.log(`  platform: ${process.platform} / ${process.arch}`);
   console.log(`  output:   ${outPath}`);
+  console.log(`  backend:  ${openssl ? `OpenSSL (static ${openssl.staticLib})` : 'portable tweetnacl (slow)'}`);
 
   const result = spawnSync(compiler, args, {
     cwd: cDir,

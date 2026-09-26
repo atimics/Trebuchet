@@ -21,9 +21,17 @@ VANITY_SRCS = vanity_keygen/vanity_keygen.c $(TWEETNACL_SRCS)
 VANITY_BIN  = $(BUILD_DIR)/vanity_keygen
 VANITY_BIN_FAST = $(BUILD_DIR)/vanity_keygen_fast
 
-.PHONY: all clean dev fast
+.PHONY: all clean dev fast portable
 
+# Default: OpenSSL-backed grinder with libcrypto linked statically, so the
+# binary runs without OpenSSL installed. Set OPENSSL_PREFIX if it is not
+# under Homebrew. `make portable` builds the slow tweetnacl-only binary.
+OPENSSL_PREFIX ?= $(shell brew --prefix openssl@3 2>/dev/null || echo /usr)
+all: CFLAGS = -O3 -flto -DTREBUCHET_OPENSSL_FAST -I$(OPENSSL_PREFIX)/include -Wall -Wextra -Wpedantic -Wno-sign-compare
+all: LDLIBS += $(OPENSSL_PREFIX)/lib/libcrypto.a
 all: $(VANITY_BIN)
+
+portable: $(VANITY_BIN)
 
 dev: CFLAGS = -O3 -flto -march=native -Wall -Wextra -Wpedantic -Wno-sign-compare
 dev: $(VANITY_BIN)

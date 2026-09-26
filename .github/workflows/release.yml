@@ -141,6 +141,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install OpenSSL for the vanity grinder
+        # build:c links libcrypto statically; without it the grinder would
+        # fall back to the ~50x slower portable build (and build:c refuses).
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3; fi
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update && sudo apt-get install -y libssl-dev; fi
+
       - name: Build vanity keygen binary
         # The C binary is what backs the Vanity CA feature. c/build/ is
         # gitignored and package.json's asarUnpack pattern packages
