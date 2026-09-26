@@ -6163,6 +6163,7 @@ app.post('/api/quote-token-info', async (req, res) => {
           freezeAuthorityBlock: false,
           mintAuthorityWarning: false,
           raydiumTradeable: 'yes',
+          swapRoute: 'raydium',
           demo: true,
         },
       });
@@ -6209,6 +6210,7 @@ app.post('/api/quote-token-info', async (req, res) => {
         // the Step 2 probe — pool-create time still runs a fresh probe
         // so we can't silently use stale data here.
         raydiumTradeable: 'yes',
+        swapRoute: 'raydium',
       };
     } else {
       // Arbitrary mint address. tokenInfoService reads decimals + symbol
@@ -6386,6 +6388,7 @@ app.post('/api/quote-token-info', async (req, res) => {
             // Future-proof: unknown verdict in cache → treat as unknown
             // and force a fresh probe by not short-circuiting.
             infoOut.raydiumTradeable = 'unknown';
+            infoOut.swapRoute = 'unknown';
           }
         } else {
           // Run the probe. We need SOL/USD to convert the probe's
@@ -6399,6 +6402,7 @@ app.post('/api/quote-token-info', async (req, res) => {
             // Can't probe without SOL/USD. Mark as unknown but don't
             // cache — the user retrying in a moment may succeed.
             infoOut.raydiumTradeable = 'unknown';
+            infoOut.swapRoute = 'unknown';
             infoOut.raydiumProbeError =
               'Could not resolve SOL/USD to run the probe';
           } else {
@@ -6466,6 +6470,7 @@ app.post('/api/quote-token-info', async (req, res) => {
                 // Don't cache the failure — let the user retry by
                 // re-typing or by refreshing.
                 infoOut.raydiumTradeable = 'unknown';
+                infoOut.swapRoute = 'unknown';
                 infoOut.raydiumProbeError = probeErr.message;
               }
             }
@@ -6474,6 +6479,7 @@ app.post('/api/quote-token-info', async (req, res) => {
       } else {
         // Couldn't determine decimals or compatibility — can't probe.
         infoOut.raydiumTradeable = 'unknown';
+        infoOut.swapRoute = 'unknown';
       }
 
       // Derive the user-facing block / warning flags from the authority

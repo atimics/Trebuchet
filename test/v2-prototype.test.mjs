@@ -11353,6 +11353,7 @@ test('v2 API client bridges classic vanity, funding, and diagnostics APIs', asyn
             priceUsd: '0.25',
             compatible: true,
             raydiumTradeable: 'yes',
+            swapRoute: 'raydium',
             freezeAuthorityBlock: false,
             mintAuthorityWarning: false,
           },
@@ -11597,6 +11598,7 @@ test('v2 API client bridges classic vanity, funding, and diagnostics APIs', asyn
   assert.equal(feeTiers[1].tickSpacing, 120);
   assert.equal(quoteInfo.address, 'QuoteMint111');
   assert.equal(quoteInfo.raydiumTradeable, 'yes');
+  assert.equal(quoteInfo.swapRoute, 'raydium');
   assert.equal(quoteInfo.freezeAuthorityBlock, false);
   assert.equal(acquire.jobId, 'job-1');
   assert.equal(acquireStatus.results[0].txId, 'Tx111');

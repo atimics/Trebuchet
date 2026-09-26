@@ -626,7 +626,7 @@ test('complex pool topology round-trips into classic execution payloads', () => 
           quotePriceSource: 'geckoterminal',
           quoteCompatibility: {
             compatible: true,
-            raydiumTradeable: 'yes',
+            swapRoute: 'raydium',
             freezeAuthorityBlock: false,
             mintAuthorityWarning: true,
             isToken2022: false,
@@ -681,7 +681,7 @@ test('complex pool topology round-trips into classic execution payloads', () => 
   assert.equal(plan.poolTopology.pools[1].quotePriceSource, 'geckoterminal');
   assert.deepEqual(plan.poolTopology.pools[1].quoteCompatibility, {
     compatible: true,
-    raydiumTradeable: 'yes',
+    swapRoute: 'raydium',
     freezeAuthorityBlock: false,
     mintAuthorityWarning: true,
     isToken2022: false,
@@ -2039,7 +2039,7 @@ test('buildV2ExecutionReadiness blocks custom quote tokens with hard safety fail
             ammConfigIndex: 12,
             quoteCompatibility: {
               compatible: true,
-              raydiumTradeable: 'no',
+              swapRoute: 'none',
               freezeAuthorityBlock: true,
               mintAuthorityWarning: false,
             },
@@ -2061,7 +2061,8 @@ test('buildV2ExecutionReadiness blocks custom quote tokens with hard safety fail
 
   assert.equal(readiness.status, 'blocked');
   assert.match(readiness.blockers.map((item) => item.id).join(','), /quote-token-safety-1-/);
-  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /freeze-authority risk|route probe/);
+  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /freeze-authority risk/);
+  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /neither Raydium nor Jupiter has a route/);
   assert.equal(readiness.plan.guardrails.find((item) => item.id === 'classic-quote-safety')?.state, 'danger');
 });
 
@@ -2080,7 +2081,7 @@ test('buildV2ExecutionReadiness warns but allows verified custom quote mint auth
             ammConfigIndex: 12,
             quoteCompatibility: {
               compatible: true,
-              raydiumTradeable: 'yes',
+              swapRoute: 'raydium',
               freezeAuthorityBlock: false,
               mintAuthorityWarning: true,
             },
@@ -2105,6 +2106,52 @@ test('buildV2ExecutionReadiness warns but allows verified custom quote mint auth
   assert.doesNotMatch(readiness.blockers.map((item) => item.id).join(','), /quote-token-safety/);
   assert.match(readiness.warnings.map((item) => item.id).join(','), /quote-token-safety-1-1/);
   assert.equal(readiness.plan.guardrails.find((item) => item.id === 'classic-quote-safety')?.state, 'warn');
+});
+
+function quoteRouteReadiness(swapRoute) {
+  return buildV2ExecutionReadiness(
+    {
+      token: { name: 'MoonKit', symbol: 'MKT', supply: '1000' },
+      poolTopology: {
+        targetMarketCapUsd: 250000,
+        pools: [{
+          quoteToken: 'DG1Sos2qR8Ut7c2JRsNGydt99NNV5VKuSjZNbjXepump',
+          quoteMint: 'DG1Sos2qR8Ut7c2JRsNGydt99NNV5VKuSjZNbjXepump',
+          quoteSymbol: 'TROLLOWEEN',
+          supplyPercent: 20,
+          ammConfigIndex: 12,
+          quoteCompatibility: { compatible: true, swapRoute, freezeAuthorityBlock: false, mintAuthorityWarning: false },
+        }],
+      },
+      funding: { estimate: { totalSol: 2.4 } },
+    },
+    {
+      demoMode: false,
+      walletPublicKey: '11111111111111111111111111111111',
+      walletAvailable: true,
+      secretAvailable: true,
+      secretPinLocked: false,
+      rpc: { activeUrl: 'https://mainnet.helius-rpc.com/?api-key=test' },
+      now: '2026-06-20T12:00:00.000Z',
+    },
+  );
+}
+
+test('a pair with no Raydium route but a Jupiter route does not block', () => {
+  const readiness = quoteRouteReadiness('jupiter');
+  assert.equal(readiness.status, 'ready');
+  assert.doesNotMatch(readiness.blockers.map((item) => item.id).join(','), /quote-token-safety/);
+  assert.doesNotMatch(readiness.warnings.map((item) => item.detail).join(' '), /route/);
+});
+
+test('no route anywhere blocks; an unverified route blocks fresh live until re-checked', () => {
+  const none = quoteRouteReadiness('none');
+  assert.equal(none.status, 'blocked');
+  assert.match(none.blockers.map((item) => item.detail).join(' '), /neither Raydium nor Jupiter has a route/);
+  const unknown = quoteRouteReadiness('unknown');
+  assert.equal(unknown.status, 'blocked');
+  assert.match(unknown.blockers.map((item) => item.detail).join(' '), /route status is incomplete/);
+  assert.doesNotMatch(unknown.blockers.map((item) => item.detail).join(' '), /neither Raydium nor Jupiter/);
 });
 
 test('buildV2ExecutionReadiness allows the same quote across different fee tiers', () => {

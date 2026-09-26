@@ -822,25 +822,27 @@ function quoteTokenSafetyIssues(pools = []) {
         detail: `Pool ${index + 1} (${label}) quote token has a freeze-authority risk that can strand launch-wallet balances.`,
       });
     }
-    if (String(info.raydiumTradeable || '').toLowerCase() === 'no') {
+    // swapRoute is decided once, by the host's quote-token check (Raydium,
+    // then Jupiter). Only "no route anywhere" blocks; nothing re-derives it.
+    const swapRoute = String(info.swapRoute || 'unknown').toLowerCase();
+    if (swapRoute === 'none') {
       issues.push({
         index,
         state: 'danger',
         blocksFreshLive: true,
-        detail: `Pool ${index + 1} (${label}) quote token did not pass the Raydium route probe.`,
+        detail: `Pool ${index + 1} (${label}) quote token cannot be bought with SOL: neither Raydium nor Jupiter has a route.`,
       });
     }
     if (
       info.compatible == null
       || info.freezeAuthorityBlock == null
-      || !info.raydiumTradeable
-      || String(info.raydiumTradeable).toLowerCase() === 'unknown'
+      || !['raydium', 'jupiter', 'none'].includes(swapRoute)
     ) {
       issues.push({
         index,
         state: 'warn',
         blocksFreshLive: true,
-        detail: `Pool ${index + 1} (${label}) quote-token compatibility, authority, or route status is incomplete. Re-run Verify quote before live execution.`,
+        detail: `Pool ${index + 1} (${label}) quote-token compatibility, authority, or route status is incomplete. Trebuchet re-checks pair tokens automatically when you estimate funding.`,
       });
     }
     if (info.mintAuthorityWarning === true) {

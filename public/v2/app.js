@@ -5255,7 +5255,7 @@ function customQuoteInfoBadge(pool = {}) {
   if (!lookup || (!pool.quoteMint && !KNOWN_SAFE_QUOTE_SYMBOLS.has(symbol))) {
     return { label: 'Needs mint', className: 'warn', detail: 'Enter a quote mint, or use SOL/USDC/USDT, then verify before launch.' };
   }
-  if (record?.loading) return { label: 'Checking', className: 'warn', detail: 'Resolving metadata, authorities, and Raydium route.' };
+  if (record?.loading) return { label: 'Checking', className: 'warn', detail: 'Resolving metadata, authorities, and swap route.' };
   if (record?.error) return { label: 'Check failed', className: 'danger', detail: record.error };
   const info = customQuoteResolvedInfo(pool);
   if (!info) return { label: 'Unverified', className: 'warn', detail: 'Verify the quote token before executing this custom pool.' };
@@ -5263,7 +5263,7 @@ function customQuoteInfoBadge(pool = {}) {
   if (info.freezeAuthorityBlock === true) return { label: 'Freeze block', className: 'danger', detail: 'Quote token freeze authority can strand launch-wallet balances.' };
   // The auto-buy tries Raydium, then Jupiter (PumpSwap-only tokens route
   // there), so only "no route anywhere" blocks.
-  const swapRoute = info.swapRoute || (info.raydiumTradeable === 'yes' ? 'raydium' : info.raydiumTradeable === 'no' ? 'none' : 'unknown');
+  const swapRoute = info.swapRoute || 'unknown'; // decided once, by the server's check
   if (swapRoute === 'none') return { label: 'No route', className: 'danger', detail: 'Neither Raydium nor Jupiter can swap SOL into this token, so it cannot be auto-bought.' };
   if (info.compatible == null || swapRoute === 'unknown' || info.freezeAuthorityBlock == null) {
     return { label: 'Verify warning', className: 'warn', detail: 'Metadata resolved, but route or authority safety could not be fully verified.' };
@@ -5847,7 +5847,7 @@ function currentClassicModel() {
       quotePriceSource: resolvedInfo?.priceSource || null,
       quoteCompatibility: resolvedInfo ? {
         compatible: resolvedInfo.compatible ?? null,
-        raydiumTradeable: resolvedInfo.raydiumTradeable || 'unknown',
+        swapRoute: resolvedInfo.swapRoute || 'unknown',
         freezeAuthorityBlock: resolvedInfo.freezeAuthorityBlock ?? null,
         mintAuthorityWarning: resolvedInfo.mintAuthorityWarning ?? null,
         isToken2022: resolvedInfo.isToken2022 === true,
@@ -7590,7 +7590,7 @@ function renderCustomQuoteInfoPanel(pool) {
     ['Symbol', info.symbol || pool.quoteSymbol || '-'],
     ['Decimals', info.decimals ?? '-'],
     ['Price', info.priceUsd ? `$${Number(info.priceUsd).toPrecision(6)}` : '-'],
-    ['Route', info.raydiumTradeable || 'unknown'],
+    ['Route', { raydium: 'Raydium', jupiter: 'Jupiter', none: 'none' }[info.swapRoute] || 'unknown'],
     ['Program', info.isToken2022 ? 'Token-2022' : 'SPL'],
     ['Authorities', info.freezeAuthorityBlock === true ? 'freeze risk' : info.mintAuthorityWarning === true ? 'mint warning' : info.freezeAuthorityBlock == null ? 'unknown' : 'safe'],
   ] : [];
