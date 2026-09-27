@@ -2954,6 +2954,13 @@ test('v2 new pools use the 1% tier and pairs open above the SOL price', () => {
   assert.match(js, /function pairArbitrageWarningHtml\(/);
 });
 
+test('v2 funding shows SOL into the pool apart from rent and fees', () => {
+  assert.match(js, /<small>Into the pool<\/small>/);
+  assert.match(js, /<small>Spent for good<\/small>/);
+  assert.match(js, /<small>Returned if unused<\/small>/);
+  assert.match(js, /No SOL goes into the pool\. Until someone buys, sellers have nothing to sell into\./);
+});
+
 test('v2 auto-compresses oversized logos into the Classic upload envelope', async () => {
   const start = js.indexOf('function loadLogoImage');
   const end = js.indexOf('\nfunction validateProofFile', start);

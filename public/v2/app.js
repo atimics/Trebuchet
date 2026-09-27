@@ -18529,9 +18529,25 @@ function renderFundingReceipt(estimate) {
       <ul>${manual.map((item) => `<li><span>${escapeHtml(item.symbol || shortAddress(item.mint))}</span><strong>${escapeHtml(Number(item.amount || 0).toLocaleString('en-US', { maximumFractionDigits: 2 }))}</strong></li>`).join('')}</ul>
     </div>` : '';
   const perPool = lines.filter((line) => /^Pool \d+/.test(String(line.label || '')));
+  // The split that matters: SOL that becomes liquidity, SOL that is spent on
+  // accounts and fees for good, and SOL that comes back.
+  const groupSol = (key) => groups.find((group) => group.key === key)?.sol || 0;
+  const intoPools = groupSol('support') + groupSol('buy');
+  const returned = groupSol('buffer');
+  const spent = Math.max(0, Number(estimate.totalSol || 0) - intoPools - returned);
+  const split = `
+      <div class="funding-split" role="group" aria-label="Where the SOL ends up">
+        <span class="is-pool"><small>Into the pool</small><strong>${intoPools.toFixed(4)}</strong><em>liquidity sellers are paid from</em></span>
+        <span class="is-spent"><small>Spent for good</small><strong>${spent.toFixed(4)}</strong><em>account rent and fees</em></span>
+        <span class="is-back"><small>Returned if unused</small><strong>${returned.toFixed(4)}</strong><em>safety buffer</em></span>
+      </div>
+      ${groupSol('support') <= 0
+        ? '<p class="funding-split-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> No SOL goes into the pool. Until someone buys, sellers have nothing to sell into. Set a liquidity budget on Token &amp; pools to add buy support.</p>'
+        : ''}`;
   return `
     <div class="funding-receipt">
       <small>Where the ${Number(estimate.totalSol || 0).toFixed(4)} SOL goes</small>
+      ${split}
       <ul>${rows}</ul>
       <div class="funding-receipt-total"><span>Total</span><strong>${Number(estimate.totalSol || 0).toFixed(4)} SOL</strong></div>
       ${manualHtml}
