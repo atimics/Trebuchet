@@ -1,6 +1,19 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
+// Pair pools open this far above the SOL pool's price, so a pair token must
+// fall past it before arbitrage can drain SOL buyers (see lpService
+// allocationStartPrice).
+const PAIR_START_PREMIUM_PCT = 25;
+
+// New pools use Raydium's 1% tier (config 3, tick spacing 120). Tick spacing
+// 1 (the 0.04%/0.05% tiers) needs a tick-array bitmap extension for a
+// launch's price range, which several routers omit, so swaps failed; its
+// 0.6%-wide tick arrays also make nearly every position pay fresh rent, and
+// the fee earned the Fee Keys almost nothing. 1% also means a pair has to
+// drift further before arbitrage between pools pays.
+const DEFAULT_POOL_CONFIG_INDEX = 3;
+
 const views = {
   launch: { eyebrow: '', title: 'Launch a token' },
   nfts: { eyebrow: '', title: 'NFT collections' },
@@ -433,6 +446,13 @@ const state = {
   destinations: { funder: null, funders: [], signed: [], launchWallet: null, checkedAt: 0, waiting: false },
   // Funding wallets chosen to share the held-back tokens (by SOL sent).
   heldShare: { selected: [] },
+  // How far above the SOL pool's price pair pools open. Restored launches
+  // keep the value they were planned with (0 before this existed).
+  pairStartPremiumPct: PAIR_START_PREMIUM_PCT,
+  // Fee tier (AmmConfig index) of the SOL pool and the flywheel pair pool.
+  // Restored launches keep the tiers they were planned with.
+  solPoolConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
+  pairPoolConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
   fundingWallet: {
     walletPublicKey: null,
     funder: null,
@@ -4786,7 +4806,7 @@ function vortexAllocationModel() {
       mint: String(pool.quoteMint || ''),
       percent: Number(pool.supplyPercent || 0),
       minPercent: 0,
-      feeTier: Number(pool.ammConfigIndex ?? 5),
+      feeTier: Number(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
     });
   });
   const venue = selectedClassicQuoteVenue();
@@ -4797,7 +4817,7 @@ function vortexAllocationModel() {
     mint: 'So11111111111111111111111111111111111111112',
     percent: Number($('#mainPoolPercent')?.value || 0),
     minPercent: 10,
-    feeTier: 8,
+    feeTier: state.solPoolConfigIndex,
   });
   const quotePercent = Number($('#quotePoolPercent')?.value || 0);
   // Always present: a pool at 0% still needs a boundary to drag open.
@@ -4809,7 +4829,7 @@ function vortexAllocationModel() {
       percent: quotePercent,
       minPercent: isFlywheel ? 10 : 0,
       maxPercent: isFlywheel ? 30 : 100,
-      feeTier: 5,
+      feeTier: state.pairPoolConfigIndex,
     });
   }
   return {
@@ -4880,7 +4900,7 @@ async function spinFlywheelVortex() {
     quoteSymbol: `MEME${index + 2}`,
     quoteMint: mint,
     supplyPercent: quoteShare,
-    ammConfigIndex: 5,
+    ammConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
     sliceShares: '100',
     feeKeyRecipient: '',
     ladderBands: 0,
@@ -4933,13 +4953,18 @@ async function shuffleMemeFlywheel() {
   notify(`Flywheel pairing drawn: ${shortAddress(mint)}`);
 }
 
+// The liquidity budget is SOL that goes INTO the SOL pool. A launch pool
+// opens holding only the new token, so SOL can only sit below the launch
+// price: it becomes the buy support that sellers are paid from. (Earlier
+// presets called most of the budget "core liquidity", which no pool ever
+// received, so launches opened with no SOL at all.)
 function launchBudgetRecommendation(value) {
   const budgetSol = Math.max(0, Number(value) || 0);
   if (budgetSol === 0) {
     return {
       id: 'minimum',
       label: 'Minimum launch',
-      detail: 'Create the token and a minimal pool path without adding discretionary SOL liquidity.',
+      detail: 'Create the token and its pool with no SOL in it. Sellers have nothing to sell into until someone buys.',
       coreSol: 0,
       supportSol: 0,
       ladderBands: 0,
@@ -4950,34 +4975,32 @@ function launchBudgetRecommendation(value) {
     return {
       id: 'lean',
       label: 'Lean',
-      detail: 'Keep every available lamport in one understandable core market.',
-      coreSol: budgetSol,
-      supportSol: 0,
+      detail: 'Place all of the SOL just below the launch price, so early sellers are paid from it.',
+      coreSol: 0,
+      supportSol: budgetSol,
       ladderBands: 0,
-      structure: '1 core band',
+      structure: '1 market · buy support',
     };
   }
   if (budgetSol < 50) {
-    const supportSol = Number((budgetSol * 0.1).toFixed(4));
     return {
       id: 'balanced',
       label: 'Balanced',
-      detail: 'Use a core market, one reach band, and a small defensive support band.',
-      coreSol: Number((budgetSol - supportSol).toFixed(4)),
-      supportSol,
+      detail: 'Place the SOL below the launch price as buy support, and add one reach band above it.',
+      coreSol: 0,
+      supportSol: budgetSol,
       ladderBands: 1,
-      structure: '3 purposeful bands',
+      structure: 'buy support · 1 reach band',
     };
   }
-  const supportSol = Number((budgetSol * 0.15).toFixed(4));
   return {
     id: 'deep',
     label: 'Deep',
-    detail: 'Use deeper core liquidity, measured price reach, and a larger defensive support band.',
-    coreSol: Number((budgetSol - supportSol).toFixed(4)),
-    supportSol,
+    detail: 'Place a deep SOL buy wall below the launch price, and add one reach band above it.',
+    coreSol: 0,
+    supportSol: budgetSol,
     ladderBands: 1,
-    structure: '3 deep bands',
+    structure: 'deep buy support · 1 reach band',
   };
 }
 
@@ -4996,9 +5019,11 @@ function renderLaunchBudgetRecommendation() {
   // A selected preset already names the band; only a custom amount needs it.
   target.innerHTML = `
     ${presetSelected ? '' : `<span class="recommended-band"><small>Band</small><strong>${escapeHtml(strategy.label)}</strong></span>`}
-    <span><small>Core liquidity</small><strong>${fmtSol(strategy.coreSol)}</strong></span>
+    <span><small>SOL in the pool</small><strong>${fmtSol(strategy.supportSol)}</strong></span>
     <span><small>Structure</small><strong>${escapeHtml(strategy.structure)}</strong></span>
-    <span><small>Buy support</small><strong>${strategy.supportSol > 0 ? fmtSol(strategy.supportSol) : 'None'}</strong></span>
+    <span><small>Where it sits</small><strong>${strategy.supportSol > 0
+      ? `Launch price to −${escapeHtml(String(clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50)))}%`
+      : 'No SOL in the pool'}</strong></span>
   `;
   target.title = strategy.detail;
 }
@@ -5047,7 +5072,7 @@ function currentClassicModel() {
     quoteToken: 'SOL',
     quoteSymbol: 'SOL',
     supplyPercent: mainPoolPercent,
-    ammConfigIndex: 8,
+    ammConfigIndex: state.solPoolConfigIndex,
     distribution,
     bootstrap: { mode: 'minimal' },
     ladder: manualBands.length
@@ -5067,7 +5092,8 @@ function currentClassicModel() {
       quoteMint: quoteVenue.quoteMint,
       quoteSymbol: quoteVenue.symbol,
       supplyPercent: quotePoolPercent,
-      ammConfigIndex: 5,
+      ammConfigIndex: state.pairPoolConfigIndex,
+      startPricePremiumPct: state.pairStartPremiumPct,
       distribution: [{ sharePercent: 100, recipient: feeKeyRecipient || null }],
       bootstrap: { mode: 'minimal' },
       ladder: { mode: 'off' },
@@ -5099,7 +5125,10 @@ function currentClassicModel() {
         isToken2022: resolvedInfo.isToken2022 === true,
       } : null,
       supplyPercent,
-      ammConfigIndex: Math.floor(parseNumericInput(pool.ammConfigIndex, 5)),
+      ammConfigIndex: Math.floor(parseNumericInput(pool.ammConfigIndex, DEFAULT_POOL_CONFIG_INDEX)),
+      startPricePremiumPct: quoteMint === DEFAULT_SOL_MINT
+        ? 0
+        : clampNumber(parseNumericInput(pool.startPremiumPct ?? state.pairStartPremiumPct, state.pairStartPremiumPct), 0, 500),
       distribution: parseSliceShares(pool.sliceShares || '100').map((sharePercent, sliceIndex) => ({
         sharePercent,
         recipient: null, // Fee Keys follow the sweep to the verified return wallet.
@@ -5298,6 +5327,7 @@ function customPoolFromRecovery(pool = {}, index = 0) {
     quoteMint: String(pool.quoteMint || (pool.quoteToken === 'SOL' ? '' : pool.quoteToken) || ''),
     supplyPercent: Number(pool.supplyPercent || 0),
     ammConfigIndex: Number(pool.ammConfigIndex ?? 5),
+    startPremiumPct: Number(pool.startPricePremiumPct ?? 0),
     sliceShares: distribution.map((slice) => Number(slice.sharePercent || 0)).join(','),
     feeKeyRecipient: String(distribution.find((slice) => slice?.recipient)?.recipient || ''),
     ladderBands: pool?.ladder?.mode === 'simple' ? Number(pool.ladder.bandCount || 0) : 0,
@@ -5317,6 +5347,22 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   const pools = Array.isArray(topology.pools)
     ? topology.pools
     : Array.isArray(topology.allocations) ? topology.allocations : [];
+  // Keep the pair premium the launch was planned with, so its plan still
+  // matches the journal (launches planned before it existed used none).
+  const pairPool = pools.find((pool) => String(pool.quoteToken || pool.quoteSymbol || '').toUpperCase() !== 'SOL');
+  state.pairStartPremiumPct = pairPool
+    ? clampNumber(Number(pairPool.startPricePremiumPct ?? 0) || 0, 0, 500)
+    : PAIR_START_PREMIUM_PCT;
+  const restoredSolPool = pools.find((pool) => String(pool.id || '') === 'sol-main')
+    || pools.find((pool) => String(pool.quoteToken || pool.quoteSymbol || '').toUpperCase() === 'SOL');
+  const restoredFlywheelPool = pools.find((pool) => String(pool.id || '').endsWith('-flywheel'));
+  // Before per-launch tiers, the SOL pool used config 8 and pairs config 5.
+  state.solPoolConfigIndex = restoredSolPool
+    ? Math.floor(Number(restoredSolPool.ammConfigIndex ?? 8))
+    : DEFAULT_POOL_CONFIG_INDEX;
+  state.pairPoolConfigIndex = restoredFlywheelPool
+    ? Math.floor(Number(restoredFlywheelPool.ammConfigIndex ?? 5))
+    : DEFAULT_POOL_CONFIG_INDEX;
   const solPool = pools.find((pool) => (
     String(pool.quoteSymbol || pool.quoteSymbolOverride || pool.quoteToken || '').toUpperCase() === 'SOL'
     || String(pool.quoteMint || '') === DEFAULT_SOL_MINT
@@ -7015,6 +7061,28 @@ function scheduleMainPoolRebalance() {
   queueMicrotask(rebalanceMainPool);
 }
 
+// Every pair pool sells the new token for its pair token. If that token
+// falls, the new token is cheaper there than in the SOL pool, and bots buy
+// it there and sell it into the SOL pool, taking SOL buyers' money. The
+// start premium sets how far a pair token can fall before that begins.
+function pairArbitrageWarningHtml(poolRows) {
+  const pairs = poolRows.filter((row) => row.key !== 'sol' && row.percent > 0);
+  if (!pairs.length) return '';
+  const topology = currentClassicModel();
+  const pairShare = pairs.reduce((sum, row) => sum + row.percent, 0);
+  const premiums = topology.pools
+    .filter((pool) => pool.id !== 'sol-main' && Number(pool.supplyPercent) > 0)
+    .map((pool) => Number(pool.startPricePremiumPct || 0));
+  const lowest = premiums.length ? Math.min(...premiums) : 0;
+  const tolerance = lowest > 0 ? Math.round((1 - 1 / (1 + lowest / 100)) * 100) : 0;
+  return `<p class="supply-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span>
+    ${pairs.length === 1 ? 'This pair' : `These ${pairs.length} pairs`} hold${pairs.length === 1 ? 's' : ''} ${Number(pairShare.toFixed(2))}% of supply.
+    ${tolerance > 0
+      ? `If a pair token falls more than ${tolerance}% after launch, bots can buy your token in that pool and sell it into the SOL pool, taking SOL buyers' money.`
+      : 'A pair opened at the SOL price lets bots drain SOL buyers as soon as the pair token falls.'}
+    Keep pairs small.</span></p>`;
+}
+
 function renderSupplyEditor() {
   const target = $('#supplyEditor');
   if (!target) return;
@@ -7090,7 +7158,8 @@ function renderSupplyEditor() {
     const id = escapeHtml(pool.id);
     const key = escapeHtml(row.key);
     return `
-      ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? 5)}</select>`)}
+      ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
+      ${field('Start above SOL price %', 'Opens this pair above the SOL pool price, so the pair token can fall this far before bots can drain SOL buyers.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="startPremiumPct" data-pool-id="${id}" data-supply-key="${key}:premium" value="${escapeHtml(pool.startPremiumPct ?? state.pairStartPremiumPct)}">`)}
       ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`)}
       ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`)}
       ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`)}
@@ -7130,6 +7199,7 @@ function renderSupplyEditor() {
     <div class="supply-bar" role="img" aria-label="Supply split">${segments}${gap}</div>
     <div class="supply-group-head"><span>Pools</span><span data-supply-pools-head>${pools.length} · ${pct(poolPercent)}</span></div>
     <ol class="supply-list">${pools.map(rowHtml).join('')}</ol>
+    ${pairArbitrageWarningHtml(pools)}
     <button class="supply-add" type="button" data-action="add-custom-pool"><i class="fa-solid fa-plus"></i> Add pair</button>
     <div class="supply-group-head"><span>Held back</span></div>
     <ol class="supply-list">${rows.filter((row) => row.kind === 'hold').map(rowHtml).join('')}</ol>
@@ -7158,7 +7228,7 @@ function renderPoolEditorPanel() {
           <label><span>Quote symbol</span><input data-custom-pool-field="quoteSymbol" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.quoteSymbol || '')}" autocomplete="off"></label>
           <label><span>Quote mint</span><input data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.quoteMint || '')}" placeholder="Mint address" autocomplete="off"></label>
           <label><span>Supply %</span><input data-custom-pool-field="supplyPercent" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="100" step="0.1" value="${escapeHtml(pool.supplyPercent ?? 5)}"></label>
-          <label><span>Fee tier</span><select data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(pool.id)}">${feeTierOptionsHtml(pool.ammConfigIndex ?? 5)}</select></label>
+          <label><span>Fee tier</span><select data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(pool.id)}">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select></label>
           <label><span>Slices</span><input data-custom-pool-field="sliceShares" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.sliceShares || '100')}" autocomplete="off"></label>
           <label><span>Ladder bands</span><input data-custom-pool-field="ladderBands" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" value="${escapeHtml(pool.ladderBands ?? 0)}"></label>
           <label><span>Support SOL</span><input data-custom-pool-field="supportSol" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" step="0.05" value="${escapeHtml(pool.supportSol ?? 0)}"></label>
@@ -18459,9 +18529,25 @@ function renderFundingReceipt(estimate) {
       <ul>${manual.map((item) => `<li><span>${escapeHtml(item.symbol || shortAddress(item.mint))}</span><strong>${escapeHtml(Number(item.amount || 0).toLocaleString('en-US', { maximumFractionDigits: 2 }))}</strong></li>`).join('')}</ul>
     </div>` : '';
   const perPool = lines.filter((line) => /^Pool \d+/.test(String(line.label || '')));
+  // The split that matters: SOL that becomes liquidity, SOL that is spent on
+  // accounts and fees for good, and SOL that comes back.
+  const groupSol = (key) => groups.find((group) => group.key === key)?.sol || 0;
+  const intoPools = groupSol('support') + groupSol('buy');
+  const returned = groupSol('buffer');
+  const spent = Math.max(0, Number(estimate.totalSol || 0) - intoPools - returned);
+  const split = `
+      <div class="funding-split" role="group" aria-label="Where the SOL ends up">
+        <span class="is-pool"><small>Into the pool</small><strong>${intoPools.toFixed(4)}</strong><em>liquidity sellers are paid from</em></span>
+        <span class="is-spent"><small>Spent for good</small><strong>${spent.toFixed(4)}</strong><em>account rent and fees</em></span>
+        <span class="is-back"><small>Returned if unused</small><strong>${returned.toFixed(4)}</strong><em>safety buffer</em></span>
+      </div>
+      ${groupSol('support') <= 0
+        ? '<p class="funding-split-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> No SOL goes into the pool. Until someone buys, sellers have nothing to sell into. Set a liquidity budget on Token &amp; pools to add buy support.</p>'
+        : ''}`;
   return `
     <div class="funding-receipt">
       <small>Where the ${Number(estimate.totalSol || 0).toFixed(4)} SOL goes</small>
+      ${split}
       <ul>${rows}</ul>
       <div class="funding-receipt-total"><span>Total</span><strong>${Number(estimate.totalSol || 0).toFixed(4)} SOL</strong></div>
       ${manualHtml}
@@ -18719,7 +18805,7 @@ function addCustomPool() {
     quoteSymbol: 'QUOTE',
     quoteMint: '',
     supplyPercent: 5,
-    ammConfigIndex: 5,
+    ammConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
     sliceShares: '100',
     feeKeyRecipient: '',
     ladderBands: 0,

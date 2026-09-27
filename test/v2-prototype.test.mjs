@@ -2930,6 +2930,37 @@ test('v2 SOL pool takes the remainder so the supply split totals 100%', () => {
   assert.match(js, /notify\('Pair added'\)/);
 });
 
+test('v2 liquidity budget puts real SOL in the pool as buy support', () => {
+  const start = js.indexOf('function launchBudgetRecommendation(value) {');
+  const end = js.indexOf('\nfunction ', start + 10);
+  const body = js.slice(start, end);
+  // coreSol was never deposited by any pool; every preset must route its
+  // SOL into the support band that lpService actually opens.
+  assert.doesNotMatch(body, /coreSol: (?!0,)/);
+  assert.equal((body.match(/supportSol: budgetSol,/g) || []).length, 3);
+  assert.doesNotMatch(js, /Core liquidity/);
+  assert.match(js, /<small>SOL in the pool<\/small>/);
+});
+
+test('v2 new pools use the 1% tier and pairs open above the SOL price', () => {
+  assert.match(js, /const DEFAULT_POOL_CONFIG_INDEX = 3;/);
+  assert.match(js, /const PAIR_START_PREMIUM_PCT = 25;/);
+  assert.match(js, /ammConfigIndex: state\.solPoolConfigIndex,/);
+  assert.match(js, /ammConfigIndex: state\.pairPoolConfigIndex,/);
+  assert.match(js, /startPricePremiumPct: state\.pairStartPremiumPct,/);
+  // Restored launches keep the tier and premium they were planned with.
+  assert.match(js, /restoredSolPool\.ammConfigIndex \?\? 8/);
+  assert.match(js, /pairPool\.startPricePremiumPct \?\? 0/);
+  assert.match(js, /function pairArbitrageWarningHtml\(/);
+});
+
+test('v2 funding shows SOL into the pool apart from rent and fees', () => {
+  assert.match(js, /<small>Into the pool<\/small>/);
+  assert.match(js, /<small>Spent for good<\/small>/);
+  assert.match(js, /<small>Returned if unused<\/small>/);
+  assert.match(js, /No SOL goes into the pool\. Until someone buys, sellers have nothing to sell into\./);
+});
+
 test('v2 auto-compresses oversized logos into the Classic upload envelope', async () => {
   const start = js.indexOf('function loadLogoImage');
   const end = js.indexOf('\nfunction validateProofFile', start);
@@ -6711,12 +6742,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=84/);
+  assert.match(html, /styles\.css\?v=85/);
   assert.match(html, /runtime-state\.js\?v=1/);
   assert.match(html, /api-client\.js\?v=37/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=176/);
-  assert.doesNotMatch(html, /app\.js\?v=176" type="module"/);
+  assert.match(html, /app\.js\?v=177/);
+  assert.doesNotMatch(html, /app\.js\?v=177" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');

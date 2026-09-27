@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pickFundingTransfer, collectFundingTransfers, MIN_FUNDING_LAMPORTS } from '../tokenService.js';
+import { pickFundingTransfer, collectFundingTransfers, getParsedTransactionAnyVersion, MIN_FUNDING_LAMPORTS } from '../tokenService.js';
 
 const LAUNCH = 'C4TxWRv1NYKDUMuVktT2AZELRj9mMVgyxRSHby458VR2';
 const REAL = 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j';
@@ -62,4 +62,21 @@ test('funder listing agrees with the trusted single funder', () => {
   assert.equal(funders[0].address, pickFundingTransfer(history, LAUNCH).funder);
   // A later lookalike above the dust floor is listed, never first.
   assert.equal(funders[1].address, LOOKALIKE);
+});
+
+test('version-1 transactions are read as raw parsed JSON instead of failing the lookup', async () => {
+  const raw = transfer('v1', REAL, 500_000_000).tx;
+  const calls = [];
+  const conn = {
+    async getParsedTransaction() {
+      throw new Error('At path: version -- Expected the value to satisfy a union of `literal | literal`, but received: 1');
+    },
+    async _rpcRequest(method, args) {
+      calls.push([method, args[1]]);
+      return { result: { ...raw, version: 1 } };
+    },
+  };
+  const tx = await getParsedTransactionAnyVersion('v1', conn);
+  assert.equal(pickFundingTransfer([{ signature: 'v1', tx }], LAUNCH).funder, REAL);
+  assert.deepEqual(calls, [['getTransaction', { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1, commitment: 'confirmed' }]]);
 });

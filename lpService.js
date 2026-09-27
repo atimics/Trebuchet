@@ -4012,6 +4012,21 @@ export async function resolveQuoteUsdForCreate({
  * Throws on any pre_flight failure with err.failedPhase='pre_flight'
  * and err.failedAllocationIndex set, same as createPoolsAndPositions.
  */
+// Opening price of a pool, in quote per launched token. Pair pools (not SOL)
+// can open above the target by alloc.startPricePremiumPct. Every pool
+// otherwise opens at the same USD price, so when a pair token later falls,
+// the launched token is cheaper in that pool than in the SOL pool, and
+// arbitrage buys it there and sells it into the SOL pool, taking SOL
+// buyers' money (RUGOWEEN: HOLDOWEEN fell ~36%). A premium means the pair
+// token has to fall past it before that starts. Absent or 0 = the target.
+export function allocationStartPrice(launchedTokenUsd, quoteUsd, alloc) {
+  const premium = Number(alloc?.startPricePremiumPct);
+  const price = new Decimal(launchedTokenUsd).div(quoteUsd);
+  if (!Number.isFinite(premium) || premium <= 0) return price;
+  if (premium > 500) throw new Error(`startPricePremiumPct must be at most 500 (got ${premium})`);
+  return price.mul(new Decimal(1).add(new Decimal(premium).div(100)));
+}
+
 export async function preflightCreatePoolsAndPositions({
   tokenTotalSupply,
   targetMarketCapUsd,
@@ -4123,7 +4138,7 @@ export async function preflightCreatePoolsAndPositions({
       // ratio is 5e-6, meaning 1 launched = 5e-6 SOL = $0.001 in SOL
       // terms.) Same formula createPoolsAndPositions uses; we precompute
       // it so the modal can show what the actual pool ratio will be.
-      const initialPrice = launchedTokenUsd.div(quoteUsd);
+      const initialPrice = allocationStartPrice(launchedTokenUsd, quoteUsd, alloc);
 
       resolvedPrices.push({
         allocationIndex: allocIdx,
@@ -4933,8 +4948,9 @@ export async function createPoolsAndPositions({
             : ' (1 token, narrow range)'),
       );
 
-      // 6d. Compute initial pool price = launched-in-terms-of-quote
-      const initialPrice = launchedTokenUsd.div(quoteUsd);
+      // 6d. Compute initial pool price = launched-in-terms-of-quote,
+      //     raised by the allocation's start premium for pair pools.
+      const initialPrice = allocationStartPrice(launchedTokenUsd, quoteUsd, alloc);
       console.log(
         `  initialPrice (${quoteToken.symbol} per launched) = ${initialPrice.toString()}`,
       );

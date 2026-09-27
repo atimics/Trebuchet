@@ -15989,3 +15989,69 @@ body[data-launch-running="true"] .workspace {
   .nft-items th:nth-child(4), .nft-items td:nth-child(4), .nft-items th:nth-child(5), .nft-items td:nth-child(5) { display: none; }
 }
 .nft-shell input.nft-check { width: 14px; height: 14px; min-height: 0; margin: 0; padding: 0; accent-color: var(--green); flex: none; }
+
+/* Pairs can cap the SOL pool through arbitrage; say so where they are set. */
+.supply-warning {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.supply-warning i {
+  color: var(--amber);
+  margin-top: 2px;
+}
+
+/* Funding split: liquidity vs. rent and fees vs. returned. */
+.funding-split {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.funding-split > span {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+}
+
+.funding-split small {
+  color: var(--subtle);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.funding-split strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.funding-split em {
+  color: var(--subtle);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.funding-split .is-pool strong {
+  color: var(--green);
+}
+
+.funding-split-warning {
+  margin: 0;
+  color: var(--amber);
+  font-size: 11px;
+}
+
+@media (max-width: 620px) {
+  .funding-split {
+    grid-template-columns: 1fr;
+  }
+}
