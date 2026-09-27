@@ -2055,6 +2055,98 @@ export function pickFundingTransfer(parsedTxsOldestFirst, publicKey) {
   return null;
 }
 
+// Qualifying inbound SOL transfers in one parsed transaction.
+function fundingTransferRows(signature, tx, publicKey) {
+  if (!tx || !tx.meta || tx.meta.err) return [];
+  const allInstructions = [...(tx.transaction?.message?.instructions || [])];
+  for (const inner of tx.meta.innerInstructions || []) allInstructions.push(...(inner.instructions || []));
+  const rows = [];
+  for (const instruction of allInstructions) {
+    if (
+      instruction.program !== 'system'
+      || instruction.parsed?.type !== 'transfer'
+      || instruction.parsed.info.destination !== publicKey
+    ) continue;
+    const lamports = Number(instruction.parsed.info.lamports);
+    const source = instruction.parsed.info.source;
+    if (!(lamports >= MIN_FUNDING_LAMPORTS) || !source || source === publicKey) continue;
+    rows.push({ address: source, lamports, signature });
+  }
+  return rows;
+}
+
+function summarizeFundingRows(rowsOldestFirst) {
+  const byFunder = new Map();
+  for (const row of rowsOldestFirst) {
+    const entry = byFunder.get(row.address) || { address: row.address, lamports: 0, firstSignature: row.signature, transfers: 0 };
+    entry.lamports += row.lamports;
+    entry.transfers += 1;
+    byFunder.set(row.address, entry);
+  }
+  return [...byFunder.values()].map((entry) => ({
+    address: entry.address,
+    sol: entry.lamports / LAMPORTS_PER_SOL,
+    firstSignature: entry.firstSignature,
+    transfers: entry.transfers,
+  }));
+}
+
+/**
+ * Every wallet that sent real SOL to the launch wallet, earliest first, with
+ * the total each sent. Parsed transactions must be ordered OLDEST first.
+ * Anyone can send SOL to an address, so only the first entry is trusted by
+ * default; the rest are listed for the operator to choose from.
+ */
+export function collectFundingTransfers(parsedTxsOldestFirst, publicKey) {
+  return summarizeFundingRows(parsedTxsOldestFirst.flatMap(({ signature, tx }) => (
+    fundingTransferRows(signature, tx, publicKey)
+  )));
+}
+
+// Per launch wallet: the newest signature already read and the funding rows
+// found so far, so a repeat scan only reads what arrived since.
+const fundingTransferCache = new Map();
+
+export async function findFundingWallets(publicKey) {
+  try {
+    const pubKey = new PublicKey(publicKey);
+    const cached = fundingTransferCache.get(publicKey) || { newestSignature: null, rows: [] };
+    const signatures = [];
+    let before;
+    for (let page = 0; page < MAX_SIGNATURE_PAGES; page++) {
+      const batch = await connection.getSignaturesForAddress(pubKey, {
+        limit: 1000,
+        before,
+        until: cached.newestSignature || undefined,
+      });
+      signatures.push(...batch);
+      if (batch.length < 1000) break;
+      before = batch[batch.length - 1].signature;
+    }
+    const rows = [...cached.rows];
+    let complete = true;
+    for (const sig of signatures.slice().reverse()) {
+      if (sig.err) continue;
+      const tx = await connection.getParsedTransaction(sig.signature, {
+        maxSupportedTransactionVersion: 0,
+      });
+      // A transaction the RPC cannot return yet is read again next time.
+      if (!tx) complete = false;
+      rows.push(...fundingTransferRows(sig.signature, tx, publicKey));
+    }
+    if (complete) {
+      fundingTransferCache.set(publicKey, {
+        newestSignature: signatures[0]?.signature || cached.newestSignature,
+        rows,
+      });
+    }
+    return summarizeFundingRows(rows);
+  } catch (error) {
+    console.error('Error listing funding wallets:', error);
+    return [];
+  }
+}
+
 export async function findFundingWallet(publicKey) {
   if (fundingWalletCache.has(publicKey)) return fundingWalletCache.get(publicKey);
   try {

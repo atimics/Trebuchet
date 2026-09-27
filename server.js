@@ -18,6 +18,7 @@ import {
   getWalletQRCode,
   checkWalletBalance,
   findFundingWallet,
+  findFundingWallets,
   normalizeMintFormat,
   refreshConnection as refreshTokenServiceConnection,
 } from './tokenService.js';
@@ -2912,10 +2913,16 @@ app.post('/api/v2/execution-readiness', async (req, res) => {
 app.get('/api/v2/destinations', async (req, res) => {
   try {
     const launchWallet = String(req.query?.launchWallet || '').trim();
-    const funder = launchWallet
-      ? (await findFundingWallet(launchWallet).catch(() => null))?.funder || null
-      : null;
-    res.json({ success: true, funder, signed: destinationProofStore.listSignedDestinations() });
+    let funder = null;
+    let funders = [];
+    if (launchWallet && isDemoMode()) {
+      funders = demoChainService.listDemoFunders(launchWallet);
+      funder = funders[0]?.address || null;
+    } else if (launchWallet) {
+      funder = (await findFundingWallet(launchWallet).catch(() => null))?.funder || null;
+      funders = await findFundingWallets(launchWallet).catch(() => []);
+    }
+    res.json({ success: true, funder, funders, signed: destinationProofStore.listSignedDestinations() });
   } catch (error) {
     sendErrorResponse(res, error, 400);
   }

@@ -2892,6 +2892,26 @@ test('v2 launch is one flow with no separate guided mode', () => {
   assert.match(apiClientJs, /V2_DEMO_LAUNCH_RUN_PATH[\s\S]*?timeoutMs: 60_000/);
 });
 
+test('v2 shows where assets go and lets funding wallets share held-back tokens', () => {
+  // Visible on Token & pools, outside More options.
+  const moreStart = html.indexOf('id="launchMoreOptions"');
+  assert.ok(html.indexOf('id="returnWalletCard"') < moreStart, 'Where assets go is folded away');
+  assert.match(js, /function assetDestinationsHtml\(\)/);
+  assert.match(js, /Where assets go/);
+  // Funders share by SOL sent, through the existing airdrop rows.
+  assert.match(js, /function heldSharePlan\(/);
+  assert.match(js, /tokens: Math\.floor\(heldTokens \* \(entry\.sol \/ totalSol\)\)/);
+  assert.match(js, /\.\.\.share\.rows,/);
+  assert.match(js, /source: 'funder-share'/);
+  // Only wallets in the current funder list count; nothing is ticked by default.
+  assert.match(js, /\.map\(\(address\) => known\.get\(address\)\)/);
+  assert.match(js, /heldShare: \{ selected: \[\] \}/);
+  // Bound to the plan once a live token exists.
+  assert.match(js, /function heldShareLocked\(\)/);
+  assert.match(js, /action === 'toggle-held-share'/);
+  assert.match(js, /anyone can send SOL to the launch wallet|Anyone can send SOL to the launch wallet/);
+});
+
 test('v2 auto-compresses oversized logos into the Classic upload envelope', async () => {
   const start = js.indexOf('function loadLogoImage');
   const end = js.indexOf('\nfunction validateProofFile', start);

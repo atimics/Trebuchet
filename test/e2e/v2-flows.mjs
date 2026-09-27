@@ -316,6 +316,32 @@ try {
     '#tokenLogoFile',
     path.join(root, 'public', 'release-assets', 'frames', 'f01.png'),
   );
+  // Where assets go: hold back 10%, then share it with both funding wallets.
+  await page.evaluate(() => {
+    for (const [id, value] of [['#preallocationSupplyPercent', '10'], ['#mainPoolPercent', '90']]) {
+      const input = document.querySelector(id);
+      input.value = value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  });
+  assert.match(await page.locator('#returnWalletCard').innerText(), /Funding wallets appear here once SOL reaches the launch wallet/);
+  await page.evaluate(async () => {
+    const session = await (await fetch('/api/session')).json();
+    await fetch('/api/demo/inject-funds', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${session.token}`, 'x-trebuchet-session': session.token },
+      body: JSON.stringify({ publicKey: selectedLaunchWalletPublicKey(), sol: 2 }),
+    });
+    await refreshDestinations({ force: true });
+  });
+  const shareBoxes = page.locator('#returnWalletCard input[data-action="toggle-held-share"]');
+  assert.equal(await shareBoxes.count(), 2, 'Both practice funders should be listed');
+  assert.equal(await shareBoxes.nth(0).isChecked(), false, 'No funder is ticked by default');
+  await shareBoxes.nth(0).click();
+  await shareBoxes.nth(1).click();
+  const shared = await page.evaluate(() => currentAirdropPlan().recipients.map((row) => row.tokens));
+  assert.deepEqual(shared, [70_000_000, 30_000_000], 'Held-back tokens are not split by SOL sent');
+
   await page.click('.launch-workspace-tab[data-launch-workspace="mint"]');
   await page.click('[data-classic-workspace="mint"] [data-action="run-demo-launch"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'finish', null, { timeout: 60_000 });
@@ -325,6 +351,8 @@ try {
   assert.match(finishText, /0 SOL/);
   assert.match(finishText, /Switch to Live/i);
   assert.doesNotMatch(finishText, /Needs proof/i, 'Practice result showed live proof requirements');
+  const delivered = await page.evaluate(() => (state.lastDemoLaunchRun?.transfer?.airdrop?.transferred || []).map((row) => row.tokens));
+  assert.deepEqual(delivered, [70_000_000, 30_000_000], 'Practice run did not airdrop the shared tokens');
   assert.deepEqual(nativeDialogs, [], 'Trebuchet opened a native prompt/confirm dialog');
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');

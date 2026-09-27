@@ -15733,3 +15733,98 @@ body[data-launch-running="true"] .workspace {
     text-align: left;
   }
 }
+
+/* Where assets go: the main return wallet, then the funding wallets that may
+   share the held-back tokens. */
+.asset-destinations,
+.fund-asset-destinations {
+  gap: 12px;
+}
+
+.asset-destination {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.asset-destination > small.eyebrow {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.asset-destination > strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.asset-destination + .asset-destination {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.asset-share-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.asset-share-list label {
+  /* Solana addresses are case-sensitive; never restyle their letters. */
+  text-transform: none;
+  letter-spacing: normal;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.asset-share-list li.is-selected label {
+  border-color: var(--green);
+}
+
+.asset-share-list input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--green);
+}
+
+.asset-share-list input:disabled + span {
+  opacity: 0.6;
+}
+
+.asset-share-list span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.asset-share-list code,
+.asset-destination code {
+  overflow-wrap: anywhere;
+  text-transform: none;
+}
+
+.asset-share-list strong {
+  color: var(--green);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+@media (max-width: 620px) {
+  .asset-share-list label {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .asset-share-list strong {
+    grid-column: 2;
+  }
+}

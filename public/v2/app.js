@@ -428,7 +428,9 @@ const state = {
   },
   // Wallets proven to be the user's: the on-chain funder of the launch wallet
   // and wallets that signed a Trebuchet challenge.
-  destinations: { funder: null, signed: [], launchWallet: null, checkedAt: 0, waiting: false },
+  destinations: { funder: null, funders: [], signed: [], launchWallet: null, checkedAt: 0, waiting: false },
+  // Funding wallets chosen to share the held-back tokens (by SOL sent).
+  heldShare: { selected: [] },
   fundingWallet: {
     walletPublicKey: null,
     funder: null,
@@ -2045,24 +2047,75 @@ function computeAirdropBudget(parsedRecipients, recipientCount, supply, requeste
   };
 }
 
+// Held-back tokens can be shared with the wallets that funded the launch,
+// split by the SOL each sent. Only wallets in the current funder list count,
+// so a choice never outlives the launch wallet or environment it was made
+// for (Practice funders can never reach a Live launch). Wallets already in
+// the airdrop CSV keep their CSV row instead.
+function heldSharePlan(supply = parseWholeNumber($('#tokenSupply')?.value) || 1000000000) {
+  const heldPercent = parsePercentInput($('#preallocationSupplyPercent')?.value, 0);
+  const csvWallets = new Set(parseAirdropCsv(state.airdropCsvText).recipients.map((row) => row.wallet));
+  const known = new Map((state.destinations.funders || []).map((entry) => [entry.address, entry]));
+  const funders = (state.heldShare.selected || [])
+    .map((address) => known.get(address))
+    .filter((entry) => entry && entry.sol > 0 && !csvWallets.has(entry.address));
+  const totalSol = funders.reduce((sum, entry) => sum + entry.sol, 0);
+  if (!(heldPercent > 0) || !funders.length || !(totalSol > 0)) {
+    return { active: false, heldPercent, funders, csvWallets, rows: [], heldTokens: 0, totalSol: 0 };
+  }
+  const heldTokens = Math.floor(supply * (heldPercent / 100));
+  // Whole tokens; rounding dust stays with the main return wallet's sweep.
+  const rows = funders.map((entry) => ({
+    wallet: entry.address,
+    tokens: Math.floor(heldTokens * (entry.sol / totalSol)),
+    source: 'funder',
+    fundedSol: entry.sol,
+  }));
+  return { active: true, heldPercent, funders, csvWallets, rows, heldTokens, totalSol };
+}
+
+// Once a live token exists, the airdrop recipients are bound to its plan.
+function heldShareLocked() {
+  if (state.demoActive) return false;
+  return Boolean(currentLaunchProof()?.token?.mint || state.lastRunEnvelope?.status === 'armed');
+}
+
+function toggleHeldShareFunder(address) {
+  if (heldShareLocked()) {
+    notify('Recipients are locked once the token is created');
+    return;
+  }
+  const selected = new Set(state.heldShare.selected || []);
+  if (selected.has(address)) selected.delete(address);
+  else selected.add(address);
+  state.heldShare = { selected: [...selected] };
+  invalidateClassicOutputs();
+  renderAll();
+}
+
 function currentAirdropPlan() {
   const parsed = parseAirdropCsv(state.airdropCsvText);
   const manualCount = parsePositiveInteger($('#airdropWallets').value, 0);
-  const recipientCount = parsed.recipients.length || manualCount;
-  const enabled = recipientCount > 0;
   const supply = parseWholeNumber($('#tokenSupply').value) || 1000000000;
+  const share = heldSharePlan(supply);
+  const csvCount = parsed.recipients.length || manualCount;
+  const recipientCount = csvCount + share.rows.length;
+  const enabled = recipientCount > 0;
   const budgetConfig = currentAirdropBudgetConfig();
   const budget = computeAirdropBudget(
-    parsed.recipients,
+    [...parsed.recipients, ...share.rows],
     recipientCount,
     supply,
-    enabled ? budgetConfig.requestedSupplyPercent : 0,
+    (csvCount > 0 ? budgetConfig.requestedSupplyPercent : 0) + (share.active ? share.heldPercent : 0),
     budgetConfig.autoFit,
   );
-  const recipients = parsed.recipients.map((row) => ({
-    wallet: row.wallet,
-    tokens: Number((row.tokens == null ? budget.equalTokens : row.tokens).toFixed(9)),
-  }));
+  const recipients = [
+    ...parsed.recipients.map((row) => ({
+      wallet: row.wallet,
+      tokens: Number((row.tokens == null ? budget.equalTokens : row.tokens).toFixed(9)),
+    })),
+    ...share.rows,
+  ];
   state.airdropParseError = parsed.error;
   state.airdropRecipients = recipients;
   state.airdropBudgetError = budget.budgetError;
@@ -2073,7 +2126,10 @@ function currentAirdropPlan() {
     requestedSupplyPercent: budget.requestedSupplyPercent,
     requiredSupplyPercent: budget.requiredSupplyPercent,
     autoFit: budget.autoFit,
-    source: parsed.recipients.length ? 'csv' : enabled ? 'manual-count' : 'off',
+    source: parsed.recipients.length ? 'csv' : manualCount ? 'manual-count' : share.active ? 'funders' : 'off',
+    csvRecipientCount: csvCount,
+    funderShareCount: share.rows.length,
+    funderSharePercent: share.active ? share.heldPercent : 0,
     recipients,
     parseError: parsed.error,
     parseErrorCount: parsed.errorCount,
@@ -2090,6 +2146,10 @@ function currentAirdropPlan() {
 function currentPreallocationPlan() {
   const input = document.getElementById('preallocationSupplyPercent');
   const supplyPercent = parsePercentInput(input?.value, 0);
+  // Shared with funding wallets: the airdrop carries this slice instead.
+  if (supplyPercent > 0 && heldSharePlan().active) {
+    return { enabled: false, supplyPercent: 0, source: 'funder-share', sharedPercent: supplyPercent };
+  }
   return {
     enabled: supplyPercent > 0,
     supplyPercent,
@@ -5105,6 +5165,7 @@ function currentClassicModel() {
     },
     feeKeyRecipient: feeKeyRecipient || null,
     sweepDestination: sweepDestination || null,
+    heldShare: { funders: [...(state.heldShare.selected || [])] },
     report: {
       publish: state.prefs.publishLaunchReport !== false,
       download: true,
@@ -5319,7 +5380,14 @@ function restoreLaunchConfigFromJournal(journal = {}) {
 
   const airdrop = topology.airdrop && typeof topology.airdrop === 'object' ? topology.airdrop : {};
   const airdropRows = Array.isArray(airdrop.recipients) ? airdrop.recipients : [];
-  state.airdropCsvText = airdropRows.map((row) => `${row.wallet || row.recipient || ''},${row.tokens ?? row.amount ?? ''}`).join('\n');
+  state.airdropCsvText = airdropRows
+    .filter((row) => row?.source !== 'funder')
+    .map((row) => `${row.wallet || row.recipient || ''},${row.tokens ?? row.amount ?? ''}`).join('\n');
+  state.heldShare = {
+    selected: Array.isArray(topology.heldShare?.funders)
+      ? topology.heldShare.funders.map((address) => String(address || '')).filter(Boolean)
+      : airdropRows.filter((row) => row?.source === 'funder').map((row) => String(row.wallet || '')).filter(Boolean),
+  };
   if ($('#airdropCsvText')) $('#airdropCsvText').value = state.airdropCsvText;
   if ($('#airdropWallets')) $('#airdropWallets').value = String(Number(airdrop.recipientCount || airdropRows.length || 0));
   if ($('#airdropSupplyPercent')) $('#airdropSupplyPercent').value = String(Number(airdrop.requestedSupplyPercent ?? airdrop.supplyPercent ?? 0));
@@ -6832,17 +6900,23 @@ function supplyEditorRows() {
   rows.forEach((row) => {
     if (row.kind === 'pool' && !row.color) row.color = SUPPLY_PAIR_COLORS[pairIndex++ % SUPPLY_PAIR_COLORS.length];
   });
+  const share = heldSharePlan();
   rows.push({
-    key: 'team', kind: 'hold', label: 'Team', detail: 'Held by the launch wallet',
+    key: 'team', kind: 'hold', label: 'Team',
+    detail: share.active
+      ? `Split across ${share.rows.length} funding wallet${share.rows.length === 1 ? '' : 's'}`
+      : 'Goes to the main return wallet',
     percent: parsePercentInput($('#preallocationSupplyPercent').value, 0), color: 'var(--amber)',
     target: '#preallocationSupplyPercent',
   });
   const airdrop = currentAirdropPlan();
-  if (airdrop.enabled) {
+  // Shared held-back tokens already count in the Team row above.
+  if (airdrop.csvRecipientCount > 0) {
     rows.push({
       key: 'airdrop', kind: 'hold', label: 'Airdrop',
-      detail: `${airdrop.recipientCount} wallet${airdrop.recipientCount === 1 ? '' : 's'}`,
-      percent: Number(airdrop.supplyPercent || 0), color: 'var(--violet)', target: '#airdropSupplyPercent',
+      detail: `${airdrop.csvRecipientCount} wallet${airdrop.csvRecipientCount === 1 ? '' : 's'}`,
+      percent: Math.max(0, Number(airdrop.supplyPercent || 0) - Number(airdrop.funderSharePercent || 0)),
+      color: 'var(--violet)', target: '#airdropSupplyPercent',
     });
   }
   return rows;
@@ -14057,6 +14131,7 @@ function renderClassicBridge() {
     <section class="classic-workspace-section classic-workspace-fund" data-classic-workspace="fund">
       <h2 class="visually-hidden" id="fundStepTitle">Fund</h2>
       ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
+      ${!completedJournal && (state.destinations.funders || []).length ? `<section class="return-wallet fund-asset-destinations" aria-label="Where assets go">${assetDestinationsHtml()}</section>` : ''}
       ${estimate && (routeCount || manualQuoteCount) ? `<details class="drawer funding-extra" open><summary><span>Pair tokens</span><strong>${routeCount + manualQuoteCount} item${routeCount + manualQuoteCount === 1 ? '' : 's'}</strong></summary>${renderQuoteAcquirePanel()}</details>` : ''}
       <div class="launch-phase-actions launch-phase-actions-split">
         <button class="text-button" type="button" data-launch-workspace="configure"><i class="fa-solid fa-arrow-left"></i><span>Token &amp; pools</span></button>
@@ -18122,16 +18197,18 @@ function renderMoreOptionsSummary() {
       ? `${supply / 1e6}M`
       : supply.toLocaleString('en-US');
   const poolCount = Math.max(0, Number(currentLaunchConfig().poolTopology?.pools?.length || 0));
-  const heldPercent = currentPreallocationPlan().supplyPercent
-    + (currentAirdropPlan().enabled ? currentAirdropPlan().supplyPercent : 0);
+  const share = heldSharePlan(supply);
+  const airdrop = currentAirdropPlan();
   summary.textContent = [
     `${compactSupply} supply`,
     $('#sealedLaunch')?.checked ? 'sealed' : 'not sealed',
     $('#mintFormat')?.value === 'classic-spl' ? 'Classic SPL' : 'Token-2022',
     state.selectedVanityPublicKey ? 'vanity address' : 'random address',
     `${poolCount} pool${poolCount === 1 ? '' : 's'}`,
-    heldPercent > 0 ? `${Number(heldPercent.toFixed(1))}% held back` : null,
-    currentAirdropPlan().enabled ? 'airdrop on' : null,
+    share.heldPercent > 0
+      ? `${Number(share.heldPercent.toFixed(1))}% held back${share.active ? ` · shared with ${share.rows.length} funder${share.rows.length === 1 ? '' : 's'}` : ''}`
+      : null,
+    airdrop.csvRecipientCount > 0 ? `airdrop to ${airdrop.csvRecipientCount}` : null,
   ].filter(Boolean).join(' · ');
 }
 
@@ -18495,6 +18572,7 @@ async function refreshManualPrefundBalance({ quiet = false } = {}) {
       lastUpdatedAt: new Date().toISOString(),
     };
     if (!quiet) notify('Launch wallet balance refreshed');
+    refreshDestinations({ force: true }).catch(() => null);
     return balance;
   } catch (error) {
     state.manualPrefund = {
@@ -21177,13 +21255,23 @@ async function refreshDestinations({ force = false } = {}) {
   if (fresh && !force) return state.destinations;
   try {
     const result = await state.apiClient.listDestinations(launchWallet);
+    const funders = (Array.isArray(result?.funders) ? result.funders : [])
+      .map((entry) => ({ address: String(entry?.address || ''), sol: Number(entry?.sol || 0) }))
+      .filter((entry) => entry.address && entry.sol > 0);
+    const fundersChanged = JSON.stringify(funders) !== JSON.stringify(state.destinations.funders || []);
     state.destinations = {
       ...state.destinations,
+      funders,
       funder: result?.funder || null,
       signed: (result?.signed || []).map((entry) => entry.address),
       launchWallet,
       checkedAt: Date.now(),
     };
+    // The funder list feeds the airdrop plan and supply split.
+    if (fundersChanged) {
+      renderAll();
+      return state.destinations;
+    }
   } catch (_error) {
     state.destinations = { ...state.destinations, launchWallet, checkedAt: Date.now() };
   }
@@ -21233,12 +21321,13 @@ function openWalletSigning() {
   window.setTimeout(poll, 3000);
 }
 
-function renderReturnWalletCard() {
-  const card = $('#returnWalletCard');
-  if (!card) return;
+// "Where assets go": the main return wallet (Fee Keys, leftover SOL, and
+// unshared held-back tokens), plus the funding wallets that may share the
+// held-back tokens, split by the SOL each sent.
+function assetDestinationsHtml() {
   const status = returnWalletStatus();
   const others = state.destinations.signed.filter((address) => address !== status.address);
-  const title = status.kind === 'signed' ? 'Signed wallet' : status.kind === 'funder' ? 'Funding wallet' : 'Not verified';
+  const title = status.kind === 'signed' ? 'Signed wallet' : status.kind === 'funder' ? 'First funding wallet' : 'Not verified';
   const badge = status.kind === 'signed'
     ? '<span class="risk-badge">Signed</span>'
     : status.kind === 'funder'
@@ -21246,25 +21335,75 @@ function renderReturnWalletCard() {
       : '<span class="risk-badge danger">Not verified</span>';
   const address = status.address
     ? `<code>${escapeHtml(status.address)}</code>`
-    : '<small>The wallet you fund the launch wallet from. Detected once the SOL arrives.</small>';
+    : '<small>The first wallet that funds the launch wallet. Detected once the SOL arrives.</small>';
   const warning = status.kind === 'unverified'
     ? '<p class="return-wallet-warning">This address was typed, not proven. Assets will not be sent to it. Sign with it, or use the funding wallet.</p>'
     : '';
-  card.innerHTML = `
-    <div class="return-wallet-head"><span>Return wallet</span>${badge}</div>
-    <strong>${escapeHtml(title)}</strong>
-    ${address}
-    ${warning}
-    <p class="return-wallet-note">Team tokens, LP fee keys, and leftover SOL go here when the launch finishes.</p>
-    <div class="operator-toolbar compact">
-      <button class="pill-button" type="button" data-action="sign-return-wallet" ${state.destinations.waiting ? 'disabled' : ''}>
-        ${state.destinations.waiting ? 'Waiting for signature…' : 'Sign with another wallet'}
-      </button>
-      ${status.kind !== 'funder' || String($('#sweepDestination')?.value || '').trim()
-        ? '<button class="pill-button" type="button" data-action="use-funding-wallet-sweep">Use funding wallet</button>'
-        : ''}
-      ${others.map((other) => `<button class="pill-button" type="button" data-action="use-signed-wallet" data-address="${escapeHtml(other)}">Use ${escapeHtml(shortAddress(other))}</button>`).join('')}
+
+  const share = heldSharePlan();
+  const locked = heldShareLocked();
+  const funders = state.destinations.funders || [];
+  const selected = new Set(state.heldShare.selected || []);
+  const heldLabel = share.heldPercent > 0
+    ? `${Number(share.heldPercent.toFixed(2))}% held back`
+    : 'No tokens held back';
+  const shareRows = funders.map((entry, index) => {
+    const inCsv = share.csvWallets.has(entry.address);
+    const checked = selected.has(entry.address) && !inCsv;
+    const row = share.rows.find((item) => item.wallet === entry.address);
+    const detail = [
+      `sent ${fmtSol(entry.sol)}`,
+      index === 0 ? 'first funder' : null,
+      inCsv ? 'already in the airdrop list' : null,
+    ].filter(Boolean).join(' · ');
+    const shareText = row
+      ? `${compactAmount(row.tokens)} tokens · ${Number(((entry.sol / share.totalSol) * 100).toFixed(1))}%`
+      : checked ? 'Hold back tokens to share' : '';
+    return `
+      <li class="${checked ? 'is-selected' : ''}">
+        <label>
+          <input type="checkbox" data-action="toggle-held-share" data-address="${escapeHtml(entry.address)}" ${checked ? 'checked' : ''} ${locked || inCsv ? 'disabled' : ''}>
+          <span><code>${escapeHtml(entry.address)}</code><small>${escapeHtml(detail)}</small></span>
+          <strong>${escapeHtml(shareText)}</strong>
+        </label>
+      </li>`;
+  }).join('');
+  const shareBody = funders.length
+    ? `<ul class="asset-share-list">${shareRows}</ul>
+       <p class="return-wallet-note">${share.heldPercent > 0
+         ? 'Ticked wallets split the held-back tokens by the SOL each sent. Anyone can send SOL to the launch wallet, so only tick wallets you recognize and check the full address.'
+         : 'Hold back part of the supply (More options, Supply and pools) to share it with funding wallets.'}${locked ? ' Locked: the token is created.' : ''}</p>`
+    : '<p class="return-wallet-note">Funding wallets appear here once SOL reaches the launch wallet. You can then tick any or all of them to share the held-back tokens, split by the SOL each sent.</p>';
+
+  return `
+    <div class="return-wallet-head"><span>Where assets go</span>${badge}</div>
+    <div class="asset-destination">
+      <small class="eyebrow">Main return wallet</small>
+      <strong>${escapeHtml(title)}</strong>
+      ${address}
+      ${warning}
+      <p class="return-wallet-note">Gets the Fee Keys, leftover SOL, and any held-back tokens not shared below.</p>
+      <div class="operator-toolbar compact">
+        <button class="pill-button" type="button" data-action="sign-return-wallet" ${state.destinations.waiting ? 'disabled' : ''}>
+          ${state.destinations.waiting ? 'Waiting for signature…' : 'Sign with another wallet'}
+        </button>
+        ${status.kind !== 'funder' || String($('#sweepDestination')?.value || '').trim()
+          ? '<button class="pill-button" type="button" data-action="use-funding-wallet-sweep">Use funding wallet</button>'
+          : ''}
+        ${others.map((other) => `<button class="pill-button" type="button" data-action="use-signed-wallet" data-address="${escapeHtml(other)}">Use ${escapeHtml(shortAddress(other))}</button>`).join('')}
+      </div>
+    </div>
+    <div class="asset-destination asset-share">
+      <small class="eyebrow">Share held-back tokens · ${escapeHtml(heldLabel)}</small>
+      <strong>${share.active ? `Split across ${share.rows.length} funding wallet${share.rows.length === 1 ? '' : 's'}` : 'Funding wallets'}</strong>
+      ${shareBody}
     </div>`;
+}
+
+function renderReturnWalletCard() {
+  const card = $('#returnWalletCard');
+  if (!card) return;
+  card.innerHTML = assetDestinationsHtml();
 }
 
 function editReturnWallet() {
@@ -23062,6 +23201,10 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'toggle-held-share') {
+    toggleHeldShareFunder(actionTarget.dataset.address);
+    return;
+  }
   if (action === 'use-funding-wallet-sweep') {
     setReturnWallet('');
     notify('Assets return to the funding wallet');
