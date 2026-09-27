@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TREBUCHET · makesometokens</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=82">
+  <link rel="stylesheet" href="./styles.css?v=83">
 </head>
-<body data-experience-mode="guided" data-execution-environment="loading" data-custody-signal="loading">
+<body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
     <aside class="sidebar" aria-label="Primary navigation">
       <a class="brand" href="#launch" data-nav="launch" aria-label="Trebuchet launch view">
@@ -208,8 +208,8 @@
 
             <details class="launch-settings-drawer">
               <summary>
-                <span><i class="fa-solid fa-sliders" aria-hidden="true"></i><strong>Launch settings</strong></span>
-                <small><span id="launchSettingsEnvironment">Practice</span> · <span id="launchSettingsExperience">Guided</span></small>
+                <span><i class="fa-solid fa-sliders" aria-hidden="true"></i><strong>Environment</strong></span>
+                <small><span id="launchSettingsEnvironment">Practice</span></small>
               </summary>
 
               <div class="launch-choice-bar" aria-label="Launch choices">
@@ -223,19 +223,6 @@
                     <button class="environment-button" type="button" role="tab" aria-selected="false" data-action="select-environment" data-environment="live">
                       <i class="fa-solid fa-satellite-dish" aria-hidden="true"></i>
                       <span><strong>Live</strong><small>On-chain · guarded</small></span>
-                    </button>
-                  </div>
-                </div>
-                <div class="launch-choice-group">
-                  <span class="launch-choice-label">Experience</span>
-                  <div class="experience-row launch-experience-switch" role="tablist" aria-label="Launch experience">
-                    <button class="experience-button is-selected" type="button" role="tab" aria-selected="true" data-action="select-experience" data-experience="guided">
-                      <i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i>
-                      <span><strong>Guided</strong><small>Simple step by step</small></span>
-                    </button>
-                    <button class="experience-button" type="button" role="tab" aria-selected="false" data-action="select-experience" data-experience="advanced">
-                      <i class="fa-solid fa-sliders" aria-hidden="true"></i>
-                      <span><strong>Advanced</strong><small>Every launch control</small></span>
                     </button>
                   </div>
                 </div>
@@ -280,10 +267,8 @@
                 </span>
                 <span class="setup-head-actions">
                   <span class="setup-help" id="setupHelp">Practice only · no SOL spent</span>
-                  <button class="text-button guided-advanced-shortcut" type="button" data-action="select-experience" data-experience="advanced">Advanced</button>
                 </span>
               </div>
-              <section class="guided-launch-flow" id="guidedLaunchFlow" aria-live="polite"></section>
               <div class="advanced-launch-controls" id="advancedLaunchControls">
               <h2 class="visually-hidden" id="configureStepTitle">Token &amp; pools</h2>
               <div class="launch-workbench compact-workbench">
@@ -471,7 +456,6 @@
               </div>
             </section>
 
-            <section class="guided-run-shell" id="guidedRunShell" data-launch-pane="fund mint liquidity finish" aria-live="polite"></section>
 
             <section class="classic-bridge" id="classicBridge" data-launch-pane="wallet fund mint liquidity finish" aria-label="Launch phase workspace"></section>
 
@@ -721,7 +705,7 @@
       </button>
       <input class="recovery-pin-capture" id="recoveryPinInput" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="Recovery PIN digits">
       <p class="recovery-pin-message" id="recoveryPinMessage" role="status" aria-live="assertive">Enter your four-digit Recovery PIN.</p>
-      <p class="recovery-pin-local"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> Verified locally. Never sent off this Mac.</p>
+      <p class="recovery-pin-local"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> Verified locally. Never sent off this device.</p>
     </div>
   </section>
 
@@ -784,6 +768,6 @@
   <script src="./runtime-state.js?v=1"></script>
   <script src="./api-client.js?v=37"></script>
   <script src="../gif-optimizer.js?v=3"></script>
-  <script src="./app.js?v=173"></script>
+  <script src="./app.js?v=174"></script>
 </body>
 </html>
