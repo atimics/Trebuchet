@@ -317,13 +317,13 @@ try {
     path.join(root, 'public', 'release-assets', 'frames', 'f01.png'),
   );
   // Where assets go: hold back 10%, then share it with both funding wallets.
+  // Holding back 10% shrinks the SOL pool to 90%, so the split stays at 100%.
   await page.evaluate(() => {
-    for (const [id, value] of [['#preallocationSupplyPercent', '10'], ['#mainPoolPercent', '90']]) {
-      const input = document.querySelector(id);
-      input.value = value;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    }
+    const input = document.querySelector('#preallocationSupplyPercent');
+    input.value = '10';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
   });
+  await page.waitForFunction(() => document.querySelector('#mainPoolPercent').value === '90');
   assert.match(await page.locator('#returnWalletCard').innerText(), /Funding wallets appear here once SOL reaches the launch wallet/);
   await page.evaluate(async () => {
     const session = await (await fetch('/api/session')).json();

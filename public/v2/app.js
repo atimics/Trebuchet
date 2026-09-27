@@ -4888,9 +4888,10 @@ async function spinFlywheelVortex() {
     supportSol: 0,
     supportDepth: 12,
   }));
-  if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(solShare);
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(quoteShare);
   if ($('#quotePoolVenue')) $('#quotePoolVenue').value = 'meme';
+  // SOL takes the rest, after any held-back or airdrop share.
+  if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(mainPoolRemainderPercent());
 
   renderFlywheelPick();
   renderVortexControl();
@@ -5007,8 +5008,9 @@ function applyLaunchBudgetRecommendation(value, { announce = true } = {}) {
   const strategy = launchBudgetRecommendation(budgetSol);
   if ($('#liquidityBudgetSol')) $('#liquidityBudgetSol').value = String(budgetSol);
   if ($('#launchSol')) $('#launchSol').value = String(strategy.coreSol);
-  if ($('#mainPoolPercent')) $('#mainPoolPercent').value = '100';
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = '0';
+  // SOL takes the rest: held-back tokens, airdrop, and added pairs stay.
+  if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(mainPoolRemainderPercent());
   if ($('#sliceShares')) $('#sliceShares').value = '100';
   if ($('#ladderBands')) $('#ladderBands').value = String(strategy.ladderBands);
   if ($('#supportSol')) $('#supportSol').value = String(strategy.supportSol);
@@ -6977,6 +6979,42 @@ function supplyEditorRows() {
   return rows;
 }
 
+// Inputs that change a non-SOL share of supply: other pools, the held-back
+// team slice, and the airdrop (its percent, recipients, or fit).
+const SUPPLY_SHARE_INPUT_IDS = new Set([
+  'quotePoolPercent',
+  'preallocationSupplyPercent',
+  'airdropSupplyPercent',
+  'airdropCsvText',
+  'airdropWallets',
+  'airdropAutoFit',
+  'tokenSupply',
+]);
+
+// The main SOL pool takes whatever the other pools and held-back rows leave,
+// so the split always totals 100% without balancing it by hand. Editing the
+// SOL row itself never moves the others.
+function mainPoolRemainderPercent() {
+  const others = supplyEditorRows()
+    .filter((row) => row.key !== 'sol')
+    .reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
+  return Math.max(0, Math.round((100 - others) * 100) / 100);
+}
+
+function rebalanceMainPool() {
+  const main = $('#mainPoolPercent');
+  if (!main) return;
+  const next = mainPoolRemainderPercent();
+  if (parsePercentInput(main.value, 0) === next) return;
+  main.value = String(next);
+  main.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// Runs after the current handler has applied its change.
+function scheduleMainPoolRebalance() {
+  queueMicrotask(rebalanceMainPool);
+}
+
 function renderSupplyEditor() {
   const target = $('#supplyEditor');
   if (!target) return;
@@ -7016,6 +7054,8 @@ function renderSupplyEditor() {
     rows.forEach((row) => {
       const amount = target.querySelector(`[data-supply-amount="${CSS.escape(row.key)}"]`);
       if (amount) amount.textContent = compactAmount(supply * row.percent / 100);
+      const percentInput = target.querySelector(`input[data-supply-key="${CSS.escape(row.key)}"]`);
+      if (percentInput && percentInput !== active) percentInput.value = String(row.percent);
     });
     target.querySelector('.supply-total')?.replaceWith(
       document.createRange().createContextualFragment(totalHtml),
@@ -18689,6 +18729,7 @@ function addCustomPool() {
   });
   invalidateClassicOutputs();
   renderAll();
+  scheduleMainPoolRebalance();
   notify('Pair added');
 }
 
@@ -18697,6 +18738,7 @@ function removeCustomPool(poolId) {
   delete state.quoteTokenInfo[poolId];
   invalidateClassicOutputs();
   renderAll();
+  scheduleMainPoolRebalance();
   notify('Pair removed');
 }
 
@@ -18717,6 +18759,7 @@ function setAirdropText(value) {
   if (input) input.value = value;
   invalidateClassicOutputs();
   refreshClassicPreview({ includePoolEditor: true });
+  scheduleMainPoolRebalance();
 }
 
 function fitAirdropBudget() {
@@ -18737,6 +18780,7 @@ function fitAirdropBudget() {
   input.value = formatPercent(plan.requiredSupplyPercent);
   invalidateClassicOutputs();
   refreshClassicPreview({ includePoolEditor: true });
+  scheduleMainPoolRebalance();
   notify(`Airdrop budget fitted to ${formatPercent(plan.requiredSupplyPercent)}%`);
 }
 
@@ -22973,6 +23017,10 @@ const VORTEX_INPUT_IDS = new Set([
 ]);
 
 function handleDynamicInput(event) {
+  if (SUPPLY_SHARE_INPUT_IDS.has(event.target?.id)
+      || event.target?.dataset?.customPoolField === 'supplyPercent') {
+    scheduleMainPoolRebalance();
+  }
   const supplyInput = event.target.closest?.('[data-supply-target]');
   if (supplyInput && supplyInput.tagName === 'INPUT') {
     const field = $(supplyInput.dataset.supplyTarget);
