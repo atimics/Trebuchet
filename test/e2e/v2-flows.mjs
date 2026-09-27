@@ -126,9 +126,11 @@ try {
   assert.equal(session.success, true);
   assert.ok(session.token, 'Trebuchet did not receive a local API session token');
 
-  // One launch flow: no separate guided mode, and it opens on Token & pools.
+  // Coins come first: the app opens on the coin list, and creating a token
+  // is an action on a coin. No separate guided mode.
   assert.equal(await page.getAttribute('body', 'data-experience-mode'), null);
-  assert.equal(await page.getAttribute('body', 'data-launch-workspace'), 'configure');
+  await page.waitForSelector('#view-coins.is-active');
+  assert.equal(await page.locator('[data-view="launch"]').count(), 0, 'Launch is back in the navigation');
   await page.waitForSelector('.sidebar', { state: 'visible' });
   await page.click('[data-view="wallet"]');
   await page.waitForSelector('#view-wallet.is-active');
@@ -181,7 +183,11 @@ try {
   await page.waitForSelector('#historyPanelJournal:not([hidden])');
   assert.equal(await page.getAttribute('#historyTabJournal', 'aria-selected'), 'true');
 
-  await page.click('[data-view="launch"]');
+  await page.click('.nav-item[data-view="coins"]');
+  await page.click('[data-action="new-coin"]');
+  await page.waitForSelector('#view-launch.is-active');
+  assert.equal(await page.getAttribute('body', 'data-launch-workspace'), 'configure');
+  assert.match(await page.locator('#coinContext').innerText(), /New coin/);
   await page.click('.launch-workspace-tab[data-launch-workspace="wallet"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'wallet');
   assert.deepEqual(await page.evaluate(() => (
@@ -363,8 +369,10 @@ try {
       body: JSON.stringify({ publicKey: selectedLaunchWalletPublicKey(), sol: 1 }),
     });
   });
-  await page.click('.nav-item[data-view="wallet"]');
-  await page.fill('#poolSupportTarget', '2SV3NWgJes9mHkWdBeuHFg8kNqfJS1XQKtNb1eJStVDC');
+  // The practiced coin has its own page; buy support is an action there.
+  await page.click('.practice-result [data-action="open-coin-mint"]');
+  await page.waitForSelector('#view-coins.is-active #coinPage:not([hidden])');
+  await page.waitForSelector('#poolSupportPanel:not([hidden])');
   await page.fill('#poolSupportSol', '0.1');
   await page.click('[data-action="preview-pool-support"]');
   await page.waitForSelector('.pool-support-plan');

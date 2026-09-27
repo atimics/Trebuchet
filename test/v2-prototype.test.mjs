@@ -1876,9 +1876,11 @@ test('v2 navigation and views stay wired together', () => {
     .map((match) => match[1])
     .sort();
 
-  assert.deepEqual(navViews, ['discovery', 'history', 'launch', 'nfts', 'settings', 'wallet']);
-  assert.deepEqual(sectionViews, navViews);
-  assert.deepEqual(viewKeys, navViews);
+  // Coins come first. Creating a token is an action on a coin, so the create
+  // view (still "launch" internally) is opened from a coin, not the nav.
+  assert.deepEqual(navViews, ['coins', 'discovery', 'history', 'nfts', 'settings', 'wallet']);
+  assert.deepEqual(sectionViews, [...navViews, 'launch'].sort());
+  assert.deepEqual(viewKeys, [...navViews, 'launch'].sort());
 });
 
 test('v2 JavaScript render targets exist in the HTML shell', () => {
@@ -6742,12 +6744,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=86/);
+  assert.match(html, /styles\.css\?v=87/);
   assert.match(html, /runtime-state\.js\?v=1/);
-  assert.match(html, /api-client\.js\?v=38/);
+  assert.match(html, /api-client\.js\?v=39/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=178/);
-  assert.doesNotMatch(html, /app\.js\?v=178" type="module"/);
+  assert.match(html, /app\.js\?v=179/);
+  assert.doesNotMatch(html, /app\.js\?v=179" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
