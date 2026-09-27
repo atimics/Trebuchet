@@ -3125,6 +3125,75 @@ app.delete('/api/v2/coins/:mint', (req, res) => {
   }
 });
 
+// The creation of a coin launched here, as steps checked against the chain
+// where the chain can answer. A step's record is a claim: "done" needs the
+// chain to agree; a record the chain contradicts is a mismatch, not a tick.
+function coinCreationSteps(journal, { account = null, markets = null, launchWalletLamports = null } = {}) {
+  const combine = (recorded, chain) => {
+    if (chain === 'done') return 'done';
+    if (chain === 'not-done') return recorded ? 'mismatch' : 'todo';
+    // Neither the record nor the chain can say it happened.
+    return recorded ? 'recorded' : 'unrecorded';
+  };
+  const token = journal?.token || {};
+  const counts = sealedMetadataRevealReadiness(journal);
+  const recordedPoolIds = v2JournalLiquidityResults(journal)
+    .map((pool) => v2TrimmedText(pool?.poolId || pool?.id))
+    .filter(Boolean);
+  const marketIds = new Set((markets?.pools || []).map((pool) => pool.poolId));
+  const steps = [];
+  const mintRecorded = Boolean(token.mint) && token.mintAuthorityRenounced === true;
+  steps.push({
+    id: 'token',
+    label: 'Create the token and revoke its mint authority',
+    state: combine(mintRecorded, account && !account.error ? (account.mintAuthority ? 'not-done' : 'done') : 'unknown'),
+    detail: account && !account.error ? (account.mintAuthority ? 'The chain still shows a mint authority.' : 'Mint authority revoked on-chain.') : 'Not checked on-chain.',
+  });
+  const poolsRecorded = counts.recordedPoolCount >= counts.plannedPoolCount && recordedPoolIds.length > 0;
+  const poolsOnChain = markets && !markets.error
+    ? (recordedPoolIds.length && recordedPoolIds.every((id) => marketIds.has(id)) ? 'done' : 'not-done')
+    : 'unknown';
+  steps.push({
+    id: 'pools',
+    label: 'Open the pools',
+    state: combine(poolsRecorded, poolsOnChain),
+    detail: `${counts.recordedPoolCount}/${counts.plannedPoolCount} planned pools recorded${poolsOnChain === 'done' ? ', all found on-chain' : poolsOnChain === 'not-done' && recordedPoolIds.length ? '; not all found on-chain' : ''}.`,
+  });
+  steps.push({
+    id: 'locks',
+    label: 'Lock the liquidity',
+    state: combine(counts.positionCount > 0 && counts.lockedPositionCount === counts.positionCount, 'unknown'),
+    detail: `${counts.lockedPositionCount}/${counts.positionCount} positions recorded as locked.`,
+  });
+  if (token.sealedLaunch === true) {
+    steps.push({
+      id: 'reveal',
+      label: 'Reveal the sealed identity',
+      state: combine(token.sealedMetadataPending !== true, 'unknown'),
+      detail: token.sealedMetadataPending === true ? 'The identity is still sealed.' : 'Recorded as revealed.',
+    });
+  }
+  const walletEmptyOnChain = launchWalletLamports === null ? 'unknown' : launchWalletLamports === 0 ? 'done' : 'not-done';
+  steps.push({
+    id: 'return',
+    label: 'Return the assets and empty the launch wallet',
+    state: combine(journal?.transfer?.walletEmpty === true, walletEmptyOnChain),
+    detail: launchWalletLamports === null
+      ? 'Not checked on-chain.'
+      : launchWalletLamports === 0
+        ? 'The launch wallet is empty on-chain.'
+        : `The launch wallet still holds ${(launchWalletLamports / 1e9).toFixed(4)} SOL.`,
+  });
+  return {
+    journalId: journal?.id || null,
+    journalStatus: journal?.status || null,
+    stage: journal?.stage || null,
+    walletPublicKey: journal?.walletPublicKey || null,
+    steps,
+    nextStep: steps.find((step) => step.state !== 'done')?.id || null,
+  };
+}
+
 app.get('/api/v2/coins/:mint', async (req, res) => {
   try {
     const mint = String(req.params.mint || '').trim();
@@ -3146,12 +3215,21 @@ app.get('/api/v2/coins/:mint', async (req, res) => {
     }
     if (!validMint(mint)) return res.status(400).json({ success: false, error: 'Invalid mint' });
     const connection = new Connection(getRpcUrl(), 'confirmed');
-    const [account, info, markets] = await Promise.all([
+    const latestJournal = journals
+      .slice()
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
+    const [account, info, markets, launchWalletLamports] = await Promise.all([
       readMintAccount(connection, mint).catch((error) => ({ error: error.message })),
       getTokenMetadata(mint).catch(() => null),
       listTokenMarkets(mint).catch((error) => ({ error: error.message, pools: [] })),
+      latestJournal?.walletPublicKey
+        ? connection.getBalance(new PublicKey(latestJournal.walletPublicKey)).catch(() => null)
+        : Promise.resolve(null),
     ]);
-    res.json({ success: true, coin: { mint, practice: false, account, info, markets, events } });
+    const creation = latestJournal
+      ? coinCreationSteps(latestJournal, { account, markets, launchWalletLamports })
+      : null;
+    res.json({ success: true, coin: { mint, practice: false, account, info, markets, events, creation } });
   } catch (error) {
     sendErrorResponse(res, error, 400);
   }

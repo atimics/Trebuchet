@@ -21862,6 +21862,58 @@ function coinMarketsHtml(markets) {
     </div>`;
 }
 
+const CREATION_STEP_STATES = {
+  done: { icon: 'fa-check', label: 'Done, confirmed on-chain' },
+  recorded: { icon: 'fa-file-circle-check', label: 'Recorded; not checked on-chain' },
+  mismatch: { icon: 'fa-triangle-exclamation', label: 'Recorded as done, but the chain disagrees' },
+  todo: { icon: 'fa-circle', label: 'Not done yet' },
+  unrecorded: { icon: 'fa-circle-question', label: 'Not recorded; not checked on-chain' },
+};
+
+function coinCreationHtml(creation) {
+  if (!creation) return '';
+  const unfinished = creation.nextStep && creation.journalStatus !== 'completed';
+  const mismatches = creation.steps.filter((step) => step.state === 'mismatch');
+  return `
+    <ol class="coin-creation">
+      ${creation.steps.map((step) => {
+        const meta = CREATION_STEP_STATES[step.state] || CREATION_STEP_STATES.todo;
+        return `<li class="is-${escapeHtml(step.state)}">
+          <i class="fa-solid ${meta.icon}" aria-hidden="true"></i>
+          <span><strong>${escapeHtml(step.label)}</strong><small>${escapeHtml(meta.label)} · ${escapeHtml(step.detail || '')}</small></span>
+        </li>`;
+      }).join('')}
+    </ol>
+    ${mismatches.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> The launch record and the chain disagree on ${mismatches.length === 1 ? 'one step' : `${mismatches.length} steps`}. The chain is right; continue the launch to repair it.</p>` : ''}
+    ${unfinished || mismatches.length
+      ? `<div class="coin-actions"><button class="primary-button compact" type="button" data-action="continue-coin-creation" data-journal-id="${escapeHtml(creation.journalId || '')}"><span>Continue in the create flow</span><i class="fa-solid fa-arrow-right"></i></button></div>`
+      : ''}`;
+}
+
+// Open a launch record in the create flow at the step it needs next,
+// the same way startup recovery does.
+function openJournalInCreateFlow(journalId) {
+  const journal = (state.recovery.journals || []).find((item) => item.id === journalId);
+  if (!journal) {
+    notify('This launch record is not loaded here; open it from History');
+    setView('history');
+    return;
+  }
+  const sameLaunch = proofTokenMint(state.launchProof) && proofTokenMint(state.launchProof) === journalTokenMint(journal);
+  if (!sameLaunch && !guardLaunchWorkspaceSwitch()) return;
+  if (!sameLaunch) clearLaunchWorkspaceState();
+  restoreLaunchConfigFromJournal(journal);
+  if (journal.walletPublicKey
+      && state.managedWallets.some((wallet) => wallet.publicKey === journal.walletPublicKey)) {
+    state.selectedWalletPublicKey = journal.walletPublicKey;
+    state.accountId = journal.walletPublicKey;
+  }
+  setView('launch');
+  setLaunchWorkspace(recoveryWorkspaceForJournal(journal));
+  renderAll();
+  checkExecutionReadiness().catch(() => null);
+}
+
 function coinActivityHtml(events = []) {
   if (!events.length) return '<p class="coins-empty">Nothing recorded yet.</p>';
   const label = {
@@ -21940,6 +21992,7 @@ function renderCoinPage(coin) {
     ${state.coins.detailError ? `<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>` : ''}
     ${coin.practice ? '<p class="pool-support-intro">Practice coin: it exists only in the local simulator.</p>' : ''}
     ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl></section>` : ''}
+    ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Launch steps' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation)}</section>` : ''}
     ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
     <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>
     ${coin.status === 'Added' ? `<div class="coin-actions"><button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button></div>` : ''}`;
@@ -23948,6 +24001,10 @@ function handleClick(event) {
     state.coins = { ...state.coins, key: null };
     setView('coins');
     refreshCoins().catch(() => null);
+    return;
+  }
+  if (action === 'continue-coin-creation') {
+    openJournalInCreateFlow(actionTarget.dataset.journalId);
     return;
   }
   if (action === 'open-draft') {

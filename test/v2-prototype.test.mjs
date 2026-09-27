@@ -2963,6 +2963,13 @@ test('v2 funding shows SOL into the pool apart from rent and fees', () => {
   assert.match(js, /No SOL goes into the pool\. Until someone buys, sellers have nothing to sell into\./);
 });
 
+test('coin page shows the launch as steps checked against the chain', () => {
+  assert.match(js, /function coinCreationHtml\(creation\)/);
+  assert.match(js, /mismatch: \{ icon: 'fa-triangle-exclamation', label: 'Recorded as done, but the chain disagrees' \}/);
+  assert.match(js, /unrecorded: \{ icon: 'fa-circle-question', label: 'Not recorded; not checked on-chain' \}/);
+  assert.match(js, /function openJournalInCreateFlow\(journalId\)/);
+});
+
 test('v2 auto-compresses oversized logos into the Classic upload envelope', async () => {
   const start = js.indexOf('function loadLogoImage');
   const end = js.indexOf('\nfunction validateProofFile', start);
@@ -6744,12 +6751,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=87/);
+  assert.match(html, /styles\.css\?v=88/);
   assert.match(html, /runtime-state\.js\?v=1/);
   assert.match(html, /api-client\.js\?v=39/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=179/);
-  assert.doesNotMatch(html, /app\.js\?v=179" type="module"/);
+  assert.match(html, /app\.js\?v=180/);
+  assert.doesNotMatch(html, /app\.js\?v=180" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
