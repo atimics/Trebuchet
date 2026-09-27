@@ -769,6 +769,13 @@ export async function createTokenWithMetaplex({
       console.log('Using random mint keypair');
     }
 
+    const normalizedMintFormat = normalizeMintFormat(mintFormat);
+    if (mintKeypair?.scalar && normalizedMintFormat !== MINT_FORMAT_TOKEN_2022) {
+      // createMint needs a seed Keypair; split-key CAs only sign in the
+      // Token-2022 path. Refuse before anything is uploaded.
+      throw new Error('Split-key vanity CAs need the Token-2022 mint format.');
+    }
+
     console.log('Uploading logo to Arweave...');
     console.log('Uploading metadata to Arweave...');
 
@@ -795,7 +802,6 @@ export async function createTokenWithMetaplex({
       onChainMetadataSymbol = SEALED_TOKEN_SYMBOL;
     }
 
-    const normalizedMintFormat = normalizeMintFormat(mintFormat);
     if (normalizedMintFormat === MINT_FORMAT_TOKEN_2022) {
       return await createToken2022WithOnMintMetadata({
         tempWallet,
@@ -815,11 +821,6 @@ export async function createTokenWithMetaplex({
     }
 
     // Compatibility profile: classic SPL Token + Metaplex metadata PDA.
-    if (mintKeypair?.scalar) {
-      // createMint needs a seed Keypair; split-key CAs only sign in the
-      // Token-2022 path above.
-      throw new Error('Split-key vanity CAs need the Token-2022 mint format.');
-    }
 
     // Create mint using standard SPL token first. Two instructions in one
     // tx (exactly what spl-token's createMint wrapper did internally),

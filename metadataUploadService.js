@@ -4,6 +4,7 @@ import { createGenericFile, keypairIdentity } from '@metaplex-foundation/umi';
 import { irysUploader } from '@metaplex-foundation/umi-uploader-irys';
 import { getRpcUrl } from './rpcConfig.js';
 import { metadataDocumentHash } from './brandShieldService.js';
+import { stampLogoDataUrl } from './logoStampService.js';
 
 export const DEFAULT_IRYS_ADDRESS = 'https://node1.irys.xyz';
 export const DEVNET_IRYS_ADDRESS = 'https://devnet.irys.xyz';
@@ -86,6 +87,7 @@ export async function uploadTokenMetadata({
   symbol,
   description,
   mint = null,
+  stampLogo = true,
   onProgress,
   logger = console,
   placeholderImageUri = PLACEHOLDER_TOKEN_IMAGE_URI,
@@ -93,6 +95,21 @@ export async function uploadTokenMetadata({
   rpcUrl = getRpcUrl(),
 }) {
   let imageUri = placeholderImageUri;
+  let logoStamped = false;
+
+  // Put the mint on the logo itself: a copy that reuses this image shows the
+  // real CA wherever the image is displayed.
+  if (logoBase64 && mint && stampLogo) {
+    const stamp = stampLogoDataUrl(logoBase64, mint);
+    if (stamp.stamped) {
+      logoBase64 = stamp.dataUrl;
+      logoStamped = true;
+      onProgress?.({ stage: 'logo_stamped', mint, bytes: stamp.bytes });
+    } else {
+      logger.warn?.('Logo left unstamped:', stamp.reason);
+      onProgress?.({ stage: 'logo_stamp_skipped', mint, reason: stamp.reason });
+    }
+  }
 
   const withTimeout = (promise, label) => {
     if (!uploadTimeoutMs || uploadTimeoutMs <= 0) return promise;
@@ -146,7 +163,7 @@ export async function uploadTokenMetadata({
   logger.log?.('Metadata uploaded:', metadataUri);
   onProgress?.({ stage: 'metadata_uploaded', metadataUri, imageUri, metadataHash });
 
-  return { metadataUri, imageUri, metadata, metadataHash };
+  return { metadataUri, imageUri, metadata, metadataHash, logoStamped };
 }
 
 export async function uploadSealedPlaceholderMetadata({

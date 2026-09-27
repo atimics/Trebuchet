@@ -106,6 +106,7 @@
     "destinationProofStore.js",
     "launchReportService.js",
     "metadataUploadService.js",
+    "logoStampService.js",
     "userPrefs.js",
     "updateCheck.js",
     "updateCheckBridge.js",
@@ -147,8 +148,10 @@
     "express": "^4.22.2",
     "gifenc": "^1.0.3",
     "gifuct-js": "^2.1.2",
+    "jpeg-js": "^0.4.4",
     "marked": "^14.1.4",
     "multer": "^2.3.0",
+    "pngjs": "^7.0.0",
     "qrcode": "^1.5.4"
   },
   "bundleDependencies": [
@@ -160,8 +163,7 @@
     "electron-builder": "^26.15.0",
     "esbuild": "^0.25.10",
     "pixelmatch": "^7.2.0",
-    "playwright": "^1.60.0",
-    "pngjs": "^7.0.0"
+    "playwright": "^1.60.0"
   },
   "overrides": {
     "@xmldom/xmldom": "^0.8.15",
@@ -228,6 +230,7 @@
       "destinationProofStore.js",
       "launchReportService.js",
       "metadataUploadService.js",
+      "logoStampService.js",
       "userPrefs.js",
       "updateCheck.js",
       "updateCheckBridge.js",

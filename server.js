@@ -5434,6 +5434,11 @@ function recordTokenJournalProgress(walletPublicKey, event) {
     token.metadataPointerAuthorityRevoked = event.metadataPointerAuthorityRevoked;
   }
   if (typeof event.sealedLaunch === 'boolean') token.sealedLaunch = event.sealedLaunch;
+  if (event.stage === 'logo_stamped') token.logoStamped = true;
+  if (event.stage === 'logo_stamp_skipped') {
+    token.logoStamped = false;
+    token.logoStampSkipReason = event.reason || null;
+  }
   if (typeof event.sealedMetadataPending === 'boolean') {
     token.sealedMetadataPending = event.sealedMetadataPending;
   }
