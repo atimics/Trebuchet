@@ -2942,6 +2942,18 @@ test('v2 liquidity budget puts real SOL in the pool as buy support', () => {
   assert.match(js, /<small>SOL in the pool<\/small>/);
 });
 
+test('v2 new pools use the 1% tier and pairs open above the SOL price', () => {
+  assert.match(js, /const DEFAULT_POOL_CONFIG_INDEX = 3;/);
+  assert.match(js, /const PAIR_START_PREMIUM_PCT = 25;/);
+  assert.match(js, /ammConfigIndex: state\.solPoolConfigIndex,/);
+  assert.match(js, /ammConfigIndex: state\.pairPoolConfigIndex,/);
+  assert.match(js, /startPricePremiumPct: state\.pairStartPremiumPct,/);
+  // Restored launches keep the tier and premium they were planned with.
+  assert.match(js, /restoredSolPool\.ammConfigIndex \?\? 8/);
+  assert.match(js, /pairPool\.startPricePremiumPct \?\? 0/);
+  assert.match(js, /function pairArbitrageWarningHtml\(/);
+});
+
 test('v2 auto-compresses oversized logos into the Classic upload envelope', async () => {
   const start = js.indexOf('function loadLogoImage');
   const end = js.indexOf('\nfunction validateProofFile', start);

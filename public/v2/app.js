@@ -6,6 +6,14 @@ const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selec
 // allocationStartPrice).
 const PAIR_START_PREMIUM_PCT = 25;
 
+// New pools use Raydium's 1% tier (config 3, tick spacing 120). Tick spacing
+// 1 (the 0.04%/0.05% tiers) needs a tick-array bitmap extension for a
+// launch's price range, which several routers omit, so swaps failed; its
+// 0.6%-wide tick arrays also make nearly every position pay fresh rent, and
+// the fee earned the Fee Keys almost nothing. 1% also means a pair has to
+// drift further before arbitrage between pools pays.
+const DEFAULT_POOL_CONFIG_INDEX = 3;
+
 const views = {
   launch: { eyebrow: '', title: 'Launch a token' },
   nfts: { eyebrow: '', title: 'NFT collections' },
@@ -441,6 +449,10 @@ const state = {
   // How far above the SOL pool's price pair pools open. Restored launches
   // keep the value they were planned with (0 before this existed).
   pairStartPremiumPct: PAIR_START_PREMIUM_PCT,
+  // Fee tier (AmmConfig index) of the SOL pool and the flywheel pair pool.
+  // Restored launches keep the tiers they were planned with.
+  solPoolConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
+  pairPoolConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
   fundingWallet: {
     walletPublicKey: null,
     funder: null,
@@ -4794,7 +4806,7 @@ function vortexAllocationModel() {
       mint: String(pool.quoteMint || ''),
       percent: Number(pool.supplyPercent || 0),
       minPercent: 0,
-      feeTier: Number(pool.ammConfigIndex ?? 5),
+      feeTier: Number(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
     });
   });
   const venue = selectedClassicQuoteVenue();
@@ -4805,7 +4817,7 @@ function vortexAllocationModel() {
     mint: 'So11111111111111111111111111111111111111112',
     percent: Number($('#mainPoolPercent')?.value || 0),
     minPercent: 10,
-    feeTier: 8,
+    feeTier: state.solPoolConfigIndex,
   });
   const quotePercent = Number($('#quotePoolPercent')?.value || 0);
   // Always present: a pool at 0% still needs a boundary to drag open.
@@ -4817,7 +4829,7 @@ function vortexAllocationModel() {
       percent: quotePercent,
       minPercent: isFlywheel ? 10 : 0,
       maxPercent: isFlywheel ? 30 : 100,
-      feeTier: 5,
+      feeTier: state.pairPoolConfigIndex,
     });
   }
   return {
@@ -4888,7 +4900,7 @@ async function spinFlywheelVortex() {
     quoteSymbol: `MEME${index + 2}`,
     quoteMint: mint,
     supplyPercent: quoteShare,
-    ammConfigIndex: 5,
+    ammConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
     sliceShares: '100',
     feeKeyRecipient: '',
     ladderBands: 0,
@@ -5060,7 +5072,7 @@ function currentClassicModel() {
     quoteToken: 'SOL',
     quoteSymbol: 'SOL',
     supplyPercent: mainPoolPercent,
-    ammConfigIndex: 8,
+    ammConfigIndex: state.solPoolConfigIndex,
     distribution,
     bootstrap: { mode: 'minimal' },
     ladder: manualBands.length
@@ -5080,7 +5092,7 @@ function currentClassicModel() {
       quoteMint: quoteVenue.quoteMint,
       quoteSymbol: quoteVenue.symbol,
       supplyPercent: quotePoolPercent,
-      ammConfigIndex: 5,
+      ammConfigIndex: state.pairPoolConfigIndex,
       startPricePremiumPct: state.pairStartPremiumPct,
       distribution: [{ sharePercent: 100, recipient: feeKeyRecipient || null }],
       bootstrap: { mode: 'minimal' },
@@ -5113,10 +5125,10 @@ function currentClassicModel() {
         isToken2022: resolvedInfo.isToken2022 === true,
       } : null,
       supplyPercent,
-      ammConfigIndex: Math.floor(parseNumericInput(pool.ammConfigIndex, 5)),
+      ammConfigIndex: Math.floor(parseNumericInput(pool.ammConfigIndex, DEFAULT_POOL_CONFIG_INDEX)),
       startPricePremiumPct: quoteMint === DEFAULT_SOL_MINT
         ? 0
-        : clampNumber(parseNumericInput(pool.startPremiumPct, state.pairStartPremiumPct), 0, 500),
+        : clampNumber(parseNumericInput(pool.startPremiumPct ?? state.pairStartPremiumPct, state.pairStartPremiumPct), 0, 500),
       distribution: parseSliceShares(pool.sliceShares || '100').map((sharePercent, sliceIndex) => ({
         sharePercent,
         recipient: null, // Fee Keys follow the sweep to the verified return wallet.
@@ -5341,6 +5353,16 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   state.pairStartPremiumPct = pairPool
     ? clampNumber(Number(pairPool.startPricePremiumPct ?? 0) || 0, 0, 500)
     : PAIR_START_PREMIUM_PCT;
+  const restoredSolPool = pools.find((pool) => String(pool.id || '') === 'sol-main')
+    || pools.find((pool) => String(pool.quoteToken || pool.quoteSymbol || '').toUpperCase() === 'SOL');
+  const restoredFlywheelPool = pools.find((pool) => String(pool.id || '').endsWith('-flywheel'));
+  // Before per-launch tiers, the SOL pool used config 8 and pairs config 5.
+  state.solPoolConfigIndex = restoredSolPool
+    ? Math.floor(Number(restoredSolPool.ammConfigIndex ?? 8))
+    : DEFAULT_POOL_CONFIG_INDEX;
+  state.pairPoolConfigIndex = restoredFlywheelPool
+    ? Math.floor(Number(restoredFlywheelPool.ammConfigIndex ?? 5))
+    : DEFAULT_POOL_CONFIG_INDEX;
   const solPool = pools.find((pool) => (
     String(pool.quoteSymbol || pool.quoteSymbolOverride || pool.quoteToken || '').toUpperCase() === 'SOL'
     || String(pool.quoteMint || '') === DEFAULT_SOL_MINT
@@ -7136,7 +7158,7 @@ function renderSupplyEditor() {
     const id = escapeHtml(pool.id);
     const key = escapeHtml(row.key);
     return `
-      ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? 5)}</select>`)}
+      ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
       ${field('Start above SOL price %', 'Opens this pair above the SOL pool price, so the pair token can fall this far before bots can drain SOL buyers.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="startPremiumPct" data-pool-id="${id}" data-supply-key="${key}:premium" value="${escapeHtml(pool.startPremiumPct ?? state.pairStartPremiumPct)}">`)}
       ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`)}
       ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`)}
@@ -7206,7 +7228,7 @@ function renderPoolEditorPanel() {
           <label><span>Quote symbol</span><input data-custom-pool-field="quoteSymbol" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.quoteSymbol || '')}" autocomplete="off"></label>
           <label><span>Quote mint</span><input data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.quoteMint || '')}" placeholder="Mint address" autocomplete="off"></label>
           <label><span>Supply %</span><input data-custom-pool-field="supplyPercent" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="100" step="0.1" value="${escapeHtml(pool.supplyPercent ?? 5)}"></label>
-          <label><span>Fee tier</span><select data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(pool.id)}">${feeTierOptionsHtml(pool.ammConfigIndex ?? 5)}</select></label>
+          <label><span>Fee tier</span><select data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(pool.id)}">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select></label>
           <label><span>Slices</span><input data-custom-pool-field="sliceShares" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.sliceShares || '100')}" autocomplete="off"></label>
           <label><span>Ladder bands</span><input data-custom-pool-field="ladderBands" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" value="${escapeHtml(pool.ladderBands ?? 0)}"></label>
           <label><span>Support SOL</span><input data-custom-pool-field="supportSol" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" step="0.05" value="${escapeHtml(pool.supportSol ?? 0)}"></label>
@@ -18767,7 +18789,7 @@ function addCustomPool() {
     quoteSymbol: 'QUOTE',
     quoteMint: '',
     supplyPercent: 5,
-    ammConfigIndex: 5,
+    ammConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
     sliceShares: '100',
     feeKeyRecipient: '',
     ladderBands: 0,
