@@ -18,16 +18,6 @@ const launchWorkspaces = [
   { id: 'finish', title: 'Finish launch', detail: 'Run airdrops, sweep every remaining asset, and save launch proof.' },
 ];
 
-const GUIDED_RECIPE_ID = 'simple-sol-v1';
-const GUIDED_DRAFT_STORAGE_KEY = 'trebuchet-v2-guided-draft';
-const GUIDED_PRACTICE_DESTINATION = '11111111111111111111111111111112';
-const guidedSteps = Object.freeze([
-  { id: 'token', label: 'Token' },
-  { id: 'liquidity', label: 'Liquidity pairs' },
-  { id: 'review', label: 'Review' },
-  { id: 'fund', label: 'Fund' },
-  { id: 'launch', label: 'Launch' },
-]);
 
 const EMPTY_ACCOUNT = Object.freeze({
   id: 'none',
@@ -312,24 +302,6 @@ const state = {
   launchMode: 'dry-run',
   environmentReady: false,
   environmentSwitching: false,
-  experienceMode: 'guided',
-  guidedStep: 0,
-  guidedIntent: {
-    destinationWallet: '',
-    startingMarketCapUsd: 250000,
-    liquidityBudgetSol: 1,
-  },
-  guidedErrors: {},
-  guidedRunError: null,
-  guidedRunStatus: 'idle',
-  guidedPracticeWalletPublicKey: null,
-  guidedFunding: {
-    status: 'idle',
-    launchCostsSol: null,
-    requiredSol: null,
-    error: null,
-  },
-  advancedDraft: null,
   launchStage: 0,
   simulated: false,
   tokenLogo: null,
@@ -457,7 +429,9 @@ const state = {
   },
   // Wallets proven to be the user's: the on-chain funder of the launch wallet
   // and wallets that signed a Trebuchet challenge.
-  destinations: { funder: null, signed: [], launchWallet: null, checkedAt: 0, waiting: false },
+  destinations: { funder: null, funders: [], signed: [], launchWallet: null, checkedAt: 0, waiting: false },
+  // Funding wallets chosen to share the held-back tokens (by SOL sent).
+  heldShare: { selected: [] },
   fundingWallet: {
     walletPublicKey: null,
     funder: null,
@@ -579,34 +553,6 @@ function v2LocalStorage() {
   }
 }
 
-const GUIDED_ADVANCED_FIELD_IDS = Object.freeze([
-  'tokenName',
-  'tokenSymbol',
-  'tokenSupply',
-  'tokenDescription',
-  'sealedLaunch',
-  'mintFormat',
-  'targetMarketCapUsd',
-  'launchSol',
-  'liquidityBudgetSol',
-  'vanityStart',
-  'vanityEnd',
-  'vanityCaseInsensitive',
-  'vanityLength',
-  'mainPoolPercent',
-  'quotePoolPercent',
-  'preallocationSupplyPercent',
-  'quotePoolVenue',
-  'sliceShares',
-  'ladderBands',
-  'supportSol',
-  'airdropWallets',
-  'airdropSupplyPercent',
-  'airdropAutoFit',
-  'feeKeyRecipient',
-  'sweepDestination',
-]);
-
 function practiceEnvironmentSelected() {
   if (!state.environmentReady) return true;
   return state.launchMode === 'dry-run' || state.demoActive;
@@ -617,514 +563,14 @@ function executionEnvironmentId() {
   return practiceEnvironmentSelected() ? 'practice' : 'live';
 }
 
-function resetGuidedFundingEstimate() {
-  state.guidedFunding = {
-    status: 'idle',
-    launchCostsSol: null,
-    requiredSol: null,
-    error: null,
-  };
-}
-
-function guidedTokenDraft() {
-  return {
-    name: String($('#tokenName')?.value || '').trim(),
-    symbol: String($('#tokenSymbol')?.value || '').trim().toUpperCase(),
-    description: String($('#tokenDescription')?.value || '').trim(),
-  };
-}
-
-function guidedDraftSnapshot() {
-  return {
-    version: 1,
-    recipeId: GUIDED_RECIPE_ID,
-    experienceMode: state.experienceMode,
-    step: state.guidedStep,
-    token: guidedTokenDraft(),
-    intent: {
-      destinationWallet: String(state.guidedIntent.destinationWallet || '').trim(),
-      startingMarketCapUsd: Number(state.guidedIntent.startingMarketCapUsd || 0),
-      liquidityBudgetSol: Math.max(0, Number(state.guidedIntent.liquidityBudgetSol || 0)),
-    },
-  };
-}
-
-function persistGuidedDraft() {
-  const storage = v2LocalStorage();
-  if (!storage) return;
-  try {
-    storage.setItem(GUIDED_DRAFT_STORAGE_KEY, JSON.stringify(guidedDraftSnapshot()));
-  } catch {
-    // Guided mode remains usable when local storage is unavailable or full.
-  }
-}
-
-function restoreGuidedDraft() {
-  const storage = v2LocalStorage();
-  if (!storage) return;
-  try {
-    const saved = JSON.parse(storage.getItem(GUIDED_DRAFT_STORAGE_KEY) || 'null');
-    if (!saved || saved.version !== 1 || saved.recipeId !== GUIDED_RECIPE_ID) return;
-    state.experienceMode = saved.experienceMode === 'advanced' ? 'advanced' : 'guided';
-    state.guidedStep = clampNumber(Math.floor(Number(saved.step || 0)), 0, guidedSteps.length - 1);
-    state.guidedIntent.destinationWallet = String(saved.intent?.destinationWallet || '').trim();
-    state.guidedIntent.startingMarketCapUsd = Math.max(0, Number(saved.intent?.startingMarketCapUsd || 250000));
-    state.guidedIntent.liquidityBudgetSol = Math.max(0, Number(saved.intent?.liquidityBudgetSol ?? 1));
-    if ($('#tokenName') && saved.token?.name) $('#tokenName').value = String(saved.token.name).slice(0, 32);
-    if ($('#tokenSymbol') && saved.token?.symbol) $('#tokenSymbol').value = String(saved.token.symbol).slice(0, 10).toUpperCase();
-    if ($('#tokenDescription') && typeof saved.token?.description === 'string') {
-      $('#tokenDescription').value = saved.token.description.slice(0, 200);
-    }
-    if ($('#targetMarketCapUsd')) $('#targetMarketCapUsd').value = String(state.guidedIntent.startingMarketCapUsd || 250000);
-    if ($('#liquidityBudgetSol')) $('#liquidityBudgetSol').value = String(state.guidedIntent.liquidityBudgetSol);
-  } catch {
-    // A malformed draft should never block the launch screen.
-  }
-}
-
-function captureAdvancedDraft() {
-  const values = {};
-  GUIDED_ADVANCED_FIELD_IDS.forEach((id) => {
-    const input = $(`#${id}`);
-    if (!input) return;
-    values[id] = input.type === 'checkbox' ? input.checked : input.value;
-  });
-  return {
-    values,
-    customPools: structuredClone(state.customPools || []),
-    baseManualLadderText: state.baseManualLadderText,
-    baseSupportDepth: state.baseSupportDepth,
-    airdropCsvText: state.airdropCsvText,
-    selectedVanityPublicKey: state.selectedVanityPublicKey,
-  };
-}
-
-function restoreAdvancedDraft(draft = state.advancedDraft) {
-  if (!draft) return;
-  Object.entries(draft.values || {}).forEach(([id, value]) => {
-    const input = $(`#${id}`);
-    if (!input) return;
-    if (input.type === 'checkbox') input.checked = Boolean(value);
-    else input.value = value;
-  });
-  state.customPools = structuredClone(draft.customPools || []);
-  state.baseManualLadderText = draft.baseManualLadderText || '';
-  state.baseSupportDepth = draft.baseSupportDepth || '12';
-  state.airdropCsvText = draft.airdropCsvText || '';
-  state.selectedVanityPublicKey = draft.selectedVanityPublicKey || null;
-}
-
-function syncGuidedField(input) {
-  const field = input?.dataset?.guidedField;
-  if (!field) return false;
-  if (field === 'name') $('#tokenName').value = input.value.slice(0, 32);
-  if (field === 'symbol') {
-    input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
-    $('#tokenSymbol').value = input.value;
-  }
-  if (field === 'description') $('#tokenDescription').value = input.value.slice(0, 200);
-  if (field === 'destinationWallet') state.guidedIntent.destinationWallet = input.value.trim();
-  if (field === 'pairQuote') state.guidedIntent.pairQuote = input.value;
-  if (field === 'feeBps') {
-    state.guidedIntent.feeBps = Math.max(0, Number(input.value) || 0);
-    resetGuidedFundingEstimate();
-  }
-  if (field === 'startingMarketCapUsd') {
-    state.guidedIntent.startingMarketCapUsd = Math.max(0, parseNumericInput(input.value, 0));
-    resetGuidedFundingEstimate();
-  }
-  if (field === 'liquidityBudgetSol') {
-    state.guidedIntent.liquidityBudgetSol = Math.max(0, parseNumericInput(input.value, 0));
-    resetGuidedFundingEstimate();
-  }
-  delete state.guidedErrors[field];
-  persistGuidedDraft();
-  if (['name', 'symbol', 'description'].includes(field)) {
-    renderLaunchPreview();
-    renderLaunchIdentity();
-  }
-  return true;
-}
-
-function applyGuidedRecipe({ refresh = true } = {}) {
-  const destination = String(state.guidedIntent.destinationWallet || '').trim();
-  const marketCap = Math.max(1, Number(state.guidedIntent.startingMarketCapUsd || 250000));
-  const budgetSol = Math.max(0, Number(state.guidedIntent.liquidityBudgetSol || 0));
-  const strategy = launchBudgetRecommendation(budgetSol);
-  $('#tokenSupply').value = '1,000,000,000';
-  $('#targetMarketCapUsd').value = String(marketCap);
-  $('#launchSol').value = String(strategy.coreSol);
-  if ($('#liquidityBudgetSol')) $('#liquidityBudgetSol').value = String(budgetSol);
-  $('#vanityStart').value = '';
-  $('#vanityEnd').value = '';
-  $('#mainPoolPercent').value = '100';
-  $('#quotePoolPercent').value = '0';
-  $('#preallocationSupplyPercent').value = '0';
-  $('#sliceShares').value = '100';
-  $('#ladderBands').value = String(strategy.ladderBands);
-  $('#supportSol').value = String(strategy.supportSol);
-  $('#airdropWallets').value = '0';
-  $('#airdropSupplyPercent').value = '0';
-  $('#airdropAutoFit').checked = true;
-  // Live launches return to the funding wallet unless a signed wallet is
-  // chosen; only practice uses the built-in placeholder destination.
-  $('#feeKeyRecipient').value = '';
-  $('#sweepDestination').value = practiceEnvironmentSelected() || state.destinations.signed.includes(destination)
-    ? destination
-    : '';
-  state.selectedVanityPublicKey = null;
-  state.customPools = [];
-  state.baseManualLadderText = '';
-  state.baseSupportDepth = '12';
-  state.airdropCsvText = '';
-  if (refresh) {
-    invalidateClassicOutputs();
-    refreshClassicPreview({ includePoolEditor: true });
-  }
-}
-
-function guidedStepErrors(step = state.guidedStep) {
-  const token = guidedTokenDraft();
-  const errors = {};
-  if (step === 1) {
-    if (!token.name) errors.name = 'Give the token a name.';
-    if (!/^[A-Z0-9]{1,10}$/.test(token.symbol)) errors.symbol = 'Use 1–10 letters or numbers.';
-  }
-  if (step === 2) {
-    const destination = String(state.guidedIntent.destinationWallet || '').trim();
-    if (destination && !isProbablySolanaAddress(destination)) errors.destinationWallet = 'Enter a complete Solana wallet address.';
-    if (!practiceEnvironmentSelected() && destination === GUIDED_PRACTICE_DESTINATION) {
-      errors.destinationWallet = 'Choose the real wallet that should receive ownership and remaining assets.';
-    }
-    if (destination && destination === selectedLaunchWalletPublicKey()) {
-      errors.destinationWallet = 'Choose your home wallet, not the temporary launch wallet.';
-    }
-  }
-  if (step === 3 && Number(state.guidedIntent.startingMarketCapUsd || 0) <= 0) {
-    errors.startingMarketCapUsd = 'Enter a starting value greater than zero.';
-  }
-  return errors;
-}
-
-function guidedStepProgress() {
-  return `
-    <ol class="guided-progress" aria-label="Guided launch progress">
-      ${guidedSteps.map((step, index) => {
-        const stepNumber = index + 1;
-        const current = state.guidedStep === index;
-        const complete = state.guidedStep > index;
-        return `<li class="${current ? 'is-current' : ''} ${complete ? 'is-complete' : ''}">
-          <span>${complete ? '<i class="fa-solid fa-check"></i>' : stepNumber}</span>
-          <small>${escapeHtml(step.label)}</small>
-        </li>`;
-      }).join('')}
-    </ol>
-  `;
-}
-
-function guidedError(field) {
-  const message = state.guidedErrors[field];
-  return message ? `<small class="guided-field-error" role="alert">${escapeHtml(message)}</small>` : '';
-}
-
-function guidedIdentityStep() {
-  const token = guidedTokenDraft();
-  const logo = state.tokenLogo;
-  return `
-    <div class="guided-step-layout">
-      <div class="guided-step-copy">
-        <span class="eyebrow">Step 1 of 5</span>
-        <h2>What are you launching?</h2>
-        <p>Name the token. Trebuchet uses a standard one-billion supply and hides the pool machinery until review.</p>
-      </div>
-      <div class="guided-form-card">
-        <label><span>Token name</span><input data-guided-field="name" value="${escapeHtml(token.name)}" maxlength="32" autocomplete="off" aria-invalid="${state.guidedErrors.name ? 'true' : 'false'}">${guidedError('name')}</label>
-        <label><span>Symbol</span><input data-guided-field="symbol" value="${escapeHtml(token.symbol)}" maxlength="10" autocomplete="off" aria-invalid="${state.guidedErrors.symbol ? 'true' : 'false'}">${guidedError('symbol')}</label>
-        <label class="guided-wide"><span>Description <em>optional</em></span><input data-guided-field="description" value="${escapeHtml(token.description)}" maxlength="200" autocomplete="off"></label>
-        <button class="guided-logo-button guided-wide" type="button" data-action="guided-select-logo">
-          <span class="guided-logo-mark">${logo?.dataUrl ? `<img src="${escapeHtml(launchIdentityImageSrc(logo, { animate: false }))}" alt="">` : '<i class="fa-solid fa-image"></i>'}</span>
-          <span><strong>${logo ? 'Logo attached' : 'Add a token logo'}</strong><small>${logo ? escapeHtml(logo.name || 'Ready') : 'PNG, JPG, or GIF · up to 10MB · optional'}</small></span>
-          <i class="fa-solid fa-chevron-right"></i>
-        </button>
-        ${logo ? `<div class="guided-wide" data-logo-stamp-slot>${tokenLogoStampMarkup()}</div>` : ''}
-      </div>
-    </div>
-  `;
-}
-
-function guidedDestinationStep() {
-  const destination = String(state.guidedIntent.destinationWallet || '');
-  const solflare = String(state.solflare?.publicKey || '');
-  const practice = practiceEnvironmentSelected();
-  const practiceDestinationSelected = destination === GUIDED_PRACTICE_DESTINATION;
-  return `
-    <div class="guided-step-layout">
-      <div class="guided-step-copy">
-        <span class="eyebrow">Step 2 of 4</span>
-        <h2>Choose the home wallet</h2>
-        <p>${practice
-          ? 'Practice uses a built-in destination. No real wallet connection or signature is needed.'
-          : 'A live launch returns ownership, Fee Keys, and every remaining asset to this wallet.'}</p>
-      </div>
-      <div class="guided-form-card single-column">
-        ${practice ? `
-          <button class="guided-practice-wallet ${practiceDestinationSelected ? 'is-selected' : ''}" type="button" data-action="guided-use-practice-wallet">
-            <i class="fa-solid fa-flask"></i>
-            <span><strong>${practiceDestinationSelected ? 'Practice wallet selected' : 'Use the practice wallet'}</strong><small>Recommended · no connection · no signature</small></span>
-            <i class="fa-solid ${practiceDestinationSelected ? 'fa-check' : 'fa-arrow-right'}"></i>
-          </button>
-          <div class="guided-choice-divider"><span>or test a return to your wallet</span></div>
-        ` : ''}
-        <label><span>Home wallet</span><input data-guided-field="destinationWallet" value="${escapeHtml(destination)}" placeholder="Paste a complete Solana address" autocomplete="off" spellcheck="false" aria-invalid="${state.guidedErrors.destinationWallet ? 'true' : 'false'}">${guidedError('destinationWallet')}</label>
-        <div class="guided-inline-actions">
-          ${solflare
-            ? `<button class="pill-button" type="button" data-action="guided-use-solflare">Use connected Solflare · ${escapeHtml(shortAddress(solflare))}</button>`
-            : '<button class="pill-button" type="button" data-action="connect-solflare">Connect Solflare</button>'}
-        </div>
-        <div class="guided-assurance"><i class="fa-solid fa-shield-halved"></i><span><strong>${practice ? 'No wallet signs this practice.' : 'This wallet never signs the launch.'}</strong><small>${practice ? 'The destination is used only to simulate the final return step.' : 'It only receives assets after the isolated Trebuchet wallet finishes.'}</small></span></div>
-      </div>
-    </div>
-  `;
-}
-
-function guidedValueStep() {
-  const marketCap = Number(state.guidedIntent.startingMarketCapUsd || 0);
-  const liquidityBudgetSol = Math.max(0, Number(state.guidedIntent.liquidityBudgetSol || 0));
-  const strategy = launchBudgetRecommendation(liquidityBudgetSol);
-  const tokenPrice = marketCap > 0 ? marketCap / 1_000_000_000 : 0;
-  return `
-    <div class="guided-step-layout">
-      <div class="guided-step-copy">
-        <span class="eyebrow">Step 3 of 4</span>
-        <h2>Choose a target and liquidity budget</h2>
-        <p>Choose the opening market-cap target and the SOL you want available to the pool. The target guides the initial price; it is not money you spend or a guaranteed valuation.</p>
-      </div>
-      <div class="guided-form-card single-column">
-        <div class="guided-presets" aria-label="Starting value presets">
-          ${[25000, 100000, 250000].map((value) => `<button class="${marketCap === value ? 'is-selected' : ''}" type="button" data-action="guided-value-preset" data-value="${value}">$${value.toLocaleString('en-US')}</button>`).join('')}
-        </div>
-        <label><span>Target starting market cap</span><input data-guided-field="startingMarketCapUsd" value="${escapeHtml(marketCap ? marketCap.toLocaleString('en-US') : '')}" inputmode="decimal" autocomplete="off" aria-invalid="${state.guidedErrors.startingMarketCapUsd ? 'true' : 'false'}"><small>Used to derive the opening token price. This is not a fee or a promise of market value.</small>${guidedError('startingMarketCapUsd')}</label>
-        <div class="guided-presets" aria-label="Liquidity budget presets">
-          ${[
-            [0, 'Minimum', 'Launch costs only'],
-            [1, '1 SOL', 'One lean market'],
-            [10, '10 SOL', 'Three balanced bands'],
-            [100, '100 SOL', 'Three deep bands'],
-          ].map(([value, label, detail]) => `<button class="${liquidityBudgetSol === value ? 'is-selected' : ''}" type="button" data-action="guided-budget-preset" data-value="${value}"><strong>${label}</strong><small>${detail}</small></button>`).join('')}
-        </div>
-        <label><span>Pool liquidity budget</span><input data-guided-field="liquidityBudgetSol" value="${escapeHtml(liquidityBudgetSol)}" inputmode="decimal" autocomplete="off"><small>${escapeHtml(strategy.label)} · ${escapeHtml(strategy.structure)} · only a live launch uses this SOL</small></label>
-        <div class="guided-price-preview guided-strategy-preview"><small>What this choice does</small><strong>${escapeHtml(strategy.detail)}</strong><span>Network fees, rent, publishing, and a safety buffer are calculated separately on Review.</span></div>
-        <div class="guided-price-preview guided-token-price-preview"><small>Approximate starting token price</small><strong>$${tokenPrice.toFixed(tokenPrice < 0.001 ? 8 : 4)}</strong><span>Based on one billion tokens and your starting market value.</span></div>
-      </div>
-    </div>
-  `;
-}
-
-function guidedLiquidityStep() {
-  const base = guidedValueStep();
-  const pair = String(state.guidedIntent?.pairQuote || 'SOL');
-  const feeBps = Number(state.guidedIntent?.feeBps ?? 100);
-  const pairs = [
-    ['SOL', 'primary'],
-    ['USDC', 'stable'],
-    ['USDT', 'stable'],
-  ].map(([value, tone]) => `<option value="${value}"${value === pair ? ' selected' : ''}>${value} · ${tone}</option>`).join('');
-  const feeOptions = [
-    [0, 'No swap fee'],
-    [100, '1% buy · 1% sell'],
-    [250, '2.5% buy · 2.5% sell'],
-    [500, '5% buy · 5% sell'],
-  ].map(([value, label]) => `<option value="${value}"${feeBps === value ? ' selected' : ''}>${label}</option>`).join('');
-  const extra = `
-    <label class="guided-wide"><span>Liquidity pair</span>
-      <select data-guided-field="pairQuote">${pairs}</select>
-      <small>The pool is quoted with this asset. More pairs can be added after launch.</small>
-    </label>
-    <label class="guided-wide"><span>Swap fee</span>
-      <select data-guided-field="feeBps">${feeOptions}</select>
-      <small>A fee per trade is routed to your treasury automatically.</small>
-    </label>
-  `;
-  const updatedEyebrow = base.replace(
-    '<span class="eyebrow">Step 3 of 4</span>',
-    '<span class="eyebrow">Step 2 of 5</span>',
-  );
-  return updatedEyebrow.replace(
-    '<div class="guided-price-preview guided-strategy-preview">',
-    `${extra}<div class="guided-price-preview guided-strategy-preview">`,
-  );
-}
-
-function guidedFundingStep() {
-  const funding = state.guidedFunding;
-  const status = funding?.status;
-  const fundValue = status === 'ready'
-    ? `${Number(funding.requiredSol || 0).toFixed(3)} SOL`
-    : status === 'loading'
-      ? 'Calculating…'
-      : 'Not estimated';
-  const costValue = status === 'ready' ? `${Number(funding.launchCostsSol || 0).toFixed(3)} SOL` : '—';
-  return `
-    <div class="guided-step-layout">
-      <div class="guided-step-copy">
-        <span class="eyebrow">Step 4 of 5</span>
-        <h2>Fund the launch</h2>
-        <p>The exact requirement is shown below — rent, fees, and your chosen liquidity. Everything you fund beyond the cost is returned to you at the end.</p>
-      </div>
-      <div class="guided-form-card single-column">
-        <div class="guided-funding-summary">
-          <span><small>Total to fund</small><strong>${fundValue}</strong></span>
-          <span><small>Launch costs</small><strong>${costValue}</strong></span>
-          ${status === 'error' ? '<button class="pill-button" type="button" data-action="guided-retry-estimate">Retry estimate</button>' : ''}
-        </div>
-        <p class="guided-funding-note">Funding also parks your liquidity for the pool. A live run starts only after you approve the launch on the next step.</p>
-      </div>
-    </div>
-  `;
-}
-
-function guidedLaunchStep() {
-  const token = guidedTokenDraft();
-  const practice = practiceEnvironmentSelected();
-  const identity = `${token.name || 'Untitled'} · $${token.symbol || 'TOK'}`;
-  return `
-    <div class="guided-step-layout">
-      <div class="guided-step-copy">
-        <span class="eyebrow">Step 5 of 5</span>
-        <h2>Ready to launch</h2>
-        <p>${escapeHtml(identity)} is fully planned and funded. ${practice ? 'Run the full simulation first — practice creates no usable token or pool, sends no transaction, and spends no SOL.' : 'Green light the live launch when you are ready, or run the simulation first.'}</p>
-      </div>
-    </div>
-  `;
-}
-
-function guidedReviewStep() {
-  const token = guidedTokenDraft();
-  const destination = String(state.guidedIntent.destinationWallet || '').trim();
-  const marketCap = Number(state.guidedIntent.startingMarketCapUsd || 0);
-  const liquidityBudgetSol = Math.max(0, Number(state.guidedIntent.liquidityBudgetSol || 0));
-  const strategy = launchBudgetRecommendation(liquidityBudgetSol);
-  const practice = practiceEnvironmentSelected();
-  const funding = state.guidedFunding;
-  const fundingValue = funding.status === 'ready'
-    ? `${Number(funding.requiredSol || 0).toFixed(3)} SOL`
-    : funding.status === 'loading'
-      ? 'Calculating…'
-      : 'Not available';
-  const costValue = funding.status === 'ready'
-    ? `${Number(funding.launchCostsSol || 0).toFixed(3)} SOL`
-    : funding.status === 'loading'
-      ? 'Calculating…'
-      : 'Not estimated';
-  return `
-    <div class="guided-review">
-      <div class="guided-step-copy">
-        <span class="eyebrow">Step 4 of 4</span>
-        <h2>Review the launch</h2>
-        <p>${practice
-          ? 'Trebuchet will simulate the complete recipe locally. It creates no usable token or pool and spends no SOL.'
-          : 'Review the derived recipe and funding requirement. Nothing goes on-chain until the isolated wallet is funded and you approve the final run.'}</p>
-      </div>
-      <div class="guided-review-hero">
-        <span class="guided-token-mark">${state.tokenLogo?.dataUrl ? `<img src="${escapeHtml(launchIdentityImageSrc(state.tokenLogo, { animate: false }))}" alt="">` : escapeHtml((token.symbol || 'TOK').slice(0, 2))}</span>
-        <span><strong>${escapeHtml(token.name || 'Untitled')} · ${escapeHtml(token.symbol || 'TOK')}</strong><small>1,000,000,000 supply · $${marketCap.toLocaleString('en-US')} starting value · ${practice ? 'practice recipe' : 'live recipe'}</small></span>
-      </div>
-      <div class="guided-recipe-list">
-        ${[
-          ['fa-coins', practice ? 'Simulate a fixed token' : 'Create a fixed token', `${practice ? 'Preview' : 'Create'} a one-billion supply and ${practice ? 'verify the recipe removes' : 'remove'} mint and freeze authority.`],
-          ['fa-water', `${practice ? 'Simulate' : 'Open'} ${strategy.label.toLowerCase()} liquidity`, `${liquidityBudgetSol} SOL liquidity budget · ${strategy.structure.toLowerCase()} · ${practice ? 'preview required locks' : 'lock every position'}.`],
-          ['fa-file-shield', practice ? 'Create a local practice record' : 'Finish with verifiable proof', `${practice ? 'Simulate returning' : 'Return'} assets to ${practice || destination === GUIDED_PRACTICE_DESTINATION ? 'the practice wallet' : destination ? shortAddress(destination) : 'your funding wallet'}${practice ? '; nothing is published publicly' : state.prefs.publishLaunchReport === false ? ' and download local proof' : ' and publish the launch report'}.`],
-        ].map(([icon, title, detail]) => `<article><i class="fa-solid ${icon}"></i><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(detail)}</small></span><i class="fa-solid fa-check"></i></article>`).join('')}
-      </div>
-      <section class="guided-funding-summary ${funding.status === 'error' ? 'has-error' : ''}" aria-live="polite">
-        <span><small>Liquidity allocation</small><strong>${fmtSol(liquidityBudgetSol)}</strong></span>
-        <span><small>${practice ? 'Estimated live launch costs' : 'Estimated launch costs'}</small><strong>${costValue}</strong></span>
-        <span><small>${practice ? 'Estimated live funding total' : 'Total to fund launch wallet'}</small><strong>${fundingValue}</strong></span>
-        ${funding.status === 'error' ? `<button class="pill-button" type="button" data-action="guided-retry-estimate">Retry estimate</button>` : ''}
-      </section>
-      <p class="guided-funding-note">${funding.status === 'ready'
-        ? `${practice ? 'Practice still spends 0 SOL. The live estimate includes' : 'Includes'} rent, network fees, publishing, and safety buffer. ${strategy.coreSol > 0 ? `${fmtSol(strategy.coreSol)} is reserved for core liquidity.` : 'This minimum recipe adds no discretionary liquidity.'}`
-        : funding.status === 'error'
-          ? `The local estimator did not respond: ${escapeHtml(funding.error || 'unknown error')}. You can retry or continue to the Funding phase.`
-          : funding.status === 'loading' ? 'Calculating launch costs.' : ''}</p>
-      <details class="guided-technical-details">
-        <summary>Technical details <span>optional</span></summary>
-        <div><span>Recipe</span><strong>${GUIDED_RECIPE_ID}</strong></div>
-        <div><span>Mint address</span><strong>Random CA</strong></div>
-        <div><span>Liquidity</span><strong>${escapeHtml(`${liquidityBudgetSol} SOL · ${strategy.label} · ${strategy.structure}`)}</strong></div>
-        <div><span>Defensive support</span><strong>${strategy.supportSol > 0 ? escapeHtml(fmtSol(strategy.supportSol)) : 'Off'}</strong></div>
-        <div><span>Execution</span><strong>${practice ? 'Local simulation only' : 'Guarded local signing with journal recovery'}</strong></div>
-        <div><span>Destination</span><code>${escapeHtml(destination)}</code></div>
-      </details>
-    </div>
-  `;
-}
-
-async function requestGuidedFundingEstimate() {
-  if (state.guidedFunding.status === 'loading') return;
-  applyGuidedRecipe({ refresh: false });
-  if (state.apiStatus !== 'connected' || !state.apiClient?.estimateClassicFunding) {
-    state.guidedFunding = {
-      status: 'error',
-      launchCostsSol: null,
-      requiredSol: null,
-      error: 'Open this flow in the local Trebuchet app to calculate current costs.',
-    };
-    renderGuidedLaunchFlow();
-    return;
-  }
-  state.guidedFunding = {
-    status: 'loading',
-    launchCostsSol: null,
-    requiredSol: null,
-    error: null,
-  };
-  renderGuidedLaunchFlow();
-  try {
-    const config = currentLaunchConfig();
-    const estimate = stampClassicFundingEstimate(
-      await state.apiClient.estimateClassicFunding(classicFundingEstimateRequest(config)),
-      config,
-    );
-    state.classicFundingEstimate = estimate;
-    const strategy = launchBudgetRecommendation(state.guidedIntent.liquidityBudgetSol);
-    const launchCostsSol = Math.max(0, Number(estimate.totalSol || 0));
-    state.guidedFunding = {
-      status: 'ready',
-      launchCostsSol,
-      requiredSol: launchCostsSol + Math.max(0, Number(strategy.coreSol || 0)),
-      error: null,
-    };
-  } catch (error) {
-    state.guidedFunding = {
-      status: 'error',
-      launchCostsSol: null,
-      requiredSol: null,
-      error: error.message || 'Funding estimate failed.',
-    };
-  }
-  renderGuidedLaunchFlow();
-  renderLaunchBudgetRecommendation();
-}
-
-function renderGuidedLaunchFlow() {
-  void refreshTokenLogoStamp();
-  document.body.dataset.experienceMode = state.experienceMode;
-  document.body.dataset.executionEnvironment = executionEnvironmentId();
+function renderEnvironmentControls() {
+  const environment = executionEnvironmentId();
+  document.body.dataset.executionEnvironment = environment;
   const settingsEnvironment = $('#launchSettingsEnvironment');
-  const settingsExperience = $('#launchSettingsExperience');
-  if (settingsEnvironment) settingsEnvironment.textContent = executionEnvironmentId() === 'live' ? 'Live' : 'Practice';
-  if (settingsExperience) settingsExperience.textContent = state.experienceMode === 'advanced' ? 'Advanced' : 'Guided';
-  $$('.experience-button').forEach((button) => {
-    const selected = button.dataset.experience === state.experienceMode;
-    button.classList.toggle('is-selected', selected);
-    button.setAttribute('aria-selected', selected ? 'true' : 'false');
-    button.tabIndex = selected ? 0 : -1;
-  });
+  if (settingsEnvironment) settingsEnvironment.textContent = environment === 'live' ? 'Live' : 'Practice';
   $$('.mode-button').forEach((button) => {
     button.classList.toggle('is-selected', button.dataset.mode === state.launchMode);
   });
-  const environment = executionEnvironmentId();
   $$('.environment-button').forEach((button) => {
     const selected = button.dataset.environment === environment;
     button.classList.toggle('is-selected', selected);
@@ -1132,90 +578,6 @@ function renderGuidedLaunchFlow() {
     button.tabIndex = selected ? 0 : -1;
     button.disabled = state.environmentSwitching || environment === 'loading';
   });
-  const target = $('#guidedLaunchFlow');
-  if (!target) return;
-  if (state.experienceMode !== 'guided') {
-    target.hidden = true;
-    return;
-  }
-  target.hidden = false;
-  const renderedStep = target.dataset.renderedStep;
-  const sameStep = renderedStep === String(state.guidedStep);
-  const viewport = $('#launchWorkspaceViewport');
-  const savedScrollTop = sameStep ? Number(viewport?.scrollTop || 0) : 0;
-  const activeField = sameStep && target.contains(document.activeElement)
-    ? document.activeElement?.dataset?.guidedField || null
-    : null;
-  const selectionStart = activeField ? document.activeElement.selectionStart : null;
-  const selectionEnd = activeField ? document.activeElement.selectionEnd : null;
-  const technicalDetailsOpen = sameStep && target.querySelector('.guided-technical-details')?.open === true;
-  const practice = practiceEnvironmentSelected();
-  let body = '';
-  if (state.guidedStep === 0) body = guidedIdentityStep();
-  else if (state.guidedStep === 1) body = guidedLiquidityStep();
-  else if (state.guidedStep === 2) body = guidedReviewStep();
-  else if (state.guidedStep === 3) body = guidedFundingStep();
-  else body = guidedLaunchStep();
-  // One source for the step counter: the rail's step list.
-  body = body.replace(
-    /<span class="eyebrow">Step \d+ of \d+<\/span>/,
-    `<span class="eyebrow">Step ${state.guidedStep + 1} of ${guidedSteps.length}</span>`,
-  );
-
-  const nextLabel = ['Continue to liquidity pairs', 'Continue to review', 'Continue to funding', 'Review launch'][state.guidedStep] || 'Continue';
-  const controls = `
-    <div class="guided-navigation">
-      ${state.guidedStep === 0 ? '<span></span>' : '<button class="secondary-button" type="button" data-action="guided-back"><i class="fa-solid fa-arrow-left"></i> Back</button>'}
-      ${state.guidedStep < guidedSteps.length - 1
-        ? `<button class="primary-button" type="button" data-action="guided-next">${nextLabel} <i class="fa-solid fa-arrow-right"></i></button>`
-        : practice
-          ? '<button class="primary-button" type="button" data-action="guided-practice"><i class="fa-solid fa-flask"></i> Start practice launch</button>'
-          : '<button class="primary-button custody-action" type="button" data-action="guided-live-handoff"><i class="fa-solid fa-shield-halved"></i> Set up live launch wallet</button>'}
-    </div>
-  `;
-  target.innerHTML = `${guidedStepProgress()}${body}${controls}`;
-  target.dataset.renderedStep = String(state.guidedStep);
-  if (technicalDetailsOpen) target.querySelector('.guided-technical-details')?.setAttribute('open', '');
-  if (activeField) {
-    const replacement = target.querySelector(`[data-guided-field="${activeField}"]`);
-    replacement?.focus({ preventScroll: true });
-    if (replacement && Number.isInteger(selectionStart) && Number.isInteger(selectionEnd)) {
-      replacement.setSelectionRange(selectionStart, selectionEnd);
-    }
-  }
-  if (sameStep && viewport) viewport.scrollTop = savedScrollTop;
-}
-
-function settleGuidedStepPosition({ focusInvalid = false } = {}) {
-  window.requestAnimationFrame(() => {
-    const target = $('#guidedLaunchFlow');
-    const viewport = $('#launchWorkspaceViewport');
-    if (viewport) viewport.scrollTop = 0;
-    if (window.matchMedia?.('(max-width: 900px)').matches) {
-      target?.scrollIntoView({ block: 'start', behavior: 'auto' });
-    }
-    if (focusInvalid) target?.querySelector('[aria-invalid="true"]')?.focus({ preventScroll: true });
-  });
-}
-
-function setExperienceMode(mode) {
-  const next = mode === 'advanced' ? 'advanced' : 'guided';
-  if (next === state.experienceMode) return;
-  if (next === 'guided') {
-    state.advancedDraft = captureAdvancedDraft();
-    state.guidedStep = Math.min(state.guidedStep, guidedSteps.length - 1);
-  } else if (state.advancedDraft) {
-    restoreAdvancedDraft();
-    state.advancedDraft = null;
-    invalidateClassicOutputs();
-  }
-  state.experienceMode = next;
-  state.guidedErrors = {};
-  setLaunchWorkspace(next === 'guided' ? 'configure' : 'wallet');
-  persistGuidedDraft();
-  renderAll();
-  if (next === 'guided') settleGuidedStepPosition();
-  notify(next === 'guided' ? 'Guided launch opened' : 'Advanced launch controls opened');
 }
 
 async function setExecutionEnvironment(environment, { announce = true } = {}) {
@@ -1228,15 +590,7 @@ async function setExecutionEnvironment(environment, { announce = true } = {}) {
     const changed = await setDemoMode(targetPractice, { announce: false });
     if (!changed) return false;
     state.launchMode = targetPractice ? 'dry-run' : 'guarded';
-    state.guidedRunError = null;
-    state.guidedRunStatus = 'idle';
     state.lastDemoLaunchRun = null;
-    if (!targetPractice && state.guidedIntent.destinationWallet === GUIDED_PRACTICE_DESTINATION) {
-      state.guidedIntent.destinationWallet = '';
-      if (state.experienceMode === 'guided' && state.guidedStep > 1) state.guidedStep = 2;
-    }
-    resetGuidedFundingEstimate();
-    persistGuidedDraft();
     if (announce) {
       notify(targetPractice
         ? 'Practice environment selected: local simulation, 0 SOL'
@@ -1249,229 +603,6 @@ async function setExecutionEnvironment(environment, { announce = true } = {}) {
   } finally {
     state.environmentSwitching = false;
     renderAll();
-  }
-}
-
-async function handoffGuidedLiveLaunch() {
-  if (practiceEnvironmentSelected()) {
-    const changed = await setExecutionEnvironment('live');
-    if (!changed) return;
-  }
-  const errors = guidedStepErrors(2);
-  if (Object.keys(errors).length) {
-    state.guidedErrors = errors;
-    state.guidedStep = 2;
-    renderAll();
-    settleGuidedStepPosition({ focusInvalid: true });
-    return;
-  }
-  applyGuidedRecipe();
-  state.advancedDraft = null;
-  state.experienceMode = 'advanced';
-  state.launchMode = 'guarded';
-  state.guidedRunStatus = 'idle';
-  persistGuidedDraft();
-  setLaunchWorkspace('wallet');
-  renderAll();
-  notify('Live recipe ready. Choose an isolated launch wallet, then continue through Funding.');
-}
-
-async function prepareGuidedLiveLaunch() {
-  const changed = await setExecutionEnvironment('live');
-  if (!changed) return;
-  state.guidedIntent.destinationWallet = '';
-  state.guidedStep = 2;
-  state.guidedRunStatus = 'idle';
-  state.guidedRunError = null;
-  setLaunchWorkspace('configure');
-  persistGuidedDraft();
-  renderLaunchPreview();
-  renderGuidedLaunchFlow();
-  renderGuidedRunShell();
-  renderLaunchWorkspace();
-  settleGuidedStepPosition();
-}
-
-function moveGuidedStep(direction) {
-  if (direction > 0) {
-    const errors = guidedStepErrors();
-    if (Object.keys(errors).length) {
-      state.guidedErrors = errors;
-      renderGuidedLaunchFlow();
-      settleGuidedStepPosition({ focusInvalid: true });
-      return;
-    }
-  }
-  state.guidedErrors = {};
-  state.guidedStep = clampNumber(state.guidedStep + direction, 0, guidedSteps.length - 1);
-  if (state.guidedStep === guidedSteps.length - 1) applyGuidedRecipe();
-  persistGuidedDraft();
-  renderLaunchPreview();
-  renderGuidedLaunchFlow();
-  renderGuidedRunShell();
-  renderLaunchWorkspace();
-  settleGuidedStepPosition();
-  // Review, Fund, and Launch all show the estimate; fetch it on reaching
-  // Review, and later only if it is still missing.
-  const reviewIndex = guidedSteps.findIndex((step) => step.id === 'review');
-  if ((direction > 0 && state.guidedStep === reviewIndex)
-      || (state.guidedStep > reviewIndex && state.guidedFunding.status !== 'ready')) {
-    requestGuidedFundingEstimate().catch(() => null);
-  }
-}
-
-function guidedOperationComplete(operationId) {
-  const operation = state.transactions.find((item) => item.id === operationId);
-  return ['signed', 'complete', 'done'].includes(String(operation?.state || '').toLowerCase());
-}
-
-function guidedRunPhases() {
-  const groups = [
-    { title: 'Prepare practice wallet', detail: 'Create an isolated simulated signer and recovery checkpoint.', operations: ['v2-wallet-and-ca', 'v2-funding-check'] },
-    { title: 'Simulate token creation', detail: 'Preview the mint and metadata result.', operations: ['v2-mint-metadata'] },
-    { title: 'Verify authority recipe', detail: 'Confirm the live recipe removes mint and freeze powers.', operations: ['v2-revoke-authorities'] },
-    { title: 'Simulate locked liquidity', detail: 'Preview the pool, positions, and required locks.', operations: ['v2-create-liquidity-pools', 'v2-lock-liquidity'] },
-    { title: 'Simulate asset return', detail: 'Preview ownership and leftovers returning home.', operations: ['v2-report-sweep'] },
-    { title: 'Create practice record', detail: 'Save a local record of the completed simulation.', operations: [] },
-  ];
-  const proofReady = Boolean(state.lastDemoLaunchRun || currentLaunchProof());
-  return groups.map((group, index) => {
-    const complete = group.operations.length
-      ? group.operations.every(guidedOperationComplete)
-      : proofReady;
-    const priorComplete = groups.slice(0, index).every((prior) => (
-      prior.operations.length ? prior.operations.every(guidedOperationComplete) : proofReady
-    ));
-    return {
-      ...group,
-      state: complete ? 'complete' : ['preparing', 'running'].includes(state.guidedRunStatus) && priorComplete ? 'running' : 'waiting',
-    };
-  });
-}
-
-function renderGuidedRunShell() {
-  const target = $('#guidedRunShell');
-  if (!target) return;
-  if (state.experienceMode !== 'guided') {
-    target.hidden = true;
-    return;
-  }
-  const workspace = state.launchWorkspace;
-  const proof = currentLaunchProof();
-  const complete = state.guidedRunStatus === 'complete' && Boolean(state.lastDemoLaunchRun);
-  const failed = state.guidedRunStatus === 'failed';
-  const running = ['preparing', 'running'].includes(state.guidedRunStatus);
-  const phases = guidedRunPhases();
-  const token = state.lastDemoLaunchRun?.token || proof?.token || currentLaunchConfig().token;
-  const poolCount = Number(state.lastDemoLaunchRun?.liquidity?.results?.length || proof?.liquidity?.poolCount || 1);
-
-  if (workspace === 'finish') {
-    target.innerHTML = `
-      <div class="guided-run-card guided-success-card">
-        <span class="guided-run-icon"><i class="fa-solid fa-file-shield"></i></span>
-        <span class="eyebrow">Local practice record</span>
-        <h2>${proof ? 'The completed simulation has a local record.' : 'A record will appear after the practice run.'}</h2>
-        <p>${proof ? 'This record previews the token, liquidity, destination, and recovery evidence a live run must produce. It is not public proof and represents no on-chain asset.' : 'Return to the recipe and run the practice launch first.'}</p>
-        <div class="guided-proof-summary">
-          <span><small>Token</small><strong>${escapeHtml(token?.symbol || 'Waiting')}</strong></span>
-          <span><small>Liquidity</small><strong>${proof ? `${fmtSol(state.guidedIntent.liquidityBudgetSol)} · ${poolCount} pool${poolCount === 1 ? '' : 's'}` : 'Waiting'}</strong></span>
-          <span><small>Mode</small><strong>Practice</strong></span>
-        </div>
-        <div class="guided-run-actions">
-          <button class="secondary-button" type="button" data-action="guided-return-run"><i class="fa-solid fa-arrow-left"></i> Practice result</button>
-          ${proof ? '<button class="primary-button" type="button" data-action="download-v2-proof"><i class="fa-solid fa-download"></i> Download local record</button>' : ''}
-        </div>
-      </div>
-    `;
-    return;
-  }
-
-  target.innerHTML = `
-    <div class="guided-run-card ${complete ? 'guided-success-card' : ''} ${failed ? 'guided-error-card' : ''}">
-      <span class="guided-run-icon"><i class="fa-solid ${complete ? 'fa-check' : failed ? 'fa-triangle-exclamation' : running ? 'fa-spinner fa-spin' : 'fa-flask'}"></i></span>
-      <span class="eyebrow">${complete ? 'Practice complete' : failed ? 'Practice paused' : 'Practice launch · 0 SOL'}</span>
-      <h2>${complete ? 'The complete launch recipe worked.' : failed ? 'The local practice run did not finish.' : running ? state.guidedRunStatus === 'preparing' ? 'Preparing the local simulation.' : 'Running your launch recipe.' : 'Ready for a full practice launch.'}</h2>
-      <p>${complete
-        ? 'Token creation, authority removal, liquidity, locking, asset return, and proof all completed in the local simulator.'
-        : failed
-          ? 'Nothing went on-chain and no SOL was spent. You can safely retry from this screen.'
-          : running
-            ? 'This usually takes less than a minute. Trebuchet is completing every checkpoint locally.'
-            : 'One button runs every launch step in the local simulator. There are no wallet prompts or funding requirements.'}</p>
-      ${failed ? `<div class="guided-run-alert" role="alert"><i class="fa-solid fa-circle-info"></i><span><strong>What happened</strong><small>${escapeHtml(state.guidedRunError)}</small></span></div>` : ''}
-      <div class="guided-run-phase-list">
-        ${phases.map((phase) => `<article class="${phase.state}">
-          <span class="guided-phase-state"><i class="fa-solid ${phase.state === 'complete' ? 'fa-check' : phase.state === 'running' ? 'fa-spinner fa-spin' : 'fa-circle'}"></i></span>
-          <span><strong>${escapeHtml(phase.title)}</strong><small>${escapeHtml(phase.detail)}</small></span>
-          <em>${phase.state === 'complete' ? 'Done' : phase.state === 'running' ? 'Running' : 'Waiting'}</em>
-        </article>`).join('')}
-      </div>
-      ${complete ? `
-        <div class="guided-proof-summary">
-          <span><small>Token</small><strong>${escapeHtml(token?.symbol || currentLaunchConfig().token.symbol)}</strong></span>
-          <span><small>Liquidity</small><strong>${fmtSol(state.guidedIntent.liquidityBudgetSol)} · ${poolCount} pool${poolCount === 1 ? '' : 's'}</strong></span>
-          <span><small>Spend</small><strong>0 SOL</strong></span>
-        </div>
-      ` : ''}
-      <div class="guided-run-actions">
-        <button class="secondary-button" type="button" data-action="guided-edit-recipe"><i class="fa-solid fa-arrow-left"></i> ${complete ? 'Edit and practice again' : 'Back to recipe'}</button>
-        ${complete
-          ? '<button class="primary-button custody-action" type="button" data-action="guided-go-live"><i class="fa-solid fa-satellite-dish"></i> Prepare live launch</button>'
-          : `<button class="primary-button" type="button" data-action="guided-start-practice" ${running ? 'disabled' : ''}><i class="fa-solid ${failed ? 'fa-rotate-right' : 'fa-flask'}"></i> ${running ? 'Running practice' : failed ? 'Try practice again' : 'Start practice launch'}</button>`}
-      </div>
-      ${running ? '' : complete
-        ? '<button class="text-button" type="button" data-action="guided-review-proof">Review local practice record</button>'
-        : '<button class="text-button" type="button" data-action="select-experience" data-experience="advanced">Open advanced controls</button>'}
-    </div>
-  `;
-}
-
-function guidedPracticeErrorMessage(error) {
-  const code = String(error?.code || '');
-  if (code === 'TIMEOUT') return 'The local simulator took too long to return its result. Its timeout has been extended; retry the practice run.';
-  if (/failed to fetch|request failed|network/i.test(String(error?.message || ''))) {
-    return 'Trebuchet temporarily lost contact with its local practice engine. Check that the app is still open, then retry.';
-  }
-  return String(error?.message || 'The local practice engine stopped before it returned a result.');
-}
-
-async function startGuidedPractice() {
-  if (state.demoLaunchRunning || ['preparing', 'running'].includes(state.guidedRunStatus)) return;
-  state.guidedRunError = null;
-  state.guidedRunStatus = 'preparing';
-  state.lastDemoLaunchRun = null;
-  setLaunchWorkspace('mint');
-  renderAll();
-  try {
-    applyGuidedRecipe();
-    if (!state.demoActive && !(await setDemoMode(true, { announce: false }))) {
-      throw new Error('Practice Mode could not be enabled in the local app.');
-    }
-    state.launchMode = 'dry-run';
-    const reusablePracticeWallet = state.managedWallets.find((wallet) => (
-      wallet.publicKey === state.guidedPracticeWalletPublicKey
-      && wallet.hasSecretKey === true
-      && wallet.decryptionFailed !== true
-    ));
-    if (reusablePracticeWallet) addManagedWallet(reusablePracticeWallet);
-    else {
-      const practiceWallet = await generateManagedWallet();
-      if (!practiceWallet?.publicKey) throw new Error('Trebuchet could not create the temporary practice wallet.');
-      state.guidedPracticeWalletPublicKey = practiceWallet.publicKey;
-    }
-    await stageTransactions({ openApproval: false, announce: false });
-    state.activeApprovalId = null;
-    state.approvalOpen = false;
-    await runDemoLaunch();
-  } catch (error) {
-    state.guidedRunError = guidedPracticeErrorMessage(error);
-    state.guidedRunStatus = 'failed';
-    state.demoLaunchRunning = false;
-    state.activeApprovalId = null;
-    state.approvalOpen = false;
-    setLaunchWorkspace('mint');
-    renderAll();
-    notify('Practice stopped safely; no SOL was spent');
   }
 }
 
@@ -2316,7 +1447,6 @@ function routeStartupRecoveryFirst() {
     state.accountId = journal.walletPublicKey;
   }
   const workspace = recoveryWorkspaceForJournal(journal);
-  state.experienceMode = 'advanced';
   state.launchWorkspace = workspace;
   return {
     view: 'launch',
@@ -2918,24 +2048,75 @@ function computeAirdropBudget(parsedRecipients, recipientCount, supply, requeste
   };
 }
 
+// Held-back tokens can be shared with the wallets that funded the launch,
+// split by the SOL each sent. Only wallets in the current funder list count,
+// so a choice never outlives the launch wallet or environment it was made
+// for (Practice funders can never reach a Live launch). Wallets already in
+// the airdrop CSV keep their CSV row instead.
+function heldSharePlan(supply = parseWholeNumber($('#tokenSupply')?.value) || 1000000000) {
+  const heldPercent = parsePercentInput($('#preallocationSupplyPercent')?.value, 0);
+  const csvWallets = new Set(parseAirdropCsv(state.airdropCsvText).recipients.map((row) => row.wallet));
+  const known = new Map((state.destinations.funders || []).map((entry) => [entry.address, entry]));
+  const funders = (state.heldShare.selected || [])
+    .map((address) => known.get(address))
+    .filter((entry) => entry && entry.sol > 0 && !csvWallets.has(entry.address));
+  const totalSol = funders.reduce((sum, entry) => sum + entry.sol, 0);
+  if (!(heldPercent > 0) || !funders.length || !(totalSol > 0)) {
+    return { active: false, heldPercent, funders, csvWallets, rows: [], heldTokens: 0, totalSol: 0 };
+  }
+  const heldTokens = Math.floor(supply * (heldPercent / 100));
+  // Whole tokens; rounding dust stays with the main return wallet's sweep.
+  const rows = funders.map((entry) => ({
+    wallet: entry.address,
+    tokens: Math.floor(heldTokens * (entry.sol / totalSol)),
+    source: 'funder',
+    fundedSol: entry.sol,
+  }));
+  return { active: true, heldPercent, funders, csvWallets, rows, heldTokens, totalSol };
+}
+
+// Once a live token exists, the airdrop recipients are bound to its plan.
+function heldShareLocked() {
+  if (state.demoActive) return false;
+  return Boolean(currentLaunchProof()?.token?.mint || state.lastRunEnvelope?.status === 'armed');
+}
+
+function toggleHeldShareFunder(address) {
+  if (heldShareLocked()) {
+    notify('Recipients are locked once the token is created');
+    return;
+  }
+  const selected = new Set(state.heldShare.selected || []);
+  if (selected.has(address)) selected.delete(address);
+  else selected.add(address);
+  state.heldShare = { selected: [...selected] };
+  invalidateClassicOutputs();
+  renderAll();
+}
+
 function currentAirdropPlan() {
   const parsed = parseAirdropCsv(state.airdropCsvText);
   const manualCount = parsePositiveInteger($('#airdropWallets').value, 0);
-  const recipientCount = parsed.recipients.length || manualCount;
-  const enabled = recipientCount > 0;
   const supply = parseWholeNumber($('#tokenSupply').value) || 1000000000;
+  const share = heldSharePlan(supply);
+  const csvCount = parsed.recipients.length || manualCount;
+  const recipientCount = csvCount + share.rows.length;
+  const enabled = recipientCount > 0;
   const budgetConfig = currentAirdropBudgetConfig();
   const budget = computeAirdropBudget(
-    parsed.recipients,
+    [...parsed.recipients, ...share.rows],
     recipientCount,
     supply,
-    enabled ? budgetConfig.requestedSupplyPercent : 0,
+    (csvCount > 0 ? budgetConfig.requestedSupplyPercent : 0) + (share.active ? share.heldPercent : 0),
     budgetConfig.autoFit,
   );
-  const recipients = parsed.recipients.map((row) => ({
-    wallet: row.wallet,
-    tokens: Number((row.tokens == null ? budget.equalTokens : row.tokens).toFixed(9)),
-  }));
+  const recipients = [
+    ...parsed.recipients.map((row) => ({
+      wallet: row.wallet,
+      tokens: Number((row.tokens == null ? budget.equalTokens : row.tokens).toFixed(9)),
+    })),
+    ...share.rows,
+  ];
   state.airdropParseError = parsed.error;
   state.airdropRecipients = recipients;
   state.airdropBudgetError = budget.budgetError;
@@ -2946,7 +2127,10 @@ function currentAirdropPlan() {
     requestedSupplyPercent: budget.requestedSupplyPercent,
     requiredSupplyPercent: budget.requiredSupplyPercent,
     autoFit: budget.autoFit,
-    source: parsed.recipients.length ? 'csv' : enabled ? 'manual-count' : 'off',
+    source: parsed.recipients.length ? 'csv' : manualCount ? 'manual-count' : share.active ? 'funders' : 'off',
+    csvRecipientCount: csvCount,
+    funderShareCount: share.rows.length,
+    funderSharePercent: share.active ? share.heldPercent : 0,
     recipients,
     parseError: parsed.error,
     parseErrorCount: parsed.errorCount,
@@ -2963,6 +2147,10 @@ function currentAirdropPlan() {
 function currentPreallocationPlan() {
   const input = document.getElementById('preallocationSupplyPercent');
   const supplyPercent = parsePercentInput(input?.value, 0);
+  // Shared with funding wallets: the airdrop carries this slice instead.
+  if (supplyPercent > 0 && heldSharePlan().active) {
+    return { enabled: false, supplyPercent: 0, source: 'funder-share', sharedPercent: supplyPercent };
+  }
   return {
     enabled: supplyPercent > 0,
     supplyPercent,
@@ -4532,7 +3720,7 @@ function recoveryPinGateCopy() {
     return {
       eyebrow: 'Launch wallet',
       title: 'Enter Recovery PIN',
-      detail: 'Unlock the selected launch wallet on this Mac.',
+      detail: 'Unlock the selected launch wallet on this device.',
     };
   }
   return {
@@ -5095,7 +4283,6 @@ async function selectTokenLogo(file) {
     state.tokenLogoError = null;
     invalidateClassicOutputs();
     refreshClassicPreview({ includePoolEditor: true });
-    renderGuidedLaunchFlow();
     if (prepared.compressed && safeFile.type === 'image/gif') {
       const beforeMb = (Number(prepared.originalSizeBytes || 0) / (1024 * 1024)).toFixed(1);
       const afterKb = Math.max(1, Math.ceil(safeFile.size / 1024));
@@ -5111,7 +4298,6 @@ async function selectTokenLogo(file) {
     if (input) input.value = '';
     invalidateClassicOutputs();
     refreshClassicPreview({ includePoolEditor: true });
-    renderGuidedLaunchFlow();
     notify(state.tokenLogoError);
   }
 }
@@ -5124,7 +4310,6 @@ function clearTokenLogo() {
   if (input) input.value = '';
   invalidateClassicOutputs();
   refreshClassicPreview({ includePoolEditor: true });
-  renderGuidedLaunchFlow();
   notify('Token logo cleared');
 }
 
@@ -5417,8 +4602,7 @@ function sweepDestinationIssues(topology = {}) {
       detail: 'Sweep destination does not look like a valid Solana address.',
     }];
   }
-  // Only a real launch can lose assets: practice/demo runs sweep nothing, and
-  // the guided practice flow uses a placeholder destination on purpose.
+  // Only a real launch can lose assets: practice/demo runs sweep nothing.
   const liveExecution = state.launchMode !== 'dry-run';
   if (liveExecution && returnWalletStatus().kind === 'unverified') {
     return [{
@@ -5982,6 +5166,7 @@ function currentClassicModel() {
     },
     feeKeyRecipient: feeKeyRecipient || null,
     sweepDestination: sweepDestination || null,
+    heldShare: { funders: [...(state.heldShare.selected || [])] },
     report: {
       publish: state.prefs.publishLaunchReport !== false,
       download: true,
@@ -5995,9 +5180,11 @@ function currentLaunchConfig() {
   const classic = currentClassicModel();
   return {
     experience: {
-      mode: state.experienceMode,
-      recipeId: state.experienceMode === 'guided' ? GUIDED_RECIPE_ID : null,
-      version: state.experienceMode === 'guided' ? 1 : null,
+      // Plan fingerprints of existing journals include this block, so it
+      // keeps the value every launch used before the single flow.
+      mode: 'advanced',
+      recipeId: null,
+      version: null,
     },
     token: {
       name: $('#tokenName').value,
@@ -6194,7 +5381,14 @@ function restoreLaunchConfigFromJournal(journal = {}) {
 
   const airdrop = topology.airdrop && typeof topology.airdrop === 'object' ? topology.airdrop : {};
   const airdropRows = Array.isArray(airdrop.recipients) ? airdrop.recipients : [];
-  state.airdropCsvText = airdropRows.map((row) => `${row.wallet || row.recipient || ''},${row.tokens ?? row.amount ?? ''}`).join('\n');
+  state.airdropCsvText = airdropRows
+    .filter((row) => row?.source !== 'funder')
+    .map((row) => `${row.wallet || row.recipient || ''},${row.tokens ?? row.amount ?? ''}`).join('\n');
+  state.heldShare = {
+    selected: Array.isArray(topology.heldShare?.funders)
+      ? topology.heldShare.funders.map((address) => String(address || '')).filter(Boolean)
+      : airdropRows.filter((row) => row?.source === 'funder').map((row) => String(row.wallet || '')).filter(Boolean),
+  };
   if ($('#airdropCsvText')) $('#airdropCsvText').value = state.airdropCsvText;
   if ($('#airdropWallets')) $('#airdropWallets').value = String(Number(airdrop.recipientCount || airdropRows.length || 0));
   if ($('#airdropSupplyPercent')) $('#airdropSupplyPercent').value = String(Number(airdrop.requestedSupplyPercent ?? airdrop.supplyPercent ?? 0));
@@ -6210,14 +5404,10 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   if ($('#vanityCaseInsensitive')) $('#vanityCaseInsensitive').checked = config.vanity?.caseInsensitive === true;
   if ($('#vanityLength')) $('#vanityLength').value = config.vanity?.length ? String(config.vanity.length) : '';
   state.selectedVanityPublicKey = String(config.vanity?.selectedPublicKey || journal?.token?.mint || '').trim() || null;
-  state.guidedIntent.destinationWallet = String(topology.sweepDestination || '');
-  state.guidedIntent.startingMarketCapUsd = Number(topology.targetMarketCapUsd || 250000);
-  state.guidedIntent.liquidityBudgetSol = Math.max(0, launchSol || 0) + supportSol;
   state.classicFundingEstimate = null;
   state.executionReadiness = null;
   state.launchPlan = null;
   state.restoredLaunchJournalId = journal.id || null;
-  state.advancedDraft = captureAdvancedDraft();
   return true;
 }
 
@@ -6424,16 +5614,9 @@ function launchWorkspaceStatus() {
 }
 
 function renderLaunchWorkspace() {
-  const requestedWorkspace = launchWorkspaces.some((item) => item.id === state.launchWorkspace)
+  const workspace = launchWorkspaces.some((item) => item.id === state.launchWorkspace)
     ? state.launchWorkspace
     : 'wallet';
-  const guidedRunVisible = state.experienceMode === 'guided'
-    && ['preparing', 'running', 'complete', 'failed'].includes(state.guidedRunStatus);
-  const workspace = state.experienceMode === 'guided'
-    ? guidedRunVisible && ['fund', 'mint', 'liquidity', 'finish'].includes(requestedWorkspace)
-      ? requestedWorkspace
-      : 'configure'
-    : requestedWorkspace;
   state.launchWorkspace = workspace;
   document.body.dataset.launchWorkspace = workspace;
 
@@ -6444,6 +5627,12 @@ function renderLaunchWorkspace() {
     button.setAttribute('aria-selected', selected ? 'true' : 'false');
     button.tabIndex = selected ? 0 : -1;
   });
+  // Narrow windows scroll the phase tabs sideways; keep the current phase in view.
+  const tabs = $('#launchWorkspaceTabs');
+  const selectedTab = tabs?.querySelector('.launch-workspace-tab.is-selected');
+  if (tabs && selectedTab && tabs.scrollWidth > tabs.clientWidth) {
+    tabs.scrollLeft = selectedTab.offsetLeft - (tabs.clientWidth - selectedTab.offsetWidth) / 2;
+  }
   $$('[data-launch-workspace-state]').forEach((label) => {
     label.textContent = statuses[label.dataset.launchWorkspaceState] || '';
   });
@@ -6588,7 +5777,7 @@ function launchIdentityModel() {
       signaturePercent,
     );
   const status = sweepComplete
-    ? 'Launch complete'
+    ? state.demoActive ? 'Practice complete' : 'Launch complete'
     : liquidityComplete
       ? 'Liquidity locked'
       : tokenComplete
@@ -6622,7 +5811,6 @@ function renderLiveLaunchMonitor() {
   const monitor = $('#liveLaunchMonitor');
   if (!monitor) return;
   const active = state.activeView === 'launch'
-    && state.experienceMode === 'advanced'
     && launchOperationIsActive();
   if (!active) {
     monitor.hidden = true;
@@ -6709,9 +5897,7 @@ function renderLaunchIdentity() {
   const heroSrc = launchIdentityImageSrc(model.logo, { animate: true });
   const stillSrc = launchIdentityImageSrc(model.logo, { animate: false });
   const animated = Boolean(model.logo.animated && !launchIdentityReducedMotion());
-  const hero = state.experienceMode === 'guided'
-    && state.launchWorkspace === 'configure'
-    && state.guidedStep === 1;
+  const hero = false;
   const mintLabel = model.mint ? shortAddress(model.mint) : 'Mint address pending';
   const phaseDetail = `${model.phase.title} / ${model.status}`;
 
@@ -6790,19 +5976,12 @@ function renderLaunchPreview() {
   $('#launchStatus').className = `badge ${state.transactions.length ? 'warn' : ''}`;
   renderAgentConsole();
   const poolCount = Math.max(0, Number(config.poolTopology?.pools?.length || 0));
-  if (state.experienceMode === 'guided') {
-    $('#setupSummary').textContent = state.guidedStep === 0
-      ? `${practiceEnvironmentSelected() ? 'Practice' : 'Prepare'} a complete token launch`
-      : guidedSteps[state.guidedStep]?.label || 'Launch';
-    $('#setupHelp').textContent = state.environmentReady
-      ? practiceEnvironmentSelected()
-        ? 'Practice · no transaction · 0 SOL'
-        : 'Live · guarded · no funds yet'
-      : 'Checking environment…';
-  } else {
-    $('#setupSummary').textContent = `${symbol} / ${poolCount} pool${poolCount === 1 ? '' : 's'}`;
-    $('#setupHelp').textContent = `${practiceEnvironmentSelected() ? 'Practice' : 'Live'} · advanced controls`;
-  }
+  $('#setupSummary').textContent = `${symbol} / ${poolCount} pool${poolCount === 1 ? '' : 's'}`;
+  $('#setupHelp').textContent = state.environmentReady
+    ? practiceEnvironmentSelected()
+      ? 'Practice · no transaction · 0 SOL'
+      : 'Live · guarded on-chain launch'
+    : 'Checking environment…';
   $('#runbookSummary').textContent = `${launchStages.length} phases`;
   $('#launchReadout').innerHTML = `
     <span><strong>${signed}/${total}</strong><small>Run</small></span>
@@ -7525,13 +6704,10 @@ function canAutoSaveLaunch(config) {
   return true;
 }
 
-// The saved (server-side) launch is explicit user intent, so it is applied
-// after the local guided draft: a stale browser draft must not overwrite the
-// launch the operator actually saved.
+// The saved (server-side) launch is explicit user intent: it opens once, and
+// is never reapplied over edits made after it loaded.
 function restoreDetectedLaunch() {
   if (!state.savedLaunches?.length) return false;
-  // The saved launch is the authority: a browser-local guided draft must not
-  // shadow it (that is how the token art and the identity card went missing).
   if (state.loadedSavedLaunchId) return false;
   const rememberedId = rememberedActiveLaunchId();
   const entry = state.savedLaunches.find((item) => item.id === rememberedId) || state.savedLaunches[0];
@@ -7544,12 +6720,8 @@ function restoreDetectedLaunch() {
   state.loadedSavedLaunchId = entry.id;
   rememberActiveLaunchId(entry.id);
   state.restoredLaunchJournalId = null;
-  // A saved launch opens in the editor. The guided wizard only knows one
-  // SOL pool, and its final step would replace the saved pools and splits.
-  state.experienceMode = 'advanced';
-  state.advancedDraft = null;
+  // A saved launch opens in the editor.
   setLaunchWorkspace('configure');
-  persistGuidedDraft();
   return true;
 }
 
@@ -7781,17 +6953,23 @@ function supplyEditorRows() {
   rows.forEach((row) => {
     if (row.kind === 'pool' && !row.color) row.color = SUPPLY_PAIR_COLORS[pairIndex++ % SUPPLY_PAIR_COLORS.length];
   });
+  const share = heldSharePlan();
   rows.push({
-    key: 'team', kind: 'hold', label: 'Team', detail: 'Held by the launch wallet',
+    key: 'team', kind: 'hold', label: 'Team',
+    detail: share.active
+      ? `Split across ${share.rows.length} funding wallet${share.rows.length === 1 ? '' : 's'}`
+      : 'Goes to the main return wallet',
     percent: parsePercentInput($('#preallocationSupplyPercent').value, 0), color: 'var(--amber)',
     target: '#preallocationSupplyPercent',
   });
   const airdrop = currentAirdropPlan();
-  if (airdrop.enabled) {
+  // Shared held-back tokens already count in the Team row above.
+  if (airdrop.csvRecipientCount > 0) {
     rows.push({
       key: 'airdrop', kind: 'hold', label: 'Airdrop',
-      detail: `${airdrop.recipientCount} wallet${airdrop.recipientCount === 1 ? '' : 's'}`,
-      percent: Number(airdrop.supplyPercent || 0), color: 'var(--violet)', target: '#airdropSupplyPercent',
+      detail: `${airdrop.csvRecipientCount} wallet${airdrop.csvRecipientCount === 1 ? '' : 's'}`,
+      percent: Math.max(0, Number(airdrop.supplyPercent || 0) - Number(airdrop.funderSharePercent || 0)),
+      color: 'var(--violet)', target: '#airdropSupplyPercent',
     });
   }
   return rows;
@@ -14407,7 +13585,41 @@ function finalizationNoticeRows({
   return rows;
 }
 
+// A practice run proves the recipe, not an on-chain launch, so it gets its own
+// result instead of the live proof panel (whose report, lock, and sweep
+// evidence a simulation cannot produce).
+function renderPracticeResultPanel() {
+  const run = state.lastDemoLaunchRun;
+  const config = currentLaunchConfig();
+  const symbol = run?.token?.symbol || config.token.symbol;
+  const poolCount = Number(run?.liquidity?.results?.length || config.poolTopology?.pools?.length || 0);
+  return `
+    <div class="finalize-panel is-terminal practice-result">
+      <div class="finalize-head">
+        <span>
+          <span class="eyebrow">Practice result</span>
+          <h3>The complete launch recipe worked</h3>
+          <p>Token creation, authority removal, liquidity, locking, asset return, and proof all ran in the local simulator.</p>
+        </span>
+      </div>
+      <div class="finalize-grid">
+        <span><small>Token</small><strong>${escapeHtml(symbol)}</strong><em>simulated mint</em></span>
+        <span><small>Pools</small><strong>${poolCount}</strong><em>simulated and locked</em></span>
+        <span><small>On-chain</small><strong>Nothing</strong><em>no transaction sent</em></span>
+        <span><small>Spent</small><strong>0 SOL</strong><em>practice is free</em></span>
+      </div>
+      <div class="operator-toolbar compact finalize-primary-actions">
+        <button class="pill-button" type="button" data-action="select-environment" data-environment="live">Switch to Live</button>
+        <button class="pill-button" type="button" data-action="run-demo-launch" ${state.demoLaunchRunning ? 'disabled' : ''}>Run practice again</button>
+        <button class="pill-button" type="button" data-launch-workspace="configure">Edit token &amp; pools</button>
+        <button class="pill-button" type="button" data-action="download-v2-proof">Download practice record</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderFinalizationPanel() {
+  if (state.demoActive && state.lastDemoLaunchRun) return renderPracticeResultPanel();
   const proof = currentLaunchProof();
   const config = proofConfigForFingerprint(proof, currentLaunchConfig());
   const badge = finalizationBadge(proof);
@@ -14706,10 +13918,10 @@ function renderClassicBridge() {
     || readinessNextDetail
     || (state.apiStatus === 'connected' ? '' : 'Open the local Trebuchet app to continue.');
   const demoRunLabel = state.demoLaunchRunning
-    ? 'Running demo'
+    ? 'Running practice'
     : state.lastDemoLaunchRun
-      ? 'Rerun demo'
-      : 'Run demo';
+      ? 'Run practice again'
+      : 'Run practice launch';
   const armedRunEnvelopeId = state.lastRunEnvelope?.status === 'armed'
     ? String(state.lastRunEnvelope.id || '')
     : '';
@@ -14747,6 +13959,7 @@ function renderClassicBridge() {
       )
     );
   const finalSweepComplete = transferHasWalletEmptyFinalSweepEvidence(currentLaunchProof()?.transfer);
+  const practiceComplete = Boolean(state.demoActive && state.lastDemoLaunchRun);
   const restoredPlanNotice = state.restoredLaunchJournalId && !finalSweepComplete ? `
     <aside class="recovered-plan-notice" role="status">
       <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
@@ -14971,6 +14184,7 @@ function renderClassicBridge() {
     <section class="classic-workspace-section classic-workspace-fund" data-classic-workspace="fund">
       <h2 class="visually-hidden" id="fundStepTitle">Fund</h2>
       ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
+      ${!completedJournal && (state.destinations.funders || []).length ? `<section class="return-wallet fund-asset-destinations" aria-label="Where assets go">${assetDestinationsHtml()}</section>` : ''}
       ${estimate && (routeCount || manualQuoteCount) ? `<details class="drawer funding-extra" open><summary><span>Pair tokens</span><strong>${routeCount + manualQuoteCount} item${routeCount + manualQuoteCount === 1 ? '' : 's'}</strong></summary>${renderQuoteAcquirePanel()}</details>` : ''}
       <div class="launch-phase-actions launch-phase-actions-split">
         <button class="text-button" type="button" data-launch-workspace="configure"><i class="fa-solid fa-arrow-left"></i><span>Token &amp; pools</span></button>
@@ -15039,10 +14253,10 @@ function renderClassicBridge() {
     <section class="classic-workspace-section classic-workspace-verify" data-classic-workspace="finish">
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
-          <h2 id="finishStepTitle">${finalSweepComplete ? 'Launch complete' : 'Finish launch'}</h2>
-          <p>${finalSweepComplete ? 'Assets swept and launch wallet verified empty.' : 'Distribute, sweep remaining assets, and save proof.'}</p>
+          <h2 id="finishStepTitle">${practiceComplete ? 'Practice complete' : finalSweepComplete ? 'Launch complete' : 'Finish launch'}</h2>
+          <p>${practiceComplete ? 'Nothing went on-chain and no SOL was spent.' : finalSweepComplete ? 'Assets swept and launch wallet verified empty.' : 'Distribute, sweep remaining assets, and save proof.'}</p>
         </div>
-        <aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Proof is ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for final sweep.' : 'Resolve the requirement below.'}</span></aside>
+        <aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${practiceComplete ? 'Ready for a live launch.' : finalSweepComplete ? 'Proof is ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for final sweep.' : 'Resolve the requirement below.'}</span></aside>
       </section>`}
       ${completedJournal && !finalSweepComplete ? renderLaunchCompleteCard(completedJournal) : ''}
       ${!completedJournal && !finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
@@ -15471,7 +14685,7 @@ function fieldRunbookActionControl(action = '', stage = {}) {
 
   if (!action || action === 'none') return null;
   if (action === 'run-demo-launch') {
-    return { dataAction: 'run-demo-launch', label: 'Run demo', disabled: state.demoLaunchRunning === true };
+    return { dataAction: 'run-demo-launch', label: 'Run practice launch', disabled: state.demoLaunchRunning === true };
   }
   if (action === 'generate-or-unlock-wallet') {
     if (walletPublicKey && walletLocked) return { dataAction: 'unlock-secret-pin', label: 'Unlock PIN' };
@@ -19024,6 +18238,33 @@ function renderVanitySummary() {
     : 'Random address · recommended';
 }
 
+// "More options" stays folded, so its header names every choice inside it:
+// defaults are visible without opening it, and changes are never hidden.
+function renderMoreOptionsSummary() {
+  const summary = $('#launchMoreSummary');
+  if (!summary) return;
+  const supply = parseWholeNumber($('#tokenSupply')?.value) || 1000000000;
+  const compactSupply = supply >= 1e9 && supply % 1e9 === 0
+    ? `${supply / 1e9}B`
+    : supply >= 1e6 && supply % 1e6 === 0
+      ? `${supply / 1e6}M`
+      : supply.toLocaleString('en-US');
+  const poolCount = Math.max(0, Number(currentLaunchConfig().poolTopology?.pools?.length || 0));
+  const share = heldSharePlan(supply);
+  const airdrop = currentAirdropPlan();
+  summary.textContent = [
+    `${compactSupply} supply`,
+    $('#sealedLaunch')?.checked ? 'sealed' : 'not sealed',
+    $('#mintFormat')?.value === 'classic-spl' ? 'Classic SPL' : 'Token-2022',
+    state.selectedVanityPublicKey ? 'vanity address' : 'random address',
+    `${poolCount} pool${poolCount === 1 ? '' : 's'}`,
+    share.heldPercent > 0
+      ? `${Number(share.heldPercent.toFixed(1))}% held back${share.active ? ` · shared with ${share.rows.length} funder${share.rows.length === 1 ? '' : 's'}` : ''}`
+      : null,
+    airdrop.csvRecipientCount > 0 ? `airdrop to ${airdrop.csvRecipientCount}` : null,
+  ].filter(Boolean).join(' · ');
+}
+
 function renderLaunchRunningBar() {
   const bar = $('#launchRunningBar');
   if (bar) bar.hidden = state.realExecutionRunning !== true;
@@ -19033,13 +18274,14 @@ function renderLaunchRunningBar() {
 function renderAll() {
   renderLaunchRunningBar();
   renderVanitySummary();
+  renderMoreOptionsSummary();
   renderCustodySignal();
   renderLaunchPreview();
   renderLaunchIdentity();
   renderLiveLaunchMonitor();
   renderLaunchBudgetRecommendation();
   renderTokenLogoPreview();
-  renderGuidedLaunchFlow();
+  renderEnvironmentControls();
   renderChartDeck();
   renderVanityCandidates();
   renderFlywheelPick();
@@ -19048,7 +18290,6 @@ function renderAll() {
   renderSupplyEditor();
   renderAirdropPanel();
   renderReportPanel();
-  renderGuidedRunShell();
   renderClassicBridge();
   renderLiveOpsPanel();
   renderSignaturePanel();
@@ -19384,6 +18625,7 @@ async function refreshManualPrefundBalance({ quiet = false } = {}) {
       lastUpdatedAt: new Date().toISOString(),
     };
     if (!quiet) notify('Launch wallet balance refreshed');
+    refreshDestinations({ force: true }).catch(() => null);
     return balance;
   } catch (error) {
     state.manualPrefund = {
@@ -20523,7 +19765,7 @@ async function runV2Airdrop({ retry = false, skipConfirm = false, quiet = false,
     return;
   }
   if (state.demoActive) {
-    if (!quiet) notify('Demo launch handles airdrop inside Run demo');
+    if (!quiet) notify('The practice launch runs the airdrop for you');
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.runAirdrop || !state.apiClient?.retryAirdrop) {
@@ -22066,13 +21308,23 @@ async function refreshDestinations({ force = false } = {}) {
   if (fresh && !force) return state.destinations;
   try {
     const result = await state.apiClient.listDestinations(launchWallet);
+    const funders = (Array.isArray(result?.funders) ? result.funders : [])
+      .map((entry) => ({ address: String(entry?.address || ''), sol: Number(entry?.sol || 0) }))
+      .filter((entry) => entry.address && entry.sol > 0);
+    const fundersChanged = JSON.stringify(funders) !== JSON.stringify(state.destinations.funders || []);
     state.destinations = {
       ...state.destinations,
+      funders,
       funder: result?.funder || null,
       signed: (result?.signed || []).map((entry) => entry.address),
       launchWallet,
       checkedAt: Date.now(),
     };
+    // The funder list feeds the airdrop plan and supply split.
+    if (fundersChanged) {
+      renderAll();
+      return state.destinations;
+    }
   } catch (_error) {
     state.destinations = { ...state.destinations, launchWallet, checkedAt: Date.now() };
   }
@@ -22085,7 +21337,6 @@ function setReturnWallet(address) {
   const input = $('#sweepDestination');
   if (!input) return;
   input.value = String(address || '');
-  state.guidedIntent.destinationWallet = input.value;
   state.executionReadiness = null;
   input.dispatchEvent(new Event('input', { bubbles: true }));
   renderAll();
@@ -22123,12 +21374,13 @@ function openWalletSigning() {
   window.setTimeout(poll, 3000);
 }
 
-function renderReturnWalletCard() {
-  const card = $('#returnWalletCard');
-  if (!card) return;
+// "Where assets go": the main return wallet (Fee Keys, leftover SOL, and
+// unshared held-back tokens), plus the funding wallets that may share the
+// held-back tokens, split by the SOL each sent.
+function assetDestinationsHtml() {
   const status = returnWalletStatus();
   const others = state.destinations.signed.filter((address) => address !== status.address);
-  const title = status.kind === 'signed' ? 'Signed wallet' : status.kind === 'funder' ? 'Funding wallet' : 'Not verified';
+  const title = status.kind === 'signed' ? 'Signed wallet' : status.kind === 'funder' ? 'First funding wallet' : 'Not verified';
   const badge = status.kind === 'signed'
     ? '<span class="risk-badge">Signed</span>'
     : status.kind === 'funder'
@@ -22136,25 +21388,75 @@ function renderReturnWalletCard() {
       : '<span class="risk-badge danger">Not verified</span>';
   const address = status.address
     ? `<code>${escapeHtml(status.address)}</code>`
-    : '<small>The wallet you fund the launch wallet from. Detected once the SOL arrives.</small>';
+    : '<small>The first wallet that funds the launch wallet. Detected once the SOL arrives.</small>';
   const warning = status.kind === 'unverified'
     ? '<p class="return-wallet-warning">This address was typed, not proven. Assets will not be sent to it. Sign with it, or use the funding wallet.</p>'
     : '';
-  card.innerHTML = `
-    <div class="return-wallet-head"><span>Return wallet</span>${badge}</div>
-    <strong>${escapeHtml(title)}</strong>
-    ${address}
-    ${warning}
-    <p class="return-wallet-note">Team tokens, LP fee keys, and leftover SOL go here when the launch finishes.</p>
-    <div class="operator-toolbar compact">
-      <button class="pill-button" type="button" data-action="sign-return-wallet" ${state.destinations.waiting ? 'disabled' : ''}>
-        ${state.destinations.waiting ? 'Waiting for signature…' : 'Sign with another wallet'}
-      </button>
-      ${status.kind !== 'funder' || String($('#sweepDestination')?.value || '').trim()
-        ? '<button class="pill-button" type="button" data-action="use-funding-wallet-sweep">Use funding wallet</button>'
-        : ''}
-      ${others.map((other) => `<button class="pill-button" type="button" data-action="use-signed-wallet" data-address="${escapeHtml(other)}">Use ${escapeHtml(shortAddress(other))}</button>`).join('')}
+
+  const share = heldSharePlan();
+  const locked = heldShareLocked();
+  const funders = state.destinations.funders || [];
+  const selected = new Set(state.heldShare.selected || []);
+  const heldLabel = share.heldPercent > 0
+    ? `${Number(share.heldPercent.toFixed(2))}% held back`
+    : 'No tokens held back';
+  const shareRows = funders.map((entry, index) => {
+    const inCsv = share.csvWallets.has(entry.address);
+    const checked = selected.has(entry.address) && !inCsv;
+    const row = share.rows.find((item) => item.wallet === entry.address);
+    const detail = [
+      `sent ${fmtSol(entry.sol)}`,
+      index === 0 ? 'first funder' : null,
+      inCsv ? 'already in the airdrop list' : null,
+    ].filter(Boolean).join(' · ');
+    const shareText = row
+      ? `${compactAmount(row.tokens)} tokens · ${Number(((entry.sol / share.totalSol) * 100).toFixed(1))}%`
+      : checked ? 'Hold back tokens to share' : '';
+    return `
+      <li class="${checked ? 'is-selected' : ''}">
+        <label>
+          <input type="checkbox" data-action="toggle-held-share" data-address="${escapeHtml(entry.address)}" ${checked ? 'checked' : ''} ${locked || inCsv ? 'disabled' : ''}>
+          <span><code>${escapeHtml(entry.address)}</code><small>${escapeHtml(detail)}</small></span>
+          <strong>${escapeHtml(shareText)}</strong>
+        </label>
+      </li>`;
+  }).join('');
+  const shareBody = funders.length
+    ? `<ul class="asset-share-list">${shareRows}</ul>
+       <p class="return-wallet-note">${share.heldPercent > 0
+         ? 'Ticked wallets split the held-back tokens by the SOL each sent. Anyone can send SOL to the launch wallet, so only tick wallets you recognize and check the full address.'
+         : 'Hold back part of the supply (More options, Supply and pools) to share it with funding wallets.'}${locked ? ' Locked: the token is created.' : ''}</p>`
+    : '<p class="return-wallet-note">Funding wallets appear here once SOL reaches the launch wallet. You can then tick any or all of them to share the held-back tokens, split by the SOL each sent.</p>';
+
+  return `
+    <div class="return-wallet-head"><span>Where assets go</span>${badge}</div>
+    <div class="asset-destination">
+      <small class="eyebrow">Main return wallet</small>
+      <strong>${escapeHtml(title)}</strong>
+      ${address}
+      ${warning}
+      <p class="return-wallet-note">Gets the Fee Keys, leftover SOL, and any held-back tokens not shared below.</p>
+      <div class="operator-toolbar compact">
+        <button class="pill-button" type="button" data-action="sign-return-wallet" ${state.destinations.waiting ? 'disabled' : ''}>
+          ${state.destinations.waiting ? 'Waiting for signature…' : 'Sign with another wallet'}
+        </button>
+        ${status.kind !== 'funder' || String($('#sweepDestination')?.value || '').trim()
+          ? '<button class="pill-button" type="button" data-action="use-funding-wallet-sweep">Use funding wallet</button>'
+          : ''}
+        ${others.map((other) => `<button class="pill-button" type="button" data-action="use-signed-wallet" data-address="${escapeHtml(other)}">Use ${escapeHtml(shortAddress(other))}</button>`).join('')}
+      </div>
+    </div>
+    <div class="asset-destination asset-share">
+      <small class="eyebrow">Share held-back tokens · ${escapeHtml(heldLabel)}</small>
+      <strong>${share.active ? `Split across ${share.rows.length} funding wallet${share.rows.length === 1 ? '' : 's'}` : 'Funding wallets'}</strong>
+      ${shareBody}
     </div>`;
+}
+
+function renderReturnWalletCard() {
+  const card = $('#returnWalletCard');
+  if (!card) return;
+  card.innerHTML = assetDestinationsHtml();
 }
 
 function editReturnWallet() {
@@ -22305,10 +21607,6 @@ async function runDemoLaunch() {
   }
 
   state.demoLaunchRunning = true;
-  if (state.experienceMode === 'guided') {
-    state.guidedRunError = null;
-    state.guidedRunStatus = 'running';
-  }
   renderAll();
   try {
     state.lastDemoLaunchRun = await state.apiClient.runDemoLaunch({
@@ -22321,7 +21619,7 @@ async function runDemoLaunch() {
     applyLaunchPlan(
       state.executionReadiness?.plan || state.launchPlan || fallbackLaunchPlan(),
       config,
-      { openApproval: state.experienceMode !== 'guided' },
+      { openApproval: true },
     );
     state.transactions.forEach((tx) => {
       tx.state = 'signed';
@@ -22334,18 +21632,10 @@ async function runDemoLaunch() {
       time: 'Just now',
     });
     pollLiveOps().catch(() => null);
-    if (state.experienceMode === 'guided') state.guidedRunStatus = 'complete';
-    notify(state.experienceMode === 'guided' ? 'Practice complete: no SOL was spent' : 'Demo launch completed end to end');
+    setLaunchWorkspace('finish');
+    notify('Practice launch complete: no SOL was spent');
   } catch (error) {
-    if (state.experienceMode === 'guided') {
-      state.guidedRunError = guidedPracticeErrorMessage(error);
-      state.guidedRunStatus = 'failed';
-      state.activeApprovalId = null;
-      state.approvalOpen = false;
-      notify('Practice stopped safely; no SOL was spent');
-    } else {
-      notify(error.message || 'Demo launch failed');
-    }
+    notify(error.message || 'Practice launch failed; no SOL was spent');
   } finally {
     state.demoLaunchRunning = false;
     renderAll();
@@ -22360,7 +21650,7 @@ async function executeNextRunOperation() {
     return;
   }
   if (state.demoActive) {
-    notify('Use Run demo while demo mode is active');
+    notify('Use Run practice launch while Practice is selected');
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.executeNextRunOperation) {
@@ -23347,15 +22637,12 @@ async function bootLocalApi() {
       }
     }
   }
-  if (state.experienceMode === 'guided' && state.guidedStep === guidedSteps.length - 1) {
-    requestGuidedFundingEstimate().catch(() => null);
-  }
   if (state.discovery.scanning) schedulePersonalDiscoveryPoll();
   if (boot.api?.available) {
     refreshDestinations({ force: true });
     autoVerifyQuoteTokens();
     // The one-step card is the static web host's launcher. On the desktop it
-    // duplicates the guided launch and hides the saved launch below it.
+    // duplicates the launch flow and hides the saved launch below it.
     const quickCard = $('.quick-launch-card');
     if (quickCard) quickCard.hidden = true;
     notify('Local API connected');
@@ -23548,7 +22835,6 @@ function openJournalFinish(journalId) {
     state.accountId = journal.walletPublicKey;
   }
   restoreLaunchConfigFromJournal(journal);
-  state.experienceMode = 'advanced';
   state.launchWorkspace = 'finish';
   state.recoveryWizardStep = 'verify';
   setView('launch');
@@ -23571,7 +22857,6 @@ function openTokenRecovery(journalId) {
     state.accountId = journal.walletPublicKey;
   }
   restoreLaunchConfigFromJournal(journal);
-  state.experienceMode = 'advanced';
   state.launchWorkspace = 'mint';
   setView('launch');
   setLaunchWorkspace('mint');
@@ -23697,7 +22982,7 @@ function handleDynamicInput(event) {
   }
   if (handleOperatorPromptInput(event)) return;
   if (handleRecoveryPinInput(event)) return;
-  if (syncGuidedField(event.target)) return;
+  if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary();
 
   if (VORTEX_INPUT_IDS.has(event.target?.id)) {
     renderVortexControl();
@@ -23821,101 +23106,10 @@ function handleClick(event) {
     renderPersonalDiscovery();
     return;
   }
-  if (action === 'select-experience') {
-    setExperienceMode(actionTarget.dataset.experience);
-    return;
-  }
   if (action === 'select-environment') {
     setExecutionEnvironment(actionTarget.dataset.environment).catch((error) => {
       notify(error.message || 'Could not change the execution environment');
     });
-    return;
-  }
-  if (action === 'guided-next') {
-    moveGuidedStep(1);
-    return;
-  }
-  if (action === 'guided-back') {
-    moveGuidedStep(-1);
-    return;
-  }
-  if (action === 'guided-select-logo') {
-    $('#tokenLogoFile')?.click();
-    return;
-  }
-  if (action === 'guided-use-solflare') {
-    const destination = String(state.solflare?.publicKey || '').trim();
-    if (!destination) {
-      notify('Connect Solflare before using it as the home wallet');
-      return;
-    }
-    state.guidedIntent.destinationWallet = destination;
-    delete state.guidedErrors.destinationWallet;
-    persistGuidedDraft();
-    renderGuidedLaunchFlow();
-    return;
-  }
-  if (action === 'guided-use-practice-wallet') {
-    state.guidedIntent.destinationWallet = GUIDED_PRACTICE_DESTINATION;
-    delete state.guidedErrors.destinationWallet;
-    persistGuidedDraft();
-    renderGuidedLaunchFlow();
-    notify('Practice wallet selected. No connection or signature is required.');
-    return;
-  }
-  if (action === 'guided-value-preset') {
-    state.guidedIntent.startingMarketCapUsd = Math.max(1, Number(actionTarget.dataset.value || 0));
-    resetGuidedFundingEstimate();
-    delete state.guidedErrors.startingMarketCapUsd;
-    persistGuidedDraft();
-    renderGuidedLaunchFlow();
-    return;
-  }
-  if (action === 'guided-budget-preset') {
-    state.guidedIntent.liquidityBudgetSol = Math.max(0, Number(actionTarget.dataset.value || 0));
-    resetGuidedFundingEstimate();
-    persistGuidedDraft();
-    renderGuidedLaunchFlow();
-    return;
-  }
-  if (action === 'guided-practice') {
-    startGuidedPractice().catch((error) => notify(error.message || 'Could not start the practice launch'));
-    return;
-  }
-  if (action === 'guided-start-practice') {
-    startGuidedPractice().catch((error) => notify(error.message || 'Could not start the practice launch'));
-    return;
-  }
-  if (action === 'guided-retry-estimate') {
-    requestGuidedFundingEstimate().catch(() => null);
-    return;
-  }
-  if (action === 'guided-live-handoff') {
-    handoffGuidedLiveLaunch().catch((error) => notify(error.message || 'Could not prepare the live launch'));
-    return;
-  }
-  if (action === 'guided-go-live') {
-    prepareGuidedLiveLaunch().catch((error) => notify(error.message || 'Could not prepare the live launch'));
-    return;
-  }
-  if (action === 'guided-edit-recipe') {
-    state.guidedRunStatus = 'idle';
-    state.guidedRunError = null;
-    state.lastDemoLaunchRun = null;
-    state.guidedStep = guidedSteps.length - 1;
-    setLaunchWorkspace('configure');
-    persistGuidedDraft();
-    renderAll();
-    return;
-  }
-  if (action === 'guided-review-proof') {
-    setLaunchWorkspace('finish');
-    renderAll();
-    return;
-  }
-  if (action === 'guided-return-run') {
-    setLaunchWorkspace('mint');
-    renderAll();
     return;
   }
   if (action === 'open-wallet-tracking') {
@@ -24060,6 +23254,10 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'toggle-held-share') {
+    toggleHeldShareFunder(actionTarget.dataset.address);
+    return;
+  }
   if (action === 'use-funding-wallet-sweep') {
     setReturnWallet('');
     notify('Assets return to the funding wallet');
@@ -24772,6 +23970,7 @@ function bindEvents() {
   document.addEventListener('input', scheduleLaunchAutoSave);
   // A pasted pair mint resolves its symbol as soon as the field is left.
   document.addEventListener('change', (event) => {
+    if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary();
     const mint = event.target.closest?.('.supply-mint');
     if (mint?.value.trim()) {
       resolveCustomQuoteToken(mint.dataset.poolId).catch((error) => notify(error.message || 'Token lookup failed'));
@@ -24990,10 +24189,6 @@ restoreExecutionLedger();
 restoreLaunchProof();
 restoreClassicReportComparison();
 restoreDiscoveryRegistry();
-restoreGuidedDraft();
-if (state.experienceMode === 'guided' && state.guidedStep === guidedSteps.length - 1) {
-  applyGuidedRecipe({ refresh: false });
-}
 restoreLaunchWorkspace();
 bindEvents();
 initializeSolflareWallet();

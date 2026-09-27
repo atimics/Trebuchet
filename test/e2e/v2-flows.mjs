@@ -126,9 +126,9 @@ try {
   assert.equal(session.success, true);
   assert.ok(session.token, 'Trebuchet did not receive a local API session token');
 
-  assert.equal(await page.getAttribute('body', 'data-experience-mode'), 'guided');
-  assert.equal(await page.isVisible('.sidebar'), false, 'Guided Mode should start as a focused tutorial');
-  await page.click('.guided-advanced-shortcut');
+  // One launch flow: no separate guided mode, and it opens on Token & pools.
+  assert.equal(await page.getAttribute('body', 'data-experience-mode'), null);
+  assert.equal(await page.getAttribute('body', 'data-launch-workspace'), 'configure');
   await page.waitForSelector('.sidebar', { state: 'visible' });
   await page.click('[data-view="wallet"]');
   await page.waitForSelector('#view-wallet.is-active');
@@ -308,59 +308,56 @@ try {
     renderAll();
   });
 
-  await page.click('.launch-settings-drawer > summary');
-  await page.locator(
-    '[data-action="select-experience"][data-experience="guided"]:visible',
-  ).first().click();
-  await page.evaluate(() => {
-    state.guidedStep = 0;
-    renderGuidedLaunchFlow();
-  });
-  await page.fill('[data-guided-field="name"]', 'First Launch');
-  await page.fill('[data-guided-field="symbol"]', 'FIRST');
+  // Practice launch through the same six phases a live launch uses.
+  await page.click('.launch-workspace-tab[data-launch-workspace="configure"]');
+  await page.fill('#tokenName', 'First Launch');
+  await page.fill('#tokenSymbol', 'FIRST');
   await page.setInputFiles(
     '#tokenLogoFile',
     path.join(root, 'public', 'release-assets', 'frames', 'f01.png'),
   );
-  await page.waitForSelector('.guided-logo-button .guided-logo-mark img');
-  assert.match(
-    await page.locator('.guided-logo-button').innerText(),
-    /Logo attached/,
-    'Guided Mode did not show the uploaded logo until a later navigation refresh',
-  );
+  // Where assets go: hold back 10%, then share it with both funding wallets.
   await page.evaluate(() => {
-    const symbol = document.querySelector('[data-guided-field="symbol"]');
-    symbol.focus();
-    symbol.setSelectionRange(2, 2);
-    document.querySelector('[data-action="select-environment"][data-environment="live"]').click();
+    for (const [id, value] of [['#preallocationSupplyPercent', '10'], ['#mainPoolPercent', '90']]) {
+      const input = document.querySelector(id);
+      input.value = value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
   });
-  await page.waitForFunction(() => document.body.dataset.executionEnvironment === 'live');
-  assert.deepEqual(await page.evaluate(() => ({
-    field: document.activeElement?.dataset?.guidedField,
-    cursor: document.activeElement?.selectionStart,
-  })), { field: 'symbol', cursor: 2 }, 'environment refresh moved focus inside Guided Mode');
-  await page.evaluate(() => {
-    document.querySelector('[data-action="select-environment"][data-environment="practice"]').click();
+  assert.match(await page.locator('#returnWalletCard').innerText(), /Funding wallets appear here once SOL reaches the launch wallet/);
+  await page.evaluate(async () => {
+    const session = await (await fetch('/api/session')).json();
+    await fetch('/api/demo/inject-funds', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${session.token}`, 'x-trebuchet-session': session.token },
+      body: JSON.stringify({ publicKey: selectedLaunchWalletPublicKey(), sol: 2 }),
+    });
+    await refreshDestinations({ force: true });
   });
-  await page.waitForFunction(() => document.body.dataset.executionEnvironment === 'practice');
-  // Token -> Liquidity pairs -> Review -> Fund -> Launch.
-  await page.click('[data-action="guided-next"]');
-  await page.click('[data-action="guided-value-preset"][data-value="100000"]');
-  for (let step = 0; step < 3; step += 1) await page.click('[data-action="guided-next"]');
-  await page.click('[data-action="guided-practice"]');
-  await page.waitForFunction(() => (
-    document.querySelector('#guidedRunShell')?.textContent?.includes('Practice complete')
-  ), null, { timeout: 60_000 });
+  const shareBoxes = page.locator('#returnWalletCard input[data-action="toggle-held-share"]');
+  assert.equal(await shareBoxes.count(), 2, 'Both practice funders should be listed');
+  assert.equal(await shareBoxes.nth(0).isChecked(), false, 'No funder is ticked by default');
+  await shareBoxes.nth(0).click();
+  await shareBoxes.nth(1).click();
+  const shared = await page.evaluate(() => currentAirdropPlan().recipients.map((row) => row.tokens));
+  assert.deepEqual(shared, [70_000_000, 30_000_000], 'Held-back tokens are not split by SOL sent');
 
-  const guidedRunText = await page.locator('#guidedRunShell').innerText();
-  assert.match(guidedRunText, /The complete launch recipe worked/i);
-  assert.match(guidedRunText, /Prepare live launch/i);
-  assert.match(guidedRunText, /Review local practice record/i);
+  await page.click('.launch-workspace-tab[data-launch-workspace="mint"]');
+  await page.click('[data-classic-workspace="mint"] [data-action="run-demo-launch"]');
+  await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'finish', null, { timeout: 60_000 });
+  const finishText = await page.locator('[data-classic-workspace="finish"]').innerText();
+  assert.match(finishText, /Practice complete/i);
+  assert.match(finishText, /The complete launch recipe worked/i);
+  assert.match(finishText, /0 SOL/);
+  assert.match(finishText, /Switch to Live/i);
+  assert.doesNotMatch(finishText, /Needs proof/i, 'Practice result showed live proof requirements');
+  const delivered = await page.evaluate(() => (state.lastDemoLaunchRun?.transfer?.airdrop?.transferred || []).map((row) => row.tokens));
+  assert.deepEqual(delivered, [70_000_000, 30_000_000], 'Practice run did not airdrop the shared tokens');
   assert.deepEqual(nativeDialogs, [], 'Trebuchet opened a native prompt/confirm dialog');
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');
 
-  console.log('Trebuchet API-backed E2E passed: session, wallet, secure dialog, Guided launch');
+  console.log('Trebuchet API-backed E2E passed: session, wallet, secure dialog, practice launch');
 } catch (error) {
   if (serverOutput) process.stderr.write(`\n--- Trebuchet E2E server output ---\n${serverOutput}\n`);
   throw error;

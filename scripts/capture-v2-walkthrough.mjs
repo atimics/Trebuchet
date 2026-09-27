@@ -76,9 +76,9 @@ const discoveryPreview = {
 };
 
 const chapters = [
-  ['01', 'Guided practice', 'Create a complete launch recipe with no transaction and no SOL spent.'],
+  ['01', 'Practice launch', 'Run a complete launch recipe with no transaction and no SOL spent.'],
   ['02', 'Wallet custody', 'Create and select the isolated local signer used by Trebuchet.'],
-  ['03', 'Six launch phases', 'Inspect the detailed controls behind the Guided recipe.'],
+  ['03', 'Six launch phases', 'Inspect every control and proof in each phase.'],
   ['04', 'Token discovery', 'Review scored assets and the user-owned wallet graph.'],
   ['05', 'Recovery and history', 'Inspect resumable journals, wallets, audit evidence, and checkpoints.'],
   ['06', 'Runtime settings', 'Review RPC, security, release, and execution policy.'],
@@ -374,37 +374,29 @@ try {
     const chapterBox = document.getElementById('treb-tour-chapter');
     chapterBox.querySelector('small').textContent = 'Trebuchet product walkthrough';
     chapterBox.querySelector('h2').textContent = 'Launch locally. Verify every phase.';
-    chapterBox.querySelector('p').textContent = 'A complete, transaction-free tour of Guided launch, the six Advanced phases, local wallet custody, discovery, recovery, settings, and the stable CLI boundary.';
+    chapterBox.querySelector('p').textContent = 'A complete, transaction-free tour of a practice launch, the six launch phases, local wallet custody, discovery, recovery, settings, and the stable CLI boundary.';
     chapterBox.classList.add('show');
   });
   await hold(3400);
   await page.evaluate(() => document.getElementById('treb-tour-chapter')?.classList.remove('show'));
   await hold(500);
 
-  await chapter(page, '01', 'Guided practice', 'Build and execute the minimal recipe in a local simulator. The same guarded operation graph runs, but no transaction is sent and no SOL is spent.');
-  await caption(page, 'Guided · Welcome', 'One decision per screen', 'Guided mode hides the operator cockpit and begins with the smallest safe launch abstraction.', 1900);
-  await clickStep(page, '[data-action="guided-next"]', 'Guided · Step 1', 'Start the tutorial', 'The four decisions are token identity, return wallet, starting value, and final review.');
-  await typeStep(page, '[data-guided-field="name"]', 'Trebuchet Tour', 'Guided · Token', 'Name the token', 'Token identity becomes permanent when the mint is created.');
-  await typeStep(page, '[data-guided-field="symbol"]', 'TBT', 'Guided · Token', 'Set the ticker', 'Trebuchet normalizes the ticker and enforces Solana metadata limits.');
-  await caption(page, 'Guided · Token', 'Attach the token image', 'Images are validated and automatically compressed into the launch envelope.', 450);
+  await chapter(page, '01', 'Practice launch', 'Design the token and run the complete recipe in a local simulator. It uses the same six phases as a live launch, but sends no transaction and spends no SOL.');
+  await caption(page, 'Token & pools', 'Start with the token', 'Launch opens on the token and its liquidity. Practice is selected until you switch to Live.', 1900);
+  await typeStep(page, '#tokenName', 'Trebuchet Tour', 'Token & pools', 'Name the token', 'Token identity becomes permanent when the mint is created.');
+  await typeStep(page, '#tokenSymbol', 'TBT', 'Token & pools', 'Set the ticker', 'Trebuchet normalizes the ticker and enforces Solana metadata limits.');
+  await caption(page, 'Token & pools', 'Attach the token image', 'Images are validated and automatically compressed into the launch envelope.', 450);
   await page.setInputFiles('#tokenLogoFile', path.join(root, 'public', 'release-assets', 'frames', 'f01.png'));
-  await page.waitForSelector('.guided-logo-button .guided-logo-mark img');
   await hold(1100);
-  await clickStep(page, '[data-action="guided-next"]', 'Guided · Step 2', 'Choose the return wallet', 'This wallet never signs the launch. It receives Fee Keys, remaining tokens, and leftover SOL at the end.');
-  await clickStep(page, '[data-action="guided-use-practice-wallet"]', 'Guided · Return wallet', 'Use the practice destination', 'The simulator supplies a safe destination so the full return step can be verified locally.');
-  await clickStep(page, '[data-action="guided-next"]', 'Guided · Step 3', 'Choose value and liquidity', 'Starting market value derives the opening token price; liquidity budget selects Trebuchet’s minimal strategy.');
-  await clickStep(page, '[data-action="guided-value-preset"][data-value="100000"]', 'Guided · Value', 'Select the starting target', 'The target guides the opening price. It is not a fee or a guaranteed valuation.');
-  await clickStep(page, '[data-action="guided-budget-preset"][data-value="1"]', 'Guided · Liquidity', 'Use the lean 1 SOL recipe', 'One understandable core market keeps the launch minimal. Practice still spends zero SOL.');
-  await clickStep(page, '[data-action="guided-next"]', 'Guided · Step 4', 'Review the complete recipe', 'The review translates every underlying operation into plain language before execution.');
-  await caption(page, 'Guided · Review', 'Practice is transaction-free', 'Token creation, authority removal, liquidity, locks, return, and proof will all be simulated.', 1800);
-  await clickStep(page, '[data-action="guided-practice"]', 'Guided · Execute', 'Run the practice launch', 'Trebuchet now checkpoints each guarded operation in order.', { after: 700 });
-  await page.waitForFunction(() => document.querySelector('#guidedRunShell')?.textContent?.includes('Practice complete'), null, { timeout: 120_000 });
-  await caption(page, 'Guided · Complete', 'The entire recipe passed', 'The simulator created the token, verified authorities, built and locked liquidity, returned assets, and saved a local record.', 3200);
-  await clickStep(page, '[data-action="guided-edit-recipe"]', 'Guided · Complete', 'Return to the recipe', 'The completed practice record remains available while the recipe can be inspected or handed to Advanced mode.');
+  await clickStep(page, '.launch-workspace-tab[data-launch-workspace="wallet"]', 'Wallet', 'Create the launch wallet', 'An isolated, app-managed signer runs the launch. Your own wallet only funds it and receives the assets.');
+  await clickStep(page, '[data-classic-workspace="wallet"] button:has-text("Create")', 'Wallet', 'Generate the signer', 'The keypair is created and encrypted on this device.', { after: 2200 });
+  await clickStep(page, '.launch-workspace-tab[data-launch-workspace="mint"]', 'Create token', 'Review the token', 'Creating the token is permanent in a live launch. Practice runs it in the simulator.');
+  await clickStep(page, '[data-classic-workspace="mint"] [data-action="run-demo-launch"]', 'Practice', 'Run the practice launch', 'Trebuchet checkpoints each guarded operation in order.', { after: 700 });
+  await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'finish', null, { timeout: 120_000 });
+  await caption(page, 'Practice · Complete', 'The entire recipe passed', 'The simulator created the token, verified authorities, built and locked liquidity, returned assets, and saved a local record.', 3200);
 
   await chapter(page, '02', 'Wallet custody', 'Trebuchet uses an isolated, app-managed signer. Personal wallets fund the launch and receive assets, but never sign launch execution.');
-  await clickStep(page, '.guided-advanced-shortcut', 'Experience', 'Open Advanced mode', 'Advanced exposes the detailed controls underneath the same guarded plan.');
-  await clickStep(page, '[data-view="wallet"]', 'Wallets', 'Open local custody', 'Wallet secrets stay on this Mac and can be protected by the Recovery PIN.');
+  await clickStep(page, '[data-view="wallet"]', 'Wallets', 'Open local custody', 'Wallet secrets stay on this device and can be protected by the Recovery PIN.');
   if (await page.locator('#accountList .account-row').count() === 0) {
     await clickStep(page, '#newVaultButton', 'Wallets', 'Create the launch wallet', 'Trebuchet generates and stores an isolated Solana signer locally.');
     await page.waitForSelector('#accountList .account-row');
@@ -415,7 +407,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('#accountList .account-row').length >= 2);
   await caption(page, 'Wallets', 'Custody remains explicit', 'Copy the funding address, inspect balances, manage the Recovery PIN, or reveal a secret only during manual recovery.', 2200);
 
-  await chapter(page, '03', 'Six launch phases', 'Advanced mode makes the full launch state machine visible: wallet, token and pools, funding, token creation, liquidity, and final proof.');
+  await chapter(page, '03', 'Six launch phases', 'Every launch runs through the same visible phases: wallet, token and pools, funding, token creation, liquidity, and final proof.');
   await clickStep(page, '[data-view="launch"]', 'Phase 1 of 6', 'Choose the launch wallet', 'The selected Trebuchet wallet is the only signer for this run.');
   await clickStep(page, '.launch-workspace-tab[data-launch-workspace="wallet"]', 'Phase 1 of 6', 'Wallet', 'Unlocking the selected launch wallet advances directly to token and pool design.');
   await clickStep(page, '.launch-wallet-choice', 'Phase 1 → 2', 'Unlock and continue', 'A locked wallet opens the Recovery PIN gate; an already-ready wallet advances immediately.');
@@ -472,7 +464,7 @@ try {
     const box = document.getElementById('treb-tour-chapter');
     box.querySelector('small').textContent = 'Walkthrough complete';
     box.querySelector('h2').textContent = 'One recipe. Six guarded phases.';
-    box.querySelector('p').textContent = 'Guided mode provides the minimal path. Advanced mode exposes every control and proof. Practice validates the entire operation graph before any live funding is placed under Trebuchet control.';
+    box.querySelector('p').textContent = 'One launch flow shows every control and proof. Practice validates the entire operation graph before any live funding is placed under Trebuchet control.';
     box.classList.add('show');
   });
   await hold(4200);

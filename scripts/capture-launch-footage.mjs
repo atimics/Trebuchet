@@ -164,7 +164,7 @@ try {
   await runDemo.click();
   await page.waitForFunction(() => (
     !document.querySelector('[data-action="run-demo-launch"]')?.hasAttribute('disabled')
-    && /Run demo/i.test(document.querySelector('[data-action="run-demo-launch"]')?.textContent || '')
+    && /Run practice/i.test(document.querySelector('[data-action="run-demo-launch"]')?.textContent || '')
   ), null, { timeout: 60_000 });
   await hold(1800);
 

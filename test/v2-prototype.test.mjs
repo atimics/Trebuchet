@@ -1991,8 +1991,7 @@ test('v2 is the Electron default with an explicit tested Classic fallback', () =
   assert.match(electronMainJs, /BrowserWindow\.getAllWindows\(\)/);
   assert.match(electronMainJs, /win\.loadURL\(`http:\/\/127\.0\.0\.1:\$\{serverPort\}\$\{desktopUiPath\}`\)/);
   assert.match(v2BrowserE2eJs, /page\.goto\(`\$\{baseUrl\}\/v2\/`/);
-  assert.match(v2BrowserE2eJs, /data-experience=\"guided\"/);
-  assert.match(v2BrowserE2eJs, /data-action=\"guided-practice\"/);
+  assert.match(v2BrowserE2eJs, /data-action=\"run-demo-launch\"/);
   assert.match(v2BrowserE2eJs, /dataset\.apiStatus === 'connected'/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\)/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\{ classic: true \}\)/);
@@ -2190,7 +2189,6 @@ test('v2 launch page presents an agentic control panel instead of instruction wa
   assert.match(combined, /Next move/);
   assert.match(combined, /Trebuchet holds the launch key locally/);
   assert.match(combined, /Review run plan/);
-  assert.match(combined, /Guided launch/);
   assert.match(combined, /Practice run/);
   assert.match(css, /agent-console/);
   assert.match(css, /agent-checks/);
@@ -2228,7 +2226,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /class="launch-toolbar"/);
   assert.match(html, /class="launch-settings-drawer"/);
   assert.match(html, /id="launchSettingsEnvironment"/);
-  assert.match(html, /id="launchSettingsExperience"/);
+  assert.doesNotMatch(html, /id="launchSettingsExperience"/);
   assert.match(combined, /Launch wallet/);
   assert.doesNotMatch(combined, /Estimate, send, then verify/);
   assert.match(combined, /I funded it · check balance/);
@@ -2875,43 +2873,43 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /renderParityPanel/);
 });
 
-test('v2 guided launch is a focused first-launch wizard over the guarded plan', () => {
+test('v2 launch is one flow with no separate guided mode', () => {
   const combined = `${html}\n${css}\n${js}`;
 
-  assert.match(html, /id="guidedLaunchFlow"/);
-  assert.match(html, /id="guidedRunShell"/);
-  assert.match(html, /data-experience="guided"/);
-  assert.match(html, /Advanced/);
-  assert.match(html, /data-action="select-environment"/);
-  assert.match(js, /const GUIDED_RECIPE_ID = 'simple-sol-v1'/);
-  assert.match(js, /function applyGuidedRecipe/);
-  assert.match(js, /function renderGuidedLaunchFlow/);
-  assert.match(js, /function guidedStepErrors/);
-  assert.match(js, /mainPoolPercent'\)\.value = '100'/);
-  assert.match(js, /quotePoolPercent'\)\.value = '0'/);
-  assert.match(js, /sliceShares'\)\.value = '100'/);
-  assert.match(js, /ladderBands'\)\.value = String\(strategy\.ladderBands\)/);
-  assert.match(js, /supportSol'\)\.value = String\(strategy\.supportSol\)/);
+  // One launch flow: the six-phase workspace is the only way to launch.
+  assert.doesNotMatch(combined, /experienceMode|data-experience-mode|data-experience=/);
+  assert.doesNotMatch(combined, /guidedLaunchFlow|guidedRunShell|guided-/);
+  assert.doesNotMatch(js, /select-experience/);
+  // Practice and Live stay an explicit environment choice.
+  assert.match(html, /data-action="select-environment" data-environment="practice"/);
+  assert.match(html, /data-action="select-environment" data-environment="live"/);
+  assert.match(js, /function setExecutionEnvironment/);
+  assert.match(js, /function renderEnvironmentControls/);
+  // Existing journals keep their plan fingerprints.
+  assert.match(js, /mode: 'advanced',\n\s*recipeId: null,\n\s*version: null,/);
   assert.match(combined, /Minimum[\s\S]*1 SOL[\s\S]*10 SOL[\s\S]*100 SOL/);
   assert.match(js, /function launchBudgetRecommendation/);
-  assert.match(js, /feeKeyRecipient'\)\.value = ''/);
-  assert.match(js, /sweepDestination'\)\.value = practiceEnvironmentSelected\(\)/);
-  assert.match(js, /data-action="guided-practice"/);
-  assert.match(js, /function startGuidedPractice/);
-  assert.match(js, /await generateManagedWallet\(\)/);
-  assert.match(js, /await runDemoLaunch\(\)/);
-  assert.match(js, /Start practice launch/);
-  assert.match(js, /stageTransactions\(\{ openApproval: false, announce: false \}\)/);
-  assert.match(js, /guidedPracticeErrorMessage/);
   assert.match(apiClientJs, /V2_DEMO_LAUNCH_RUN_PATH[\s\S]*?timeoutMs: 60_000/);
-  assert.match(js, /Choose your home wallet, not the temporary launch wallet/);
-  assert.match(combined, /sends no transaction, and spends no SOL/);
-  assert.match(js, /function setExecutionEnvironment/);
-  assert.match(js, /function requestGuidedFundingEstimate/);
-  assert.match(js, /function settleGuidedStepPosition/);
-  assert.match(js, /focus\(\{ preventScroll: true \}\)/);
-  assert.match(css, /\.guided-launch-flow\s*\{[\s\S]*?overflow-anchor: none/);
-  assert.match(css, /data-experience-mode="guided"/);
+});
+
+test('v2 shows where assets go and lets funding wallets share held-back tokens', () => {
+  // Visible on Token & pools, outside More options.
+  const moreStart = html.indexOf('id="launchMoreOptions"');
+  assert.ok(html.indexOf('id="returnWalletCard"') < moreStart, 'Where assets go is folded away');
+  assert.match(js, /function assetDestinationsHtml\(\)/);
+  assert.match(js, /Where assets go/);
+  // Funders share by SOL sent, through the existing airdrop rows.
+  assert.match(js, /function heldSharePlan\(/);
+  assert.match(js, /tokens: Math\.floor\(heldTokens \* \(entry\.sol \/ totalSol\)\)/);
+  assert.match(js, /\.\.\.share\.rows,/);
+  assert.match(js, /source: 'funder-share'/);
+  // Only wallets in the current funder list count; nothing is ticked by default.
+  assert.match(js, /\.map\(\(address\) => known\.get\(address\)\)/);
+  assert.match(js, /heldShare: \{ selected: \[\] \}/);
+  // Bound to the plan once a live token exists.
+  assert.match(js, /function heldShareLocked\(\)/);
+  assert.match(js, /action === 'toggle-held-share'/);
+  assert.match(js, /anyone can send SOL to the launch wallet|Anyone can send SOL to the launch wallet/);
 });
 
 test('v2 auto-compresses oversized logos into the Classic upload envelope', async () => {
@@ -6666,7 +6664,7 @@ test('v2 locked launch wallet opens the Recovery PIN gate directly', () => {
   assert.ok(walletClickStart >= 0 && walletClickEnd > walletClickStart);
   assert.match(walletClickSource, /!walletIsUnlocked\(\) \|\| state\.secretPin\.locked \|\| selected\?\.secretPinLocked === true/);
   assert.match(walletClickSource, /unlockSecretPin\(\{ reason: 'wallet' \}\)/);
-  assert.match(js, /title: 'Enter Recovery PIN'[\s\S]*?Unlock the selected launch wallet on this Mac/);
+  assert.match(js, /title: 'Enter Recovery PIN'[\s\S]*?Unlock the selected launch wallet on this device/);
   assert.match(js, /walletButton\.setAttribute\('aria-label', walletButtonLabel\)/);
 });
 
@@ -6695,12 +6693,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=82/);
+  assert.match(html, /styles\.css\?v=83/);
   assert.match(html, /runtime-state\.js\?v=1/);
   assert.match(html, /api-client\.js\?v=37/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=173/);
-  assert.doesNotMatch(html, /app\.js\?v=173" type="module"/);
+  assert.match(html, /app\.js\?v=174/);
+  assert.doesNotMatch(html, /app\.js\?v=174" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11262,7 +11260,7 @@ test('startup routes an interrupted launch to recovery before the tutorial', () 
   assert.match(js, /if \(journalNeedsTokenFinish\(journal\)\) return false/);
   assert.match(js, /action === 'open-token-recovery'[\s\S]*?openTokenRecovery/);
   assert.match(js, /restoreLaunchConfigFromJournal\(journal\)/);
-  assert.match(js, /state\.experienceMode = 'advanced'/);
+  assert.match(js, /state\.launchWorkspace = workspace/);
 });
 
 test('completed liquidity recovery opens Finish without replaying resume or funding', () => {

@@ -70,108 +70,26 @@ async function smokeViewport(browser, viewport) {
       { timeout: 10_000 },
     );
 
-    const guidedMetrics = await page.evaluate(() => {
-      const rectFor = (selector) => {
-        const element = document.querySelector(selector);
-        if (!element) return null;
-        const rect = element.getBoundingClientRect();
-        return {
-          width: rect.width,
-          height: rect.height,
-          top: rect.top,
-          left: rect.left,
-          right: rect.right,
-          bottom: rect.bottom,
-        };
-      };
-      return {
-        experienceMode: document.body.dataset.experienceMode,
-        welcomeText: document.querySelector('#guidedLaunchFlow')?.textContent || '',
-        setupHelp: document.querySelector('#setupHelp')?.textContent || '',
-        scrollWidth: document.documentElement.scrollWidth,
-        clientWidth: document.documentElement.clientWidth,
-        sidebarVisible: Boolean(document.querySelector('.sidebar')?.getClientRects().length),
-        topbarVisible: Boolean(document.querySelector('.topbar')?.getClientRects().length),
-        visibleAdvancedChrome: [
-          '.cockpit-heading',
-          '.launch-summary-drawer',
-          '#launchWorkspaceTabs',
-          '.launch-choice-bar',
-        ].filter((selector) => document.querySelector(selector)?.getClientRects().length),
-        rects: {
-          flow: rectFor('#guidedLaunchFlow'),
-          welcome: rectFor('.guided-form-card'),
-        },
-      };
-    });
-    assert.equal(guidedMetrics.experienceMode, 'guided', `${viewport.name}: guided launch is not the default experience`);
-    assert.match(guidedMetrics.welcomeText, /What are you launching\?/);
-    assert.match(guidedMetrics.welcomeText, /Continue to liquidity pairs/);
-    assert.match(guidedMetrics.setupHelp, /no transaction · 0 SOL/i);
-    assert.equal(guidedMetrics.sidebarVisible, false, `${viewport.name}: Guided Mode still shows the app sidebar`);
-    assert.equal(guidedMetrics.topbarVisible, false, `${viewport.name}: Guided Mode still shows the terminal header`);
-    assert.deepEqual(
-      guidedMetrics.visibleAdvancedChrome,
-      [],
-      `${viewport.name}: Guided Mode exposes advanced launch chrome`,
-    );
+    // One launch flow: it opens on Token & pools with the app chrome visible.
+    const firstOpen = await page.evaluate(() => ({
+      experienceMode: document.body.dataset.experienceMode || null,
+      workspace: document.body.dataset.launchWorkspace,
+      setupHelp: document.querySelector('#setupHelp')?.textContent || '',
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+      tabsVisible: Boolean(document.querySelector('#launchWorkspaceTabs')?.getClientRects().length),
+      tokenNameVisible: Boolean(document.querySelector('#tokenName')?.getClientRects().length),
+    }));
+    assert.equal(firstOpen.experienceMode, null, `${viewport.name}: a separate experience mode is back`);
+    assert.equal(firstOpen.workspace, 'configure', `${viewport.name}: launch does not open on Token & pools`);
+    assert.match(firstOpen.setupHelp, /no transaction · 0 SOL/i);
+    assert.equal(firstOpen.tabsVisible, true, `${viewport.name}: launch phases are hidden`);
+    assert.equal(firstOpen.tokenNameVisible, true, `${viewport.name}: token name field is hidden`);
     assert.ok(
-      guidedMetrics.scrollWidth <= guidedMetrics.clientWidth + 1,
-      `${viewport.name}: guided launch overflows horizontally`,
+      firstOpen.scrollWidth <= firstOpen.clientWidth + 1,
+      `${viewport.name}: launch overflows horizontally`,
     );
-    for (const selector of ['flow', 'welcome']) {
-      assertRectVisible(guidedMetrics.rects[selector], `guided ${selector}`, viewport);
-    }
 
-    await page.fill('[data-guided-field="name"]', 'First Launch');
-    await page.fill('[data-guided-field="symbol"]', 'FIRST');
-    await page.click('[data-action="guided-next"]');
-    const guidedConsoleSkin = await page.evaluate(() => {
-      const bodyStyle = getComputedStyle(document.body);
-      const formStyle = getComputedStyle(document.querySelector('.guided-form-card'));
-      const strategyStyle = getComputedStyle(document.querySelector('.guided-strategy-preview strong'));
-      return {
-        fontFamily: bodyStyle.fontFamily,
-        formRadius: formStyle.borderTopLeftRadius,
-        formShadow: formStyle.boxShadow,
-        strategyFontSize: Number.parseFloat(strategyStyle.fontSize),
-      };
-    });
-    assert.match(guidedConsoleSkin.fontFamily, /JetBrains Mono|SFMono-Regular|Consolas/);
-    assert.equal(guidedConsoleSkin.formRadius, '0px', `${viewport.name}: Guided Mode still uses rounded glass panels`);
-    assert.equal(guidedConsoleSkin.formShadow, 'none', `${viewport.name}: Guided Mode still uses floating card shadows`);
-    assert.ok(guidedConsoleSkin.strategyFontSize <= 12, `${viewport.name}: Step 3 strategy copy is oversized`);
-    await page.click('[data-action="guided-value-preset"][data-value="100000"]');
-    // Review, then Fund, then Launch.
-    for (let step = 0; step < 3; step += 1) await page.click('[data-action="guided-next"]');
-
-    const guidedReview = await page.evaluate(() => {
-      const visibleAdvancedPanes = Array.from(document.querySelectorAll('[data-launch-pane]'))
-        .filter((panel) => panel.id !== 'guidedRunShell'
-          && !panel.classList.contains('setup-dock')
-          && !panel.closest('#guidedLaunchFlow')
-          && !panel.hidden
-          && panel.getClientRects().length > 0)
-        .map((panel) => panel.id || panel.className || panel.tagName);
-      return {
-        text: document.querySelector('#guidedLaunchFlow')?.textContent || '',
-        runLabel: document.querySelector('[data-action="guided-practice"]')?.textContent?.trim() || '',
-        actionRect: (() => {
-          const element = document.querySelector('[data-action="guided-practice"]');
-          if (!element) return null;
-          const rect = element.getBoundingClientRect();
-          return { width: rect.width, height: rect.height, top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom };
-        })(),
-        visibleAdvancedPanes,
-      };
-    });
-    assert.match(guidedReview.text, /Ready to launch/);
-    assert.match(guidedReview.runLabel, /Start practice launch/);
-    assertRectVisible(guidedReview.actionRect, 'guided practice action', viewport);
-    assert.deepEqual(guidedReview.visibleAdvancedPanes, [], `${viewport.name}: guided review exposes advanced wallet operations`);
-
-    await page.click('.guided-advanced-shortcut');
-    await page.waitForFunction(() => document.body.dataset.experienceMode === 'advanced');
     await page.click('.launch-workspace-tab[data-launch-workspace="configure"]');
 
     const collapsedMetrics = await page.evaluate(() => {
