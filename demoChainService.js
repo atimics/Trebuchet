@@ -37,7 +37,8 @@
 // It verifies UI flow, the state machine, conditional rendering, the
 // report generator, and the visual coherence of every screen.
 
-import { Keypair } from '@solana/web3.js';
+import crypto from 'node:crypto';
+import { Keypair, PublicKey } from '@solana/web3.js';
 
 // ===========================================================================
 // Constants — the well-known quote mints, so SOL/USDC/USDT pools resolve to
@@ -290,6 +291,24 @@ export function handleStatus(req, res, { active }) {
 
 export function handleFindFunder(req, res) {
   res.json({ success: true, result: null });
+}
+
+// Practice stand-in for the funding wallets of a launch wallet. A practice
+// wallet has no chain history, so once "Pretend funding arrived" sets a
+// balance, two fixed look-alike funders split it 70/30. They let the
+// "Where assets go" choices be tried without real SOL.
+export function listDemoFunders(publicKey) {
+  const st = publicKey ? getState(publicKey) : null;
+  const sol = Number(st?.solBalance || 0);
+  if (!(sol > 0)) return [];
+  const funder = (label) => new PublicKey(
+    crypto.createHash('sha256').update(`trebuchet-demo-funder:${publicKey}:${label}`).digest(),
+  ).toBase58();
+  const first = Math.round(sol * 0.7 * 1e9) / 1e9;
+  return [
+    { address: funder('first'), sol: first, firstSignature: 'demo-funding-1', transfers: 1 },
+    { address: funder('second'), sol: Math.round((sol - first) * 1e9) / 1e9, firstSignature: 'demo-funding-2', transfers: 1 },
+  ];
 }
 
 // ===========================================================================
