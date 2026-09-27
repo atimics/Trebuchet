@@ -5299,11 +5299,14 @@
          preview; coinRenderer.js is our self-contained coin module. Both
          load before app.js so window.coinRenderer is ready when app.js
          wires it up. Loaded from 'self' to satisfy the CSP. -->
-    <script src="vendor/three/three.min.js"></script>
-    <script src="coinRenderer.js"></script>
-    <script src="api.js"></script>
-    <script src="gif-optimizer.js?v=3"></script>
-    <script src="app.js"></script>
+    <!-- defer: run in this order once the whole document is parsed. Inline
+         startup code in app.js fires API calls on timers; without defer a
+         slow machine ran them while the page below was still loading. -->
+    <script defer src="vendor/three/three.min.js"></script>
+    <script defer src="coinRenderer.js"></script>
+    <script defer src="api.js"></script>
+    <script defer src="gif-optimizer.js?v=3"></script>
+    <script defer src="app.js"></script>
     <!-- ============================================================ -->
     <!-- Generic Confirm Modal                                          -->
     <!-- ============================================================ -->
