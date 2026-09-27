@@ -694,6 +694,23 @@
       return request(SAVED_LAUNCHES_PATH, { method: 'GET' });
     }
 
+    // Coins: drafts, launched coins, and coins added by address.
+    async function listCoins() {
+      return request('/api/v2/coins', { timeoutMs: 15_000 });
+    }
+
+    async function addCoin(mint) {
+      return request('/api/v2/coins', { method: 'POST', body: { mint }, timeoutMs: 30_000 });
+    }
+
+    async function removeCoin(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}`, { method: 'DELETE' });
+    }
+
+    async function getCoin(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}`, { timeoutMs: 90_000 });
+    }
+
     // Buy support for an existing token/SOL pool. Preview never signs.
     async function previewSolSupport({ walletPublicKey = null, poolId = null, tokenMint = null, solAmount, depthPct } = {}) {
       return request('/api/v2/support/preview', {
@@ -703,10 +720,10 @@
       });
     }
 
-    async function openSolSupport({ walletPublicKey, poolId, solAmount, depthPct, expected } = {}) {
+    async function openSolSupport({ walletPublicKey, poolId, tokenMint = null, solAmount, depthPct, expected } = {}) {
       return request('/api/v2/support/open', {
         method: 'POST',
-        body: { walletPublicKey, poolId, solAmount, depthPct, expected },
+        body: { walletPublicKey, poolId, tokenMint, solAmount, depthPct, expected },
         timeoutMs: 180_000,
       });
     }
@@ -1085,6 +1102,10 @@
       listDestinations,
       previewSolSupport,
       openSolSupport,
+      listCoins,
+      addCoin,
+      removeCoin,
+      getCoin,
       getClmmFeeTiers,
       getQuoteTokenInfo,
       getAirdropProgress,

@@ -6510,12 +6510,14 @@ function positiveNumber(value) {
 }
 
 /**
- * Cheapest price, in SOL per token, at which the token can be bought in any
- * of its Raydium pools other than `excludePoolId`. Pools with none of the
- * token left have nothing to sell and are skipped; pools whose quote has no
- * USD price are reported as unpriced. Returns { cheapest, pools, unpriced }.
+ * Every Raydium pool holding `tokenMint`, priced in SOL per token. CLMM
+ * prices are read on-chain (API price as fallback); a pool quoted in
+ * another token is converted through USD. Rows: { poolId, type, isSolPool,
+ * quoteMint, quoteSymbol, feeRate, tokenReserve, quoteReserve,
+ * quoteReserveSol, priceSol }; priceSol / quoteReserveSol are null when
+ * the quote has no USD price. Also returns the token's symbol when known.
  */
-export async function cheapestTokenPriceInSol({ raydium, tokenMint, excludePoolId, getUsd = getUsdPrice }) {
+export async function tokenMarketRows({ raydium, tokenMint, getUsd = getUsdPrice }) {
   const response = await raydium.api.fetchPoolByMints({ mint1: tokenMint, sort: 'liquidity', order: 'desc' });
   const list = Array.isArray(response) ? response : (Array.isArray(response?.data) ? response.data : []);
   // SOL/USD is only needed for pools quoted in something other than SOL.
@@ -6524,16 +6526,16 @@ export async function cheapestTokenPriceInSol({ raydium, tokenMint, excludePoolI
     solUsdPromise = solUsdPromise || getUsd(WSOL_MINT).then(positiveNumber).catch(() => null);
     return solUsdPromise;
   };
-  const pools = [];
+  const rows = [];
   let tokenSymbol = null;
   for (const pool of list) {
-    if (!pool?.id || pool.id === excludePoolId || !pool.mintA || !pool.mintB) continue;
+    if (!pool?.id || !pool.mintA || !pool.mintB) continue;
     const tokenIsA = pool.mintA.address === tokenMint;
     if (!tokenIsA && pool.mintB.address !== tokenMint) continue;
     const quote = tokenIsA ? pool.mintB : pool.mintA;
     tokenSymbol = tokenSymbol || (tokenIsA ? pool.mintA.symbol : pool.mintB.symbol) || null;
-    const tokenReserve = Number(tokenIsA ? pool.mintAmountA : pool.mintAmountB);
-    if (!(tokenReserve > 0)) continue;
+    const tokenReserve = Number(tokenIsA ? pool.mintAmountA : pool.mintAmountB) || 0;
+    const quoteReserve = Number(tokenIsA ? pool.mintAmountB : pool.mintAmountA) || 0;
     let bPerA = positiveNumber(pool.price);
     if (pool.type === 'Concentrated') {
       try {
@@ -6544,25 +6546,78 @@ export async function cheapestTokenPriceInSol({ raydium, tokenMint, excludePoolI
       }
     }
     const quotePerToken = bPerA ? (tokenIsA ? bPerA : 1 / bPerA) : null;
-    let solPerQuote = quote.address === WSOL_MINT ? 1 : null;
+    const isSolPool = quote.address === WSOL_MINT;
+    let solPerQuote = isSolPool ? 1 : null;
     if (solPerQuote === null) {
       const solUsd = await solUsdPrice();
       const quoteUsd = solUsd ? positiveNumber(await getUsd(quote.address).catch(() => null)) : null;
       solPerQuote = quoteUsd ? quoteUsd / solUsd : null;
     }
-    pools.push({
+    rows.push({
       poolId: pool.id,
+      type: pool.type || null,
+      isSolPool,
       quoteMint: quote.address,
-      quoteSymbol: quote.symbol || null,
+      quoteSymbol: isSolPool ? 'SOL' : (quote.symbol || null),
+      feeRate: Number.isFinite(Number(pool.feeRate)) ? Number(pool.feeRate) : null,
       tokenReserve,
+      quoteReserve,
+      quoteReserveSol: solPerQuote ? quoteReserve * solPerQuote : null,
       priceSol: quotePerToken && solPerQuote ? quotePerToken * solPerQuote : null,
     });
   }
+  return { rows, tokenSymbol };
+}
+
+/**
+ * Cheapest price, in SOL per token, at which the token can be bought in any
+ * of its Raydium pools other than `excludePoolId`. Pools with none of the
+ * token left have nothing to sell and are skipped; pools whose quote has no
+ * USD price are reported as unpriced. Returns { cheapest, pools, unpriced }.
+ */
+export async function cheapestTokenPriceInSol({ raydium, tokenMint, excludePoolId, getUsd = getUsdPrice }) {
+  const { rows, tokenSymbol } = await tokenMarketRows({ raydium, tokenMint, getUsd });
+  const pools = rows
+    .filter((row) => row.poolId !== excludePoolId && row.tokenReserve > 0)
+    .map((row) => ({
+      poolId: row.poolId,
+      quoteMint: row.quoteMint,
+      quoteSymbol: row.quoteSymbol,
+      tokenReserve: row.tokenReserve,
+      priceSol: row.priceSol,
+    }));
   const priced = pools.filter((row) => row.priceSol);
   const cheapest = priced.length
     ? priced.reduce((low, row) => (row.priceSol < low.priceSol ? row : low))
     : null;
   return { cheapest, pools, unpriced: pools.length - priced.length, tokenSymbol };
+}
+
+/**
+ * A coin's markets: every pool with its SOL price, depth, and how it
+ * compares to the main SOL pool. A pool that sells the token for less than
+ * the SOL pool (by more than the two pools' fees) drains SOL buyers:
+ * arbitrage buys there and sells into the SOL pool.
+ */
+export async function listTokenMarkets(tokenMint) {
+  const mint = new PublicKey(String(tokenMint || '').trim()).toBase58();
+  const raydium = await readOnlySdk();
+  const { rows, tokenSymbol } = await tokenMarketRows({ raydium, tokenMint: mint });
+  const solPools = rows.filter((row) => row.isSolPool && row.priceSol);
+  const solPool = solPools.length
+    ? solPools.reduce((deep, row) => (row.quoteReserve > deep.quoteReserve || (row.quoteReserve === deep.quoteReserve && row.tokenReserve > deep.tokenReserve) ? row : deep))
+    : null;
+  const pools = rows.map((row) => {
+    const gapPct = solPool && row.priceSol && row !== solPool ? (row.priceSol / solPool.priceSol - 1) * 100 : null;
+    const feesPct = ((row.feeRate || 0) + (solPool?.feeRate || 0)) * 100;
+    return {
+      ...row,
+      isMainSolPool: row === solPool,
+      gapPct,
+      drainsSolPool: gapPct !== null && row.tokenReserve > 0 && -gapPct > feesPct,
+    };
+  });
+  return { mint, tokenSymbol, mainSolPoolId: solPool?.poolId || null, pools };
 }
 
 /**

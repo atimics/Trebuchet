@@ -61,6 +61,9 @@ async function smokeViewport(browser, viewport) {
 
   try {
     await page.goto(v2Url, { waitUntil: 'load' });
+    // The app opens on Coins; creating a token starts from "New coin".
+    await page.waitForSelector('#view-coins.is-active', { timeout: 10_000 });
+    await page.click('[data-action="new-coin"]');
     await page.waitForSelector('#view-launch.is-active', { timeout: 10_000 });
     await page.waitForFunction(
       () => document.querySelector('#tokenomicsChart svg')
@@ -332,7 +335,8 @@ async function smokeViewport(browser, viewport) {
     // Keyboard walkthrough. This is release evidence, not a smoke nicety: the
     // proof artifact below fails closed when any of these is false or absent,
     // so an inaccessible build cannot ship with a passing manifest.
-    await page.click('.nav-item[data-view="launch"]');
+    await page.click('.nav-item[data-view="coins"]');
+    await page.click('[data-action="new-coin"]');
     await page.waitForFunction(() => document.body.dataset.activeView === 'launch');
     await page.evaluate(() => document.body.focus());
 

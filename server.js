@@ -38,6 +38,7 @@ import {
   previewSolSupport,
   openSolSupport,
   findSolClmmPoolForToken,
+  listTokenMarkets,
 } from './lpService.js';
 import { WSOL_MINT as WSOL_MINT_ADDRESS } from './lpConstants.js';
 
@@ -69,6 +70,8 @@ import * as secretStore from './secretStore.js';
 import { createLaunchReportUmi, publishLaunchReport } from './launchReportService.js';
 import * as launchJournal from './launchJournal.js';
 import * as launchStore from './launchStore.js';
+import * as coinStore from './coinStore.js';
+import { mergeCoins, validMint, readMintAccount } from './coinService.js';
 import * as launchFlywheels from './launchFlywheels.js';
 import * as userPrefs from './userPrefs.js';
 import * as discoveryStore from './discoveryStore.js';
@@ -2992,7 +2995,18 @@ app.post('/api/v2/support/preview', async (req, res) => {
     const body = req.body || {};
     const walletPublicKey = String(body.walletPublicKey || '').trim() || null;
     if (isDemoMode()) {
-      return res.json({ success: true, plan: demoChainService.planDemoSolSupport({ ...body, walletPublicKey }) });
+      // Practice reads real pools (read-only) and simulates only the send,
+      // with the practice wallet's balance. Practice coins have no real
+      // pool, so they plan against a sample one.
+      let plan = null;
+      try {
+        const poolId = await resolveSupportPoolId(body);
+        plan = await previewSolSupport({ walletPublicKey: null, poolId, solAmount: body.solAmount, depthPct: body.depthPct });
+      } catch {
+        plan = null;
+      }
+      if (!plan) return res.json({ success: true, plan: demoChainService.planDemoSolSupport({ ...body, walletPublicKey }) });
+      return res.json({ success: true, plan: demoChainService.practiceSupportPlan(plan, walletPublicKey) });
     }
     const poolId = await resolveSupportPoolId(body);
     const plan = await previewSolSupport({
@@ -3015,7 +3029,14 @@ app.post('/api/v2/support/open', async (req, res) => {
   }
   if (isDemoMode()) {
     try {
-      return res.json({ success: true, result: demoChainService.openDemoSolSupport({ ...body, walletPublicKey }) });
+      const result = demoChainService.openDemoSolSupport({ ...body, walletPublicKey });
+      if (body.tokenMint || result.token?.mint) {
+        coinStore.recordEvent(String(body.tokenMint || result.token.mint), {
+          type: 'support_added', practice: true, poolId: result.poolId, txId: null,
+          sol: Number(result.depositLamports) / 1e9, tickLower: result.tickLower, tickUpper: result.tickUpper,
+        });
+      }
+      return res.json({ success: true, result });
     } catch (error) {
       return res.status(409).json({ success: false, code: error.code || null, error: error.message, plan: error.plan || null });
     }
@@ -3035,6 +3056,11 @@ app.post('/api/v2/support/open', async (req, res) => {
       expected: body.expected,
     });
     console.log(`Buy support opened in ${poolId}: nft=${result.nftMint} tx=${result.txId}`);
+    coinStore.recordEvent(result.token.mint, {
+      type: 'support_added', poolId: result.poolId, txId: result.txId, nftMint: result.nftMint,
+      sol: Number(result.depositLamports) / 1e9, tickLower: result.tickLower, tickUpper: result.tickUpper,
+      outcome: result.adopted ? 'landed (found on-chain after a retry)' : 'landed',
+    });
     res.json({ success: true, result });
   } catch (error) {
     if (error.code === 'SUPPORT_PLAN_CHANGED' || error.code === 'SUPPORT_INSUFFICIENT_SOL') {
@@ -3043,6 +3069,91 @@ app.post('/api/v2/support/open', async (req, res) => {
     sendErrorResponse(res, error, 400);
   } finally {
     if (claimed) clearLaunchOpInFlight(walletPublicKey);
+  }
+});
+
+// Coins: drafts (saved plans), launched coins (journals), and coins added
+// by address. On-chain facts are read fresh; records are claims.
+app.get('/api/v2/coins', (_req, res) => {
+  try {
+    const coins = mergeCoins({
+      launches: launchStore.list(),
+      journals: launchJournal.list({ includeCompleted: true, includeArchived: true }),
+      added: coinStore.list(),
+      practice: isDemoMode(),
+    });
+    res.json({ success: true, coins });
+  } catch (error) {
+    sendErrorResponse(res, error, 500);
+  }
+});
+
+app.post('/api/v2/coins', async (req, res) => {
+  try {
+    const mint = validMint(req.body?.mint);
+    if (!mint) return res.status(400).json({ success: false, error: 'Paste a valid token mint address.' });
+    let name = null;
+    let symbol = null;
+    if (!/^Demo/.test(mint)) {
+      const connection = new Connection(getRpcUrl(), 'confirmed');
+      const account = await readMintAccount(connection, mint).catch(() => null);
+      if (!account) {
+        return res.status(400).json({ success: false, error: 'That address is not a token mint on this network.' });
+      }
+      name = account.metadata?.name || null;
+      symbol = account.metadata?.symbol || null;
+      if (!name || !symbol) {
+        const info = await getTokenMetadata(mint).catch(() => null);
+        name = name || info?.name || null;
+        symbol = symbol || info?.symbol || null;
+      }
+    }
+    const coin = coinStore.add({ mint, name, symbol, source: 'added' });
+    res.json({ success: true, coin });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.delete('/api/v2/coins/:mint', (req, res) => {
+  try {
+    const mint = validMint(req.params.mint);
+    if (!mint) return res.status(400).json({ success: false, error: 'Invalid mint' });
+    res.json({ success: true, removed: coinStore.remove(mint) });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.get('/api/v2/coins/:mint', async (req, res) => {
+  try {
+    const mint = String(req.params.mint || '').trim();
+    const record = coinStore.get(mint);
+    const journals = launchJournal.list({ includeCompleted: true, includeArchived: true })
+      .filter((journal) => String(journal?.token?.mint || '') === mint);
+    const events = [
+      ...journals.map((journal) => ({
+        at: journal.createdAt,
+        type: 'launched_here',
+        outcome: journal.status === 'completed' ? 'landed' : journal.status === 'archived' ? 'stopped' : 'in progress',
+        journalId: journal.id,
+        stage: journal.stage || null,
+      })),
+      ...(record?.events || []),
+    ].sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+    if (/^Demo/.test(mint)) {
+      return res.json({ success: true, coin: { mint, practice: true, account: null, info: null, markets: null, events } });
+    }
+    if (!validMint(mint)) return res.status(400).json({ success: false, error: 'Invalid mint' });
+    const connection = new Connection(getRpcUrl(), 'confirmed');
+    const [account, info, markets] = await Promise.all([
+      readMintAccount(connection, mint).catch((error) => ({ error: error.message })),
+      getTokenMetadata(mint).catch(() => null),
+      listTokenMarkets(mint).catch((error) => ({ error: error.message, pools: [] })),
+    ]);
+    res.json({ success: true, coin: { mint, practice: false, account, info, markets, events } });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
   }
 });
 

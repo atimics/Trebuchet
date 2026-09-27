@@ -370,6 +370,22 @@ export function planDemoSolSupport({ walletPublicKey, poolId, solAmount, depthPc
   };
 }
 
+// A real (read-only) plan, with the practice wallet's balance in place of a
+// chain balance: practice reads real pools and simulates only the send.
+export function practiceSupportPlan(plan, walletPublicKey) {
+  const st = walletPublicKey ? getState(walletPublicKey) : null;
+  const walletLamports = Math.round(Number(st?.solBalance || 0) * 1e9);
+  const enoughSol = walletLamports >= Number(plan.totalLamports);
+  const warnings = [
+    'Practice: the pool is real and read-only; adding support is simulated and sends nothing.',
+    ...plan.warnings.filter((warning) => !/^The wallet has /.test(warning)),
+  ];
+  if (!enoughSol) {
+    warnings.push(`The wallet has ${(walletLamports / 1e9).toFixed(4)} SOL; this needs ${(Number(plan.totalLamports) / 1e9).toFixed(4)} SOL.`);
+  }
+  return { ...plan, walletLamports: String(walletLamports), enoughSol, warnings, practice: true };
+}
+
 export function openDemoSolSupport(body = {}) {
   const plan = planDemoSolSupport(body);
   if (!plan.enoughSol) {
