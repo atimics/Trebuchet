@@ -103,6 +103,7 @@ import {
   CLMM_PROGRAM_ID,
   LockClPositionLayoutV2,
   DEVNET_PROGRAM_ID,
+  getPdaTickArrayAddress,
 } from '@raydium-io/raydium-sdk-v2';
 import {
   TOKEN_PROGRAM_ID,
@@ -121,6 +122,9 @@ import {
   computeLadderTicksManual,
   computeMainTicks,
   computeSupportTicks,
+  computeCappedSupportTicks,
+  tickForTokenPrice,
+  tokenPriceAtTick,
   MINIMAL_BOOTSTRAP_WIDTH_PCT,
   SUPPORT_DEPTH_PCT_DEFAULT,
   driftExceedsThreshold,
@@ -138,7 +142,7 @@ import { getRpcUrl, getNetwork } from './rpcConfig.js';
 // SOL price into the fallback path).
 import { getTokenMetadata, getUsdPrice } from './tokenInfoService.js';
 import { landTxWithRetry } from './chainRetry.js';
-import { getOnChainPriceUsd } from './onChainPriceService.js';
+import { getOnChainPriceUsd, clmmPriceBPerA } from './onChainPriceService.js';
 import { normalizeDistribution } from './lpDistribution.js';
 import {
   FALLBACK_FEE_TIERS,
@@ -6469,6 +6473,311 @@ export async function estimateRequiredFunding({
     // be computed and the airdrop is silently skipped at launch.
     solUsd: Number(solUsd.toString()),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Buy support for an existing pool
+// ---------------------------------------------------------------------------
+//
+// Opens one SOL-only position below the current price of a token/SOL pool:
+// a buy wall that sellers are paid from. It is NOT locked; the owner can
+// withdraw it. Two things decide whether it helps or is simply given away:
+//
+// - Where it sits. If the token can be bought more cheaply in another pool
+//   (a pair whose token fell), bots buy it there and sell into any SOL
+//   above that price in the same slot. So the range's top is capped at the
+//   cheapest price in the token's other pools (RUGOWEEN: ~1.32e-6 SOL while
+//   its SOL pool sat at 1.79e-6).
+// - What it costs. Each new tick array a range touches is rent that is
+//   never returned (~0.053 SOL at today's rate); preview names each one.
+//
+// preview never signs. open re-plans against the chain and refuses to send
+// if the range or the cost moved from what the user confirmed.
+
+const SUPPORT_TICK_ARRAY_BYTES = 10240;
+// Personal position, position NFT mint (Token-2022), and its token account.
+const SUPPORT_POSITION_ACCOUNT_BYTES = [281, 270, 170];
+// Priority fees, NFT metadata growth, and rounding on the temporary wSOL
+// account. Anything unspent stays in the wallet.
+const SUPPORT_FEE_BUFFER_LAMPORTS = 10_000_000;
+// Stay 1% under the cheapest other pool, for fees and price movement.
+const SUPPORT_CAP_MARGIN = 0.99;
+export const SUPPORT_DEFAULT_DEPTH_PCT = 50;
+
+function positiveNumber(value) {
+  const n = Number(value?.toString?.() ?? value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Cheapest price, in SOL per token, at which the token can be bought in any
+ * of its Raydium pools other than `excludePoolId`. Pools with none of the
+ * token left have nothing to sell and are skipped; pools whose quote has no
+ * USD price are reported as unpriced. Returns { cheapest, pools, unpriced }.
+ */
+export async function cheapestTokenPriceInSol({ raydium, tokenMint, excludePoolId, getUsd = getUsdPrice }) {
+  const response = await raydium.api.fetchPoolByMints({ mint1: tokenMint, sort: 'liquidity', order: 'desc' });
+  const list = Array.isArray(response) ? response : (Array.isArray(response?.data) ? response.data : []);
+  // SOL/USD is only needed for pools quoted in something other than SOL.
+  let solUsdPromise = null;
+  const solUsdPrice = () => {
+    solUsdPromise = solUsdPromise || getUsd(WSOL_MINT).then(positiveNumber).catch(() => null);
+    return solUsdPromise;
+  };
+  const pools = [];
+  let tokenSymbol = null;
+  for (const pool of list) {
+    if (!pool?.id || pool.id === excludePoolId || !pool.mintA || !pool.mintB) continue;
+    const tokenIsA = pool.mintA.address === tokenMint;
+    if (!tokenIsA && pool.mintB.address !== tokenMint) continue;
+    const quote = tokenIsA ? pool.mintB : pool.mintA;
+    tokenSymbol = tokenSymbol || (tokenIsA ? pool.mintA.symbol : pool.mintB.symbol) || null;
+    const tokenReserve = Number(tokenIsA ? pool.mintAmountA : pool.mintAmountB);
+    if (!(tokenReserve > 0)) continue;
+    let bPerA = positiveNumber(pool.price);
+    if (pool.type === 'Concentrated') {
+      try {
+        const state = await raydium.clmm.getRpcClmmPoolInfo({ poolId: pool.id });
+        bPerA = positiveNumber(clmmPriceBPerA(state.sqrtPriceX64, pool.mintA.decimals, pool.mintB.decimals)) ?? bPerA;
+      } catch {
+        // The API price stands in when the on-chain read fails.
+      }
+    }
+    const quotePerToken = bPerA ? (tokenIsA ? bPerA : 1 / bPerA) : null;
+    let solPerQuote = quote.address === WSOL_MINT ? 1 : null;
+    if (solPerQuote === null) {
+      const solUsd = await solUsdPrice();
+      const quoteUsd = solUsd ? positiveNumber(await getUsd(quote.address).catch(() => null)) : null;
+      solPerQuote = quoteUsd ? quoteUsd / solUsd : null;
+    }
+    pools.push({
+      poolId: pool.id,
+      quoteMint: quote.address,
+      quoteSymbol: quote.symbol || null,
+      tokenReserve,
+      priceSol: quotePerToken && solPerQuote ? quotePerToken * solPerQuote : null,
+    });
+  }
+  const priced = pools.filter((row) => row.priceSol);
+  const cheapest = priced.length
+    ? priced.reduce((low, row) => (row.priceSol < low.priceSol ? row : low))
+    : null;
+  return { cheapest, pools, unpriced: pools.length - priced.length, tokenSymbol };
+}
+
+/**
+ * The pool to add support to, from either a pool address or a token mint.
+ * A pool address is recognized by its owner program; a token mint resolves
+ * to its deepest Raydium CLMM pool with SOL. Returns the pool id or null.
+ */
+export async function findSolClmmPoolForToken(target) {
+  let key;
+  try {
+    key = new PublicKey(String(target || '').trim());
+  } catch {
+    throw new Error('Paste a valid token mint or pool address');
+  }
+  const mint = key.toBase58();
+  const raydium = await readOnlySdk();
+  const account = await raydium.connection.getAccountInfo(key);
+  if (!account) throw new Error('Nothing exists at that address on this network');
+  if (account.owner.equals(getClmmProgramId())) return mint;
+  const response = await raydium.api.fetchPoolByMints({ mint1: mint, mint2: WSOL_MINT, sort: 'liquidity', order: 'desc' });
+  const list = Array.isArray(response) ? response : (Array.isArray(response?.data) ? response.data : []);
+  const pool = list.find((item) => item?.type === 'Concentrated');
+  return pool ? pool.id : null;
+}
+
+async function planSolSupport(raydium, { walletPublicKey, poolId, solAmount, depthPct }) {
+  let poolKey;
+  try {
+    poolKey = new PublicKey(String(poolId || '').trim());
+  } catch {
+    throw new Error('poolId must be a valid Raydium CLMM pool address');
+  }
+  const amount = Number(solAmount);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 100_000) {
+    throw new Error('solAmount must be a positive number of SOL');
+  }
+  const depth = Number.isFinite(Number(depthPct)) ? Math.min(99, Math.max(1, Number(depthPct))) : SUPPORT_DEFAULT_DEPTH_PCT;
+  const connection = raydium.connection;
+  const id = poolKey.toBase58();
+
+  const { poolInfo, poolKeys } = await raydium.clmm.getPoolInfoFromRpc(id);
+  const rpcData = await raydium.clmm.getRpcClmmPoolInfo({ poolId: id });
+  const solIsA = poolInfo.mintA.address === WSOL_MINT;
+  if (!solIsA && poolInfo.mintB.address !== WSOL_MINT) {
+    throw new Error('This pool is not paired with SOL. Buy support can only be added to a token/SOL pool.');
+  }
+  const launchedIsMintA = !solIsA;
+  const tokenInfo = launchedIsMintA ? poolInfo.mintA : poolInfo.mintB;
+  const decimalsA = poolInfo.mintA.decimals;
+  const decimalsB = poolInfo.mintB.decimals;
+  const tickSpacing = poolInfo.config.tickSpacing;
+  const currentTick = Number(rpcData.tickCurrent);
+  const priceAt = (tick) => tokenPriceAtTick({ tick, launchedIsMintA, decimalsA, decimalsB });
+
+  const warnings = [];
+  let ceiling = null;
+  let tokenSymbol = tokenInfo.symbol || null;
+  const token = { address: tokenInfo.address, decimals: tokenInfo.decimals, get symbol() { return tokenSymbol; } };
+  try {
+    ceiling = await cheapestTokenPriceInSol({ raydium, tokenMint: token.address, excludePoolId: id });
+    tokenSymbol = tokenSymbol || ceiling.tokenSymbol || null;
+  } catch (error) {
+    warnings.push(`Could not price ${token.symbol || 'the token'}'s other pools (${error.message}). If it is cheaper in one of them, bots can take this SOL.`);
+  }
+  if (ceiling?.unpriced) {
+    warnings.push(`${ceiling.unpriced} other pool${ceiling.unpriced === 1 ? '' : 's'} could not be priced and ${ceiling.unpriced === 1 ? 'was' : 'were'} not checked.`);
+  }
+  const capPrice = ceiling?.cheapest ? ceiling.cheapest.priceSol * SUPPORT_CAP_MARGIN : null;
+  const capTick = capPrice ? tickForTokenPrice({ priceInQuote: capPrice, launchedIsMintA, decimalsA, decimalsB }) : null;
+  const ticks = computeCappedSupportTicks({ currentTick, tickSpacing, launchedIsMintA, capTick, depthPct: depth });
+
+  const programId = new PublicKey(poolInfo.programId);
+  const starts = [...new Set([
+    tickArrayStartIndex(ticks.tickLower, tickSpacing),
+    tickArrayStartIndex(ticks.tickUpper, tickSpacing),
+  ])];
+  const arrayAddresses = starts.map((start) => getPdaTickArrayAddress(programId, poolKey, start).publicKey);
+  const arrayInfos = await connection.getMultipleAccountsInfo(arrayAddresses);
+  const tickArrays = starts.map((start, index) => ({
+    startIndex: start,
+    address: arrayAddresses[index].toBase58(),
+    exists: Boolean(arrayInfos[index]),
+  }));
+  const newArrays = tickArrays.filter((array) => !array.exists).length;
+  const tickArrayRentLamports = newArrays
+    ? await connection.getMinimumBalanceForRentExemption(SUPPORT_TICK_ARRAY_BYTES)
+    : 0;
+  let positionRentLamports = 0;
+  for (const bytes of SUPPORT_POSITION_ACCOUNT_BYTES) {
+    positionRentLamports += await connection.getMinimumBalanceForRentExemption(bytes);
+  }
+  const depositLamports = Math.floor(amount * LAMPORTS_PER_SOL);
+  const newArrayRentLamports = newArrays * tickArrayRentLamports;
+  const totalLamports = depositLamports + newArrayRentLamports + positionRentLamports + SUPPORT_FEE_BUFFER_LAMPORTS;
+  const walletLamports = walletPublicKey
+    ? await connection.getBalance(new PublicKey(walletPublicKey)).catch(() => null)
+    : null;
+
+  const currentPrice = priceAt(currentTick);
+  const topPrice = launchedIsMintA ? priceAt(ticks.tickUpper) : priceAt(ticks.tickLower);
+  const bottomPrice = launchedIsMintA ? priceAt(ticks.tickLower) : priceAt(ticks.tickUpper);
+  if (ticks.capped && ceiling?.cheapest) {
+    warnings.push(
+      `The range starts ${Math.round((1 - topPrice / currentPrice) * 100)}% below the current price: `
+      + `${token.symbol || 'the token'} is cheaper in its ${ceiling.cheapest.quoteSymbol || 'other'} pool, `
+      + 'so SOL placed higher would be taken by arbitrage bots right away.',
+    );
+  }
+  if (walletLamports !== null && walletLamports < totalLamports) {
+    warnings.push(
+      `The wallet has ${(walletLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL; this needs `
+      + `${(totalLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL.`,
+    );
+  }
+
+  return {
+    raydium,
+    poolInfo,
+    poolKeys,
+    launchedIsMintA,
+    plan: {
+      poolId: id,
+      token: { mint: token.address, symbol: token.symbol || null, decimals: token.decimals },
+      tickSpacing,
+      feeRate: poolInfo.config?.tradeFeeRate ?? poolInfo.feeRate ?? null,
+      currentTick,
+      currentPriceSol: currentPrice,
+      ceiling: ceiling?.cheapest
+        ? { priceSol: ceiling.cheapest.priceSol, poolId: ceiling.cheapest.poolId, quoteSymbol: ceiling.cheapest.quoteSymbol }
+        : null,
+      otherPools: ceiling?.pools || [],
+      depthPct: depth,
+      tickLower: ticks.tickLower,
+      tickUpper: ticks.tickUpper,
+      capped: ticks.capped,
+      topPriceSol: topPrice,
+      bottomPriceSol: bottomPrice,
+      tickArrays,
+      newTickArrays: newArrays,
+      depositLamports: String(depositLamports),
+      newArrayRentLamports: String(newArrayRentLamports),
+      positionRentLamports: String(positionRentLamports),
+      feeBufferLamports: String(SUPPORT_FEE_BUFFER_LAMPORTS),
+      totalLamports: String(totalLamports),
+      walletLamports: walletLamports === null ? null : String(walletLamports),
+      enoughSol: walletLamports === null ? null : walletLamports >= totalLamports,
+      locked: false,
+      warnings,
+    },
+  };
+}
+
+/** Plan buy support for a token/SOL pool. Reads the chain; never signs. */
+export async function previewSolSupport({ walletPublicKey = null, poolId, solAmount, depthPct }) {
+  const raydium = await readOnlySdk();
+  const { plan } = await planSolSupport(raydium, { walletPublicKey, poolId, solAmount, depthPct });
+  return plan;
+}
+
+/**
+ * Open the buy support position the user confirmed. Re-plans against the
+ * chain first and refuses (code SUPPORT_PLAN_CHANGED) if the range or the
+ * total cost moved from `expected`, so what is sent is what was shown.
+ */
+export async function openSolSupport({ tempWalletSecretKey, poolId, solAmount, depthPct, expected, onProgress } = {}) {
+  const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
+  const raydium = await initSdk(ownerKeypair);
+  const { plan, poolInfo, poolKeys, launchedIsMintA } = await planSolSupport(raydium, {
+    walletPublicKey: ownerKeypair.publicKey.toBase58(),
+    poolId,
+    solAmount,
+    depthPct,
+  });
+  const moved = !expected
+    || Number(expected.tickLower) !== plan.tickLower
+    || Number(expected.tickUpper) !== plan.tickUpper
+    || BigInt(plan.totalLamports) > BigInt(String(expected.totalLamports || '0'));
+  if (moved) {
+    const error = new Error('The pool moved since the preview. Review the new range and cost, then confirm again. Nothing was sent.');
+    error.code = 'SUPPORT_PLAN_CHANGED';
+    error.plan = plan;
+    throw error;
+  }
+  if (plan.enoughSol === false) {
+    const error = new Error(`Not enough SOL: ${plan.warnings.at(-1) || 'the wallet is short'} Nothing was sent.`);
+    error.code = 'SUPPORT_INSUFFICIENT_SOL';
+    error.plan = plan;
+    throw error;
+  }
+
+  const recorded = new Set(
+    (await fetchOwnerClmmPositionsForPool(raydium, plan.poolId).catch(() => [])).map((position) => position.nftMint),
+  );
+  onProgress?.({ stage: 'support_open_start', poolId: plan.poolId, tickLower: plan.tickLower, tickUpper: plan.tickUpper });
+  const result = await executeSdkTx({
+    label: 'buy support position',
+    build: async () => raydium.clmm.openPositionFromBase({
+      poolInfo,
+      poolKeys,
+      tickLower: plan.tickLower,
+      tickUpper: plan.tickUpper,
+      base: launchedIsMintA ? 'MintB' : 'MintA',
+      baseAmount: new BN(plan.depositLamports),
+      otherAmountMax: new BN(0),
+      ownerInfo: { useSOLBalance: true },
+      txVersion: TxVersion.V0,
+      computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
+    }),
+    alreadyDone: () => findUnrecordedPositionAt(raydium, plan.poolId, plan.tickLower, plan.tickUpper, recorded),
+    onAlreadyDone: (position) => ({ tx: { txId: null }, nftMint: position.nftMint, adopted: true }),
+  });
+  const nftMint = result.skipped ? result.value.nftMint : result.value.res.extInfo?.nftMint?.toBase58();
+  const txId = result.skipped ? null : result.value.tx.txId;
+  onProgress?.({ stage: 'support_open_done', poolId: plan.poolId, nftMint, txId });
+  return { ...plan, nftMint, txId, adopted: Boolean(result.skipped) };
 }
 
 // ---------------------------------------------------------------------------

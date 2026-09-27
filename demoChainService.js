@@ -311,6 +311,78 @@ export function listDemoFunders(publicKey) {
   ];
 }
 
+// Practice stand-in for adding buy support to an existing token/SOL pool.
+// A practice wallet has no real pool, so this plans against a fixed one:
+// SOL pool at 1.0e-6 SOL per token, the token 10% cheaper in a pair pool,
+// and one of the two tick arrays already created. Shape matches
+// lpService.previewSolSupport so the same screen renders both.
+export function planDemoSolSupport({ walletPublicKey, poolId, solAmount, depthPct } = {}) {
+  const amount = Number(solAmount);
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error('solAmount must be a positive number of SOL');
+  const depth = Number.isFinite(Number(depthPct)) ? Math.min(99, Math.max(1, Number(depthPct))) : 50;
+  const current = 1.0e-6;
+  const top = current * 0.9 * 0.99;
+  const bottom = top * (1 - depth / 100);
+  const depositLamports = Math.floor(amount * 1e9);
+  const newArrayRentLamports = 52_669_440;
+  const positionRentLamports = 5_613_400;
+  const feeBufferLamports = 10_000_000;
+  const totalLamports = depositLamports + newArrayRentLamports + positionRentLamports + feeBufferLamports;
+  const st = walletPublicKey ? getState(walletPublicKey) : null;
+  const walletLamports = Math.round(Number(st?.solBalance || 0) * 1e9);
+  const warnings = [
+    'Practice: this plans against a sample pool. Nothing is read from or sent to the chain.',
+    'The range starts 11% below the current price: the token is cheaper in its PAIR pool, so SOL placed higher would be taken by arbitrage bots right away.',
+  ];
+  if (walletLamports < totalLamports) {
+    warnings.push(`The wallet has ${(walletLamports / 1e9).toFixed(4)} SOL; this needs ${(totalLamports / 1e9).toFixed(4)} SOL.`);
+  }
+  return {
+    poolId: String(poolId || 'DemoSupportPoo1111111111111111111111111111'),
+    token: { mint: 'DemoToken1111111111111111111111111111111111', symbol: 'DEMO', decimals: 9 },
+    tickSpacing: 120,
+    feeRate: 10000,
+    currentTick: -138120,
+    currentPriceSol: current,
+    ceiling: { priceSol: current * 0.9, poolId: 'DemoPairPoo11111111111111111111111111111111', quoteSymbol: 'PAIR' },
+    otherPools: [],
+    depthPct: depth,
+    tickLower: -145080,
+    tickUpper: -139200,
+    capped: true,
+    topPriceSol: top,
+    bottomPriceSol: bottom,
+    tickArrays: [
+      { startIndex: -151200, address: 'DemoTickArrayLower111111111111111111111111', exists: false },
+      { startIndex: -144000, address: 'DemoTickArrayUpper111111111111111111111111', exists: true },
+    ],
+    newTickArrays: 1,
+    depositLamports: String(depositLamports),
+    newArrayRentLamports: String(newArrayRentLamports),
+    positionRentLamports: String(positionRentLamports),
+    feeBufferLamports: String(feeBufferLamports),
+    totalLamports: String(totalLamports),
+    walletLamports: String(walletLamports),
+    enoughSol: walletLamports >= totalLamports,
+    locked: false,
+    warnings,
+    practice: true,
+  };
+}
+
+export function openDemoSolSupport(body = {}) {
+  const plan = planDemoSolSupport(body);
+  if (!plan.enoughSol) {
+    const error = new Error('Not enough SOL in the practice wallet. Nothing was sent.');
+    error.code = 'SUPPORT_INSUFFICIENT_SOL';
+    error.plan = plan;
+    throw error;
+  }
+  const st = getState(body.walletPublicKey);
+  st.solBalance = Math.max(0, Number(st.solBalance || 0) - Number(plan.totalLamports) / 1e9 + Number(plan.feeBufferLamports) / 1e9);
+  return { ...plan, nftMint: randomBase58(44), txId: `Demo${randomBase58(84)}`, adopted: false };
+}
+
 // ===========================================================================
 // /api/rpc-health — the periodic RPC health dot
 // ===========================================================================

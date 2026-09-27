@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TREBUCHET · makesometokens</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=85">
+  <link rel="stylesheet" href="./styles.css?v=86">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -560,6 +560,27 @@
             <div class="asset-table" id="assetTable"></div>
           </section>
         </div>
+        <section class="surface pool-support" id="poolSupportPanel" aria-labelledby="poolSupportTitle">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Pool tools</span>
+              <h2 id="poolSupportTitle">Add buy support to a pool</h2>
+            </div>
+          </div>
+          <p class="pool-support-intro">Put SOL below a token's price in its Raydium SOL pool, so sellers have something to sell into. It is signed by the selected wallet and is not locked: you can withdraw it later.</p>
+          <div class="pool-support-form">
+            <label class="pool-support-target"><span>Token mint or SOL pool address</span><input id="poolSupportTarget" data-support-field="target" type="text" autocomplete="off" spellcheck="false" placeholder="Paste a token mint or pool address"></label>
+            <label><span>SOL to add</span><input id="poolSupportSol" data-support-field="solAmount" type="text" inputmode="decimal" autocomplete="off" value="0.1"></label>
+            <label><span>Spread down to</span><select id="poolSupportDepth" data-support-field="depthPct">
+              <option value="12">−12%</option>
+              <option value="25">−25%</option>
+              <option value="50" selected>−50%</option>
+              <option value="75">−75%</option>
+            </select></label>
+            <button class="secondary-button" type="button" data-action="preview-pool-support"><i class="fa-solid fa-magnifying-glass-chart"></i><span>Preview</span></button>
+          </div>
+          <div class="pool-support-result" id="poolSupportResult" aria-live="polite"></div>
+        </section>
       </section>
 
       <section class="view" id="view-discovery" aria-labelledby="viewTitle">
@@ -782,9 +803,9 @@
   <div class="toast-stack" id="toastStack" aria-live="polite"></div>
 
   <script src="./runtime-state.js?v=1"></script>
-  <script src="./api-client.js?v=37"></script>
+  <script src="./api-client.js?v=38"></script>
   <script src="../gif-optimizer.js?v=3"></script>
-  <script src="./app.js?v=177"></script>
+  <script src="./app.js?v=178"></script>
   <script src="./nfts.js?v=1"></script>
 </body>
 </html>
