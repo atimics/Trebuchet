@@ -501,14 +501,7 @@
           </div>
           <div class="nft-field">
             <span class="nft-label">Standard</span>
-            <table class="nft-table">
-              <thead><tr><th>Standard</th><th>Vanity address</th><th>Cost / item</th><th>Royalties</th></tr></thead>
-              <tbody>
-                <tr class="is-selected"><td><strong>Metaplex Core</strong> <span class="nft-ok">selected</span></td><td class="nft-ok">● Yes · asset key</td><td>${sol(d.cost.perAssetSol, 5)}</td><td>Plugin · enforced</td></tr>
-                <tr class="nft-dim"><td>Token Metadata · pNFT</td><td>Yes · mint key</td><td>higher</td><td>Not built yet</td></tr>
-                <tr class="nft-dim"><td>Compressed · Bubblegum</td><td class="nft-bad">✕ No vanity</td><td>lowest</td><td>Not built yet</td></tr>
-              </tbody>
-            </table>
+            <div>Metaplex Core · one account per asset · ${sol(d.cost.perAssetSol, 5)} per item · royalties enforced by plugin</div>
           </div>
         </div>
       </section>

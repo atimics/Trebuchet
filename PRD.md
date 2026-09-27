@@ -109,8 +109,11 @@ scrolling.
   Record each signature as it lands; a rerun skips anything on chain.
 - Verify on chain: pattern, membership, name, URI, owner, royalties, supply.
   Export a proof JSON.
-- Out of scope today: Token Metadata (pNFT) and compressed NFTs, collection
-  authority transfer, and making a collection immutable.
+- Metaplex Core only, by decision: it is the cheapest standard that keeps a
+  real per-asset address (so vanity works) and enforces royalties. Token
+  Metadata, pNFT and compressed NFTs are not supported.
+- Not built yet: collection authority transfer and making a collection
+  immutable.
 
 ### Wallet
 
