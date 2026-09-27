@@ -6381,6 +6381,17 @@ function launchWorkspaceStatus() {
     || (poolCount > 0 && launchProofPoolIds(proof).length >= poolCount)
   );
   const sweepComplete = transferHasWalletEmptyFinalSweepEvidence(proof?.transfer);
+  // A finished launch of this exact config: every step is done.
+  if (completedLaunchJournal(currentLaunchConfig())) {
+    return {
+      wallet: 'Done',
+      configure: 'Done',
+      fund: 'Done',
+      mint: 'Created',
+      liquidity: 'Locked',
+      finish: 'Complete',
+    };
+  }
   return {
     wallet: selectedLaunchWalletPublicKey()
       ? walletIsUnlocked() ? 'Ready' : 'Unlock'
@@ -14969,13 +14980,13 @@ function renderClassicBridge() {
       <div class="launch-phase-secondary"><button class="text-button" type="button" data-launch-workspace="mint"><i class="fa-solid fa-arrow-left"></i> Back to token</button></div>
     </section>
     <section class="classic-workspace-section classic-workspace-verify" data-classic-workspace="finish">
-      <section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
+      ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
           <h2 id="finishStepTitle">${finalSweepComplete ? 'Launch complete' : 'Finish launch'}</h2>
           <p>${finalSweepComplete ? 'Assets swept and launch wallet verified empty.' : 'Distribute, sweep remaining assets, and save proof.'}</p>
         </div>
         <aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Proof is ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for final sweep.' : 'Resolve the requirement below.'}</span></aside>
-      </section>
+      </section>`}
       ${completedJournal && !finalSweepComplete ? renderLaunchCompleteCard(completedJournal) : ''}
       ${!completedJournal && !finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
       ${!finalSweepComplete && finishDestinationReady ? readinessPanel({
@@ -14989,11 +15000,11 @@ function renderClassicBridge() {
         primary: true,
         finalizationIssue: executeNextTransferFinalizationIssue(readiness, config),
       }) : ''}
-      <details class="drawer launch-proof-details" ${finalSweepComplete ? 'open' : ''}>
+      ${completedJournal && !finalSweepComplete ? '' : `<details class="drawer launch-proof-details" ${finalSweepComplete ? 'open' : ''}>
         <summary><span>${finalSweepComplete ? 'Launch proof' : 'Proof status'}</span><strong>${finalSweepComplete ? 'Ready' : 'Waiting'}</strong></summary>
         ${renderFinalizationPanel()}
-      </details>
-      ${!finalSweepComplete ? `<details class="drawer launch-recovery-details">
+      </details>`}
+      ${!finalSweepComplete && !completedJournal ? `<details class="drawer launch-recovery-details">
         <summary><span>Interrupted launch or refund</span><strong>Open recovery actions</strong></summary>
         ${renderCancelRefundPanel(config)}
       </details>

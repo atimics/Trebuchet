@@ -9051,12 +9051,11 @@ body[data-experience-mode="guided"] #launchWorkspaceViewport > details.drawer {
   }
 
   body[data-launch-workspace="mint"] #launchWorkspaceViewport > details.drawer[data-launch-pane~="mint"],
-  body[data-launch-workspace="liquidity"] #launchWorkspaceViewport > details.drawer[data-launch-pane~="liquidity"],
-  body[data-launch-workspace="finish"] #launchWorkspaceViewport > .diagnostics-drawer {
+  body[data-launch-workspace="liquidity"] #launchWorkspaceViewport > details.drawer[data-launch-pane~="liquidity"] {
     position: absolute;
-    right: 6px;
+    right: 16px;
     bottom: 8px;
-    left: 0;
+    left: 16px;
     z-index: 4;
     max-height: calc(100% - 12px);
     margin: 0;
@@ -17651,4 +17650,10 @@ body[data-launch-running="true"] .workspace {
 /* No decorative slash markers beside section headings. */
 .section-heading > div::before {
   content: none;
+}
+
+/* Diagnostics follow the finish content instead of floating over it. */
+#launchWorkspaceViewport > .diagnostics-drawer {
+  position: static;
+  margin: 8px 16px 16px;
 }

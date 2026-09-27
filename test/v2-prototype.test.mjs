@@ -6582,7 +6582,7 @@ test('v2 terminal recovery collapses into the completed proof panel', () => {
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('has-recovery-notice'/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('is-terminal-launch', finalSweepComplete\)/);
   assert.match(bridgeSource, /Assets swept and launch wallet verified empty/);
-  assert.match(bridgeSource, /!finalSweepComplete \? `<details class="drawer launch-recovery-details"/);
+  assert.match(bridgeSource, /!finalSweepComplete && !completedJournal \? `<details class="drawer launch-recovery-details"/);
   assert.match(css, /#classicBridge\.is-terminal-launch \.classic-workspace-verify\s*\{[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\)/);
   assert.match(css, /\.recovered-plan-notice\s*\{[\s\S]*?max-height: 44px/);
   assert.doesNotMatch(css, /body\[data-experience-mode="advanced"\]\[data-active-view="launch"\][\s\S]{0,180}?height: auto/);
