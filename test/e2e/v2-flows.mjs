@@ -187,7 +187,9 @@ try {
   await page.click('[data-action="new-coin"]');
   await page.waitForSelector('#view-launch.is-active');
   assert.equal(await page.getAttribute('body', 'data-launch-workspace'), 'configure');
-  assert.match(await page.locator('#coinContext').innerText(), /New coin/);
+  assert.match(await page.locator('#viewTitle').innerText(), /New coin/i);
+  assert.match(await page.locator('#viewEyebrow').innerText(), /Coins/i);
+  assert.equal(await page.getAttribute('.nav-item.is-active', 'data-view'), 'coins', 'A coin being created is still under Coins');
   await page.click('.launch-workspace-tab[data-launch-workspace="wallet"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'wallet');
   assert.deepEqual(await page.evaluate(() => (
@@ -369,8 +371,10 @@ try {
       body: JSON.stringify({ publicKey: selectedLaunchWalletPublicKey(), sol: 1 }),
     });
   });
-  // The practiced coin has its own page; buy support is an action there.
-  await page.click('.practice-result [data-action="open-coin-mint"]');
+  // The practiced coin is listed under Coins with its own page; buy support
+  // is an action there.
+  await page.click('#viewEyebrow [data-action="coins-back"]');
+  await page.click('.coin-card:has-text("Practice coin")');
   await page.waitForSelector('#view-coins.is-active #coinPage:not([hidden])');
   await page.waitForSelector('#poolSupportPanel:not([hidden])');
   await page.fill('#poolSupportSol', '0.1');

@@ -16505,3 +16505,16 @@ body[data-launch-running="true"] .workspace {
 .coin-creation .is-todo i {
   color: var(--subtle);
 }
+
+/* The coin being created: back link, status, and address in the title bar. */
+#viewEyebrow .coin-back-inline {
+  padding: 0;
+  font-size: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+#viewEyebrow code {
+  font-size: inherit;
+  text-transform: none;
+}

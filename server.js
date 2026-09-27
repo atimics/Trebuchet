@@ -3184,11 +3184,18 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
         ? 'The launch wallet is empty on-chain.'
         : `The launch wallet still holds ${(launchWalletLamports / 1e9).toFixed(4)} SOL.`,
   });
+  const walletEntry = journal?.walletPublicKey ? pendingWallets.get(journal.walletPublicKey) : null;
+  const { events: _events, ...journalWithoutEvents } = journal || {};
   return {
     journalId: journal?.id || null,
     journalStatus: journal?.status || null,
     stage: journal?.stage || null,
     walletPublicKey: journal?.walletPublicKey || null,
+    // Whether the steps can be run from here: the record keeps the launch's
+    // plan (older records did not), and this app holds the wallet's key.
+    hasPlan: Boolean(journal?.launchConfig && typeof journal.launchConfig === 'object'),
+    walletManaged: Boolean(walletEntry),
+    journal: journalWithoutEvents,
     steps,
     nextStep: steps.find((step) => step.state !== 'done')?.id || null,
   };
@@ -5149,6 +5156,14 @@ app.post('/api/v2/demo-launch/run', async (req, res) => {
       .digest('hex')
       .slice(0, 16);
 
+    // The practiced coin is a coin (in Practice): it gets a page.
+    coinStore.add({
+      mint: tokenMint,
+      name: config?.token?.name || tokenResult?.name || null,
+      symbol: config?.token?.symbol || tokenResult?.symbol || null,
+      source: 'practice',
+    });
+    coinStore.recordEvent(tokenMint, { type: 'practice_launch', practice: true, outcome: 'landed' });
     res.json({
       success: true,
       run: {
