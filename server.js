@@ -2544,7 +2544,7 @@ app.get('/api/app-version', (_req, res) => {
       checkForUpdatesOnStartup: userPrefs.get().checkForUpdatesOnStartup !== false,
       releaseTrust: {
         status: 'unsigned-test-artifact',
-        label: 'Unsigned test artifact',
+        label: 'Unsigned build',
         signingStatus: 'unsigned',
         notarizationStatus: macos ? 'not-notarized' : 'not-applicable',
         platform: process.platform,

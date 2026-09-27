@@ -1054,6 +1054,54 @@
       }
     }
 
+    .solve-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--line);
+      border-left: 1px solid var(--line);
+    }
+
+    .solve-card {
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: 26px 28px;
+    }
+
+    .solve-card h3 {
+      margin: 12px 0 10px;
+      font-family: var(--sans);
+      font-size: 18px;
+      font-weight: 590;
+      letter-spacing: -0.02em;
+    }
+
+    .solve-card h3 em {
+      color: var(--green);
+      font-style: normal;
+    }
+
+    .solve-card p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-family: var(--sans);
+      font-size: 13.5px;
+      line-height: 1.65;
+    }
+
+    .solve-card p.solve-problem {
+      color: #6d7f73;
+      font-size: 13px;
+    }
+
+    .solve-card strong {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .solve-card a {
+      color: var(--green);
+    }
+
     @media (max-width: 1100px) {
       .hero-grid {
         grid-template-columns: 1fr;
@@ -1076,6 +1124,10 @@
       }
 
       .capability-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .solve-grid {
         grid-template-columns: repeat(2, 1fr);
       }
 
@@ -1184,6 +1236,11 @@
       .proof-tape-inner,
       .section-head,
       .capability-grid,
+      .download-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .solve-grid,
       .download-grid {
         grid-template-columns: 1fr;
       }
@@ -1431,10 +1488,97 @@
       </div>
     </section>
 
+    <section class="section" id="solves">
+      <div class="shell">
+        <div class="section-head">
+          <div class="section-index"><strong>02</strong> / solves</div>
+          <div>
+            <h2>Built for what goes wrong after the token exists.</h2>
+            <p>The price that opens in the wrong place, liquidity drained in the first minute, a lock that turns out to be optional, a crash that strands funds. Each feature exists because each of these happened to someone first. None of it is a paid tier.</p>
+          </div>
+        </div>
+
+        <div class="solve-grid">
+          <article class="solve-card">
+            <span class="capability-no">PRICE DISCOVERY / 01</span>
+            <h3>Your token opens at the price <em>you</em> chose</h3>
+            <p class="solve-problem">On a bonding curve the curve sets the price, not buyers and sellers, with a built-in edge for whoever is automated and first. Launch tools that skip the curve often price your pool off an indexer's quote — which for a low-cap pairing can be one dust trade in an empty pool.</p>
+            <p>You set a <strong>target market cap</strong>; Trebuchet derives the starting price and opens every pool at exactly that value. Quote-token prices are read <strong>from the pool accounts on-chain</strong>, deepest in-range pool first, and a launch is refused outright if the pools disagree or a pool would open at a different market cap than its siblings.</p>
+          </article>
+          <article class="solve-card">
+            <span class="capability-no">LIQUIDITY SHAPE / 02</span>
+            <h3>Concentrated liquidity, laddered upward</h3>
+            <p class="solve-problem">A single wide pool spreads your supply thin across prices nobody will ever pay, so early buyers get a huge slice for almost nothing and the chart looks like a cliff either way.</p>
+            <p>Liquidity goes into <strong>Raydium CLMM</strong> as concentrated, single-sided positions. The <strong>ladder</strong> option stacks bands above the launch price — a controlled release as the price climbs — and the <strong>support</strong> option places a buy wall beneath it. Only your token goes in; the SOL side fills as people buy.</p>
+          </article>
+          <article class="solve-card">
+            <span class="capability-no">MULTI-POOL / 03</span>
+            <h3>Launch into several markets at once</h3>
+            <p class="solve-problem">One SOL pool means one place to buy. If your community holds a different token, or you want a stablecoin pair, you're doing a second launch by hand — and hoping the two prices line up.</p>
+            <p>Split supply across <strong>SOL, USDC/USDT, and any other token</strong> in one launch. Every pool opens at the same market cap by construction, a preflight check refuses the launch if they wouldn't, and bootstraps are deferred until all pools are built so trading can't start on one while the others are still being shaped.</p>
+          </article>
+          <article class="solve-card">
+            <span class="capability-no">RUG-PROOFING / 04</span>
+            <h3>Liquidity locked — and still earning</h3>
+            <p class="solve-problem">Burning LP proves you can't pull liquidity, but it also throws away the trading fees forever. Many teams skip the lock entirely, or lock it somewhere holders can't verify.</p>
+            <p>Positions are locked with <strong>Raydium Burn &amp; Earn</strong>: withdrawal is gone permanently, verifiable on-chain by anyone, but each lock mints a <strong>Fee Key NFT</strong> that collects that position's fees forever. Slice the main position and each slice gets its own Fee Key — team fee-sharing without a custom contract. Trebuchet takes none of it.</p>
+          </article>
+          <article class="solve-card">
+            <span class="capability-no">SUPPLY DISCIPLINE / 05</span>
+            <h3>100% to liquidity, by default</h3>
+            <p class="solve-problem">Launchpads protect graduation liquidity and stop there. A dev wallet holding 10–20% of supply is the other half of the trust equation, and holders assume the worst. In one 47-launch dataset the tokens that put full supply in the pool with all authorities null survived at roughly four times the rate of tokens missing even one of those.</p>
+            <p>The default is <strong>the entire supply into the pools</strong>, mint and freeze authorities renounced, metadata frozen. Preallocation for an airdrop or team share is opt-in, capped, and <strong>stated plainly in the permanent launch report</strong> — so it's a disclosed choice, not a hidden wallet.</p>
+          </article>
+          <article class="solve-card">
+            <span class="capability-no">DISTRIBUTION / 06</span>
+            <h3>Airdrops from a CSV, retryable</h3>
+            <p class="solve-problem">Distributing to a community list by hand is slow, error-prone, and one failed transfer halfway through leaves you unsure who got what.</p>
+            <p>Paste a list, Trebuchet validates every address and amount, sizes the preallocation to cover it, and delivers with per-recipient retry. It <strong>journals every delivery</strong>, so a retry skips who's already paid and a crash never double-sends.</p>
+          </article>
+          <article class="solve-card">
+            <span class="capability-no">CRASH RECOVERY / 07</span>
+            <h3>Nothing strands your funds</h3>
+            <p class="solve-problem">Launching is a dozen transactions. If the app, your machine, or the RPC dies in the middle, most tools leave you with a half-built launch, a wallet full of assets, and no idea what already happened on-chain.</p>
+            <p>Every launch runs from an <strong>ephemeral wallet</strong> you fund once, with a <strong>journal</strong> of each step. Resume picks up exactly where it stopped, verifying against the chain rather than trusting the log. The final sweep moves every asset out and <strong>only then</strong> the SOL — so a failed transfer can always pay for its own retry. The wallet's recovery phrase stays encrypted on your machine until it's verifiably empty.</p>
+          </article>
+          <article class="solve-card">
+            <span class="capability-no">RELIABILITY / 08</span>
+            <h3>Transactions that land</h3>
+            <p class="solve-problem">A congested network drops unprioritized transactions, and a tool that retries the wrong way either gives up or does something twice — a double mint, a duplicate pool.</p>
+            <p>Every transaction carries a <strong>priority fee sampled from the live market</strong> and bid slightly above it. Retries rebuild with a fresh blockhash and <strong>check the chain before every re-send</strong>, so a confirmation that timed out but actually landed is adopted, never repeated.</p>
+          </article>
+          <article class="solve-card">
+            <span class="capability-no">PROOF / 09</span>
+            <h3>A launch report nobody can edit</h3>
+            <p class="solve-problem">"Trust me" is the whole pitch of most launches. Holders have no way to check how a token was actually configured — what was locked, what was kept, at what price.</p>
+            <p>Trebuchet publishes a <strong>signed launch report to Arweave</strong>: supply, pools, locks, Fee Keys, preallocation, starting price — permanent, public, findable from the token address. Optional, if you'd rather keep a launch private.</p>
+          </article>
+          <article class="solve-card">
+            <span class="capability-no">IDENTITY / 10</span>
+            <h3>A contract address people recognize</h3>
+            <p class="solve-problem">Addresses are random strings. Yours looks like everyone else's, including the scam copies.</p>
+            <p>Grind a <strong>vanity contract address</strong> that starts or ends with your ticker — locally, on your CPU, with the key encrypted behind your Recovery PIN. Cosmetic, but it's the address your community will paste ten thousand times.</p>
+          </article>
+          <article class="solve-card">
+            <span class="capability-no">REHEARSAL / 11</span>
+            <h3>Practice the whole launch for free</h3>
+            <p class="solve-problem">The first time most people see a launch flow is the one that costs real money.</p>
+            <p><strong>Demo mode</strong> runs the identical six-step flow with every on-chain action simulated — wallet, token, pools, locks, sweep, report — no SOL, no RPC. When you switch it off, nothing about the flow changes except that it's real.</p>
+          </article>
+          <article class="solve-card">
+            <span class="capability-no">NO MIDDLEMAN / 12</span>
+            <h3>Your keys, your machine, no house</h3>
+            <p class="solve-problem">Hosted launchpads take a cut of every trade, hold your flow on their servers, and decide which DEX your token lands on.</p>
+            <p>Trebuchet is a <strong>desktop app you run yourself</strong>. Keys never leave your computer, there's no platform fee, no per-trade cut, and no server between you and Solana except the RPC you choose. You pay the network and Raydium's standard pool costs. That's the whole bill.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
     <section class="section" id="operations">
       <div class="shell">
         <div class="section-head">
-          <div class="section-index"><strong>02</strong> / operations</div>
+          <div class="section-index"><strong>03</strong> / operations</div>
           <div>
             <h2>See what the chain sees.</h2>
             <p>Trebuchet separates configuration, live evidence, and recovery state so operators can tell what is planned, what landed, and what still needs action.</p>
@@ -1478,7 +1622,7 @@
     <section class="section" id="proof">
       <div class="shell">
         <div class="section-head">
-          <div class="section-index"><strong>03</strong> / run sequence</div>
+          <div class="section-index"><strong>04</strong> / run sequence</div>
           <div>
             <h2>One controlled route from draft to custody.</h2>
             <p>Each phase produces state the next phase can verify. Nothing becomes “complete” just because the interface moved forward.</p>
@@ -1513,7 +1657,7 @@
         </div>
 
         <div class="section-head" style="margin-top: 104px;">
-          <div class="section-index"><strong>04</strong> / custody path</div>
+          <div class="section-index"><strong>05</strong> / custody path</div>
           <div>
             <h2>Your machine is the control plane.</h2>
             <p>Trebuchet coordinates public chain infrastructure without taking custody of the launch wallet or routing secrets through a hosted backend.</p>

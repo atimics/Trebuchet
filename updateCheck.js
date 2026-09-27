@@ -175,7 +175,7 @@ function releaseTrustRecord(trust, platform = null) {
   if (normalized === 'unsigned test artifact') {
     return {
       status: 'unsigned-test-artifact',
-      label: 'Unsigned test artifact',
+      label: 'Unsigned build',
       signingStatus: 'unsigned',
       notarizationStatus: platform === 'darwin' ? 'not-notarized' : 'not-applicable',
       platform: platformName,

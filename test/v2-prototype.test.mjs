@@ -10466,7 +10466,7 @@ test('v2 app boots through the local API client when available', () => {
   assert.match(js, /renderReleasePanel/);
   assert.match(js, /releaseTrustSummary/);
   assert.match(js, /release-trust-line/);
-  assert.match(js, /Unsigned test artifact/);
+  assert.match(js, /Unsigned build/);
   assert.match(apiClientJs, /normalizeReleaseTrust/);
   assert.match(apiClientJs, /releaseTrust: normalizeReleaseTrust\(appVersion\.releaseTrust\)/);
   assert.match(js, /window\.__showUpdateResult = applyUpdateResult/);
@@ -10501,7 +10501,7 @@ test('v2 API client bootstraps local session and read-only app state', async () 
       checkForUpdatesOnStartup: false,
       releaseTrust: {
         status: 'unsigned-test-artifact',
-        label: 'Unsigned test artifact',
+        label: 'Unsigned build',
         signingStatus: 'unsigned',
         notarizationStatus: 'not-notarized',
         platform: 'darwin',

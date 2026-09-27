@@ -765,21 +765,22 @@ export const KNOWN_QUOTES = {
   },
 };
 
-// --- Devnet quote tokens for realistic pool testing on devnet ---
-// RATi, Kyro, Ruby are curated devnet-native tokens usable as quote/basis tokens.
-// Add new entries as you create devnet pool tokens.
-// Also add matching <option> entries in pool-editor.js and app.js for UI visibility.
-// DEPRECATED — use tokenRegistry.js (isAllowedQuote(spec, 'devnet')) instead.
-// Kept for backward compatibility during transition; will be removed.
-export const DEVNET_ALLOWED_QUOTES = {
-  RATI: { address: '8ZscSWe5ZSFbGYg4JzA3eqpf6iCnwT72i8TZvVni2yMY', symbol: 'RATi', decimals: 9, name: 'RATi (Agent Economy)' },
-  KYRO: { address: '7m5Y29h6pEvzfkgn3hkYqFQNUrL5CofXtrnDJoqCKyro', symbol: 'Kyro', decimals: 6, name: 'Kyro (Intent Protocol)' },
-  RUBY: { address: '2hJY16WZgTQXXo6qBoWoBtZM7fz556cw3qdLgtntRuby', symbol: 'Ruby', decimals: 6, name: 'Ruby (Ruby High AI)' },
-};
-
-// Thin wrapper — the real network-scoped allowlist lives in tokenRegistry.js.
-export function isAllowedDevnetQuote(spec) {
-  return isAllowedQuote(spec, 'devnet');
+// Devnet launches may only pair against SOL or curated devnet tokens
+// (tokenRegistry.js). Throws a pre-flight error before any SOL is spent.
+function assertDevnetQuotesAllowed(allocations, partialResults = null) {
+  if (getNetwork() !== 'devnet') return;
+  const disallowed = allocations.filter((a) => !isAllowedQuote(a.quoteToken || a.quoteSymbolOverride || '', 'devnet'));
+  if (disallowed.length === 0) return;
+  const names = disallowed
+    .map((a) => a.quoteSymbolOverride || (a.quoteToken ? a.quoteToken.slice(0, 8) : 'custom'))
+    .join(', ');
+  const e = new Error(
+    `Devnet launches only support SOL or curated devnet pool tokens (not allowed: ${names}). `
+    + 'Add the token to tokenRegistry.js or use SOL / RATi / Kyro / Ruby. No SOL was spent.',
+  );
+  e.failedPhase = 'pre_flight';
+  if (partialResults) e.partialResults = partialResults;
+  throw e;
 }
 
 
@@ -3042,78 +3043,6 @@ async function feeKeyIsAtRecipient(raydium, feeKeyMint, recipient) {
 // `mainPositions[i].txIds.lock` get set, same for the bootstrap.
 // ---------------------------------------------------------------------------
 
-// ── Rate-limit recovery ─────────────────────────────────────────────
-
-/**
- * Detect whether an error is a transient RPC rate limit that should be
- * retried with backoff rather than failing the launch immediately.
- */
-function isRetryableRateLimit(err) {
-  if (!err) return false;
-  const msg = (err.message || String(err)).toLowerCase();
-  // HTTP 429
-  if (msg.includes('429') || msg.includes('too many requests')) return true;
-  // Solana RPC rate limit messages
-  if (msg.includes('rate limit') || msg.includes('ratelimit')) return true;
-  if (msg.includes('throttled') || msg.includes('try again')) return true;
-  // Web3.js retry exhaustion
-  if (msg.includes('was not confirmed') && msg.includes('retries')) return true;
-  // Generic HTTP 5xx server errors (transient)
-  if (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('504')) return true;
-  // Network errors
-  if (msg.includes('fetch failed') || msg.includes('econnrefused') || msg.includes('econnreset')) return true;
-  if (msg.includes('etimedout') || msg.includes('enotfound')) return true;
-  return false;
-}
-
-/**
- * Human-readable summary of why a launch phase failed, for the UI.
- */
-function describeFailure(err, phase) {
-  const msg = (err.message || String(err)).toLowerCase();
-  if (msg.includes('429') || msg.includes('too many requests') || msg.includes('rate limit')) {
-    return 'RPC rate limit — wait 30s and click Resume to retry. Consider using a dedicated RPC endpoint (Helius, Triton, QuickNode).';
-  }
-  if (msg.includes('fetch failed') || msg.includes('econnrefused') || msg.includes('etimedout')) {
-    return 'Network error reaching RPC — check your connection and retry.';
-  }
-  if (msg.includes('0x1')) return 'Insufficient SOL in the launch wallet to cover rent and fees. Fund the wallet and retry.';
-  if (msg.includes('0x86')) return 'Mint must sign the metadata transaction — this is a bug, please report.';
-  if (msg.includes('simulation failed')) {
-    return 'Transaction simulation failed — the pool parameters may be invalid. Try adjusting your configuration.';
-  }
-  // Return the original error, truncated
-  const short = err.message || String(err);
-  return short.length > 200 ? short.slice(0, 197) + '...' : short;
-}
-
-/**
- * Execute an async function with exponential backoff on rate-limit errors.
- * Returns the function result or throws on non-retryable errors / exhaustion.
- */
-async function withRateLimitBackoff(fn, {
-  maxRetries = 4,
-  baseDelayMs = 2000,
-  maxDelayMs = 30000,
-  onRetry = null,       // called with { attempt, delayMs, error }
-} = {}) {
-  let lastError;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastError = err;
-      if (!isRetryableRateLimit(err) || attempt >= maxRetries) throw err;
-      const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
-      const jitter = delay * (0.5 + Math.random() * 0.5); // 50%-100% of delay
-      if (onRetry) onRetry({ attempt: attempt + 1, delayMs: Math.round(jitter), error: err });
-      console.warn(`Rate limit hit, retrying in ${Math.round(jitter / 1000)}s (attempt ${attempt + 1}/${maxRetries})...`);
-      await new Promise(r => setTimeout(r, jitter));
-    }
-  }
-  throw lastError;
-}
-
 // Inter-tx pacing for Phase 3 (locks) and Phase 4 (transfers).
 //
 // sendAndConfirm is the natural floor between transactions because it
@@ -4093,21 +4022,7 @@ export async function preflightCreatePoolsAndPositions({
     e.failedPhase = 'pre_flight';
     throw e;
   }
-  // Devnet launches may only pair against SOL or curated devnet tokens.
-  if (getNetwork() === 'devnet') {
-    const disallowed = allocations.filter((a) => !isAllowedDevnetQuote(a.quoteToken || a.quoteSymbolOverride || ''));
-    if (disallowed.length > 0) {
-      const names = disallowed
-        .map((a) => a.quoteSymbolOverride || (a.quoteToken ? a.quoteToken.slice(0, 8) : 'custom'))
-        .join(', ');
-      const e = new Error(
-        `Devnet launches only support SOL or curated devnet pool tokens (not allowed: ${names}). `
-        + 'Add the token to tokenRegistry.js or use SOL / RATi / Kyro / Ruby. No SOL was spent.',
-      );
-      e.failedPhase = 'pre_flight';
-      throw e;
-    }
-  }
+  assertDevnetQuotesAllowed(allocations);
   // Numeric inputs: must be positive finite numbers (or strings that
   // parse to positive finite numbers). Frontend gates this already in
   // updateContinueToFundingState, but defense in depth produces a
@@ -4332,27 +4247,8 @@ export async function createPoolsAndPositions({
   // each retry only attempting the work that didn't complete before.
   priorResults = [],
 }) {
-  onProgress && onProgress({ stage: "lp_preflight", allocationCount: allocations.length });
-  var _net = (typeof getNetwork === "function") ? getNetwork() : null;
-  if (_net === "devnet") {
-    var _bad = allocations.filter(function(a) {
-      var q = a.quoteToken || a.quoteSymbolOverride || "";
-      return !isAllowedDevnetQuote(q);
-    });
-    if (_bad.length > 0) {
-      var _names = _bad.map(function(a) { return a.quoteSymbolOverride || (a.quoteToken ? a.quoteToken.slice(0, 8) : "custom"); }).join(", ");
-      var _err = new Error(
-        "Devnet launches only support SOL or curated devnet pool tokens (see tokenRegistry.js — RATi, Kyro, Ruby + your additions). " +
-        "Non-allowed quotes on devnet: " + _names + ". " +
-        "Add the mint to the allowlist (and a pool editor dropdown entry) or use only allowed quotes. No SOL was spent."
-      );
-      _err.failedPhase = "pre_flight";
-      _err.partialResults = priorResults || [];
-      throw _err;
-    }
-    var _curated = Object.keys(DEVNET_ALLOWED_QUOTES || {}).join(", ") || "(none)";
-    console.log("Devnet: pools restricted to SOL + curated quotes (" + _curated + ").");
-  }
+  onProgress?.({ stage: 'lp_preflight', allocationCount: allocations.length });
+  assertDevnetQuotesAllowed(allocations, priorResults || []);
   console.log(`\n=== Creating pools and positions for ${tokenMint} ===`);
   console.log(`Total supply: ${tokenTotalSupply}, target MC: $${targetMarketCapUsd}`);
   console.log(`Allocations: ${allocations.length}, lock: ${lockPositions}`);

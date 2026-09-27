@@ -361,7 +361,7 @@ const state = {
   releaseUrl: 'https://github.com/AnOversizedMooseWithSocks/Trebuchet/releases',
   releaseTrust: {
     status: 'unsigned-test-artifact',
-    label: 'Unsigned test artifact',
+    label: 'Unsigned build',
     signingStatus: 'unsigned',
     notarizationStatus: 'not-notarized',
     platform: null,
@@ -21911,7 +21911,7 @@ function renderPairTokenChecks() {
     ? `${problems.length} pair token${problems.length === 1 ? '' : 's'} cannot be used`
     : checking
       ? 'Checking pair tokens…'
-      : `All ${rows.length} pair tokens verified${viaJupiter ? ` (${viaJupiter} bought via Jupiter)` : ''}`;
+      : `All ${rows.length} pair tokens verified${viaJupiter ? ` (${viaJupiter} will be bought via Jupiter)` : ''}`;
   return `
     <div class="pair-token-checks ${problems.length ? 'has-problems' : ''}">
       <small>${escapeHtml(summary)}</small>

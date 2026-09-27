@@ -6339,7 +6339,7 @@ button.discovery-row {
 }
 
 .diagnostics-drawer {
-  margin-top: 8px;
+  margin: 8px 16px 0;
 }
 
 .diagnostics-grid {
@@ -17646,4 +17646,9 @@ body[data-launch-running="true"] .workspace {
   #launchIdentityChip {
     display: none !important;
   }
+}
+
+/* No decorative slash markers beside section headings. */
+.section-heading > div::before {
+  content: none;
 }

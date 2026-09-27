@@ -192,7 +192,7 @@
     if (!input || typeof input !== 'object') {
       return {
         status: 'unsigned-test-artifact',
-        label: 'Unsigned test artifact',
+        label: 'Unsigned build',
         signingStatus: 'unsigned',
         notarizationStatus: 'not-notarized',
         platform: null,

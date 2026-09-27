@@ -2975,7 +2975,7 @@ test('server exposes the v2 launch-plan contract as an authenticated API route',
   assert.match(serverSource, /kind,/);
   assert.match(serverSource, /app\.get\('\/api\/app-version'/);
   assert.match(serverSource, /releaseTrust: \{/);
-  assert.match(serverSource, /Unsigned test artifact/);
+  assert.match(serverSource, /Unsigned build/);
   assert.match(serverSource, /notarizationStatus: macos \? 'not-notarized' : 'not-applicable'/);
   assert.match(serverSource, /app\.post\('\/api\/check-for-updates'/);
   assert.match(serverSource, /updateCheckBridge\.triggerManual\(\)/);
