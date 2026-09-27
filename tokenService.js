@@ -2127,6 +2127,24 @@ export function pickFundingTransfer(parsedTxsOldestFirst, publicKey) {
   return null;
 }
 
+// Parsed transaction of any version. web3.js 1.x can neither request nor
+// validate version-1 transactions, and one unreadable transaction used to
+// fail the whole funder lookup. Those are read as raw jsonParsed RPC JSON,
+// which has the same meta/message shape the funding parsers use.
+export async function getParsedTransactionAnyVersion(signature, conn = connection) {
+  try {
+    return await conn.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 });
+  } catch (error) {
+    if (typeof conn._rpcRequest !== 'function') throw error;
+    const response = await conn._rpcRequest('getTransaction', [
+      signature,
+      { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1, commitment: 'confirmed' },
+    ]);
+    if (response?.error) throw new Error(response.error.message || String(error.message || error));
+    return response?.result || null;
+  }
+}
+
 // Qualifying inbound SOL transfers in one parsed transaction.
 function fundingTransferRows(signature, tx, publicKey) {
   if (!tx || !tx.meta || tx.meta.err) return [];
@@ -2199,9 +2217,7 @@ export async function findFundingWallets(publicKey) {
     let complete = true;
     for (const sig of signatures.slice().reverse()) {
       if (sig.err) continue;
-      const tx = await connection.getParsedTransaction(sig.signature, {
-        maxSupportedTransactionVersion: 0,
-      });
+      const tx = await getParsedTransactionAnyVersion(sig.signature);
       // A transaction the RPC cannot return yet is read again next time.
       if (!tx) complete = false;
       rows.push(...fundingTransferRows(sig.signature, tx, publicKey));
@@ -2243,9 +2259,7 @@ export async function findFundingWallet(publicKey) {
     // both count.
     for (const sig of signatures.slice().reverse()) {
       if (sig.err) continue;
-      const tx = await connection.getParsedTransaction(sig.signature, {
-        maxSupportedTransactionVersion: 0,
-      });
+      const tx = await getParsedTransactionAnyVersion(sig.signature);
       const result = pickFundingTransfer([{ signature: sig.signature, tx }], publicKey);
       if (result) {
         fundingWalletCache.set(publicKey, result);
