@@ -39,6 +39,8 @@ import {
   openSolSupport,
   findSolClmmPoolForToken,
   listTokenMarkets,
+  listCoinPositions,
+  withdrawPosition,
 } from './lpService.js';
 import { WSOL_MINT as WSOL_MINT_ADDRESS } from './lpConstants.js';
 
@@ -3057,7 +3059,7 @@ app.post('/api/v2/support/open', async (req, res) => {
     });
     console.log(`Buy support opened in ${poolId}: nft=${result.nftMint} tx=${result.txId}`);
     coinStore.recordEvent(result.token.mint, {
-      type: 'support_added', poolId: result.poolId, txId: result.txId, nftMint: result.nftMint,
+      type: 'support_added', poolId: result.poolId, txId: result.txId, nftMint: result.nftMint, walletPublicKey,
       sol: Number(result.depositLamports) / 1e9, tickLower: result.tickLower, tickUpper: result.tickUpper,
       outcome: result.adopted ? 'landed (found on-chain after a retry)' : 'landed',
     });
@@ -3239,6 +3241,75 @@ app.get('/api/v2/coins/:mint', async (req, res) => {
     res.json({ success: true, coin: { mint, practice: false, account, info, markets, events, creation } });
   } catch (error) {
     sendErrorResponse(res, error, 400);
+  }
+});
+
+// Positions this app's wallets hold in a coin's pools (unlocked: buy support
+// and other positions they own), and withdrawing one. Withdraw re-reads the
+// position and refuses if it changed since it was shown.
+app.get('/api/v2/coins/:mint/positions', async (req, res) => {
+  try {
+    const mint = String(req.params.mint || '').trim();
+    if (isDemoMode()) {
+      return res.json({ success: true, positions: demoChainService.listDemoPositions(mint) });
+    }
+    if (!validMint(mint)) return res.status(400).json({ success: false, error: 'Invalid mint' });
+    const owners = pendingWallets.list().map((wallet) => wallet.publicKey).filter(Boolean);
+    const positions = await listCoinPositions({ tokenMint: mint, owners });
+    res.json({ success: true, positions });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.post('/api/v2/positions/withdraw', async (req, res) => {
+  const body = req.body || {};
+  const walletPublicKey = String(body.walletPublicKey || '').trim();
+  const tokenMint = String(body.tokenMint || '').trim();
+  if (!walletPublicKey || !body.poolId || !body.nftMint) {
+    return res.status(400).json({ success: false, error: 'walletPublicKey, poolId, and nftMint are required' });
+  }
+  if (isDemoMode()) {
+    try {
+      const result = demoChainService.withdrawDemoPosition(body);
+      if (tokenMint) {
+        coinStore.recordEvent(tokenMint, {
+          type: 'position_withdrawn', practice: true, poolId: body.poolId, nftMint: body.nftMint,
+          sol: result.solReturned, walletPublicKey,
+        });
+      }
+      return res.json({ success: true, result });
+    } catch (error) {
+      return res.status(409).json({ success: false, code: error.code || null, error: error.message });
+    }
+  }
+  if (rejectIfSecretPinLocked(res, 'withdrawing a position with a saved wallet')) return;
+  let claimed = false;
+  try {
+    const { secretKeyArr, walletPublicKey: signer } = resolveSigner({ walletPublicKey });
+    if (rejectOrClaimLaunchOp(res, signer, 'withdraw position')) return;
+    claimed = true;
+    const result = await withdrawPosition({
+      tempWalletSecretKey: secretKeyArr,
+      poolId: String(body.poolId),
+      nftMint: String(body.nftMint),
+      expected: body.expected,
+    });
+    console.log(`Position withdrawn from ${body.poolId}: nft=${body.nftMint} tx=${result.txId}`);
+    if (tokenMint) {
+      coinStore.recordEvent(tokenMint, {
+        type: 'position_withdrawn', poolId: body.poolId, nftMint: body.nftMint, txId: result.txId, walletPublicKey,
+        outcome: result.adopted ? 'landed (found withdrawn after a retry)' : 'landed',
+      });
+    }
+    res.json({ success: true, result });
+  } catch (error) {
+    if (['POSITION_CHANGED', 'POSITION_NOT_FOUND'].includes(error.code)) {
+      return res.status(409).json({ success: false, code: error.code, error: error.message });
+    }
+    sendErrorResponse(res, error, 400);
+  } finally {
+    if (claimed) clearLaunchOpInFlight(walletPublicKey);
   }
 });
 

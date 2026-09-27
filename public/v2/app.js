@@ -453,6 +453,8 @@ const state = {
   // Coins are what the app is organized around. `key` is the open coin
   // ("draft:<id>" or "mint:<address>"); null shows the list.
   coins: { list: [], loaded: false, loading: false, error: null, key: null, detail: null, detailLoading: false, detailError: null },
+  // Positions this app's wallets hold in the open coin's pools.
+  coinPositions: { mint: null, list: [], loading: false, error: null, withdrawing: null },
   // How far above the SOL pool's price pair pools open. Restored launches
   // keep the value they were planned with (0 before this existed).
   pairStartPremiumPct: PAIR_START_PREMIUM_PCT,
@@ -21732,8 +21734,87 @@ function openCoin(key) {
   resetPoolSupport();
   setView('coins');
   const coin = coinByKey(key);
-  if (coin?.kind === 'onchain') loadCoinDetail(coin.mint).catch(() => null);
+  if (coin?.kind === 'onchain') {
+    loadCoinDetail(coin.mint).catch(() => null);
+    loadCoinPositions(coin.mint).catch(() => null);
+  }
   renderCoins();
+}
+
+async function loadCoinPositions(mint) {
+  if (!state.apiClient?.listCoinPositions) return;
+  state.coinPositions = { mint, list: state.coinPositions.mint === mint ? state.coinPositions.list : [], loading: true, error: null, withdrawing: null };
+  renderCoins();
+  try {
+    const response = await state.apiClient.listCoinPositions(mint);
+    if (state.coins.key !== `mint:${mint}`) return;
+    state.coinPositions = { mint, list: Array.isArray(response.positions) ? response.positions : [], loading: false, error: null, withdrawing: null };
+  } catch (error) {
+    state.coinPositions = { ...state.coinPositions, loading: false, error: error.message || 'Could not read positions' };
+  }
+  renderCoins();
+}
+
+async function withdrawCoinPosition(nftMint) {
+  const mint = state.coinPositions.mint;
+  const position = (state.coinPositions.list || []).find((item) => item.nftMint === nftMint);
+  if (!position || !mint) return;
+  const quote = position.quoteSymbol || 'SOL';
+  const coin = coinByKey(`mint:${mint}`);
+  const symbol = coin?.symbol || shortAddress(mint);
+  const ok = await confirmOperatorAction({
+    title: 'Withdraw position',
+    detail: `Withdraw everything from this ${symbol}/${quote} position and close it: about `
+      + `${Number(position.quoteAmount).toFixed(4)} ${quote} and ${compactAmount(position.tokenAmount)} ${symbol} `
+      + `go back to ${shortAddress(position.owner)}, with the position's account rent. The buy support it gave is removed.`,
+    confirmLabel: 'Withdraw',
+    danger: true,
+    confirmationText: 'WITHDRAW',
+  });
+  if (!ok) return;
+  state.coinPositions = { ...state.coinPositions, withdrawing: nftMint, error: null };
+  renderCoins();
+  try {
+    await state.apiClient.withdrawPosition({
+      walletPublicKey: position.owner,
+      poolId: position.poolId,
+      nftMint,
+      tokenMint: mint,
+      expected: { liquidity: position.liquidity },
+    });
+    notify(`Withdrawn from the ${symbol}/${quote} pool`);
+  } catch (error) {
+    notify(error.message || 'Withdrawing failed');
+    state.coinPositions = { ...state.coinPositions, withdrawing: null, error: error.message || 'Withdrawing failed' };
+  }
+  loadCoinPositions(mint).catch(() => null);
+  loadCoinDetail(mint).catch(() => null);
+}
+
+// A position's range is priced in its pool's quote token.
+function fmtQuotePrice(value, position) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return '—';
+  const text = number < 0.0001 ? number.toExponential(3) : number.toPrecision(4);
+  return `${text} ${position.isSolPool ? 'SOL' : (position.quoteSymbol || 'quote')}`;
+}
+
+function coinPositionsHtml() {
+  const { list, loading, error, withdrawing } = state.coinPositions;
+  const coinSymbol = coinByKey(`mint:${state.coinPositions.mint}`)?.symbol || 'coin';
+  if (loading && !list.length) return '<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading your wallets\' positions…</p>';
+  const rows = (list || []).map((position) => `
+    <li>
+      <span>
+        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${escapeHtml(shortAddress(position.owner))}</strong>
+        <small>${escapeHtml(fmtQuotePrice(position.priceLow, position))} to ${escapeHtml(fmtQuotePrice(position.priceHigh, position))} per coin · ${position.inRange ? 'the price is inside this range' : 'the price is outside this range'}</small>
+      </span>
+      <span class="coin-position-holds">${Number(position.quoteAmount).toFixed(4)} ${escapeHtml(position.quoteSymbol || '')} + ${escapeHtml(compactAmount(position.tokenAmount))} ${escapeHtml(coinSymbol)}</span>
+      <button class="pill-button danger" type="button" data-action="withdraw-coin-position" data-nft="${escapeHtml(position.nftMint)}" ${withdrawing ? 'disabled' : ''}>${withdrawing === position.nftMint ? 'Withdrawing…' : 'Withdraw'}</button>
+    </li>`).join('');
+  return `
+    ${rows ? `<ul class="coin-positions">${rows}</ul>` : '<p class="coins-empty">None of this app\'s wallets hold an unlocked position in this coin\'s pools. Locked launch positions are held by the lock program; their Fee Keys are the receipts.</p>'}
+    ${error ? `<p class="pool-support-error">${escapeHtml(error)}</p>` : ''}`;
 }
 
 function openCoinByMint(mint) {
@@ -21952,6 +22033,7 @@ function coinActivityHtml(events = []) {
     launched_here: 'Launched with Trebuchet',
     practice_launch: 'Practice launch',
     support_added: 'Buy support added',
+    position_withdrawn: 'Position withdrawn',
   };
   return `<ul class="coin-activity">${events.map((event) => `
     <li>
@@ -22032,6 +22114,7 @@ function renderCoinPage(coin) {
     ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl></section>` : ''}
     ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Launch steps' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation, coin)}</section>` : ''}
     ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
+    <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Positions</span><h2>Your positions</h2></div><button class="pill-button" type="button" data-action="refresh-coin-positions">Refresh</button></div>${coinPositionsHtml()}</section>
     <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>
     ${coin.status === 'Added' ? `<div class="coin-actions"><button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button></div>` : ''}`;
   if (supportPanel) {
@@ -22172,7 +22255,10 @@ async function openPoolSupport() {
       expected: { tickLower: plan.tickLower, tickUpper: plan.tickUpper, totalLamports: plan.totalLamports },
     });
     state.poolSupport = { ...state.poolSupport, status: 'done', result: response.result, error: null };
-    if (inputs.target) loadCoinDetail(inputs.target).catch(() => null);
+    if (inputs.target) {
+      loadCoinDetail(inputs.target).catch(() => null);
+      loadCoinPositions(inputs.target).catch(() => null);
+    }
     notify(`Buy support added: ${deposit.toFixed(4)} SOL in the ${symbol}/SOL pool`);
     refreshManualPrefundBalance({ quiet: true }).catch(() => null);
   } catch (error) {
@@ -24073,6 +24159,14 @@ function handleClick(event) {
   if (action === 'refresh-coin') {
     const coin = coinByKey(state.coins.key);
     if (coin?.mint) loadCoinDetail(coin.mint).catch(() => null);
+    return;
+  }
+  if (action === 'withdraw-coin-position') {
+    withdrawCoinPosition(actionTarget.dataset.nft).catch((error) => notify(error.message || 'Withdrawing failed'));
+    return;
+  }
+  if (action === 'refresh-coin-positions') {
+    if (state.coinPositions.mint) loadCoinPositions(state.coinPositions.mint).catch(() => null);
     return;
   }
   if (action === 'preview-pool-support') {

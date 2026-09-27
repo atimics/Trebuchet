@@ -389,6 +389,17 @@ try {
   await page.fill('#operatorPromptInput', 'ADD SUPPORT');
   await page.click('#operatorPromptSubmit');
   await page.waitForSelector('.pool-support-done');
+
+  // The support is now a position the coin page lists; withdraw it.
+  await page.waitForSelector('.coin-positions [data-action="withdraw-coin-position"]');
+  assert.equal(await page.locator('.coin-positions li').count(), 1);
+  await page.click('.coin-positions [data-action="withdraw-coin-position"]');
+  await page.waitForSelector('#operatorPromptGate:not([hidden])');
+  assert.match(await page.locator('#operatorPromptGate').innerText(), /WITHDRAW/);
+  await page.fill('#operatorPromptInput', 'WITHDRAW');
+  await page.click('#operatorPromptSubmit');
+  await page.waitForFunction(() => document.querySelectorAll('.coin-positions li').length === 0, null, { timeout: 30_000 });
+  await page.waitForFunction(() => /Position withdrawn/.test(document.querySelector('.coin-activity')?.textContent || ''), null, { timeout: 30_000 });
   assert.deepEqual(nativeDialogs, [], 'Trebuchet opened a native prompt/confirm dialog');
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');

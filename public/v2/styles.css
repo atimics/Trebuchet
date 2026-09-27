@@ -16518,3 +16518,48 @@ body[data-launch-running="true"] .workspace {
   font-size: inherit;
   text-transform: none;
 }
+
+/* Coin page: positions this app's wallets hold in the coin's pools. */
+.coin-positions {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.coin-positions li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.coin-positions li > span:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.coin-positions small {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.coin-position-holds {
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+@media (max-width: 620px) {
+  .coin-positions li {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .coin-position-holds {
+    grid-column: 1;
+  }
+}

@@ -386,6 +386,34 @@ export function practiceSupportPlan(plan, walletPublicKey) {
   return { ...plan, walletLamports: String(walletLamports), enoughSol, warnings, practice: true };
 }
 
+// Practice positions opened with "Add buy support", so they can be listed
+// and withdrawn like real ones.
+const demoPositions = [];
+
+export function listDemoPositions(tokenMint) {
+  return demoPositions.filter((position) => !tokenMint || position.tokenMint === tokenMint).map((position) => ({ ...position }));
+}
+
+export function withdrawDemoPosition({ walletPublicKey, nftMint, expected } = {}) {
+  const index = demoPositions.findIndex((position) => position.nftMint === nftMint && position.owner === walletPublicKey);
+  if (index < 0) {
+    const error = new Error('This wallet no longer holds that position. Nothing was sent.');
+    error.code = 'POSITION_NOT_FOUND';
+    throw error;
+  }
+  const position = demoPositions[index];
+  if (!expected || String(expected.liquidity) !== position.liquidity) {
+    const error = new Error('The position changed since you reviewed it. Review it again, then confirm. Nothing was sent.');
+    error.code = 'POSITION_CHANGED';
+    throw error;
+  }
+  demoPositions.splice(index, 1);
+  const st = getState(walletPublicKey);
+  const solReturned = position.quoteAmount + 0.0056134;
+  st.solBalance = Number(st.solBalance || 0) + solReturned;
+  return { poolId: position.poolId, nftMint, txId: `Demo${randomBase58(84)}`, adopted: false, solReturned };
+}
+
 export function openDemoSolSupport(body = {}) {
   const plan = planDemoSolSupport(body);
   if (!plan.enoughSol) {
@@ -396,7 +424,24 @@ export function openDemoSolSupport(body = {}) {
   }
   const st = getState(body.walletPublicKey);
   st.solBalance = Math.max(0, Number(st.solBalance || 0) - Number(plan.totalLamports) / 1e9 + Number(plan.feeBufferLamports) / 1e9);
-  return { ...plan, nftMint: randomBase58(44), txId: `Demo${randomBase58(84)}`, adopted: false };
+  const nftMint = randomBase58(44);
+  demoPositions.push({
+    owner: body.walletPublicKey,
+    tokenMint: String(body.tokenMint || plan.token.mint),
+    nftMint,
+    poolId: plan.poolId,
+    quoteSymbol: 'SOL',
+    isSolPool: true,
+    tickLower: plan.tickLower,
+    tickUpper: plan.tickUpper,
+    liquidity: `demo-${nftMint.slice(0, 8)}`,
+    tokenAmount: 0,
+    quoteAmount: Number(plan.depositLamports) / 1e9,
+    priceLow: plan.bottomPriceSol,
+    priceHigh: plan.topPriceSol,
+    inRange: false,
+  });
+  return { ...plan, nftMint, txId: `Demo${randomBase58(84)}`, adopted: false };
 }
 
 // ===========================================================================
