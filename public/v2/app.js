@@ -4933,13 +4933,18 @@ async function shuffleMemeFlywheel() {
   notify(`Flywheel pairing drawn: ${shortAddress(mint)}`);
 }
 
+// The liquidity budget is SOL that goes INTO the SOL pool. A launch pool
+// opens holding only the new token, so SOL can only sit below the launch
+// price: it becomes the buy support that sellers are paid from. (Earlier
+// presets called most of the budget "core liquidity", which no pool ever
+// received, so launches opened with no SOL at all.)
 function launchBudgetRecommendation(value) {
   const budgetSol = Math.max(0, Number(value) || 0);
   if (budgetSol === 0) {
     return {
       id: 'minimum',
       label: 'Minimum launch',
-      detail: 'Create the token and a minimal pool path without adding discretionary SOL liquidity.',
+      detail: 'Create the token and its pool with no SOL in it. Sellers have nothing to sell into until someone buys.',
       coreSol: 0,
       supportSol: 0,
       ladderBands: 0,
@@ -4950,34 +4955,32 @@ function launchBudgetRecommendation(value) {
     return {
       id: 'lean',
       label: 'Lean',
-      detail: 'Keep every available lamport in one understandable core market.',
-      coreSol: budgetSol,
-      supportSol: 0,
+      detail: 'Place all of the SOL just below the launch price, so early sellers are paid from it.',
+      coreSol: 0,
+      supportSol: budgetSol,
       ladderBands: 0,
-      structure: '1 core band',
+      structure: '1 market · buy support',
     };
   }
   if (budgetSol < 50) {
-    const supportSol = Number((budgetSol * 0.1).toFixed(4));
     return {
       id: 'balanced',
       label: 'Balanced',
-      detail: 'Use a core market, one reach band, and a small defensive support band.',
-      coreSol: Number((budgetSol - supportSol).toFixed(4)),
-      supportSol,
+      detail: 'Place the SOL below the launch price as buy support, and add one reach band above it.',
+      coreSol: 0,
+      supportSol: budgetSol,
       ladderBands: 1,
-      structure: '3 purposeful bands',
+      structure: 'buy support · 1 reach band',
     };
   }
-  const supportSol = Number((budgetSol * 0.15).toFixed(4));
   return {
     id: 'deep',
     label: 'Deep',
-    detail: 'Use deeper core liquidity, measured price reach, and a larger defensive support band.',
-    coreSol: Number((budgetSol - supportSol).toFixed(4)),
-    supportSol,
+    detail: 'Place a deep SOL buy wall below the launch price, and add one reach band above it.',
+    coreSol: 0,
+    supportSol: budgetSol,
     ladderBands: 1,
-    structure: '3 deep bands',
+    structure: 'deep buy support · 1 reach band',
   };
 }
 
@@ -4996,9 +4999,11 @@ function renderLaunchBudgetRecommendation() {
   // A selected preset already names the band; only a custom amount needs it.
   target.innerHTML = `
     ${presetSelected ? '' : `<span class="recommended-band"><small>Band</small><strong>${escapeHtml(strategy.label)}</strong></span>`}
-    <span><small>Core liquidity</small><strong>${fmtSol(strategy.coreSol)}</strong></span>
+    <span><small>SOL in the pool</small><strong>${fmtSol(strategy.supportSol)}</strong></span>
     <span><small>Structure</small><strong>${escapeHtml(strategy.structure)}</strong></span>
-    <span><small>Buy support</small><strong>${strategy.supportSol > 0 ? fmtSol(strategy.supportSol) : 'None'}</strong></span>
+    <span><small>Where it sits</small><strong>${strategy.supportSol > 0
+      ? `Launch price to −${escapeHtml(String(clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50)))}%`
+      : 'No SOL in the pool'}</strong></span>
   `;
   target.title = strategy.detail;
 }

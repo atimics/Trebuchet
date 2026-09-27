@@ -2930,6 +2930,18 @@ test('v2 SOL pool takes the remainder so the supply split totals 100%', () => {
   assert.match(js, /notify\('Pair added'\)/);
 });
 
+test('v2 liquidity budget puts real SOL in the pool as buy support', () => {
+  const start = js.indexOf('function launchBudgetRecommendation(value) {');
+  const end = js.indexOf('\nfunction ', start + 10);
+  const body = js.slice(start, end);
+  // coreSol was never deposited by any pool; every preset must route its
+  // SOL into the support band that lpService actually opens.
+  assert.doesNotMatch(body, /coreSol: (?!0,)/);
+  assert.equal((body.match(/supportSol: budgetSol,/g) || []).length, 3);
+  assert.doesNotMatch(js, /Core liquidity/);
+  assert.match(js, /<small>SOL in the pool<\/small>/);
+});
+
 test('v2 auto-compresses oversized logos into the Classic upload envelope', async () => {
   const start = js.indexOf('function loadLogoImage');
   const end = js.indexOf('\nfunction validateProofFile', start);
