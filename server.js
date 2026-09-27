@@ -12,6 +12,7 @@ import {
   createTokenWithMetaplex,
   finishTokenCreation,
   revealSealedTokenMetadata,
+  uploadSealedIdentity,
   inspectTokenCreationStatus,
   transferMetadataAuthority,
   generateTemporaryWallet,
@@ -68,6 +69,8 @@ import * as launchFlywheels from './launchFlywheels.js';
 import * as userPrefs from './userPrefs.js';
 import * as discoveryStore from './discoveryStore.js';
 import * as brandShieldStore from './brandShieldStore.js';
+import { getSealedIdentity, removeSealedIdentity } from './sealedIdentityStore.js';
+import { stampLogoDataUrl } from './logoStampService.js';
 import * as updateCheckBridge from './updateCheckBridge.js';
 import * as demoChainService from './demoChainService.js';
 import {
@@ -1372,6 +1375,33 @@ app.get('/api/v2/discovery/personal', (_req, res) => {
     res.json(personalDiscoveryResponse());
   } catch (error) {
     sendErrorResponse(res, error);
+  }
+});
+
+// Shown until a vanity CA is picked; the real mint is only known at launch.
+const LOGO_STAMP_SAMPLE_MINT = 'Your1Mint1Address1Appears1Here1At1Launch';
+
+// Preview the CA stamp exactly as the launch will apply it.
+app.post('/api/v2/logo-stamp-preview', (req, res) => {
+  try {
+    const logo = String(req.body?.logo || '');
+    if (!logo.startsWith('data:')) throw new Error('Preview needs the logo as a data URL.');
+    let mint = null;
+    try {
+      mint = req.body?.mint ? new PublicKey(String(req.body.mint).trim()).toBase58() : null;
+    } catch {
+      mint = null;
+    }
+    const result = stampLogoDataUrl(logo, mint || LOGO_STAMP_SAMPLE_MINT);
+    res.json({
+      stamped: result.stamped,
+      reason: result.reason || null,
+      dataUrl: result.stamped ? result.dataUrl : null,
+      mint: mint || null,
+      sample: !mint,
+    });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
   }
 });
 
@@ -5815,15 +5845,38 @@ async function revealSealedMetadataForJournal({ walletPublicKey, secretKeyArr })
     error.revealReadiness = revealReadiness;
     throw error;
   }
+  // Deferred sealed launches upload their identity only now. The URIs go in
+  // the journal before any chain write, so a retried reveal reuses them.
+  const identity = getSealedIdentity(token.mint);
+  let metadataUri = token.metadataUri;
+  if (!metadataUri) {
+    if (!identity) {
+      throw new Error('This sealed launch has no uploaded identity and its sealed identity is not on this machine.');
+    }
+    const uploaded = await uploadSealedIdentity({
+      tempWalletSecretKey: secretKeyArr,
+      identity,
+      // The journal's metadataHash is the launch commitment; keep it.
+      onProgress: (event) => recordTokenJournalProgress(walletPublicKey, { ...event, metadataHash: undefined }),
+    });
+    metadataUri = uploaded.metadataUri;
+    launchJournal.update(
+      journal.id,
+      { token: { metadataUri, imageUri: uploaded.imageUri } },
+      { stage: 'sealed_identity_uploaded', tokenMint: token.mint, metadataUri },
+    );
+  }
   const result = await revealSealedTokenMetadata({
     tempWalletSecretKey: secretKeyArr,
     tokenMint: token.mint,
     name: token.name,
     symbol: token.symbol,
-    metadataUri: token.metadataUri,
+    metadataUri,
     metadataHash: token.metadataHash,
+    imageSha256: identity?.imageSha256 || null,
     onProgress: (event) => recordTokenJournalProgress(walletPublicKey, event),
   });
+  const finalMetadataHash = result.finalMetadataHash || token.metadataHash;
   launchJournal.update(
     journal.id,
     {
@@ -5833,7 +5886,10 @@ async function revealSealedMetadataForJournal({ walletPublicKey, secretKeyArr })
       errorDetails: null,
       token: {
         sealedMetadataPending: false,
-        onChainMetadataUri: token.metadataUri,
+        metadataUri,
+        metadataHash: finalMetadataHash,
+        sealedCommitment: token.metadataHash,
+        onChainMetadataUri: metadataUri,
         mintFormat: result.mintFormat || token.mintFormat,
         tokenProgram: result.tokenProgram || token.tokenProgram,
         metadataStandard: result.metadataStandard || token.metadataStandard,
@@ -5844,8 +5900,9 @@ async function revealSealedMetadataForJournal({ walletPublicKey, secretKeyArr })
         isSafe: true,
       },
     },
-    { stage: 'metadata_revealed', tokenMint: token.mint, metadataUri: token.metadataUri },
+    { stage: 'metadata_revealed', tokenMint: token.mint, metadataUri },
   );
+  removeSealedIdentity(token.mint);
   const updated = launchJournal.get(journal.id);
   registerOfficialBrandLaunch({ journal: updated, token: updated.token, secretKey: secretKeyArr });
   const followupScan = setTimeout(() => void runBrandShieldScan(), 20_000);

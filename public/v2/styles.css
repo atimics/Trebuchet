@@ -1198,6 +1198,37 @@ textarea:focus {
   background: color-mix(in srgb, var(--panel) 58%, transparent);
 }
 
+.token-logo-stamp-slot {
+  grid-column: 1 / -1;
+}
+
+.token-logo-stamp-slot:empty {
+  display: none;
+}
+
+.token-logo-stamp-preview {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  margin: 2px 0 0;
+}
+
+.token-logo-stamp-preview img {
+  width: min(220px, 100%);
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  image-rendering: pixelated;
+}
+
+.token-logo-stamp-preview figcaption,
+.token-logo-stamp-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .token-logo-preview.danger {
   border-color: color-mix(in srgb, var(--red) 48%, var(--line));
 }

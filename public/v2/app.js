@@ -334,6 +334,7 @@ const state = {
   simulated: false,
   tokenLogo: null,
   tokenLogoError: null,
+  tokenLogoStamp: null,
   launchIdentity: {
     palette: null,
     posterDataUrl: null,
@@ -845,6 +846,7 @@ function guidedIdentityStep() {
           <span><strong>${logo ? 'Logo attached' : 'Add a token logo'}</strong><small>${logo ? escapeHtml(logo.name || 'Ready') : 'PNG, JPG, or GIF · up to 10MB · optional'}</small></span>
           <i class="fa-solid fa-chevron-right"></i>
         </button>
+        ${logo ? `<div class="guided-wide" data-logo-stamp-slot>${tokenLogoStampMarkup()}</div>` : ''}
       </div>
     </div>
   `;
@@ -1106,6 +1108,7 @@ async function requestGuidedFundingEstimate() {
 }
 
 function renderGuidedLaunchFlow() {
+  void refreshTokenLogoStamp();
   document.body.dataset.experienceMode = state.experienceMode;
   document.body.dataset.executionEnvironment = executionEnvironmentId();
   const settingsEnvironment = $('#launchSettingsEnvironment');
@@ -6809,10 +6812,61 @@ function renderLaunchPreview() {
   `;
 }
 
+const LOGO_STAMP_SKIP_REASONS = {
+  'logo-too-small': 'Logo is too small to carry a readable CA.',
+  'stamped-logo-too-large': 'Stamped logo would pass the upload limit; it launches unstamped.',
+  'logo-format-unsupported': 'Only PNG, JPG and GIF logos can be stamped.',
+  'logo-unreadable': 'Logo could not be decoded for stamping.',
+};
+
+// Ask the local server to stamp the logo the way the launch will. Keyed on the
+// logo and the chosen CA so re-renders don't re-request.
+async function refreshTokenLogoStamp() {
+  const logo = state.tokenLogo;
+  const mint = currentVanityConfig().selectedPublicKey || null;
+  const key = logo?.dataUrl ? `${logo.sizeBytes}:${logo.dataUrl.length}:${logo.dataUrl.slice(-64)}:${mint || ''}` : null;
+  if (!key || typeof state.apiClient?.previewLogoStamp !== 'function') {
+    state.tokenLogoStamp = null;
+    return;
+  }
+  if (state.tokenLogoStamp?.key === key) return;
+  state.tokenLogoStamp = { key, pending: true };
+  try {
+    const preview = await state.apiClient.previewLogoStamp({ logo: logo.dataUrl, mint });
+    if (state.tokenLogoStamp?.key !== key) return;
+    state.tokenLogoStamp = { key, ...preview };
+  } catch (error) {
+    if (state.tokenLogoStamp?.key !== key) return;
+    state.tokenLogoStamp = { key, stamped: false, reason: 'preview-unavailable' };
+  }
+  // Patch only the preview slots so a form being typed in keeps its focus.
+  const markup = tokenLogoStampMarkup();
+  document.querySelectorAll('[data-logo-stamp-slot]').forEach((slot) => { slot.innerHTML = markup; });
+}
+
+function tokenLogoStampMarkup() {
+  const stamp = state.tokenLogoStamp;
+  if (!state.tokenLogo || !stamp || stamp.pending) return '';
+  if (!stamp.stamped) {
+    const reason = LOGO_STAMP_SKIP_REASONS[stamp.reason] || 'CA stamp preview unavailable.';
+    return `<p class="token-logo-stamp-note">${escapeHtml(reason)}</p>`;
+  }
+  const caption = stamp.sample
+    ? 'CA stamp preview · sample address until you pick a vanity CA'
+    : `CA stamp preview · ${shortAddress(stamp.mint)}`;
+  return `
+    <figure class="token-logo-stamp-preview">
+      <img src="${escapeHtml(stamp.dataUrl)}" alt="Logo with the contract address stamped along the bottom">
+      <figcaption>${escapeHtml(caption)}</figcaption>
+    </figure>
+  `;
+}
+
 function renderTokenLogoPreview() {
   const target = $('#tokenLogoPreview');
   const logo = state.tokenLogo;
   const error = state.tokenLogoError;
+  void refreshTokenLogoStamp();
   target.className = `token-logo-preview ${logo ? 'has-logo' : ''} ${error ? 'danger' : ''}`;
   target.innerHTML = `
     <span class="token-logo-thumb">
@@ -6823,6 +6877,7 @@ function renderTokenLogoPreview() {
       <strong>${escapeHtml(error || logoSummary(logo))}</strong>
     </span>
     ${logo || error ? '<button class="pill-button" type="button" data-action="clear-token-logo">Clear</button>' : ''}
+    <div class="token-logo-stamp-slot" data-logo-stamp-slot>${tokenLogoStampMarkup()}</div>
   `;
 }
 

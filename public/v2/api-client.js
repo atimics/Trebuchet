@@ -517,6 +517,13 @@
       return request(V2_PERSONAL_DISCOVERY_PATH);
     }
 
+    async function previewLogoStamp({ logo, mint } = {}) {
+      return request('/api/v2/logo-stamp-preview', {
+        method: 'POST',
+        body: { logo, mint: mint || null },
+      });
+    }
+
     async function addDiscoveryWallet({ publicKey, label } = {}) {
       return request(V2_DISCOVERY_WALLETS_PATH, {
         method: 'POST',
@@ -1076,6 +1083,7 @@
       importManagedWallet,
       addDiscoveryWallet,
       inspectDiscoveryToken,
+      previewLogoStamp,
       listLaunchJournals,
       listVanityCandidates,
       listManagedWallets,
