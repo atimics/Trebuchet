@@ -1876,7 +1876,7 @@ test('v2 navigation and views stay wired together', () => {
     .map((match) => match[1])
     .sort();
 
-  assert.deepEqual(navViews, ['discovery', 'history', 'launch', 'settings', 'wallet']);
+  assert.deepEqual(navViews, ['discovery', 'history', 'launch', 'nfts', 'settings', 'wallet']);
   assert.deepEqual(sectionViews, navViews);
   assert.deepEqual(viewKeys, navViews);
 });
@@ -2070,10 +2070,16 @@ test('v2 makes custody risk visible without replacing semantic UI colors', () =>
   assert.doesNotMatch(css, /data-custody-signal="(?:live|funded)"[^}]*--green/);
 });
 
-test('v2 removes the staged NFT collection product surface', () => {
+test('v2 keeps the old staged NFT surface out; NFTs run on the real executor', () => {
   const combined = `${html}\n${css}\n${js}`;
+  const nfts = read('public/v2/nfts.js');
 
-  assert.doesNotMatch(combined, /NFT collection/i);
+  // The NFTs view is backed by nftRoutes.js (real Core transactions, a
+  // journal, and on-chain verification), not a staged manifest.
+  assert.match(html, /id="view-nfts"/);
+  assert.match(html, /nfts\.js\?v=\d+/);
+  assert.match(nfts, /\/api\/v2\/nfts/);
+  assert.match(nfts, /\/verify`/);
   assert.doesNotMatch(combined, /avatarCollection/);
   assert.doesNotMatch(combined, /avatar-collection/);
   assert.doesNotMatch(combined, /v2-avatar-collection/);
@@ -6695,12 +6701,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=82/);
+  assert.match(html, /styles\.css\?v=83/);
   assert.match(html, /runtime-state\.js\?v=1/);
   assert.match(html, /api-client\.js\?v=37/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=173/);
-  assert.doesNotMatch(html, /app\.js\?v=173" type="module"/);
+  assert.match(html, /app\.js\?v=174/);
+  assert.doesNotMatch(html, /app\.js\?v=174" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');

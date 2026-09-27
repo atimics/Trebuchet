@@ -19,7 +19,8 @@
     "./streamlined-launch": "./src/streamlined-launch.js",
     "./validators": "./src/validators.js",
     "./lp-constants": "./src/lp-constants.js",
-    "./split-key": "./src/split-key.js"
+    "./split-key": "./src/split-key.js",
+    "./nft-plan": "./src/nft-plan.js"
   },
   "dependencies": {
     "@noble/curves": "^1.9.7",

@@ -3,9 +3,9 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-09-27T00:35:58.027Z",
-  "durationMs": 8284,
-  "target": "file:///Users/ratimics/develop/trebuchet/public/v2/index.html",
+  "generatedAt": "2026-09-27T02:20:48.186Z",
+  "durationMs": 8332,
+  "target": "file:///Users/ratimics/develop/trebuchet-wt-nft/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
     "horizontalOverflow",
@@ -19,10 +19,10 @@
     "keyboardWalkthrough"
   ],
   "assetHashes": {
-    "index.html": "1a982548f24bd3451a44b3af366ada103290acf454af3e9cf794464de0bd5ae8",
-    "styles.css": "bf538918f97f506684f790ed7db748e2d243cf7e483f425c03e53606b2c1c153",
-    "api-client.js": "00132f6d43e6f80cb9762792c61bb048f0cbb5a07977e16eb8d0dd960c5b43ed",
-    "app.js": "eff83fddc4f050f31776a2e1af94bf39b0af7b043333e778dc3fad867d07e269"
+    "index.html": "55918408b690be6fcb1ec1894b99d155284ec2c5ad848638d0874517888eda2c",
+    "styles.css": "502267018e15a58c55fb3895452de5560de54cb1929ee9afeab73609fbe9ede3",
+    "api-client.js": "51c1747e14c9dae34e1e993b37ae170bee8f518621de617cf2ec28f3d62e4e9e",
+    "app.js": "2b3052a2b4b1dc2fe4a14f074dfe0a5b90ba55d739220be1a9426d9ba23a4042"
   },
   "viewports": [
     {

@@ -94,6 +94,8 @@ import {
 import { expectedVanityAttempts, unsafeSweepDestinationReason } from '@trebuchet/core/validators';
 import * as destinationProofStore from './destinationProofStore.js';
 import * as splitJobStore from './splitJobStore.js';
+import * as nftCollectionStore from './nftCollectionStore.js';
+import { registerNftRoutes } from './nftRoutes.js';
 import { combineSplitKey, createSplitSecret, matchesVanityPattern } from '@trebuchet/core/split-key';
 import { normalizeDistribution } from './lpDistribution.js';
 import { isWalletEffectivelyEmpty } from './walletRecovery.js';
@@ -1725,6 +1727,7 @@ app.post('/api/secret-pin/reset', (req, res) => {
       pendingWallets: pendingWallets.removePinEncrypted(),
       vanityCAs: vanityCaStore.removePinEncrypted(),
       splitJobs: splitJobStore.removePinEncrypted(),
+      nftKeys: nftCollectionStore.removePinEncrypted(),
     };
     const status = secretStore.resetSecretPin();
     res.json({ success: true, status, removed });
@@ -1913,6 +1916,15 @@ function demoAllocationsForV2(allocations = []) {
 
 // SOL-only balance (kept for backwards compatibility / Step 1 display)
 // ---------------------------------------------------------------------------
+
+// NFT collections (v2 NFTs view). See nftRoutes.js.
+registerNftRoutes(app, {
+  isDemoMode,
+  rejectIfSecretPinLocked,
+  sendErrorResponse,
+  getRpcUrl,
+  getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
+});
 
 app.get('/api/vanity-ca-candidates', (req, res) => {
   try {

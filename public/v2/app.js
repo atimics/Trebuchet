@@ -3,6 +3,7 @@ const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selec
 
 const views = {
   launch: { eyebrow: '', title: 'Launch a token' },
+  nfts: { eyebrow: '', title: 'NFT collections' },
   wallet: { eyebrow: '', title: 'Wallet' },
   discovery: { eyebrow: '', title: 'Discovery' },
   history: { eyebrow: '', title: 'History' },
@@ -6367,6 +6368,7 @@ function setView(view) {
   });
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
+  if (view === 'nfts') window.TrebuchetNfts?.onShow();
   renderLaunchWorkspace();
   renderExtension();
   drawLaunchCanvas();
