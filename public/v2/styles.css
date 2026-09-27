@@ -15989,3 +15989,21 @@ body[data-launch-running="true"] .workspace {
   .nft-items th:nth-child(4), .nft-items td:nth-child(4), .nft-items th:nth-child(5), .nft-items td:nth-child(5) { display: none; }
 }
 .nft-shell input.nft-check { width: 14px; height: 14px; min-height: 0; margin: 0; padding: 0; accent-color: var(--green); flex: none; }
+
+/* Pairs can cap the SOL pool through arbitrage; say so where they are set. */
+.supply-warning {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.supply-warning i {
+  color: var(--amber);
+  margin-top: 2px;
+}

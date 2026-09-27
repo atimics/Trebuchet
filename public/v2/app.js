@@ -1,6 +1,11 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
+// Pair pools open this far above the SOL pool's price, so a pair token must
+// fall past it before arbitrage can drain SOL buyers (see lpService
+// allocationStartPrice).
+const PAIR_START_PREMIUM_PCT = 25;
+
 const views = {
   launch: { eyebrow: '', title: 'Launch a token' },
   nfts: { eyebrow: '', title: 'NFT collections' },
@@ -433,6 +438,9 @@ const state = {
   destinations: { funder: null, funders: [], signed: [], launchWallet: null, checkedAt: 0, waiting: false },
   // Funding wallets chosen to share the held-back tokens (by SOL sent).
   heldShare: { selected: [] },
+  // How far above the SOL pool's price pair pools open. Restored launches
+  // keep the value they were planned with (0 before this existed).
+  pairStartPremiumPct: PAIR_START_PREMIUM_PCT,
   fundingWallet: {
     walletPublicKey: null,
     funder: null,
@@ -5073,6 +5081,7 @@ function currentClassicModel() {
       quoteSymbol: quoteVenue.symbol,
       supplyPercent: quotePoolPercent,
       ammConfigIndex: 5,
+      startPricePremiumPct: state.pairStartPremiumPct,
       distribution: [{ sharePercent: 100, recipient: feeKeyRecipient || null }],
       bootstrap: { mode: 'minimal' },
       ladder: { mode: 'off' },
@@ -5105,6 +5114,9 @@ function currentClassicModel() {
       } : null,
       supplyPercent,
       ammConfigIndex: Math.floor(parseNumericInput(pool.ammConfigIndex, 5)),
+      startPricePremiumPct: quoteMint === DEFAULT_SOL_MINT
+        ? 0
+        : clampNumber(parseNumericInput(pool.startPremiumPct, state.pairStartPremiumPct), 0, 500),
       distribution: parseSliceShares(pool.sliceShares || '100').map((sharePercent, sliceIndex) => ({
         sharePercent,
         recipient: null, // Fee Keys follow the sweep to the verified return wallet.
@@ -5303,6 +5315,7 @@ function customPoolFromRecovery(pool = {}, index = 0) {
     quoteMint: String(pool.quoteMint || (pool.quoteToken === 'SOL' ? '' : pool.quoteToken) || ''),
     supplyPercent: Number(pool.supplyPercent || 0),
     ammConfigIndex: Number(pool.ammConfigIndex ?? 5),
+    startPremiumPct: Number(pool.startPricePremiumPct ?? 0),
     sliceShares: distribution.map((slice) => Number(slice.sharePercent || 0)).join(','),
     feeKeyRecipient: String(distribution.find((slice) => slice?.recipient)?.recipient || ''),
     ladderBands: pool?.ladder?.mode === 'simple' ? Number(pool.ladder.bandCount || 0) : 0,
@@ -5322,6 +5335,12 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   const pools = Array.isArray(topology.pools)
     ? topology.pools
     : Array.isArray(topology.allocations) ? topology.allocations : [];
+  // Keep the pair premium the launch was planned with, so its plan still
+  // matches the journal (launches planned before it existed used none).
+  const pairPool = pools.find((pool) => String(pool.quoteToken || pool.quoteSymbol || '').toUpperCase() !== 'SOL');
+  state.pairStartPremiumPct = pairPool
+    ? clampNumber(Number(pairPool.startPricePremiumPct ?? 0) || 0, 0, 500)
+    : PAIR_START_PREMIUM_PCT;
   const solPool = pools.find((pool) => (
     String(pool.quoteSymbol || pool.quoteSymbolOverride || pool.quoteToken || '').toUpperCase() === 'SOL'
     || String(pool.quoteMint || '') === DEFAULT_SOL_MINT
@@ -7020,6 +7039,28 @@ function scheduleMainPoolRebalance() {
   queueMicrotask(rebalanceMainPool);
 }
 
+// Every pair pool sells the new token for its pair token. If that token
+// falls, the new token is cheaper there than in the SOL pool, and bots buy
+// it there and sell it into the SOL pool, taking SOL buyers' money. The
+// start premium sets how far a pair token can fall before that begins.
+function pairArbitrageWarningHtml(poolRows) {
+  const pairs = poolRows.filter((row) => row.key !== 'sol' && row.percent > 0);
+  if (!pairs.length) return '';
+  const topology = currentClassicModel();
+  const pairShare = pairs.reduce((sum, row) => sum + row.percent, 0);
+  const premiums = topology.pools
+    .filter((pool) => pool.id !== 'sol-main' && Number(pool.supplyPercent) > 0)
+    .map((pool) => Number(pool.startPricePremiumPct || 0));
+  const lowest = premiums.length ? Math.min(...premiums) : 0;
+  const tolerance = lowest > 0 ? Math.round((1 - 1 / (1 + lowest / 100)) * 100) : 0;
+  return `<p class="supply-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span>
+    ${pairs.length === 1 ? 'This pair' : `These ${pairs.length} pairs`} hold${pairs.length === 1 ? 's' : ''} ${Number(pairShare.toFixed(2))}% of supply.
+    ${tolerance > 0
+      ? `If a pair token falls more than ${tolerance}% after launch, bots can buy your token in that pool and sell it into the SOL pool, taking SOL buyers' money.`
+      : 'A pair opened at the SOL price lets bots drain SOL buyers as soon as the pair token falls.'}
+    Keep pairs small.</span></p>`;
+}
+
 function renderSupplyEditor() {
   const target = $('#supplyEditor');
   if (!target) return;
@@ -7096,6 +7137,7 @@ function renderSupplyEditor() {
     const key = escapeHtml(row.key);
     return `
       ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? 5)}</select>`)}
+      ${field('Start above SOL price %', 'Opens this pair above the SOL pool price, so the pair token can fall this far before bots can drain SOL buyers.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="startPremiumPct" data-pool-id="${id}" data-supply-key="${key}:premium" value="${escapeHtml(pool.startPremiumPct ?? state.pairStartPremiumPct)}">`)}
       ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`)}
       ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`)}
       ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`)}
@@ -7135,6 +7177,7 @@ function renderSupplyEditor() {
     <div class="supply-bar" role="img" aria-label="Supply split">${segments}${gap}</div>
     <div class="supply-group-head"><span>Pools</span><span data-supply-pools-head>${pools.length} · ${pct(poolPercent)}</span></div>
     <ol class="supply-list">${pools.map(rowHtml).join('')}</ol>
+    ${pairArbitrageWarningHtml(pools)}
     <button class="supply-add" type="button" data-action="add-custom-pool"><i class="fa-solid fa-plus"></i> Add pair</button>
     <div class="supply-group-head"><span>Held back</span></div>
     <ol class="supply-list">${rows.filter((row) => row.kind === 'hold').map(rowHtml).join('')}</ol>

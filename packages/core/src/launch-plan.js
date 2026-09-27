@@ -562,6 +562,9 @@ function normalizePoolTopology(input = {}) {
     const quoteCompatibility = pool.quoteCompatibility && typeof pool.quoteCompatibility === 'object'
       ? { ...pool.quoteCompatibility }
       : undefined;
+    // Only carried when set, so plans saved before it existed keep their
+    // fingerprints and resume at the prices they were created with.
+    const startPricePremiumPct = optionalStartPremium(pool.startPricePremiumPct);
     return {
       id: String(pool.id || `pool-${index + 1}`),
       quoteToken,
@@ -571,6 +574,7 @@ function normalizePoolTopology(input = {}) {
       ...(quoteUsdOverride !== undefined ? { quoteUsdOverride } : {}),
       ...(pool.quotePriceSource ? { quotePriceSource: String(pool.quotePriceSource) } : {}),
       ...(quoteCompatibility ? { quoteCompatibility } : {}),
+      ...(startPricePremiumPct !== undefined ? { startPricePremiumPct } : {}),
       supplyPercent: normalizePercent(pool.supplyPercent, index === 0 ? 70 : 0),
       ammConfigIndex: Math.floor(numeric(pool.ammConfigIndex, quoteSymbol === 'USDC' ? 5 : 8)),
       distribution,
@@ -706,6 +710,14 @@ function normalizeAirdropRecipients(input = {}, context = {}) {
   return [];
 }
 
+// How far above the SOL pool's price a pair pool opens, 0–500%.
+function optionalStartPremium(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return undefined;
+  return Math.min(500, Math.round(number * 100) / 100);
+}
+
 function classicAllocations(poolTopology) {
   return poolTopology.pools.map((pool) => ({
     quoteToken: pool.quoteToken,
@@ -715,6 +727,7 @@ function classicAllocations(poolTopology) {
     quoteUsdOverride: pool.quoteUsdOverride,
     quoteDecimalsOverride: pool.quoteDecimalsOverride,
     quoteSymbolOverride: pool.quoteSymbol,
+    ...(pool.startPricePremiumPct !== undefined ? { startPricePremiumPct: pool.startPricePremiumPct } : {}),
     distribution: pool.distribution,
     bootstrap: pool.bootstrap,
     ladder: pool.ladder,
