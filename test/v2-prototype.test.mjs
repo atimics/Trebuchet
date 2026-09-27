@@ -1993,7 +1993,7 @@ test('v2 is the Electron default with an explicit tested Classic fallback', () =
   assert.match(v2BrowserE2eJs, /page\.goto\(`\$\{baseUrl\}\/v2\/`/);
   assert.match(v2BrowserE2eJs, /data-experience=\"guided\"/);
   assert.match(v2BrowserE2eJs, /data-action=\"guided-practice\"/);
-  assert.match(v2BrowserE2eJs, /Local API connected/);
+  assert.match(v2BrowserE2eJs, /dataset\.apiStatus === 'connected'/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\)/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\{ classic: true \}\)/);
   assert.match(v2ElectronSmokeJs, /const expectedPath = classic \? '\/' : '\/v2\/'/);

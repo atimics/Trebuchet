@@ -66,7 +66,7 @@ async function launchRouteSmoke({ classic = false } = {}) {
 
     if (!classic) {
       await page.waitForFunction(() => (
-        document.querySelector('#globalStrip')?.textContent?.includes('Local API connected')
+        document.body.dataset.apiStatus === 'connected'
       ), null, { timeout: 30_000 });
       assert.equal(await page.getAttribute('body', 'data-experience-mode'), 'guided');
       assert.equal(await page.isVisible('.sidebar'), false, 'Guided Mode should use the focused tutorial shell');

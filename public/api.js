@@ -42,6 +42,8 @@
   // Exposed so EventSource callers (which can't set custom headers)
   // can pass the session token as a query parameter instead.
   window.getApiSessionToken = getApiSessionToken;
+  // app.js reuses this layer instead of stacking a second one.
+  window.__trebuchetApiLayer = true;
 
   window.fetch = async function (input, init) {
     init = init || {};

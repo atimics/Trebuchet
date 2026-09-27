@@ -359,7 +359,7 @@ try {
 
   await page.goto(`${baseUrl}/v2/`, { waitUntil: 'load' });
   await page.waitForFunction(() => (
-    document.querySelector('#globalStrip')?.textContent?.includes('Local API connected')
+    document.body.dataset.apiStatus === 'connected'
     && document.querySelector('#networkLabel')?.textContent?.trim() === 'Demo'
   ), null, { timeout: 60_000 });
   await installTourLayer(page);

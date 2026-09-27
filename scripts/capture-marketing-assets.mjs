@@ -135,7 +135,7 @@ try {
   await appPage.waitForSelector('#view-launch.is-active');
   await appPage.waitForFunction(() => document.querySelector('#tokenomicsChart svg'));
   await appPage.waitForFunction(() => (
-    document.querySelector('#globalStrip')?.textContent.includes('Local API connected')
+    document.body.dataset.apiStatus === 'connected'
     && document.querySelector('#networkLabel')?.textContent.trim().toLowerCase() === 'demo'
   ));
   await appPage.waitForFunction(() => document.querySelector('#toastStack')?.children.length === 0);

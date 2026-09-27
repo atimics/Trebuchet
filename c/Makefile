@@ -29,9 +29,11 @@ VANITY_BIN_FAST = $(BUILD_DIR)/vanity_keygen_fast
 # not (`make fast`). Set SODIUM_PREFIX if it is not under Homebrew.
 # `make portable` builds the slow tweetnacl-only binary.
 SODIUM_PREFIX ?= $(shell brew --prefix libsodium 2>/dev/null || echo /usr)
+# Debian/Ubuntu keep the static library under a multiarch directory.
+SODIUM_LIB ?= $(firstword $(wildcard $(SODIUM_PREFIX)/lib/libsodium.a $(SODIUM_PREFIX)/lib/*/libsodium.a))
 all: $(BUILD_DIR)
 	$(CC) -O3 -flto -DTREBUCHET_SODIUM -I$(SODIUM_PREFIX)/include -Wall -Wextra -Wpedantic -Wno-sign-compare \
-	  vanity_keygen/vanity_keygen.c $(REF10_SRCS) -o $(VANITY_BIN) -I. -I$(VENDOR_DIR) -I$(VENDOR_DIR)/ed25519-ref10 -lpthread $(SODIUM_PREFIX)/lib/libsodium.a -lm
+	  vanity_keygen/vanity_keygen.c $(REF10_SRCS) -o $(VANITY_BIN) -I. -I$(VENDOR_DIR) -I$(VENDOR_DIR)/ed25519-ref10 -lpthread $(SODIUM_LIB) -lm
 
 portable: $(VANITY_BIN)
 

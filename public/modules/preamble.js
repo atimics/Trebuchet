@@ -72,19 +72,23 @@ async function getApiSessionToken() {
   return apiSessionTokenPromise;
 }
 
-// Exposed for EventSource callers and lp-execution.js which pass the
-// session token as a query parameter (custom headers not possible).
-window.getApiSessionToken = getApiSessionToken;
+// api.js normally installs this layer first; stacking a second wrapper
+// would fetch the session token twice. Install only when it is missing.
+if (!window.__trebuchetApiLayer) {
+  // Exposed for EventSource callers and lp-execution.js which pass the
+  // session token as a query parameter (custom headers not possible).
+  window.getApiSessionToken = getApiSessionToken;
 
-window.fetch = async (input, init = {}) => {
-  if (!isLocalApiRequest(input)) return originalFetch(input, init);
+  window.fetch = async (input, init = {}) => {
+    if (!isLocalApiRequest(input)) return originalFetch(input, init);
 
-  const headers = new Headers(
-    init.headers || (input instanceof Request ? input.headers : undefined),
-  );
-  headers.set('x-trebuchet-session', await getApiSessionToken());
-  return originalFetch(input, { ...init, headers });
-};
+    const headers = new Headers(
+      init.headers || (input instanceof Request ? input.headers : undefined),
+    );
+    headers.set('x-trebuchet-session', await getApiSessionToken());
+    return originalFetch(input, { ...init, headers });
+  };
+}
 
 // ===========================================================================
 // Global state

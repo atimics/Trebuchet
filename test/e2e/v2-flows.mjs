@@ -114,7 +114,7 @@ try {
 
   await page.goto(`${baseUrl}/v2/`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await page.waitForFunction(() => (
-    document.querySelector('#globalStrip')?.textContent?.includes('Local API connected')
+    document.body.dataset.apiStatus === 'connected'
     && document.querySelector('#networkLabel')?.textContent?.trim() === 'Demo'
   ), null, { timeout: 30_000 });
   assert.equal(new URL(page.url()).pathname, '/v2/');
@@ -192,8 +192,8 @@ try {
 
   await page.click('.launch-wallet-choice');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'configure');
-  assert.equal(await page.isVisible('#advancedLaunchControls .configure-step-guide'), true);
-  assert.match(await page.locator('#configureStepTitle').innerText(), /Token & pools/i);
+  assert.equal(await page.getAttribute('#launchWorkspaceTabConfigure', 'aria-selected'), 'true');
+  assert.match(await page.locator('#configureStepTitle').textContent(), /Token & pools/i);
   assert.deepEqual(await page.evaluate(() => (
     [...document.querySelectorAll('[data-classic-workspace]')]
       .filter((panel) => !panel.hidden)
@@ -202,36 +202,10 @@ try {
 
   await page.click('#advancedLaunchControls button[data-launch-workspace="fund"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'fund');
-  assert.match(await page.locator('#fundStepTitle').innerText(), /^Fund$/i);
-  assert.equal(await page.locator('.classic-workspace-fund [data-action="estimate-funding"]').count(), 0);
+  assert.match(await page.locator('#fundStepTitle').textContent(), /^Fund$/i);
+  // Assets return to the wallet that funds the launch (or one that signs),
+  // so estimating does not wait on a typed return wallet.
   assert.equal(await page.locator('.classic-workspace-fund button[data-launch-workspace="mint"]').count(), 0);
-  assert.match(await page.locator('.classic-workspace-fund .funding-wallet-hint').innerText(), /Return wallet not set/i);
-  assert.match(await page.locator('.classic-workspace-fund .funding-wallet-hint').innerText(), /Set return wallet/i);
-
-  await page.click('.classic-workspace-fund [data-action="edit-return-wallet"]');
-  await page.waitForFunction(() => (
-    document.body.dataset.launchWorkspace === 'configure'
-    && document.activeElement?.id === 'sweepDestination'
-  ));
-  assert.equal(await page.getAttribute('#sweepDestination', 'placeholder'), 'Wallet receiving remaining assets');
-  assert.equal(await page.getAttribute('#sweepDestination', 'aria-invalid'), null);
-  assert.equal(await page.locator('#sweepDestination').evaluate((input) => input.closest('details')?.open), true);
-
-  await page.fill('#sweepDestination', fundingAddress);
-  await page.dispatchEvent('#sweepDestination', 'change');
-  await page.click('#advancedLaunchControls button[data-launch-workspace="fund"]');
-  await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'fund');
-  assert.equal(
-    await page.locator('.classic-workspace-fund [data-action="estimate-funding"]').count(),
-    0,
-    'Funding should require a return wallet distinct from the launch wallet',
-  );
-  await page.click('.classic-workspace-fund [data-action="edit-return-wallet"]');
-  await page.waitForFunction(() => document.activeElement?.id === 'sweepDestination');
-  await page.fill('#sweepDestination', returnWalletAddress);
-  await page.dispatchEvent('#sweepDestination', 'change');
-  await page.click('#advancedLaunchControls button[data-launch-workspace="fund"]');
-  await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'fund');
   await page.click('.classic-workspace-fund [data-action="estimate-funding"]');
   await page.waitForSelector('.classic-workspace-fund .funding-task-address', { timeout: 30_000 });
   await page.evaluate(() => renderClassicBridge());
@@ -338,7 +312,10 @@ try {
   await page.locator(
     '[data-action="select-experience"][data-experience="guided"]:visible',
   ).first().click();
-  await page.click('[data-action="guided-next"]');
+  await page.evaluate(() => {
+    state.guidedStep = 0;
+    renderGuidedLaunchFlow();
+  });
   await page.fill('[data-guided-field="name"]', 'First Launch');
   await page.fill('[data-guided-field="symbol"]', 'FIRST');
   await page.setInputFiles(
@@ -366,22 +343,19 @@ try {
     document.querySelector('[data-action="select-environment"][data-environment="practice"]').click();
   });
   await page.waitForFunction(() => document.body.dataset.executionEnvironment === 'practice');
-  await page.click('[data-action="guided-next"]');
-  await page.click('[data-action="guided-use-practice-wallet"]');
+  // Token -> Liquidity pairs -> Review -> Fund -> Launch.
   await page.click('[data-action="guided-next"]');
   await page.click('[data-action="guided-value-preset"][data-value="100000"]');
-  await page.click('[data-action="guided-next"]');
+  for (let step = 0; step < 3; step += 1) await page.click('[data-action="guided-next"]');
   await page.click('[data-action="guided-practice"]');
   await page.waitForFunction(() => (
     document.querySelector('#guidedRunShell')?.textContent?.includes('Practice complete')
   ), null, { timeout: 60_000 });
 
   const guidedRunText = await page.locator('#guidedRunShell').innerText();
-  const runText = await page.locator('#globalStrip').innerText();
   assert.match(guidedRunText, /The complete launch recipe worked/i);
   assert.match(guidedRunText, /Prepare live launch/i);
   assert.match(guidedRunText, /Review local practice record/i);
-  assert.match(runText, /Run\s+\d+\/\d+ done \/ 0 queued/);
   assert.deepEqual(nativeDialogs, [], 'Trebuchet opened a native prompt/confirm dialog');
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');

@@ -139,7 +139,7 @@ try {
 
   await page.goto(`${baseUrl}/v2/`, { waitUntil: 'load' });
   await page.waitForFunction(() => (
-    document.querySelector('#globalStrip')?.textContent?.includes('Local API connected')
+    document.body.dataset.apiStatus === 'connected'
     && document.querySelector('#networkLabel')?.textContent?.trim() === 'Demo'
   ));
   await page.waitForSelector('#view-launch.is-active');

@@ -6491,6 +6491,8 @@ function restoreLaunchWorkspace() {
 
 function renderGlobalStrip() {
   renderCustodySignal();
+  // Stable hook for tests and tooling; the strip itself hides when healthy.
+  document.body.dataset.apiStatus = state.apiStatus || 'unknown';
   const { pending, signed, total } = signatureStats();
   const current = account();
   const apiLabel = state.apiStatus === 'connected'
