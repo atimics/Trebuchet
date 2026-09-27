@@ -16,7 +16,8 @@ const DEFAULT_POOL_CONFIG_INDEX = 3;
 
 const views = {
   coins: { eyebrow: '', title: 'Coins' },
-  launch: { eyebrow: '', title: 'Create a coin' },
+  // A coin being created: the coin page with its creation steps.
+  launch: { eyebrow: '', title: 'Coins' },
   nfts: { eyebrow: '', title: 'NFT collections' },
   wallet: { eyebrow: '', title: 'Wallet' },
   discovery: { eyebrow: '', title: 'Discovery' },
@@ -5604,8 +5605,10 @@ function setView(view) {
   if (view !== 'launch') {
     state.approvalOpen = false;
   }
+  // A coin's creation steps are part of its coin page, under Coins.
+  const navView = view === 'launch' ? 'coins' : view;
   $$('.nav-item').forEach((button) => {
-    button.classList.toggle('is-active', button.dataset.view === view);
+    button.classList.toggle('is-active', button.dataset.view === navView);
   });
   $$('.view').forEach((panel) => {
     panel.classList.toggle('is-active', panel.id === `view-${view}`);
@@ -5613,6 +5616,7 @@ function setView(view) {
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
   if (view === 'nfts') window.TrebuchetNfts?.onShow();
+  renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();
   drawLaunchCanvas();
@@ -5973,7 +5977,7 @@ function renderLaunchIdentity() {
         ${animated ? '<span class="launch-identity-motion"><i class="fa-solid fa-wave-square"></i> Live artwork</span>' : ''}
       </div>
       <div class="launch-identity-copy">
-        <span class="eyebrow">Active launch identity</span>
+        <span class="eyebrow">Working on</span>
         <h2>${escapeHtml(model.name)} <em>$${escapeHtml(model.symbol)}</em></h2>
         <p>${escapeHtml(phaseDetail)}</p>
         <div class="launch-identity-facts">
@@ -5994,7 +5998,7 @@ function renderLaunchIdentity() {
     sidebar.hidden = false;
     sidebar.innerHTML = `
       <span class="launch-identity-mini-coin"><img src="${escapeHtml(stillSrc)}" alt=""></span>
-      <span><small>Active launch</small><strong>${escapeHtml(model.symbol)}</strong><em>${escapeHtml(model.status)}</em></span>
+      <span><small>Working on</small><strong>${escapeHtml(model.symbol)}</strong><em>${escapeHtml(model.status)}</em></span>
       <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
     `;
     sidebar.setAttribute('aria-label', `Open ${model.name} launch`);
@@ -13730,7 +13734,6 @@ function renderPracticeResultPanel() {
         <button class="pill-button" type="button" data-action="select-environment" data-environment="live">Switch to Live</button>
         <button class="pill-button" type="button" data-action="run-demo-launch" ${state.demoLaunchRunning ? 'disabled' : ''}>Run practice again</button>
         <button class="pill-button" type="button" data-launch-workspace="configure">Edit token &amp; pools</button>
-        ${run?.token?.tokenMint || run?.token?.mint ? `<button class="pill-button" type="button" data-action="open-coin-mint" data-mint="${escapeHtml(run.token.tokenMint || run.token.mint)}">Coin page</button>` : ''}
         <button class="pill-button" type="button" data-action="download-v2-proof">Download practice record</button>
       </div>
     </div>
@@ -13839,7 +13842,6 @@ function renderFinalizationPanel() {
     <button class="pill-button" type="button" data-action="download-v2-dossier" ${canDownloadDossier ? '' : 'disabled'}>${escapeHtml(dossierDownloadLabel)}</button>
     <button class="pill-button" type="button" data-action="download-v2-proof" ${canDownload ? '' : 'disabled'}>Download proof</button>
     ${reportUri ? `<a class="pill-button link-button" href="${escapeHtml(reportUri)}" target="_blank" rel="noopener">Open report</a>` : ''}
-    ${finalSweepComplete && tokenMint ? `<button class="pill-button" type="button" data-action="open-coin-mint" data-mint="${escapeHtml(tokenMint)}">Coin page</button>` : ''}
   `;
   const supplementalProofActions = [
     canPublish || state.reportPublishing
@@ -21689,6 +21691,7 @@ function newCoin() {
   state.solPoolConfigIndex = DEFAULT_POOL_CONFIG_INDEX;
   state.pairPoolConfigIndex = DEFAULT_POOL_CONFIG_INDEX;
   applyLaunchBudgetRecommendation(1, { announce: false });
+  if ($('#targetMarketCapUsd')) $('#targetMarketCapUsd').value = '250,000';
   state.coins = { ...state.coins, key: null };
   setView('launch');
   setLaunchWorkspace('configure');
@@ -21719,6 +21722,12 @@ function openDraftForCreation(draftId) {
 }
 
 function openCoin(key) {
+  const target = coinByKey(key);
+  // A draft is created on its own page: its steps.
+  if (target?.kind === 'draft') {
+    openDraftForCreation(target.draftId);
+    return;
+  }
   state.coins = { ...state.coins, key, detail: null, detailError: null };
   resetPoolSupport();
   setView('coins');
@@ -21862,10 +21871,86 @@ function coinMarketsHtml(markets) {
     </div>`;
 }
 
+const CREATION_STEP_STATES = {
+  done: { icon: 'fa-check', label: 'Done, confirmed on-chain' },
+  recorded: { icon: 'fa-file-circle-check', label: 'Recorded; not checked on-chain' },
+  mismatch: { icon: 'fa-triangle-exclamation', label: 'Recorded as done, but the chain disagrees' },
+  todo: { icon: 'fa-circle', label: 'Not done yet' },
+  unrecorded: { icon: 'fa-circle-question', label: 'Not recorded; not checked on-chain' },
+};
+
+const CREATION_STEP_ACTIONS = {
+  token: 'Finish creating the token',
+  pools: 'Open the remaining pools',
+  locks: 'Lock the liquidity',
+  reveal: 'Reveal the identity',
+  return: 'Return the remaining assets',
+};
+
+function coinCreationHtml(creation, coin) {
+  if (!creation) return '';
+  const mismatches = creation.steps.filter((step) => step.state === 'mismatch');
+  const next = creation.steps.find((step) => ['todo', 'mismatch'].includes(step.state)) || null;
+  let action = '';
+  if (next) {
+    if (next.id === 'return' && creation.walletManaged && creation.walletPublicKey) {
+      // Sweep the launch wallet: nothing else of the plan is needed.
+      action = `<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}"><span>Sweep the launch wallet</span><i class="fa-solid fa-broom"></i></button>`;
+    } else if (creation.hasPlan && creation.walletManaged) {
+      action = `<button class="primary-button compact" type="button" data-action="continue-coin-step" data-mint="${escapeHtml(coin?.mint || '')}"><span>${escapeHtml(CREATION_STEP_ACTIONS[next.id] || 'Do the next step')}</span><i class="fa-solid fa-arrow-right"></i></button>`;
+    } else if (!creation.walletManaged) {
+      action = '<p class="pool-support-intro">The launch wallet is not in this app, so the remaining steps can\'t be run from here.</p>';
+    } else {
+      action = '<p class="pool-support-intro">This launch was recorded before Trebuchet saved launch plans, so its remaining steps can\'t be run from here.</p>';
+    }
+  }
+  return `
+    <ol class="coin-creation">
+      ${creation.steps.map((step) => {
+        const meta = CREATION_STEP_STATES[step.state] || CREATION_STEP_STATES.todo;
+        return `<li class="is-${escapeHtml(step.state)}">
+          <i class="fa-solid ${meta.icon}" aria-hidden="true"></i>
+          <span><strong>${escapeHtml(step.label)}</strong><small>${escapeHtml(meta.label)} · ${escapeHtml(step.detail || '')}</small></span>
+        </li>`;
+      }).join('')}
+    </ol>
+    ${mismatches.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> The launch record says ${mismatches.length === 1 ? 'a step is' : `${mismatches.length} steps are`} done, but the chain disagrees. The chain is what counts.</p>` : ''}
+    ${action ? `<div class="coin-actions">${action}</div>` : ''}`;
+}
+
+// Bring up a coin's remaining steps from its launch record, at the step it
+// needs. Checks the record has a plan BEFORE touching the coin being
+// worked on, so a record without one never shows another coin's design.
+function continueCoinStep(mint) {
+  const journal = state.coins.detail?.mint === mint ? state.coins.detail?.creation?.journal : null;
+  if (!journal || !recoveryLaunchConfig(journal)) {
+    notify('This launch\'s plan was not saved, so its steps can\'t be run here');
+    return;
+  }
+  const sameCoin = proofTokenMint(state.launchProof) === mint;
+  if (!sameCoin && !guardLaunchWorkspaceSwitch()) return;
+  if (!sameCoin) clearLaunchWorkspaceState();
+  if (!restoreLaunchConfigFromJournal(journal)) {
+    notify('This launch\'s plan could not be restored');
+    return;
+  }
+  state.loadedSavedLaunchId = null;
+  if (journal.walletPublicKey
+      && state.managedWallets.some((wallet) => wallet.publicKey === journal.walletPublicKey)) {
+    state.selectedWalletPublicKey = journal.walletPublicKey;
+    state.accountId = journal.walletPublicKey;
+  }
+  setView('launch');
+  setLaunchWorkspace(recoveryWorkspaceForJournal(journal));
+  renderAll();
+  checkExecutionReadiness().catch(() => null);
+}
+
 function coinActivityHtml(events = []) {
   if (!events.length) return '<p class="coins-empty">Nothing recorded yet.</p>';
   const label = {
     launched_here: 'Launched with Trebuchet',
+    practice_launch: 'Practice launch',
     support_added: 'Buy support added',
   };
   return `<ul class="coin-activity">${events.map((event) => `
@@ -21892,6 +21977,23 @@ function draftPlanHtml(entry) {
   return `<dl class="pool-support-facts">${facts.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>`;
 }
 
+// The coin header, the same at every stage of a coin's life.
+function coinHeaderHtml({ coin = {}, name, symbol, image = null, status = '', address = null, links = false }) {
+  const mark = image
+    ? `<span class="coin-mark"><img src="${escapeHtml(image)}" alt=""></span>`
+    : `<span class="coin-mark">${escapeHtml(String(symbol || name || '').slice(0, 2).toUpperCase())}</span>`;
+  return `
+    <header class="coin-header">
+      ${mark}
+      <span class="coin-header-copy">
+        <span class="eyebrow">${escapeHtml(status)}</span>
+        <h2>${escapeHtml(name || symbol || 'New coin')}${symbol && name ? ` <small>${escapeHtml(symbol)}</small>` : ''}</h2>
+        <code>${escapeHtml(address || 'No address yet')}</code>
+      </span>
+      ${links && address ? `<span class="coin-links"><a class="pill-button link-button" href="https://solscan.io/token/${escapeHtml(address)}" target="_blank" rel="noopener">Solscan</a><a class="pill-button link-button" href="https://raydium.io/swap/?inputMint=sol&outputMint=${escapeHtml(address)}" target="_blank" rel="noopener">Raydium</a></span>` : ''}
+    </header>`;
+}
+
 function renderCoinPage(coin) {
   const body = $('#coinPageBody');
   const supportPanel = $('#poolSupportPanel');
@@ -21900,31 +22002,19 @@ function renderCoinPage(coin) {
   const account = detail?.account && !detail.account.error ? detail.account : null;
   const name = account?.metadata?.name || detail?.info?.name || coin.name;
   const symbol = account?.metadata?.symbol || detail?.info?.symbol || coin.symbol;
-  const header = `
-    <header class="coin-header">
-      ${coinMark({ ...coin, name, symbol }, detail)}
-      <span class="coin-header-copy">
-        <span class="eyebrow">${escapeHtml(coin.status || '')}</span>
-        <h2>${escapeHtml(name || symbol || 'Untitled coin')}${symbol && name ? ` <small>${escapeHtml(symbol)}</small>` : ''}</h2>
-        <code>${escapeHtml(coin.mint || coin.reservedAddress || 'No address yet')}</code>
-      </span>
-      ${coin.mint && !coin.practice ? `<span class="coin-links"><a class="pill-button link-button" href="https://solscan.io/token/${escapeHtml(coin.mint)}" target="_blank" rel="noopener">Solscan</a><a class="pill-button link-button" href="https://raydium.io/swap/?inputMint=sol&outputMint=${escapeHtml(coin.mint)}" target="_blank" rel="noopener">Raydium</a></span>` : ''}
-    </header>`;
+  const header = coinHeaderHtml({
+    coin,
+    name,
+    symbol,
+    image: detail?.info?.imageUrl || coin.logoDataUrl || null,
+    status: coin.status || '',
+    address: coin.mint || coin.reservedAddress || null,
+    links: Boolean(coin.mint && !coin.practice),
+  });
 
   if (coin.kind === 'draft') {
-    const entry = (state.savedLaunches || []).find((item) => item.id === coin.draftId);
-    body.innerHTML = `${header}
-      <section class="coin-section">
-        <div class="section-heading"><div><span class="eyebrow">Plan</span><h2>Token and markets</h2></div></div>
-        ${entry ? draftPlanHtml(entry) : '<p class="coins-empty">This draft\'s plan is not loaded.</p>'}
-      </section>
-      <section class="coin-section">
-        <div class="section-heading"><div><span class="eyebrow">Actions</span><h2>What you can do now</h2></div></div>
-        <div class="coin-actions">
-          <button class="primary-button" type="button" data-action="open-draft" data-draft-id="${escapeHtml(coin.draftId)}"><span>Design and create the token</span><i class="fa-solid fa-arrow-right"></i></button>
-        </div>
-        <p class="pool-support-intro">Design the token, its pools, and where assets go; practice it; then fund and create it. Once it exists on-chain, its markets and actions show here.</p>
-      </section>`;
+    // A draft's page is its creation steps (see openCoin).
+    body.innerHTML = header;
     if (supportPanel) supportPanel.hidden = true;
     return;
   }
@@ -21940,6 +22030,7 @@ function renderCoinPage(coin) {
     ${state.coins.detailError ? `<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>` : ''}
     ${coin.practice ? '<p class="pool-support-intro">Practice coin: it exists only in the local simulator.</p>' : ''}
     ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl></section>` : ''}
+    ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Launch steps' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation, coin)}</section>` : ''}
     ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
     <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>
     ${coin.status === 'Added' ? `<div class="coin-actions"><button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button></div>` : ''}`;
@@ -21953,15 +22044,32 @@ function renderCoinPage(coin) {
   }
 }
 
+// The coin being created: its identity is the page title (name, ticker,
+// status, address), over its creation steps. It takes no extra height, so
+// the steps keep the whole page.
 function renderCoinContext() {
-  const target = $('#coinContext');
-  if (!target) return;
-  const draftKey = state.loadedSavedLaunchId ? `draft:${state.loadedSavedLaunchId}` : null;
-  const label = String($('#tokenName')?.value || '').trim() || String($('#tokenSymbol')?.value || '').trim() || 'New coin';
-  target.innerHTML = `
-    <button class="text-button" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> Coins</button>
-    <span class="coin-context-name">${escapeHtml(label)}</span>
-    ${draftKey ? `<button class="text-button" type="button" data-action="open-coin" data-coin-key="${escapeHtml(draftKey)}">Coin page</button>` : ''}`;
+  const bar = $('#coinContext');
+  if (bar) {
+    bar.hidden = true;
+    bar.innerHTML = '';
+  }
+  if (state.activeView !== 'launch') return;
+  const name = String($('#tokenName')?.value || '').trim();
+  const symbol = String($('#tokenSymbol')?.value || '').trim();
+  const proof = currentLaunchProof();
+  const mint = proofTokenMint(proof) || null;
+  const practice = isDemoLaunchProof(proof);
+  const reserved = state.selectedVanityPublicKey || null;
+  const status = mint
+    ? practice ? 'Practice coin' : transferHasWalletEmptyFinalSweepEvidence(proof?.transfer) ? 'Live' : 'Being created'
+    : reserved ? 'Address reserved' : 'Draft';
+  const address = mint || reserved;
+  const eyebrow = $('#viewEyebrow');
+  const title = $('#viewTitle');
+  if (eyebrow) {
+    eyebrow.innerHTML = `<button class="text-button coin-back-inline" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> Coins</button> · ${escapeHtml(status)} · <code>${escapeHtml(address ? shortAddress(address) : 'no address yet')}</code>`;
+  }
+  if (title) title.textContent = name ? `${name}${symbol ? ` · ${symbol}` : ''}` : symbol || 'New coin';
 }
 
 // ---------------------------------------------------------------------------
@@ -23656,7 +23764,7 @@ function handleDynamicInput(event) {
   }
   if (handleOperatorPromptInput(event)) return;
   if (handleRecoveryPinInput(event)) return;
-  if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary();
+  if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary(); if (['tokenName', 'tokenSymbol'].includes(event.target?.id)) renderCoinContext();
   if (event.target?.dataset?.supportField) {
     resetPoolSupport();
     return;
@@ -23950,8 +24058,8 @@ function handleClick(event) {
     refreshCoins().catch(() => null);
     return;
   }
-  if (action === 'open-draft') {
-    openDraftForCreation(actionTarget.dataset.draftId);
+  if (action === 'continue-coin-step') {
+    continueCoinStep(actionTarget.dataset.mint);
     return;
   }
   if (action === 'add-coin') {
@@ -24691,7 +24799,7 @@ function bindEvents() {
   document.addEventListener('input', scheduleLaunchAutoSave);
   // A pasted pair mint resolves its symbol as soon as the field is left.
   document.addEventListener('change', (event) => {
-    if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary();
+    if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary(); if (['tokenName', 'tokenSymbol'].includes(event.target?.id)) renderCoinContext();
     const mint = event.target.closest?.('.supply-mint');
     if (mint?.value.trim()) {
       resolveCustomQuoteToken(mint.dataset.poolId).catch((error) => notify(error.message || 'Token lookup failed'));

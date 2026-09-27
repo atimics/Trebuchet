@@ -71,7 +71,7 @@ export function mergeCoins({ launches = [], journals = [], added = [], practice 
       mint: coin.mint,
       name: coin.name || null,
       symbol: coin.symbol || null,
-      status: coin.source === 'added' ? 'Added' : 'On-chain',
+      status: coin.source === 'added' ? 'Added' : coin.source === 'practice' ? 'Practice coin' : 'On-chain',
       launchedHere: false,
       practice: isPracticeMint(coin.mint),
       eventCount: (coin.events || []).length,
