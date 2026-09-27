@@ -2918,6 +2918,18 @@ test('v2 shows where assets go and lets funding wallets share held-back tokens',
   assert.match(js, /anyone can send SOL to the launch wallet|Anyone can send SOL to the launch wallet/);
 });
 
+test('v2 SOL pool takes the remainder so the supply split totals 100%', () => {
+  assert.match(js, /function mainPoolRemainderPercent\(\)/);
+  assert.match(js, /function rebalanceMainPool\(\)/);
+  assert.match(js, /const SUPPLY_SHARE_INPUT_IDS = new Set\(\[/);
+  assert.match(js, /'preallocationSupplyPercent',/);
+  assert.match(js, /dataset\?\.customPoolField === 'supplyPercent'[\s\S]*?scheduleMainPoolRebalance\(\)/);
+  // Presets and pair changes keep held-back and airdrop shares.
+  assert.doesNotMatch(js, /\$\('#mainPoolPercent'\)\.value = '100';/);
+  assert.match(js, /\$\('#mainPoolPercent'\)\.value = String\(mainPoolRemainderPercent\(\)\)/);
+  assert.match(js, /notify\('Pair added'\)/);
+});
+
 test('v2 auto-compresses oversized logos into the Classic upload envelope', async () => {
   const start = js.indexOf('function loadLogoImage');
   const end = js.indexOf('\nfunction validateProofFile', start);
@@ -6703,8 +6715,8 @@ test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /runtime-state\.js\?v=1/);
   assert.match(html, /api-client\.js\?v=37/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=175/);
-  assert.doesNotMatch(html, /app\.js\?v=175" type="module"/);
+  assert.match(html, /app\.js\?v=176/);
+  assert.doesNotMatch(html, /app\.js\?v=176" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');

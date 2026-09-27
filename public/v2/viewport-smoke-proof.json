@@ -3,9 +3,9 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-09-27T02:56:19.775Z",
-  "durationMs": 2782,
-  "target": "file:///Users/ratimics/develop/trebuchet-wt-nft/public/v2/index.html",
+  "generatedAt": "2026-09-27T03:23:37.920Z",
+  "durationMs": 1394,
+  "target": "file:///Users/ratimics/develop/trebuchet-wt-one-flow/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
     "horizontalOverflow",
@@ -22,7 +22,7 @@
     "index.html": "33e6e0fe77ad6930bc95041673d27f5c0006b73659d7d1dc85f365e5a9fe20d2",
     "styles.css": "e137bcc384306e8f5d42a3bf9661dd631a3e8056e826ca217adc8c2b39b03d0c",
     "api-client.js": "51c1747e14c9dae34e1e993b37ae170bee8f518621de617cf2ec28f3d62e4e9e",
-    "app.js": "c5ace04047a4c7e3ea99cc026d32d948c7e1fccb2cfa4d52a9aa8fe4fc49b76d"
+    "app.js": "aa14f61371d6109deb16be1124d1baaa7adc8e74c3aeee76933745fcf66eb536"
   },
   "viewports": [
     {
