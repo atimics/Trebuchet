@@ -18110,6 +18110,31 @@ function renderVanitySummary() {
     : 'Random address · recommended';
 }
 
+// "More options" stays folded, so its header names every choice inside it:
+// defaults are visible without opening it, and changes are never hidden.
+function renderMoreOptionsSummary() {
+  const summary = $('#launchMoreSummary');
+  if (!summary) return;
+  const supply = parseWholeNumber($('#tokenSupply')?.value) || 1000000000;
+  const compactSupply = supply >= 1e9 && supply % 1e9 === 0
+    ? `${supply / 1e9}B`
+    : supply >= 1e6 && supply % 1e6 === 0
+      ? `${supply / 1e6}M`
+      : supply.toLocaleString('en-US');
+  const poolCount = Math.max(0, Number(currentLaunchConfig().poolTopology?.pools?.length || 0));
+  const heldPercent = currentPreallocationPlan().supplyPercent
+    + (currentAirdropPlan().enabled ? currentAirdropPlan().supplyPercent : 0);
+  summary.textContent = [
+    `${compactSupply} supply`,
+    $('#sealedLaunch')?.checked ? 'sealed' : 'not sealed',
+    $('#mintFormat')?.value === 'classic-spl' ? 'Classic SPL' : 'Token-2022',
+    state.selectedVanityPublicKey ? 'vanity address' : 'random address',
+    `${poolCount} pool${poolCount === 1 ? '' : 's'}`,
+    heldPercent > 0 ? `${Number(heldPercent.toFixed(1))}% held back` : null,
+    currentAirdropPlan().enabled ? 'airdrop on' : null,
+  ].filter(Boolean).join(' · ');
+}
+
 function renderLaunchRunningBar() {
   const bar = $('#launchRunningBar');
   if (bar) bar.hidden = state.realExecutionRunning !== true;
@@ -18119,6 +18144,7 @@ function renderLaunchRunningBar() {
 function renderAll() {
   renderLaunchRunningBar();
   renderVanitySummary();
+  renderMoreOptionsSummary();
   renderCustodySignal();
   renderLaunchPreview();
   renderLaunchIdentity();
@@ -22764,6 +22790,7 @@ function handleDynamicInput(event) {
   }
   if (handleOperatorPromptInput(event)) return;
   if (handleRecoveryPinInput(event)) return;
+  if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary();
 
   if (VORTEX_INPUT_IDS.has(event.target?.id)) {
     renderVortexControl();
@@ -23747,6 +23774,7 @@ function bindEvents() {
   document.addEventListener('input', scheduleLaunchAutoSave);
   // A pasted pair mint resolves its symbol as soon as the field is left.
   document.addEventListener('change', (event) => {
+    if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary();
     const mint = event.target.closest?.('.supply-mint');
     if (mint?.value.trim()) {
       resolveCustomQuoteToken(mint.dataset.poolId).catch((error) => notify(error.message || 'Token lookup failed'));

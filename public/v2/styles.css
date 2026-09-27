@@ -15710,3 +15710,26 @@ body[data-launch-running="true"] .workspace {
   overflow: visible;
   text-overflow: clip;
 }
+
+/* "More options" names every folded choice. On narrow windows the list
+   moves under the label instead of squeezing into one column. */
+#launchMoreOptions > summary strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 620px) {
+  #launchMoreOptions > summary {
+    grid-template-columns: minmax(0, 1fr) 18px;
+    row-gap: 4px;
+  }
+
+  #launchMoreOptions > summary strong {
+    grid-column: 1;
+    grid-row: 2;
+    white-space: normal;
+    text-align: left;
+  }
+}

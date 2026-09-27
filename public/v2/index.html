@@ -282,12 +282,12 @@
                     <input id="tokenSymbol" type="text" value="" placeholder="TOKEN" maxlength="10" autocomplete="off">
                   </label>
                   <label>
-                    <span>Total supply</span>
-                    <input id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000" autocomplete="off">
-                  </label>
-                  <label>
                     <span>Description</span>
                     <input id="tokenDescription" type="text" value="" placeholder="What is this token for?" autocomplete="off">
+                  </label>
+                  <label>
+                    <span>Target market cap (USD)</span>
+                    <input id="targetMarketCapUsd" type="text" value="250,000" autocomplete="off">
                   </label>
                   <div class="logo-input-row">
                     <span class="logo-input-label">Token logo / auto-compress</span>
@@ -298,24 +298,6 @@
                     </label>
                   </div>
                   <div class="token-logo-preview" id="tokenLogoPreview"></div>
-                  <label class="sealed-launch-control" for="sealedLaunch">
-                    <input id="sealedLaunch" type="checkbox" checked>
-                    <span>
-                      <strong>Sealed launch</strong>
-                      <small>Commit identity now; reveal it only after liquidity is locked.</small>
-                    </span>
-                  </label>
-                  <label>
-                    <span>Mint standard</span>
-                    <select id="mintFormat">
-                      <option value="token-2022" selected>Token-2022 · on-mint identity</option>
-                      <option value="classic-spl">Classic SPL · compatibility</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Target market cap</span>
-                    <input id="targetMarketCapUsd" type="text" value="250,000" autocomplete="off">
-                  </label>
                 </form>
                 <section class="launch-budget-recommender" aria-labelledby="launchBudgetTitle">
                   <input id="launchSol" type="hidden" value="1">
@@ -336,6 +318,33 @@
                   </div>
                   <div class="launch-budget-strategy" id="launchBudgetStrategy" aria-live="polite"></div>
                 </section>
+              </div>
+
+              <details class="drawer launch-more-options" id="launchMoreOptions">
+                <summary>
+                  <span>More options</span>
+                  <strong id="launchMoreSummary">1B supply · sealed · Token-2022 · random address · 1 pool</strong>
+                </summary>
+                <div class="config-grid launch-more-grid">
+                    <label>
+                      <span>Total supply</span>
+                      <input id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000" autocomplete="off">
+                    </label>
+                    <label class="sealed-launch-control" for="sealedLaunch">
+                      <input id="sealedLaunch" type="checkbox" checked>
+                      <span>
+                        <strong>Sealed launch</strong>
+                        <small>Commit identity now; reveal it only after liquidity is locked.</small>
+                      </span>
+                    </label>
+                    <label>
+                      <span>Mint standard</span>
+                      <select id="mintFormat">
+                        <option value="token-2022" selected>Token-2022 · on-mint identity</option>
+                        <option value="classic-spl">Classic SPL · compatibility</option>
+                      </select>
+                    </label>
+                </div>
                 <details class="vanity-panel vanity-details">
                   <summary>
                     <span>Contract address</span>
@@ -379,71 +388,70 @@
                   </div>
                   </div>
                 </details>
-              </div>
-
-              <details class="drawer classic-controls launch-design-details" open>
-                <summary>
-                  <span>Supply and pools</span>
-                  <strong id="classicSummary">Simple SOL pool · no allocation</strong>
-                </summary>
-                <section class="supply-editor" id="supplyEditor" aria-label="Supply split"></section>
-                <form class="classic-grid" id="classicConfig" aria-label="Pool options">
-                  <div class="classic-hidden-fields" hidden>
-                    <input id="mainPoolPercent" type="number" value="100" min="0" max="100" step="0.1">
-                    <input id="quotePoolPercent" type="number" value="0" min="0" max="100" step="0.1">
-                    <select id="quotePoolVenue">
-                      <option value="meme" selected>Meme flywheel</option>
-                      <option value="reserve">Reserve flywheel</option>
-                      <option value="usdc">Stable USDC</option>
-                    </select>
-                    <div class="flywheel-pick" id="flywheelPick">
-                      <code class="flywheel-pick-mint" id="flywheelPickMint">—</code>
+                <details class="drawer classic-controls launch-design-details">
+                  <summary>
+                    <span>Supply and pools</span>
+                    <strong id="classicSummary">Simple SOL pool · no allocation</strong>
+                  </summary>
+                  <section class="supply-editor" id="supplyEditor" aria-label="Supply split"></section>
+                  <form class="classic-grid" id="classicConfig" aria-label="Pool options">
+                    <div class="classic-hidden-fields" hidden>
+                      <input id="mainPoolPercent" type="number" value="100" min="0" max="100" step="0.1">
+                      <input id="quotePoolPercent" type="number" value="0" min="0" max="100" step="0.1">
+                      <select id="quotePoolVenue">
+                        <option value="meme" selected>Meme flywheel</option>
+                        <option value="reserve">Reserve flywheel</option>
+                        <option value="usdc">Stable USDC</option>
+                      </select>
+                      <div class="flywheel-pick" id="flywheelPick">
+                        <code class="flywheel-pick-mint" id="flywheelPickMint">—</code>
+                      </div>
+                      <input id="preallocationSupplyPercent" type="number" value="0" min="0" max="99" step="0.1">
+                      <input id="sliceShares" type="text" value="100" autocomplete="off">
+                      <input id="ladderBands" type="number" value="0" min="0" max="20" step="1">
+                      <input id="supportSol" type="number" value="0" min="0" step="0.05">
+                      <div class="pool-editor-panel" id="poolEditorPanel"></div>
+                      <input id="sweepDestination" type="hidden" value="">
+                      <input id="feeKeyRecipient" type="hidden" value="">
                     </div>
-                    <input id="preallocationSupplyPercent" type="number" value="0" min="0" max="99" step="0.1">
-                    <input id="sliceShares" type="text" value="100" autocomplete="off">
-                    <input id="ladderBands" type="number" value="0" min="0" max="20" step="1">
-                    <input id="supportSol" type="number" value="0" min="0" step="0.05">
-                    <div class="pool-editor-panel" id="poolEditorPanel"></div>
-                    <input id="sweepDestination" type="hidden" value="">
-                    <input id="feeKeyRecipient" type="hidden" value="">
-                  </div>
-                  <section class="return-wallet" id="returnWalletCard" aria-label="Return wallet"></section>
-                </form>
+                    <section class="return-wallet" id="returnWalletCard" aria-label="Return wallet"></section>
+                  </form>
 
-                <details class="drawer-section" id="airdropSection" aria-label="Airdrop CSV import">
-                  <summary><span>Airdrop</span><span class="risk-badge warn" id="airdropSummary">Off</span></summary>
-                  <label class="supply-field" for="airdropCsvText"><span>CSV recipients</span></label>
-                  <textarea id="airdropCsvText" rows="4" spellcheck="false" placeholder="wallet,tokens&#10;Recipient111...,1000"></textarea>
-                  <div class="airdrop-budget-controls">
-                    <label>
-                      <span>Budget %</span>
-                      <input id="airdropSupplyPercent" type="number" value="2" min="0" max="99" step="0.1">
-                    </label>
-                    <label>
-                      <span>Airdrop wallets</span>
-                      <input id="airdropWallets" type="number" value="0" min="0" step="1">
-                    </label>
-                    <label class="toggle-line">
-                      <input id="airdropAutoFit" type="checkbox" checked>
-                      <span>Auto-fit</span>
-                    </label>
-                  </div>
-                  <div class="operator-toolbar compact">
-                    <button class="pill-button" type="button" data-action="sample-airdrop">Sample CSV</button>
-                    <button class="pill-button" type="button" data-action="fit-airdrop-budget">Fit budget</button>
-                    <button class="pill-button" type="button" data-action="clear-airdrop">Clear</button>
-                  </div>
-                  <div class="airdrop-budget-panel" id="airdropBudgetPanel"></div>
-                  <div class="mini-table" id="airdropRecipientPreview"></div>
-                </details>
+                  <details class="drawer-section" id="airdropSection" aria-label="Airdrop CSV import">
+                    <summary><span>Airdrop</span><span class="risk-badge warn" id="airdropSummary">Off</span></summary>
+                    <label class="supply-field" for="airdropCsvText"><span>CSV recipients</span></label>
+                    <textarea id="airdropCsvText" rows="4" spellcheck="false" placeholder="wallet,tokens&#10;Recipient111...,1000"></textarea>
+                    <div class="airdrop-budget-controls">
+                      <label>
+                        <span>Budget %</span>
+                        <input id="airdropSupplyPercent" type="number" value="2" min="0" max="99" step="0.1">
+                      </label>
+                      <label>
+                        <span>Airdrop wallets</span>
+                        <input id="airdropWallets" type="number" value="0" min="0" step="1">
+                      </label>
+                      <label class="toggle-line">
+                        <input id="airdropAutoFit" type="checkbox" checked>
+                        <span>Auto-fit</span>
+                      </label>
+                    </div>
+                    <div class="operator-toolbar compact">
+                      <button class="pill-button" type="button" data-action="sample-airdrop">Sample CSV</button>
+                      <button class="pill-button" type="button" data-action="fit-airdrop-budget">Fit budget</button>
+                      <button class="pill-button" type="button" data-action="clear-airdrop">Clear</button>
+                    </div>
+                    <div class="airdrop-budget-panel" id="airdropBudgetPanel"></div>
+                    <div class="mini-table" id="airdropRecipientPreview"></div>
+                  </details>
 
-                <details class="drawer-section" id="reportSection" aria-label="Launch report export">
-                  <summary><span>Launch report</span><span class="risk-badge" id="reportSummary">Draft</span></summary>
-                  <div class="mini-table" id="reportPreview"></div>
-                  <div class="operator-toolbar compact">
-                    <button class="pill-button" type="button" data-action="toggle-report-publish">Toggle publish</button>
-                    <button class="pill-button" type="button" data-action="download-report-preview">Download preview</button>
-                  </div>
+                  <details class="drawer-section" id="reportSection" aria-label="Launch report export">
+                    <summary><span>Launch report</span><span class="risk-badge" id="reportSummary">Draft</span></summary>
+                    <div class="mini-table" id="reportPreview"></div>
+                    <div class="operator-toolbar compact">
+                      <button class="pill-button" type="button" data-action="toggle-report-publish">Toggle publish</button>
+                      <button class="pill-button" type="button" data-action="download-report-preview">Download preview</button>
+                    </div>
+                  </details>
                 </details>
               </details>
               <div class="launch-phase-actions launch-phase-actions-split configure-phase-actions">
