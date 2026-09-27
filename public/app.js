@@ -3958,7 +3958,30 @@ bind('tokenLogo', 'change', async (e) => {
     }
   }
 
-  const err = await validateLogoFile(f);
+  // PNG/JPG that is too large in bytes or pixels is shrunk to fit rather
+  // than rejected. GIFs were already optimized above.
+  if (f.type !== 'image/gif') {
+    const firstCheck = await validateLogoFileDimensionsOnly(f);
+    const tooLargeDims = firstCheck && /max is/.test(firstCheck);
+    if (f.size > MAX_LOGO_BYTES || tooLargeDims) {
+      try {
+        filenameEl.textContent = `${f.name} (compressing…)`;
+        const compressed = await compressImageToFit(f, MAX_LOGO_DIMENSION, MAX_LOGO_BYTES);
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([compressed], f.name.replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' }));
+        e.target.files = transfer.files;
+        f = e.target.files[0];
+        filenameEl.textContent = `${f.name} · ${Math.ceil(f.size / 1024)}KB`;
+      } catch (_) {
+        // Fall through: validation below reports the problem.
+      }
+    }
+  }
+
+  let err = await validateLogoFileDimensionsOnly(f);
+  if (!err && f.size > MAX_LOGO_BYTES) {
+    err = `Logo is ${Math.ceil(f.size / 1024)}KB; max is ${Math.floor(MAX_LOGO_BYTES / 1024)}KB.`;
+  }
   if (err) {
     e.target.value = '';
     filenameEl.textContent = 'No file selected';

@@ -58,6 +58,14 @@ jobs:
       - name: Verify package.json file lists cover all runtime modules
         run: npm run check:package
 
+      - name: Install libsodium for the vanity grinder
+        # The grinder tests build c/build/vanity_keygen, which links libsodium.
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev
+
+      - name: Install Playwright browser
+        # test/startup-freeze.test.mjs drives a headless Chromium.
+        run: npx playwright install --with-deps chromium
+
       - name: Unit tests
         run: npm test
 

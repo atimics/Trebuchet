@@ -31,7 +31,7 @@ VANITY_BIN_FAST = $(BUILD_DIR)/vanity_keygen_fast
 SODIUM_PREFIX ?= $(shell brew --prefix libsodium 2>/dev/null || echo /usr)
 all: $(BUILD_DIR)
 	$(CC) -O3 -flto -DTREBUCHET_SODIUM -I$(SODIUM_PREFIX)/include -Wall -Wextra -Wpedantic -Wno-sign-compare \
-	  vanity_keygen/vanity_keygen.c $(REF10_SRCS) -o $(VANITY_BIN) -I. -I$(VENDOR_DIR) -I$(VENDOR_DIR)/ed25519-ref10 -lpthread $(SODIUM_PREFIX)/lib/libsodium.a
+	  vanity_keygen/vanity_keygen.c $(REF10_SRCS) -o $(VANITY_BIN) -I. -I$(VENDOR_DIR) -I$(VENDOR_DIR)/ed25519-ref10 -lpthread $(SODIUM_PREFIX)/lib/libsodium.a -lm
 
 portable: $(VANITY_BIN)
 

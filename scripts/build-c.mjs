@@ -172,7 +172,8 @@ function build(compiler) {
 
   const linkLibs = process.platform === 'win32'
     ? ['-static-libgcc', '-Wl,-Bstatic', '-lpthread', '-Wl,-Bdynamic', '-lbcrypt']
-    : ['-pthread'];
+    // -lm: the exact-odds math uses powl, which glibc keeps in libm.
+    : ['-pthread', '-lm'];
 
   const sodium = process.platform === 'win32' ? null : findLibsodium();
   const openssl = sodium ? null : findOpenSSL();
