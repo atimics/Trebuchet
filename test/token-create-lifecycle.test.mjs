@@ -110,6 +110,30 @@ test('sealed metadata reveal verifies both the placeholder and final identity ha
   }), /does not match the sealed identity commitment/);
 });
 
+test('sealed metadata reveal refuses a document bound to a different mint', () => {
+  const mint = Keypair.generate().publicKey.toBase58();
+  const finalDocument = {
+    name: 'XRAT',
+    symbol: 'XRAT',
+    description: 'Official launch',
+    image: 'https://arweave.net/xrat',
+    mint,
+  };
+  const metadataHash = metadataDocumentHash(finalDocument);
+  const args = {
+    placeholderDocument: { description: `sha256:${metadataHash}` },
+    finalDocument,
+    metadataHash,
+    name: 'XRAT',
+    symbol: 'XRAT',
+  };
+  assert.equal(tokenService.verifySealedMetadataCommitment({ ...args, mint }).metadataHash, metadataHash);
+  assert.throws(
+    () => tokenService.verifySealedMetadataCommitment({ ...args, mint: Keypair.generate().publicKey.toBase58() }),
+    /names a different mint/,
+  );
+});
+
 test('sealed metadata reveal waits for finalized RPC posture without resending', async () => {
   let reads = 0;
   const state = await tokenService.waitForSealedMetadataPosture(async () => {
@@ -219,6 +243,37 @@ test('createTokenWithMetaplex: supply math + renounce reporting via injected upl
   assert.equal(captured.name, 'My Token');
   assert.equal(captured.symbol, 'MYT');
   assert.equal(captured.description, 'a token');
+});
+
+test('createTokenWithMetaplex: metadata names the mint that will be created', async () => {
+  tokenService.setConnectionFactoryForTests(() => makeFakeConnection());
+  tokenService.setUmiFactoryForTests(() => makeFakeUmi());
+  const vanity = Keypair.generate();
+  let captured = null;
+  tokenService.setUploaderForTests(async (args) => {
+    captured = args;
+    throw new Error('stop-after-upload');
+  });
+
+  await assert.rejects(() => tokenService.createTokenWithMetaplex({
+    tempWalletSecretKey: SECRET_KEY,
+    name: 'My Token',
+    symbol: 'MYT',
+    description: 'a token',
+    totalSupply: '1000000',
+    vanityCAKeypair: [...vanity.secretKey],
+  }), /stop-after-upload/);
+  assert.equal(captured.mint, vanity.publicKey.toBase58());
+
+  // A random mint is chosen before upload too, so every launch binds a mint.
+  await assert.rejects(() => tokenService.createTokenWithMetaplex({
+    tempWalletSecretKey: SECRET_KEY,
+    name: 'My Token',
+    symbol: 'MYT',
+    description: 'a token',
+    totalSupply: '1000000',
+  }), /stop-after-upload/);
+  assert.match(captured.mint, /^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
 });
 
 test('createTokenWithMetaplex: connection DI seam defaults to real factory after reset (production unchanged)', () => {

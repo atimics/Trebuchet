@@ -12,12 +12,32 @@ export const PLACEHOLDER_TOKEN_IMAGE_URI = 'https://arweave.net/placeholder-toke
 export const SEALED_TOKEN_NAME = 'Trebuchet Sealed Launch';
 export const SEALED_TOKEN_SYMBOL = 'SEALED';
 
-export function tokenMetadataJson({ name, symbol, description, imageUri }) {
+// A metadata document that names its own mint. Copy launchers reuse the
+// official metadata URI verbatim, so the document itself tells every reader
+// (explorers, wallets, Brand Shield) which mint it belongs to. The hash
+// committed on-chain covers the mint too, so the commitment can't be replayed.
+export function officialMintNotice(mint) {
+  return `Official CA: ${mint}. Any other mint using this metadata is a copy.`;
+}
+
+export function tokenMetadataJson({ name, symbol, description, imageUri, mint = null }) {
+  const address = String(mint || '').trim();
+  if (!address) {
+    return {
+      name,
+      symbol,
+      description,
+      image: imageUri,
+    };
+  }
+  const notice = officialMintNotice(address);
+  const text = String(description || '').trim();
   return {
     name,
     symbol,
-    description,
+    description: text ? `${text}\n\n${notice}` : notice,
     image: imageUri,
+    mint: address,
   };
 }
 
@@ -65,6 +85,7 @@ export async function uploadTokenMetadata({
   name,
   symbol,
   description,
+  mint = null,
   onProgress,
   logger = console,
   placeholderImageUri = PLACEHOLDER_TOKEN_IMAGE_URI,
@@ -110,7 +131,7 @@ export async function uploadTokenMetadata({
     imageUri = `https://gateway.irys.xyz/${txId}`;
   }
 
-  const metadata = tokenMetadataJson({ name, symbol, description, imageUri });
+  const metadata = tokenMetadataJson({ name, symbol, description, imageUri, mint });
   let metadataUri = await withTimeout(
     umi.uploader.uploadJson(metadata),
     'Metadata upload'

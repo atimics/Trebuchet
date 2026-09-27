@@ -43,6 +43,24 @@ test('builds token metadata json from resolved image URI', () => {
   });
 });
 
+test('metadata json names its official mint and warns about copies', () => {
+  const mint = 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG';
+  const document = tokenMetadataJson({
+    name: 'RUGOWEEN',
+    symbol: 'RUG',
+    description: 'The Halloween flywheel.',
+    imageUri: 'https://arweave.net/logo',
+    mint,
+  });
+  assert.equal(document.mint, mint);
+  assert.equal(
+    document.description,
+    `The Halloween flywheel.\n\nOfficial CA: ${mint}. Any other mint using this metadata is a copy.`,
+  );
+  // The committed hash covers the mint, so it can't be replayed on a copy.
+  assert.notEqual(metadataDocumentHash(document), metadataDocumentHash({ ...document, mint: 'other' }));
+});
+
 test('uploads logo and metadata through an injected uploader', async () => {
   const calls = [];
   const progress = [];

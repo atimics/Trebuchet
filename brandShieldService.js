@@ -296,6 +296,7 @@ export async function fetchMetadataFingerprint(uri, options = {}) {
     imageUri: normalizedUri(json.image) || null,
     name: String(json.name || '').trim() || null,
     symbol: String(json.symbol || '').trim() || null,
+    declaredMint: String(json.mint || '').trim() || null,
   };
 }
 
@@ -340,9 +341,22 @@ export function assessBrandRisk({
     metadataUri: metadata?.metadataUri || metadata?.uri || null,
     metadataHash: metadata?.metadataHash || null,
     imageUri: metadata?.imageUri || metadata?.imageUrl || null,
+    declaredMint: String(metadata?.declaredMint || '').trim() || null,
   };
   const evidence = [];
   let matchedLaunch = official;
+
+  // Trebuchet metadata names its own mint. A token whose metadata names a
+  // different mint reused another launch's identity, whether or not that
+  // launch is in this registry.
+  const mintMismatch = Boolean(candidate.declaredMint && address && candidate.declaredMint !== address);
+  if (mintMismatch) {
+    evidence.push({
+      id: 'metadata-mint-mismatch',
+      severity: 'critical',
+      detail: `Metadata names ${candidate.declaredMint} as its official mint, not this token.`,
+    });
+  }
 
   if (!matchedLaunch) {
     let best = null;
@@ -392,7 +406,9 @@ export function assessBrandRisk({
     });
   }
 
-  const hasExactCopy = evidence.some((item) => ['metadata-hash-reuse', 'metadata-uri-reuse'].includes(item.id));
+  const hasExactCopy = evidence.some((item) => (
+    ['metadata-hash-reuse', 'metadata-uri-reuse', 'metadata-mint-mismatch'].includes(item.id)
+  ));
   const hasIdentityCopy = evidence.some((item) => item.id === 'identity-reuse');
   let classification = official ? 'Official' : 'Unverified';
   let risk = official ? 'low' : 'unknown';
@@ -419,7 +435,9 @@ export function assessBrandRisk({
     risk,
     official: Boolean(official),
     scoreCap,
-    matchedMint: !official ? matchedLaunch?.fingerprint?.mint || null : null,
+    matchedMint: !official
+      ? matchedLaunch?.fingerprint?.mint || (mintMismatch ? candidate.declaredMint : null)
+      : null,
     matchedSymbol: !official ? matchedLaunch?.fingerprint?.symbol || null : null,
     provenanceVerified: Boolean(
       official

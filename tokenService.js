@@ -741,37 +741,16 @@ export async function createTokenWithMetaplex({
     
     const umi = _umiFactory(tempWallet);
 
-    console.log('Uploading logo to Arweave...');
-    console.log('Uploading metadata to Arweave...');
-
-    const { metadataUri, imageUri, metadataHash } = await _uploadMetadata({
-      umi,
-      logoBase64,
-      name,
-      symbol,
-      description,
-      onProgress: progress,
-    });
-    let onChainMetadataUri = metadataUri;
-    let onChainMetadataName = name;
-    let onChainMetadataSymbol = symbol;
-    if (sealedLaunch) {
-      const placeholder = await uploadSealedPlaceholderMetadata({
-        umi,
-        commitmentHash: metadataHash,
-        onProgress: progress,
-      });
-      onChainMetadataUri = placeholder.metadataUri;
-      onChainMetadataName = SEALED_TOKEN_NAME;
-      onChainMetadataSymbol = SEALED_TOKEN_SYMBOL;
-    }
-    
     // Select the mint keypair.
     //
     // - vanityCAKeypair (pre-ground via the web UI): use it as-is.
     // - vanityPrefix/vanitySuffix (live grind request from server): invoke
     //   the C grinder.
-    // - Neither: leave mintKeypair null so createMint generates a random one.
+    // - Neither: generate a random one here.
+    //
+    // The mint is chosen BEFORE the metadata upload so the uploaded document
+    // can name its own mint. Copy launchers reuse the official metadata URI
+    // verbatim; a document that names its mint exposes every such copy.
     //
     // No mintA-sort constraint is applied. The lpService launch pipeline
     // detects which side the launched token lands on after pool creation
@@ -786,7 +765,34 @@ export async function createTokenWithMetaplex({
     } else if (vanityPrefix || vanitySuffix) {
       mintKeypair = await grindVanityKeypair({ vanityPrefix, vanitySuffix });
     } else {
+      mintKeypair = Keypair.generate();
       console.log('Using random mint keypair');
+    }
+
+    console.log('Uploading logo to Arweave...');
+    console.log('Uploading metadata to Arweave...');
+
+    const { metadataUri, imageUri, metadataHash } = await _uploadMetadata({
+      umi,
+      logoBase64,
+      name,
+      symbol,
+      description,
+      mint: mintKeypair.publicKey.toBase58(),
+      onProgress: progress,
+    });
+    let onChainMetadataUri = metadataUri;
+    let onChainMetadataName = name;
+    let onChainMetadataSymbol = symbol;
+    if (sealedLaunch) {
+      const placeholder = await uploadSealedPlaceholderMetadata({
+        umi,
+        commitmentHash: metadataHash,
+        onProgress: progress,
+      });
+      onChainMetadataUri = placeholder.metadataUri;
+      onChainMetadataName = SEALED_TOKEN_NAME;
+      onChainMetadataSymbol = SEALED_TOKEN_SYMBOL;
     }
 
     const normalizedMintFormat = normalizeMintFormat(mintFormat);
@@ -1683,6 +1689,7 @@ export async function revealSealedTokenMetadata({
       metadataHash: expectedMetadataHash,
       name,
       symbol,
+      mint: tokenMint,
       requirePlaceholder: false,
     });
     return {
@@ -1715,6 +1722,7 @@ export async function revealSealedTokenMetadata({
     metadataHash: expectedMetadataHash,
     name,
     symbol,
+    mint: tokenMint,
   });
 
   progress({ stage: 'metadata_reveal_started', tokenMint, metadataUri });
@@ -1828,6 +1836,7 @@ export function verifySealedMetadataCommitment({
   metadataHash,
   name,
   symbol,
+  mint = null,
   requirePlaceholder = true,
 } = {}) {
   const expectedHash = String(metadataHash || '').trim().toLowerCase();
@@ -1852,6 +1861,12 @@ export function verifySealedMetadataCommitment({
   }
   if (String(finalDocument.symbol || '').trim() !== String(symbol || '').trim()) {
     throw new Error('Final token metadata symbol does not match the recorded launch identity.');
+  }
+  // Documents from before mint binding carry no `mint`; a document that names
+  // a different mint belongs to another launch and must not be revealed here.
+  const declaredMint = String(finalDocument.mint || '').trim();
+  if (declaredMint && mint && declaredMint !== String(mint).trim()) {
+    throw new Error('Final token metadata names a different mint than this launch.');
   }
   return { metadataHash: actualHash };
 }
