@@ -151,3 +151,59 @@ test('open sends one SOL-only position at the confirmed range', async () => {
   assert.equal(result.txId, 'sig-support');
   assert.equal(result.adopted, false);
 });
+
+test('positions list reads each wallet and prices what a position holds', async () => {
+  const { listCoinPositions, setSdkFactoryForTests: setSdk, setConnectionFactoryForTests: setConn } = await import('../lpService.js');
+  const owner = Keypair.generate().publicKey.toBase58();
+  const { raydium } = mockSdk();
+  // One SOL-only support position below the current tick.
+  raydium.clmm.getOwnerPositionInfo = async () => [{
+    poolId: new PublicKey(POOL), nftMint: new PublicKey('11111111111111111111111111111112'),
+    tickLower: -139969, tickUpper: -133037, liquidity: new BN('1000000000000'),
+  }];
+  const state = await raydium.clmm.getRpcClmmPoolInfo();
+  raydium.clmm.getRpcClmmPoolInfo = async () => ({ ...state, mintA: new PublicKey(TOKEN), mintB: new PublicKey(WSOL), mintDecimalsA: 9, mintDecimalsB: 9 });
+  setConn(() => raydium.connection);
+  setSdk(() => raydium);
+  const positions = await listCoinPositions({ tokenMint: TOKEN, owners: [owner] });
+  assert.equal(positions.length, 1);
+  const [position] = positions;
+  assert.equal(position.owner, owner);
+  assert.equal(position.poolId, POOL);
+  assert.equal(position.inRange, false, 'support below the price is out of range');
+  assert.equal(position.tokenAmount, 0, 'below the price it holds only SOL');
+  assert.ok(position.quoteAmount > 0);
+  assert.ok(position.priceHigh <= 1.79e-6 && position.priceLow < position.priceHigh);
+});
+
+test('withdraw refuses a position that changed since it was shown, and closes a matching one', async () => {
+  const { withdrawPosition, setSdkFactoryForTests: setSdk, setConnectionFactoryForTests: setConn } = await import('../lpService.js');
+  const owner = Keypair.generate();
+  const { raydium } = mockSdk();
+  const position = {
+    poolId: new PublicKey(POOL), nftMint: new PublicKey('11111111111111111111111111111112'),
+    tickLower: -139969, tickUpper: -133037, liquidity: new BN('1000000000000'),
+  };
+  let held = [position];
+  raydium.clmm.getOwnerPositionInfo = async () => held;
+  const decreased = [];
+  raydium.clmm.decreaseLiquidity = async (args) => {
+    decreased.push(args);
+    return { execute: async () => { held = []; return { txId: 'sig-withdraw' }; } };
+  };
+  setConn(() => raydium.connection);
+  setSdk(() => raydium);
+  await assert.rejects(
+    withdrawPosition({ tempWalletSecretKey: Array.from(owner.secretKey), poolId: POOL, nftMint: position.nftMint.toBase58(), expected: { liquidity: '1' } }),
+    (error) => error.code === 'POSITION_CHANGED',
+  );
+  assert.equal(decreased.length, 0);
+  const result = await withdrawPosition({ tempWalletSecretKey: Array.from(owner.secretKey), poolId: POOL, nftMint: position.nftMint.toBase58(), expected: { liquidity: '1000000000000' } });
+  assert.equal(decreased.length, 1);
+  assert.equal(decreased[0].ownerInfo.closePosition, true);
+  assert.equal(decreased[0].liquidity.toString(), '1000000000000');
+  // Mins are 99% of what the position holds: SOL side positive, token side zero.
+  assert.ok(new BN(decreased[0].amountMinB).gt(new BN(0)));
+  assert.equal(decreased[0].amountMinA.toString(), '0');
+  assert.equal(result.txId, 'sig-withdraw');
+});

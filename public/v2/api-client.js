@@ -707,6 +707,18 @@
       return request(`/api/v2/coins/${encodeURIComponent(mint)}`, { method: 'DELETE' });
     }
 
+    async function listCoinPositions(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}/positions`, { timeoutMs: 120_000 });
+    }
+
+    async function withdrawPosition({ walletPublicKey, poolId, nftMint, tokenMint = null, expected } = {}) {
+      return request('/api/v2/positions/withdraw', {
+        method: 'POST',
+        body: { walletPublicKey, poolId, nftMint, tokenMint, expected },
+        timeoutMs: 180_000,
+      });
+    }
+
     async function getCoin(mint) {
       return request(`/api/v2/coins/${encodeURIComponent(mint)}`, { timeoutMs: 90_000 });
     }
@@ -1106,6 +1118,8 @@
       addCoin,
       removeCoin,
       getCoin,
+      listCoinPositions,
+      withdrawPosition,
       getClmmFeeTiers,
       getQuoteTokenInfo,
       getAirdropProgress,

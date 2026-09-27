@@ -104,6 +104,8 @@ import {
   LockClPositionLayoutV2,
   DEVNET_PROGRAM_ID,
   getPdaTickArrayAddress,
+  LiquidityMath,
+  SqrtPriceMath,
 } from '@raydium-io/raydium-sdk-v2';
 import {
   TOKEN_PROGRAM_ID,
@@ -6833,6 +6835,158 @@ export async function openSolSupport({ tempWalletSecretKey, poolId, solAmount, d
   const txId = result.skipped ? null : result.value.tx.txId;
   onProgress?.({ stage: 'support_open_done', poolId: plan.poolId, nftMint, txId });
   return { ...plan, nftMint, txId, adopted: Boolean(result.skipped) };
+}
+
+// ---------------------------------------------------------------------------
+// Positions a coin's owner can manage
+// ---------------------------------------------------------------------------
+//
+// Unlocked CLMM positions that the given wallets hold in one coin's pools:
+// buy support opened here, or any other position those wallets own. Locked
+// launch positions are held by the lock program (their Fee Keys are the
+// receipts) and are not listed. Amounts are what the position would return
+// now, at the current price.
+
+const WITHDRAW_SLIPPAGE_BPS = 100; // 1%: mins are 99% of the current amounts
+
+async function readOnlySdkForOwner(ownerPublicKey) {
+  if (__sdkFactoryOverride) return __sdkFactoryOverride({ publicKey: new PublicKey(ownerPublicKey) });
+  const connection = __connectionFactoryOverride
+    ? __connectionFactoryOverride()
+    : new Connection(getRpcUrl(), { commitment: 'confirmed' });
+  return Raydium.load({
+    owner: new PublicKey(ownerPublicKey),
+    connection,
+    cluster: getNetwork() === 'devnet' ? 'devnet' : 'mainnet',
+    disableFeatureCheck: true,
+    disableLoadToken: true,
+  });
+}
+
+// What a position holds now, in whole units of mintA and mintB.
+function positionAmounts(position, poolState) {
+  const liquidity = new BN(position.liquidity.toString());
+  const { amountA, amountB } = LiquidityMath.getAmountsFromLiquidity(
+    new BN(poolState.sqrtPriceX64.toString()),
+    SqrtPriceMath.getSqrtPriceX64FromTick(Number(position.tickLower)),
+    SqrtPriceMath.getSqrtPriceX64FromTick(Number(position.tickUpper)),
+    liquidity,
+    false,
+  );
+  return { amountA, amountB };
+}
+
+function wholeUnits(raw, decimals) {
+  return Number(new Decimal(raw.toString()).div(new Decimal(10).pow(decimals)).toString());
+}
+
+/** Unlocked positions `owners` hold in `tokenMint`'s Raydium CLMM pools. */
+export async function listCoinPositions({ tokenMint, owners = [] }) {
+  const mint = new PublicKey(String(tokenMint || '').trim()).toBase58();
+  const markets = await listTokenMarkets(mint);
+  const pools = new Map(markets.pools.filter((pool) => pool.type === 'Concentrated').map((pool) => [pool.poolId, pool]));
+  if (!pools.size) return [];
+  const uniqueOwners = [...new Set(owners.map((owner) => String(owner || '').trim()).filter(Boolean))].slice(0, 25);
+  const poolStates = new Map();
+  const rows = [];
+  for (const owner of uniqueOwners) {
+    let raydium;
+    let held;
+    try {
+      raydium = await readOnlySdkForOwner(owner);
+      held = await raydium.clmm.getOwnerPositionInfo({ programId: getClmmProgramId() });
+    } catch (error) {
+      console.warn(`positions: could not read ${owner}: ${error.message}`);
+      continue;
+    }
+    for (const position of held || []) {
+      const poolId = position?.poolId?.toString?.();
+      const market = pools.get(poolId);
+      if (!market) continue;
+      if (!poolStates.has(poolId)) poolStates.set(poolId, await raydium.clmm.getRpcClmmPoolInfo({ poolId }));
+      const state = poolStates.get(poolId);
+      const { amountA, amountB } = positionAmounts(position, state);
+      const tokenIsA = state.mintA.toString() === mint;
+      const tokenRaw = tokenIsA ? amountA : amountB;
+      const quoteRaw = tokenIsA ? amountB : amountA;
+      const tokenDecimals = tokenIsA ? state.mintDecimalsA : state.mintDecimalsB;
+      const quoteDecimals = tokenIsA ? state.mintDecimalsB : state.mintDecimalsA;
+      const priceAt = (tick) => tokenPriceAtTick({ tick, launchedIsMintA: tokenIsA, decimalsA: state.mintDecimalsA, decimalsB: state.mintDecimalsB });
+      const lowTick = Number(position.tickLower);
+      const highTick = Number(position.tickUpper);
+      rows.push({
+        owner,
+        nftMint: position.nftMint.toString(),
+        poolId,
+        quoteSymbol: market.quoteSymbol,
+        isSolPool: market.isSolPool,
+        tickLower: lowTick,
+        tickUpper: highTick,
+        liquidity: position.liquidity.toString(),
+        tokenAmount: wholeUnits(tokenRaw, tokenDecimals),
+        quoteAmount: wholeUnits(quoteRaw, quoteDecimals),
+        priceLow: Math.min(priceAt(lowTick), priceAt(highTick)),
+        priceHigh: Math.max(priceAt(lowTick), priceAt(highTick)),
+        inRange: Number(state.tickCurrent) >= lowTick && Number(state.tickCurrent) < highTick,
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Withdraw all of a position and close it (its account rent comes back).
+ * Refuses (code POSITION_CHANGED) if the position's liquidity differs from
+ * what the user confirmed. Minimum amounts are 99% of what it holds now.
+ */
+export async function withdrawPosition({ tempWalletSecretKey, poolId, nftMint, expected } = {}) {
+  const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
+  const raydium = await initSdk(ownerKeypair);
+  const held = await raydium.clmm.getOwnerPositionInfo({ programId: getClmmProgramId() });
+  const position = (held || []).find((item) => item?.nftMint?.toString?.() === nftMint);
+  if (!position) {
+    const error = new Error('This wallet no longer holds that position. It may already be withdrawn; nothing was sent.');
+    error.code = 'POSITION_NOT_FOUND';
+    throw error;
+  }
+  if (position.poolId.toString() !== poolId) throw new Error('That position is in a different pool');
+  if (!expected || String(expected.liquidity) !== position.liquidity.toString()) {
+    const error = new Error('The position changed since you reviewed it. Review it again, then confirm. Nothing was sent.');
+    error.code = 'POSITION_CHANGED';
+    throw error;
+  }
+  const { poolInfo, poolKeys } = await raydium.clmm.getPoolInfoFromRpc(poolId);
+  const state = await raydium.clmm.getRpcClmmPoolInfo({ poolId });
+  const { amountA, amountB } = positionAmounts(position, state);
+  const minOf = (amount) => amount.mul(new BN(10_000 - WITHDRAW_SLIPPAGE_BPS)).div(new BN(10_000));
+  const result = await executeSdkTx({
+    label: 'withdraw position',
+    build: async () => raydium.clmm.decreaseLiquidity({
+      poolInfo,
+      poolKeys,
+      ownerPosition: position,
+      ownerInfo: { useSOLBalance: true, closePosition: true },
+      liquidity: new BN(position.liquidity.toString()),
+      amountMinA: minOf(amountA),
+      amountMinB: minOf(amountB),
+      txVersion: TxVersion.V0,
+      computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
+    }),
+    // Done when the position is gone from the wallet.
+    alreadyDone: async () => {
+      const now = await fetchOwnerClmmPositionsForPool(raydium, poolId).catch(() => null);
+      return now && !now.some((item) => item.nftMint === nftMint) ? { gone: true } : null;
+    },
+    onAlreadyDone: () => ({ tx: { txId: null }, adopted: true }),
+  });
+  return {
+    poolId,
+    nftMint,
+    txId: result.skipped ? null : result.value.tx.txId,
+    adopted: Boolean(result.skipped),
+    amountARaw: amountA.toString(),
+    amountBRaw: amountB.toString(),
+  };
 }
 
 // ---------------------------------------------------------------------------
