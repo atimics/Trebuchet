@@ -122,7 +122,7 @@ remain visible.
 
 The full desktop shell is:
 
-- left navigation: Launch, Wallet, Discovery, History, Settings;
+- left navigation: Launch, NFTs, Wallet, Discovery, History, Settings;
 - terminal tape: chain, environment, signer, execution policy, custody;
 - topbar: current workspace and selected wallet;
 - global strip: health/blocker summary;
@@ -242,6 +242,14 @@ destructive colors independent so rarity never obscures operational state.
 
 Each row needs state, last evidence, available action, and a full-detail
 inspection path.
+
+### NFTs
+
+Each collection moves through the same phase strip as a launch: Collection,
+Items, Addresses, Fund, Mint, Verify. A collection or item is **Minted** only
+when its create signature is recorded, and **Proof** only after the Verify
+phase has read every asset back from chain. Vanity addresses keep the whole
+pattern visible and highlighted, not just the last four characters.
 
 ### Discovery
 
