@@ -16055,3 +16055,150 @@ body[data-launch-running="true"] .workspace {
     grid-template-columns: 1fr;
   }
 }
+
+/* Wallet view: add buy support to an existing pool. */
+.pool-support {
+  margin-top: 16px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  min-height: 0;
+}
+
+.pool-support-intro {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 72ch;
+}
+
+.pool-support-form {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.pool-support-form label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pool-support-form label > span {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pool-support-form input,
+.pool-support-form select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+}
+
+.pool-support-plan {
+  display: grid;
+  gap: 12px;
+}
+
+.pool-support-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.pool-support-facts div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pool-support-facts dt {
+  color: var(--subtle);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pool-support-facts dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.pool-support-costs {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pool-support-costs li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.pool-support-costs li span {
+  display: grid;
+  gap: 2px;
+}
+
+.pool-support-costs small {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.pool-support-costs .is-total strong {
+  color: var(--green);
+}
+
+.pool-support-warnings {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pool-support-warnings li {
+  display: flex;
+  gap: 8px;
+  color: var(--amber);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.pool-support-error {
+  margin: 0;
+  color: var(--red);
+  font-size: 12px;
+}
+
+.pool-support-status,
+.pool-support-done {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pool-support-done {
+  color: var(--green);
+}
+
+@media (max-width: 760px) {
+  .pool-support-form,
+  .pool-support-facts {
+    grid-template-columns: 1fr;
+  }
+}

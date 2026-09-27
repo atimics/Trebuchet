@@ -353,6 +353,30 @@ try {
   assert.doesNotMatch(finishText, /Needs proof/i, 'Practice result showed live proof requirements');
   const delivered = await page.evaluate(() => (state.lastDemoLaunchRun?.transfer?.airdrop?.transferred || []).map((row) => row.tokens));
   assert.deepEqual(delivered, [70_000_000, 30_000_000], 'Practice run did not airdrop the shared tokens');
+
+  // Add buy support to an existing pool (practice plans against a sample pool).
+  await page.evaluate(async () => {
+    const session = await (await fetch('/api/session')).json();
+    await fetch('/api/demo/inject-funds', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${session.token}`, 'x-trebuchet-session': session.token },
+      body: JSON.stringify({ publicKey: selectedLaunchWalletPublicKey(), sol: 1 }),
+    });
+  });
+  await page.click('.nav-item[data-view="wallet"]');
+  await page.fill('#poolSupportTarget', '2SV3NWgJes9mHkWdBeuHFg8kNqfJS1XQKtNb1eJStVDC');
+  await page.fill('#poolSupportSol', '0.1');
+  await page.click('[data-action="preview-pool-support"]');
+  await page.waitForSelector('.pool-support-plan');
+  const supportPlanText = await page.locator('#poolSupportResult').innerText();
+  assert.match(supportPlanText, /Cheapest elsewhere/i);
+  assert.match(supportPlanText, /never returned/i);
+  await page.click('[data-action="open-pool-support"]');
+  await page.waitForSelector('#operatorPromptGate:not([hidden])');
+  assert.match(await page.locator('#operatorPromptGate').innerText(), /ADD SUPPORT/);
+  await page.fill('#operatorPromptInput', 'ADD SUPPORT');
+  await page.click('#operatorPromptSubmit');
+  await page.waitForSelector('.pool-support-done');
   assert.deepEqual(nativeDialogs, [], 'Trebuchet opened a native prompt/confirm dialog');
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');

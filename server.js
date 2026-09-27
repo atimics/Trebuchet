@@ -35,6 +35,9 @@ import {
   KNOWN_QUOTES,
   KNOWN_SAFE_QUOTES,
   getQuoteTokenOnChainPrice,
+  previewSolSupport,
+  openSolSupport,
+  findSolClmmPoolForToken,
 } from './lpService.js';
 import { WSOL_MINT as WSOL_MINT_ADDRESS } from './lpConstants.js';
 
@@ -2967,6 +2970,79 @@ app.get('/api/v2/destinations', async (req, res) => {
     res.json({ success: true, funder, funders, signed: destinationProofStore.listSignedDestinations() });
   } catch (error) {
     sendErrorResponse(res, error, 400);
+  }
+});
+
+// Buy support for an existing token/SOL pool: one SOL-only position below
+// the price, capped under the token's cheapest other pool so arbitrage
+// cannot take it at once. Preview reads the chain and never signs; open
+// re-plans and refuses if the range or cost moved from what was confirmed.
+async function resolveSupportPoolId(body = {}) {
+  const poolId = String(body.poolId || '').trim();
+  if (poolId) return poolId;
+  const tokenMint = String(body.tokenMint || '').trim();
+  if (!tokenMint) throw new Error('poolId or tokenMint is required');
+  const found = await findSolClmmPoolForToken(tokenMint);
+  if (!found) throw new Error('No Raydium concentrated-liquidity SOL pool was found for that token.');
+  return found;
+}
+
+app.post('/api/v2/support/preview', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const walletPublicKey = String(body.walletPublicKey || '').trim() || null;
+    if (isDemoMode()) {
+      return res.json({ success: true, plan: demoChainService.planDemoSolSupport({ ...body, walletPublicKey }) });
+    }
+    const poolId = await resolveSupportPoolId(body);
+    const plan = await previewSolSupport({
+      walletPublicKey,
+      poolId,
+      solAmount: body.solAmount,
+      depthPct: body.depthPct,
+    });
+    res.json({ success: true, plan });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.post('/api/v2/support/open', async (req, res) => {
+  const body = req.body || {};
+  const walletPublicKey = String(body.walletPublicKey || '').trim();
+  if (!walletPublicKey) {
+    return res.status(400).json({ success: false, error: 'walletPublicKey is required' });
+  }
+  if (isDemoMode()) {
+    try {
+      return res.json({ success: true, result: demoChainService.openDemoSolSupport({ ...body, walletPublicKey }) });
+    } catch (error) {
+      return res.status(409).json({ success: false, code: error.code || null, error: error.message, plan: error.plan || null });
+    }
+  }
+  if (rejectIfSecretPinLocked(res, 'adding buy support with a saved wallet')) return;
+  let claimed = false;
+  try {
+    const { secretKeyArr, walletPublicKey: signer } = resolveSigner({ walletPublicKey });
+    if (rejectOrClaimLaunchOp(res, signer, 'add buy support')) return;
+    claimed = true;
+    const poolId = await resolveSupportPoolId(body);
+    const result = await openSolSupport({
+      tempWalletSecretKey: secretKeyArr,
+      poolId,
+      solAmount: body.solAmount,
+      depthPct: body.depthPct,
+      expected: body.expected,
+    });
+    console.log(`Buy support opened in ${poolId}: nft=${result.nftMint} tx=${result.txId}`);
+    res.json({ success: true, result });
+  } catch (error) {
+    if (error.code === 'SUPPORT_PLAN_CHANGED' || error.code === 'SUPPORT_INSUFFICIENT_SOL') {
+      return res.status(409).json({ success: false, code: error.code, error: error.message, plan: error.plan || null });
+    }
+    sendErrorResponse(res, error, 400);
+  } finally {
+    if (claimed) clearLaunchOpInFlight(walletPublicKey);
   }
 });
 

@@ -694,6 +694,23 @@
       return request(SAVED_LAUNCHES_PATH, { method: 'GET' });
     }
 
+    // Buy support for an existing token/SOL pool. Preview never signs.
+    async function previewSolSupport({ walletPublicKey = null, poolId = null, tokenMint = null, solAmount, depthPct } = {}) {
+      return request('/api/v2/support/preview', {
+        method: 'POST',
+        body: { walletPublicKey, poolId, tokenMint, solAmount, depthPct },
+        timeoutMs: 90_000,
+      });
+    }
+
+    async function openSolSupport({ walletPublicKey, poolId, solAmount, depthPct, expected } = {}) {
+      return request('/api/v2/support/open', {
+        method: 'POST',
+        body: { walletPublicKey, poolId, solAmount, depthPct, expected },
+        timeoutMs: 180_000,
+      });
+    }
+
     async function listDestinations(launchWallet = '') {
       const query = launchWallet ? `?launchWallet=${encodeURIComponent(launchWallet)}` : '';
       return request(`/api/v2/destinations${query}`);
@@ -1066,6 +1083,8 @@
       executeNextRunOperation,
       findFundingWallet,
       listDestinations,
+      previewSolSupport,
+      openSolSupport,
       getClmmFeeTiers,
       getQuoteTokenInfo,
       getAirdropProgress,
