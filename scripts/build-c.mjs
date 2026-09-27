@@ -118,7 +118,8 @@ function build(compiler) {
   const outPath = path.join(buildDir, outName);
   // Build beside the target, then rename over it: a grind already running
   // keeps its old binary instead of crashing when the file is rewritten.
-  const tmpPath = path.join(buildDir, `.${outName}.building`);
+  // Per-process temp name: parallel builds (e.g. test files) never share it.
+  const tmpPath = path.join(buildDir, `.${outName}.${process.pid}.building`);
 
   // Platform/arch-aware flags.
   //
@@ -231,6 +232,9 @@ function build(compiler) {
     console.error(`\n${compiler} exited with status ${result.status}.`);
     process.exit(result.status || 1);
   }
+  // Set the executable bit BEFORE the rename, so the binary never appears
+  // at outPath without it (a parallel reader would get EACCES).
+  if (process.platform !== 'win32') chmodSync(tmpPath, 0o755);
   renameSync(tmpPath, outPath);
 
   // On Unix, ensure the executable bit is set. The compiler sets it

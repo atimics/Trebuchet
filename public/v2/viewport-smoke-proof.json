@@ -3,8 +3,8 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-09-27T02:14:47.075Z",
-  "durationMs": 1443,
+  "generatedAt": "2026-09-27T02:47:07.032Z",
+  "durationMs": 1481,
   "target": "file:///Users/ratimics/develop/trebuchet-wt-one-flow/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
@@ -20,9 +20,9 @@
   ],
   "assetHashes": {
     "index.html": "3b88b9045842e1cab7dc324c7f6ed1d94ce96cae023f5d5d71de59e482e898e8",
-    "styles.css": "61cf292af68593d63e932e07373aa7f0ca310c3fcbeace973c2d19f55dde4626",
-    "api-client.js": "00132f6d43e6f80cb9762792c61bb048f0cbb5a07977e16eb8d0dd960c5b43ed",
-    "app.js": "88ce125a671a3b8ee6d69ed6ace2b0530729a89f818027325f4601ada3932c2b"
+    "styles.css": "ebd4fb661eb46e97a1ba1bee71d1f8cb6ee65e369385d6921efcc659660052d6",
+    "api-client.js": "51c1747e14c9dae34e1e993b37ae170bee8f518621de617cf2ec28f3d62e4e9e",
+    "app.js": "1a0eb7ce30307903950d18f83a217696e495585df74a52e6b1487079a2369df3"
   },
   "viewports": [
     {

@@ -58,11 +58,14 @@ import { generateVanityKeypair } from './vanityKeygen.js';
 import { scalarPublicKey, signWithScalar } from '@trebuchet/core/split-key';
 import {
   createTokenMetadataUmi,
+  prepareSealedIdentity,
   SEALED_TOKEN_NAME,
   SEALED_TOKEN_SYMBOL,
+  sealedCommitmentDocument,
   uploadSealedPlaceholderMetadata,
   uploadTokenMetadata,
 } from './metadataUploadService.js';
+import { saveSealedIdentity } from './sealedIdentityStore.js';
 import { landTxWithRetry } from './chainRetry.js';
 import { redactUrl } from './logRedaction.js';
 import { parseMetaplexUri } from './tokenMetadataLayout.js';
@@ -776,22 +779,24 @@ export async function createTokenWithMetaplex({
       throw new Error('Split-key vanity CAs need the Token-2022 mint format.');
     }
 
-    console.log('Uploading logo to Arweave...');
-    console.log('Uploading metadata to Arweave...');
-
-    const { metadataUri, imageUri, metadataHash } = await _uploadMetadata({
-      umi,
-      logoBase64,
-      name,
-      symbol,
-      description,
-      mint: mintKeypair.publicKey.toBase58(),
-      onProgress: progress,
-    });
-    let onChainMetadataUri = metadataUri;
+    const mintAddress = mintKeypair.publicKey.toBase58();
+    let metadataUri = null;
+    let imageUri = null;
+    let metadataHash;
+    let onChainMetadataUri;
     let onChainMetadataName = name;
     let onChainMetadataSymbol = symbol;
     if (sealedLaunch) {
+      // Nothing identifying leaves this machine until the reveal: Irys uploads
+      // are public, and an early upload links name and art to this mint.
+      const identity = prepareSealedIdentity({ logoBase64, name, symbol, description, mint: mintAddress });
+      saveSealedIdentity(mintAddress, identity);
+      metadataHash = identity.commitment;
+      progress({
+        stage: identity.logoStamped ? 'logo_stamped' : 'sealed_identity_prepared',
+        mint: mintAddress,
+        metadataHash,
+      });
       const placeholder = await uploadSealedPlaceholderMetadata({
         umi,
         commitmentHash: metadataHash,
@@ -800,6 +805,18 @@ export async function createTokenWithMetaplex({
       onChainMetadataUri = placeholder.metadataUri;
       onChainMetadataName = SEALED_TOKEN_NAME;
       onChainMetadataSymbol = SEALED_TOKEN_SYMBOL;
+    } else {
+      console.log('Uploading logo and metadata to Arweave...');
+      ({ metadataUri, imageUri, metadataHash } = await _uploadMetadata({
+        umi,
+        logoBase64,
+        name,
+        symbol,
+        description,
+        mint: mintAddress,
+        onProgress: progress,
+      }));
+      onChainMetadataUri = metadataUri;
     }
 
     if (normalizedMintFormat === MINT_FORMAT_TOKEN_2022) {
@@ -1632,6 +1649,45 @@ export async function finishTokenCreation({
   return status;
 }
 
+// Upload a sealed launch's identity at reveal time and check it still matches
+// the commitment made at launch. Returns the final metadata URI and hash.
+export async function uploadSealedIdentity({ tempWalletSecretKey, identity, onProgress }) {
+  if (!identity?.commitment || !identity?.mint) {
+    throw new Error('The sealed identity for this launch is missing on this machine.');
+  }
+  const tempWallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
+  const uploaded = await _uploadMetadata({
+    umi: _umiFactory(tempWallet),
+    logoBase64: identity.logoDataUrl || null,
+    name: identity.name,
+    symbol: identity.symbol,
+    description: identity.description,
+    mint: identity.mint,
+    stampLogo: false,
+    requireLogo: Boolean(identity.logoDataUrl),
+    onProgress,
+  });
+  const committed = metadataDocumentHash(sealedCommitmentDocument(uploaded.metadata, identity.imageSha256));
+  if (committed !== identity.commitment) {
+    throw new Error('The uploaded identity does not match the sealed commitment.');
+  }
+  return {
+    metadataUri: uploaded.metadataUri,
+    imageUri: uploaded.imageUri,
+    metadataHash: uploaded.metadataHash,
+  };
+}
+
+// A document uploaded moments ago can take a few seconds to reach the gateway.
+async function fetchFreshMetadataDocument(uri, { attempts = 8, delayMs = 1500 } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const document = await fetchMetadataDocument(uri);
+    if (document) return document;
+    if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return null;
+}
+
 export async function revealSealedTokenMetadata({
   tempWalletSecretKey,
   tokenMint,
@@ -1639,6 +1695,7 @@ export async function revealSealedTokenMetadata({
   symbol,
   metadataUri,
   metadataHash,
+  imageSha256 = null,
   onProgress,
 }) {
   const progress = (event) => {
@@ -1684,16 +1741,18 @@ export async function revealSealedTokenMetadata({
 
   const before = await inspect();
   if (before.uri === metadataUri && before.updateAuthority === SYSTEM_PROGRAM_ADDRESS) {
-    const finalDocument = await fetchMetadataDocument(metadataUri);
-    verifySealedMetadataCommitment({
+    const finalDocument = await fetchFreshMetadataDocument(metadataUri);
+    const { finalHash: revealedHash } = verifySealedMetadataCommitment({
       finalDocument,
       metadataHash: expectedMetadataHash,
+      imageSha256,
       name,
       symbol,
       mint: tokenMint,
       requirePlaceholder: false,
     });
     return {
+      finalMetadataHash: revealedHash,
       tokenMint,
       metadataUri,
       mintFormat: isToken2022 ? MINT_FORMAT_TOKEN_2022 : MINT_FORMAT_CLASSIC,
@@ -1715,12 +1774,13 @@ export async function revealSealedTokenMetadata({
 
   const [placeholderDocument, finalDocument] = await Promise.all([
     fetchMetadataDocument(before.uri),
-    fetchMetadataDocument(metadataUri),
+    fetchFreshMetadataDocument(metadataUri),
   ]);
-  verifySealedMetadataCommitment({
+  const { finalHash } = verifySealedMetadataCommitment({
     placeholderDocument,
     finalDocument,
     metadataHash: expectedMetadataHash,
+    imageSha256,
     name,
     symbol,
     mint: tokenMint,
@@ -1731,7 +1791,12 @@ export async function revealSealedTokenMetadata({
     // URI is written last, so a retry after an interrupted reveal can still
     // load and validate the sealed placeholder commitment. Authority is
     // retired only after every final identity field has landed.
-    for (const [field, value] of [['Name', name], ['Symbol', symbol], ['Uri', metadataUri]]) {
+    // The launch-time commitment field becomes the plain hash of the final
+    // document, so a revealed token reads exactly like an unsealed one.
+    const fields = [['Name', name], ['Symbol', symbol]];
+    if (finalHash !== expectedMetadataHash) fields.push(['trebuchet:sha256', finalHash]);
+    fields.push(['Uri', metadataUri]);
+    for (const [field, value] of fields) {
       await tokenMetadataUpdateFieldWithRentTransfer(
         connection,
         tempWallet,
@@ -1795,6 +1860,7 @@ export async function revealSealedTokenMetadata({
     metadataUpdateAuthorityRevoked: true,
     metadataImmutable: true,
     sealedMetadataPending: false,
+    finalMetadataHash: finalHash,
     skipped: false,
   };
   progress({ stage: 'metadata_revealed', ...result });
@@ -1835,6 +1901,7 @@ export function verifySealedMetadataCommitment({
   placeholderDocument = null,
   finalDocument = null,
   metadataHash,
+  imageSha256 = null,
   name,
   symbol,
   mint = null,
@@ -1853,8 +1920,13 @@ export function verifySealedMetadataCommitment({
   if (!finalDocument || typeof finalDocument !== 'object' || Array.isArray(finalDocument)) {
     throw new Error('Final token metadata could not be loaded for commitment verification.');
   }
+  // Launches sealed before deferred uploads committed to the document itself;
+  // deferred ones commit to it with the image replaced by its content hash.
   const actualHash = metadataDocumentHash(finalDocument);
-  if (actualHash !== expectedHash) {
+  const committedHash = imageSha256
+    ? metadataDocumentHash(sealedCommitmentDocument(finalDocument, imageSha256))
+    : actualHash;
+  if (actualHash !== expectedHash && committedHash !== expectedHash) {
     throw new Error('Final token metadata does not match the sealed identity commitment.');
   }
   if (String(finalDocument.name || '').trim() !== String(name || '').trim()) {
@@ -1869,7 +1941,7 @@ export function verifySealedMetadataCommitment({
   if (declaredMint && mint && declaredMint !== String(mint).trim()) {
     throw new Error('Final token metadata names a different mint than this launch.');
   }
-  return { metadataHash: actualHash };
+  return { metadataHash: expectedHash, finalHash: actualHash };
 }
 
 // Transfer tokens and remaining SOL

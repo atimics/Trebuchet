@@ -33,7 +33,10 @@ function b58decode(str) {
 before(() => {
   // The binary is built by `npm run build:c`. Build it if CI hasn't.
   if (!existsSync(BINARY)) {
-    execFileSync('make', ['-C', 'c'], { cwd: REPO, stdio: 'inherit' });
+    // build-c.mjs writes to a temp file and renames it into place; `make`
+    // writes in place, and other test files running in parallel would see
+    // a half-written, non-executable binary.
+    execFileSync(process.execPath, ['scripts/build-c.mjs'], { cwd: REPO, stdio: 'inherit' });
   }
 });
 

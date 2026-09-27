@@ -22,6 +22,7 @@ test/ui/diffs/*.png
 # Local capture output and runtime records
 /artifacts
 /brandShield.json
+/sealedIdentities.json
 /incident-tx.json
 
 # Cloudflare wrangler local state
