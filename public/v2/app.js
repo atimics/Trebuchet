@@ -5948,7 +5948,9 @@ function renderLiveLaunchMonitor() {
     || (blocked ? 'Trebuchet needs your attention before it can continue.' : 'Trebuchet is recording each confirmed launch checkpoint.'),
   ).trim();
   const logoSrc = launchIdentityImageSrc(model.logo, { animate: true });
-  const progress = Math.max(0, Math.min(100, Number(context.percent) || 0));
+  // What exists so far, as facts: the same rows the coin shows, not a percentage.
+  const chainFacts = coinFacts().filter((fact) => ['mint', 'liquidity', 'finish'].includes(fact.id));
+  const factLabels = { mint: 'Token', liquidity: 'Liquidity', finish: 'Launch wallet' };
   const expanded = state.launchDetailsExpanded === true;
   document.body.dataset.launchFocus = expanded ? 'details' : 'active';
   monitor.hidden = false;
@@ -5971,13 +5973,12 @@ function renderLiveLaunchMonitor() {
         <em>${escapeHtml(currentDetail)}</em>
       </span>
     </div>
-    <div class="live-launch-progress">
-      <span><small>Launch progress</small><strong>${progress}%</strong></span>
-      <span class="live-launch-progress-track" role="progressbar" aria-label="Launch progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}">
-        <i style="width: ${progress}%"></i>
-      </span>
-      <small>${context.signed} of ${context.total} checkpoints complete</small>
-    </div>
+    <ul class="live-launch-facts" aria-label="What is true now">
+      ${chainFacts.map((fact) => `<li class="is-${escapeHtml(fact.state)}">
+        <i class="fa-solid ${(COIN_FACT_MARKS[fact.state] || COIN_FACT_MARKS.todo).icon}" aria-hidden="true"></i>
+        <span><small>${escapeHtml(factLabels[fact.id])}</small><strong>${escapeHtml(fact.value || '')}</strong></span>
+      </li>`).join('')}
+    </ul>
     <button class="live-launch-details-button" type="button" data-action="toggle-launch-details" aria-expanded="${expanded}">
       <span>${expanded ? 'Focus on current action' : 'Show launch details'}</span>
       <i class="fa-solid fa-chevron-${expanded ? 'up' : 'down'}" aria-hidden="true"></i>
@@ -6070,7 +6071,6 @@ function renderLaunchIdentity() {
 function renderLaunchPreview() {
   const name = $('#tokenName').value.trim() || 'Untitled';
   const symbol = ($('#tokenSymbol').value.trim() || 'TOK').toUpperCase();
-  const { signed, total, pending, percent } = signatureStats();
   const config = currentLaunchConfig();
   const liquidityBudgetSol = Math.max(
     0,
@@ -6096,9 +6096,7 @@ function renderLaunchPreview() {
     : 'Checking environment…';
   $('#runbookSummary').textContent = `${launchStages.length} phases`;
   $('#launchReadout').innerHTML = `
-    <span><strong>${signed}/${total}</strong><small>Run</small></span>
-    <span><strong>${pending}</strong><small>Queued</small></span>
-    <span><strong>${percent}%</strong><small>Complete</small></span>
+    <span><strong>${poolCount}</strong><small>Pool${poolCount === 1 ? '' : 's'}</small></span>
     <span><strong>${liquidityBudgetSol.toFixed(2)} SOL</strong><small>Liquidity budget</small></span>
   `;
 }
@@ -6482,7 +6480,6 @@ function renderChartDeck() {
     : liveLpEventCount
       ? { label: 'Live', className: '' }
       : tokenomicsBadge;
-  const signaturePercent = signatureStats().percent;
   const identityPalette = state.launchIdentity?.palette;
   const slices = buildV2TokenomicsItems(config, results).map((item, index) => ({
     ...item,
@@ -6553,7 +6550,6 @@ function renderChartDeck() {
     <div class="funding-row ${escapeHtml(funding.acquireClass)}"><span>Acquired quotes</span><strong>${escapeHtml(funding.acquireLabel)}</strong></div>
     <div class="funding-row ${escapeHtml(funding.manualClass)}"><span>Manual quote</span><strong>${escapeHtml(funding.manualLabel)}</strong></div>
     <div class="funding-row ${escapeHtml(funding.observedClass)}"><span>Observed spend</span><strong>${escapeHtml(funding.observedLabel)}</strong></div>
-    <div class="funding-row"><span>Run</span><strong>${signaturePercent}% complete</strong></div>
   `;
 }
 
@@ -14424,7 +14420,7 @@ function renderClassicBridge() {
         primary: true,
       })}
       <details class="drawer phase-tree-drawer">
-        <summary><span>Progress by position</span><strong>${poolCount} pool${poolCount === 1 ? '' : 's'} / ${sliceCount} position${sliceCount === 1 ? '' : 's'}</strong></summary>
+        <summary><span>Each position</span><strong>${poolCount} pool${poolCount === 1 ? '' : 's'} / ${sliceCount} position${sliceCount === 1 ? '' : 's'}</strong></summary>
         <div class="phase-tree">${renderClassicPhaseTree(topology)}</div>
       </details>
     </section>
@@ -14705,10 +14701,9 @@ function renderExecutionLedger() {
 
 function renderSignaturePanel() {
   const context = runProgressContext();
-  const { rows, total, signed, percent, activeId } = context;
+  const { rows, activeId } = context;
   const activeTx = rows.find((tx) => tx.id === activeId) || rows[0];
   const panel = $('#signaturePanel');
-  const completionLabel = context.isLive ? 'phases complete' : 'operations complete';
 
   panel.classList.toggle('is-staged', state.transactions.length > 0 || context.isLive);
   panel.classList.toggle('is-live', context.isLive);
@@ -14716,39 +14711,15 @@ function renderSignaturePanel() {
     <div class="signature-head">
       <span>
         <span class="eyebrow">${escapeHtml(context.headingLabel)}</span>
-        <h2>${signed} / ${total} ${completionLabel}</h2>
+        <h2>${escapeHtml(activeTx?.label || 'Review run plan first')}</h2>
       </span>
       <span class="signature-source">${escapeHtml(context.source)}</span>
     </div>
-    <div class="signature-progress" aria-label="Run progress">
-      <span style="width:${percent}%"></span>
-    </div>
     <div class="signature-focus">
-      <span class="signature-index">${Math.max(1, rows.findIndex((tx) => tx.id === activeTx?.id) + 1)}</span>
       <span>
         <small>${escapeHtml(context.focusLabel)}</small>
-        <strong>${escapeHtml(activeTx?.label || 'Review run plan first')}</strong>
         <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet will list the local-wallet run before you arm it.')}</p>
       </span>
-    </div>
-    <div class="signature-track">
-      ${rows.map((tx, index) => {
-        const stateLabel = tx.state === 'signed'
-          ? 'signed'
-          : tx.state === 'blocked'
-            ? 'blocked'
-            : tx.id === activeId && (state.transactions.length || context.isLive)
-              ? 'next'
-              : state.transactions.length || context.isLive ? 'pending' : 'draft';
-        const actionAttrs = state.transactions.length
-          ? `data-action="review" data-tx="${escapeHtml(tx.id)}"`
-          : 'data-action="review-plan"';
-        return `
-          <button class="signature-step ${stateLabel}" type="button" title="${escapeHtml(tx.label)}" ${actionAttrs}>
-            <span class="signature-index">${index + 1}</span>
-          </button>
-        `;
-      }).join('')}
     </div>
     ${renderExecutionLedger()}
   `;
