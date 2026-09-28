@@ -421,7 +421,8 @@ async function assertRecoveredPositionNftsOwned({
 async function fetchOwnerClmmPositionsForPool(raydium, poolId) {
   const all = await raydium.clmm.getOwnerPositionInfo({ programId: CLMM_PROGRAM_ID });
   const target = poolId.toString();
-  return (all || [])
+  if (!Array.isArray(all)) throw new Error('Position lookup requires a complete chain response');
+  return all
     .filter((p) => p && p.poolId && p.poolId.toString() === target)
     .map((p) => ({
       nftMint: p.nftMint.toString(),
@@ -595,41 +596,16 @@ async function executeSdkTx({ label, build, alreadyDone, onAlreadyDone }) {
 
 // Probe helper for position opens: is there a position at exactly this range
 // that no one has accounted for yet? Returns the position (truthy) or null.
-async function findUnrecordedPositionAt(raydium, poolId, tickLower, tickUpper, recordedMints) {
-  try {
-    const onChain = await fetchOwnerClmmPositionsForPool(raydium, poolId);
-    const hits = unrecordedPositionsAtRange(onChain, tickLower, tickUpper, recordedMints);
-    return hits.length > 0 ? hits[0] : null;
-  } catch (e) {
-    // A probe failure must never block the send — fall through to sending,
-    // which is the pre-existing behaviour. (A false negative here at worst
-    // re-creates the old duplicate risk; a false positive would skip real
-    // work, which is worse.)
-    console.warn(`  position probe failed (${e.message}); proceeding to send`);
-    return null;
-  }
+export async function findUnrecordedPositionAt(raydium, poolId, tickLower, tickUpper, recordedMints) {
+  const onChain = await fetchOwnerClmmPositionsForPool(raydium, poolId);
+  const hits = unrecordedPositionsAtRange(onChain, tickLower, tickUpper, recordedMints);
+  return hits.length > 0 ? hits[0] : null;
 }
 
-// Probe helper for locks. Returns the Fee Key mint (truthy) when a lock for
-// this position exists on-chain, else null.
-//
-// This deliberately requires POSITIVE evidence — a lock account that names
-// this position — rather than inferring a lock from the position's absence
-// in the wallet. Absence has a second cause: an RPC that hasn't indexed the
-// position yet. Treating that as "already locked" would SKIP the lock, leave
-// the liquidity unlocked, and report it locked — the one outcome a launch
-// tool must never produce, since the lock is the user's no-rug guarantee.
-// The failure direction here must be "lock again and hit a deterministic
-// already-locked error", never "silently don't lock". Probe failures fall
-// through to sending for the same reason.
-async function positionLockedOnChain(raydium, nftMint) {
-  try {
-    const feeKey = await findLockFeeKeyForPosition(raydium, nftMint);
-    return feeKey || null;
-  } catch (e) {
-    console.warn(`  lock probe failed (${e.message}); proceeding to send`);
-    return null;
-  }
+// A matching lock account supplies the Fee Key mint. Read failures propagate
+// so the caller can retry reconciliation before another transaction.
+export async function positionLockedOnChain(raydium, nftMint) {
+  return await findLockFeeKeyForPosition(raydium, nftMint) || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1626,10 +1602,8 @@ async function createSinglePool({
       label: 'create pool',
       build: buildCreate,
       alreadyDone: async () => {
-        try {
-          const info = await connection.getAccountInfo(new PublicKey(poolId), 'finalized');
-          return !!(info && info.data && info.data.length > 0);
-        } catch (_) { return false; }
+        const info = await connection.getAccountInfo(new PublicKey(poolId), 'finalized');
+        return !!(info && info.data && info.data.length > 0);
       },
       onAlreadyDone: () => ({ tx: { txId: null }, adopted: true }),
     });
@@ -2964,6 +2938,7 @@ const LOCK_ACCT_POSITION_ID_OFFSET = 73;
 // on the happy path.
 async function findLockFeeKeyForPosition(raydium, positionNftMint) {
   const accounts = await raydium.connection.getProgramAccounts(CLMM_LOCK_PROGRAM_ID, {
+    commitment: 'finalized',
     filters: [
       {
         // Pre-filter to lock accounts whose positionId equals this position's
@@ -2976,7 +2951,8 @@ async function findLockFeeKeyForPosition(raydium, positionNftMint) {
       },
     ],
   });
-  for (const acct of accounts || []) {
+  if (!Array.isArray(accounts)) throw new Error('Lock lookup requires a complete chain response');
+  for (const acct of accounts) {
     let decoded;
     try {
       decoded = LockClPositionLayoutV2.decode(acct.account.data);

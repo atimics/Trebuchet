@@ -139,10 +139,8 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 //   alreadyDone — async () => boolean (optional). Idempotency guard, evaluated
 //                 BEFORE each attempt. If it returns true, the work is already
 //                 on-chain (a prior attempt landed) and we return { skipped:true }
-//                 WITHOUT sending again. Implementations should be defensive:
-//                 if the check itself can't run (e.g. a test's mock connection
-//                 doesn't support the read), throw or return false so the
-//                 attempt proceeds normally rather than silently skipping.
+//                 WITHOUT sending again. A failed check pauses execution until
+//                 chain state can be read again.
 //   onRetry     — async (attempt, err) => void (optional). Side effects between
 //                 attempts, e.g. refreshing the SDK's cached token accounts so
 //                 the rebuilt transaction is clean.
@@ -179,12 +177,15 @@ export async function landTxWithRetry({
   let lastErr = null;
   let attempts = 0;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    // Idempotency guard. A defensive implementation returns false (or throws)
-    // when it can't determine state, so we proceed rather than wrongly skip.
+    // Read chain state before every send, including retries after a timeout.
     if (alreadyDone) {
-      let done = false;
+      let done;
       try { done = await alreadyDone(); }
-      catch (_) { done = false; }
+      catch (cause) {
+        throw Object.assign(new Error(`${label}: chain state needs verification before sending.`, { cause }), {
+          code: 'CHAIN_STATE_UNAVAILABLE', kind: 'recovery_required', attempts,
+        });
+      }
       if (done) return { value: null, skipped: true, attempts };
     }
 
@@ -210,8 +211,8 @@ export async function landTxWithRetry({
         throw err;
       }
 
-      if (onRetry) { try { await onRetry(attempt, err); } catch (_) { /* best-effort */ } }
       if (attempt >= maxAttempts) break;
+      if (onRetry) await onRetry(attempt, err);
       await sleep(settleMs);
     }
   }

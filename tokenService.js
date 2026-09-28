@@ -18,6 +18,7 @@ import {
 // priority fee. See priorityFees.js.
 import { 
   getMint,
+  unpackMint,
   getAccount,
   AuthorityType,
   TOKEN_PROGRAM_ID,
@@ -860,11 +861,9 @@ export async function createTokenWithMetaplex({
       await landTxWithRetry({
         label: 'create mint',
         alreadyDone: async () => {
-          // getMint throws while the account doesn't exist / isn't initialized.
-          try {
-            await getMint(connection, mint, 'finalized', TOKEN_PROGRAM_ID);
-            return true;
-          } catch (_) { return false; }
+          const account = await connection.getAccountInfo(mint, 'finalized');
+          if (account === null) return false;
+          return unpackMint(mint, account, TOKEN_PROGRAM_ID).isInitialized;
         },
         send: () => sendIxsWithPriority({
           payer: tempWallet,

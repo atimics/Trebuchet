@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { unrecordedPositionsAtRange } from '../lpService.js';
+import { unrecordedPositionsAtRange, findUnrecordedPositionAt, positionLockedOnChain } from '../lpService.js';
 
 // unrecordedPositionsAtRange is the pure core of the resume-time on-chain
 // reconciliation: given the positions the launch wallet actually holds and a
@@ -56,4 +56,30 @@ test('skips malformed entries (null, or missing nftMint)', () => {
   const out = unrecordedPositionsAtRange(onChain, -100, 100, new Set());
   assert.equal(out.length, 1);
   assert.equal(out[0].nftMint, 'A');
+});
+
+
+test('liquidity position reconciliation propagates failed and incomplete reads', async () => {
+  const error = new Error('RPC timed out after the position send');
+  for (const read of [async () => { throw error; }, async () => null]) {
+    const raydium = { clmm: { getOwnerPositionInfo: read } };
+    await assert.rejects(findUnrecordedPositionAt(raydium, 'pool', -100, 100, new Set()));
+  }
+  assert.equal(await findUnrecordedPositionAt({ clmm: { getOwnerPositionInfo: async () => [] } }, 'pool', -100, 100, new Set()), null);
+  const raydium = { clmm: { getOwnerPositionInfo: async () => [{ poolId: 'pool', nftMint: 'landed', tickLower: -100, tickUpper: 100 }] } };
+  assert.equal((await findUnrecordedPositionAt(raydium, 'pool', -100, 100, new Set())).nftMint, 'landed');
+});
+
+test('liquidity lock reconciliation requires a complete finalized read', async () => {
+  let calls = 0;
+  const raydium = { connection: { getProgramAccounts: async (_program, options) => {
+    calls++;
+    assert.equal(options.commitment, 'finalized');
+    if (calls === 1) throw new Error('RPC timed out after the lock send');
+    if (calls === 2) return null;
+    return [];
+  } } };
+  await assert.rejects(positionLockedOnChain(raydium, 'position'));
+  await assert.rejects(positionLockedOnChain(raydium, 'position'));
+  assert.equal(await positionLockedOnChain(raydium, 'position'), null);
 });

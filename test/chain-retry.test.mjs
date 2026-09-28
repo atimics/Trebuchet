@@ -189,16 +189,38 @@ test('alreadyDone short-circuits without sending (idempotency)', async () => {
   assert.equal(calls, 0); // never sent — prevents double-mint on a landed-but-threw tx
 });
 
-test('a throwing alreadyDone is treated as "not done" and the send proceeds', async () => {
+test('a failed chain check pauses before the first send', async () => {
   let calls = 0;
-  const { skipped, value } = await landTxWithRetry({
-    alreadyDone: async () => { throw new Error('mock connection has no getMint'); },
-    send: async () => { calls += 1; return 'sent'; },
+  const cause = new Error('RPC is unavailable');
+  await assert.rejects(landTxWithRetry({
+    alreadyDone: async () => { throw cause; },
+    send: async () => { calls += 1; },
     sleep: noSleep,
-  });
-  assert.equal(skipped, false);
-  assert.equal(value, 'sent');
-  assert.equal(calls, 1); // defensive: unknown state -> proceed, matches today's behavior
+  }), (error) => error.code === 'CHAIN_STATE_UNAVAILABLE' && error.cause === cause && error.attempts === 0);
+  assert.equal(calls, 0);
+});
+
+test('a failed chain check after a send timeout preserves the uncertain operation', async () => {
+  let calls = 0;
+  let checks = 0;
+  await assert.rejects(landTxWithRetry({
+    alreadyDone: async () => { if (++checks > 1) throw new Error('RPC timeout'); return false; },
+    send: async () => { calls += 1; throw new Error('Transaction was not confirmed'); },
+    sleep: noSleep,
+  }), (error) => error.code === 'CHAIN_STATE_UNAVAILABLE' && error.attempts === 1);
+  assert.equal(calls, 1);
+});
+
+test('a failed retry preparation pauses before the next send', async () => {
+  let calls = 0;
+  const cause = new Error('Recovery journal commit failed');
+  await assert.rejects(landTxWithRetry({
+    alreadyDone: async () => false,
+    send: async () => { calls += 1; throw new Error('Blockhash not found'); },
+    onRetry: async () => { throw cause; },
+    sleep: noSleep,
+  }), (error) => error === cause);
+  assert.equal(calls, 1);
 });
 
 test('alreadyDone re-checked between retries adopts a tx that landed mid-retry', async () => {
