@@ -16,12 +16,12 @@ const extension = (type, data) => {
   return Buffer.concat([header, data]);
 };
 
-export function tokenTransferChain({ token2022 = false, transferFee = false, native = false, decimals = 6, sourceAmount = 5_000_000n, destinationExists = false, associatedSource = false } = {}) {
+export function tokenTransferChain({ token2022 = false, transferFee = false, native = false, decimals = 6, sourceAmount = 5_000_000n, destinationExists = false, associatedSource = false, destinationWallet = sweepDestination } = {}) {
   const ledger = solSweepChain();
   const { state, connection } = ledger;
   const program = token2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
   const mint = native ? NATIVE_MINT : key(34), source = associatedSource ? getAssociatedTokenAddressSync(mint, sweepWallet.publicKey, false, program) : key(35);
-  const destination = getAssociatedTokenAddressSync(mint, new PublicKey(sweepDestination), false, program);
+  const destination = getAssociatedTokenAddressSync(mint, new PublicKey(destinationWallet), false, program);
   Object.assign(state, { fee: 11000, decimals, sourceAmount, destinationAmount: 0n, destinationExists, sourceOwner: sweepWallet.publicKey, frozen: false,
     accountSlot: state.slot, rentSizes: [], native, sourceLamports: 2_100_000 + (native ? Number(sourceAmount) : 0), destinationLamports: destinationExists ? 2_100_000 : 0 });
   const feeSchedule = { epoch: 0n, maximumFee: 5000n, transferFeeBasisPoints: 250 };
@@ -51,7 +51,7 @@ export function tokenTransferChain({ token2022 = false, transferFee = false, nat
     if (value === sweepWallet.publicKey.toBase58()) return { ...base, owner: SystemProgram.programId, lamports: state.balance, data: Buffer.alloc(0) };
     if (value === mint.toBase58()) return { ...base, owner: program, lamports: 3_000_000, data: mintData() };
     if (value === source.toBase58()) return { ...base, owner: program, lamports: state.sourceLamports, data: accountData(state.sourceOwner, state.sourceAmount) };
-    if (value === destination.toBase58() && state.destinationExists) return { ...base, owner: program, lamports: state.destinationLamports, data: accountData(new PublicKey(sweepDestination), state.destinationAmount) };
+    if (value === destination.toBase58() && state.destinationExists) return { ...base, owner: program, lamports: state.destinationLamports, data: accountData(new PublicKey(destinationWallet), state.destinationAmount) };
     return null;
   };
   connection.getAccountInfo = async (key) => accountInfo(key);
@@ -80,7 +80,7 @@ export function tokenTransferChain({ token2022 = false, transferFee = false, nat
       const preBalances = keys.map((key) => accountInfo(key)?.lamports || 0);
       const tokenEntry = (index, owner, quantity) => ({ accountIndex: index, mint: mint.toBase58(), owner: owner.toBase58(), programId: program.toBase58(), uiTokenAmount: { amount: quantity.toString(), decimals: state.decimals, uiAmount: null } });
       const preTokenBalances = [tokenEntry(sourceIndex, sweepWallet.publicKey, state.sourceAmount)];
-      if (state.destinationExists) preTokenBalances.push(tokenEntry(destinationIndex, new PublicKey(sweepDestination), state.destinationAmount));
+      if (state.destinationExists) preTokenBalances.push(tokenEntry(destinationIndex, new PublicKey(destinationWallet), state.destinationAmount));
       state.sourceAmount -= sent; state.destinationAmount += sent - charged;
       assert.ok(state.sourceAmount >= 0n);
       state.balance -= state.fee + rent;
@@ -90,7 +90,7 @@ export function tokenTransferChain({ token2022 = false, transferFee = false, nat
       const postBalances = keys.map((key) => accountInfo(key)?.lamports || 0);
       state.receipts.set(inspected.signature, { slot: state.slot, blockTime: 1700000000, transaction: { message, signatures: [inspected.signature] },
         meta: { err: null, fee: state.fee, preBalances, postBalances, preTokenBalances,
-          postTokenBalances: [tokenEntry(sourceIndex, sweepWallet.publicKey, state.sourceAmount), tokenEntry(destinationIndex, new PublicKey(sweepDestination), state.destinationAmount)] },
+          postTokenBalances: [tokenEntry(sourceIndex, sweepWallet.publicKey, state.sourceAmount), tokenEntry(destinationIndex, new PublicKey(destinationWallet), state.destinationAmount)] },
       });
     }
     await state.afterSend?.(inspected);

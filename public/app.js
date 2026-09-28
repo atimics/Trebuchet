@@ -4858,10 +4858,7 @@ function buildLiveAirdropTransferPayload() {
   return {
     tokenMint: createdTokenInfo.mint,
     tokenDecimals: createdTokenInfo.decimals,
-    // Launched tokens are classic SPL (tokenService.js creates them with
-    // TOKEN_PROGRAM_ID). The server defaults to false anyway but we
-    // pass it explicitly so the wire format is self-describing.
-    isToken2022: false,
+    isToken2022: createdTokenInfo.mintFormat === 'token-2022' || createdTokenInfo.isToken2022 === true,
     recipients,
   };
 }
@@ -20358,7 +20355,7 @@ async function runAirdropRetry() {
           ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
           tokenMint: createdTokenInfo.mint,
           tokenDecimals: createdTokenInfo.decimals,
-          isToken2022: false,
+          isToken2022: createdTokenInfo.mintFormat === 'token-2022' || createdTokenInfo.isToken2022 === true,
           recipients,
         }),
       });

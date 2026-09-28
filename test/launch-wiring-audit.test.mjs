@@ -149,9 +149,10 @@ test('transfer-assets airdrop step skips recipients already delivered', () => {
 test('retry-airdrop dedupes, merges, and returns the merged record', () => {
   // The handler was extracted to a named function when /api/run-airdrop
   // was added as an alias — anchor on the function, not the route line.
-  const retryStart = serverSrc.indexOf('async function runAirdropHandler(');
+  assert.match(serverSrc, /launchServices\.runAirdrop\(req\.body\)/);
+  const retryStart = serviceSrc.indexOf('async function runAirdrop(');
   assert.ok(retryStart >= 0);
-  const retry = serverSrc.slice(retryStart, retryStart + 7000);
+  const retry = serviceSrc.slice(retryStart, retryStart + 7000);
   assert.ok(
     /const pendingRecipients = recipients\.filter\(\(r\) => !deliveredWallets\.has\(r\.wallet\)\);/.test(retry),
     'retry must drop wallets the journal already records as delivered',
@@ -161,7 +162,7 @@ test('retry-airdrop dedupes, merges, and returns the merged record', () => {
     'retry must persist the merged record on journal.airdrop',
   );
   assert.ok(
-    /airdrop: mergedAirdrop,\r?\n\s*\}\);/.test(retry),
+    /return \{ success: true, airdrop: mergedAirdrop \};/.test(retry),
     'retry response must return the merged record',
   );
 });
@@ -717,18 +718,6 @@ test('publish service degrades gracefully on oversized HTML', () => {
   );
 });
 
-test('run-airdrop claims the per-wallet launch-op mutex', () => {
-  const handlerStart = serverSrc.indexOf('async function runAirdropHandler(');
-  const handler = serverSrc.slice(handlerStart, handlerStart + 9000);
-  assert.ok(
-    /rejectOrClaimLaunchOp\(res, walletPublicKey, 'run-airdrop'\)/.test(handler),
-    'the airdrop must hold the same mutex as create/resume/transfer',
-  );
-  assert.ok(
-    /if \(claimedLaunchOp && walletPublicKey\) \{\r?\n\s*clearLaunchOpInFlight\(walletPublicKey\);/.test(handler),
-    'the mutex must release in finally, only when this handler claimed it',
-  );
-});
 
 test('transfer-assets validates an explicit destination before resolving a saved signer', () => {
   const handler = transferAssetsHandlerSource();
@@ -941,4 +930,26 @@ test('display price and launch price share one on-chain adapter definition', () 
   assert.match(epBody, /priceSource = `on-chain:\$\{oc\.anchorSymbol\}`/, 'endpoint must label the source');
   assert.match(epBody, /priceLiquidityUsd/, 'endpoint must surface depth');
   assert.match(epBody, /priceWarning = oc\.spreadError/, 'endpoint must surface a spread finding, not hide it');
+});
+
+
+test('classic airdrop requests and retries keep the saved token program', async () => {
+  const start = tokenConfigSrc.indexOf('function buildLiveAirdropTransferPayload()');
+  const end = tokenConfigSrc.indexOf('\n// Compute the preallocation', start);
+  const retryStart = transferSrc.indexOf('async function runAirdropRetry()');
+  const retryEnd = transferSrc.indexOf('\n}', retryStart) + 2;
+  for (const mintFormat of ['classic-spl', 'token-2022']) {
+    let sent;
+    const context = vm.createContext({ createdTokenInfo: { mint: 'mint-a', decimals: 9, mintFormat },
+      simpleConfig: { preallocationEnabled: true, airdrop: { enabled: true, parsedRows: [{ wallet: 'recipient-a', tokens: 2 }] } },
+      lastAirdropResult: { transferred: [], failed: [{ wallet: 'recipient-a', tokens: 2 }] }, tempWallet: { publicKey: 'wallet-a' }, demoModeActive: false,
+      document: { getElementById: () => ({}) }, setLoading() {}, log() {}, startAirdropProgressPoll() {}, stopAirdropProgressPoll() {}, hideAirdropProgressPanel() {},
+      fetch: async (_url, options) => { sent = JSON.parse(options.body); return { json: async () => ({ success: true, airdrop: { transferred: [], failed: [] } }) }; },
+      renderAirdropResult() {}, logAirdropOutcome() {},
+    });
+    vm.runInContext(tokenConfigSrc.slice(start, end) + '\n' + transferSrc.slice(retryStart, retryEnd), context);
+    assert.equal(vm.runInContext('buildLiveAirdropTransferPayload().isToken2022', context), mintFormat === 'token-2022');
+    await vm.runInContext('runAirdropRetry()', context);
+    assert.equal(sent.isToken2022, mintFormat === 'token-2022');
+  }
 });

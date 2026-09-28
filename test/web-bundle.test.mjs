@@ -118,3 +118,14 @@ test('browser cost and vanity displays use the shared rules at different prices 
     assert.equal(sandbox.vanityExpectedAttempts('RUG', 'rug', true, length), native.expectedVanityAttempts('RUG', 'rug', { caseInsensitive: true, length }));
   }
 });
+
+
+test('browser and native token amount rules preserve exact base units', () => {
+  const core = browserContext().TrebuchetCore;
+  for (const [text, decimals] of [['0.1', 9], ['1e-9', 9], ['18446744073.709551615', 9], [0.1 + 0.2, 9]]) {
+    const raw = native.normalizeTokenAmountRaw(text, decimals);
+    assert.equal(core.normalizeTokenAmountRaw(text, decimals), raw);
+    assert.equal(core.formatTokenAmountRaw(raw, decimals), native.formatTokenAmountRaw(raw, decimals));
+  }
+  assert.throws(() => core.normalizeTokenAmountRaw('0.0000000001', 9));
+});

@@ -44,6 +44,8 @@ export function createLaunchExecutionServices({
   createPoolsAndPositions,
   createTokenWithMetaplex,
   executeAirdrop,
+  prepareAirdrop,
+  reconcileAirdrop,
   findFundingWallet,
   finishSweepWithSolGate,
   finishTokenCreation,
@@ -1037,6 +1039,41 @@ export function createLaunchExecutionServices({
     }
   }
 
+  async function runAirdrop(input = {}) {
+    let walletPublicKey = null, claimed = false, tracking = false;
+    try {
+      try { validateTransferAirdropPayload(input); }
+      catch (error) { throw new LaunchRejection(400, { success: false, error: error.message }); }
+      if (!input.tempWalletSecretKey && !input.walletPublicKey) throw new LaunchRejection(400, { success: false, error: 'Provide a saved launch wallet or its signer.' });
+      if (!Array.isArray(input.recipients) || !input.recipients.length) throw new LaunchRejection(400, { success: false, error: 'Provide the airdrop recipients.' });
+      if (input.walletPublicKey) requireSecretPinUnlocked('running an airdrop with a saved wallet');
+      const signer = resolveSigner(input);
+      walletPublicKey = signer.walletPublicKey;
+      claimLaunchOp(walletPublicKey, 'run-airdrop'); claimed = true;
+      prepareAirdrop({ walletPublicKey, airdrop: input });
+      await reconcileAirdrop({ tempWalletSecretKey: signer.secretKeyArr, tokenMint: input.tokenMint });
+      const priorAirdrop = launchJournal.activeForWallet(walletPublicKey)?.airdrop || {};
+      const priorDelivered = priorAirdrop.transferred || [], deliveredWallets = new Set(priorDelivered.map((row) => row.wallet));
+      const recipients = input.recipients;
+      const pendingRecipients = recipients.filter((r) => !deliveredWallets.has(r.wallet));
+      markAirdropInFlight(walletPublicKey); tracking = true;
+      airdropProgressBegin(walletPublicKey, pendingRecipients.length);
+      const result = pendingRecipients.length ? await executeAirdrop({ ...input, tempWalletSecretKey: signer.secretKeyArr, recipients: pendingRecipients,
+        onProgress: (value) => airdropProgressStep(walletPublicKey, value) }) : { transferred: [], failed: [] };
+      const retried = new Set(pendingRecipients.map((row) => row.wallet));
+      const mergedAirdrop = { transferred: [...priorDelivered, ...result.transferred],
+        failed: [...(priorAirdrop.failed || []).filter((row) => !retried.has(row.wallet)), ...result.failed] };
+      launchJournal.upsertForWallet(walletPublicKey, { airdrop: mergedAirdrop }, {
+        stage: 'airdrop_retry', retried: pendingRecipients.length, delivered: result.transferred.length, stillFailed: result.failed.length,
+      });
+      return { success: true, airdrop: mergedAirdrop };
+    } catch (error) { throw serviceError(error); }
+    finally {
+      if (tracking) { clearAirdropInFlight(walletPublicKey); airdropProgressEnd(walletPublicKey); }
+      if (claimed) clearLaunchOpInFlight(walletPublicKey);
+    }
+  }
+
   async function transferAssets(input = {}) {
 
     let walletPublicKey = null;
@@ -1113,6 +1150,7 @@ export function createLaunchExecutionServices({
         },
         { stage: 'transfer_started', destinationWallet },
       );
+      input = { ...input, airdrop: prepareAirdrop({ walletPublicKey, airdrop: input.airdrop }) };
       await reconcileWalletOperation({ tempWalletSecretKey: secretKeyArr, destinationWallet });
 
       // 0. Metadata authority handoff (keep-authority launches only). The
@@ -1328,7 +1366,7 @@ export function createLaunchExecutionServices({
 
       // Receipts survive a restart even when the transferred assets have
       // left the source wallet. Commit this complete report before cleanup.
-      mergeTransferReceipts({ nftSweep, tokenSweep, receipts: await getTransferReceipts(walletPublicKey) });
+      mergeTransferReceipts({ nftSweep, tokenSweep, receipts: (await getTransferReceipts(walletPublicKey)).filter((receipt) => receipt.action?.context?.purpose !== 'airdrop') });
 
       // 4. Verify the wallet is on-chain empty before clearing the
       //    recovery cache entry. Anything still there → leave the cached
@@ -1447,5 +1485,5 @@ export function createLaunchExecutionServices({
     }
   }
 
-  return { finishToken, revealMetadata, createToken, createLiquidity, resumeLiquidity, transferAssets };
+  return { finishToken, revealMetadata, createToken, createLiquidity, resumeLiquidity, transferAssets, runAirdrop };
 }

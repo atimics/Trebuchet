@@ -27,6 +27,8 @@ function fixture() {
     PublicKey, launchJournal,
     reconcileWalletOperation: async () => null,
     reconcileBeforeLiquidity: async () => null,
+    reconcileAirdrop: async () => null,
+    prepareAirdrop: ({ airdrop }) => airdrop,
     getTransferReceipts: async () => [],
     requireSecretPinUnlocked: () => { if (state.locked) throw new LaunchRejection(423, { success: false, code: 'SECRET_PIN_LOCKED', error: 'Unlock recovery storage.' }); },
     requireTokenCompleteForLiquidity: async () => {},
@@ -311,3 +313,47 @@ for (const method of ['createLiquidity', 'resumeLiquidity']) {
     assert.equal(f.operations.size, 0);
   });
 }
+
+
+test('the airdrop service holds wallet admission and releases only its own request', async () => {
+  const f = fixture(); let entered, finish;
+  const started = new Promise((resolve) => { entered = resolve; }), gate = new Promise((resolve) => { finish = resolve; });
+  f.deps.executeAirdrop = async ({ recipients }) => { entered(); await gate; return { transferred: recipients, failed: [] }; };
+  const services = f.services(), request = { ...input, recipients: [{ wallet: destination, tokens: 1 }] };
+  const first = services.runAirdrop(request); await started;
+  await assert.rejects(services.runAirdrop(request), { code: 'OP_IN_FLIGHT' });
+  assert.equal(f.state.cleared, 0); assert.equal(f.operations.size, 1);
+  finish(); assert.equal((await first).success, true);
+  assert.equal(f.state.cleared, 1); assert.equal(f.operations.size, 0);
+});
+
+test('airdrop plan validation finishes before any sweep starts', async () => {
+  const f = fixture();
+  f.deps.prepareAirdrop = () => { throw Object.assign(new Error('recipient amount changed'), { code: 'EXECUTION_RECOVERY_REQUIRED' }); };
+  await assert.rejects(f.services().transferAssets(input), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  assert.ok(!f.calls.includes('nfts')); assert.ok(!f.calls.includes('tokens')); assert.equal(f.state.removed, 0);
+});
+
+test('a saved airdrop plan is restored when the final transfer request omits it', async () => {
+  const f = fixture(); const rows = [{ wallet: destination, tokens: 2 }];
+  f.deps.prepareAirdrop = () => ({ tokenMint: 'mint-a', tokenDecimals: 6, recipients: rows });
+  const result = await f.services().transferAssets(input);
+  assert.deepEqual(result.airdrop.transferred, rows);
+  assert.ok(f.calls.findIndex((call) => Array.isArray(call) && call[0] === 'airdrop') < f.calls.indexOf('tokens'));
+});
+
+test('airdrop receipts remain in the airdrop report while sweep totals use sweep receipts', async () => {
+  const f = fixture();
+  f.deps.getTransferReceipts = async () => [{ txId: 'airdrop-tx', signature: 'airdrop-tx', mint: 'mint-a', programId: 'token-program',
+    decimals: 6, amountRaw: '2000000', receivedRaw: '2000000', transferFeeRaw: '0', destinationWallet: destination,
+    action: { context: { purpose: 'airdrop' } } }];
+  const result = await f.services().transferAssets(input);
+  assert.deepEqual(result.tokenSweep.transferred, []);
+});
+
+
+test('airdrop input errors return a client error before the signer loads', async () => {
+  const f = fixture(); f.deps.validateTransferAirdropPayload = () => { throw new Error('Choose valid recipients'); };
+  await assert.rejects(f.services().runAirdrop({ ...input, recipients: [] }), { statusCode: 400 });
+  assert.deepEqual(f.calls, []); assert.deepEqual(f.writes, []);
+});

@@ -185,3 +185,16 @@ The production Fee Key process test accepts its signed transfer at a local RPC f
 The focused tests also cover changed recipients, position identities, Fee Key mints, allocation and slice indexes, finalized lock fields, approval scope and action bindings, lost replies, failed journal checkpoints, changed plans, and replay after source-account removal. The saved-journal path refreshes its journal after recovery and merges recovered pool records by allocation.
 
 The full completion checklist remains open for token creation, upload payments, quote-token acquisition, airdrops, wallet position management, the whole-launch budget, runner custody and execution, the desktop process split, live CLI execution, and the validator recovery drill.
+
+
+### Airdrop payments through the engine
+
+Airdrops now use the shared token transfer engine. The runtime saves the complete recipient plan before sending. Each recipient has one stable action ID bound to the wallet, launch, network, plan digest, mint, token program, decimals, recipient, and exact amount. Each signed payment and its approval commit before broadcast. Each finalized receipt commits before the next recipient starts. Recovery uses the saved signature and exact balance changes. Token-2022 receipts retain gross, net, and withheld amounts.
+
+The Core amount rules use exact decimal text. Numeric UI amounts use the existing nearest-unit rule once, before the plan and approval are saved. Browser and Node tests verify the same resulting base units. A changed recipient, amount, token program, or mint pauses execution. A retry can select a subset of the saved plan. The final transfer restores the full saved plan when its request omits the airdrop, so remaining recipients complete before the token sweep. Airdrop receipts remain in their report section; sweep totals use sweep receipts.
+
+Older journal deliveries now require a finalized signature, a verified original signer and complete message, and exact token and lamport changes. An observed operation preserves the original journal row and signed transaction bytes. An uncertain old receipt retains wallet admission across restart. Its verification can resume through the airdrop API or final transfer path.
+
+The ordinary launch service now exposes `runAirdrop`; the HTTP handler translates its input and result. Both classic and v2 airdrop requests use the saved token format. Process-death tests accept the first signed payment at a local RPC fixture and kill the caller before the response. Later processes recover and finish the list with one payment per recipient. Real HTTP tests cover recovery for both new operations and older receipts while competing requests arrive. Other tests cover changed plans, pre-existing recipient balances, failed journal commits, cache replay, receipt corruption, finalization, network changes, and Token-2022 transfer fees.
+
+The completion checklist still includes token creation, upload payments, quote-token acquisition, wallet position management, the budget for the whole launch, runner custody and execution, the desktop process split, live CLI execution, and the validator recovery drill.

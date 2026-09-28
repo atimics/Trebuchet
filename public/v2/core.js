@@ -116,6 +116,7 @@ var TrebuchetCore = (() => {
     estimateAirdropExecutionCostSol: () => estimateAirdropExecutionCostSol,
     eventDerivedPriorResults: () => eventDerivedPriorResults,
     expectedVanityAttempts: () => expectedVanityAttempts,
+    formatTokenAmountRaw: () => formatTokenAmountRaw,
     hasCompletedLpResults: () => hasCompletedLpResults,
     hasOpenedPhase1Position: () => hasOpenedPhase1Position,
     invalidBase58Characters: () => invalidBase58Characters,
@@ -137,6 +138,7 @@ var TrebuchetCore = (() => {
     normalizeItems: () => normalizeItems,
     normalizeLogoImageMime: () => normalizeLogoImageMime,
     normalizeStreamlinedFees: () => normalizeStreamlinedFees,
+    normalizeTokenAmountRaw: () => normalizeTokenAmountRaw,
     normalizeTokenDescription: () => normalizeTokenDescription,
     normalizeTokenMintFormat: () => normalizeTokenMintFormat,
     normalizeTokenName: () => normalizeTokenName,
@@ -634,6 +636,41 @@ var TrebuchetCore = (() => {
       );
     }
     return { mime, width, height };
+  }
+  function normalizeTokenAmountRaw(value, decimals) {
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error("Use token decimals between 0 and 255");
+    if (typeof value === "number" && (!Number.isFinite(value) || Number.isInteger(value) && !Number.isSafeInteger(value))) throw new Error("Use decimal text for large token amounts");
+    const text = String(value ?? "").trim();
+    if (text.length > 400) throw new Error("Use a bounded token amount");
+    const match = /^(\d+)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(text);
+    if (!match) throw new Error("Use a positive decimal token amount");
+    const exponent = Number(match[3] || 0);
+    if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1e3) throw new Error("Use a bounded token exponent");
+    let digits = (match[1] + (match[2] || "")).replace(/^0+/, "");
+    if (!digits) throw new Error("Use a token amount greater than zero");
+    const shift = decimals + exponent - (match[2]?.length || 0);
+    if (shift < 0) {
+      if (typeof value === "number") {
+        const padded = digits.padStart(-shift + 1, "0"), whole = padded.slice(0, shift);
+        digits = (BigInt(whole) + (padded.at(shift) >= "5" ? 1n : 0n)).toString();
+        if (digits === "0") throw new Error("Use a token amount of at least one base unit");
+      } else {
+        if (-shift >= digits.length || !/^0+$/.test(digits.slice(shift))) throw new Error("Use an amount that fits the token decimals");
+        digits = digits.slice(0, shift);
+      }
+    } else {
+      if (digits.length + shift > 20) throw new Error("Use a token amount within the unsigned 64-bit limit");
+      digits += "0".repeat(shift);
+    }
+    if (digits.length > 20 || BigInt(digits) > U64_MAX) throw new Error("Use a token amount within the unsigned 64-bit limit");
+    return BigInt(digits).toString();
+  }
+  function formatTokenAmountRaw(value, decimals) {
+    const raw = normalizeTokenAmountRaw(value, 0);
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error("Use token decimals between 0 and 255");
+    if (decimals === 0) return raw;
+    const padded = raw.padStart(decimals + 1, "0");
+    return (padded.slice(0, -decimals) + "." + padded.slice(-decimals)).replace(/0+$/, "").replace(/\.$/, "");
   }
 
   // packages/core/src/launch-plan.js

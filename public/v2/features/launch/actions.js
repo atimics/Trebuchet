@@ -43,7 +43,7 @@ async function runV2Airdrop({ retry = false, skipConfirm = false, quiet = false,
       walletPublicKey: proof.walletPublicKey || selectedLaunchWalletPublicKey(),
       tokenMint: proof.airdrop?.tokenMint || proof.token.mint,
       tokenDecimals: proof.airdrop?.tokenDecimals ?? proof.token.decimals ?? currentLaunchConfig().token.decimals,
-      isToken2022: false,
+      isToken2022: proof.token.mintFormat === 'token-2022' || proof.token.isToken2022 === true || proof.airdrop?.isToken2022 === true,
       recipients,
     };
     const result = retry
