@@ -145,6 +145,7 @@ import { getRpcUrl, getNetwork } from './rpcConfig.js';
 import { getTokenMetadata, getUsdPrice, setOnChainPriceFallback } from './tokenInfoService.js';
 import { landTxWithRetry } from './chainRetry.js';
 import { getOnChainPriceUsd, clmmPriceBPerA } from './onChainPriceService.js';
+import { fetchVenuePoolsByMints } from './venuePoolService.js';
 import { normalizeDistribution } from './lpDistribution.js';
 import {
   FALLBACK_FEE_TIERS,
@@ -5655,7 +5656,16 @@ export function onChainPriceDeps(raydium) {
       const r = await raydium.api.fetchPoolByMints({
         mint1: m1, mint2: m2, sort: 'liquidity', order: 'desc',
       });
-      return Array.isArray(r) ? r : (r && Array.isArray(r.data) ? r.data : []);
+      const raydiumPools = Array.isArray(r) ? r : (r && Array.isArray(r.data) ? r.data : []);
+      // Orca and Meteora pools for the same pair, found and read on-chain.
+      // A failure here leaves the Raydium pools to price the token alone.
+      let venuePools = [];
+      try {
+        venuePools = await fetchVenuePoolsByMints(raydium.connection, m1, m2);
+      } catch (e) {
+        console.warn(`on-chain price: Orca/Meteora discovery failed: ${e.message}`);
+      }
+      return [...raydiumPools, ...venuePools];
     },
     readClmm: async (id) => raydium.clmm.getRpcClmmPoolInfo({ poolId: id }),
     // AMM v4 / stable pools — liquidityStateV4 layout.
