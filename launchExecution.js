@@ -65,6 +65,7 @@ export function createLaunchExecutionServices({
   pendingWallets,
   recordLpJournalProgress,
   recordTokenJournalProgress,
+  reconcileWalletOperation,
   registerOfficialBrandLaunch,
   requireSecretPinUnlocked,
   requireTokenCompleteForLiquidity,
@@ -1107,6 +1108,7 @@ export function createLaunchExecutionServices({
         },
         { stage: 'transfer_started', destinationWallet },
       );
+      await reconcileWalletOperation({ tempWalletSecretKey: secretKeyArr, destinationWallet });
 
       // 0. Metadata authority handoff (keep-authority launches only). The
       //    update authority currently sits on the launch wallet, which this

@@ -45,7 +45,7 @@ export async function connectRuntime(profile, { timeoutMs = 1000 } = {}) {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       const payload = await result.json();
-      if (!result.ok) throw Object.assign(runtimeError(payload.code || 'RUNTIME_REQUEST_FAILED', payload.error || `Runtime returned HTTP ${result.status}`), { statusCode: result.status });
+      if (!result.ok) throw Object.assign(runtimeError(payload.code || 'RUNTIME_REQUEST_FAILED', payload.error || `Runtime returned HTTP ${result.status}`), { statusCode: result.status, ...(typeof payload.operationId === 'string' ? { operationId: payload.operationId } : {}), ...(payload.errorDetails && typeof payload.errorDetails === 'object' ? { errorDetails: payload.errorDetails } : {}) });
       return payload;
     },
   });

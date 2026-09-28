@@ -120,3 +120,29 @@ test('stable operation identity includes plan, wallet, stage, and item index', (
   assert.equal(operationId(input), operationId({ ...input }));
   for (const change of [{ index: 2 }, { walletPublicKey: 'other' }, { planDigest: 'q' }]) assert.notEqual(operationId(input), operationId({ ...input, ...change }));
 });
+
+test('version one state upgrades with approval storage and retains signed recovery bytes', async (t) => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const dir = profile(t);
+  let store = openRuntimeStore(dir);
+  store.saveLaunch(launch);
+  const op = store.prepareOperation({ launchId: launch.id, kind: 'sweep' });
+  store.recordSignedTransaction({ operationId: op.id, signature: 'prior-tx', wire: 'saved-wire', blockhash: 'prior-hash', lastValidBlockHeight: 10 });
+  store.close();
+  const database = new DatabaseSync(path.join(dir, 'execution.sqlite'));
+  database.exec('DROP TABLE operation_approvals; PRAGMA user_version = 1;');
+  database.close();
+  store = openRuntimeStore(dir);
+  try {
+    assert.equal(store.getActiveOperation(launch.walletPublicKey).id, op.id);
+    assert.equal(store.getTransactions(op.id)[0].wire, 'saved-wire');
+    const approval = { id: 'approval-a', maxSpendLamports: 10000, expiresAtMs: 20000 };
+    store.recordOperationApproval(op.id, approval);
+    store.recordOperationApproval(op.id, approval);
+    assert.throws(() => store.recordOperationApproval(op.id, { ...approval, maxSpendLamports: 10001 }), { code: 'OPERATION_CONFLICT' });
+    assert.deepEqual(store.getOperationApprovals(op.id), [approval]);
+    const other = store.saveLaunch({ ...launch, id: 'other-launch', walletPublicKey: 'other-wallet' });
+    const otherOp = store.prepareOperation({ launchId: other.id, kind: 'sweep' });
+    assert.throws(() => store.recordOperationApproval(otherOp.id, approval), { code: 'OPERATION_CONFLICT' });
+  } finally { store.close(); }
+});

@@ -2,6 +2,12 @@ import { createPublicKey, verify } from 'node:crypto';
 import { PACKET_DATA_SIZE, VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 
+// Read from the public Solana cluster RPCs with getGenesisHash.
+export const SOLANA_GENESIS_HASHES = Object.freeze({
+  mainnet: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d',
+  devnet: 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG',
+});
+
 const invalid = (message) => Object.assign(new Error(message), { code: 'TRANSACTION_INVALID' });
 const unavailable = () => Object.assign(new Error('A complete chain response is required for recovery'), { code: 'CHAIN_STATE_UNAVAILABLE' });
 const ed25519Prefix = Buffer.from('302a300506032b6570032100', 'hex');
@@ -53,7 +59,7 @@ export function createSolanaSigner({ getSigners }) {
   };
 }
 
-export function createSolanaChain({ connection, network, expectedGenesisHash }) {
+export function createSolanaChain({ connection, network, expectedGenesisHash, beforeSend }) {
   if (!connection || !['devnet', 'mainnet', 'localnet'].includes(network) || typeof expectedGenesisHash !== 'string' || !expectedGenesisHash) {
     throw new TypeError('Supply a Solana connection, network, and expected genesis hash');
   }
@@ -100,9 +106,10 @@ export function createSolanaChain({ connection, network, expectedGenesisHash }) 
       if (validity.value) return { state: 'rebroadcast', evidence: { slot: afterExpiry.slot, finalizedBlockHeight: height } };
       return { state: 'expired', evidence: { slot: afterExpiry.slot, finalizedBlockHeight: height, blockhashValid: false } };
     },
-    async sendTransaction(transaction) {
+    async sendTransaction(transaction, context) {
       validateSaved(transaction);
       await checkNetwork();
+      if (beforeSend) await beforeSend(transaction, context);
       return connection.sendRawTransaction(Buffer.from(transaction.wire, 'base64'), { skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 0 });
     },
   };

@@ -60,7 +60,7 @@ export function openRuntimeStore(profileDir) {
     fs.chmodSync(file, 0o600);
     db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;');
     const version = db.prepare('PRAGMA user_version').get().user_version;
-    if (version > 1) throw new Error('Execution database requires a newer Trebuchet runtime');
+    if (version > 2) throw new Error('Execution database requires a newer Trebuchet runtime');
     db.exec(`BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS collections (namespace TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(namespace, id)) STRICT;
       CREATE TABLE IF NOT EXISTS migrations (source TEXT PRIMARY KEY, digest TEXT NOT NULL, imported_at TEXT NOT NULL) STRICT;
@@ -76,7 +76,10 @@ export function openRuntimeStore(profileDir) {
         blockhash TEXT NOT NULL, last_valid_height INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('signed','submitted','confirmed','failed','expired')),
         receipt TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       ) STRICT;
-      PRAGMA user_version = 1;
+      CREATE TABLE IF NOT EXISTS operation_approvals (
+        id TEXT PRIMARY KEY, operation_id TEXT NOT NULL REFERENCES operations(id), body TEXT NOT NULL, created_at TEXT NOT NULL
+      ) STRICT;
+      PRAGMA user_version = 2;
       COMMIT;`);
   } catch (error) {
     try { db?.close(); } catch { /* retain the opening error */ }
@@ -173,6 +176,24 @@ export function openRuntimeStore(profileDir) {
       });
     },
     getOperation,
+    getActiveOperation(walletPublicKey) {
+      return decodeOperation(db.prepare("SELECT * FROM operations WHERE wallet = ? AND state IN ('prepared','submitted','recovery_required')").get(walletPublicKey));
+    },
+    recordOperationApproval(operationId, approval) {
+      return transaction(() => {
+        if (!getOperation(operationId) || typeof approval?.id !== 'string' || !approval.id) throw new TypeError('An approval requires an operation and identity');
+        const body = publicJson(approval);
+        const prior = db.prepare('SELECT * FROM operation_approvals WHERE id = ?').get(approval.id);
+        if (prior) {
+          if (prior.operation_id !== operationId || prior.body !== body) conflict('Approval identity is immutable');
+          return;
+        }
+        db.prepare('INSERT INTO operation_approvals VALUES (?, ?, ?, ?)').run(approval.id, operationId, body, now());
+      });
+    },
+    getOperationApprovals(operationId) {
+      return db.prepare('SELECT body FROM operation_approvals WHERE operation_id = ? ORDER BY rowid').all(operationId).map((row) => JSON.parse(row.body));
+    },
     listOperations(launchId) {
       return db.prepare('SELECT * FROM operations WHERE launch_id = ? ORDER BY created_at, rowid').all(launchId).map(decodeOperation);
     },

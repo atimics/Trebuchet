@@ -11,7 +11,8 @@
     "./client": "./src/client.js",
     "./control": "./src/control.js",
     "./engine": "./src/engine.js",
-    "./solana": "./src/solana.js"
+    "./solana": "./src/solana.js",
+    "./sol-sweep": "./src/sol-sweep.js"
   },
   "engines": {
     "node": ">=22.13.0"

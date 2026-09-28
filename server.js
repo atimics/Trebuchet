@@ -1,3 +1,4 @@
+import { createWalletExecutionRuntime } from './walletExecution.js';
 import { createLaunchExecutionServices, claimLaunchOperation, LaunchRejection } from './launchExecution.js';
 import express from 'express';
 import { acquireProfileOwner } from '@trebuchet/runtime/owner';
@@ -54,7 +55,6 @@ import {
   checkWalletBalanceMultiToken,
   sweepNftsToDestination,
   sweepAllTokensToDestination,
-  sweepSolToDestination,
   executeAirdrop,
 } from './walletHelpers.js';
 
@@ -368,16 +368,6 @@ function launchOpInFlight(walletPublicKey) {
 function clearLaunchOpInFlight(walletPublicKey) {
   launchOpsInFlight.delete(walletPublicKey);
 }
-// Live services and HTTP jobs share one wallet admission guard.
-function claimLaunchOp(walletPublicKey, op) {
-  claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
-}
-
-function rejectOrClaimLaunchOp(res, walletPublicKey, op) {
-  try { claimLaunchOp(walletPublicKey, op); return false; }
-  catch (error) { if (!(error instanceof LaunchRejection)) throw error; sendErrorResponse(res, error); return true; }
-}
-
 // Live progress tracker for airdrops. Both the real executeAirdrop (in
 // walletHelpers.js) and the demo simulateAirdrop (in demoChainService.js)
 // write into this Map as they process recipients, one entry per launch
@@ -661,7 +651,31 @@ const __dirname = path.dirname(__filename);
  */
 const AUTOSWAP_CONCURRENCY = 1;
 
-export function createLocalApiApp({ runtimeControl = null } = {}) {
+export function createLocalApiApp({ runtimeControl = null, runtimeOwner = null } = {}) {
+const walletExecution = runtimeOwner ? createWalletExecutionRuntime({
+  owner: runtimeOwner,
+  getScopeId: (walletPublicKey) => launchJournal.activeForWallet(walletPublicKey)?.id,
+}) : null;
+const requireWalletExecution = () => {
+  if (!walletExecution) throw Object.assign(new Error('Start the owned runtime before live transfers.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  return walletExecution;
+};
+const sweepSolToDestination = (input) => requireWalletExecution().sweepSolToDestination(input);
+const reconcileWalletOperation = (input) => requireWalletExecution().recover(input);
+
+// Live services and HTTP jobs share wallet admission and durable recovery state.
+function claimLaunchOp(walletPublicKey, op) {
+  const pending = walletExecution?.active(walletPublicKey);
+  if (pending && op !== 'transfer-assets') {
+    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: 'Resume the saved asset transfer before starting another wallet action.' });
+  }
+  claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
+}
+function rejectOrClaimLaunchOp(res, walletPublicKey, op) {
+  try { claimLaunchOp(walletPublicKey, op); return false; }
+  catch (error) { if (!(error instanceof LaunchRejection)) throw error; sendErrorResponse(res, error); return true; }
+}
+
 // The Raydium SDK prints every simulated transaction ("simulate tx
 // string: [<base64>...]") with a bare console.log. It is noise in the app
 // log; drop just that message.
@@ -715,6 +729,7 @@ function sendErrorResponse(res, error, fallbackStatus = 500) {
     error: launchJournal.errorMessage(error),
   };
   if (error?.code) body.code = error.code;
+  if (error?.operationId) body.operationId = error.operationId;
   if (error?.errorDetails) body.errorDetails = error.errorDetails;
   if (error?.failedPhase) body.failedPhase = error.failedPhase;
   if (error?.failedAllocationIndex !== undefined) body.failedAllocationIndex = error.failedAllocationIndex;
@@ -5148,6 +5163,7 @@ const launchServices = createLaunchExecutionServices({
   pendingWallets,
   recordLpJournalProgress,
   recordTokenJournalProgress,
+  reconcileWalletOperation,
   registerOfficialBrandLaunch,
   requireSecretPinUnlocked,
   requireTokenCompleteForLiquidity,
@@ -8701,7 +8717,7 @@ export function createLocalApiServer({
         if (!application) {
           owner = acquireProfileOwner(process.env.TREBUCHET_CONFIG_DIR || __dirname);
           control = createRuntimeControl({ owner, stop: () => runtime.stop(), isBusy: () => localApplication?.locals?.runtimeBusy?.() === true });
-          localApplication = createLocalApiApp({ runtimeControl: control });
+          localApplication = createLocalApiApp({ runtimeControl: control, runtimeOwner: owner });
         }
         try {
           const address = await new Promise((resolve, reject) => {

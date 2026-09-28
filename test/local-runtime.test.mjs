@@ -88,3 +88,44 @@ test('CLI clients share one production runtime and recover its ownership after p
     fs.rmSync(profile, { recursive: true, force: true });
   }
 });
+
+test('a pending durable transfer holds later live API wallet actions across runtime startup', { timeout: 45_000 }, async () => {
+  const { openRuntimeStore } = await import('../packages/runtime/src/store.js');
+  const { sweepWallet, sweepDestination } = await import('../packages/runtime/test/fixtures/sol-sweep-chain.mjs');
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-runtime-pending-'));
+  fs.writeFileSync(path.join(profile, 'userPrefs.json'), JSON.stringify({ demoMode: false }));
+  const store = openRuntimeStore(profile);
+  const walletPublicKey = sweepWallet.publicKey.toBase58();
+  let operation;
+  try {
+    store.saveLaunch({ id: 'pending-sweep', walletPublicKey, network: 'devnet', planDigest: 'b'.repeat(64), config: { purpose: 'sol-sweep' } });
+    operation = store.prepareOperation({ launchId: 'pending-sweep', kind: 'sol-sweep', payload: { destinationWallet: sweepDestination, amountLamports: 1000 } });
+  } finally { store.close(); }
+  let runtime;
+  try {
+    runtime = await ensureRuntime(profile, { args: [server] });
+    const tempWalletSecretKey = Array.from(sweepWallet.secretKey);
+    const requests = [
+      ['/api/create-token', { tempWalletSecretKey, name: 'Pending Test', symbol: 'PEND', description: 'Recovery test', totalSupply: '1000' }],
+      ['/api/run-airdrop', { tempWalletSecretKey, tokenMint: sweepDestination, tokenDecimals: 9, recipients: [{ address: sweepDestination, amount: '1' }] }],
+    ];
+    for (const [endpoint, body] of requests) {
+      await assert.rejects(runtime.request(endpoint, { method: 'POST', body }), (error) => {
+        assert.equal(error.statusCode, 409);
+        assert.equal(error.code, 'EXECUTION_RECOVERY_REQUIRED');
+        assert.equal(error.operationId, operation.id);
+        return true;
+      });
+    }
+    const check = openRuntimeStore(profile);
+    try {
+      assert.equal(check.getActiveOperation(walletPublicKey).id, operation.id);
+      assert.deepEqual(check.getTransactions(operation.id), []);
+    } finally { check.close(); }
+    await runtime.request('/api/runtime/stop', { method: 'POST' });
+    await waitFor(() => !fs.existsSync(path.join(profile, 'runtime.json')));
+  } finally {
+    if (runtime) { try { process.kill(runtime.identity.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
+    fs.rmSync(profile, { recursive: true, force: true });
+  }
+});

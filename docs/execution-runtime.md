@@ -104,3 +104,15 @@ These checks cover the existing callbacks and error paths. Production adapters m
 ### Saved launches use the profile owner
 
 CLI saved-launch commands now attach to the local runtime, or start it under the profile lock. The runtime handles save, list, and remove through the same API used by the desktop. CLI output retains the database path and saved-launch fields. The integration test checks that the app can read a CLI save and that the same owner remains active across all three commands.
+
+### Live SOL transfer through the engine
+
+The final SOL transfer now calls `createSolSweepService` through the local wallet host. The host supplies its active profile owner, signer, connection, and fee policy. The service saves a bounded request approval with the operation, then commits the signed bytes before sending. The saved approval includes the wallet, destination, full chain genesis hash, expiry, and maximum spend in lamports. Schema version two adds immutable approval records and preserves version one recovery data.
+
+The service verifies the exact signed message against the saved transfer intent. Completion requires a finalized receipt with the same signature and message, the expected destination balance increase, and the exact payer decrease including its bounded fee. A pending operation retains wallet admission across restart. Asset-transfer retries reconcile it before another asset send. Other live wallet actions return its operation ID through the API and native client.
+
+`test/wallet-execution.test.mjs` exercises the production host with real Solana signing. Its process test accepts a transaction at a local HTTP RPC fixture, kills the caller before the response, then starts the same host with the saved profile. The next process adopts the finalized receipt with one send in total. The fixture also checks that approval and signed bytes were durable when the first send arrived. The tests use local RPC fixtures and temporary profiles.
+
+`packages/runtime/test/sol-sweep.test.mjs` covers receipt integrity, failed approval and transaction commits, fee and message changes, expiry during RPC calls, owner release, concurrent clients, and approved rebroadcast of identical saved bytes. `test/local-runtime.test.mjs` verifies that a saved pending transfer holds token creation and airdrops through the real HTTP runtime. The architecture suite passes 129 tests, and package coverage checks 93 required files.
+
+Token, metadata, liquidity, token-asset, and NFT transaction adapters still need engine integration. Full launch and runner spending limits remain separate requirements from the bounded local transfer request implemented here.

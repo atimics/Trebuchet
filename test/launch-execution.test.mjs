@@ -25,6 +25,7 @@ function fixture() {
   };
   const deps = {
     PublicKey, launchJournal,
+    reconcileWalletOperation: async () => null,
     requireSecretPinUnlocked: () => { if (state.locked) throw new LaunchRejection(423, { success: false, code: 'SECRET_PIN_LOCKED', error: 'Unlock recovery storage.' }); },
     requireTokenCompleteForLiquidity: async () => {},
     claimLaunchOp: (key, op) => claimLaunchOperation(operations, key, op, 1000),
@@ -225,4 +226,13 @@ test('a failed airdrop receipt stops before the token and SOL sweeps', async () 
   assert.equal(f.calls.includes('tokens'), false);
   assert.equal(f.calls.includes('sol-gate'), false);
   assert.equal(f.state.removed, 0);
+});
+
+test('an unresolved engine transfer stops before further asset sends and preserves wallet recovery', async () => {
+  const f = fixture();
+  f.deps.reconcileWalletOperation = async () => { throw Object.assign(new Error('Resume the saved transfer.'), { code: 'EXECUTION_RECOVERY_REQUIRED', operationId: 'saved-op', statusCode: 409 }); };
+  await assert.rejects(f.services().transferAssets({ ...input, keepMetadataAuthorityMint: 'mint-a' }), { code: 'EXECUTION_RECOVERY_REQUIRED', operationId: 'saved-op' });
+  assert.deepEqual(f.calls, ['signer']);
+  assert.equal(f.state.removed, 0);
+  assert.equal(f.operations.size, 0);
 });

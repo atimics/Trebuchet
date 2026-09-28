@@ -120,13 +120,13 @@ function errorText(err) {
 
 // Recovery failures stop every enclosing launch phase and retry path.
 export function throwIfExecutionPaused(error) {
-  if (['RECOVERY_STORAGE_UNAVAILABLE', 'CHAIN_STATE_UNAVAILABLE'].includes(error?.code)) throw error;
+  if (['RECOVERY_STORAGE_UNAVAILABLE', 'CHAIN_STATE_UNAVAILABLE', 'EXECUTION_RECOVERY_REQUIRED'].includes(error?.code)) throw error;
 }
 
 // Classify a thrown transaction error by recovery state and retry policy.
 // Recovery state takes priority. Funds and network errors follow.
 export function classifyChainError(err) {
-  if (['RECOVERY_STORAGE_UNAVAILABLE', 'CHAIN_STATE_UNAVAILABLE'].includes(err?.code)) return 'recovery_required';
+  if (['RECOVERY_STORAGE_UNAVAILABLE', 'CHAIN_STATE_UNAVAILABLE', 'EXECUTION_RECOVERY_REQUIRED'].includes(err?.code)) return 'recovery_required';
   const text = errorText(err);
   if (!text) return 'deterministic';
   for (const re of INSUFFICIENT_FUNDS_SIGNS) if (re.test(text)) return 'insufficient_funds';
