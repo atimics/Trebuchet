@@ -2214,7 +2214,9 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="supplyEditor"/);
   assert.doesNotMatch(html, /Classic parity controls/);
   assert.match(html, /class="launch-toolbar"/);
-  assert.match(html, /class="launch-settings-drawer"/);
+  // Mode is a visible switch, not a drawer behind a "+".
+  assert.match(html, /class="launch-mode"/);
+  assert.doesNotMatch(html + css, /launch-settings-drawer/);
   assert.match(html, /id="launchSettingsEnvironment"/);
   assert.doesNotMatch(html, /id="launchSettingsExperience"/);
   assert.match(combined, /Launch wallet/);
@@ -2225,7 +2227,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.doesNotMatch(js, /class="launch-guidance-list"/);
   assert.doesNotMatch(js, /Verify funding to continue/);
   assert.match(css, /\.funding-task\s*\{/);
-  assert.match(css, /\.launch-settings-drawer\[open\] \.launch-choice-bar/);
+  assert.match(js, /Fixed by this coin\\'s mint/);
   assert.doesNotMatch(js, /Check prerequisites/);
   assert.doesNotMatch(js, /Classic execution payloads ready/);
   assert.match(combined, /The name and logo stay hidden until the pool is locked/);

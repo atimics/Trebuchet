@@ -220,27 +220,18 @@
               </aside>
             </details>
 
-            <details class="launch-settings-drawer">
-              <summary>
-                <span><i class="fa-solid fa-sliders" aria-hidden="true"></i><strong>Mode</strong></span>
-                <small><span id="launchSettingsEnvironment">Test</span></small>
-              </summary>
-
-              <div class="launch-choice-bar" aria-label="Launch choices">
-                <div class="launch-choice-group">
-                  <div class="environment-row" role="tablist" aria-label="Mode">
-                    <button class="environment-button" type="button" role="tab" aria-selected="false" data-action="select-environment" data-environment="practice">
-                      <i class="fa-solid fa-flask" aria-hidden="true"></i>
-                      <span><strong>Test</strong><small>Nothing is sent</small></span>
-                    </button>
-                    <button class="environment-button" type="button" role="tab" aria-selected="false" data-action="select-environment" data-environment="live">
-                      <i class="fa-solid fa-satellite-dish" aria-hidden="true"></i>
-                      <span><strong>Live</strong><small>Real transactions and SOL</small></span>
-                    </button>
-                  </div>
-                </div>
+            <div class="launch-mode" role="group" aria-labelledby="launchModeLabel">
+              <span class="launch-mode-label" id="launchModeLabel"><i class="fa-solid fa-sliders" aria-hidden="true"></i><strong>Mode</strong></span>
+              <div class="environment-row" role="tablist" aria-label="Mode">
+                <button class="environment-button" type="button" role="tab" aria-selected="false" data-action="select-environment" data-environment="practice">
+                  <i class="fa-solid fa-flask" aria-hidden="true"></i><strong>Test</strong>
+                </button>
+                <button class="environment-button" type="button" role="tab" aria-selected="false" data-action="select-environment" data-environment="live">
+                  <i class="fa-solid fa-satellite-dish" aria-hidden="true"></i><strong>Live</strong>
+                </button>
               </div>
-            </details>
+              <small id="launchSettingsEnvironment">Nothing is sent</small>
+            </div>
             </div>
 
             <div class="coin-state-layout">
