@@ -78,6 +78,13 @@ import * as coinStore from './coinStore.js';
 import { mergeCoins, validMint, readMintAccount } from './coinService.js';
 import * as launchFlywheels from './launchFlywheels.js';
 import * as userPrefs from './userPrefs.js';
+import {
+  getCachedImage,
+  putCachedImage,
+  recentImageFailure,
+  rememberImageFailure,
+  isContentAddressed,
+} from './imageCache.js';
 import * as discoveryStore from './discoveryStore.js';
 import * as brandShieldStore from './brandShieldStore.js';
 import { getSealedIdentity, removeSealedIdentity } from './sealedIdentityStore.js';
@@ -6765,51 +6772,37 @@ async function assertHostResolvesPublic(hostname) {
   }
 }
 
-app.get('/api/proxy-image', async (req, res) => {
+async function fetchProxyImage(parsed) {
+  // Time-box the whole fetch (including redirect chain) so a slow/hung host
+  // can't pin the request.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+
+  // Follow redirects manually so each hop is re-validated. fetch with
+  // redirect:'manual' returns the 3xx response instead of chasing it for us.
+  const MAX_HOPS = 4;
+  let currentUrl = parsed;
+  let upstream;
   try {
-    const raw = req.query.url;
-    if (!raw || typeof raw !== 'string') throw new Error('url required');
-
-    let parsed;
-    try {
-      parsed = new URL(raw);
-    } catch (e) {
-      throw new Error('invalid url');
-    }
-
-    // Time-box the whole fetch (including redirect chain) so a slow/hung host
-    // can't pin the request.
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-
-    // Follow redirects manually so each hop is re-validated. fetch with
-    // redirect:'manual' returns the 3xx response instead of chasing it for us.
-    const MAX_HOPS = 4;
-    let currentUrl = parsed;
-    let upstream;
-    try {
-      for (let hop = 0; ; hop++) {
-        assertAllowedProxyUrl(currentUrl);
-        await assertHostResolvesPublic(currentUrl.hostname);
-        const resp = await fetch(currentUrl.toString(), {
-          signal: controller.signal,
-          headers: { Accept: 'image/*' },
-          redirect: 'manual',
-        });
-        if (resp.status >= 300 && resp.status < 400) {
-          if (hop >= MAX_HOPS) throw new Error('too many redirects');
-          const loc = resp.headers.get('location');
-          if (!loc) throw new Error('redirect without location');
-          // Resolve relative redirects against the current URL; the next loop
-          // iteration re-runs the full protocol + host + IP validation on it.
-          currentUrl = new URL(loc, currentUrl);
-          continue;
-        }
-        upstream = resp;
-        break;
+    for (let hop = 0; ; hop++) {
+      assertAllowedProxyUrl(currentUrl);
+      await assertHostResolvesPublic(currentUrl.hostname);
+      const resp = await fetch(currentUrl.toString(), {
+        signal: controller.signal,
+        headers: { Accept: 'image/*' },
+        redirect: 'manual',
+      });
+      if (resp.status >= 300 && resp.status < 400) {
+        if (hop >= MAX_HOPS) throw new Error('too many redirects');
+        const loc = resp.headers.get('location');
+        if (!loc) throw new Error('redirect without location');
+        // Resolve relative redirects against the current URL; the next loop
+        // iteration re-runs the full protocol + host + IP validation on it.
+        currentUrl = new URL(loc, currentUrl);
+        continue;
       }
-    } finally {
-      clearTimeout(timer);
+      upstream = resp;
+      break;
     }
     if (!upstream.ok) throw new Error('upstream ' + upstream.status);
 
@@ -6820,13 +6813,66 @@ app.get('/api/proxy-image', async (req, res) => {
     const declared = Number(upstream.headers.get('content-length') || 0);
     if (declared && declared > MAX_BYTES) throw new Error('image too large');
 
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    if (buf.length > MAX_BYTES) throw new Error('image too large');
+    const body = Buffer.from(await upstream.arrayBuffer());
+    if (body.length > MAX_BYTES) throw new Error('image too large');
+    return { type, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-    res.set('Content-Type', type);
-    // Logos rarely change; let the renderer/browser cache for a day.
-    res.set('Cache-Control', 'public, max-age=86400');
-    res.send(buf);
+// One upstream fetch per URL at a time: a coin card and its color reading
+// ask for the same logo together.
+const proxyImageInflight = new Map();
+
+app.get('/api/proxy-image', async (req, res) => {
+  const raw = req.query.url;
+  try {
+    if (!raw || typeof raw !== 'string') throw new Error('url required');
+
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch (e) {
+      throw new Error('invalid url');
+    }
+    // Validate before touching the cache, so a disallowed URL is refused
+    // even if it was somehow cached.
+    assertAllowedProxyUrl(parsed);
+    const cacheControl = isContentAddressed(raw)
+      ? 'public, max-age=31536000, immutable'
+      : 'public, max-age=86400';
+
+    const cached = getCachedImage(raw);
+    if (cached) {
+      res.set('Content-Type', cached.type);
+      res.set('Cache-Control', cacheControl);
+      res.set('X-Trebuchet-Image-Cache', 'hit');
+      res.send(cached.body);
+      return;
+    }
+    const failed = recentImageFailure(raw);
+    if (failed) throw new Error(failed);
+
+    let pending = proxyImageInflight.get(raw);
+    if (!pending) {
+      pending = fetchProxyImage(parsed)
+        .then((image) => {
+          putCachedImage(raw, image);
+          return image;
+        })
+        .catch((error) => {
+          rememberImageFailure(raw, error.message);
+          throw error;
+        })
+        .finally(() => proxyImageInflight.delete(raw));
+      proxyImageInflight.set(raw, pending);
+    }
+    const image = await pending;
+    res.set('Content-Type', image.type);
+    res.set('Cache-Control', cacheControl);
+    res.set('X-Trebuchet-Image-Cache', 'miss');
+    res.send(image.body);
   } catch (error) {
     // 404 (not 500) so a failed proxy cleanly triggers the client's image
     // onerror path and the coin falls back to the embossed symbol quietly.

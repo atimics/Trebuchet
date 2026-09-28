@@ -244,3 +244,47 @@ bootLocalApi().catch((error) => {
   });
   renderAll();
 });
+
+// The screen stays where the user put it. Only their own scrolling (wheel,
+// touch, keys, or the scrollbar) moves the remembered position. When a
+// re-render shortens the page for a moment (a list rebuilt, a section
+// showing "Reading…"), the browser pulls the scroll up; once the content is
+// back, this puts it where it was. Opening a different row resets it on
+// purpose through setViewScrollTop.
+const viewScrollIntent = new WeakMap();
+let lastUserScrollAt = 0;
+
+function markUserScroll(event) {
+  if (event.type === 'pointerdown' && !event.target?.classList?.contains('view')) return;
+  if (event.type === 'keydown' && !['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' '].includes(event.key)) return;
+  lastUserScrollAt = Date.now();
+}
+
+function setViewScrollTop(view, top) {
+  if (!view) return;
+  view.scrollTop = top;
+  viewScrollIntent.set(view, view.scrollTop);
+}
+
+function restoreViewScroll() {
+  const view = document.querySelector('.view.is-active');
+  const want = view ? viewScrollIntent.get(view) : null;
+  if (want == null || Date.now() - lastUserScrollAt < 400) return;
+  const reachable = Math.min(want, view.scrollHeight - view.clientHeight);
+  if (view.scrollTop < reachable) view.scrollTop = reachable;
+}
+
+['wheel', 'touchmove', 'keydown', 'pointerdown'].forEach((type) => {
+  window.addEventListener(type, markUserScroll, { capture: true, passive: true });
+});
+document.addEventListener('scroll', (event) => {
+  const view = event.target;
+  if (!view?.classList?.contains('view')) return;
+  // A user scroll, or any move further down (e.g. scrollIntoView), is where
+  // the screen should be. A move up without the user is the browser clamping.
+  if (Date.now() - lastUserScrollAt < 400 || view.scrollTop > (viewScrollIntent.get(view) ?? 0)) {
+    viewScrollIntent.set(view, view.scrollTop);
+  }
+}, true);
+new MutationObserver(() => window.requestAnimationFrame(restoreViewScroll))
+  .observe(document.querySelector('.workspace') || document.body, { childList: true, subtree: true, characterData: true });

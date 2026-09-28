@@ -3,11 +3,9 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-09-28T04:20:46.574Z",
-  "durationMs": 1628,
-  "generatedAt": "2026-09-28T04:32:07.151Z",
-  "durationMs": 1753,
-  "target": "file:///Users/ratimics/develop/trebuchet-wt-facts/public/v2/index.html",
+  "generatedAt": "2026-09-28T05:33:21.124Z",
+  "durationMs": 2789,
+  "target": "file:///Users/ratimics/develop/trebuchet-wt-helius/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
     "horizontalOverflow",
@@ -21,13 +19,10 @@
     "keyboardWalkthrough"
   ],
   "assetHashes": {
-    "index.html": "c7834b8c7a8d50b474cfaff662f22d9bd639be40ac8f7b91db90c1ebac966930",
-    "styles.css": "8dfda551b8b89c42f6f88d119d68fe66c0f21097f5d95b38128fa8d1630ba593",
+    "index.html": "decdd470193dc3becac1cdf9564550585f5effaca235de9e0cc4505ddb6aa49c",
+    "styles.css": "371d54d320a03a893c167e972625a151f325fdd1bf9de0740db072313b4f9308",
     "api-client.js": "780fd86902d7da75f0e48dd68ef6b1e97f0a0ec0592ddab48bc5d06f4920e610",
-    "app.js": "665918dfc10f92327c9b91a046f7f467f157c89ce34a8ac7cafb9d0aa81b2fea"
-    "styles.css": "d1fd94941d9f058635087c96cd56b3beb2687c0425f0547870738bde398688b2",
-    "api-client.js": "780fd86902d7da75f0e48dd68ef6b1e97f0a0ec0592ddab48bc5d06f4920e610",
-    "app.js": "d87ebc9f2de3fa3b3e25fbc91d32296f66ee60e67a79c54c70ead9bea942d6ec"
+    "app.js": "8c972eacbc380293fd465499831dccc07155f0dd8c8d8e9c2940c1988bec13b5"
   },
   "viewports": [
     {
@@ -53,7 +48,7 @@
         "focusIsVisible": true,
         "focusablesAreLabelled": true
       },
-      "scrollOwner": "panel"
+      "scrollOwner": "view"
     },
     {
       "name": "normal",
@@ -78,7 +73,7 @@
         "focusIsVisible": true,
         "focusablesAreLabelled": true
       },
-      "scrollOwner": "panel"
+      "scrollOwner": "view"
     },
     {
       "name": "cramped",

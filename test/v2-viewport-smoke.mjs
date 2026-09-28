@@ -111,6 +111,16 @@ async function smokeViewport(browser, viewport) {
         workspace: rect(workspace),
         shell: rect(shell),
         workspaceOverflowY: workspace ? getComputedStyle(workspace).overflowY : null,
+        viewOverflowY: getComputedStyle(document.querySelector('#view-launch')).overflowY,
+        viewScrollHeight: document.querySelector('#view-launch').scrollHeight,
+        viewTop: document.querySelector('#view-launch').getBoundingClientRect().top,
+        // Anything inside the screen that scrolls on its own.
+        nestedScrollers: [...document.querySelectorAll('#view-launch *')].filter((element) => {
+          const style = getComputedStyle(element);
+          return element.offsetParent !== null
+            && /(auto|scroll)/.test(style.overflowY)
+            && element.scrollHeight > element.clientHeight + 2;
+        }).map((element) => element.id || element.className).slice(0, 5),
         docScrollHeight: document.documentElement.scrollHeight,
       };
     });
@@ -202,14 +212,16 @@ async function smokeViewport(browser, viewport) {
       assert.ok(workspaceState.visiblePaneCount > 0, `${viewport.name}: ${workspace} has no visible workspace pane`);
       assert.equal(workspaceState.classicSectionVisible, true, `${viewport.name}: ${workspace} content is hidden`);
     }
-    // Which element owns vertical scrolling is a deliberate, width-dependent
-    // decision: above the 900px breakpoint the workspace panel scrolls
-    // internally so the shell stays put; at or below it the page scrolls.
-    // Pin both, so neither can flip silently.
-    const expectedScrollOwner = viewport.tier === 'wide' || viewport.tier === 'normal'
-      ? 'panel'
-      : 'page';
-    const actualScrollOwner = collapsedMetrics.workspaceOverflowY === 'auto' ? 'panel' : 'page';
+    // One scroll per screen: above the 900px breakpoint the screen (the view)
+    // scrolls and the sidebar and header stay put; at or below it the page
+    // scrolls. Nothing inside the screen scrolls on its own, at any width.
+    assert.deepEqual(
+      collapsedMetrics.nestedScrollers,
+      [],
+      `${viewport.name}: something inside the screen scrolls on its own`,
+    );
+    const expectedScrollOwner = viewport.tier === 'wide' || viewport.tier === 'normal' ? 'view' : 'page';
+    const actualScrollOwner = collapsedMetrics.viewOverflowY === 'auto' ? 'view' : 'page';
     assert.equal(
       actualScrollOwner,
       expectedScrollOwner,
@@ -219,10 +231,10 @@ async function smokeViewport(browser, viewport) {
     const workspaceStartsInFirstViewport = collapsedMetrics.workspace.top < collapsedMetrics.clientHeight;
     const firstViewportFit = isDesktopClass(viewport)
       ? workspaceStartsInFirstViewport
-        // When the page owns scrolling the panel may exceed the window, but the
-        // document must actually be able to reveal all of it — not clip it.
-        && (actualScrollOwner === 'panel'
-          || collapsedMetrics.docScrollHeight + 1 >= collapsedMetrics.workspace.bottom)
+        // Whichever element scrolls must be able to reveal all of the panel.
+        && (actualScrollOwner === 'view'
+          ? collapsedMetrics.viewTop + collapsedMetrics.viewScrollHeight + 1 >= collapsedMetrics.workspace.bottom
+          : collapsedMetrics.docScrollHeight + 1 >= collapsedMetrics.workspace.bottom)
       : collapsedMetrics.cockpit.bottom <= viewport.height + 1;
     assert.ok(
       firstViewportFit,
@@ -230,6 +242,7 @@ async function smokeViewport(browser, viewport) {
         workspaceTop: collapsedMetrics.workspace.top,
         workspaceBottom: collapsedMetrics.workspace.bottom,
         clientHeight: collapsedMetrics.clientHeight,
+        viewScrollHeight: collapsedMetrics.viewScrollHeight,
         docScrollHeight: collapsedMetrics.docScrollHeight,
         actualScrollOwner,
       })}`,

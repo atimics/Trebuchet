@@ -381,11 +381,13 @@ function renderLaunchWorkspace() {
 // Open a row. Which row is open is a view, never saved and never progress.
 function setLaunchWorkspace(workspace, { focus = false } = {}) {
   if (!launchWorkspaces.some((item) => item.id === workspace)) return;
+  const changed = state.launchWorkspace !== workspace;
   state.launchWorkspace = workspace;
   renderLaunchWorkspace();
   renderLaunchIdentity();
-  const viewport = $('#launchWorkspaceViewport');
-  if (viewport) viewport.scrollTop = 0;
+  // A different row opens at its top. Re-selecting the open row (e.g. Grind
+  // on Token & pools) must not move the screen.
+  if (changed) setViewScrollTop($('#view-launch'), 0);
   if (focus) {
     $(`.coin-fact[data-coin-fact="${workspace}"]`)?.focus();
   }
