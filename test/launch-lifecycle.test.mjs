@@ -555,7 +555,7 @@ test('lock phase preserves a failed receipt and stops before the next lock', asy
 test('an uncertain lock lookup pauses the whole lock phase', async () => {
   let lookups = 0;
   const raydium = makeMockRaydium({ connection: makeFakeConnection({
-    getProgramAccounts: async () => { lookups++; throw new Error('RPC read failed'); },
+    getAccountInfo: async () => { lookups++; throw new Error('RPC read failed'); },
   }) });
   const results = [makeResultEntry({ mainCount: 2, withBootstrap: true })];
   await assert.rejects(hooks.lockAllPositions({ raydium, results }), { code: 'CHAIN_STATE_UNAVAILABLE' });
