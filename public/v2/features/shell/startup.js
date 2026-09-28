@@ -288,3 +288,80 @@ document.addEventListener('scroll', (event) => {
 }, true);
 new MutationObserver(() => window.requestAnimationFrame(restoreViewScroll))
   .observe(document.querySelector('.workspace') || document.body, { childList: true, subtree: true, characterData: true });
+
+
+// Few-choice dropdowns become visible choices: a slider for ordered values
+// (address length, support depth, fee tier) and a row of buttons for the
+// rest. Mark a <select> with data-choice="slider" or "buttons"; an option's
+// data-short is its label. The <select> stays the source of truth, so
+// change handlers and saved plans work unchanged.
+function chooseOption(select, index) {
+  if (select.disabled || index < 0 || index >= select.options.length) return;
+  if (select.selectedIndex !== index) {
+    select.selectedIndex = index;
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  syncChoiceControl(select);
+}
+
+function syncChoiceControl(select) {
+  const control = select.nextElementSibling;
+  if (!control?.classList?.contains('choice-control')) return;
+  const range = control.querySelector('input[type="range"]');
+  if (range) {
+    range.value = String(Math.max(0, select.selectedIndex));
+    range.disabled = select.disabled;
+    range.setAttribute('aria-valuetext', select.options[select.selectedIndex]?.textContent?.trim() || '');
+  }
+  control.querySelectorAll('button[data-choice-index]').forEach((button) => {
+    const on = Number(button.dataset.choiceIndex) === select.selectedIndex;
+    button.classList.toggle('is-selected', on);
+    button.setAttribute('aria-checked', on ? 'true' : 'false');
+    button.disabled = select.disabled;
+  });
+}
+
+function enhanceChoiceControls(root = document) {
+  root.querySelectorAll('select[data-choice]').forEach((select) => {
+    if (select.dataset.choiceReady) {
+      syncChoiceControl(select);
+      return;
+    }
+    select.dataset.choiceReady = '1';
+    const kind = select.dataset.choice === 'slider' ? 'slider' : 'buttons';
+    const name = select.getAttribute('aria-label')
+      || select.closest('label')?.querySelector('span')?.textContent?.trim()
+      || 'Choice';
+    const labels = [...select.options].map((option, index) => (
+      `<button type="button" role="radio" data-choice-index="${index}">${escapeHtml(option.dataset.short || option.textContent.trim())}</button>`
+    )).join('');
+    const control = document.createElement('div');
+    control.className = `choice-control is-${kind}`;
+    control.innerHTML = kind === 'slider'
+      ? `<input type="range" min="0" max="${select.options.length - 1}" step="1" aria-label="${escapeHtml(name)}"><div class="choice-ticks" role="radiogroup" aria-label="${escapeHtml(name)}">${labels}</div>`
+      : `<div class="choice-buttons" role="radiogroup" aria-label="${escapeHtml(name)}">${labels}</div>`;
+    control.addEventListener('input', (event) => {
+      if (event.target.matches('input[type="range"]')) chooseOption(select, Number(event.target.value));
+      event.stopPropagation();
+    });
+    control.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-choice-index]');
+      if (button) chooseOption(select, Number(button.dataset.choiceIndex));
+    });
+    select.hidden = true;
+    select.after(control);
+    syncChoiceControl(select);
+  });
+}
+
+// Selects come and go with re-renders; enhance new ones as they appear and
+// keep every control in step with its select's current value.
+new MutationObserver(() => enhanceChoiceControls())
+  .observe(document.body, { childList: true, subtree: true });
+enhanceChoiceControls();
+renderAll = ((render) => function renderAllWithChoices(...args) {
+  const result = render.apply(this, args);
+  enhanceChoiceControls();
+  return result;
+})(renderAll);

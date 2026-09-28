@@ -16486,3 +16486,141 @@ body[data-active-view="launch"] .launch-mode .environment-button:last-child { bo
     z-index: 2;
   }
 }
+
+/* Choices you can see: sliders for ordered values, buttons for the rest
+   (see enhanceChoiceControls in app.js). The <select> behind each is hidden. */
+select[data-choice-ready][hidden] {
+  display: none !important;
+}
+
+.choice-control {
+  min-width: 0;
+}
+
+.choice-buttons {
+  display: inline-flex;
+  flex-wrap: wrap;
+  border: 1px solid var(--line-strong);
+}
+
+.choice-buttons button,
+.choice-ticks button {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.choice-buttons button + button {
+  border-left: 1px solid var(--line-strong);
+}
+
+.choice-buttons button:hover,
+.choice-ticks button:hover {
+  color: var(--ink);
+}
+
+.choice-buttons button.is-selected {
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--green);
+}
+
+.choice-control.is-slider {
+  display: grid;
+  gap: 2px;
+  min-width: 180px;
+  max-width: 360px;
+}
+
+.choice-control.is-slider input[type="range"] {
+  width: 100%;
+  margin: 6px 0 0;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+
+.choice-ticks {
+  display: flex;
+  justify-content: space-between;
+}
+
+.choice-ticks button {
+  min-height: 20px;
+  padding: 0 2px;
+  font-size: 10px;
+}
+
+.choice-ticks button.is-selected {
+  color: var(--green);
+  font-weight: 700;
+}
+
+.choice-control button:disabled,
+.choice-control input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Address length: label and slider sit together, not at opposite edges. */
+.vanity-length-select {
+  display: flex !important;
+  align-items: center;
+  justify-content: flex-start !important;
+  gap: 16px;
+}
+
+/* Panels are as tall as what they hold; the screen is not a frame to fill. */
+@media (min-width: 901px) {
+  #view-wallet .two-column,
+  #view-settings .two-column,
+  #view-discovery .discovery-grid {
+    align-items: start;
+  }
+
+  #view-wallet .surface,
+  #view-settings .surface,
+  #view-discovery .surface,
+  #view-history .surface-main {
+    height: auto !important;
+    min-height: 0 !important;
+  }
+
+  /* The wallet list is short; the wallet in use gets the room. */
+  #view-wallet .two-column {
+    grid-template-columns: minmax(280px, 0.75fr) minmax(0, 1.4fr);
+  }
+}
+
+/* History: the tabs and the panel, without a frame around both. */
+#view-history .surface-main {
+  padding: 0 !important;
+  border: 0 !important;
+  background: none !important;
+}
+
+/* A coin's token facts: one row of four, not two columns far apart. */
+.coin-section .pool-support-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 220px));
+  gap: 10px 28px;
+}
+
+.choice-buttons button {
+  white-space: nowrap;
+}
+
+/* Discovery's sort was a 140px dropdown column; the buttons size themselves. */
+#view-discovery .personal-discovery-head {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+/* "Nothing to recover" is a line under the tabs, not a box in a frame. */
+#view-history .recovery-wizard-panel.pass {
+  border: 0;
+  background: none;
+}

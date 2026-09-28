@@ -4434,7 +4434,7 @@ function feeTierOptionsHtml(selectedIndex) {
   const selected = Math.floor(Number(selectedIndex));
   const hasSelected = tiers.some((tier) => tier.index === selected);
   const options = tiers.map((tier) => `
-    <option value="${tier.index}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(feeTierLabel(tier))}</option>
+    <option value="${tier.index}" data-short="${escapeHtml(`${Number(tier.tradeFeeRate || 0) / 10000}%`)}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(feeTierLabel(tier))}</option>
   `).join('');
   return `${options}${Number.isInteger(selected) && !hasSelected ? `<option value="${selected}" selected>Custom index ${selected}</option>` : ''}`;
 }
@@ -6677,7 +6677,11 @@ function vanityEstimateSummary(prefix, suffix) {
   if (estimate.difficulty === 'impossible') {
     return {
       label: 'Impossible',
-      detail: `No address of that length can start with "${estimate.prefix}". Choose 43 characters or Any.`,
+      // Addresses shorter than 43 characters come only from keys with a
+      // leading zero byte, and those all start with "1".
+      detail: estimate.prefix
+        ? `No address of that length can start with "${estimate.prefix}". Choose 43 characters or Any.`
+        : 'Addresses this short always start with "1". Start with 1, or choose 43 characters or Any.',
       className: 'danger',
     };
   }
@@ -7178,7 +7182,7 @@ function renderSupplyEditor() {
     const id = escapeHtml(pool.id);
     const key = escapeHtml(row.key);
     return `
-      ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
+      ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-choice="slider" data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
       ${field('Start above SOL price %', 'Opens this pair above the SOL pool price, so the pair token can fall this far before bots can drain SOL buyers.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="startPremiumPct" data-pool-id="${id}" data-supply-key="${key}:premium" value="${escapeHtml(pool.startPremiumPct ?? state.pairStartPremiumPct)}">`)}
       ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`)}
       ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`)}
@@ -7248,7 +7252,7 @@ function renderPoolEditorPanel() {
           <label><span>Quote symbol</span><input data-custom-pool-field="quoteSymbol" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.quoteSymbol || '')}" autocomplete="off"></label>
           <label><span>Quote mint</span><input data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.quoteMint || '')}" placeholder="Mint address" autocomplete="off"></label>
           <label><span>Supply %</span><input data-custom-pool-field="supplyPercent" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="100" step="0.1" value="${escapeHtml(pool.supplyPercent ?? 5)}"></label>
-          <label><span>Fee tier</span><select data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(pool.id)}">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select></label>
+          <label><span>Fee tier</span><select data-choice="slider" data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(pool.id)}">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select></label>
           <label><span>Slices</span><input data-custom-pool-field="sliceShares" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.sliceShares || '100')}" autocomplete="off"></label>
           <label><span>Ladder bands</span><input data-custom-pool-field="ladderBands" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" value="${escapeHtml(pool.ladderBands ?? 0)}"></label>
           <label><span>Support SOL</span><input data-custom-pool-field="supportSol" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" step="0.05" value="${escapeHtml(pool.supportSol ?? 0)}"></label>
@@ -25132,3 +25136,80 @@ document.addEventListener('scroll', (event) => {
 }, true);
 new MutationObserver(() => window.requestAnimationFrame(restoreViewScroll))
   .observe(document.querySelector('.workspace') || document.body, { childList: true, subtree: true, characterData: true });
+
+
+// Few-choice dropdowns become visible choices: a slider for ordered values
+// (address length, support depth, fee tier) and a row of buttons for the
+// rest. Mark a <select> with data-choice="slider" or "buttons"; an option's
+// data-short is its label. The <select> stays the source of truth, so
+// change handlers and saved plans work unchanged.
+function chooseOption(select, index) {
+  if (select.disabled || index < 0 || index >= select.options.length) return;
+  if (select.selectedIndex !== index) {
+    select.selectedIndex = index;
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  syncChoiceControl(select);
+}
+
+function syncChoiceControl(select) {
+  const control = select.nextElementSibling;
+  if (!control?.classList?.contains('choice-control')) return;
+  const range = control.querySelector('input[type="range"]');
+  if (range) {
+    range.value = String(Math.max(0, select.selectedIndex));
+    range.disabled = select.disabled;
+    range.setAttribute('aria-valuetext', select.options[select.selectedIndex]?.textContent?.trim() || '');
+  }
+  control.querySelectorAll('button[data-choice-index]').forEach((button) => {
+    const on = Number(button.dataset.choiceIndex) === select.selectedIndex;
+    button.classList.toggle('is-selected', on);
+    button.setAttribute('aria-checked', on ? 'true' : 'false');
+    button.disabled = select.disabled;
+  });
+}
+
+function enhanceChoiceControls(root = document) {
+  root.querySelectorAll('select[data-choice]').forEach((select) => {
+    if (select.dataset.choiceReady) {
+      syncChoiceControl(select);
+      return;
+    }
+    select.dataset.choiceReady = '1';
+    const kind = select.dataset.choice === 'slider' ? 'slider' : 'buttons';
+    const name = select.getAttribute('aria-label')
+      || select.closest('label')?.querySelector('span')?.textContent?.trim()
+      || 'Choice';
+    const labels = [...select.options].map((option, index) => (
+      `<button type="button" role="radio" data-choice-index="${index}">${escapeHtml(option.dataset.short || option.textContent.trim())}</button>`
+    )).join('');
+    const control = document.createElement('div');
+    control.className = `choice-control is-${kind}`;
+    control.innerHTML = kind === 'slider'
+      ? `<input type="range" min="0" max="${select.options.length - 1}" step="1" aria-label="${escapeHtml(name)}"><div class="choice-ticks" role="radiogroup" aria-label="${escapeHtml(name)}">${labels}</div>`
+      : `<div class="choice-buttons" role="radiogroup" aria-label="${escapeHtml(name)}">${labels}</div>`;
+    control.addEventListener('input', (event) => {
+      if (event.target.matches('input[type="range"]')) chooseOption(select, Number(event.target.value));
+      event.stopPropagation();
+    });
+    control.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-choice-index]');
+      if (button) chooseOption(select, Number(button.dataset.choiceIndex));
+    });
+    select.hidden = true;
+    select.after(control);
+    syncChoiceControl(select);
+  });
+}
+
+// Selects come and go with re-renders; enhance new ones as they appear and
+// keep every control in step with its select's current value.
+new MutationObserver(() => enhanceChoiceControls())
+  .observe(document.body, { childList: true, subtree: true });
+enhanceChoiceControls();
+renderAll = ((render) => function renderAllWithChoices(...args) {
+  const result = render.apply(this, args);
+  enhanceChoiceControls();
+  return result;
+})(renderAll);

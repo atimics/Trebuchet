@@ -117,7 +117,11 @@ function vanityEstimateSummary(prefix, suffix) {
   if (estimate.difficulty === 'impossible') {
     return {
       label: 'Impossible',
-      detail: `No address of that length can start with "${estimate.prefix}". Choose 43 characters or Any.`,
+      // Addresses shorter than 43 characters come only from keys with a
+      // leading zero byte, and those all start with "1".
+      detail: estimate.prefix
+        ? `No address of that length can start with "${estimate.prefix}". Choose 43 characters or Any.`
+        : 'Addresses this short always start with "1". Start with 1, or choose 43 characters or Any.',
       className: 'danger',
     };
   }
