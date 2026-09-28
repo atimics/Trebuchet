@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=92">
+  <link rel="stylesheet" href="./styles.css?v=93">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -243,34 +243,36 @@
             </details>
             </div>
 
-            <nav class="launch-workspace-tabs" id="launchWorkspaceTabs" role="tablist" aria-label="Launch steps">
-              <button class="launch-workspace-tab is-selected" id="launchWorkspaceTabWallet" type="button" role="tab" aria-selected="true" aria-controls="launchWorkspaceViewport" data-launch-workspace="wallet">
-                <i class="fa-solid fa-wallet" aria-hidden="true"></i>
-                <span><strong>Wallet</strong><small data-launch-workspace-state="wallet"></small></span>
+            <div class="coin-state-layout">
+            <nav class="coin-state" id="coinState" aria-label="What is true about this coin">
+              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="wallet" data-coin-fact="wallet">
+                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
+                <span><strong>Signer</strong><small data-coin-fact-value="wallet"></small></span>
               </button>
-              <button class="launch-workspace-tab" id="launchWorkspaceTabConfigure" type="button" role="tab" aria-selected="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="configure">
-                <i class="fa-solid fa-sliders" aria-hidden="true"></i>
-                <span><strong>Token &amp; pools</strong><small data-launch-workspace-state="configure"></small></span>
+              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="configure" data-coin-fact="configure">
+                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
+                <span><strong>Plan</strong><small data-coin-fact-value="configure"></small></span>
               </button>
-              <button class="launch-workspace-tab" id="launchWorkspaceTabFund" type="button" role="tab" aria-selected="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="fund">
-                <i class="fa-solid fa-coins" aria-hidden="true"></i>
-                <span><strong>Fund</strong><small data-launch-workspace-state="fund"></small></span>
+              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="fund" data-coin-fact="fund">
+                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
+                <span><strong>Funding</strong><small data-coin-fact-value="fund"></small></span>
               </button>
-              <button class="launch-workspace-tab" id="launchWorkspaceTabMint" type="button" role="tab" aria-selected="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="mint">
-                <i class="fa-solid fa-coins" aria-hidden="true"></i>
-                <span><strong>Create token</strong><small data-launch-workspace-state="mint"></small></span>
+              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="mint" data-coin-fact="mint">
+                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
+                <span><strong>Token</strong><small data-coin-fact-value="mint"></small></span>
               </button>
-              <button class="launch-workspace-tab" id="launchWorkspaceTabLiquidity" type="button" role="tab" aria-selected="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="liquidity">
-                <i class="fa-solid fa-water" aria-hidden="true"></i>
-                <span><strong>Liquidity</strong><small data-launch-workspace-state="liquidity"></small></span>
+              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="liquidity" data-coin-fact="liquidity">
+                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
+                <span><strong>Liquidity</strong><small data-coin-fact-value="liquidity"></small></span>
               </button>
-              <button class="launch-workspace-tab" id="launchWorkspaceTabFinish" type="button" role="tab" aria-selected="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="finish">
-                <i class="fa-solid fa-flag-checkered" aria-hidden="true"></i>
-                <span><strong>Finish</strong><small data-launch-workspace-state="finish"></small></span>
+              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="finish" data-coin-fact="finish">
+                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
+                <span><strong>Launch wallet</strong><small data-coin-fact-value="finish"></small></span>
               </button>
             </nav>
 
-            <div class="launch-workspace-viewport" id="launchWorkspaceViewport" role="tabpanel" tabindex="0" aria-live="polite">
+
+            <div class="launch-workspace-viewport" id="launchWorkspaceViewport" role="region" tabindex="0" aria-live="polite">
             <section class="launch-identity-dock" id="launchIdentityDock" aria-label="Active token launch identity" hidden></section>
             <section class="setup-dock" data-launch-pane="configure" aria-label="Launch setup dock">
               <div class="setup-dock-head">
@@ -468,11 +470,8 @@
                 </details>
               </details>
               <div class="launch-phase-actions launch-phase-actions-split configure-phase-actions">
-                <button class="text-button" type="button" data-launch-workspace="wallet"><i class="fa-solid fa-arrow-left"></i><span>Wallet</span></button>
-                <div>
-                  <button class="secondary-button" type="button" data-action="review-plan"><i class="fa-solid fa-list-check"></i><span>Review plan</span></button>
-                  <button class="primary-button" type="button" data-launch-workspace="fund"><span>Continue to funding</span><i class="fa-solid fa-arrow-right"></i></button>
-                </div>
+                <button class="secondary-button" type="button" data-action="review-plan"><i class="fa-solid fa-list-check"></i><span>Review plan</span></button>
+                <button class="primary-button" type="button" data-next-fact hidden></button>
               </div>
               </div>
             </section>
@@ -520,6 +519,7 @@
               <div class="parity-list" id="parityPanel"></div>
               <div class="guardrail-list" id="guardrailList"></div>
             </details>
+            </div>
             </div>
           </section>
         </div>
@@ -764,7 +764,7 @@
   <script src="./runtime-state.js?v=2"></script>
   <script src="./api-client.js?v=40"></script>
   <script src="../gif-optimizer.js?v=3"></script>
-  <script src="./app.js?v=184"></script>
+  <script src="./app.js?v=185"></script>
   <script src="./nfts.js?v=1"></script>
 </body>
 </html>

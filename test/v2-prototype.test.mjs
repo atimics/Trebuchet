@@ -2197,7 +2197,8 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="classicBridge"/);
   assert.match(html, /id="liveOpsPanel"/);
   assert.match(html, /id="activityLogDrawer"/);
-  assert.match(html, /id="launchWorkspaceTabs"/);
+  assert.match(html, /id="coinState"/);
+  assert.doesNotMatch(html, /launch-workspace-tab|Six launch phases/);
   assert.match(html, /id="launchWorkspaceViewport"/);
   for (const workspace of ['wallet', 'configure', 'fund', 'mint', 'liquidity', 'finish']) {
     assert.match(html, new RegExp(`data-launch-workspace="${workspace}"`));
@@ -2254,7 +2255,8 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(css, /activity-filter-tabs/);
   assert.match(css, /body\[data-active-view="launch"\][\s\S]*overflow: hidden/);
   assert.match(css, /launch-workspace-viewport[\s\S]*overflow: hidden auto/);
-  assert.match(css, /launch-workspace-tab\.is-selected/);
+  assert.match(css, /\.coin-fact\.is-selected/);
+  assert.doesNotMatch(css, /launch-workspace-tab/);
   assert.match(css, /journal-resume-plan/);
   assert.match(css, /token-logo-preview/);
   assert.match(css, /asset-mark\.has-logo/);
@@ -2264,7 +2266,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(combined, /duplicatePoolRouteIssues/);
   assert.match(js, /function setLaunchWorkspace/);
   assert.match(js, /function renderLaunchWorkspace/);
-  assert.match(js, /trebuchet-v2-launch-workspace/);
+  assert.doesNotMatch(js, /trebuchet-v2-launch-workspace/);
   assert.match(combined, /Raydium uses both to identify a pool/);
   assert.match(combined, /classicSimpleLadderConfig/);
   assert.match(combined, /CLASSIC_LADDER_DEFAULT_CEILING_MULTIPLIER/);
@@ -2586,7 +2588,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(css, /\.logo-upload-command/);
   assert.match(css, /data-launch-identity="active"/);
   assert.match(css, /\.launch-identity-dock/);
-  assert.match(css, /\.launch-identity-progress-ring/);
+  assert.doesNotMatch(css, /launch-identity-progress-ring/);
   assert.match(css, /\.live-launch-monitor/);
   assert.match(css, /data-launch-focus="active"/);
   assert.doesNotMatch(js, /launchIdentityPhaseRail/);
@@ -6737,12 +6739,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=92/);
+  assert.match(html, /styles\.css\?v=93/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=40/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=184/);
-  assert.doesNotMatch(html, /app\.js\?v=184" type="module"/);
+  assert.match(html, /app\.js\?v=185/);
+  assert.doesNotMatch(html, /app\.js\?v=185" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11665,4 +11667,55 @@ test('v2 API client bridges classic vanity, funding, and diagnostics APIs', asyn
   assert.equal(rpcRemoved.saved[0].name, 'Backup RPC');
   assert.equal(report.tokenMint, 'Mint111');
   assert.equal(calls.filter((call) => call.url === '/api/session').length, 1);
+});
+
+test('a finished launch is matched to the coin by its mint, never its name', () => {
+  const source = js.match(/function completedLaunchJournal[\s\S]*?\n}\n/)?.[0];
+  const mintHelpers = ['proofTokenMint', 'journalTokenMint']
+    .map((name) => js.match(new RegExp(`function ${name}[\\s\\S]*?\\n}\\n`))?.[0]);
+  assert.ok(source && mintHelpers.every(Boolean), 'completedLaunchJournal and mint helpers should be extractable');
+  const finished = { status: 'completed', token: { mint: 'MintA', name: 'Pepe', symbol: 'PEPE' }, launchConfig: { token: { name: 'Pepe', symbol: 'PEPE' } } };
+  const sandbox = {
+    state: { recovery: { journals: [finished] } },
+    currentLaunchProof: () => null,
+    Date,
+  };
+  vm.runInNewContext([...mintHelpers, source, 'globalThis.completedLaunchJournal = completedLaunchJournal;'].join('\n'), sandbox);
+  // A new draft with the same name and ticker is not that launch.
+  assert.equal(sandbox.completedLaunchJournal(null), null);
+  assert.equal(sandbox.completedLaunchJournal({ token: { name: 'Pepe', symbol: 'PEPE' } }), null);
+  assert.equal(sandbox.completedLaunchJournal({ token: { mint: 'MintB' } }), null);
+  assert.equal(sandbox.completedLaunchJournal({ token: { mint: 'MintA' } }), finished);
+});
+
+test('a coin being created shows its facts, not a numbered track of phases', () => {
+  // One row per fact, with no ordinals and no Continue/back navigation.
+  for (const fact of ['wallet', 'configure', 'fund', 'mint', 'liquidity', 'finish']) {
+    assert.match(html, new RegExp(`class="coin-fact"[^>]*data-coin-fact="${fact}"`));
+  }
+  assert.doesNotMatch(css, /content: "0[1-6]"/);
+  assert.doesNotMatch(html + js, /Continue to (funding|create token)|Back to token|> Review funding/);
+  assert.doesNotMatch(js.match(/function coinFacts[\s\S]*?\n}\n/)?.[0] || '', /Waiting|Continue/);
+  // Which row is open is a view: never saved, never a percentage.
+  assert.doesNotMatch(js, /launchWorkspaces\.length\) \* 100/);
+
+  const source = js.match(/function nextCoinFact[\s\S]*?\n}\n/)?.[0];
+  assert.ok(source, 'nextCoinFact should be extractable');
+  const sandbox = {};
+  vm.runInNewContext(`${source}\nglobalThis.nextCoinFact = nextCoinFact;`, sandbox);
+  const facts = (states) => states.map((state, index) => ({ id: `f${index}`, state }));
+  // A plan still being edited never blocks; the first fact that doesn't hold does.
+  assert.equal(sandbox.nextCoinFact(facts(['done', 'draft', 'todo', 'todo'])).id, 'f2');
+  // What is happening now comes first, and a chain mismatch needs doing.
+  assert.equal(sandbox.nextCoinFact(facts(['todo', 'running'])).id, 'f1');
+  assert.equal(sandbox.nextCoinFact(facts(['done', 'recorded', 'mismatch'])).id, 'f2');
+  assert.equal(sandbox.nextCoinFact(facts(['done', 'recorded', 'draft'])), null);
+});
+
+test('a coin page names its creation facts as nouns', () => {
+  const labels = [...serverJs.matchAll(/^\s+label: '([^']+)',$/gm)].map((match) => match[1]);
+  for (const label of ['Token', 'Pools', 'Liquidity locks', 'Identity', 'Launch wallet']) {
+    assert.ok(labels.includes(label), `${label} should be a creation fact`);
+  }
+  assert.doesNotMatch(serverJs, /label: '(Create the token|Open the pools|Lock the liquidity|Return the assets)/);
 });

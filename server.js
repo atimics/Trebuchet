@@ -3159,7 +3159,7 @@ app.delete('/api/v2/coins/:mint', (req, res) => {
   }
 });
 
-// The creation of a coin launched here, as steps checked against the chain
+// What is true about a coin launched here, fact by fact, checked against the chain
 // where the chain can answer. A step's record is a claim: "done" needs the
 // chain to agree; a record the chain contradicts is a mismatch, not a tick.
 function coinCreationSteps(journal, { account = null, markets = null, launchWalletLamports = null } = {}) {
@@ -3179,7 +3179,7 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
   const mintRecorded = Boolean(token.mint) && token.mintAuthorityRenounced === true;
   steps.push({
     id: 'token',
-    label: 'Create the token and revoke its mint authority',
+    label: 'Token',
     state: combine(mintRecorded, account && !account.error ? (account.mintAuthority ? 'not-done' : 'done') : 'unknown'),
     detail: account && !account.error ? (account.mintAuthority ? 'The chain still shows a mint authority.' : 'Mint authority revoked on-chain.') : 'Not checked on-chain.',
   });
@@ -3189,20 +3189,20 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
     : 'unknown';
   steps.push({
     id: 'pools',
-    label: 'Open the pools',
+    label: 'Pools',
     state: combine(poolsRecorded, poolsOnChain),
     detail: `${counts.recordedPoolCount}/${counts.plannedPoolCount} planned pools recorded${poolsOnChain === 'done' ? ', all found on-chain' : poolsOnChain === 'not-done' && recordedPoolIds.length ? '; not all found on-chain' : ''}.`,
   });
   steps.push({
     id: 'locks',
-    label: 'Lock the liquidity',
+    label: 'Liquidity locks',
     state: combine(counts.positionCount > 0 && counts.lockedPositionCount === counts.positionCount, 'unknown'),
     detail: `${counts.lockedPositionCount}/${counts.positionCount} positions recorded as locked.`,
   });
   if (token.sealedLaunch === true) {
     steps.push({
       id: 'reveal',
-      label: 'Reveal the sealed identity',
+      label: 'Identity',
       state: combine(token.sealedMetadataPending !== true, 'unknown'),
       detail: token.sealedMetadataPending === true ? 'The identity is still sealed.' : 'Recorded as revealed.',
     });
@@ -3210,7 +3210,7 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
   const walletEmptyOnChain = launchWalletLamports === null ? 'unknown' : launchWalletLamports === 0 ? 'done' : 'not-done';
   steps.push({
     id: 'return',
-    label: 'Return the assets and empty the launch wallet',
+    label: 'Launch wallet',
     state: combine(journal?.transfer?.walletEmpty === true, walletEmptyOnChain),
     detail: launchWalletLamports === null
       ? 'Not checked on-chain.'

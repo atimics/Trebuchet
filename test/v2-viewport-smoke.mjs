@@ -80,20 +80,20 @@ async function smokeViewport(browser, viewport) {
       setupHelp: document.querySelector('#setupHelp')?.textContent || '',
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth: document.documentElement.clientWidth,
-      tabsVisible: Boolean(document.querySelector('#launchWorkspaceTabs')?.getClientRects().length),
+      tabsVisible: Boolean(document.querySelector('#coinState')?.getClientRects().length),
       tokenNameVisible: Boolean(document.querySelector('#tokenName')?.getClientRects().length),
     }));
     assert.equal(firstOpen.experienceMode, null, `${viewport.name}: a separate experience mode is back`);
     assert.equal(firstOpen.workspace, 'configure', `${viewport.name}: launch does not open on Token & pools`);
     assert.match(firstOpen.setupHelp, /nothing is sent/i);
-    assert.equal(firstOpen.tabsVisible, true, `${viewport.name}: launch phases are hidden`);
+    assert.equal(firstOpen.tabsVisible, true, `${viewport.name}: coin facts are hidden`);
     assert.equal(firstOpen.tokenNameVisible, true, `${viewport.name}: token name field is hidden`);
     assert.ok(
       firstOpen.scrollWidth <= firstOpen.clientWidth + 1,
       `${viewport.name}: launch overflows horizontally`,
     );
 
-    await page.click('.launch-workspace-tab[data-launch-workspace="configure"]');
+    await page.click('.coin-fact[data-coin-fact="configure"]');
 
     const collapsedMetrics = await page.evaluate(() => {
       const cockpit = document.querySelector('.launch-summary-drawer');
@@ -153,7 +153,7 @@ async function smokeViewport(browser, viewport) {
           tokenomicsChart: rectFor('#tokenomicsChart'),
           liquidityChart: rectFor('#liquidityChart'),
           fundingMeter: rectFor('#fundingMeter'),
-          workspaceTabs: rectFor('#launchWorkspaceTabs'),
+          workspaceTabs: rectFor('#coinState'),
           workspaceViewport: rectFor('#launchWorkspaceViewport'),
           actionPanel: rectFor('.cockpit-board .action-panel'),
           setupDock: rectFor('.setup-dock'),
@@ -163,15 +163,15 @@ async function smokeViewport(browser, viewport) {
 
     const workspaceStates = {};
     for (const workspace of ['wallet', 'configure', 'fund', 'mint', 'liquidity', 'finish']) {
-      await page.click(`.launch-workspace-tab[data-launch-workspace="${workspace}"]`);
+      await page.click(`.coin-fact[data-coin-fact="${workspace}"]`);
       workspaceStates[workspace] = await page.evaluate((selectedWorkspace) => {
-        const selectedTab = document.querySelector(`.launch-workspace-tab[data-launch-workspace="${selectedWorkspace}"]`);
+        const selectedTab = document.querySelector(`.coin-fact[data-coin-fact="${selectedWorkspace}"]`);
         const visiblePaneCount = Array.from(document.querySelectorAll('[data-launch-pane]'))
           .filter((panel) => !panel.hidden && panel.getClientRects().length > 0).length;
         const classicSection = document.querySelector(`[data-classic-workspace="${selectedWorkspace}"]`);
         return {
           bodyWorkspace: document.body.dataset.launchWorkspace,
-          selected: selectedTab?.getAttribute('aria-selected') === 'true',
+          selected: selectedTab?.getAttribute('aria-pressed') === 'true',
           visiblePaneCount,
           classicSectionVisible: classicSection
             ? !classicSection.hidden && classicSection.getClientRects().length > 0
@@ -179,7 +179,7 @@ async function smokeViewport(browser, viewport) {
         };
       }, workspace);
     }
-    await page.click('.launch-workspace-tab[data-launch-workspace="configure"]');
+    await page.click('.coin-fact[data-coin-fact="configure"]');
 
     assert.deepEqual(pageErrors, [], `${viewport.name}: page errors`);
     assert.deepEqual(consoleErrors, [], `${viewport.name}: console errors`);
@@ -257,7 +257,7 @@ async function smokeViewport(browser, viewport) {
     }
     let terminalPanelFit = true;
     if (viewport.name === 'desktop') {
-      await page.click('.launch-workspace-tab[data-launch-workspace="finish"]');
+      await page.click('.coin-fact[data-coin-fact="finish"]');
       const terminalMetrics = await page.evaluate(() => {
         // Measure the workspace itself, not a layout squeezed by the Plan drawer.
         document.querySelector('.launch-summary-drawer')?.removeAttribute('open');

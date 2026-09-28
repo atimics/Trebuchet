@@ -190,7 +190,7 @@ try {
   assert.match(await page.locator('#viewTitle').innerText(), /New coin/i);
   assert.match(await page.locator('#viewEyebrow').innerText(), /Coins/i);
   assert.equal(await page.getAttribute('.nav-item.is-active', 'data-view'), 'coins', 'A coin being created is still under Coins');
-  await page.click('.launch-workspace-tab[data-launch-workspace="wallet"]');
+  await page.click('.coin-fact[data-coin-fact="wallet"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'wallet');
   assert.deepEqual(await page.evaluate(() => (
     [...document.querySelectorAll('[data-classic-workspace]')]
@@ -200,7 +200,7 @@ try {
 
   await page.click('.launch-wallet-choice');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'configure');
-  assert.equal(await page.getAttribute('#launchWorkspaceTabConfigure', 'aria-selected'), 'true');
+  assert.equal(await page.getAttribute('.coin-fact[data-coin-fact="configure"]', 'aria-pressed'), 'true');
   assert.match(await page.locator('#configureStepTitle').textContent(), /Token & pools/i);
   assert.deepEqual(await page.evaluate(() => (
     [...document.querySelectorAll('[data-classic-workspace]')]
@@ -208,12 +208,17 @@ try {
       .map((panel) => panel.dataset.classicWorkspace)
   )), [], 'Classic phases leaked into Phase 2');
 
-  await page.click('#advancedLaunchControls button[data-launch-workspace="fund"]');
+  await page.click('.coin-fact[data-coin-fact="fund"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'fund');
   assert.match(await page.locator('#fundStepTitle').textContent(), /^Fund$/i);
   // Assets return to the wallet that funds the launch (or one that signs),
   // so estimating does not wait on a typed return wallet.
-  assert.equal(await page.locator('.classic-workspace-fund button[data-launch-workspace="mint"]').count(), 0);
+  // The only way on is the action the coin's facts ask for, never a "Continue".
+  assert.equal(await page.locator('.classic-workspace-fund').getByText(/Continue/).count(), 0);
+  assert.deepEqual(
+    await page.evaluate(() => [...document.querySelectorAll('.classic-workspace-fund [data-next-fact]:not([hidden])')].map((button) => button.dataset.launchWorkspace)),
+    await page.evaluate(() => (nextCoinFact()?.action && nextCoinFact().id !== 'fund' ? [nextCoinFact().id] : [])),
+  );
   await page.click('.classic-workspace-fund [data-action="estimate-funding"]');
   // In test mode the estimate says no SOL is needed and links to the next
   // step; there is no deposit address to show.
@@ -226,7 +231,12 @@ try {
   )), ['fund'], 'An async funding refresh exposed multiple launch phases');
   assert.match(await page.locator('.classic-workspace-fund .funding-task').innerText(), /No SOL needed/i);
   assert.equal(await page.locator('.classic-workspace-fund .funding-task-address').count(), 0);
-  assert.equal(await page.locator('.classic-workspace-fund .funding-task button[data-launch-workspace="mint"]').count(), 1);
+  // The only way on is the action the coin's facts ask for, never a "Continue".
+  assert.equal(await page.locator('.classic-workspace-fund').getByText(/Continue/).count(), 0);
+  assert.deepEqual(
+    await page.evaluate(() => [...document.querySelectorAll('.classic-workspace-fund [data-next-fact]:not([hidden])')].map((button) => button.dataset.launchWorkspace)),
+    await page.evaluate(() => (nextCoinFact()?.action && nextCoinFact().id !== 'fund' ? [nextCoinFact().id] : [])),
+  );
   await page.evaluate(() => {
     const config = currentLaunchConfig();
     const walletPublicKey = selectedLaunchWalletPublicKey();
@@ -320,7 +330,7 @@ try {
   });
 
   // Practice launch through the same six phases a live launch uses.
-  await page.click('.launch-workspace-tab[data-launch-workspace="configure"]');
+  await page.click('.coin-fact[data-coin-fact="configure"]');
   await page.fill('#tokenName', 'First Launch');
   await page.fill('#tokenSymbol', 'FIRST');
   await page.setInputFiles(
@@ -353,7 +363,7 @@ try {
   const shared = await page.evaluate(() => currentAirdropPlan().recipients.map((row) => row.tokens));
   assert.deepEqual(shared, [70_000_000, 30_000_000], 'Held-back tokens are not split by SOL sent');
 
-  await page.click('.launch-workspace-tab[data-launch-workspace="mint"]');
+  await page.click('.coin-fact[data-coin-fact="mint"]');
   await page.click('[data-classic-workspace="mint"] [data-action="run-demo-launch"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'finish', null, { timeout: 60_000 });
   const finishText = await page.locator('[data-classic-workspace="finish"]').innerText();
