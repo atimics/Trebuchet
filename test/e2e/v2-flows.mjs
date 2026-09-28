@@ -374,7 +374,7 @@ try {
   // The practiced coin is listed under Coins with its own page; buy support
   // is an action there.
   await page.click('#viewEyebrow [data-action="coins-back"]');
-  await page.click('.coin-card:has-text("Practice coin")');
+  await page.click('.coin-card-ui:has-text("Practice coin")');
   await page.waitForSelector('#view-coins.is-active #coinPage:not([hidden])');
   await page.waitForSelector('#poolSupportPanel:not([hidden])');
   await page.fill('#poolSupportSol', '0.1');
