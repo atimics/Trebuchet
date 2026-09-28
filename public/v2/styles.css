@@ -17000,3 +17000,135 @@ body.light-mode {
   width: fit-content !important;
   max-width: 100%;
 }
+
+/* Actions keep the action color. A coin's logo colors decorate the launch
+   view, but a grey or dark logo made every primary button look disabled. */
+body[data-launch-identity="active"] #view-launch .primary-button:not(.custody-action) {
+  border-color: color-mix(in srgb, var(--green) 64%, var(--line));
+  background: color-mix(in srgb, var(--green) 6%, var(--panel));
+  color: var(--green);
+}
+
+body[data-launch-identity="active"] #view-launch .primary-button:not(.custody-action):hover,
+body[data-launch-identity="active"] #view-launch .primary-button:not(.custody-action):focus-visible {
+  border-color: var(--green);
+  background: var(--green);
+  color: #031009;
+}
+
+.history-empty {
+  margin: 0;
+  padding: 16px 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.field-hint {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.risk-badge.is-neutral {
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+
+/* Discovery: the add-wallet form is one row of normal-height controls. */
+#view-discovery .discovery-wallet-form {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+}
+
+#view-discovery .discovery-wallet-form button {
+  height: auto;
+  min-height: 34px;
+  align-self: stretch;
+}
+
+@media (max-width: 700px) {
+  #view-discovery .discovery-wallet-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Buy support: SOL amount, spread and Preview side by side at their own
+   widths, instead of a field three quarters of the row wide. */
+.pool-support-form {
+  grid-template-columns: minmax(120px, 180px) minmax(220px, 340px) auto;
+  justify-content: start;
+  gap: 16px;
+}
+
+.pool-support-form label > span {
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.pool-support-intro {
+  max-width: 72ch;
+}
+
+.coin-page-footer {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.coin-page-footer:empty {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .pool-support-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Phones: all six sections fit the bottom bar (icon over label), and the
+   header's coin, theme and wallet controls share one row. */
+@media (max-width: 900px) {
+  .nav-list {
+    grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+  }
+
+  .nav-item {
+    grid-template-columns: 1fr !important;
+    justify-items: center;
+    gap: 2px !important;
+    padding: 4px 1px !important;
+    font-size: 10px !important;
+  }
+
+  .nav-item span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .topbar-actions {
+    flex-wrap: nowrap !important;
+    min-width: 0;
+  }
+
+  .topbar-actions .launch-identity-chip {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .topbar-actions .wallet-button {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 46vw;
+  }
+}
+
+/* A coin card's status takes the logo's color, mixed with the text color so
+   a pale or grey logo still reads, in either theme. */
+.coin-card-ui__status {
+  color: color-mix(in srgb, var(--coin-accent-2) 55%, var(--ink));
+  font-size: 11px;
+}
