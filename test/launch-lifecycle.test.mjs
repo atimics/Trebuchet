@@ -348,6 +348,7 @@ test('createSinglePool resumes a verified partial Phase 1 pool from the missing 
       ownerKeypair.publicKey,
       prior.mainPositions.map((p) => p.nftMint),
     ),
+    positions: prior.mainPositions.map((position) => ({ poolId: prior.poolId, nftMint: position.nftMint, tickLower: 0, tickUpper: 0 })),
   });
   const launchedToken = { address: '__LAUNCHED__', decimals: 9, programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' };
   const quoteToken = { address: 'So11111111111111111111111111111111111111112', decimals: 9, programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' };

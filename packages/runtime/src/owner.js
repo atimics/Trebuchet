@@ -29,6 +29,9 @@ export function acquireProfileOwner(profileDir) {
   let released = false;
   return {
     id, token, profile,
+    assertActive() {
+      if (released || !activeOwners.has(db)) throw Object.assign(new Error('Execution requires an active profile owner'), { code: 'RUNTIME_OWNER_RELEASED' });
+    },
     publish(port) {
       if (released || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Runtime owner requires an active local port');
       const descriptor = { schema: 'trebuchet-runtime/v1', id, profile, pid: process.pid, url: `http://127.0.0.1:${port}`, token };

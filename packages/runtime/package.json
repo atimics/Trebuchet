@@ -9,7 +9,9 @@
     "./owner": "./src/owner.js",
     "./profile-stores": "./src/profile-stores.js",
     "./client": "./src/client.js",
-    "./control": "./src/control.js"
+    "./control": "./src/control.js",
+    "./engine": "./src/engine.js",
+    "./solana": "./src/solana.js"
   },
   "engines": {
     "node": ">=22.13.0"
@@ -18,6 +20,8 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@trebuchet/core": "0.1.0"
+    "@trebuchet/core": "0.1.0",
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0"
   }
 }

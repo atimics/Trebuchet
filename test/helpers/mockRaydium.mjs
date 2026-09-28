@@ -71,8 +71,9 @@ function makeExecute(failMap, key) {
   };
 }
 
-export function makeMockRaydium({ fail = {}, connection, launchedAsMintB = false } = {}) {
+export function makeMockRaydium({ fail = {}, connection, launchedAsMintB = false, positions = [] } = {}) {
   const conn = connection || makeFakeConnection();
+  const heldPositions = positions.map((position) => ({ ...position }));
 
   // Record SDK calls so tests can assert which code path lpService took.
   // openPositionFromBase is the most informative — its `base` arg directly
@@ -102,6 +103,10 @@ export function makeMockRaydium({ fail = {}, connection, launchedAsMintB = false
     : { address: QUOTE_ADDR, decimals: 9, programId: TOKEN_PROGRAM };
 
   const clmm = {
+    async getOwnerPositionInfo() {
+      if (shouldFail(fail, 'getOwnerPositionInfo')) throw failError(fail, 'getOwnerPositionInfo', 'Position lookup failed');
+      return heldPositions.map((position) => ({ ...position }));
+    },
     async createPool(args) {
       recordedCalls.createPool.push(args);
       if (shouldFail(fail, 'createPool')) throw failError(fail, 'createPool', 'createPool failed');
@@ -140,7 +145,11 @@ export function makeMockRaydium({ fail = {}, connection, launchedAsMintB = false
       if (shouldFail(fail, 'openPosition')) throw failError(fail, 'openPosition', 'openPositionFromBase failed');
       const nftMint = freshPubkey();
       return {
-        execute: makeExecute(fail, 'openPosition'),
+        execute: async (options) => {
+          const receipt = await makeExecute(fail, 'openPosition')(options);
+          heldPositions.push({ poolId: args.poolInfo.id, nftMint, tickLower: args.tickLower, tickUpper: args.tickUpper });
+          return receipt;
+        },
         extInfo: { nftMint },
       };
     },

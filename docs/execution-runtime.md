@@ -66,3 +66,18 @@ The desktop process split has a prepared source edit. Automatic approval review 
 Core tests cover signature changes, every required binding, missing trusted context, malformed signatures, expiry boundaries, and spending ceilings. Runner tests cover a configured operator, wrong keys and wallets, network changes, expired approval, and a manifest changed after approval. The CLI test signs through the real binary with an encrypted test keyfile and rejects a plan whose file bytes changed.
 
 The wider suite also exposed a lock lifetime bug: garbage collection could close an unused SQLite owner handle. Active handles now stay referenced until explicit release. The process test forces garbage collection, verifies exclusive ownership, kills the owner, and verifies takeover by a new process.
+
+
+### Transaction engine stage
+
+`@trebuchet/runtime/engine` now exports `ExecutionEngine.prepare`, `executeNext`, `resume`, and `getStatus`. One operation holds one atomic transaction. The engine requires the profile owner, a durable store, a signer, a chain adapter, an approval check, and an operation builder with a chain result check.
+
+The engine commits the signed bytes before broadcast. Recovery reads the saved signature first. It resends the same bytes while that transaction remains valid. A replacement requires an expired transaction plus a fresh check of the operation result. Finalized chain failures remain terminal. Failed storage writes and uncertain chain reads pause execution. Multiple engine clients share the owner's wallet admission guard.
+
+The Solana adapter verifies every Ed25519 signature, the exact wire bytes, the fee payer, and the expected chain genesis hash. It searches transaction history during recovery. It checks finalized height and blockhash validity before expiry, then reads history again to catch a late receipt. Completion requires a finalized transaction and the operation's chain result check.
+
+`packages/runtime/test/engine-process.test.mjs` uses a real signed Solana transaction and a local HTTP RPC fixture. The fixture accepts the bytes, kills the caller before replying, and exposes the finalized receipt to the next process. Recovery completes with exactly one send. Unit tests cover failed writes before send and after broadcast, pending results, lost ownership, competing engine clients, renewed approval at resume, and replacement after expiry.
+
+Existing token and liquidity retry paths now propagate failed chain checks. Position and lock queries require complete responses, and lock queries use finalized state. This closes an existing path that could send again after a failed recovery read.
+
+The engine interfaces are ready for host integration. The existing live token, upload, liquidity, and sweep services still need adapters, durable spending approval, and ordinary service methods. The desktop process split still awaits the pending approval described above. Live CLI and runner wiring remain in the completion checklist.

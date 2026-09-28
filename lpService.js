@@ -419,6 +419,11 @@ async function assertRecoveredPositionNftsOwned({
 // ones whose poolId matches. The resume path uses this to compare what the
 // journal believes was opened against what actually landed on-chain.
 async function fetchOwnerClmmPositionsForPool(raydium, poolId) {
+  // The SDK caches wallet accounts. Refresh before looking for a position
+  // whose transaction may have landed since the last attempt.
+  if (raydium.account?.fetchWalletTokenAccounts) {
+    await raydium.account.fetchWalletTokenAccounts({ forceUpdate: true });
+  }
   const all = await raydium.clmm.getOwnerPositionInfo({ programId: CLMM_PROGRAM_ID });
   const target = poolId.toString();
   if (!Array.isArray(all)) throw new Error('Position lookup requires a complete chain response');

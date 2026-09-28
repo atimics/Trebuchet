@@ -46,13 +46,14 @@ export function operationId({ launchId, walletPublicKey, kind, index = 0, planDi
 }
 
 export function openRuntimeStore(profileDir) {
-  const directory = path.resolve(profileDir);
+  let directory = path.resolve(profileDir);
   let db;
   let depth = 0;
   const fail = (error) => error instanceof RecoveryStorageError ? error
     : new RecoveryStorageError('Execution storage needs recovery before further spending.', { cause: error });
   try {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    directory = fs.realpathSync(directory);
     const file = path.join(directory, 'execution.sqlite');
     if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) throw new Error('Execution database must be a regular file');
     db = new DatabaseSync(file);
@@ -199,6 +200,8 @@ export function openRuntimeStore(profileDir) {
           if (prior.operation_id !== opId || prior.wire !== wire || prior.blockhash !== blockhash || prior.last_valid_height !== lastValidBlockHeight) conflict('Transaction signature already belongs to another payload');
           return store.getTransactions(opId).find((tx) => tx.signature === signature);
         }
+        const pending = db.prepare("SELECT signature FROM transactions WHERE operation_id = ? AND state IN ('signed','submitted')").get(opId);
+        if (pending) conflict('Reconcile the saved transaction before signing a replacement', 'OPERATION_IN_FLIGHT');
         const timestamp = now();
         db.prepare('INSERT INTO transactions VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)').run(signature, opId, wire, blockhash, lastValidBlockHeight, 'signed', timestamp, timestamp);
         return store.getTransactions(opId).find((tx) => tx.signature === signature);

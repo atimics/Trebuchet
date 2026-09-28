@@ -83,3 +83,15 @@ test('liquidity lock reconciliation requires a complete finalized read', async (
   await assert.rejects(positionLockedOnChain(raydium, 'position'));
   assert.equal(await positionLockedOnChain(raydium, 'position'), null);
 });
+
+
+test('position recovery refreshes SDK wallet accounts before checking the chain', async () => {
+  let refreshed = false;
+  const raydium = {
+    account: { fetchWalletTokenAccounts: async (options) => { assert.equal(options.forceUpdate, true); refreshed = true; } },
+    clmm: { getOwnerPositionInfo: async () => { assert.equal(refreshed, true); return []; } },
+  };
+  assert.equal(await findUnrecordedPositionAt(raydium, 'pool', -10, 10, new Set()), null);
+  raydium.account.fetchWalletTokenAccounts = async () => { throw new Error('Wallet read failed'); };
+  await assert.rejects(findUnrecordedPositionAt(raydium, 'pool', -10, 10, new Set()), /Wallet read failed/);
+});
