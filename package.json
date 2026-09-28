@@ -69,7 +69,8 @@
     "check:audit": "node scripts/audit-policy.mjs",
     "release:gate": "node scripts/production-release-gate.mjs",
     "test:architecture": "node --test packages/core/test/*.test.mjs packages/runner/test/*.mjs packages/runtime/test/*.test.mjs",
-    "test:e2e:runtime-token:localnet": "node test/e2e/runtime-token-localnet.mjs"
+    "test:e2e:runtime-token:localnet": "node test/e2e/runtime-token-localnet.mjs",
+    "test:e2e:runtime-upload:localnet": "node test/e2e/runtime-upload-localnet.mjs"
   },
   "files": [
     "build/**/*",

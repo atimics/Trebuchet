@@ -236,3 +236,9 @@ Upload recovery uses the original funding receipt and signed data item. It check
 The [storage upload connection proposal](storage-upload-integration-proposal.md) records the production payload, node destinations, payment bounds, and host changes awaiting explicit approval after automatic approval review rejected that connection. The current stage supplies the adapters, transport, and isolated recovery tests. Production sealed-reveal wiring, initial metadata uploads, storage-credit recovery, and the full launch budget remain in the completion checklist.
 
 Validation for the upload adapter stage: all 275 architecture tests and all 105 affected upload, payment, store, and prepared-transaction tests passed on Node 22.23.3. The focused Node 25 run passed all 76 upload and payment tests. Package coverage passed for 102 required runtime files, and syntax passed for 389 files. These checks use temporary profiles and local fixtures.
+
+### Upload funding recovery on a local validator
+
+`npm run test:e2e:runtime-upload:localnet` starts a private loopback Solana validator and a local storage fixture. The fixture uses real Solana-signed data items and RSA-signed storage receipts. Each of three cases kills the client after the validator accepts a deposit, the storage fixture acknowledges that deposit, or the fixture accepts the upload. Fresh clients recover each case, then replay the saved receipt with zero remote requests.
+
+The drill passed on Node 25.8.2 and Node 22.23.3. It verified three distinct finalized deposits, three verified uploads, the exact storage-recipient credits, and payer debits including fees. On Node 22 the first recovery resubmitted the same signed deposit while its receipt became visible; it still produced one finalized payment. The test cleans up its clients, validator, and ledger. Production Irys-node delivery and the pending host connection remain separate requirements.
