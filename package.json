@@ -25,7 +25,7 @@
     "registry": "https://npm.pkg.github.com"
   },
   "engines": {
-    "node": ">=22.12.0",
+    "node": ">=22.13.0",
     "npm": ">=10"
   },
   "scripts": {
@@ -68,7 +68,7 @@
     "check:package": "node scripts/check-package-files.mjs",
     "check:audit": "node scripts/audit-policy.mjs",
     "release:gate": "node scripts/production-release-gate.mjs",
-    "test:architecture": "node --test packages/core/test/*.test.mjs packages/runner/test/*.mjs"
+    "test:architecture": "node --test packages/core/test/*.test.mjs packages/runner/test/*.mjs packages/runtime/test/*.test.mjs"
   },
   "files": [
     "build/**/*",
@@ -134,7 +134,8 @@
     "packages/cli/**/*",
     "README.md",
     "public/**/*",
-    "c/build/**/*"
+    "c/build/**/*",
+    "packages/runtime/**/*"
   ],
   "dependencies": {
     "@metaplex-foundation/mpl-core": "^1.10.0",
@@ -161,10 +162,12 @@
     "marked": "^14.1.4",
     "multer": "^2.3.0",
     "pngjs": "^7.0.0",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "@trebuchet/runtime": "file:packages/runtime"
   },
   "bundleDependencies": [
-    "@trebuchet/core"
+    "@trebuchet/core",
+    "@trebuchet/runtime"
   ],
   "devDependencies": {
     "@types/node": "^20.14.10",
@@ -265,7 +268,8 @@
       "README.md",
       "public/**/*",
       "c/build/**/*",
-      "package.json"
+      "package.json",
+      "packages/runtime/**/*"
     ],
     "asarUnpack": [
       "public/**/*",

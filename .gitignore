@@ -29,3 +29,8 @@ test/ui/diffs/*.png
 /.wrangler
 docs/LAUNCH-RISK-BACKLOG.md
 docs/RELEASE-AUDIT-BACKLOG.md
+
+# Local durable runtime state
+/execution.sqlite*
+/runtime-owner.sqlite*
+/runtime.json

@@ -23,7 +23,7 @@ trebuchet launch list [--config-dir dir]
 trebuchet launch remove --id id [--config-dir dir]
 ```
 
-`trebuchet launch save` persists a planned launch (`launches.json` in the
+`trebuchet launch save` persists a planned launch (`execution.sqlite` in the
 config dir) so it survives an app restart and shows up in the desktop app's
 saved-launch list, exactly like saved vanity addresses. This is also how a
 launch can be created programmatically instead of being retyped in the UI.

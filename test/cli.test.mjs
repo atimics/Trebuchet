@@ -1,3 +1,4 @@
+import { createProfileLaunchStore } from '@trebuchet/runtime/profile-stores';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -108,7 +109,7 @@ function completeProof() {
 }
 
 test('doctor emits one versioned JSON envelope and advertises demo-execute capability', async () => {
-  const result = await invoke(['doctor', '--json'], { nodeVersion: '22.12.0', platform: 'linux' });
+  const result = await invoke(['doctor', '--json'], { nodeVersion: '22.13.0', platform: 'linux' });
   assert.equal(result.exitCode, CliExitCode.SUCCESS);
   assert.equal(result.stderr, '');
   const payload = JSON.parse(result.stdout);
@@ -241,6 +242,7 @@ test('the packed root package bundles Core and runs the published CLI in isolati
   assert.equal(packed.status, 0, packed.stderr);
   const [{ filename, bundled = [] }] = JSON.parse(packed.stdout);
   assert.ok(bundled.includes('@trebuchet/core'), 'packed package must bundle @trebuchet/core');
+  assert.ok(bundled.includes('@trebuchet/runtime'), 'packed package must bundle @trebuchet/runtime');
 
   const extractDirectory = path.join(directory, 'extract');
   await mkdir(extractDirectory);
@@ -261,6 +263,11 @@ test('the packed root package bundles Core and runs the published CLI in isolati
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.ok, true);
   assert.equal(payload.data.transactionExecution, false);
+  const stored = spawnSync(process.execPath, [
+    'packages/cli/bin/trebuchet.js', 'launch', 'list', '--config-dir', path.join(directory, 'profile'), '--json',
+  ], { cwd: path.join(extractDirectory, 'package'), encoding: 'utf8' });
+  assert.equal(stored.status, 0, stored.stderr);
+  assert.deepEqual(JSON.parse(stored.stdout).data.launches, []);
 }));
 
 test('execute runs a complete demo-runtime launch with a disposable wallet', async () => withTempDirectory(async (directory) => {
@@ -300,8 +307,7 @@ test('launch save/list/remove persist a launch configuration for the app', async
   assert.equal(savedPayload.ok, true);
   assert.ok(savedPayload.data.id);
   assert.equal(savedPayload.data.name, 'CLI launch');
-  const storePath = path.join(configDir, 'launches.json');
-  const stored = JSON.parse(await readFile(storePath, 'utf8'));
+  const stored = createProfileLaunchStore(configDir).list();
   assert.equal(stored.length, 1);
   assert.equal(stored[0].config.token.symbol, launchIntent.token.symbol);
   assert.equal(stored[0].source, 'cli');

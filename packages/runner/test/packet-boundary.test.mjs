@@ -9,7 +9,7 @@ import { Header } from 'tar';
 import { buildV2LaunchPlan } from '@trebuchet/core/launch-plan';
 import { extractPacketArchive, PACKET_LIMITS, packetRelativePath, verifyPacketDir } from '../src/packet.js';
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const intent = JSON.parse(fs.readFileSync(new URL('../../core/test/fixtures/guided-sol-plan.json', import.meta.url))).input;
+const intent = JSON.parse(fs.readFileSync(new URL('../../core/test/fixtures/guided-sol-plan.json', import.meta.url))).intent;
 function work(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-packet-boundary-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

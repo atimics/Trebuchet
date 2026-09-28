@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { openRuntimeStore } from '@trebuchet/runtime/store';
 import assert from 'node:assert/strict';
 import {
   existsSync,
@@ -50,7 +51,9 @@ test('starts a non-secret launch journal idempotently', async (t) => {
   assert.equal(first.status, 'active');
   assert.equal(first.stage, 'wallet_generated');
 
-  const disk = JSON.parse(readFileSync(journalFile(configDir), 'utf8'));
+  const db = openRuntimeStore(configDir);
+  const disk = db.collection('journals').load();
+  db.close();
   assert.equal(disk.length, 1);
   assert.equal(disk[0].walletPublicKey, 'Wallet1111111111111111111111111111111111');
   assert.equal(disk[0].events[0].stage, 'wallet_generated');
@@ -163,7 +166,9 @@ test('updates token, pool, and transfer state while filtering secrets', async (t
   assert.equal(completedAfterUpdate[0].reportPublish.jsonUri, 'ar://report-json');
   assert.equal(completedAfterUpdate[0].events.at(-1).stage, 'report_published');
 
-  const rawText = readFileSync(journalFile(configDir), 'utf8');
+  const db = openRuntimeStore(configDir);
+  const rawText = JSON.stringify(db.collection('journals').load());
+  db.close();
   assert.equal(rawText.includes('tempWalletSecretKey'), false);
   assert.equal(rawText.includes('secretKey'), false);
   assert.equal(rawText.includes('[1,2,3]'), false);

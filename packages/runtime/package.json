@@ -1,0 +1,21 @@
+{
+  "name": "@trebuchet/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Durable execution and profile ownership for Trebuchet hosts.",
+  "exports": {
+    "./store": "./src/store.js",
+    "./owner": "./src/owner.js",
+    "./profile-stores": "./src/profile-stores.js"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@trebuchet/core": "0.1.0"
+  }
+}

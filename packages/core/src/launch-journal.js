@@ -132,7 +132,7 @@ export function tokenCreationComplete(journal, tokenMint = journal?.token?.mint)
   return supplyRecorded && (metadataRecorded || metadataAdoptedBySafeRepair);
 }
 
-function normalizeJournal(raw) {
+export function normalizeJournal(raw) {
   const createdAt = typeof raw.createdAt === 'string' ? raw.createdAt : nowIso();
   const updatedAt = typeof raw.updatedAt === 'string' ? raw.updatedAt : createdAt;
   return {
@@ -207,7 +207,7 @@ function touch(journal) {
  * A successful return means the checkpoint reached durable storage. Callers
  * enter recovery on a storage error before sending another transaction.
  */
-export function createLaunchJournalStore({ filePath, onWarn = () => {}, onError = () => {} } = {}) {
+export function createLaunchJournalStore({ filePath, storage = null, onWarn = () => {}, onError = () => {} } = {}) {
   if (!filePath || typeof filePath !== 'string') {
     throw new Error('createLaunchJournalStore requires a filePath');
   }
@@ -241,9 +241,10 @@ export function createLaunchJournalStore({ filePath, onWarn = () => {}, onError 
     }
   };
 
-  const load = () => readRaw().map(normalizeJournal);
+  const load = () => (storage ? storage.load() : readRaw()).map(normalizeJournal);
 
   const persist = (list) => {
+    if (storage) return storage.save(list);
     const tmp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
     let descriptor;
     try {
@@ -269,7 +270,7 @@ export function createLaunchJournalStore({ filePath, onWarn = () => {}, onError 
     }
   };
 
-  return {
+  const api = {
     filePath: file,
 
     start({ walletPublicKey } = {}) {
@@ -392,4 +393,11 @@ export function createLaunchJournalStore({ filePath, onWarn = () => {}, onError 
       return true;
     },
   };
+  if (storage) {
+    for (const key of ['start', 'update', 'upsertForWallet', 'recordEvent', 'archive']) {
+      const method = api[key];
+      api[key] = (...args) => storage.transaction(() => method.apply(api, args));
+    }
+  }
+  return api;
 }

@@ -24,7 +24,6 @@ import {
   openCustodySession,
   readCustodyKeyfileMeta,
 } from '@trebuchet/core/custody';
-import { createLaunchStore } from '@trebuchet/core/launch-store';
 import { createFlywheelPoolStore, isValidFlywheelMint } from '@trebuchet/core/flywheel-pools';
 import { isPlaceholderSweepDestination } from '@trebuchet/core/validators';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
@@ -57,7 +56,7 @@ function parseNodeVersion(version = process.versions.node) {
 }
 
 function nodeVersionSupported(node) {
-  return node.major > 22 || (node.major === 22 && node.minor >= 12);
+  return node.major > 22 || (node.major === 22 && node.minor >= 13);
 }
 
 function commandError(code, message, details = null) {
@@ -76,13 +75,10 @@ function cliFlywheelStore(configDirOption) {
   });
 }
 
-function cliLaunchStore(configDirOption) {
+async function cliLaunchStore(configDirOption) {
+  const { createProfileLaunchStore } = await import('@trebuchet/runtime/profile-stores');
   const dir = configDirOption || process.env.TREBUCHET_CONFIG_DIR || process.cwd();
-  return createLaunchStore({
-    filePath: path.join(dir, 'launches.json'),
-    onWarn: () => {},
-    onError: (message) => { throw new Error(message); },
-  });
+  return createProfileLaunchStore(dir);
 }
 
 function requirePositionals(positionals, expected, usage) {
@@ -327,7 +323,7 @@ export async function runCli(argv = [], {
       requireOptions(options, ['config', 'name', 'id', 'config-dir', 'json'], usage);
       if (!options.config) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--config is required.');
       const input = await readJsonFile(options.config, 'Launch config');
-      const store = cliLaunchStore(options['config-dir']);
+      const store = await cliLaunchStore(options['config-dir']);
       const saved = store.save({
         id: options.id || null,
         name: options.name || null,
@@ -345,7 +341,7 @@ export async function runCli(argv = [], {
       const usage = 'trebuchet launch list [--config-dir <dir>] [--json]';
       requirePositionals(positionals, ['launch', 'list'], usage);
       requireOptions(options, ['config-dir', 'json'], usage);
-      const store = cliLaunchStore(options['config-dir']);
+      const store = await cliLaunchStore(options['config-dir']);
       const launches = store.list().map((entry) => ({
         id: entry.id,
         name: entry.name,
@@ -371,7 +367,7 @@ export async function runCli(argv = [], {
       requirePositionals(positionals, ['launch', 'remove'], usage);
       requireOptions(options, ['id', 'config-dir', 'json'], usage);
       if (!options.id) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--id is required.');
-      const store = cliLaunchStore(options['config-dir']);
+      const store = await cliLaunchStore(options['config-dir']);
       const removed = store.remove(options.id);
       if (!removed) {
         throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `No saved launch with id ${options.id}.`);

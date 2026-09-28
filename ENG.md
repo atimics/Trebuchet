@@ -106,7 +106,8 @@ Edit `public/modules/`, run `npm run build:js`, and commit the resulting
 
 - `rpcConfig.js` → `rpcConfig.json`
 - `userPrefs.js` → `userPrefs.json`
-- `launchJournal.js` → `launchJournals.json`
+- `launchJournal.js` → `execution.sqlite` (imports `launchJournals.json` once)
+- `launchStore.js` → `execution.sqlite` (imports `launches.json` once)
 - `pendingWallets.js` → `pendingWallets.json`
 - `vanityCaStore.js` → `vanityCAs.json`
 - `secretPinStore.js` → `.secretPin.json`
