@@ -16433,3 +16433,56 @@ body[data-active-view="launch"] .launch-mode .environment-button:last-child { bo
 @media (max-width: 900px) {
   .launch-mode { flex-wrap: wrap; }
 }
+
+/* One scroll per screen. The sidebar and header stay put and the active
+   screen scrolls as one piece. Nothing inside a screen scrolls on its own:
+   boxes that scrolled inside boxes moved the page around under the pointer.
+   Side panels stick instead, so they stay in view. */
+@media (min-width: 901px) {
+  body .view.is-active,
+  body[data-active-view="launch"] #view-launch.is-active {
+    flex: 1 1 auto;
+    height: auto !important;
+    min-height: 0;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
+    scrollbar-color: var(--line-strong) transparent;
+    scrollbar-width: thin;
+  }
+
+  #view-launch .surface-main,
+  #view-launch .launch-grid,
+  #view-launch .coin-state-layout,
+  #view-launch .launch-workspace-viewport,
+  #view-launch #classicBridge,
+  #view-launch .classic-workspace-verify,
+  #view-launch .verify-panel-stage,
+  #view-launch .verify-panel-stage > [data-verify-panel-view],
+  #view-launch .finalize-panel,
+  #view-discovery .surface-main,
+  #view-discovery .discovery-table,
+  #view-discovery .rail,
+  #view-wallet .surface,
+  #view-settings .surface,
+  #view-discovery .surface,
+  #view-history .surface-main,
+  #view-history .history-pane-stage,
+  #view-history .history-pane {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  #view-launch .surface-main {
+    grid-template-rows: none !important;
+  }
+
+  #view-launch .coin-state,
+  #view-discovery .rail {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    z-index: 2;
+  }
+}
