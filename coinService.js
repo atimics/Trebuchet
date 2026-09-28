@@ -31,6 +31,14 @@ function journalStatus(journal) {
  * address. A draft that has since launched is shown once, as the launched
  * coin. Test coins appear only in test mode.
  */
+// Old launches recorded a stand-in URL ("…/placeholder-token-image") before
+// the real logo was uploaded; it never resolves, so it is not an image.
+export function realImageUrl(value) {
+  const text = String(value || '').trim();
+  if (!text || /placeholder/i.test(text)) return null;
+  return text;
+}
+
 export function mergeCoins({ launches = [], journals = [], added = [], practice = false } = {}) {
   const byMint = new Map();
   for (const journal of journals) {
@@ -50,7 +58,7 @@ export function mergeCoins({ launches = [], journals = [], added = [], practice 
       symbol: token.symbol || null,
       status: journalStatus(journal),
       journalId: journal.id || null,
-      image: token.imageUri || null,
+      image: realImageUrl(token.imageUri),
       launchedHere: true,
       practice: isPractice,
       updatedAt: journal.updatedAt || journal.createdAt || null,
