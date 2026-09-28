@@ -3962,7 +3962,6 @@ textarea:focus {
   text-transform: uppercase;
 }
 
-.signature-progress,
 .queue-progress {
   overflow: hidden;
   height: 8px;
@@ -3970,45 +3969,13 @@ textarea:focus {
   background: color-mix(in srgb, var(--panel-strong) 70%, transparent);
 }
 
-.signature-progress span,
 .queue-progress span {
   display: block;
   height: 100%;
   background: linear-gradient(90deg, var(--green), var(--blue));
 }
 
-.signature-panel.is-live .signature-progress span {
-  background: linear-gradient(90deg, var(--green), var(--amber));
-}
-
-.signature-track {
-  display: grid;
-  grid-template-columns: repeat(8, minmax(34px, 1fr));
-  gap: 6px;
-  overflow-x: hidden;
-}
-
-.signature-step {
-  display: grid;
-  place-items: center;
-  min-width: 0;
-  min-height: 38px;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: transparent;
-  color: inherit;
-  text-align: center;
-}
-
 @media (max-width: 1180px) {
-  .signature-track {
-    grid-template-columns: repeat(8, minmax(38px, 1fr));
-  }
-
-  .signature-step {
-    min-width: 38px;
-  }
 }
 
 .signature-focus {
@@ -4040,42 +4007,6 @@ textarea:focus {
 .signature-focus p {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-.signature-step.next {
-  border-color: color-mix(in srgb, var(--amber) 60%, var(--line));
-}
-
-.signature-step.blocked {
-  border-color: color-mix(in srgb, var(--red) 60%, var(--line));
-  background: color-mix(in srgb, var(--red) 6%, transparent);
-}
-
-.signature-step.signed {
-  border-color: color-mix(in srgb, var(--green) 58%, var(--line));
-  background: color-mix(in srgb, var(--green) 6%, transparent);
-}
-
-.signature-index {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 860;
-}
-
-.signature-step.signed .signature-index {
-  color: var(--green);
-  border-color: color-mix(in srgb, var(--green) 55%, var(--line));
-}
-
-.signature-step.blocked .signature-index {
-  color: var(--red);
-  border-color: color-mix(in srgb, var(--red) 55%, var(--line));
 }
 
 .execution-ledger {
@@ -6098,7 +6029,6 @@ button.discovery-row {
 
 .depth-bar,
 .funding-track,
-.signature-progress,
 .queue-progress {
   border-radius: 999px;
 }
@@ -6184,23 +6114,13 @@ button.discovery-row {
   display: none;
 }
 
-.signature-focus,
-.signature-step {
+.signature-focus {
   border: 0;
   background: color-mix(in srgb, var(--panel) 62%, transparent);
 }
 
 .execution-ledger-row {
   border: 0;
-}
-
-.signature-step.next {
-  background: color-mix(in srgb, var(--amber) 12%, transparent);
-}
-
-.signature-step.signed {
-  border: 0;
-  background: color-mix(in srgb, var(--green) 10%, transparent);
 }
 
 .drawer {
@@ -13564,8 +13484,7 @@ body[data-launch-identity="active"] #view-launch .asset-mark.has-logo {
 }
 
 .live-launch-token small,
-.live-launch-now small,
-.live-launch-progress small {
+.live-launch-now small {
   color: var(--subtle);
   font-size: 7px;
   font-style: normal;
@@ -13623,48 +13542,6 @@ body[data-launch-identity="active"] #view-launch .asset-mark.has-logo {
 @keyframes live-launch-pulse {
   0% { box-shadow: 0 0 0 0 rgb(var(--identity-primary-rgb) / .42); }
   70%, 100% { box-shadow: 0 0 0 10px rgb(var(--identity-primary-rgb) / 0); }
-}
-
-.live-launch-progress {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-}
-
-.live-launch-progress > span:first-child {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.live-launch-progress > span:first-child strong {
-  color: var(--identity-primary);
-  font-size: 10px;
-}
-
-.live-launch-progress-track {
-  display: block;
-  width: 100%;
-  height: 5px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--line-strong);
-}
-
-.live-launch-progress-track i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--identity-primary), var(--identity-accent));
-  box-shadow: 0 0 12px rgb(var(--identity-primary-rgb) / .35);
-  transition: width .28s ease;
-}
-
-.live-launch-progress > small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .live-launch-details-button {
@@ -13747,10 +13624,6 @@ body[data-active-view="launch"][data-launch-focus="active"] #view-launch #launch
     padding: 10px;
   }
 
-  .live-launch-progress {
-    grid-column: 1 / -1;
-  }
-
   .live-launch-coin {
     flex-basis: 46px;
     width: 46px;
@@ -13761,10 +13634,6 @@ body[data-active-view="launch"][data-launch-focus="active"] #view-launch #launch
 @media (prefers-reduced-motion: reduce) {
   .live-launch-pulse {
     animation: none;
-  }
-
-  .live-launch-progress-track i {
-    transition: none;
   }
 }
 
@@ -16522,3 +16391,51 @@ body[data-active-view="launch"] #launchIdentityChip {
     padding-top: 12px;
   }
 }
+
+/* A live launch shows what exists so far, as the coin's own facts. */
+.live-launch-facts {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.live-launch-facts li {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.live-launch-facts span {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  align-items: baseline;
+}
+
+.live-launch-facts small {
+  flex: none;
+  color: var(--subtle);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.live-launch-facts strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-launch-facts i { color: var(--subtle); font-size: 9px; text-align: center; }
+.live-launch-facts .is-todo i { font-size: 5px; }
+.live-launch-facts .is-done i { color: var(--green); }
+.live-launch-facts .is-recorded i { color: color-mix(in srgb, var(--green) 55%, var(--muted)); }
+.live-launch-facts .is-running i { color: var(--amber); }
+.live-launch-facts .is-mismatch i,
+.live-launch-facts .is-mismatch strong { color: var(--red); }

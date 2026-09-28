@@ -2301,7 +2301,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(css, /criteria-chip/);
   assert.match(css, /signature-panel:not\(.is-staged\)/);
   assert.match(css, /signature-panel\.is-live/);
-  assert.match(css, /signature-step\.blocked/);
   assert.match(css, /execution-ledger/);
   assert.match(css, /history-audit-panel/);
   assert.match(css, /history-audit-actions/);
@@ -6558,8 +6557,10 @@ test('v2 launch mechanism stages one Trebuchet-managed local wallet run', () => 
   assert.match(html, /id="signaturePanel"/);
   assert.match(combined, /Local wallet run/);
   assert.match(combined, /Live launch progress/);
-  assert.match(combined, /signature-progress/);
-  assert.match(combined, /signature-track/);
+  // A run shows what is happening and what exists, never a count of phases or a percentage.
+  assert.doesNotMatch(combined, /signature-progress|signature-track|live-launch-progress|phases complete|operations complete|checkpoints complete/);
+  assert.doesNotMatch(js, /<small>Queued<\/small>|% complete</);
+  assert.match(js, /class="live-launch-facts"/);
   assert.match(combined, /Current operation/);
   assert.match(combined, /Next checkpoint/);
   assert.match(combined, /Execution ledger/);
@@ -6568,8 +6569,6 @@ test('v2 launch mechanism stages one Trebuchet-managed local wallet run', () => 
   assert.match(combined, /Retries/);
   assert.match(combined, /attempt/);
   assert.match(combined, /variable/);
-  assert.match(combined, /operations complete/);
-  assert.match(combined, /phases complete/);
   assert.match(combined, /Review run plan first/);
   assert.match(combined, /trebuchet-managed-launch-wallet/);
   assert.match(combined, /'Approve'/);
