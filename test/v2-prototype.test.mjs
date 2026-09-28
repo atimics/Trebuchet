@@ -2941,9 +2941,9 @@ test('v2 funding shows SOL into the pool apart from rent and fees', () => {
   assert.match(js, /No SOL goes into the pool\. Until someone buys, sellers have nothing to sell into\./);
 });
 
-test('coin page shows the launch as steps checked against the chain', () => {
+test('coin page shows the launch as facts checked against the chain', () => {
   assert.match(js, /function coinCreationHtml\(creation, coin\)/);
-  assert.match(js, /mismatch: \{ icon: 'fa-triangle-exclamation', label: 'Recorded as done, but the chain disagrees' \}/);
+  assert.match(js, /mismatch: \{ icon: 'fa-triangle-exclamation', label: 'Recorded, but the chain disagrees' \}/);
   assert.match(js, /unrecorded: \{ icon: 'fa-circle-question', label: 'Not recorded; not checked on-chain' \}/);
   assert.match(js, /function continueCoinStep\(mint\)/);
   assert.match(js, /data-action="sweep-recovery-wallet"/);
@@ -11724,4 +11724,12 @@ test('a coin page names its creation facts as nouns', () => {
 test('the parity audit states which checks pass, not a percentage score', () => {
   assert.doesNotMatch(js, /audit\?\.score \|\| 0\}% complete|token-stat-label">Score</);
   assert.match(js, /checks pass · \$\{audit\?\.missingCount \|\| 0\} missing/);
+});
+
+test('the coin page and the create view share one facts vocabulary', () => {
+  assert.doesNotMatch(js, /CREATION_STEP_STATES|Not done yet|remaining steps can/);
+  assert.match(js, /const meta = COIN_FACT_MARKS\[step\.state\] \|\| COIN_FACT_MARKS\.todo;/);
+  assert.match(js, /unrecorded: \{ icon: 'fa-circle-question'/);
+  // The same action words in both places.
+  assert.match(js, /return: 'Sweep the launch wallet'/);
 });

@@ -5581,6 +5581,7 @@ const COIN_FACT_MARKS = {
   draft: { icon: 'fa-pen', label: 'Can change until the token is created' },
   running: { icon: 'fa-spinner fa-spin', label: 'Happening now' },
   todo: { icon: 'fa-circle', label: 'Not yet' },
+  unrecorded: { icon: 'fa-circle-question', label: 'Not recorded; not checked on-chain' },
 };
 
 function coinFacts() {
@@ -21938,20 +21939,13 @@ function coinMarketsHtml(markets) {
     </div>`;
 }
 
-const CREATION_STEP_STATES = {
-  done: { icon: 'fa-check', label: 'Done, confirmed on-chain' },
-  recorded: { icon: 'fa-file-circle-check', label: 'Recorded; not checked on-chain' },
-  mismatch: { icon: 'fa-triangle-exclamation', label: 'Recorded as done, but the chain disagrees' },
-  todo: { icon: 'fa-circle', label: 'Not done yet' },
-  unrecorded: { icon: 'fa-circle-question', label: 'Not recorded; not checked on-chain' },
-};
-
+// What each fact that doesn't hold asks for, in the create view's words.
 const CREATION_STEP_ACTIONS = {
-  token: 'Finish creating the token',
-  pools: 'Open the remaining pools',
+  token: 'Finish the token',
+  pools: 'Open the pools',
   locks: 'Lock the liquidity',
   reveal: 'Reveal the identity',
-  return: 'Return the remaining assets',
+  return: 'Sweep the launch wallet',
 };
 
 function coinCreationHtml(creation, coin) {
@@ -21964,24 +21958,24 @@ function coinCreationHtml(creation, coin) {
       // Sweep the launch wallet: nothing else of the plan is needed.
       action = `<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}"><span>Sweep the launch wallet</span><i class="fa-solid fa-broom"></i></button>`;
     } else if (creation.hasPlan && creation.walletManaged) {
-      action = `<button class="primary-button compact" type="button" data-action="continue-coin-step" data-mint="${escapeHtml(coin?.mint || '')}"><span>${escapeHtml(CREATION_STEP_ACTIONS[next.id] || 'Do the next step')}</span><i class="fa-solid fa-arrow-right"></i></button>`;
+      action = `<button class="primary-button compact" type="button" data-action="continue-coin-step" data-mint="${escapeHtml(coin?.mint || '')}"><span>${escapeHtml(CREATION_STEP_ACTIONS[next.id] || 'Open the coin')}</span><i class="fa-solid fa-arrow-right"></i></button>`;
     } else if (!creation.walletManaged) {
-      action = '<p class="pool-support-intro">The launch wallet is not in this app, so the remaining steps can\'t be run from here.</p>';
+      action = '<p class="pool-support-intro">The launch wallet is not in this app, so what is left can\'t be done from here.</p>';
     } else {
-      action = '<p class="pool-support-intro">This launch was recorded before Trebuchet saved launch plans, so its remaining steps can\'t be run from here.</p>';
+      action = '<p class="pool-support-intro">This launch was recorded before Trebuchet saved launch plans, so what is left can\'t be done from here.</p>';
     }
   }
   return `
-    <ol class="coin-creation">
+    <ul class="coin-creation">
       ${creation.steps.map((step) => {
-        const meta = CREATION_STEP_STATES[step.state] || CREATION_STEP_STATES.todo;
-        return `<li class="is-${escapeHtml(step.state)}">
+        const meta = COIN_FACT_MARKS[step.state] || COIN_FACT_MARKS.todo;
+        return `<li class="is-${escapeHtml(step.state)}" title="${escapeHtml(meta.label)}">
           <i class="fa-solid ${meta.icon}" aria-hidden="true"></i>
-          <span><strong>${escapeHtml(step.label)}</strong><small>${escapeHtml(meta.label)} · ${escapeHtml(step.detail || '')}</small></span>
+          <span><strong>${escapeHtml(step.label)}</strong><small><span class="visually-hidden">${escapeHtml(meta.label)}: </span>${escapeHtml(step.detail || '')}</small></span>
         </li>`;
       }).join('')}
-    </ol>
-    ${mismatches.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> The launch record says ${mismatches.length === 1 ? 'a step is' : `${mismatches.length} steps are`} done, but the chain disagrees. The chain is what counts.</p>` : ''}
+    </ul>
+    ${mismatches.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> The launch record and the chain disagree on ${mismatches.length === 1 ? 'one fact' : `${mismatches.length} facts`}. The chain is what counts.</p>` : ''}
     ${action ? `<div class="coin-actions">${action}</div>` : ''}`;
 }
 
