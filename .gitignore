@@ -37,3 +37,8 @@ docs/RELEASE-AUDIT-BACKLOG.md
 
 # Private local runtime output
 /runtime.log
+
+# Private recovery backups and interrupted PIN writes
+/pendingWallets.json.*
+/.secretPin.json*
+/.tmp-*.json
