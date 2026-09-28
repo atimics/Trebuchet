@@ -3627,7 +3627,9 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
       }
       console.log(`[${symbol}] transferring Fee Key (slice ${i + 1}) nft=${feeKeyMint} to ${pos.recipient}...`);
       try {
-        const txId = await transferNftToRecipient({
+        const durableTransfer = liquidityExecutors.get(raydium)?.transferFeeKey;
+        const txId = durableTransfer ? await durableTransfer({ allocationIndex: r.allocationIndex ?? allocIdx, sliceIndex: i,
+          poolId: r.poolId, positionNftMint: pos.nftMint, nftMint: feeKeyMint, recipient: pos.recipient }) : await transferNftToRecipient({
           connection,
           ownerKeypair,
           nftMint: feeKeyMint,

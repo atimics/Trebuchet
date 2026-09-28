@@ -16,11 +16,11 @@ const extension = (type, data) => {
   return Buffer.concat([header, data]);
 };
 
-export function tokenTransferChain({ token2022 = false, transferFee = false, native = false, decimals = 6, sourceAmount = 5_000_000n, destinationExists = false } = {}) {
+export function tokenTransferChain({ token2022 = false, transferFee = false, native = false, decimals = 6, sourceAmount = 5_000_000n, destinationExists = false, associatedSource = false } = {}) {
   const ledger = solSweepChain();
   const { state, connection } = ledger;
   const program = token2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
-  const mint = native ? NATIVE_MINT : key(34), source = key(35);
+  const mint = native ? NATIVE_MINT : key(34), source = associatedSource ? getAssociatedTokenAddressSync(mint, sweepWallet.publicKey, false, program) : key(35);
   const destination = getAssociatedTokenAddressSync(mint, new PublicKey(sweepDestination), false, program);
   Object.assign(state, { fee: 11000, decimals, sourceAmount, destinationAmount: 0n, destinationExists, sourceOwner: sweepWallet.publicKey, frozen: false,
     accountSlot: state.slot, rentSizes: [], native, sourceLamports: 2_100_000 + (native ? Number(sourceAmount) : 0), destinationLamports: destinationExists ? 2_100_000 : 0 });
@@ -54,6 +54,7 @@ export function tokenTransferChain({ token2022 = false, transferFee = false, nat
     if (value === destination.toBase58() && state.destinationExists) return { ...base, owner: program, lamports: state.destinationLamports, data: accountData(new PublicKey(sweepDestination), state.destinationAmount) };
     return null;
   };
+  connection.getAccountInfo = async (key) => accountInfo(key);
   connection.getMultipleAccountsInfoAndContext = async (keys) => ({ context: { slot: state.accountSlot }, value: keys.map(accountInfo) });
   connection.getEpochInfo = async () => ({ epoch: 10, absoluteSlot: state.slot });
   connection.getMinimumBalanceForRentExemption = async (size) => { state.rentSizes.push(size); return (128 + size) * 6960; };

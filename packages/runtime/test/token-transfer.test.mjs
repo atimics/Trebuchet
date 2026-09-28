@@ -228,3 +228,48 @@ test('receipt token balances support RPCs that omit optional owner and program f
   assert.equal((await f.service().transfer(f.input)).receivedRaw, '5000000');
   assert.equal(f.state.sends.length, 1);
 });
+
+
+const savedAction = { key: 'fee-key/position-a', context: { purpose: 'liquidity-fee-key', recipient: sweepDestination } };
+function keyedInput(f, action = savedAction) {
+  return { ...f.input, action, approval: { ...f.input.approval, action, scopeId: f.input.scopeId } };
+}
+
+test('a stable transfer action returns its saved receipt after source accounts become unavailable', async (t) => {
+  const f = fixture(t, { token2022: true, decimals: 0, sourceAmount: 1n });
+  const input = keyedInput(f), result = await f.service().transfer(input);
+  f.connection.getMultipleAccountsInfoAndContext = async () => { throw new Error('source was closed'); };
+  assert.deepEqual(await f.service().transfer(input), result);
+  assert.equal(f.state.sends.length, 1);
+  assert.equal(f.store.listWalletOperations(input.walletPublicKey).length, 1);
+});
+
+for (const [label, change] of Object.entries({ recipient: { destinationWallet: Keypair.generate().publicKey.toBase58() }, amount: { amountRaw: '2' },
+  context: { action: { ...savedAction, context: { purpose: 'another-purpose' } } }, source: { sourceTokenAccount: Keypair.generate().publicKey.toBase58() } })) {
+  test(`a completed action preserves its original ${label}`, async (t) => {
+    const f = fixture(t); const input = keyedInput(f);
+    await f.service().transfer(input);
+    await assert.rejects(f.service().transfer({ ...input, ...change }), { code: 'OPERATION_CONFLICT' });
+    assert.equal(f.state.sends.length, 1);
+  });
+}
+
+test('a stable transfer approval binds its scope and action context before spending', async (t) => {
+  for (const change of [{ action: null }, { scopeId: 'another-launch' }, { action: { ...savedAction, context: {} } }]) {
+    const f = fixture(t); const input = keyedInput(f);
+    await assert.rejects(f.service().transfer({ ...input, approval: { ...input.approval, ...change } }), { code: 'EXECUTION_APPROVAL_REQUIRED' });
+    assert.equal(f.state.sends.length, 0);
+  }
+});
+
+test('a pending token transfer keeps its original launch scope and action', async (t) => {
+  const f = fixture(t); const input = keyedInput(f); f.state.status = 'confirmed';
+  await assert.rejects(f.service().transfer(input), { code: 'CHAIN_STATE_UNAVAILABLE' });
+  for (const changed of [{ scopeId: 'another-launch' }, { action: { ...savedAction, key: 'fee-key/position-b' } }, { action: undefined }]) {
+    await assert.rejects(f.service().transfer({ ...input, ...changed }), { code: 'OPERATION_IN_FLIGHT' });
+  }
+  await assert.rejects(f.service().recover({ ...input, scopeId: 'another-launch' }), { code: 'OPERATION_IN_FLIGHT' });
+  f.state.status = 'finalized';
+  assert.equal((await f.service().transfer(input)).txId, f.state.sends[0].signature);
+  assert.equal(f.state.sends.length, 1);
+});

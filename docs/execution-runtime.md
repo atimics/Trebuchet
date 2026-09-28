@@ -172,3 +172,16 @@ SDK-backed phase tests run pool creation, two main slices, a ladder band, suppor
 These tests exposed an older lock lookup error. Lock queries now select the SDK's program for the current network and derive the personal position address from the NFT mint. The account's `positionId` field holds that derived address. Lock builders use the same program, authority, and pool program selection.
 
 This stage covers the launch's Raydium pool, position, and lock transactions. Direct Fee Key distribution, quote-token acquisition, airdrops, token creation, and upload payments still need their remaining engine integration. The full launch budget, runner custody and hosting, desktop process split, live CLI execution, and full validator recovery drill remain in the completion checklist.
+
+
+### Direct Fee Key distribution through the engine
+
+Direct Fee Key distribution now uses the token transfer engine. Each main position has one stable action key. The action binds the launch scope, network, complete liquidity plan digest, pool, position NFT, Fee Key mint, slice, and planned recipient. The host checks the finalized lock account and its Fee Key before preparing the transfer. The token adapter saves the exact source, destination, amount, fee bounds, approval, signed bytes, and finalized balance evidence.
+
+A repeated action returns the same saved receipt, including after the source account closes. Changed action context or transfer intent stops before spending. A pending direct distribution can resume through the liquidity flow or before a final asset sweep. Ordinary asset sweeps keep their own recovery path. Journal progress replays once per operation ID, and final transfer reports retain the original recipient and signature.
+
+The production Fee Key process test accepts its signed transfer at a local RPC fixture and kills the caller before the response. The next process recovers; a third reads the same receipt. The ledger sees one send. The real HTTP saved-journal test holds receipt recovery while competing launch requests arrive. It verifies wallet admission, the confirmed operation, and the restored recipient and signature. This test exposed an error path that replaced newly recovered journal results with an empty array after a later token read failed. That path now reads the latest durable journal results.
+
+The focused tests also cover changed recipients, position identities, Fee Key mints, allocation and slice indexes, finalized lock fields, approval scope and action bindings, lost replies, failed journal checkpoints, changed plans, and replay after source-account removal. The saved-journal path refreshes its journal after recovery and merges recovered pool records by allocation.
+
+The full completion checklist remains open for token creation, upload payments, quote-token acquisition, airdrops, wallet position management, the whole-launch budget, runner custody and execution, the desktop process split, live CLI execution, and the validator recovery drill.

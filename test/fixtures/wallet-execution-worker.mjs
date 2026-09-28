@@ -1,3 +1,4 @@
+import { feeKeyContext, feeKeyRequest } from './fee-key-context.mjs';
 import * as walletHelpers from '../../walletHelpers.js';
 import { metadataMint, metadataRevealFields } from '../../packages/runtime/test/fixtures/metadata-chain.mjs';
 import { Connection, SystemProgram } from '@solana/web3.js';
@@ -11,12 +12,17 @@ const owner = acquireProfileOwner(profile);
 try {
   const journals = createProfileJournalStore(profile);
   const walletPublicKey = sweepWallet.publicKey.toBase58();
-  if (!journals.activeForWallet(walletPublicKey)) journals.start({ walletPublicKey });
+  if (mode !== 'fee-key' && !journals.activeForWallet(walletPublicKey)) journals.start({ walletPublicKey });
   const runtime = createWalletExecutionRuntime({ owner, getScopeId: (wallet) => journals.activeForWallet(wallet)?.id,
     networkForRequest: () => 'devnet', createConnection: () => new Connection(rpcUrl, 'finalized'), timeoutMs: 1000 });
   const input = { tempWalletSecretKey: Array.from(sweepWallet.secretKey), destinationWallet: sweepDestination };
   let result;
-  if (mode === 'SOL') result = await runtime.sweepSolToDestination(input);
+  if (mode === 'fee-key') {
+    const host = feeKeyContext({ owner, connection: new Connection(rpcUrl, 'finalized') });
+    await host.feeKeyExecution.recover(host.input);
+    await host.feeKeyExecution.forLaunch(host.input)(feeKeyRequest);
+    result = host.walletExecution.getTransferReceipts(walletPublicKey)[0];
+  } else if (mode === 'SOL') result = await runtime.sweepSolToDestination(input);
   else if (mode === 'metadata-handoff') result = await runtime.transferMetadataAuthority({ tempWalletSecretKey: input.tempWalletSecretKey, tokenMint: metadataMint.toBase58(), newAuthority: sweepDestination });
   else if (mode === 'metadata-reveal') {
     await runtime.recoverMetadataReveal({ tempWalletSecretKey: input.tempWalletSecretKey, tokenMint: metadataMint.toBase58() });

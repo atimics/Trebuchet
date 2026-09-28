@@ -151,7 +151,8 @@ export function createTokenTransferService({
         || approval.network !== network || approval.genesisHash !== expectedGenesisHash || !Number.isSafeInteger(approval.expiresAtMs) || approval.expiresAtMs <= now()
         || !Number.isSafeInteger(approval.maxSpendLamports) || approval.maxSpendLamports < payload.feeCeilingLamports + payload.rentCeilingLamports
         || !token || token.mint !== payload.mint || token.programId !== payload.programId || token.sourceTokenAccount !== payload.sourceTokenAccount
-        || token.amountRaw !== payload.amountRaw || token.decimals !== payload.decimals || await authorize({ approval, operation, launch }) !== true) {
+        || token.amountRaw !== payload.amountRaw || token.decimals !== payload.decimals
+        || (launch.config.action && (approval.scopeId !== launch.config.scopeId || publicJson(approval.action || null) !== publicJson(launch.config.action))) || await authorize({ approval, operation, launch }) !== true) {
       throw failure('EXECUTION_APPROVAL_REQUIRED', 'Approve the exact token, source, destination, amount, network, and fee limit');
     }
     owner.assertActive();
@@ -184,21 +185,33 @@ export function createTokenTransferService({
     return active;
   };
   return {
-    async recover({ walletPublicKey, destinationWallet, approval }) {
+    async recover({ scopeId, walletPublicKey, destinationWallet, approval }) {
       const operation = activeFor(walletPublicKey, destinationWallet);
+      if (operation && scopeId && store.getLaunch(operation.launchId).config.scopeId !== scopeId) throw failure('OPERATION_IN_FLIGHT', 'Resume the saved launch scope', { operationId: operation.id });
       return operation ? run(operation, approval) : null;
     },
-    async transfer({ scopeId, walletPublicKey, destinationWallet, mint, programId, sourceTokenAccount, amountRaw, decimals, approval }) {
+    async transfer({ scopeId, walletPublicKey, destinationWallet, mint, programId, sourceTokenAccount, amountRaw, decimals, action, approval }) {
       const wallet = address(walletPublicKey), destination = address(destinationWallet), tokenMint = address(mint), program = address(programId);
       if (!scopeId || wallet === destination || destination === SystemProgram.programId.toBase58() || ![TOKEN_PROGRAM_ID.toBase58(), TOKEN_2022_PROGRAM_ID.toBase58()].includes(program)
           || !Number.isInteger(decimals) || decimals < 0 || decimals > 255 || amount(amountRaw) === 0n) throw failure('INVALID_INPUT', 'Use a saved launch, token program, exact amount, and separate destination');
       const source = sourceTokenAccount ? address(sourceTokenAccount) : getAssociatedTokenAddressSync(publicKey(tokenMint), publicKey(wallet), false, publicKey(program)).toBase58();
       const destinationTokenAccount = getAssociatedTokenAddressSync(publicKey(tokenMint), publicKey(destination), false, publicKey(program)).toBase58();
       const intent = { mint: tokenMint, programId: program, sourceTokenAccount: source, destinationWallet: destination, destinationTokenAccount, amountRaw: amount(amountRaw).toString(), decimals };
+      if (action !== undefined && (!action || typeof action.key !== 'string' || !action.key || action.key.length > 256)) throw failure('INVALID_INPUT', 'Use a stable transfer action key');
+      const config = { scopeId, purpose: kind, walletPublicKey: wallet, network, genesisHash: expectedGenesisHash,
+        ...(action ? { action: JSON.parse(publicJson(action)) } : {}) };
+      const planDigest = digest(config), launch = { id: `${kind}-${action ? digest({ scopeId, walletPublicKey: wallet, network, actionKey: action.key }) : planDigest}`, walletPublicKey: wallet, network, planDigest, config };
+      const savedLaunch = store.getLaunch(launch.id);
+      if (savedLaunch && savedLaunch.planDigest !== planDigest) throw failure('OPERATION_CONFLICT', 'Use the original transfer action and launch plan');
       const pending = activeFor(wallet, destination);
       if (pending) {
-        if (Object.entries(intent).some(([key, value]) => pending.payload[key] !== value)) throw failure('OPERATION_IN_FLIGHT', 'Recover the exact saved token transfer first', { operationId: pending.id });
+        if (pending.launchId !== launch.id || Object.entries(intent).some(([key, value]) => pending.payload[key] !== value)) throw failure('OPERATION_IN_FLIGHT', 'Recover the exact saved token transfer first', { operationId: pending.id });
         return run(pending, approval);
+      }
+      const saved = action && store.listOperations(launch.id)[0];
+      if (saved) {
+        if (Object.entries(intent).some(([key, value]) => saved.payload[key] !== value)) throw failure('OPERATION_CONFLICT', 'Use the original token, amount, source, and recipient', { operationId: saved.id });
+        return run(saved, approval);
       }
       const current = await snapshot(intent, wallet);
       const policy = await feePolicy({ connection, walletPublicKey: wallet });
@@ -216,12 +229,10 @@ export function createTokenTransferService({
         transferFeeRaw = calculateEpochFee(transferFee, BigInt(epoch.epoch), amount(intent.amountRaw)).toString();
       }
       const payload = { ...intent, createDestination: !current.destination, isNative: current.source.isNative, hasTransferFee: !!transferFee, transferFeeRaw, rentCeilingLamports, feeCeilingLamports, computeUnitLimit, microLamports };
-      const config = { scopeId, purpose: kind, walletPublicKey: wallet, network, genesisHash: expectedGenesisHash };
-      const planDigest = digest(config), launch = { id: `${kind}-${planDigest}`, walletPublicKey: wallet, network, planDigest, config };
       await validateApproval(approval, { payload }, launch);
       const operation = store.transaction(() => {
         store.saveLaunch(launch);
-        const prepared = store.prepareOperation({ launchId: launch.id, kind, index: store.listOperations(launch.id).length, payload });
+        const prepared = store.prepareOperation({ launchId: launch.id, kind, index: action ? 0 : store.listOperations(launch.id).length, payload });
         recordApproval(prepared, approval);
         return prepared;
       });

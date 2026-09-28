@@ -51,10 +51,13 @@ export function createWalletExecutionRuntime({
         mint: new PublicKey(input.mint).toBase58(), newAuthority: new PublicKey(destinationWallet).toBase58(),
         fields: input.fields || {}, makeImmutable: input.makeImmutable === true,
       }) : null;
+      const scopeId = getScopeId(walletPublicKey);
+      if (typeof scopeId !== 'string' || !scopeId) throw new Error('Save the launch recovery record before transferring assets');
+      const action = method === 'recover' ? store.getLaunch(pending.launchId)?.config.action : input.action;
       const current = await connection.getBalanceAndContext(wallet.publicKey, { commitment: 'finalized' });
       if (!Number.isSafeInteger(current?.value) || current.value < 0) throw new Error('Read a complete wallet balance before approving the transfer');
       const approval = {
-        id: randomUUID(), source: 'local-transfer-request', walletPublicKey, destinationWallet,
+        id: randomUUID(), source: 'local-transfer-request', walletPublicKey, destinationWallet, scopeId, ...(action ? { action } : {}),
         network, genesisHash, expiresAtMs: now() + 10 * 60_000,
         maxSpendLamports: Math.max(current.value, pending ? (pending.payload.amountLamports || pending.payload.rentCeilingLamports || pending.payload.rentLamports || 0) + pending.payload.feeCeilingLamports : 0),
         ...(metadataInput ? { metadata: { mint: metadataInput.mint, newAuthority: metadataInput.newAuthority, fields: metadataInput.fields, makeImmutable: metadataInput.makeImmutable } } : {}),
@@ -67,7 +70,7 @@ export function createWalletExecutionRuntime({
           if (launch.walletPublicKey !== walletPublicKey) throw new Error('The signer must match the saved wallet');
           return [wallet];
         } }),
-        authorize: async ({ approval: candidate }) => candidate === approval && networkForRequest() === network,
+        authorize: async ({ approval: candidate }) => candidate === approval && networkForRequest() === network && getScopeId(walletPublicKey) === scopeId,
         feePolicy: async () => {
           const microLamports = await samplePriorityFeeMicroLamports(connection);
           const computeUnitLimit = operationKind === 'token-transfer' ? CU_TOKEN_TRANSFER : operationKind === 'metadata-update' ? CU_METADATA_OPS : CU_SOL_TRANSFER;
@@ -78,9 +81,7 @@ export function createWalletExecutionRuntime({
           };
         },
       });
-      const scopeId = getScopeId(walletPublicKey);
-      if (typeof scopeId !== 'string' || !scopeId) throw new Error('Save the launch recovery record before transferring assets');
-      return await service[method]({ ...tokenInput, ...metadataInput, scopeId, walletPublicKey, destinationWallet, approval });
+      return await service[method]({ ...tokenInput, ...metadataInput, scopeId, walletPublicKey, destinationWallet, action, approval });
     } catch (cause) {
       if (cause.code === 'RECOVERY_STORAGE_UNAVAILABLE') throw cause;
       throw Object.assign(new Error('Resume the saved wallet operation to verify its result.', { cause }), {
@@ -105,7 +106,7 @@ export function createWalletExecutionRuntime({
       }).map((operation) => {
         const receipt = operation.evidence?.chain;
         if (!receipt?.signature || !Number.isInteger(receipt.decimals) || !receipt.programId || !receipt.amountRaw) throw new Error('Read the complete saved transfer receipt');
-        return { ...receipt, operationId: operation.id, txId: receipt.signature,
+        return { ...receipt, operationId: operation.id, txId: receipt.signature, ...(store.getLaunch(operation.launchId).config.action ? { action: store.getLaunch(operation.launchId).config.action } : {}),
           programName: receipt.programId === TOKEN_2022_PROGRAM_ID.toBase58() ? 'token-2022' : 'classic' };
       })));
     },
@@ -142,6 +143,7 @@ export function createWalletExecutionRuntime({
       ...await execute('update', { tempWalletSecretKey, mint: tokenMint, destinationWallet: newAuthority }), transferred: true, newAuthority,
     }),
     sweepSolToDestination: (input) => execute('sweep', input),
+    transferToken: (input) => execute('transfer', input),
     transferTokenWithProgram: async ({ ownerKeypair, destination, mint, programId, sourceTokenAccount, amount, decimals }) => {
       const result = await execute('transfer', { tempWalletSecretKey: Array.from(ownerKeypair.secretKey), destinationWallet: destination.toBase58(),
         mint: mint.toBase58(), programId: programId.toBase58(), sourceTokenAccount, amountRaw: amount.toString(), decimals });

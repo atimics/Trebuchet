@@ -28,6 +28,11 @@ export function liquidityPlan(input) {
     targetMarketCapUsd: input.targetMarketCapUsd, allocations: input.allocations, lockPositions: input.lockPositions !== false };
 }
 
+export function saveLiquidityPlan(store, { scopeId, walletPublicKey, network, plan }) {
+  return store.saveLaunch({ id: hash({ scopeId, walletPublicKey, network, kind: 'liquidity-plan' }), walletPublicKey, network,
+    planDigest: hash(plan), config: { scopeId, plan, genesisHash: SOLANA_GENESIS_HASHES[network] } });
+}
+
 export async function checkLiquidityResult(connection, network, { operation, launch, minContextSlot }) {
   const result = operation.payload.result;
   const keys = [result.targetAddress];
@@ -77,8 +82,7 @@ export function createLiquidityExecutionRuntime({ owner, getScopeId, recordProgr
     try {
       const genesisHash = SOLANA_GENESIS_HASHES[network];
       if (!genesisHash) throw paused('Choose the saved launch network');
-      store.saveLaunch({ id: hash({ scopeId, walletPublicKey, network, kind: 'liquidity-plan' }), walletPublicKey, network,
-        planDigest: hash(plan), config: { scopeId, plan, genesisHash } });
+      saveLiquidityPlan(store, { scopeId, walletPublicKey, network, plan });
       const pending = store.getActiveOperation(walletPublicKey);
       const balance = await connection.getBalanceAndContext(wallet.publicKey, { commitment: 'finalized' });
       if (!Number.isSafeInteger(balance?.value) || balance.value < 0) throw paused('Read the complete launch wallet balance');

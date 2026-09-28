@@ -7,6 +7,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { PublicKey, SystemProgram } from '@solana/web3.js';
+import { feeKeyChain } from './fixtures/fee-key-context.mjs';
 import { tokenTransferChain } from '../packages/runtime/test/fixtures/token-transfer-chain.mjs';
 import * as walletHelpers from '../walletHelpers.js';
 import { metadataChain, metadataMint, metadataRevealFields } from '../packages/runtime/test/fixtures/metadata-chain.mjs';
@@ -75,10 +76,10 @@ test('local approval requires the saved launch and the same network at send time
   assert.equal(changed.state.sends.length, 0);
 });
 
-for (const mode of ['SOL', 'token', 'nft', 'metadata-handoff', 'metadata-reveal']) {
+for (const mode of ['SOL', 'token', 'nft', 'fee-key', 'metadata-handoff', 'metadata-reveal']) {
 test(`the production ${mode} adapter recovers after its process dies between chain acceptance and receipt storage`, { timeout: 20_000 }, async (t) => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-wallet-crash-'));
-  const ledger = mode === 'SOL' ? solSweepChain() : mode.startsWith('metadata-') ? metadataChain({ inline: mode === 'metadata-reveal' }) : tokenTransferChain(mode === 'nft' ? { token2022: true, decimals: 0, sourceAmount: 1n } : {});
+  const ledger = mode === 'SOL' ? solSweepChain() : mode === 'fee-key' ? feeKeyChain() : mode.startsWith('metadata-') ? metadataChain({ inline: mode === 'metadata-reveal' }) : tokenTransferChain(['nft', 'fee-key'].includes(mode) ? { token2022: true, decimals: 0, sourceAmount: 1n, associatedSource: mode === 'fee-key' } : {});
   const children = [];
   let running;
   const rpcErrors = [];
@@ -92,6 +93,11 @@ test(`the production ${mode} adapter recovers after its process dies between cha
         case 'getGenesisHash': result = await ledger.connection.getGenesisHash(); break;
         case 'getBalance': result = await ledger.connection.getBalanceAndContext(); break;
         case 'getMinimumBalanceForRentExemption': result = await ledger.connection.getMinimumBalanceForRentExemption(...body.params); break;
+        case 'getAccountInfo': {
+          const account = await ledger.connection.getAccountInfo(new PublicKey(body.params[0]));
+          result = { context: { slot: ledger.state.slot }, value: account && { ...account, owner: account.owner.toBase58(), data: [account.data.toString('base64'), 'base64'] } };
+          break;
+        }
         case 'getMultipleAccounts': {
           result = await ledger.connection.getMultipleAccountsInfoAndContext(body.params[0].map((key) => new PublicKey(key)), body.params[1]);
           result.value = result.value.map((account) => account && ({ ...account, owner: account.owner.toBase58(), data: [account.data.toString('base64'), 'base64'] }));
@@ -164,7 +170,7 @@ test(`the production ${mode} adapter recovers after its process dies between cha
   if (mode === 'SOL') assert.equal(recovered.solTransferred, 0.00909312);
   else {
     if (mode.startsWith('metadata-')) assert.equal(recovered.newAuthority, ledger.state.authority);
-    else assert.equal(recovered.amountRaw, mode === 'nft' ? '1' : '5000000');
+    else assert.equal(recovered.amountRaw, ['nft', 'fee-key'].includes(mode) ? '1' : '5000000');
     const third = run();
     assert.equal((await once(third.child, 'close'))[0], 0, third.output().err);
     assert.deepEqual(JSON.parse(third.output().out.split('RESULT:')[1]), recovered);

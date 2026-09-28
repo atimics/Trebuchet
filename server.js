@@ -1,3 +1,4 @@
+import { createFeeKeyExecutionRuntime } from './feeKeyExecution.js';
 import { createLiquidityExecutionRuntime, LIQUIDITY_OPERATION_KIND } from './liquidityExecution.js';
 import { createWalletExecutionRuntime } from './walletExecution.js';
 import { classifyChainError } from './chainRetry.js';
@@ -666,9 +667,22 @@ const requireLiquidityExecution = () => {
   if (!liquidityExecution) throw Object.assign(new Error('Start the owned runtime before liquidity execution.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
   return liquidityExecution;
 };
-const createPoolsAndPositions = (input) => createPoolsWithSdk({ ...input, execution: requireLiquidityExecution().forLaunch(input) });
+const feeKeyExecution = runtimeOwner ? createFeeKeyExecutionRuntime({
+  owner: runtimeOwner, walletExecution,
+  getJournal: (wallet) => launchJournal.activeForWallet(wallet),
+  getPosition: (wallet, allocationIndex, sliceIndex) => {
+    const result = journalResultList(launchJournal.activeForWallet(wallet)).find((entry) => entry.allocationIndex === allocationIndex);
+    const position = result?.mainPositions?.find((entry) => entry.sliceIndex === sliceIndex) || result?.mainPositions?.[sliceIndex];
+    return position ? { ...position, poolId: result.poolId } : null;
+  },
+  recordProgress: (wallet, event) => recordLpJournalProgress(wallet, event),
+}) : null;
+const createPoolsAndPositions = (input) => createPoolsWithSdk({ ...input, execution: {
+  ...requireLiquidityExecution().forLaunch(input), transferFeeKey: feeKeyExecution.forLaunch(input),
+} });
 const reconcileBeforeLiquidity = async (input) => {
   await requireLiquidityExecution().recover(input);
+  await feeKeyExecution.recover(input);
   return requireWalletExecution().recoverMetadataReveal(input);
 };
 const requireWalletExecution = () => {
@@ -680,6 +694,7 @@ const transferMetadataAuthority = (input) => requireWalletExecution().transferMe
 const reconcileWalletOperation = async (input) => {
   const wallet = Keypair.fromSecretKey(Uint8Array.from(input.tempWalletSecretKey)).publicKey.toBase58();
   if (walletExecution?.active(wallet)?.kind === LIQUIDITY_OPERATION_KIND) await requireLiquidityExecution().recover(input);
+  await feeKeyExecution.recover(input);
   return requireWalletExecution().recover(input);
 };
 const sweepNftsToDestination = (input) => sweepNftsWithSigner({ ...input, transferToken: requireWalletExecution().transferTokenWithProgram });
@@ -691,7 +706,8 @@ function claimLaunchOp(walletPublicKey, op) {
   const canResumeMetadata = pending?.kind === 'metadata-update' && pending.payload.makeImmutable
     && ['reveal-sealed-metadata', 'create-lp', 'resume-launch'].includes(op);
   const canResumeLiquidity = pending?.kind === LIQUIDITY_OPERATION_KIND && ['create-lp', 'resume-launch'].includes(op);
-  if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity) {
+  const canResumeFeeKey = pending?.kind === 'token-transfer' && ['create-lp', 'resume-launch'].includes(op) && feeKeyExecution?.canRecover(walletPublicKey);
+  if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity && !canResumeFeeKey) {
     throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: 'Resume the saved wallet operation before starting another wallet action.' });
   }
   claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
@@ -6057,9 +6073,11 @@ function recordLpJournalProgress(walletPublicKey, event) {
 function mergePriorResults(priorResults, recoveredResults) {
   const merged = cloneJson(priorResults || []);
   for (const recovered of recoveredResults || []) {
-    upsertJournalResult(merged, recovered);
+    const index = merged.findIndex((result) => result.allocationIndex === recovered.allocationIndex);
+    if (index >= 0) merged[index] = { ...merged[index], ...recovered };
+    else merged.push(recovered);
   }
-  return merged;
+  return merged.sort((left, right) => (left.allocationIndex ?? 0) - (right.allocationIndex ?? 0));
 }
 
 function materializePhase1RecoveryResults(journal, priorResults, allocations) {
@@ -8119,7 +8137,6 @@ app.post('/api/launch-journals/resume', async (req, res) => {
   }
   let walletPublicKey = null;
   let claimedLaunchOp = false;
-  let priorResultsForFailure = [];
   try {
     const { id } = req.body;
     if (!id) {
@@ -8179,9 +8196,9 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       tokenDecimals,
     })) return;
 
-    const priorResults = priorResultsFromJournal(journal);
-    priorResultsForFailure = priorResults;
-    if (hasCompletedLpResults(journal)) {
+    const recoveredJournal = launchJournal.activeForWallet(walletPublicKey);
+    const priorResults = priorResultsFromJournal(recoveredJournal);
+    if (hasCompletedLpResults(recoveredJournal)) {
       launchJournal.upsertForWallet(
         walletPublicKey,
         {
@@ -8201,12 +8218,11 @@ app.post('/api/launch-journals/resume', async (req, res) => {
     }
 
     const phase1Recovery = materializePhase1RecoveryResults(
-      journal,
+      recoveredJournal,
       priorResults,
       allocations,
     );
     let effectivePriorResults = mergePriorResults(priorResults, phase1Recovery.recoveredResults);
-    priorResultsForFailure = effectivePriorResults;
     if (phase1Recovery.blockedEvents.length > 0) {
       const pools = phase1Recovery.blockedEvents.map((event) => event.poolId).filter(Boolean).join(', ');
       const message =
@@ -8348,7 +8364,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
     if (error instanceof LaunchRejection || classifyChainError(error) === 'recovery_required') return sendErrorResponse(res, error);
     const partialResults = Array.isArray(error.partialResults)
       ? error.partialResults
-      : priorResultsForFailure;
+      : journalResultList(launchJournal.activeForWallet(walletPublicKey));
     const message = launchJournal.errorMessage(error);
     const errorDetails = launchFailureDetails(error, {
       route: 'launch-journals/resume',
