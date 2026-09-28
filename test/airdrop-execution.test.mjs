@@ -186,8 +186,9 @@ async function seedLegacyDelivery(f) {
   } finally { helpers.setConnectionFactoryForTests(null); }
 }
 
-test('older airdrop journals gain verified signed receipts before remaining payments', async (t) => {
-  const f = fixture(t), legacy = await seedLegacyDelivery(f);
+for (const destinationExists of [false, true]) {
+test(`older airdrop journals gain verified receipts for ${destinationExists ? 'existing' : 'new'} destination accounts`, async (t) => {
+  const f = fixture(t, { chain: { destinationExists } }), legacy = await seedLegacyDelivery(f);
   const result = await f.runtime.execute(airdropInput);
   assert.equal(result.transferred.length, 2); assert.equal(f.state.sends.length, 2);
   const observed = result.transferred.find((row) => row.wallet === legacy.wallet);
@@ -204,9 +205,11 @@ test('older airdrop journals gain verified signed receipts before remaining paym
   assert.equal(f.state.sends.length, 2);
 });
 
-for (const scenario of ['signature', 'amount', 'message', 'credit', 'finalization', 'network']) {
+}
+
+for (const scenario of ['signature', 'amount', 'message', 'credit', 'short credit', 'missing prior credit', 'finalization', 'network']) {
   test(`an uncertain older ${scenario} preserves the journal and stops later airdrop payments`, async (t) => {
-    const f = fixture(t), row = await seedLegacyDelivery(f);
+    const f = fixture(t, { chain: { destinationExists: scenario === 'missing prior credit' } }), row = await seedLegacyDelivery(f);
     const original = f.journal.activeForWallet(walletPublicKey).airdrop;
     if (scenario === 'signature') {
       const receipt = f.state.receipts.get(row.txId); receipt.transaction.signatures[0] = '1'.repeat(64);
@@ -216,6 +219,10 @@ for (const scenario of ['signature', 'amount', 'message', 'credit', 'finalizatio
       const receipt = f.state.receipts.get(row.txId); receipt.transaction.message.recentBlockhash = Keypair.generate().publicKey.toBase58();
     } else if (scenario === 'credit') {
       f.state.receipts.get(row.txId).meta.postTokenBalances[1].uiTokenAmount.amount = '9000000';
+    } else if (scenario === 'short credit') {
+      f.state.receipts.get(row.txId).meta.postTokenBalances[1].uiTokenAmount.amount = '2499999';
+    } else if (scenario === 'missing prior credit') {
+      f.state.receipts.get(row.txId).meta.preTokenBalances.splice(1, 1);
     } else if (scenario === 'finalization') f.state.status = 'confirmed';
     else f.state.genesisHash = 'changed-chain';
     await assert.rejects(f.runtime.execute(airdropInput), { code: 'EXECUTION_RECOVERY_REQUIRED' });

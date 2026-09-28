@@ -1,5 +1,5 @@
 import { ComputeBudgetInstruction, ComputeBudgetProgram, PublicKey, Transaction } from '@solana/web3.js';
-import { getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction, NATIVE_MINT } from '@solana/spl-token';
+import { getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction, NATIVE_MINT, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { inspectSolanaTransaction } from './solana.js';
 
 const paused = (message) => Object.assign(new Error(message), { code: 'CHAIN_STATE_UNAVAILABLE' });
@@ -49,9 +49,9 @@ export async function readObservedAirdrop({ connection, expectedGenesisHash, wal
     return raw(entry.uiTokenAmount.amount);
   };
   const sent = balance(meta.preTokenBalances, sourceIndex, walletPublicKey) - balance(meta.postTokenBalances, sourceIndex, walletPublicKey);
-  const received = balance(meta.postTokenBalances, destinationIndex, recipient) - balance(meta.preTokenBalances, destinationIndex, recipient, true);
+  const received = balance(meta.postTokenBalances, destinationIndex, recipient) - balance(meta.preTokenBalances, destinationIndex, recipient, meta.preBalances[destinationIndex] === 0);
   const rent = meta.preBalances[0] - meta.postBalances[0] - meta.fee, nativeAmount = mint.equals(NATIVE_MINT) ? sent : 0n;
-  if (sent !== raw(amountRaw) || received < 0n || received > sent || rent < 0
+  if ((program.equals(TOKEN_PROGRAM_ID) && received !== sent) || sent !== raw(amountRaw) || received < 0n || received > sent || rent < 0
       || BigInt(meta.postBalances[destinationIndex]) - BigInt(meta.preBalances[destinationIndex]) !== BigInt(rent) + nativeAmount
       || BigInt(meta.preBalances[sourceIndex]) - BigInt(meta.postBalances[sourceIndex]) !== nativeAmount) throw paused('Verify the saved airdrop debit, credit, fee, and account rent');
   if (await connection.getGenesisHash() !== expectedGenesisHash) throw paused('Keep the saved airdrop network during receipt verification');
