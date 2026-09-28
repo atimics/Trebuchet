@@ -590,8 +590,14 @@ function executionEnvironmentId() {
 function renderEnvironmentControls() {
   const environment = executionEnvironmentId();
   document.body.dataset.executionEnvironment = environment;
+  // A coin that has a mint was made in one mode; switching would make its facts lie.
+  const fixedByMint = state.activeView === 'launch' && Boolean(proofTokenMint(currentLaunchProof()));
   const settingsEnvironment = $('#launchSettingsEnvironment');
-  if (settingsEnvironment) settingsEnvironment.textContent = environment === 'live' ? 'Live' : 'Test';
+  if (settingsEnvironment) {
+    settingsEnvironment.textContent = fixedByMint
+      ? 'Fixed by this coin\'s mint'
+      : environment === 'live' ? 'Real transactions and SOL' : 'Nothing is sent';
+  }
   $$('.mode-button').forEach((button) => {
     button.classList.toggle('is-selected', button.dataset.mode === state.launchMode);
   });
@@ -600,7 +606,7 @@ function renderEnvironmentControls() {
     button.classList.toggle('is-selected', selected);
     button.setAttribute('aria-selected', selected ? 'true' : 'false');
     button.tabIndex = selected ? 0 : -1;
-    button.disabled = state.environmentSwitching || environment === 'loading';
+    button.disabled = state.environmentSwitching || environment === 'loading' || (fixedByMint && !selected);
   });
 }
 

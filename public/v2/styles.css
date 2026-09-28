@@ -13917,8 +13917,8 @@ body[data-active-view="launch"][data-launch-focus="active"] #view-launch #launch
   }
 }
 
-/* Compact launch shell: phase tabs provide the sequence, while the workspace
-   contains only the current task and one visible next action. */
+/* Compact launch shell: the coin's facts beside the open one, and one
+   visible action that the facts ask for. */
 .launch-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -13954,49 +13954,6 @@ body[data-active-view="launch"][data-launch-focus="active"] #view-launch #launch
 .launch-summary-drawer > summary {
   min-height: 36px;
   padding: 7px 10px;
-}
-
-.launch-settings-drawer {
-  position: relative;
-  width: 210px;
-}
-
-.launch-settings-drawer[open] .launch-choice-bar {
-  position: absolute;
-  top: calc(100% + 5px);
-  right: -1px;
-  z-index: 30;
-  display: grid;
-  width: min(470px, calc(100vw - 44px));
-  margin: 0;
-  padding: 10px;
-  border: 1px solid var(--line-strong);
-  background: var(--panel-strong);
-  box-shadow: 0 18px 44px rgb(0 0 0 / .38);
-}
-
-body[data-active-view="launch"] .launch-settings-drawer .launch-choice-bar {
-  display: none;
-}
-
-body[data-active-view="launch"] .launch-settings-drawer[open] .launch-choice-bar {
-  display: grid;
-}
-
-body[data-active-view="launch"] .launch-settings-drawer .launch-choice-group,
-body[data-active-view="launch"] .launch-settings-drawer .launch-choice-label {
-  display: grid;
-}
-
-body[data-active-view="launch"] .launch-settings-drawer .environment-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  width: 100%;
-}
-
-body[data-active-view="launch"] .launch-settings-drawer .environment-button {
-  min-height: 38px;
-  border-right-width: 1px;
 }
 
 body[data-active-view="launch"] .setup-dock-head {
@@ -14140,18 +14097,6 @@ body[data-active-view="launch"] #view-launch .signature-panel {
   .launch-step-guide,
   .launch-step-guide.is-complete {
     grid-template-columns: 1fr;
-  }
-
-  .launch-settings-drawer {
-    width: auto;
-  }
-
-  .launch-settings-drawer[open] .launch-choice-bar {
-    position: static;
-    width: auto;
-    border-inline: 0;
-    border-bottom: 0;
-    box-shadow: none;
   }
 }
 
@@ -16439,3 +16384,42 @@ body[data-active-view="launch"] #launchIdentityChip {
 .live-launch-facts .is-running i { color: var(--amber); }
 .live-launch-facts .is-mismatch i,
 .live-launch-facts .is-mismatch strong { color: var(--red); }
+
+/* Mode is always visible: which one is on, and what it means. */
+.launch-mode {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.launch-mode-label { display: flex; align-items: center; gap: 7px; color: var(--muted); }
+.launch-mode-label strong { color: var(--ink); font-size: 9px; }
+.launch-mode > small { color: var(--muted); font-size: 8px; white-space: nowrap; }
+
+body[data-active-view="launch"] .launch-mode .environment-row {
+  display: flex;
+  width: auto;
+  gap: 0;
+}
+
+body[data-active-view="launch"] .launch-mode .environment-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-right-width: 0;
+}
+
+body[data-active-view="launch"] .launch-mode .environment-button:last-child { border-right-width: 1px; }
+.launch-mode .environment-button:disabled:not(.is-selected) { cursor: not-allowed; opacity: .4; }
+
+@media (max-width: 900px) {
+  .launch-mode { flex-wrap: wrap; }
+}
