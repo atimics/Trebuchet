@@ -92,10 +92,13 @@ export function createWalletExecutionRuntime({
   };
   return {
     active,
-    getTransferReceipts: (walletPublicKey) => withStore((store) => store.transaction(() => {
+    getTransferReceipts: (walletPublicKey) => {
+      owner.assertActive();
+      // The journal may use its own SQLite connection. Resolve host data before
+      // the receipt transaction takes the database write lock.
       const scopeId = getScopeId(walletPublicKey), network = networkForRequest();
       if (typeof scopeId !== 'string' || !scopeId) throw new Error('Read the saved launch before building its transfer report');
-      return store.listWalletOperations(walletPublicKey).filter((operation) => {
+      return withStore((store) => store.transaction(() => store.listWalletOperations(walletPublicKey).filter((operation) => {
         if (operation.kind !== 'token-transfer' || operation.state !== 'confirmed') return false;
         const launch = store.getLaunch(operation.launchId);
         return launch?.config.scopeId === scopeId && launch.network === network && launch.config.genesisHash === SOLANA_GENESIS_HASHES[network];
@@ -104,25 +107,27 @@ export function createWalletExecutionRuntime({
         if (!receipt?.signature || !Number.isInteger(receipt.decimals) || !receipt.programId || !receipt.amountRaw) throw new Error('Read the complete saved transfer receipt');
         return { ...receipt, operationId: operation.id, txId: receipt.signature,
           programName: receipt.programId === TOKEN_2022_PROGRAM_ID.toBase58() ? 'token-2022' : 'classic' };
-      });
-    })),
+      })));
+    },
     recover: (input) => execute('recover', input),
     recoverMetadataReveal: ({ tempWalletSecretKey, tokenMint, name, symbol, metadataUri }) => {
       const wallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
       const walletPublicKey = wallet.publicKey.toBase58();
       const pending = active(walletPublicKey);
       const fields = { name, symbol, uri: metadataUri };
-      if (!pending) return withStore((store) => store.transaction(() => {
+      if (!pending) {
         const scopeId = getScopeId(walletPublicKey), network = networkForRequest();
         if (!scopeId) return null;
-        const completed = store.listWalletOperations(walletPublicKey).findLast((operation) => {
-          if (operation.kind !== 'metadata-update' || operation.state !== 'confirmed' || !operation.payload.makeImmutable || operation.payload.mint !== tokenMint
-              || Object.entries(fields).some(([key, value]) => value !== undefined && operation.payload.fields[key] !== value)) return false;
-          const launch = store.getLaunch(operation.launchId);
-          return launch?.config.scopeId === scopeId && launch.network === network && launch.config.genesisHash === SOLANA_GENESIS_HASHES[network];
-        });
-        return completed ? { ...completed.evidence.chain, operationId: completed.id, txId: completed.evidence.chain.signature } : null;
-      }));
+        return withStore((store) => store.transaction(() => {
+          const completed = store.listWalletOperations(walletPublicKey).findLast((operation) => {
+            if (operation.kind !== 'metadata-update' || operation.state !== 'confirmed' || !operation.payload.makeImmutable || operation.payload.mint !== tokenMint
+                || Object.entries(fields).some(([key, value]) => value !== undefined && operation.payload.fields[key] !== value)) return false;
+            const launch = store.getLaunch(operation.launchId);
+            return launch?.config.scopeId === scopeId && launch.network === network && launch.config.genesisHash === SOLANA_GENESIS_HASHES[network];
+          });
+          return completed ? { ...completed.evidence.chain, operationId: completed.id, txId: completed.evidence.chain.signature } : null;
+        }));
+      }
       if (pending.kind !== 'metadata-update' || pending.payload.mint !== tokenMint || !pending.payload.makeImmutable
           || pending.payload.newAuthority !== SystemProgram.programId.toBase58()
           || Object.entries(fields).some(([key, value]) => value !== undefined && pending.payload.fields[key] !== value)) {

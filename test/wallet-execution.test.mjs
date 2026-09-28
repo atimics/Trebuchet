@@ -10,6 +10,7 @@ import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { tokenTransferChain } from '../packages/runtime/test/fixtures/token-transfer-chain.mjs';
 import * as walletHelpers from '../walletHelpers.js';
 import { metadataChain, metadataMint, metadataRevealFields } from '../packages/runtime/test/fixtures/metadata-chain.mjs';
+import { createProfileJournalStore } from '../packages/runtime/src/profile-stores.js';
 import { acquireProfileOwner } from '../packages/runtime/src/owner.js';
 import { openRuntimeStore } from '../packages/runtime/src/store.js';
 import { createWalletExecutionRuntime } from '../walletExecution.js';
@@ -22,7 +23,9 @@ function fixture(t, options = {}) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-wallet-execution-'));
   const owner = acquireProfileOwner(profile);
   const { connection, state } = solSweepChain();
-  const runtime = createWalletExecutionRuntime({ owner, getScopeId: () => 'journal-a', networkForRequest: () => 'devnet', createConnection: () => connection, timeoutMs: 0, ...options });
+  const journals = createProfileJournalStore(profile);
+  journals.start({ walletPublicKey });
+  const runtime = createWalletExecutionRuntime({ owner, getScopeId: (wallet) => journals.activeForWallet(wallet)?.id, networkForRequest: () => 'devnet', createConnection: () => connection, timeoutMs: 0, ...options });
   t.after(() => { owner.release(); fs.rmSync(profile, { recursive: true, force: true }); });
   return { profile, owner, state, connection, runtime };
 }
@@ -225,5 +228,6 @@ test('metadata recovery accepts the saved reveal before other liquidity work', a
   const result = await f.runtime.recoverMetadataReveal({ ...update, name: metadataRevealFields.name, symbol: metadataRevealFields.symbol, metadataUri: metadataRevealFields.uri });
   assert.equal(result.txId, ledger.state.sends[0].signature);
   assert.equal(f.runtime.active(walletPublicKey), null);
+  assert.deepEqual(await f.runtime.recoverMetadataReveal(update), result);
   assert.equal(ledger.state.sends.length, 1);
 });

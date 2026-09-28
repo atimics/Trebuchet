@@ -1,4 +1,5 @@
 import { createWalletExecutionRuntime } from './walletExecution.js';
+import { classifyChainError } from './chainRetry.js';
 import { createLaunchExecutionServices, claimLaunchOperation, LaunchRejection } from './launchExecution.js';
 import express from 'express';
 import { acquireProfileOwner } from '@trebuchet/runtime/owner';
@@ -8095,6 +8096,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
     });
   }
   let walletPublicKey = null;
+  let claimedLaunchOp = false;
   let priorResultsForFailure = [];
   try {
     const { id } = req.body;
@@ -8118,6 +8120,8 @@ app.post('/api/launch-journals/resume', async (req, res) => {
         && rejectIfSecretPinLocked(res, 'resuming a launch journal with a saved wallet')) {
       return;
     }
+    claimLaunchOp(walletPublicKey, 'resume-launch');
+    claimedLaunchOp = true;
     const wallet = pendingWallets.get(walletPublicKey);
     if (!wallet || !Array.isArray(wallet.secretKey)) {
       return res.status(409).json({
@@ -8144,6 +8148,8 @@ app.post('/api/launch-journals/resume', async (req, res) => {
         error: 'launch journal is missing the token or pool plan needed to resume',
       });
     }
+
+    await requireWalletExecution().recoverMetadataReveal({ tempWalletSecretKey: wallet.secretKey, tokenMint });
 
     if (await rejectIfTokenIncompleteForLiquidity(res, {
       tokenMint,
@@ -8317,6 +8323,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
 
     res.json({ success: true, ...result });
   } catch (error) {
+    if (error instanceof LaunchRejection || classifyChainError(error) === 'recovery_required') return sendErrorResponse(res, error);
     const partialResults = Array.isArray(error.partialResults)
       ? error.partialResults
       : priorResultsForFailure;
@@ -8373,7 +8380,8 @@ app.post('/api/launch-journals/resume', async (req, res) => {
     });
   } finally {
     // Mirror the create-lp / resume-launch cleanup pattern.
-    if (walletPublicKey) {
+    if (claimedLaunchOp && walletPublicKey) {
+      clearLaunchOpInFlight(walletPublicKey);
       try { lpProgressEnd(walletPublicKey); }
       catch (_) { /* end is a best-effort cleanup */ }
     }

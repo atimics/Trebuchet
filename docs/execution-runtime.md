@@ -153,3 +153,10 @@ Completion requires the exact finalized transaction, bounded fee and rent change
 The production host crash tests cover both a Metaplex handoff and an inline reveal. The RPC fixture accepts the real signed transaction, kills its caller, and allows a new process to recover with one send in total. Service tests verify the sealed document before execution, preserve authority after a failed initial checkpoint, and recover a completed receipt after a failed final checkpoint. Other tests cover changed signing bytes, stale account reads, exact approvals, renewed approval for saved bytes, and competing clients.
 
 Metadata upload payments and token creation still need their own durable operations. Launch-wide spending limits, remaining liquidity and airdrop work, and runner execution remain in the full completion checklist.
+
+
+### Saved-journal wallet admission
+
+The saved-journal resume endpoint now uses the same wallet admission guard as the ordinary launch services. It reconciles a pending metadata reveal before liquidity work, preserves storage and chain-recovery errors, and releases only the request's own admission. The real HTTP runtime test holds a chain read open while a second saved-journal request and a token-creation request arrive. Both receive the busy response, and the journal stays unchanged. Pending SOL, token, and metadata operations also hold this endpoint across runtime restart.
+
+Receipt lookups resolve the host journal scope before entering the SQLite transaction. The journal uses its own connection, so this order prevents the receipt reader from blocking its own journal lookup. Production crash tests now use the real profile journal adapter for SOL, token, NFT, metadata handoff, and metadata reveal recovery. The saved-journal HTTP test exposed this lock conflict before the fix.

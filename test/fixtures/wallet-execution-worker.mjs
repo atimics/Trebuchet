@@ -1,6 +1,7 @@
 import * as walletHelpers from '../../walletHelpers.js';
 import { metadataMint, metadataRevealFields } from '../../packages/runtime/test/fixtures/metadata-chain.mjs';
 import { Connection, SystemProgram } from '@solana/web3.js';
+import { createProfileJournalStore } from '../../packages/runtime/src/profile-stores.js';
 import { acquireProfileOwner } from '../../packages/runtime/src/owner.js';
 import { createWalletExecutionRuntime } from '../../walletExecution.js';
 import { sweepWallet, sweepDestination } from '../../packages/runtime/test/fixtures/sol-sweep-chain.mjs';
@@ -8,7 +9,10 @@ import { sweepWallet, sweepDestination } from '../../packages/runtime/test/fixtu
 const [profile, rpcUrl, mode = 'SOL'] = process.argv.slice(2);
 const owner = acquireProfileOwner(profile);
 try {
-  const runtime = createWalletExecutionRuntime({ owner, getScopeId: () => 'journal-a',
+  const journals = createProfileJournalStore(profile);
+  const walletPublicKey = sweepWallet.publicKey.toBase58();
+  if (!journals.activeForWallet(walletPublicKey)) journals.start({ walletPublicKey });
+  const runtime = createWalletExecutionRuntime({ owner, getScopeId: (wallet) => journals.activeForWallet(wallet)?.id,
     networkForRequest: () => 'devnet', createConnection: () => new Connection(rpcUrl, 'finalized'), timeoutMs: 1000 });
   const input = { tempWalletSecretKey: Array.from(sweepWallet.secretKey), destinationWallet: sweepDestination };
   let result;

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import http from 'node:http';
+import { once } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -101,12 +103,14 @@ test(`a pending durable ${kind} holds later live API wallet actions across runti
   try {
     store.saveLaunch({ id: 'pending-sweep', walletPublicKey, network: 'devnet', planDigest: 'b'.repeat(64), config: { purpose: 'sol-sweep' } });
     operation = store.prepareOperation({ launchId: 'pending-sweep', kind, payload: { destinationWallet: sweepDestination, amountLamports: 1000, newAuthority: sweepDestination, makeImmutable: false } });
+    store.collection('journals').save([{ id: 'journal-a', walletPublicKey, status: 'active', stage: 'waiting-for-recovery' }]);
   } finally { store.close(); }
   let runtime;
   try {
     runtime = await ensureRuntime(profile, { args: [server] });
     const tempWalletSecretKey = Array.from(sweepWallet.secretKey);
     const requests = [
+      ['/api/launch-journals/resume', { id: 'journal-a' }],
       ['/api/create-token', { tempWalletSecretKey, name: 'Pending Test', symbol: 'PEND', description: 'Recovery test', totalSupply: '1000' }],
       ['/api/run-airdrop', { tempWalletSecretKey, tokenMint: sweepDestination, tokenDecimals: 9, recipients: [{ address: sweepDestination, amount: '1' }] }],
     ];
@@ -127,6 +131,7 @@ test(`a pending durable ${kind} holds later live API wallet actions across runti
     try {
       assert.equal(check.getActiveOperation(walletPublicKey).id, operation.id);
       assert.deepEqual(check.getTransactions(operation.id), []);
+      assert.deepEqual(check.collection('journals').load(), [{ id: 'journal-a', walletPublicKey, status: 'active', stage: 'waiting-for-recovery' }]);
     } finally { check.close(); }
     await runtime.request('/api/runtime/stop', { method: 'POST' });
     await waitFor(() => !fs.existsSync(path.join(profile, 'runtime.json')));
@@ -137,3 +142,56 @@ test(`a pending durable ${kind} holds later live API wallet actions across runti
 });
 
 }
+
+
+test('saved-journal and launch clients share wallet admission while a chain read is pending', { timeout: 30_000 }, async (t) => {
+  const { openRuntimeStore } = await import('../packages/runtime/src/store.js');
+  const { sweepWallet, sweepDestination } = await import('../packages/runtime/test/fixtures/sol-sweep-chain.mjs');
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-journal-admission-'));
+  const walletPublicKey = sweepWallet.publicKey.toBase58(), secretKey = Array.from(sweepWallet.secretKey);
+  let arrived, release;
+  const started = new Promise((resolve) => { arrived = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  let reads = 0;
+  const rpc = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks));
+    reads++; arrived(); await gate;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { context: { slot: 200 }, value: null } }));
+  });
+  rpc.listen(0, '127.0.0.1'); await once(rpc, 'listening');
+  const url = `http://127.0.0.1:${rpc.address().port}`;
+  fs.writeFileSync(path.join(profile, 'rpcConfig.json'), JSON.stringify({ active: url, activeNetwork: 'devnet', saved: [{ name: 'Local fixture', url, network: 'devnet' }] }));
+  fs.writeFileSync(path.join(profile, 'userPrefs.json'), JSON.stringify({ demoMode: false }));
+  fs.writeFileSync(path.join(profile, 'pendingWallets.json'), JSON.stringify([{ publicKey: walletPublicKey, secretKeyEnc: 'plain:' + JSON.stringify(secretKey), createdAt: new Date().toISOString() }]));
+  const journal = { id: 'journal-a', walletPublicKey, status: 'active', stage: 'lp_started', token: { mint: sweepDestination, totalSupply: '1' },
+    poolPlan: { tokenMint: sweepDestination, tokenTotalSupply: '1', targetMarketCapUsd: 1000, allocations: [{ quoteToken: 'SOL', supplyPercent: 100 }] } };
+  const db = openRuntimeStore(profile);
+  db.collection('journals').save([journal]); db.close();
+  let runtime;
+  t.after(async () => {
+    release();
+    if (runtime) { try { process.kill(runtime.identity.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
+    rpc.closeAllConnections(); await new Promise((resolve) => rpc.close(resolve));
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
+  runtime = await ensureRuntime(profile, { args: [server] });
+  const first = runtime.request('/api/launch-journals/resume', { method: 'POST', body: { id: journal.id } }).catch((error) => error);
+  await Promise.race([started, first.then((result) => { throw new Error(`Saved-journal request ended before its chain read: ${JSON.stringify({ message: result?.message, code: result?.code, statusCode: result?.statusCode })}`); })]);
+  for (const [endpoint, body] of [
+    ['/api/launch-journals/resume', { id: journal.id }],
+    ['/api/create-token', { tempWalletSecretKey: secretKey, name: 'Pending Test', symbol: 'PEND', description: 'Recovery test', totalSupply: '1000' }],
+  ]) await assert.rejects(runtime.request(endpoint, { method: 'POST', body }), (error) => error.statusCode === 409 && error.code === 'OP_IN_FLIGHT');
+  const check = openRuntimeStore(profile);
+  assert.deepEqual(check.collection('journals').load(), [journal]); check.close();
+  assert.equal(reads, 1);
+  release();
+  assert.equal((await first).statusCode, 500);
+  const again = await runtime.request('/api/launch-journals/resume', { method: 'POST', body: { id: journal.id } }).catch((error) => error);
+  assert.equal(again.statusCode, 500);
+  assert.equal(reads, 2);
+  await runtime.request('/api/runtime/stop', { method: 'POST' });
+  await waitFor(() => !fs.existsSync(path.join(profile, 'runtime.json')));
+});
