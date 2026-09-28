@@ -27,7 +27,7 @@ function journalStatus(journal) {
 /**
  * One list of coins from saved drafts, launch journals, and coins added by
  * address. A draft that has since launched is shown once, as the launched
- * coin. Practice coins appear only in Practice.
+ * coin. Test coins appear only in test mode.
  */
 export function mergeCoins({ launches = [], journals = [], added = [], practice = false } = {}) {
   const byMint = new Map();
@@ -74,7 +74,7 @@ export function mergeCoins({ launches = [], journals = [], added = [], practice 
       mint: coin.mint,
       name: coin.name || null,
       symbol: coin.symbol || null,
-      status: coin.source === 'added' ? 'Added' : coin.source === 'practice' ? 'Practice coin' : 'On-chain',
+      status: coin.source === 'added' ? 'Added' : coin.source === 'practice' ? 'Test coin' : 'On-chain',
       image: coin.image || null,
       launchedHere: false,
       practice: isPracticeMint(coin.mint),

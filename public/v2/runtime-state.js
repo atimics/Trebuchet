@@ -8,7 +8,7 @@
   }
 
   function networkLabel({ demoActive = false, rpcName = '', rpcActiveUrl = '' } = {}) {
-    if (demoActive) return 'Demo';
+    if (demoActive) return 'Nothing is sent';
     if (String(rpcName || '').trim()) return String(rpcName).trim();
     try {
       return new URL(rpcActiveUrl).hostname || 'RPC unavailable';
