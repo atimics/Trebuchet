@@ -11742,3 +11742,16 @@ test('an NFT collection shows its facts, not numbered phases', () => {
   // The rail keeps one action; the facts list replaces its checks.
   assert.doesNotMatch(nfts, /nft-gap">Checks</);
 });
+
+test('a coin is called Live only once the chain agrees', () => {
+  const source = js.match(/function coinChainStatus[\s\S]*?\n}\n/)?.[0];
+  assert.ok(source, 'coinChainStatus should be extractable');
+  const sandbox = {};
+  vm.runInNewContext(`${source}\nglobalThis.coinChainStatus = coinChainStatus;`, sandbox);
+  const steps = (...states) => ({ steps: states.map((state, index) => ({ id: `s${index}`, state })) });
+  assert.equal(sandbox.coinChainStatus(null), null, 'no chain read yet: keep what the record claims');
+  assert.equal(sandbox.coinChainStatus(steps('done', 'done', 'recorded', 'done')), 'Live');
+  assert.equal(sandbox.coinChainStatus(steps('done', 'done', 'unrecorded', 'mismatch')), 'Chain disagrees');
+  assert.equal(sandbox.coinChainStatus(steps('done', 'todo', 'unrecorded', 'todo')), 'Unfinished');
+  assert.doesNotMatch(js, /transferHasWalletEmptyFinalSweepEvidence\(proof\?\.transfer\) \? 'Live'/);
+});
