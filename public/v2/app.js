@@ -25298,7 +25298,7 @@ const ADDRESS_TEXT_RE = new RegExp(
 );
 // Skipped: form fields, links (they open their page), toasts, and narrow
 // rows whose click opens a panel that shows the full, copyable address.
-const ADDRESS_SKIP = '.address-copy, script, style, textarea, input, select, option, a, [contenteditable="true"], .toast, .coin-fact, summary';
+const ADDRESS_SKIP = '.address-copy, script, style, textarea, input, select, option, a, [contenteditable="true"], .toast, .coin-fact, summary, #walletButton, .nav-item';
 
 function copyableAddress(text) {
   if (text.includes('...')) return shortAddressFull.get(text) || null;

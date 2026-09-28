@@ -16978,3 +16978,13 @@ body.light-mode {
 #view-launch .vanity-candidate.grade-rare { --candidate-grade: var(--rarity-rare); }
 #view-launch .vanity-candidate.grade-rati { --candidate-grade: var(--rarity-rati); }
 #view-launch .vanity-candidate.grade-commissioned { --candidate-grade: var(--rarity-commissioned); }
+
+/* Grid and flex cells would stretch a copy control to the cell's width;
+   it is as wide as the address it holds. */
+.address-copy {
+  display: inline !important;
+  justify-self: start;
+  align-self: start;
+  width: fit-content !important;
+  max-width: 100%;
+}
