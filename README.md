@@ -100,23 +100,27 @@ and current safety limits.
 
 ### Launch
 
-Launch is organized around the six decisions and actions a user actually takes:
+A coin being created shows what is true about it, one fact per row. The first
+fact that doesn't hold is the one to do, and the page offers that one action:
 
-- **Launch wallet** — select the temporary, locally controlled signer.
-- **Token & pools** — define the token, set a liquidity budget, and let
-  Trebuchet derive a minimal Minimum/1/10/100 SOL strategy before expanding
-  optional distribution controls.
-- **Fund wallet** — calculate the requirement, verify the wallet balance, and
-  acquire or manually deposit any required quote tokens.
-- **Create token** — review the permanent token facts, create the mint and
-  metadata, and confirm the authority posture.
-- **Create liquidity** — create pools and positions, lock liquidity, and deliver
-  the Fee Keys.
-- **Finish launch** — complete airdrops, sweep remaining assets to their final
-  destination, and save the launch proof.
+- **Signer** — the temporary, locally controlled launch wallet, and whether it
+  is unlocked.
+- **Plan** — the token and its pools: a liquidity budget, and the minimal
+  None/1/10/100 SOL strategy Trebuchet derives from it, with optional
+  distribution controls. It can change until the token is created.
+- **Funding** — what the launch needs, what the launch wallet holds, and any
+  quote tokens still to acquire or deposit.
+- **Token** — whether the mint exists on-chain with its authorities revoked.
+- **Liquidity** — whether the pools are open and locked, and the Fee Keys
+  delivered.
+- **Launch wallet** — whether it is empty, with its assets returned and the
+  launch proof saved.
+
+A live coin's facts are checked against the chain. A fact the launch record
+claims but the chain contradicts shows as a mismatch, not as done.
 
 Recovery and release-comparison diagnostics remain available from History and
-the collapsed diagnostics area; they are not presented as launch phases.
+the collapsed diagnostics area; they are not presented as facts of the coin.
 
 ### Wallet
 

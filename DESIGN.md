@@ -22,15 +22,31 @@ The interface should answer five questions without making the operator hunt:
 
 - Use hard panel edges, 1 px rules, tabular rows, and dense spacing.
 - Use the local mono face for operational UI and tabular numerals.
-- Keep a clear three-column hierarchy: primary work, evidence/progress, next
-  action.
+- Keep a clear three-column hierarchy: primary work, evidence, next action.
 - Prefer one framed workspace with internal dividers over a pile of floating
   cards.
-- Preserve first-viewport utility. Configure/Fund/Execute/Verify/Recover switch
-  within the Launch workspace instead of growing a long landing page.
+- Preserve first-viewport utility. A coin's facts open within the Launch
+  workspace instead of growing a long landing page.
 - Use color for state and focus, not decoration.
 - Keep labels concrete: **Estimate funding**, **Arm run**, **Retry airdrop**,
   **Download proof**. Avoid vague CTA language.
+
+## No progress, only state
+
+Show what is true now, not where the user is in a sequence.
+
+- A row is a fact with its evidence: "Launch wallet · holds 0.0009 SOL", not
+  "Step 6 of 6 · Sweep". Label rows with nouns; put the value beside them.
+- No step numbers, "Phase N of M", progress percentages, or "Waiting". A fact
+  that can't hold yet says what is true ("Not on-chain"), not that it is queued.
+- The only "next" is the one action the first fact that doesn't hold asks for.
+  No Continue or Back buttons.
+- Which row or pane is open is a view. Never save it as state and never count
+  it toward anything.
+- A record is a claim. Where the chain can answer, a fact is true only when the
+  chain agrees, and a mismatch when it disagrees.
+- A running job may show a count of real things done ("3 of 11 positions
+  locked"). It never shows a percentage of a planned total.
 
 ## Anti-patterns
 
@@ -218,9 +234,9 @@ Never call `prompt()`, `confirm()`, or `alert()` for an Electron workflow.
 
 ### Launch cockpit
 
-Keep the agent/next-move rail, tokenomics, liquidity, funding, and signature
-evidence visible as a coordinated instrument. Drawers hold advanced detail, not
-basic progress.
+Keep the coin's facts, tokenomics, liquidity, funding, and transaction evidence
+visible as a coordinated instrument. Drawers hold advanced detail, never a
+fact the user needs to act on.
 
 Classic parity controls may be collapsed, but their values and blockers must
 feed the same plan and proof state as the primary controls.
