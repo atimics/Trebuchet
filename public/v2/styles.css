@@ -16624,3 +16624,305 @@ select[data-choice-ready][hidden] {
   border: 0;
   background: none;
 }
+
+/* Contract address grinder. One type scale (13px values, 12px text, 11px
+   labels), normal-size controls, and only theme colors, so it reads the
+   same in light and dark mode. Overrides the older terminal styling. */
+#view-launch .vanity-panel {
+  padding: 0 !important;
+  border: 1px solid var(--line) !important;
+  background: var(--panel) !important;
+  font-family: var(--mono) !important;
+  color: var(--ink);
+}
+
+#view-launch .vanity-panel > summary {
+  min-height: 40px;
+  padding: 8px 12px;
+}
+
+#view-launch .vanity-panel > summary span {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+#view-launch .vanity-panel > summary strong {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+#view-launch .grinder {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+
+#view-launch .grinder-intro,
+#view-launch .grinder-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+#view-launch .grinder-note.is-error {
+  color: var(--red);
+}
+
+#view-launch .grinder-fields {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+#view-launch .grinder-field {
+  display: grid !important;
+  gap: 5px;
+  min-width: 0;
+}
+
+#view-launch .grinder-field > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+#view-launch .grinder-field input[type="text"] {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--panel-strong);
+  color: var(--ink);
+  font: 500 13px var(--mono);
+}
+
+#view-launch .grinder-field input[type="text"]::placeholder {
+  color: var(--subtle);
+}
+
+#view-launch .grinder-field input[type="text"]:focus {
+  border-color: var(--green);
+  outline: none;
+}
+
+#view-launch .grinder-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+#view-launch .grinder-options .vanity-length-select {
+  display: grid !important;
+  justify-content: stretch !important;
+}
+
+#view-launch .grinder-check {
+  display: grid !important;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding-top: 18px;
+  cursor: pointer;
+}
+
+#view-launch .grinder-check input[type="checkbox"] {
+  width: 16px !important;
+  height: 16px !important;
+  margin: 1px 0 0;
+  accent-color: var(--green);
+}
+
+#view-launch .grinder-check strong {
+  display: block;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+#view-launch .grinder-check small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#view-launch .grinder-results {
+  display: grid !important;
+  gap: 10px;
+  padding: 0 !important;
+  border: 0 !important;
+  background: none !important;
+}
+
+#view-launch .grinder-statuses {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#view-launch .grinder-status {
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+#view-launch .grinder-status i {
+  color: var(--green);
+  font-size: 11px;
+}
+
+#view-launch .grinder-status strong {
+  color: var(--ink);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+#view-launch .grinder-status span {
+  min-width: 0;
+  color: var(--muted);
+}
+
+#view-launch .grinder-status.warn i,
+#view-launch .grinder-status.warn strong {
+  color: var(--amber);
+}
+
+#view-launch .grinder-status.danger i,
+#view-launch .grinder-status.danger strong {
+  color: var(--red);
+}
+
+#view-launch .grinder-list {
+  display: grid;
+  border: 1px solid var(--line);
+}
+
+#view-launch .grinder-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 7px 12px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+#view-launch .grinder-row:first-child {
+  border-top: 0;
+}
+
+#view-launch .grinder-row:hover {
+  background: color-mix(in srgb, var(--green) 6%, transparent);
+}
+
+#view-launch .grinder-row.is-active {
+  background: color-mix(in srgb, var(--green) 11%, transparent);
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
+#view-launch .grinder-radio {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+}
+
+#view-launch .grinder-row.is-active .grinder-radio {
+  border-color: var(--green);
+  background: radial-gradient(circle, var(--green) 45%, transparent 50%);
+}
+
+#view-launch .grinder-row-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+#view-launch .grinder-row-main code {
+  overflow: hidden;
+  color: var(--ink);
+  font: 600 13px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#view-launch .grinder-row-main small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#view-launch .grinder-row-state {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+#view-launch .grinder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+#view-launch .grinder-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (max-width: 700px) {
+  #view-launch .grinder-fields,
+  #view-launch .grinder-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #view-launch .grinder-check {
+    padding-top: 0;
+  }
+}
+
+/* Older vanity rules laid these out in columns; the grinder is one column
+   and each field's label sits above it. */
+#view-launch .grinder,
+#view-launch .grinder-results {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+#view-launch .grinder-field {
+  grid-template-columns: minmax(0, 1fr) !important;
+  align-items: start !important;
+}
+
+#view-launch .grinder-status span {
+  overflow-wrap: anywhere;
+}
+
+#view-launch .grinder-results {
+  gap: 10px !important;
+}
+
+#view-launch .grinder-actions .primary-button,
+#view-launch .grinder-actions .secondary-button,
+#view-launch .grinder-actions .text-button {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px !important;
+}
