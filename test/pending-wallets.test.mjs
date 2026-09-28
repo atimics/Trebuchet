@@ -59,10 +59,10 @@ function fakeSafeStorage() {
   };
 }
 
-test('adds pending wallets idempotently and removes them', async (t) => {
+test('adds encrypted pending wallets idempotently and removes them', async (t) => {
   await withMutedConsole(async () => {
     const configDir = makeTempConfigDir(t);
-    secretStore.setSafeStorage(null);
+    secretStore.setSafeStorage(fakeSafeStorage());
     const pendingWallets = await importFreshPendingWallets(configDir);
 
     pendingWallets.add('Wallet1111111111111111111111111111111111', [1, 2, 3], 'alpha beta');
@@ -82,8 +82,10 @@ test('adds pending wallets idempotently and removes them', async (t) => {
     assert.equal(disk.length, 1);
     assert.equal(disk[0].secretKey, undefined);
     assert.equal(disk[0].mnemonic, undefined);
-    assert.equal(disk[0].secretKeyEnc, 'plain:[1,2,3]');
-    assert.equal(disk[0].mnemonicEnc, 'plain:alpha beta');
+    assert.match(disk[0].secretKeyEnc, /^enc:/);
+    assert.equal(secretStore.decryptString(disk[0].secretKeyEnc), '[1,2,3]');
+    assert.match(disk[0].mnemonicEnc, /^enc:/);
+    assert.equal(secretStore.decryptString(disk[0].mnemonicEnc), 'alpha beta');
 
     pendingWallets.remove('Wallet1111111111111111111111111111111111');
     assert.deepEqual(pendingWallets.list(), []);
@@ -138,7 +140,7 @@ test('fails closed when a generated wallet cannot be persisted', async (t) => {
 test('persists non-secret vanity rarity metadata for wallet styling', async (t) => {
   await withMutedConsole(async () => {
     const configDir = makeTempConfigDir(t);
-    secretStore.setSafeStorage(null);
+    secretStore.setSafeStorage(fakeSafeStorage());
     const pendingWallets = await importFreshPendingWallets(configDir);
     const publicKey = 'RareWallet1111111111111111111111111111111';
 
@@ -161,7 +163,8 @@ test('persists non-secret vanity rarity metadata for wallet styling', async (t) 
     assert.equal(disk[0].rarity, 'Legendary');
     assert.equal(disk[0].vanity, true);
     assert.equal(disk[0].secretKey, undefined);
-    assert.equal(disk[0].secretKeyEnc, 'plain:[4,5,6]');
+    assert.match(disk[0].secretKeyEnc, /^enc:/);
+    assert.equal(secretStore.decryptString(disk[0].secretKeyEnc), '[4,5,6]');
   });
 });
 
@@ -220,7 +223,7 @@ test('stores pending wallet secrets with the configured Recovery PIN', async (t)
   await withMutedConsole(async () => {
     const configDir = makeTempConfigDir(t);
     process.env.TREBUCHET_CONFIG_DIR = configDir;
-    secretStore.setSafeStorage(null);
+    secretStore.setSafeStorage(fakeSafeStorage());
     secretStore.setupSecretPin('2468');
     t.after(() => secretStore.lockSecretPin());
 
@@ -281,7 +284,7 @@ test('adding and removing another wallet preserves unreadable ciphertext and rec
   await withMutedConsole(async () => {
     const configDir = makeTempConfigDir(t);
     secretStore.lockSecretPin();
-    secretStore.setSafeStorage(null);
+    secretStore.setSafeStorage(fakeSafeStorage());
     const original = { publicKey: 'encrypted-wallet', createdAt: '2026-01-01T00:00:00Z', secretKeyEnc: 'enc:device-key', mnemonicEnc: 'enc:device-words', recoveryNote: 'Retain this record' };
     writeFileSync(pendingWalletFile(configDir), JSON.stringify([original]) + '\n');
     const pendingWallets = await importFreshPendingWallets(configDir);
@@ -320,7 +323,7 @@ test('a failed rename or sync preserves the previous wallet file and clears temp
   for (const method of ['renameSync', 'fsyncSync']) {
     await withMutedConsole(async () => {
       const configDir = makeTempConfigDir(t);
-      secretStore.setSafeStorage(null);
+      secretStore.setSafeStorage(fakeSafeStorage());
       const pendingWallets = await importFreshPendingWallets(configDir);
       pendingWallets.add('prior-wallet', [1, 2, 3]);
       const original = readFileSync(pendingWalletFile(configDir));
@@ -362,5 +365,47 @@ test('an existing encrypted key requires encrypted custody for replacement', asy
     const pendingWallets = await importFreshPendingWallets(configDir);
     assert.throws(() => pendingWallets.add('repair', [1, 2, 3]), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
     assert.equal(readFileSync(pendingWalletFile(configDir), 'utf8'), original);
+  });
+});
+
+test('fresh wallets require encryption while existing plaintext recovery remains readable', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    secretStore.lockSecretPin();
+    secretStore.setSafeStorage(null);
+    const original = '[{"publicKey":"legacy","secretKey":[1,2,3],"mnemonic":"old words"}]\n';
+    writeFileSync(pendingWalletFile(configDir), original);
+    const pendingWallets = await importFreshPendingWallets(configDir);
+    assert.deepEqual(pendingWallets.get('legacy').secretKey, [1, 2, 3]);
+    assert.equal(readFileSync(pendingWalletFile(configDir), 'utf8'), original);
+    assert.throws(() => pendingWallets.add('fresh', [4, 5, 6], 'new words'), { code: 'RECOVERY_ENCRYPTION_REQUIRED' });
+    assert.equal(readFileSync(pendingWalletFile(configDir), 'utf8'), original);
+  });
+});
+
+test('a fresh wallet is returned only after both encrypted fields verify', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    secretStore.setSafeStorage({ ...fakeSafeStorage(), encryptString: (text) => {
+      if (text === 'new words') throw new Error('Keychain interrupted');
+      return Buffer.from(`wrapped:${text}`);
+    } });
+    const pendingWallets = await importFreshPendingWallets(configDir);
+    assert.throws(() => pendingWallets.add('fresh', [4, 5, 6], 'new words'), { code: 'RECOVERY_ENCRYPTION_REQUIRED' });
+    assert.equal(existsSync(pendingWalletFile(configDir)), false);
+  });
+});
+
+test('fresh wallet PIN custody requires a protected device secret', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    process.env.TREBUCHET_CONFIG_DIR = configDir;
+    secretStore.setSafeStorage(null);
+    secretStore.setupSecretPin('2468');
+    t.after(() => secretStore.lockSecretPin());
+    assert.equal(secretStore.secretPinStatus().deviceSecretProtected, false);
+    const pendingWallets = await importFreshPendingWallets(configDir);
+    assert.throws(() => pendingWallets.add('fresh', [4, 5, 6]), { code: 'RECOVERY_ENCRYPTION_REQUIRED' });
+    assert.equal(existsSync(pendingWalletFile(configDir)), false);
   });
 });

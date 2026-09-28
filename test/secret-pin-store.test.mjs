@@ -205,3 +205,21 @@ test('migrates legacy v1 PIN state and decrypts legacy tokens for rewrap', (t) =
   assert.equal(Buffer.from(nextToken.slice(4), 'base64')[0], 2);
   assert.equal(secretPinStore.decryptString(nextToken), 'fresh secret');
 });
+
+test('an interrupted PIN commit preserves the prior key and removes its temporary file', async (t) => {
+  const { default: fs } = await import('node:fs');
+  const dir = useConfigDir(t);
+  secretPinStore.setSafeStorage(fakeSafeStorage());
+  secretPinStore.setPin('1234');
+  const token = secretPinStore.encryptString('retained recovery key');
+  const original = readFileSync(path.join(dir, '.secretPin.json'));
+  const sync = fs.fsyncSync;
+  fs.fsyncSync = () => { throw new Error('PIN sync interrupted'); };
+  try { assert.throws(() => secretPinStore.rotateUnlockedPin('5678'), /PIN sync interrupted/); }
+  finally { fs.fsyncSync = sync; }
+  assert.deepEqual(readFileSync(path.join(dir, '.secretPin.json')), original);
+  assert.deepEqual(fs.readdirSync(dir), ['.secretPin.json']);
+  secretPinStore.lock();
+  assert.equal(secretPinStore.unlock('1234'), true);
+  assert.equal(secretPinStore.decryptString(token), 'retained recovery key');
+});

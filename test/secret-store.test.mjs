@@ -68,3 +68,25 @@ test('validates plaintext type before encrypting', async () => {
 
   assert.throws(() => secretStore.encryptString(null), /expects a string/);
 });
+
+test('fresh recovery encryption requires a protected backend and a complete round trip', async () => {
+  await withMutedWarn(async () => {
+    const unavailable = await importFreshSecretStore();
+    assert.throws(() => unavailable.encryptRecoveryString('wallet secret'), { code: 'RECOVERY_ENCRYPTION_REQUIRED', statusCode: 409 });
+    assert.equal(unavailable.decryptString('plain:existing recovery'), 'existing recovery');
+    for (const changes of [
+      { getSelectedStorageBackend: () => 'basic_text' },
+      { encryptString: () => { throw new Error('Keychain busy'); } },
+      { decryptString: () => 'different material' },
+    ]) {
+      const store = await importFreshSecretStore();
+      store.setSafeStorage({ ...fakeSafeStorage(), ...changes });
+      assert.throws(() => store.encryptRecoveryString('wallet secret'), { code: 'RECOVERY_ENCRYPTION_REQUIRED' });
+    }
+    const ready = await importFreshSecretStore();
+    ready.setSafeStorage(fakeSafeStorage());
+    const token = ready.encryptRecoveryString('wallet secret');
+    assert.match(token, /^enc:/);
+    assert.equal(ready.decryptString(token), 'wallet secret');
+  });
+});

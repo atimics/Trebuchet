@@ -14,7 +14,8 @@
 // At-rest encryption: secret material (the secretKey byte array and the
 // mnemonic) goes through secretStore before being written to disk. In
 // the Electron desktop build that means OS-keychain-backed encryption;
-// in `npm run web` mode it falls back to plaintext with a warning.
+// fresh wallets require a protected backend. Existing recovery records keep
+// their original material when the backend is unavailable.
 // On-disk format:
 //   {
 //     publicKey:    "...",
@@ -39,7 +40,7 @@ const __dirname = path.dirname(__filename);
 const sourceRecords = new WeakMap();
 
 function storageError(cause) {
-  if (cause?.code === 'RECOVERY_STORAGE_UNAVAILABLE') return cause;
+  if (['RECOVERY_STORAGE_UNAVAILABLE', 'RECOVERY_ENCRYPTION_REQUIRED'].includes(cause?.code)) return cause;
   return Object.assign(new RecoveryStorageError('Wallet recovery storage requires attention before continuing.', { cause }), { statusCode: 500 });
 }
 
@@ -104,7 +105,7 @@ function encodeEntry(decoded) {
     const original = prior[tokenField];
     const same = typeof original === 'string' && secretStore.decryptString(original) === text;
     if (same && !secretStore.shouldReencryptToken(original)) { delete out[field]; return; }
-    const token = secretStore.encryptString(text);
+    const token = sourceRecords.has(decoded) ? secretStore.encryptString(text) : secretStore.encryptRecoveryString(text);
     if (secretStore.decryptString(token) !== text) throw new Error('Verify the recovery ciphertext before saving it');
     if (typeof original === 'string' && /^(enc|pin):/.test(original) && token.startsWith('plain:')) {
       throw new Error('Use encrypted custody when replacing an encrypted recovery secret');

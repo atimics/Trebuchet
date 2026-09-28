@@ -123,4 +123,11 @@ Wallet recovery updates now keep each original record beside its decoded in-memo
 
 Recovery file reads require valid records and distinct public keys. Damaged bytes remain at their original path, and a recovery error stops further work. Updates sync a private temporary file before atomic rename and sync the directory on POSIX. Migration saves an exact private backup of the source bytes before replacing the active file.
 
-`test/pending-wallets.test.mjs` covers mixed readable and unreadable records, encrypted key repair, exact migration backups, file permissions, interrupted rename and sync, backup failure, and preservation of damaged input. Encrypted storage for every fresh funded wallet remains an open requirement in the completion checklist.
+`test/pending-wallets.test.mjs` covers mixed readable and unreadable records, encrypted key repair, exact migration backups, file permissions, interrupted rename and sync, backup failure, and preservation of damaged input. The fresh-wallet custody policy is described below. Runner custody remains part of the full completion checklist.
+
+
+### Fresh local wallets require encrypted recovery
+
+A new pending wallet now uses the strict recovery encryption interface. Its key and mnemonic must round-trip through the protected host backend before a private file commit. Device encryption can be supplied directly by the desktop, or by an unlocked Recovery PIN whose device secret has OS protection. An unavailable backend, Linux basic-text backend, keychain error, or changed decrypt result returns `RECOVERY_ENCRYPTION_REQUIRED` before the API returns a wallet for funding. The existing recovery-read interface retains access to legacy material.
+
+The PIN state file now syncs its temporary contents before rename and syncs its directory on POSIX. An interrupted rotation preserves the previous key and PIN. Tests cover both generation endpoints and wallet import through the real headless API, protected PIN storage, legacy reads, backend errors, and interrupted PIN commits. Demo wallets continue to use the practice ledger. The runner will need its own encrypted host backend when live execution is connected.

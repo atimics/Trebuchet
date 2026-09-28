@@ -117,6 +117,11 @@ test('a pending durable transfer holds later live API wallet actions across runt
         return true;
       });
     }
+    for (const endpoint of ['/api/generate-wallet', '/api/v2/wallets/generate', '/api/v2/wallets/import']) {
+      await assert.rejects(runtime.request(endpoint, { method: 'POST', body: endpoint.endsWith('/import') ? { secretKey: tempWalletSecretKey } : {} }),
+        (error) => error.statusCode === 409 && error.code === 'RECOVERY_ENCRYPTION_REQUIRED');
+    }
+    assert.equal(fs.existsSync(path.join(profile, 'pendingWallets.json')), false);
     const check = openRuntimeStore(profile);
     try {
       assert.equal(check.getActiveOperation(walletPublicKey).id, operation.id);
