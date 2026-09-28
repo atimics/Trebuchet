@@ -6272,7 +6272,7 @@ function fundingMeterSnapshot(config = currentLaunchConfig()) {
 
   return {
     availableSol,
-    availableLabel: hasWalletBalance ? 'Wallet SOL' : 'Planned SOL',
+    availableLabel: hasWalletBalance ? 'In the wallet' : 'Budget',
     availableClass: fundingEstimateStatus.matchesConfig && !hasWalletBalance ? 'warn' : '',
     hasWalletBalance,
     walletBalanceFresh,
@@ -6529,9 +6529,9 @@ function renderChartDeck() {
   const supportSolTotal = topology.pools.reduce((sum, pool) => sum + Number(pool.support?.solValue || 0), 0);
   const bands = [
     ...liquidityDepthRows(topology),
-    ['Slices', clampPercent(sliceCount * 16), `${sliceCount} keys`],
-    ['Ladder', clampPercent(ladderCount * 12), `${ladderCount} bands`],
-    ['Support', clampPercent(supportSolTotal * 60), `${supportSolTotal.toFixed(2)} SOL`],
+    ['Locked positions', clampPercent(sliceCount * 16), String(sliceCount)],
+    ['Extra bands', clampPercent(ladderCount * 12), ladderCount ? String(ladderCount) : 'none'],
+    ['Buy support', clampPercent(supportSolTotal * 60), `${supportSolTotal.toFixed(2)} SOL`],
   ].slice(0, 5);
 
   $('#tokenomicsChart').classList.add('has-svg');
@@ -6573,11 +6573,11 @@ function renderChartDeck() {
     <div class="funding-track" aria-label="Funding progress">
       <span style="width:${funding.fundedPercent}%"></span>
     </div>
-    <div class="funding-row ${escapeHtml(funding.availableClass)}"><span>${escapeHtml(funding.availableLabel)}</span><strong>${funding.estimateAvailable ? `${funding.availableSol.toFixed(2)} / ${funding.estimatedCost.toFixed(2)} SOL` : `${funding.availableSol.toFixed(2)} SOL planned`}</strong></div>
-    <div class="funding-row ${escapeHtml(funding.missingClass)}"><span>${funding.estimateAvailable ? 'Missing SOL' : 'Cost estimate'}</span><strong>${funding.estimateAvailable ? `${funding.missingSol.toFixed(2)} SOL` : 'Run estimator first'}</strong></div>
-    <div class="funding-row ${escapeHtml(funding.acquireClass)}"><span>Acquired quotes</span><strong>${escapeHtml(funding.acquireLabel)}</strong></div>
-    <div class="funding-row ${escapeHtml(funding.manualClass)}"><span>Manual quote</span><strong>${escapeHtml(funding.manualLabel)}</strong></div>
-    <div class="funding-row ${escapeHtml(funding.observedClass)}"><span>Observed spend</span><strong>${escapeHtml(funding.observedLabel)}</strong></div>
+    <div class="funding-row ${escapeHtml(funding.availableClass)}"><span>${escapeHtml(funding.availableLabel)}</span><strong>${funding.estimateAvailable ? `${funding.availableSol.toFixed(2)} / ${funding.estimatedCost.toFixed(2)} SOL` : `${funding.availableSol.toFixed(2)} SOL`}</strong></div>
+    <div class="funding-row ${escapeHtml(funding.missingClass)}"><span>${funding.estimateAvailable ? 'Still needed' : 'Cost'}</span><strong>${funding.estimateAvailable ? `${funding.missingSol.toFixed(2)} SOL` : 'Not estimated yet'}</strong></div>
+    <div class="funding-row ${escapeHtml(funding.acquireClass)}"><span>Pair tokens bought</span><strong>${escapeHtml(funding.acquireLabel)}</strong></div>
+    <div class="funding-row ${escapeHtml(funding.manualClass)}"><span>Pair tokens to send</span><strong>${escapeHtml(funding.manualLabel)}</strong></div>
+    <div class="funding-row ${escapeHtml(funding.observedClass)}"><span>Spent so far</span><strong>${escapeHtml(funding.observedLabel)}</strong></div>
   `;
 }
 
@@ -7464,7 +7464,8 @@ function renderAirdropPanel() {
     : airdrop.enabled
       ? `${airdrop.recipientCount} / ${formatPercent(airdrop.supplyPercent)}%`
       : 'Off';
-  summary.className = `risk-badge ${hasError ? 'danger' : airdrop.enabled ? '' : 'warn'}`;
+  // Off is the normal state, not a warning.
+  summary.className = `risk-badge ${hasError ? 'danger' : airdrop.enabled ? '' : 'is-neutral'}`;
   const requested = Number(airdrop.requestedSupplyPercent || 0);
   const effective = Number(airdrop.supplyPercent || 0);
   const required = Number(airdrop.requiredSupplyPercent || 0);
@@ -16877,7 +16878,7 @@ function renderPersonalDiscovery() {
         ` : ''}
       </details>
     ` : ''}
-    <p class="discovery-scan-budget">${enabledWatchOnlyCount + enabledManagedCount} enabled · ${scanConcurrency} at a time</p>
+    ${enabledWatchOnlyCount + enabledManagedCount ? `<p class="discovery-scan-budget">Refresh looks through ${enabledWatchOnlyCount + enabledManagedCount} wallet${enabledWatchOnlyCount + enabledManagedCount === 1 ? '' : 's'}, ${scanConcurrency} at a time.</p>` : ''}
   `;
 
   const progressLabel = personalDiscoveryProgressLabel();
@@ -16906,6 +16907,12 @@ function renderPersonalDiscovery() {
   ['personalDiscoveryStatus', 'discoveryWalletStatus'].forEach((id) => {
     const statusNode = $(`#${id}`);
     if (!statusNode) return;
+    // The Wallets tab already says to add an address; don't say it twice.
+    if (id === 'discoveryWalletStatus' && !snapshot && !state.discovery.personalError && !state.discovery.scanning
+      && enabledWatchOnlyCount + enabledManagedCount === 0) {
+      statusNode.innerHTML = '';
+      return;
+    }
     statusNode.classList.toggle('is-error', Boolean(state.discovery.personalError));
     statusNode.classList.toggle('is-warning', !state.discovery.personalError && scanWarnings.length > 0);
     statusNode.title = scanWarnings.join('\n');
@@ -17403,7 +17410,8 @@ function renderRpcSettingsPanel() {
       </div>
       ${isPublic ? '<div class="rpc-warning">Public Solana RPCs are launch hazards. Save a dedicated endpoint before creating pools.</div>' : ''}
       <div class="rpc-saved-list">
-        ${saved.length ? saved.map((entry) => {
+        ${saved.filter((entry) => entry.url !== activeUrl).length ? `<small class="rpc-saved-title">Other saved endpoints</small>` : ''}
+        ${saved.some((entry) => entry.url !== activeUrl) ? saved.filter((entry) => entry.url !== activeUrl).map((entry) => {
           const selected = entry.url === activeUrl;
           return `
             <article class="${selected ? 'is-active' : ''}">
@@ -17417,7 +17425,7 @@ function renderRpcSettingsPanel() {
               </span>
             </article>
           `;
-        }).join('') : '<div class="empty-state compact">No saved RPC endpoints loaded.</div>'}
+        }).join('') : ''}
       </div>
       <div class="rpc-add-grid">
         <label>
@@ -17466,15 +17474,12 @@ function renderSettings() {
         <button class="pill-button" type="button" data-action="${escapeHtml(pinMeta.primaryAction)}" ${pinMeta.disabled || state.secretPin.busy ? 'disabled' : ''}>
           ${escapeHtml(state.secretPin.busy || pinMeta.primaryLabel)}
         </button>
-        <button class="pill-button" type="button" data-action="refresh-secret-pin" ${state.apiStatus !== 'connected' || state.secretPin.busy ? 'disabled' : ''}>
-          Refresh
-        </button>
-        <button class="pill-button" type="button" data-action="change-secret-pin" ${state.apiStatus !== 'connected' || !state.secretPin.configured || state.secretPin.busy ? 'disabled' : ''}>
+        ${state.secretPin.configured ? `<button class="pill-button" type="button" data-action="change-secret-pin" ${state.apiStatus !== 'connected' || state.secretPin.busy ? 'disabled' : ''}>
           Change
         </button>
-        <button class="pill-button danger" type="button" data-action="reset-secret-pin" ${state.apiStatus !== 'connected' || !state.secretPin.configured || state.secretPin.busy ? 'disabled' : ''}>
+        <button class="pill-button danger" type="button" data-action="reset-secret-pin" ${state.apiStatus !== 'connected' || state.secretPin.busy ? 'disabled' : ''}>
           Reset
-        </button>
+        </button>` : ''}
       </span>
     </article>
     ${renderReleasePanel()}

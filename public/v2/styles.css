@@ -17022,3 +17022,34 @@ body[data-launch-identity="active"] #view-launch .primary-button:not(.custody-ac
   color: var(--muted);
   font-size: 12px;
 }
+
+.field-hint {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.risk-badge.is-neutral {
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+
+/* Discovery: the add-wallet form is one row of normal-height controls. */
+#view-discovery .discovery-wallet-form {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+}
+
+#view-discovery .discovery-wallet-form button {
+  height: auto;
+  min-height: 34px;
+  align-self: stretch;
+}
+
+@media (max-width: 700px) {
+  #view-discovery .discovery-wallet-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

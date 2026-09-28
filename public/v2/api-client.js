@@ -142,7 +142,7 @@
 
   function healthLabel(value, latencyMs) {
     const normalized = normalizeHealth(value);
-    if (normalized === 'good') return latencyMs === 0 ? 'healthy demo RPC' : `healthy ${latencyMs}ms`;
+    if (normalized === 'good') return latencyMs === 0 ? 'Connected' : `Connected · ${latencyMs} ms`;
     if (normalized === 'slow') return latencyMs == null ? 'slow' : `slow ${latencyMs}ms`;
     if (normalized === 'error') return 'unhealthy';
     return 'unknown';
