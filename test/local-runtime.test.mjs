@@ -91,7 +91,7 @@ test('CLI clients share one production runtime and recover its ownership after p
   }
 });
 
-for (const kind of ['sol-sweep', 'token-transfer', 'metadata-update']) {
+for (const kind of ['sol-sweep', 'token-transfer', 'metadata-update', 'liquidity-transaction']) {
 test(`a pending durable ${kind} holds later live API wallet actions across runtime startup`, { timeout: 45_000 }, async () => {
   const { openRuntimeStore } = await import('../packages/runtime/src/store.js');
   const { sweepWallet, sweepDestination } = await import('../packages/runtime/test/fixtures/sol-sweep-chain.mjs');
@@ -110,7 +110,7 @@ test(`a pending durable ${kind} holds later live API wallet actions across runti
     runtime = await ensureRuntime(profile, { args: [server] });
     const tempWalletSecretKey = Array.from(sweepWallet.secretKey);
     const requests = [
-      ['/api/launch-journals/resume', { id: 'journal-a' }],
+      ...(kind === 'liquidity-transaction' ? [] : [['/api/launch-journals/resume', { id: 'journal-a' }]]),
       ['/api/create-token', { tempWalletSecretKey, name: 'Pending Test', symbol: 'PEND', description: 'Recovery test', totalSupply: '1000' }],
       ['/api/run-airdrop', { tempWalletSecretKey, tokenMint: sweepDestination, tokenDecimals: 9, recipients: [{ address: sweepDestination, amount: '1' }] }],
     ];

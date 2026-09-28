@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { PublicKey } from '@solana/web3.js';
+import { CLMM_PROGRAM_ID, CLMM_LOCK_PROGRAM_ID, LockClPositionLayoutV2, getPdaPersonalPositionAddress } from '@raydium-io/raydium-sdk-v2';
 
 import { unrecordedPositionsAtRange, findUnrecordedPositionAt, positionLockedOnChain } from '../lpService.js';
 
@@ -79,9 +81,9 @@ test('liquidity lock reconciliation requires a complete finalized read', async (
     if (calls === 2) return null;
     return [];
   } } };
-  await assert.rejects(positionLockedOnChain(raydium, 'position'));
-  await assert.rejects(positionLockedOnChain(raydium, 'position'));
-  assert.equal(await positionLockedOnChain(raydium, 'position'), null);
+  await assert.rejects(positionLockedOnChain(raydium, '11111111111111111111111111111111'));
+  await assert.rejects(positionLockedOnChain(raydium, '11111111111111111111111111111111'));
+  assert.equal(await positionLockedOnChain(raydium, '11111111111111111111111111111111'), null);
 });
 
 
@@ -94,4 +96,18 @@ test('position recovery refreshes SDK wallet accounts before checking the chain'
   assert.equal(await findUnrecordedPositionAt(raydium, 'pool', -10, 10, new Set()), null);
   raydium.account.fetchWalletTokenAccounts = async () => { throw new Error('Wallet read failed'); };
   await assert.rejects(findUnrecordedPositionAt(raydium, 'pool', -10, 10, new Set()), /Wallet read failed/);
+});
+
+
+test('lock recovery queries the deployed program and the derived personal position account', async () => {
+  const mint = new PublicKey(new Uint8Array(32).fill(11)), feeKey = new PublicKey(new Uint8Array(32).fill(12));
+  const position = getPdaPersonalPositionAddress(CLMM_PROGRAM_ID, mint).publicKey;
+  const data = Buffer.alloc(LockClPositionLayoutV2.span);
+  LockClPositionLayoutV2.encode({ ...LockClPositionLayoutV2.decode(data), positionId: position, lockNftMint: feeKey }, data);
+  const raydium = { connection: { getProgramAccounts: async (program, options) => {
+    assert.equal(program.toBase58(), CLMM_LOCK_PROGRAM_ID.toBase58());
+    assert.equal(options.filters[0].memcmp.bytes, position.toBase58());
+    return [{ account: { data } }];
+  } } };
+  assert.equal(await positionLockedOnChain(raydium, mint.toBase58()), feeKey.toBase58());
 });

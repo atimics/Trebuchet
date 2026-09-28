@@ -67,7 +67,7 @@ export function createLaunchExecutionServices({
   recordLpJournalProgress,
   recordTokenJournalProgress,
   reconcileWalletOperation,
-  reconcileMetadataReveal,
+  reconcileBeforeLiquidity,
   getTransferReceipts,
   registerOfficialBrandLaunch,
   requireSecretPinUnlocked,
@@ -576,7 +576,7 @@ export function createLaunchExecutionServices({
       // someone else does (leave it alone).
       claimLaunchOp(walletPublicKey, 'create-lp');
       claimedLaunchOp = true;
-      await reconcileMetadataReveal({ tempWalletSecretKey: secretKeyArr, tokenMint });
+      await reconcileBeforeLiquidity({ tempWalletSecretKey: secretKeyArr, tokenMint });
       const poolPlan = {
         tokenMint,
         tokenDecimals: tokenDecimals || 9,
@@ -806,7 +806,7 @@ export function createLaunchExecutionServices({
       // this guard, two orchestrators would race over the same positions.
       claimLaunchOp(walletPublicKey, 'resume-launch');
       claimedLaunchOp = true;
-      await reconcileMetadataReveal({ tempWalletSecretKey: secretKeyArr, tokenMint });
+      await reconcileBeforeLiquidity({ tempWalletSecretKey: secretKeyArr, tokenMint });
 
       const activeJournal = launchJournal.activeForWallet(walletPublicKey);
       const phase1Recovery = materializePhase1RecoveryResults(

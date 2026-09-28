@@ -1,3 +1,4 @@
+import { createLiquidityExecutionRuntime, LIQUIDITY_OPERATION_KIND } from './liquidityExecution.js';
 import { createWalletExecutionRuntime } from './walletExecution.js';
 import { classifyChainError } from './chainRetry.js';
 import { createLaunchExecutionServices, claimLaunchOperation, LaunchRejection } from './launchExecution.js';
@@ -29,7 +30,7 @@ import {
 } from './tokenService.js';
 
 import {
-  createPoolsAndPositions,
+  createPoolsAndPositions as createPoolsWithSdk,
   preflightCreatePoolsAndPositions,
   estimateRequiredFunding,
   getUsdPrice,
@@ -656,13 +657,31 @@ const walletExecution = runtimeOwner ? createWalletExecutionRuntime({
   owner: runtimeOwner,
   getScopeId: (walletPublicKey) => launchJournal.activeForWallet(walletPublicKey)?.id,
 }) : null;
+const liquidityExecution = runtimeOwner ? createLiquidityExecutionRuntime({
+  owner: runtimeOwner,
+  getScopeId: (wallet) => launchJournal.activeForWallet(wallet)?.id,
+  recordProgress: (wallet, event) => recordLpJournalProgress(wallet, event),
+}) : null;
+const requireLiquidityExecution = () => {
+  if (!liquidityExecution) throw Object.assign(new Error('Start the owned runtime before liquidity execution.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  return liquidityExecution;
+};
+const createPoolsAndPositions = (input) => createPoolsWithSdk({ ...input, execution: requireLiquidityExecution().forLaunch(input) });
+const reconcileBeforeLiquidity = async (input) => {
+  await requireLiquidityExecution().recover(input);
+  return requireWalletExecution().recoverMetadataReveal(input);
+};
 const requireWalletExecution = () => {
   if (!walletExecution) throw Object.assign(new Error('Start the owned runtime before live transfers.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
   return walletExecution;
 };
 const sweepSolToDestination = (input) => requireWalletExecution().sweepSolToDestination(input);
 const transferMetadataAuthority = (input) => requireWalletExecution().transferMetadataAuthority(input);
-const reconcileWalletOperation = (input) => requireWalletExecution().recover(input);
+const reconcileWalletOperation = async (input) => {
+  const wallet = Keypair.fromSecretKey(Uint8Array.from(input.tempWalletSecretKey)).publicKey.toBase58();
+  if (walletExecution?.active(wallet)?.kind === LIQUIDITY_OPERATION_KIND) await requireLiquidityExecution().recover(input);
+  return requireWalletExecution().recover(input);
+};
 const sweepNftsToDestination = (input) => sweepNftsWithSigner({ ...input, transferToken: requireWalletExecution().transferTokenWithProgram });
 const sweepAllTokensToDestination = (input) => sweepTokensWithSigner({ ...input, transferToken: requireWalletExecution().transferTokenWithProgram });
 
@@ -671,7 +690,8 @@ function claimLaunchOp(walletPublicKey, op) {
   const pending = walletExecution?.active(walletPublicKey);
   const canResumeMetadata = pending?.kind === 'metadata-update' && pending.payload.makeImmutable
     && ['reveal-sealed-metadata', 'create-lp', 'resume-launch'].includes(op);
-  if (pending && op !== 'transfer-assets' && !canResumeMetadata) {
+  const canResumeLiquidity = pending?.kind === LIQUIDITY_OPERATION_KIND && ['create-lp', 'resume-launch'].includes(op);
+  if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity) {
     throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: 'Resume the saved wallet operation before starting another wallet action.' });
   }
   claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
@@ -5169,7 +5189,7 @@ const launchServices = createLaunchExecutionServices({
   recordLpJournalProgress,
   recordTokenJournalProgress,
   reconcileWalletOperation,
-  reconcileMetadataReveal: (input) => requireWalletExecution().recoverMetadataReveal(input),
+  reconcileBeforeLiquidity,
   getTransferReceipts: (wallet) => requireWalletExecution().getTransferReceipts(wallet),
   registerOfficialBrandLaunch,
   requireSecretPinUnlocked,
@@ -6022,6 +6042,7 @@ function recordLpJournalProgress(walletPublicKey, event) {
   if (!walletPublicKey || !event) return;
 
   const journal = launchJournal.activeForWallet(walletPublicKey);
+  if (event.operationId && journal?.lp?.operationIds?.includes(event.operationId)) return;
   const partialResults = journalResultList(journal);
   const patch = { stage: event.stage || 'lp_progress' };
 
@@ -6029,6 +6050,7 @@ function recordLpJournalProgress(walletPublicKey, event) {
     patch.lp = { partialResults };
   }
 
+  if (event.operationId) patch.lp = { ...patch.lp, operationIds: [...(journal?.lp?.operationIds || []), event.operationId] };
   launchJournal.upsertForWallet(walletPublicKey, patch, event);
 }
 
@@ -8149,7 +8171,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       });
     }
 
-    await requireWalletExecution().recoverMetadataReveal({ tempWalletSecretKey: wallet.secretKey, tokenMint });
+    await reconcileBeforeLiquidity({ tempWalletSecretKey: wallet.secretKey, tokenMint });
 
     if (await rejectIfTokenIncompleteForLiquidity(res, {
       tokenMint,

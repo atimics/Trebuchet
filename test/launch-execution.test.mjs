@@ -26,7 +26,7 @@ function fixture() {
   const deps = {
     PublicKey, launchJournal,
     reconcileWalletOperation: async () => null,
-    reconcileMetadataReveal: async () => null,
+    reconcileBeforeLiquidity: async () => null,
     getTransferReceipts: async () => [],
     requireSecretPinUnlocked: () => { if (state.locked) throw new LaunchRejection(423, { success: false, code: 'SECRET_PIN_LOCKED', error: 'Unlock recovery storage.' }); },
     requireTokenCompleteForLiquidity: async () => {},
@@ -301,7 +301,7 @@ test('metadata handoff receipts commit before the wallet recovery key is removed
 for (const method of ['createLiquidity', 'resumeLiquidity']) {
   test(`${method} reconciles an interrupted metadata reveal before the next liquidity action`, async () => {
     const f = fixture();
-    f.deps.reconcileMetadataReveal = async ({ tokenMint }) => {
+    f.deps.reconcileBeforeLiquidity = async ({ tokenMint }) => {
       assert.equal(tokenMint, input.tokenMint);
       throw Object.assign(new Error('Metadata receipt needs recovery'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
     };

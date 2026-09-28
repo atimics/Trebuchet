@@ -101,6 +101,9 @@ import {
   Raydium,
   TxVersion,
   CLMM_PROGRAM_ID,
+  CLMM_LOCK_PROGRAM_ID,
+  CLMM_LOCK_AUTH_ID,
+  getPdaPersonalPositionAddress,
   LockClPositionLayoutV2,
   DEVNET_PROGRAM_ID,
   getPdaTickArrayAddress,
@@ -576,7 +579,11 @@ export function checkContinuousLiquidity({
 // true the work was found already done on-chain and `value` is whatever the
 // probe captured (via `onAlreadyDone`), so the caller can adopt it.
 // ---------------------------------------------------------------------------
-async function executeSdkTx({ label, build, alreadyDone, onAlreadyDone }) {
+const liquidityExecutors = new WeakMap();
+
+async function executeSdkTx({ raydium, key, action, label, build, alreadyDone, onAlreadyDone }) {
+  const executor = raydium && liquidityExecutors.get(raydium);
+  if (executor) return executor.execute({ key, action, build });
   let captured;
   const r = await landTxWithRetry({
     label,
@@ -1494,6 +1501,7 @@ async function lpComputeBudgetConfig(raydium, poolId) {
 
 async function createSinglePool({
   raydium,
+  allocationIndex,
   ownerKeypair,
   ammConfig,
   launchedToken,
@@ -1604,6 +1612,8 @@ async function createSinglePool({
     // when building the extInfo). Don't call toBase58() on it.
     poolId = preliminary.extInfo.address.id;
     const createR = await executeSdkTx({
+      raydium, key: `pool/${allocationIndex}`,
+      action: { type: 'pool', event: { stage: 'pool_create_done', allocationIndex } },
       label: 'create pool',
       build: buildCreate,
       alreadyDone: async () => {
@@ -1756,7 +1766,7 @@ async function createSinglePool({
   // best-effort: if it fails we fall back to the journal-only view, which is no
   // worse than the behaviour before this check existed.
   let onChainPoolPositions = [];
-  if (recoveringPhase1) {
+  if (recoveringPhase1 && !liquidityExecutors.has(raydium)) {
     try {
       onChainPoolPositions = await fetchOwnerClmmPositionsForPool(raydium, poolId);
       console.log(
@@ -1962,8 +1972,11 @@ async function createSinglePool({
       // range, plus anything recovered) — the probe must not adopt those.
       const recordedMain = new Set(mainPositions.map((p) => p.nftMint).filter(Boolean));
       const openR = await executeSdkTx({
+        raydium, key: `position/${allocationIndex}/main/${i}`,
+        action: { type: 'position', poolId, ...mainTicks, event: { stage: 'main_open_done', allocationIndex, sliceIndex: i, baseAmountRaw: sliceRaw.toString() } },
         label: `main position slice ${i}`,
-        build: async () => raydium.clmm.openPositionFromBase({
+        build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
+          ...signerOptions,
           poolInfo,
           poolKeys,
           ownerInfo: { useSOLBalance: true },
@@ -1986,6 +1999,7 @@ async function createSinglePool({
         ),
         onAlreadyDone: (pos) => ({ tx: { txId: null }, nftMint: pos.nftMint, adopted: true }),
       });
+      if (openR.value.saved) Object.assign(mainTicks, { tickLower: openR.value.saved.tickLower, tickUpper: openR.value.saved.tickUpper });
       if (openR.skipped) {
         openTx = openR.value.tx;
         nftMint = openR.value.nftMint;
@@ -2192,7 +2206,7 @@ async function createSinglePool({
     });
 
     for (let bi = 0; bi < ladderBands.length; bi++) {
-      const { tickLower, tickUpper } = bandTicks[bi];
+      let { tickLower, tickUpper } = bandTicks[bi];
       const bandBaseRaw = ladderBands[bi].baseRaw;
       const recovered = recoveredLadderByIndex.get(bi);
       if (recovered) {
@@ -2262,8 +2276,11 @@ async function createSinglePool({
           [...mainPositions, ...ladderPositions].map((p) => p.nftMint).filter(Boolean),
         );
         const ladderR = await executeSdkTx({
+          raydium, key: `position/${allocationIndex}/ladder/${bi}`,
+          action: { type: 'position', poolId, tickLower, tickUpper, event: { stage: 'ladder_open_done', allocationIndex, bandIndex: bi, baseAmountRaw: bandBaseRaw.toString() } },
           label: `ladder band ${bi}`,
-          build: async () => raydium.clmm.openPositionFromBase({
+          build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
+          ...signerOptions,
             poolInfo,
             poolKeys,
             tickLower,
@@ -2284,6 +2301,7 @@ async function createSinglePool({
           ),
           onAlreadyDone: (pos) => ({ tx: { txId: null }, nftMint: pos.nftMint, adopted: true }),
         });
+        if (ladderR.value.saved) ({ tickLower, tickUpper } = ladderR.value.saved);
         ladderTx = ladderR.value.tx;
         ladderNftMint = ladderR.skipped
           ? ladderR.value.nftMint
@@ -2503,8 +2521,11 @@ async function createSinglePool({
         [...mainPositions, ...ladderPositions, ...supportPositions].map((p) => p.nftMint).filter(Boolean),
       );
       const supportR = await executeSdkTx({
+        raydium, key: `position/${allocationIndex}/support/0`,
+        action: { type: 'position', poolId, ...supportTicks, event: { stage: 'support_open_done', allocationIndex, supportIndex: 0, quoteAmountRaw: supportQuoteRaw.toString() } },
         label: 'support position',
-        build: async () => raydium.clmm.openPositionFromBase({
+        build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
+          ...signerOptions,
           poolInfo,
           poolKeys,
           tickLower: supportTicks.tickLower,
@@ -2521,6 +2542,7 @@ async function createSinglePool({
         ),
         onAlreadyDone: (pos) => ({ tx: { txId: null }, nftMint: pos.nftMint, adopted: true }),
       });
+      if (supportR.value.saved) Object.assign(supportTicks, { tickLower: supportR.value.saved.tickLower, tickUpper: supportR.value.saved.tickUpper });
       supportTx = supportR.value.tx;
       supportNftMint = supportR.skipped
         ? supportR.value.nftMint
@@ -2648,6 +2670,7 @@ async function createSinglePool({
  */
 async function openBootstrapPosition({
   raydium,
+  allocationIndex,
   ctx,
   // NOTE: lockPositions no longer accepted; locking happens in the
   // dedicated Phase 3 (lockAllPositions). See createSinglePool's note.
@@ -2714,7 +2737,7 @@ async function openBootstrapPosition({
   // hit here is unambiguously a previously-landed bootstrap. The scan runs on
   // every attempt (not just resumes) so a late-landing duplicate is caught too.
   // Best-effort: a scan failure falls back to opening, the pre-existing path.
-  try {
+  if (!liquidityExecutors.has(raydium)) try {
     const onChainBoot = await fetchOwnerClmmPositionsForPool(raydium, poolId);
     const adoptBoot = unrecordedPositionsAtRange(
       onChainBoot,
@@ -2832,8 +2855,11 @@ async function openBootstrapPosition({
   // adopted rather than opened twice.
   const recordedBs = new Set((priorNftMints || []).filter(Boolean));
   const bsR = await executeSdkTx({
+    raydium, key: `position/${allocationIndex}/bootstrap/0`,
+    action: { type: 'position', poolId, ...bsTicks, event: { stage: 'bootstrap_open_done', allocationIndex } },
     label: 'bootstrap position',
-    build: async () => raydium.clmm.openPositionFromBase({
+    build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
+          ...signerOptions,
       poolInfo,
       poolKeys,
       ownerInfo: { useSOLBalance: true },
@@ -2850,6 +2876,7 @@ async function openBootstrapPosition({
     ),
     onAlreadyDone: (pos) => ({ tx: { txId: null }, nftMint: pos.nftMint, adopted: true }),
   });
+  if (bsR.value.saved) Object.assign(bsTicks, { tickLower: bsR.value.saved.tickLower, tickUpper: bsR.value.saved.tickUpper });
   const bsTx = bsR.value.tx;
   const bsNftMint = bsR.skipped
     ? bsR.value.nftMint
@@ -2914,7 +2941,12 @@ function feeKeyMintFromLockResult(lockRes) {
 // in this program's escrow; the program also stores a per-lock account that
 // maps the original position mint to the Fee Key (lock NFT) mint. The id is the
 // immutable deployed program address, taken from the SDK's constants.
-const CLMM_LOCK_PROGRAM_ID = new PublicKey('DLockwT7X7sxtLmGH9g5kmfcjaBtncdbUmi738m5bvQC');
+function getClmmLockProgramId() {
+  return getNetwork() === 'devnet' ? DEVNET_PROGRAM_ID.CLMM_LOCK_PROGRAM_ID : CLMM_LOCK_PROGRAM_ID;
+}
+function getClmmLockAuthId() {
+  return getNetwork() === 'devnet' ? DEVNET_PROGRAM_ID.CLMM_LOCK_AUTH_ID : CLMM_LOCK_AUTH_ID;
+}
 
 // Byte offset of the positionId field inside the lock program's
 // LockClPositionLayoutV2 account (8 discriminator + 1 bump + 32 lockOwner + 32
@@ -2949,15 +2981,15 @@ const LOCK_ACCT_POSITION_ID_OFFSET = 73;
 // on-chain lock the journal missed. Cost is paid only when a lock fails, never
 // on the happy path.
 async function findLockFeeKeyForPosition(raydium, positionNftMint) {
-  const accounts = await raydium.connection.getProgramAccounts(CLMM_LOCK_PROGRAM_ID, {
+  const positionAddress = getPdaPersonalPositionAddress(getClmmProgramId(), new PublicKey(positionNftMint)).publicKey.toBase58();
+  const accounts = await raydium.connection.getProgramAccounts(getClmmLockProgramId(), {
     commitment: 'finalized',
     filters: [
       {
-        // Pre-filter to lock accounts whose positionId equals this position's
-        // mint; the decode below re-verifies, so this only narrows the scan.
+        // Filter by the personal position account derived from its NFT mint.
         memcmp: {
           offset: LOCK_ACCT_POSITION_ID_OFFSET,
-          bytes: positionNftMint,
+          bytes: positionAddress,
           encoding: 'base58',
         },
       },
@@ -2974,7 +3006,7 @@ async function findLockFeeKeyForPosition(raydium, positionNftMint) {
     if (
       decoded &&
       decoded.positionId &&
-      decoded.positionId.toString() === positionNftMint &&
+      decoded.positionId.toString() === positionAddress &&
       decoded.lockNftMint
     ) {
       return decoded.lockNftMint.toString();
@@ -3107,8 +3139,12 @@ async function lockAllPositions({ raydium, results, onProgress }) {
       console.log(`[${symbol}] locking main slice ${i + 1}/${r.mainPositions.length}: nft=${pos.nftMint}`);
       try {
         const lockR = await executeSdkTx({
+          raydium, key: `lock/${pos.nftMint}`,
+          action: { type: 'lock', poolId: r.poolId, positionNftMint: pos.nftMint, event: { stage: 'main_lock_done', allocationIndex: allocIdx, sliceIndex: i } },
           label: `lock ${pos.nftMint}`,
-          build: async () => raydium.clmm.lockPosition({
+          build: async (signerOptions = {}) => raydium.clmm.lockPosition({
+            ...signerOptions,
+            programId: getClmmLockProgramId(), authProgramId: getClmmLockAuthId(), poolProgramId: getClmmProgramId(),
             ownerPosition: { nftMint: new PublicKey(pos.nftMint) },
             // Locks were the one SDK call in this file sent WITHOUT a priority
             // fee — the same dynamic, pool-scoped config every other builder
@@ -3218,8 +3254,12 @@ async function lockAllPositions({ raydium, results, onProgress }) {
       console.log(`[${symbol}] locking ladder band ${bi + 1}/${r.ladderPositions.length}: nft=${lp.nftMint}`);
       try {
         const lockR = await executeSdkTx({
+          raydium, key: `lock/${lp.nftMint}`,
+          action: { type: 'lock', poolId: r.poolId, positionNftMint: lp.nftMint, event: { stage: 'ladder_lock_done', allocationIndex: allocIdx, bandIndex: bi } },
           label: `lock ${lp.nftMint}`,
-          build: async () => raydium.clmm.lockPosition({
+          build: async (signerOptions = {}) => raydium.clmm.lockPosition({
+            ...signerOptions,
+            programId: getClmmLockProgramId(), authProgramId: getClmmLockAuthId(), poolProgramId: getClmmProgramId(),
             ownerPosition: { nftMint: new PublicKey(lp.nftMint) },
             // Same priority-fee config as the main-position locks above.
             computeBudgetConfig: await lpComputeBudgetConfig(raydium, r.poolId),
@@ -3319,8 +3359,12 @@ async function lockAllPositions({ raydium, results, onProgress }) {
       console.log(`[${symbol}] locking support position ${si + 1}/${r.supportPositions.length}: nft=${sp.nftMint}`);
       try {
         const lockR = await executeSdkTx({
+          raydium, key: `lock/${sp.nftMint}`,
+          action: { type: 'lock', poolId: r.poolId, positionNftMint: sp.nftMint, event: { stage: 'support_lock_done', allocationIndex: allocIdx, supportIndex: si } },
           label: `lock ${sp.nftMint}`,
-          build: async () => raydium.clmm.lockPosition({
+          build: async (signerOptions = {}) => raydium.clmm.lockPosition({
+            ...signerOptions,
+            programId: getClmmLockProgramId(), authProgramId: getClmmLockAuthId(), poolProgramId: getClmmProgramId(),
             ownerPosition: { nftMint: new PublicKey(sp.nftMint) },
             // Same priority-fee config as the main-position locks above.
             computeBudgetConfig: await lpComputeBudgetConfig(raydium, r.poolId),
@@ -3401,8 +3445,12 @@ async function lockAllPositions({ raydium, results, onProgress }) {
       console.log(`[${symbol}] locking bootstrap: nft=${bs.nftMint}`);
       try {
         const lockR = await executeSdkTx({
+          raydium, key: `lock/${bs.nftMint}`,
+          action: { type: 'lock', poolId: r.poolId, positionNftMint: bs.nftMint, event: { stage: 'bootstrap_lock_done', allocationIndex: allocIdx } },
           label: `lock ${bs.nftMint}`,
-          build: async () => raydium.clmm.lockPosition({
+          build: async (signerOptions = {}) => raydium.clmm.lockPosition({
+            ...signerOptions,
+            programId: getClmmLockProgramId(), authProgramId: getClmmLockAuthId(), poolProgramId: getClmmProgramId(),
             ownerPosition: { nftMint: new PublicKey(bs.nftMint) },
             // Same priority-fee config as the main-position locks above.
             computeBudgetConfig: await lpComputeBudgetConfig(raydium, r.poolId),
@@ -4265,6 +4313,7 @@ export async function createPoolsAndPositions({
   // This means a single failed launch can be retried any number of times,
   // each retry only attempting the work that didn't complete before.
   priorResults = [],
+  execution = null,
 }) {
   onProgress?.({ stage: 'lp_preflight', allocationCount: allocations.length });
   assertDevnetQuotesAllowed(allocations, priorResults || []);
@@ -4280,6 +4329,7 @@ export async function createPoolsAndPositions({
   // -----------------------------------------------------------------------
   const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
   const raydium = await initSdk(ownerKeypair);
+  if (execution) liquidityExecutors.set(raydium, execution);
   const connection = raydium.connection;
   const launchedMintCompatibility = await getMintCompatibilityWithRaydiumClmm(
     connection,
@@ -5174,6 +5224,7 @@ export async function createPoolsAndPositions({
       //     all bootstraps at the end.
       const poolResult = await createSinglePool({
         raydium,
+        allocationIndex: allocIdx,
         ownerKeypair,
         ammConfig,
         launchedToken,
@@ -5379,6 +5430,7 @@ export async function createPoolsAndPositions({
         : [];
       const bootstrap = await openBootstrapPosition({
         raydium,
+        allocationIndex: allocIdx,
         ctx,
         priorNftMints,
         onProgress: (event) =>
@@ -6841,7 +6893,8 @@ export async function openSolSupport({ tempWalletSecretKey, poolId, solAmount, d
   onProgress?.({ stage: 'support_open_start', poolId: plan.poolId, tickLower: plan.tickLower, tickUpper: plan.tickUpper });
   const result = await executeSdkTx({
     label: 'buy support position',
-    build: async () => raydium.clmm.openPositionFromBase({
+    build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
+          ...signerOptions,
       poolInfo,
       poolKeys,
       tickLower: plan.tickLower,
@@ -7034,7 +7087,9 @@ export async function withdrawPosition({ tempWalletSecretKey, poolId, nftMint, e
 // for this object literal to reference functions that appear earlier
 // in the file.
 export const __testHooks = {
+  bindLiquidityExecutor: (raydium, execution) => liquidityExecutors.set(raydium, execution),
   createSinglePool,
+  openBootstrapPosition,
   lockAllPositions,
   transferFeeKeys,
 };

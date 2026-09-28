@@ -14,7 +14,8 @@
     "./solana": "./src/solana.js",
     "./sol-sweep": "./src/sol-sweep.js",
     "./token-transfer": "./src/token-transfer.js",
-    "./metadata-update": "./src/metadata-update.js"
+    "./metadata-update": "./src/metadata-update.js",
+    "./prepared-transaction": "./src/prepared-transaction.js"
   },
   "engines": {
     "node": ">=22.13.0"
