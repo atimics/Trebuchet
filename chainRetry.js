@@ -118,11 +118,15 @@ function errorText(err) {
   return parts.join(' \n ');
 }
 
-// Classify a thrown transaction error into one of the three buckets above.
-// Insufficient-funds is checked first: it is the most consequential to get
-// right (it must never be retried), and its signatures are specific enough
-// not to collide with the transient set.
+// Recovery failures stop every enclosing launch phase and retry path.
+export function throwIfExecutionPaused(error) {
+  if (['RECOVERY_STORAGE_UNAVAILABLE', 'CHAIN_STATE_UNAVAILABLE'].includes(error?.code)) throw error;
+}
+
+// Classify a thrown transaction error by recovery state and retry policy.
+// Recovery state takes priority. Funds and network errors follow.
 export function classifyChainError(err) {
+  if (['RECOVERY_STORAGE_UNAVAILABLE', 'CHAIN_STATE_UNAVAILABLE'].includes(err?.code)) return 'recovery_required';
   const text = errorText(err);
   if (!text) return 'deterministic';
   for (const re of INSUFFICIENT_FUNDS_SIGNS) if (re.test(text)) return 'insufficient_funds';
@@ -182,6 +186,7 @@ export async function landTxWithRetry({
       let done;
       try { done = await alreadyDone(); }
       catch (cause) {
+        throwIfExecutionPaused(cause);
         throw Object.assign(new Error(`${label}: chain state needs verification before sending.`, { cause }), {
           code: 'CHAIN_STATE_UNAVAILABLE', kind: 'recovery_required', attempts,
         });
@@ -194,11 +199,12 @@ export async function landTxWithRetry({
       const value = await send();
       return { value, skipped: false, attempts };
     } catch (err) {
+      throwIfExecutionPaused(err);
       lastErr = err;
       let kind = classifyChainError(err);
       if (kind === 'deterministic' && retryIf) {
         let allowRetry = false;
-        try { allowRetry = await retryIf(err, attempt); } catch (_) { allowRetry = false; }
+        try { allowRetry = await retryIf(err, attempt); } catch (error) { throwIfExecutionPaused(error); allowRetry = false; }
         if (allowRetry) kind = 'transient';
       }
       console.warn(`    ${label}: attempt ${attempt}/${maxAttempts} failed (${kind}): ${err && err.message}`);

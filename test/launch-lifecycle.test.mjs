@@ -537,3 +537,28 @@ test('journal persists structured error details and strips secret-looking fields
   assert.equal(lastEvent.error, 'RPC timeout while opening slice 3');
   assert.equal(lastEvent.secretKey, undefined, 'secret-looking fields are removed from events');
 });
+
+test('lock phase preserves a failed receipt and stops before the next lock', async () => {
+  const failure = Object.assign(new Error('checkpoint write failed'), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+  const raydium = makeMockRaydium();
+  const results = [makeResultEntry({ mainCount: 2, withBootstrap: true })];
+  await assert.rejects(hooks.lockAllPositions({
+    raydium, results,
+    onProgress: (event) => { if (event.stage === 'main_lock_done') throw failure; },
+  }), (error) => error === failure);
+  assert.equal(raydium.recordedCalls.lockPosition.length, 1);
+  assert.equal(results[0].mainPositions[0].locked, true);
+  assert.equal(results[0].mainPositions[1].locked, false);
+});
+
+
+test('an uncertain lock lookup pauses the whole lock phase', async () => {
+  let lookups = 0;
+  const raydium = makeMockRaydium({ connection: makeFakeConnection({
+    getProgramAccounts: async () => { lookups++; throw new Error('RPC read failed'); },
+  }) });
+  const results = [makeResultEntry({ mainCount: 2, withBootstrap: true })];
+  await assert.rejects(hooks.lockAllPositions({ raydium, results }), { code: 'CHAIN_STATE_UNAVAILABLE' });
+  assert.equal(lookups, 1);
+  assert.equal(raydium.recordedCalls.lockPosition.length, 0);
+});

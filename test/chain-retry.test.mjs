@@ -241,3 +241,16 @@ test('alreadyDone re-checked between retries adopts a tx that landed mid-retry',
   assert.equal(calls, 1);   // sent once; the retry was short-circuited by the guard
   assert.equal(attempts, 1);
 });
+
+test('a storage failure keeps its recovery code and stops transaction retries', async () => {
+  for (const message of ['database write timed out', 'checkpoint failed']) {
+    const failure = Object.assign(new Error(message), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+    let sends = 0;
+    await assert.rejects(landTxWithRetry({
+      send: async () => { sends++; throw failure; },
+      retryIf: async () => true,
+      sleep: noSleep,
+    }), (error) => error === failure);
+    assert.equal(sends, 1);
+  }
+});

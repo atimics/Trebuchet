@@ -80,7 +80,7 @@ The Solana adapter verifies every Ed25519 signature, the exact wire bytes, the f
 
 Existing token and liquidity retry paths now propagate failed chain checks. Position and lock queries require complete responses, and lock queries use finalized state. This closes an existing path that could send again after a failed recovery read.
 
-The engine interfaces are ready for host integration. The existing live token, upload, liquidity, and sweep services still need adapters, durable spending approval, and ordinary service methods. The desktop process split still awaits the pending approval described above. Live CLI and runner wiring remain in the completion checklist.
+The engine interfaces are ready for host integration. The existing live token, upload, liquidity, and sweep services still need transaction adapters and durable spending approval. The desktop process split still awaits the pending approval described above. Live CLI and runner wiring remain in the completion checklist.
 
 
 ### Ordinary live service methods
@@ -90,3 +90,12 @@ Token creation, interrupted token recovery, metadata reveal, liquidity creation,
 The service tests exercise all six methods. They verify shared wallet admission, validation before signing, liquidity failure details, saved authority choices, airdrop recovery, and recovery-key retention. A concurrent rejected request preserves the active request's lock and progress. The final sweep record commits before the wallet recovery key is removed. A failed final commit therefore preserves the key.
 
 The runtime process test also sends invalid live HTTP requests. It verifies their error status and payload before any chain call. Browser practice launch and package coverage pass after extraction. Production transaction adapters, durable approval, and engine integration remain in the completion checklist.
+
+
+### Recovery errors stop the next spend
+
+Journal callbacks now propagate storage failures through token creation, token recovery, metadata reveal, and liquidity execution. Nested retries and phase-level error handlers preserve `RECOVERY_STORAGE_UNAVAILABLE` and `CHAIN_STATE_UNAVAILABLE`. Asset sweeps and airdrops apply the same rule. The sweep gate also requires its recovery event to commit.
+
+Injected failure tests reproduced continued execution in the earlier code. They now verify that a failed logo receipt stops the metadata upload, a failed token checkpoint stops the next step, a failed lock receipt stops further locks, and a failed airdrop receipt stops later sweeps. Asset-loop tests count exactly one attempted transfer when that transfer or its receipt reports a recovery error. An uncertain lock lookup stops before building a transaction. Failed writes with timeout text also stop the retry loop.
+
+These checks cover the existing callbacks and error paths. Production adapters must still save each signed transaction and spending reservation through the engine before broadcast. That full requirement remains open above.

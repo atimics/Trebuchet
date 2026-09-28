@@ -1,3 +1,4 @@
+import { throwIfExecutionPaused } from './chainRetry.js';
 import { createUmi } from '@metaplex-foundation/umi-bundle-defaults';
 import { mplTokenMetadata } from '@metaplex-foundation/mpl-token-metadata';
 import { createGenericFile, keypairIdentity } from '@metaplex-foundation/umi';
@@ -140,6 +141,7 @@ export async function uploadTokenMetadata({
       logger.log?.('Logo uploaded:', imageUri);
       onProgress?.({ stage: 'logo_uploaded', imageUri });
     } catch (uploadError) {
+      throwIfExecutionPaused(uploadError);
       // A sealed reveal committed to these exact logo bytes; a placeholder
       // would break the commitment, so the reveal fails and is retried.
       if (requireLogo) throw uploadError;

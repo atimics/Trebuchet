@@ -143,7 +143,7 @@ import { getRpcUrl, getNetwork } from './rpcConfig.js';
 // re-export and would leave these undefined locally (which silently sent every
 // SOL price into the fallback path).
 import { getTokenMetadata, getUsdPrice, setOnChainPriceFallback } from './tokenInfoService.js';
-import { landTxWithRetry } from './chainRetry.js';
+import { landTxWithRetry, throwIfExecutionPaused } from './chainRetry.js';
 import { getOnChainPriceUsd, clmmPriceBPerA } from './onChainPriceService.js';
 import { fetchVenuePoolsByMints } from './venuePoolService.js';
 import { normalizeDistribution } from './lpDistribution.js';
@@ -1764,6 +1764,7 @@ async function createSinglePool({
           `position(s) in pool ${poolId}`,
       );
     } catch (e) {
+      throwIfExecutionPaused(e);
       console.warn(`  on-chain reconciliation scan failed (non-fatal): ${e.message}`);
       onChainPoolPositions = [];
     }
@@ -1945,6 +1946,7 @@ async function createSinglePool({
         await raydium.account.fetchWalletTokenAccounts({ forceUpdate: true });
         console.log('    refreshed SDK token account cache');
       } catch (e) {
+        throwIfExecutionPaused(e);
         console.warn('    cache refresh failed (non-fatal):', e.message);
       }
       // Wait for the previous slice to be VISIBLE (not a fixed 1.5s): the
@@ -1993,6 +1995,7 @@ async function createSinglePool({
         nftMint = openR.value.res.extInfo?.nftMint?.toBase58();
       }
     } catch (err) {
+      throwIfExecutionPaused(err);
       progress({
         stage: 'main_open_failed',
         poolId,
@@ -2241,6 +2244,7 @@ async function createSinglePool({
           await raydium.account.fetchWalletTokenAccounts({ forceUpdate: true });
           console.log('    refreshed SDK token account cache for ladder band');
         } catch (e) {
+          throwIfExecutionPaused(e);
           console.warn('    ladder cache refresh failed (non-fatal):', e.message);
         }
         // Same as the main-slice loop: wait for the previous open (band or,
@@ -2286,6 +2290,7 @@ async function createSinglePool({
           : ladderR.value.res.extInfo?.nftMint?.toBase58();
         if (ladderR.skipped) console.log(`      band ${bi} already landed (nft=${ladderNftMint}); adopting`);
       } catch (err) {
+        throwIfExecutionPaused(err);
         progress({
           stage: 'ladder_open_failed',
           poolId,
@@ -2522,6 +2527,7 @@ async function createSinglePool({
         : supportR.value.res.extInfo?.nftMint?.toBase58();
       if (supportR.skipped) console.log(`    support already landed (nft=${supportNftMint}); adopting`);
     } catch (err) {
+      throwIfExecutionPaused(err);
       progress({
         stage: 'support_open_failed',
         poolId,
@@ -2737,6 +2743,7 @@ async function openBootstrapPosition({
       };
     }
   } catch (e) {
+    throwIfExecutionPaused(e);
     console.warn(`  bootstrap on-chain reconciliation scan failed (non-fatal): ${e.message}`);
   }
 
@@ -3139,6 +3146,7 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           feeKeyNftMint: pos.feeKeyNftMint,
         });
       } catch (e) {
+        throwIfExecutionPaused(e);
         // The lock may have actually landed despite this throw (a confirmation
         // timeout under congestion), or this is a resume re-locking a position
         // whose prior lock was never journaled — in which case re-locking
@@ -3149,7 +3157,8 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         let recoveredFeeKey = null;
         try {
           recoveredFeeKey = await findLockFeeKeyForPosition(raydium, pos.nftMint);
-        } catch (_) {
+        } catch (error) {
+          throwIfExecutionPaused(error);
           recoveredFeeKey = null;
         }
         if (recoveredFeeKey) {
@@ -3243,11 +3252,13 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           txId: lockTx.txId,
         });
       } catch (e) {
+        throwIfExecutionPaused(e);
         // See the main-slice lock catch above for the rationale.
         let recoveredFeeKey = null;
         try {
           recoveredFeeKey = await findLockFeeKeyForPosition(raydium, lp.nftMint);
-        } catch (_) {
+        } catch (error) {
+          throwIfExecutionPaused(error);
           recoveredFeeKey = null;
         }
         if (recoveredFeeKey) {
@@ -3342,11 +3353,13 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           txId: lockTx.txId,
         });
       } catch (e) {
+        throwIfExecutionPaused(e);
         // See the main-slice lock catch above for the rationale.
         let recoveredFeeKey = null;
         try {
           recoveredFeeKey = await findLockFeeKeyForPosition(raydium, sp.nftMint);
-        } catch (_) {
+        } catch (error) {
+          throwIfExecutionPaused(error);
           recoveredFeeKey = null;
         }
         if (recoveredFeeKey) {
@@ -3421,11 +3434,13 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           txId: lockTx.txId,
         });
       } catch (e) {
+        throwIfExecutionPaused(e);
         // See the main-slice lock catch above for the rationale.
         let recoveredFeeKey = null;
         try {
           recoveredFeeKey = await findLockFeeKeyForPosition(raydium, bs.nftMint);
-        } catch (_) {
+        } catch (error) {
+          throwIfExecutionPaused(error);
           recoveredFeeKey = null;
         }
         if (recoveredFeeKey) {
@@ -3546,7 +3561,7 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
       // an error that reads as if the Fee Key were lost.
       let feeKeyMint = pos.feeKeyNftMint || null;
       if (!feeKeyMint) {
-        try { feeKeyMint = await findLockFeeKeyForPosition(raydium, pos.nftMint); } catch (_) { feeKeyMint = null; }
+        try { feeKeyMint = await findLockFeeKeyForPosition(raydium, pos.nftMint); } catch (error) { throwIfExecutionPaused(error); feeKeyMint = null; }
         if (feeKeyMint) pos.feeKeyNftMint = feeKeyMint;
       }
       if (!feeKeyMint) {
@@ -3581,6 +3596,7 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
           txId,
         });
       } catch (e) {
+        throwIfExecutionPaused(e);
         // The transfer may have actually landed despite this throw, or this is
         // a resume re-transferring a Fee Key that already left this wallet — in
         // which case re-transferring throws. Before recording a failure, check
@@ -4686,6 +4702,7 @@ export async function createPoolsAndPositions({
 
       onProgress && onProgress({ stage: "lp_quote_resolved", allocationIndex: i, quoteSymbol: quoteToken.symbol, quoteAddress: quoteToken.address });      resolvedAllocs.push({ alloc, quoteToken });
     } catch (err) {
+      throwIfExecutionPaused(err);
       // Annotate with which allocation failed so the caller can highlight
       // the right row in the UI. partialResults preserves any priorResults
       // we were given (resume case) so the user doesn't lose the
@@ -4737,6 +4754,7 @@ export async function createPoolsAndPositions({
   try {
     solUsdForSupport = await getUsdPrice(WSOL_MINT);
   } catch (e) {
+    throwIfExecutionPaused(e);
     const err = new Error(
       `Couldn't resolve SOL/USD price (${e.message}). This is unusual - ` +
       `every price source we consult covers SOL. Check your network ` +
@@ -4839,6 +4857,7 @@ export async function createPoolsAndPositions({
         results.push(prior);
         continue;
       } catch (err) {
+        throwIfExecutionPaused(err);
         // Couldn't rebuild context — surface clearly so the user knows
         // which prior pool is the blocker. Most likely cause: RPC
         // unreachable when we tried to read the pool state.
@@ -4902,6 +4921,7 @@ export async function createPoolsAndPositions({
           quoteUsdByMint.set(quoteToken.address, { quoteUsd, source: resolved.source });
         }
       } catch (priceErr) {
+        throwIfExecutionPaused(priceErr);
         if (!priceErr.failedPhase) {
           priceErr.failedPhase = 'pre_flight';
           priceErr.failedAllocationIndex = allocIdx;
@@ -5218,6 +5238,7 @@ export async function createPoolsAndPositions({
         result: resultEntry,
       });
     } catch (err) {
+      throwIfExecutionPaused(err);
       // Attach partial results to the error so the caller knows what
       // got created before the failure.
       //
@@ -5294,6 +5315,7 @@ export async function createPoolsAndPositions({
     await raydium.account.fetchWalletTokenAccounts({ forceUpdate: true });
     console.log('  refreshed SDK token account cache before phase 2');
   } catch (e) {
+    throwIfExecutionPaused(e);
     console.warn('  cache refresh failed (non-fatal):', e.message);
   }
   // Wait until every Phase 1 position is VISIBLE before Phase 2 queries
@@ -5368,6 +5390,7 @@ export async function createPoolsAndPositions({
       const resultEntry = results.find((r) => r.allocationIndex === allocIdx);
       if (resultEntry) resultEntry.bootstrap = bootstrap;
     } catch (err) {
+      throwIfExecutionPaused(err);
       // Record the failure, surface it via the progress callback, but keep
       // going — the next pool's bootstrap is independent.
       //

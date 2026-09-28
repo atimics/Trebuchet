@@ -67,7 +67,7 @@ import {
   uploadTokenMetadata,
 } from './metadataUploadService.js';
 import { saveSealedIdentity } from './sealedIdentityStore.js';
-import { landTxWithRetry } from './chainRetry.js';
+import { landTxWithRetry, throwIfExecutionPaused } from './chainRetry.js';
 import { redactUrl } from './logRedaction.js';
 import { parseMetaplexUri } from './tokenMetadataLayout.js';
 import {
@@ -729,14 +729,7 @@ export async function createTokenWithMetaplex({
   keepMetadataAuthority = false,
 }) {
   try {
-    const progress = (event) => {
-      if (!onProgress) return;
-      try {
-        onProgress(event);
-      } catch (e) {
-        console.warn('Token progress callback failed:', e.message);
-      }
-    };
+    const progress = (event) => onProgress?.(event);
 
     console.log('Starting token creation...');
     
@@ -889,6 +882,7 @@ export async function createTokenWithMetaplex({
         }),
       });
     } catch (mintError) {
+      throwIfExecutionPaused(mintError);
       // The mint address is known before the transaction lands, so surface it
       // on failure: an account that already exists can then be adopted and
       // finished instead of re-created.
@@ -1020,6 +1014,7 @@ export async function createTokenWithMetaplex({
         txId: renounceMintAuthSig,
       });
     } catch (error) {
+      throwIfExecutionPaused(error);
       console.error('Error renouncing mint authority:', error);
       throw new Error('Failed to renounce mint authority. Token creation aborted for safety.');
     }
@@ -1096,6 +1091,7 @@ export async function createTokenWithMetaplex({
       });
       
     } catch (error) {
+      throwIfExecutionPaused(error);
       console.error('Error revoking update authority:', error);
       console.error('Full error details:', error.message);
       
@@ -1143,6 +1139,7 @@ export async function createTokenWithMetaplex({
         });
         
       } catch (altError) {
+        throwIfExecutionPaused(altError);
         console.error('Alternative approach also failed:', altError.message);
         
         // Wait a bit before final attempt
@@ -1170,6 +1167,7 @@ export async function createTokenWithMetaplex({
           progress({ stage: 'metadata_update_authority_revoked', tokenMint: mint.toString() });
           
         } catch (finalError) {
+          throwIfExecutionPaused(finalError);
           console.error('Final attempt failed:', finalError.message);
           // At this point, we've tried everything - the token is still functional
           console.warn('WARNING: Could not revoke metadata update authority.');
@@ -1229,6 +1227,7 @@ export async function createTokenWithMetaplex({
         console.log('Verified token balance:', accountInfo.amount.toString());
         break;
       } catch (error) {
+        throwIfExecutionPaused(error);
         console.error(`Error getting account info (attempt ${4 - retries}):`, error.message);
         retries--;
         if (retries === 0) {
@@ -1270,6 +1269,7 @@ export async function createTokenWithMetaplex({
           : 'Metadata update authority could not be revoked. Please verify token safety on Solscan.'
     };
   } catch (error) {
+    throwIfExecutionPaused(error);
     console.error('Error in createTokenWithMetaplex:', error);
     throw error;
   }
@@ -1381,10 +1381,7 @@ export async function finishTokenCreation({
   // revoke it. Read from the launch journal's token record by the caller.
   keepMetadataAuthority = false,
 }) {
-  const progress = (event) => {
-    if (!onProgress) return;
-    try { onProgress(event); } catch (e) { console.warn('finish-token progress callback failed:', e.message); }
-  };
+  const progress = (event) => onProgress?.(event);
 
   const tempWallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
   const umi = _umiFactory(tempWallet);
@@ -1413,6 +1410,7 @@ export async function finishTokenCreation({
   try {
     mintInfo = await getMint(connection, mint, 'finalized', programId);
   } catch (e) {
+    throwIfExecutionPaused(e);
     throw new Error(`finish-token: cannot read mint ${tokenMint} on-chain: ${e.message}`);
   }
   status.supplyMinted = mintInfo.supply >= totalTokens;
@@ -1425,11 +1423,11 @@ export async function finishTokenCreation({
   let metaAccount = null;
   let inlineMetadata = null;
   if (isToken2022) {
-    try { inlineMetadata = await getTokenMetadata(connection, mint, 'finalized', programId); } catch (_) { /* absent */ }
+    try { inlineMetadata = await getTokenMetadata(connection, mint, 'finalized', programId); } catch (error) { throwIfExecutionPaused(error); /* absent */ }
     status.metadataExists = Boolean(inlineMetadata);
     status.updateAuthorityRevoked = Boolean(inlineMetadata && !inlineMetadata.updateAuthority);
   } else {
-    try { metaAccount = await connection.getAccountInfo(metadataPda, 'finalized'); } catch (_) { /* treat as absent */ }
+    try { metaAccount = await connection.getAccountInfo(metadataPda, 'finalized'); } catch (error) { throwIfExecutionPaused(error); /* treat as absent */ }
     status.metadataExists = !!(metaAccount && metaAccount.data && metaAccount.data.length > 0);
   }
   if (!isToken2022 && status.metadataExists && metaAccount.data.length >= 33) {
@@ -1635,6 +1633,7 @@ export async function finishTokenCreation({
       status.steps.push('revoked metadata update authority');
       progress({ stage: 'metadata_update_authority_revoked', tokenMint });
     } catch (e) {
+      throwIfExecutionPaused(e);
       status.steps.push(`could not revoke metadata update authority: ${e.message}`);
     }
   }
@@ -1697,10 +1696,7 @@ export async function revealSealedTokenMetadata({
   imageSha256 = null,
   onProgress,
 }) {
-  const progress = (event) => {
-    if (!onProgress) return;
-    try { onProgress(event); } catch (_) { /* progress is best-effort */ }
-  };
+  const progress = (event) => onProgress?.(event);
   if (!tokenMint || !metadataUri) {
     throw new Error('Sealed metadata reveal requires a mint and final metadata URI.');
   }

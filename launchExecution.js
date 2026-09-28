@@ -1,3 +1,4 @@
+import { throwIfExecutionPaused } from './chainRetry.js';
 // Live launch services use ordinary inputs and shared host interfaces.
 // HTTP routes translate the result; the runtime can call these methods directly.
 
@@ -162,6 +163,7 @@ export function createLaunchExecutionServices({
 
       return { success: true, ...status };
     } catch (error) {
+      throwIfExecutionPaused(error);
       if (error instanceof LaunchRejection) throw error;
       console.error('Error finishing token creation:', error);
       const accountStillSettling = /InvalidAccountData|invalid account data for instruction/i.test(
@@ -216,6 +218,7 @@ export function createLaunchExecutionServices({
       });
       return { success: true, ...result };
     } catch (error) {
+      throwIfExecutionPaused(error);
       if (error instanceof LaunchRejection) throw error;
       if (walletPublicKey && error?.code !== 'SEALED_METADATA_WAITING_FOR_LOCKS') {
         launchJournal.upsertForWallet(
@@ -462,6 +465,7 @@ export function createLaunchExecutionServices({
         ...result,
       };
     } catch (error) {
+      throwIfExecutionPaused(error);
       if (error instanceof LaunchRejection) throw error;
       console.error('Error creating token:', error);
       if (walletPublicKey) {
@@ -615,11 +619,10 @@ export function createLaunchExecutionServices({
         lockPositions: lockPositions !== false,
         onProgress: (event) => {
           // Journal: durable record for recovery if the launch dies.
-          try { recordLpJournalProgress(walletPublicKey, event); }
-          catch (_) { /* never let a progress write break the launch */ }
+          recordLpJournalProgress(walletPublicKey, event);
           // Live progress tracker: drives the frontend's per-row updates.
           try { lpProgressEvent(walletPublicKey, event); }
-          catch (_) { /* same — progress is best-effort */ }
+          catch (_) { /* UI progress is best-effort. */ }
         },
       });
 
@@ -650,6 +653,7 @@ export function createLaunchExecutionServices({
           secretKeyArr,
         });
       } catch (revealError) {
+        throwIfExecutionPaused(revealError);
         metadataReveal = { success: false, error: launchJournal.errorMessage(revealError) };
         launchJournal.upsertForWallet(
           walletPublicKey,
@@ -665,6 +669,7 @@ export function createLaunchExecutionServices({
 
       return { success: true, ...result, metadataReveal };
     } catch (error) {
+      throwIfExecutionPaused(error);
       if (error instanceof LaunchRejection) throw error;
       const message = launchJournal.errorMessage(error);
       const errorDetails = launchFailureDetails(error, {
@@ -742,7 +747,7 @@ export function createLaunchExecutionServices({
       // later, leaving time for any in-flight poll to see the final state.
       if (claimedLaunchOp && walletPublicKey) {
         try { lpProgressEnd(walletPublicKey); }
-        catch (_) { /* end is a best-effort cleanup */ }
+        catch (_) { /* UI cleanup is best-effort. */ }
       }
       // Release the per-wallet operation lock — but only if WE claimed it.
       // A 409 rejection path never sets claimedLaunchOp, so we don't
@@ -909,10 +914,9 @@ export function createLaunchExecutionServices({
         lockPositions: lockPositions !== false,
         priorResults: effectivePriorResults,
         onProgress: (event) => {
-          try { recordLpJournalProgress(walletPublicKey, event); }
-          catch (_) { /* never let a progress write break the launch */ }
+          recordLpJournalProgress(walletPublicKey, event);
           try { lpProgressEvent(walletPublicKey, event); }
-          catch (_) { /* same — progress is best-effort */ }
+          catch (_) { /* UI progress is best-effort. */ }
         },
       });
 
@@ -943,6 +947,7 @@ export function createLaunchExecutionServices({
           secretKeyArr,
         });
       } catch (revealError) {
+        throwIfExecutionPaused(revealError);
         metadataReveal = { success: false, error: launchJournal.errorMessage(revealError) };
         launchJournal.upsertForWallet(
           walletPublicKey,
@@ -958,6 +963,7 @@ export function createLaunchExecutionServices({
 
       return { success: true, ...result, metadataReveal };
     } catch (error) {
+      throwIfExecutionPaused(error);
       if (error instanceof LaunchRejection) throw error;
       const message = launchJournal.errorMessage(error);
       const errorDetails = launchFailureDetails(error, {
@@ -1015,7 +1021,7 @@ export function createLaunchExecutionServices({
       // requiring the frontend to know which endpoint fired the work.
       if (claimedLaunchOp && walletPublicKey) {
         try { lpProgressEnd(walletPublicKey); }
-        catch (_) { /* end is a best-effort cleanup */ }
+        catch (_) { /* UI cleanup is best-effort. */ }
       }
       // Release the per-wallet operation lock if we claimed it (409
       // rejections never claim, so they never release someone else's).
@@ -1250,6 +1256,7 @@ export function createLaunchExecutionServices({
               },
             );
           } catch (e) {
+            throwIfExecutionPaused(e);
             // An UNEXPECTED airdrop failure (one that bypassed per-recipient
             // try/catch — likely a bad mint or connection init failure)
             // shouldn't abort the rest of the sweep. We log it and mark
@@ -1330,6 +1337,7 @@ export function createLaunchExecutionServices({
           );
         }
       } catch (e) {
+        throwIfExecutionPaused(e);
         console.warn('Post-sweep verification failed; keeping recovery entry:', e.message);
       }
 
@@ -1403,6 +1411,7 @@ export function createLaunchExecutionServices({
         airdrop: airdropResult,
       };
     } catch (error) {
+      throwIfExecutionPaused(error);
       if (error instanceof LaunchRejection) throw error;
       console.error('Error transferring assets:', error);
       if (walletPublicKey) {

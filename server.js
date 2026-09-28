@@ -8264,8 +8264,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       lockPositions,
       priorResults: effectivePriorResults,
       onProgress: (event) => {
-        try { recordLpJournalProgress(walletPublicKey, event); }
-        catch (_) { /* never let a progress write break the launch */ }
+        recordLpJournalProgress(walletPublicKey, event);
         try { lpProgressEvent(walletPublicKey, event); }
         catch (_) { /* same — progress is best-effort */ }
       },

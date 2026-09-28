@@ -333,3 +333,40 @@ test('sweep enumeration reads at finalized commitment', async () => {
     `sweep enumeration must be at finalized; saw: ${JSON.stringify(seenCommitments)}`,
   );
 });
+
+
+test('a failed token sweep checkpoint stops before the next asset', async () => {
+  const keypair = Keypair.generate();
+  const owner = keypair.publicKey.toBase58();
+  const failure = Object.assign(new Error('checkpoint write failed'), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+  let sends = 0;
+  walletHelpers.setConnectionFactoryForTests(() => makeFakeConnection({
+    getParsedTokenAccountsByOwner: async () => ({ value: [
+      makeFakeTokenAccountEntry({ mint: '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr', owner, programId: TOKEN_PROGRAM_ID, amount: '1000', decimals: 6 }),
+      makeFakeTokenAccountEntry({ mint: '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R', owner, programId: TOKEN_PROGRAM_ID, amount: '1000', decimals: 6 }),
+    ] }),
+    sendTransaction: async () => { sends++; throw failure; },
+  }));
+  await assert.rejects(walletHelpers.sweepAllTokensToDestination({
+    tempWalletSecretKey: [...keypair.secretKey], destinationWallet: DEST_WALLET,
+  }), (error) => error === failure);
+  assert.equal(sends, 1);
+});
+
+for (const phase of ['send', 'progress']) {
+  test(`airdrop recovery failure during ${phase} stops before the next recipient`, async () => {
+    const keypair = Keypair.generate();
+    const failure = Object.assign(new Error('checkpoint write failed'), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+    let sends = 0;
+    walletHelpers.setConnectionFactoryForTests(() => makeFakeConnection({
+      sendRawTransaction: async () => { sends++; if (phase === 'send') throw failure; return 'signed-airdrop'; },
+    }));
+    await assert.rejects(walletHelpers.executeAirdrop({
+      tempWalletSecretKey: [...keypair.secretKey],
+      tokenMint: '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr', tokenDecimals: 6,
+      recipients: Array.from({ length: 2 }, () => ({ wallet: Keypair.generate().publicKey.toBase58(), tokens: 1 })),
+      onProgress: () => { if (phase === 'progress') throw failure; },
+    }), (error) => error === failure);
+    assert.equal(sends, 1);
+  });
+}

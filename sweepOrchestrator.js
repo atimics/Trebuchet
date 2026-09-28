@@ -1,3 +1,4 @@
+import { throwIfExecutionPaused } from './chainRetry.js';
 // sweepOrchestrator.js
 //
 // The decision core of the post-launch asset sweep: the straggler second
@@ -52,10 +53,10 @@ export function hasTokenBalances(balanceSnapshot) {
  *   sweepTokens({tempWalletSecretKey, destinationWallet}) -> {transferred, errors}
  *   sweepSol({tempWalletSecretKey, destinationWallet}) -> {solTransferred, txId?}
  *   enumerate(walletPublicKey, {commitment}) -> {sol, tokens}   (may throw)
- *   recordEvent(event)                                          (best-effort)
+ *   recordEvent(event)                                          (durable commit)
  *
  * Returns { solSweep, solSweepError, solSweepSkipped, secondPassRan }.
- * Never throws for sweep/enumeration failures — those become gate outcomes.
+ * Recovery failures propagate. Other sweep failures become gate outcomes.
  */
 export async function finishSweepWithSolGate({
   walletPublicKey,
@@ -75,18 +76,17 @@ export async function finishSweepWithSolGate({
   try {
     remainingAfterSweep = await enumerate(walletPublicKey, { commitment: 'finalized' });
   } catch (e) {
+    throwIfExecutionPaused(e);
     console.warn('Straggler re-enumeration failed (treating as unknown):', e.message);
   }
 
   if (hasTokenBalances(remainingAfterSweep)) {
     secondPassRan = true;
     console.log('Straggler pass: assets remain after first sweep — running a second pass.');
-    try {
-      recordEvent({
-        stage: 'sweep_second_pass',
-        remainingTokenMints: Object.keys(remainingAfterSweep.tokens || {}).length,
-      });
-    } catch (_) { /* journal is best-effort here */ }
+    recordEvent({
+      stage: 'sweep_second_pass',
+      remainingTokenMints: Object.keys(remainingAfterSweep.tokens || {}).length,
+    });
 
     const nftSweep2 = await sweepNfts({ tempWalletSecretKey, destinationWallet });
     const tokenSweep2 = await sweepTokens({ tempWalletSecretKey, destinationWallet });
@@ -98,6 +98,7 @@ export async function finishSweepWithSolGate({
     try {
       remainingAfterSweep = await enumerate(walletPublicKey, { commitment: 'finalized' });
     } catch (e) {
+      throwIfExecutionPaused(e);
       console.warn('Post-second-pass re-enumeration failed:', e.message);
       remainingAfterSweep = null; // unknown — the gate below fails closed
     }
@@ -120,17 +121,16 @@ export async function finishSweepWithSolGate({
       + 'it stays behind to pay the fees for a retry. Retry the transfer; '
       + 'nothing has been lost.';
     console.warn(`SOL sweep skipped: ${solSweepSkipped}`);
-    try {
-      recordEvent({
-        stage: 'sol_sweep_skipped_assets_remain',
-        nftErrors: (nftSweep.errors || []).length,
-        tokenErrors: (tokenSweep.errors || []).length,
-      });
-    } catch (_) { /* journal is best-effort here */ }
+    recordEvent({
+      stage: 'sol_sweep_skipped_assets_remain',
+      nftErrors: (nftSweep.errors || []).length,
+      tokenErrors: (tokenSweep.errors || []).length,
+    });
   } else {
     try {
       solSweep = await sweepSol({ tempWalletSecretKey, destinationWallet });
     } catch (e) {
+      throwIfExecutionPaused(e);
       // The gate passed — every asset is out — so a SOL-sweep failure here
       // strands only SOL, which the recovery entry (kept by the caller's
       // post-sweep verification) can always retrieve. Report, don't throw.

@@ -1,3 +1,4 @@
+import { throwIfExecutionPaused } from './chainRetry.js';
 // walletHelpers.js
 //
 // Helpers used alongside tokenService.js. Two responsibilities:
@@ -241,6 +242,7 @@ async function withSweepRetries(label, fn) {
       }
       return result;
     } catch (err) {
+      throwIfExecutionPaused(err);
       lastErr = err;
       const transient = isTransientAirdropError(err);
       if (!transient || attempt === SWEEP_MAX_ATTEMPTS) {
@@ -313,6 +315,7 @@ export async function sweepNftsToDestination({
       console.log(`  swept ${nft.mint} (${nft.programName}): ${txId}`);
       transferred.push({ mint: nft.mint, txId, programName: nft.programName });
     } catch (err) {
+      throwIfExecutionPaused(err);
       console.error(`  failed to sweep ${nft.mint}:`, err.message);
       errors.push({ mint: nft.mint, error: err.message });
     }
@@ -420,6 +423,7 @@ export async function sweepAllTokensToDestination({
         );
         txIds.push(txId);
       } catch (err) {
+        throwIfExecutionPaused(err);
         mintHadError = true;
         console.error(`  failed to sweep ${t.mint} from ${acct.address || 'derived ATA'}:`, err.message);
         errors.push({ mint: t.mint, account: acct.address, error: err.message });
@@ -810,6 +814,7 @@ async function recipientHasAtLeast(connection, recipientAta, expectedAmount, pro
       const acct = await getAccount(connection, recipientAta, 'confirmed', programId);
       return BigInt(acct.amount.toString()) >= expectedAmount;
     } catch (err) {
+      throwIfExecutionPaused(err);
       const msg = String(err.message || '').toLowerCase();
       // "TokenAccountNotFoundError" means the ATA doesn't exist yet,
       // which means our tx definitely didn't land (creating the ATA is
@@ -871,6 +876,7 @@ async function deliverOneAirdropRecipient({
       blockhash = latest.blockhash;
       lastValidBlockHeight = latest.lastValidBlockHeight;
     } catch (err) {
+      throwIfExecutionPaused(err);
       lastError = err;
       if (isTransientAirdropError(err) && attempt < AIRDROP_MAX_ATTEMPTS) continue;
       return { ok: false, error: `Blockhash fetch failed: ${err.message}`, attempts: attempt };
@@ -910,6 +916,7 @@ async function deliverOneAirdropRecipient({
         maxRetries: 2,
       });
     } catch (sendErr) {
+      throwIfExecutionPaused(sendErr);
       lastError = sendErr;
       // Permanent send-time errors typically include "insufficient
       // funds for rent", "Invalid mint", "Account in use" with
@@ -945,6 +952,7 @@ async function deliverOneAirdropRecipient({
       // Clean success.
       return { ok: true, txId: signature, attempts: attempt };
     } catch (confErr) {
+      throwIfExecutionPaused(confErr);
       lastError = confErr;
       // Confirmation failed/timed out. The tx may or may not have
       // landed. CHECK the recipient's balance to find out before
@@ -1055,7 +1063,7 @@ export async function executeAirdrop({
       failed.push({ wallet: r.wallet, tokens: r.tokens, amountRaw: null, error: 'Invalid token amount', attempts: 0 });
       if (typeof onProgress === 'function') {
         try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: false }); }
-        catch (_) { /* never let a progress callback break the airdrop */ }
+        catch (error) { throwIfExecutionPaused(error); /* UI progress is best-effort. */ }
       }
       continue;
     }
@@ -1077,7 +1085,7 @@ export async function executeAirdrop({
       });
       if (typeof onProgress === 'function') {
         try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: false }); }
-        catch (_) { /* never let a progress callback break the airdrop */ }
+        catch (error) { throwIfExecutionPaused(error); /* UI progress is best-effort. */ }
       }
       // Invalid-address failures don't count toward the circuit
       // breaker — they're client-data problems, not RPC problems.
@@ -1096,7 +1104,7 @@ export async function executeAirdrop({
       });
       if (typeof onProgress === 'function') {
         try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: false }); }
-        catch (_) { /* never let a progress callback break the airdrop */ }
+        catch (error) { throwIfExecutionPaused(error); /* UI progress is best-effort. */ }
       }
       continue;
     }
@@ -1119,7 +1127,7 @@ export async function executeAirdrop({
       });
       if (typeof onProgress === 'function') {
         try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: false }); }
-        catch (_) { /* never let a progress callback break the airdrop */ }
+        catch (error) { throwIfExecutionPaused(error); /* UI progress is best-effort. */ }
       }
       continue;
     }
@@ -1163,7 +1171,7 @@ export async function executeAirdrop({
       });
       if (typeof onProgress === 'function') {
         try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: true }); }
-        catch (_) { /* never let a progress callback break the airdrop */ }
+        catch (error) { throwIfExecutionPaused(error); /* UI progress is best-effort. */ }
       }
       consecutiveFailures = 0;
       // If we needed >1 attempt for THIS recipient, bump pacing to
@@ -1193,7 +1201,7 @@ export async function executeAirdrop({
       });
       if (typeof onProgress === 'function') {
         try { onProgress({ recipient: r.wallet, tokens: r.tokens, success: false }); }
-        catch (_) { /* never let a progress callback break the airdrop */ }
+        catch (error) { throwIfExecutionPaused(error); /* UI progress is best-effort. */ }
       }
       consecutiveFailures += 1;
       // Bump pace too — a failed recipient is strongly suggestive of

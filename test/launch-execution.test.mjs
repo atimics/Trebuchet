@@ -194,3 +194,35 @@ test('a remaining wallet balance keeps recovery material and reports partial tra
   assert.equal(result.hasPartialFailure, true);
   assert.equal(f.state.removed, 0);
 });
+
+for (const method of ['createLiquidity', 'resumeLiquidity']) {
+  test(`${method} stops at a failed liquidity checkpoint`, async () => {
+    const f = fixture();
+    const failure = new RecoveryStorageError('checkpoint write failed');
+    let laterTransactions = 0;
+    f.deps.recordLpJournalProgress = () => { throw failure; };
+    f.deps.createPoolsAndPositions = async ({ onProgress }) => {
+      onProgress({ stage: 'pool_create_done', poolId: 'pool-a' });
+      laterTransactions++;
+      return { results: [] };
+    };
+    await assert.rejects(f.services()[method](input), (error) => error === failure);
+    assert.equal(laterTransactions, 0);
+    assert.equal(f.operations.size, 0);
+    assert.equal(f.writes.some((event) => /_failed$/.test(event.stage)), false);
+  });
+}
+
+test('a failed airdrop receipt stops before the token and SOL sweeps', async () => {
+  const f = fixture();
+  const failure = new RecoveryStorageError('airdrop receipt write failed');
+  f.deps.launchJournal.upsertForWallet = (_key, patch) => {
+    if (patch.airdrop) throw failure;
+  };
+  await assert.rejects(f.services().transferAssets({
+    ...input, airdrop: { tokenMint: input.tokenMint, tokenDecimals: 9, recipients: [{ wallet: destination, tokens: 1 }] },
+  }), (error) => error === failure);
+  assert.equal(f.calls.includes('tokens'), false);
+  assert.equal(f.calls.includes('sol-gate'), false);
+  assert.equal(f.state.removed, 0);
+});
