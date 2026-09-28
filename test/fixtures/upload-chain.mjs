@@ -6,7 +6,7 @@ import * as bundles from '@irys/bundles';
 import buildIrysTransaction from '@irys/upload-core/esm/transaction';
 import Utils from '@irys/upload-core/esm/utils';
 import { solSweepChain, sweepWallet, sweepDestination } from '../../packages/runtime/test/fixtures/sol-sweep-chain.mjs';
-import { createIrysUploadTransport } from '../../irysUploadTransport.js';
+import { createIrysUploadTransport } from '@trebuchet/runtime/irys-upload-transport';
 
 export { sweepWallet, sweepDestination };
 const receiptKeys = generateKeyPairSync('rsa', { modulusLength: 2048 });

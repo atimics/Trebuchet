@@ -20,7 +20,8 @@
     "./token-creation": "./src/token-creation.js",
     "./storage-payment": "./src/storage-payment.js",
     "./upload": "./src/upload.js",
-    "./upload-store": "./src/upload-store.js"
+    "./upload-store": "./src/upload-store.js",
+    "./irys-upload-transport": "./src/irys-upload-transport.js"
   },
   "engines": {
     "node": ">=22.13.0"

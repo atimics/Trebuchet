@@ -1,7 +1,7 @@
 import bs58 from 'bs58';
-import { uploadIdCandidates } from '@trebuchet/runtime/storage-payment';
+import { uploadIdCandidates } from './storage-payment.js';
 import { PublicKey } from '@solana/web3.js';
-import { uploadDigest } from '@trebuchet/runtime/upload-store';
+import { uploadDigest } from './upload-store.js';
 
 const paused = (message) => Object.assign(new Error(message), { code: 'CHAIN_STATE_UNAVAILABLE' });
 const integer = (value) => {

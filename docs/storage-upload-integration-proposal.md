@@ -2,7 +2,7 @@
 
 This approval covers a code change in draft PR #52. Each live launch will still use its existing authenticated request and saved launch inputs.
 
-The tested implementation is available in `packages/runtime/src/storage-payment.js`, `packages/runtime/src/upload.js`, `packages/runtime/src/upload-store.js`, and `irysUploadTransport.js`. The local fixture tests cover real Solana-signed data items, signed storage receipts, process death after payment and upload acceptance, lost replies, failed commits, changed input, damaged files, and receipt ID formats. Payment tests also verify exact credits, payer debit, fee limits, and approval renewal.
+The tested implementation is available in `packages/runtime/src/storage-payment.js`, `packages/runtime/src/upload.js`, `packages/runtime/src/upload-store.js`, and `packages/runtime/src/irys-upload-transport.js`. The local fixture tests cover real Solana-signed data items, signed storage receipts, process death after payment and upload acceptance, lost replies, failed commits, changed input, damaged files, and receipt ID formats. Payment tests also verify exact credits, payer debit, fee limits, and approval renewal.
 
 ## Payload and destination
 
@@ -30,7 +30,7 @@ The whole-launch budget remains a separate completion requirement. This connecti
 2. In `metadataUploadService.js`, add the optional `uploadExecution` callback and stable `uploadKey`. The logo uses `<uploadKey>/logo`; the JSON document uses `<uploadKey>/document`. Each callback receives the exact bytes and content-type tags. The existing path remains available to callers outside this host connection. Pass the selected RPC URL as the uploader's provider URL.
 3. In `tokenService.js`, let `uploadSealedIdentity` accept that callback. Recompute and check the saved identity commitment locally before uploading. Use `sealed/<mint>` as its stable upload key.
 4. In `server.js`, construct the upload runtime under the existing profile owner. Pass its upload callback from `revealSealedMetadataForJournal`. A pending upload holds wallet admission across restart. The reveal, liquidity recovery, saved-launch recovery, and final transfer paths reconcile it before another action. Other wallet actions receive the saved recovery ID.
-5. Add both new host modules to the package file lists.
+5. Add the new `uploadExecution.js` host module to both package file lists. The Irys transport is exported by the runtime package.
 
 ## Checks before delivery
 
