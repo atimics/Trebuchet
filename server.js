@@ -74,6 +74,7 @@ import * as launchJournal from './launchJournal.js';
 import * as launchStore from './launchStore.js';
 import * as coinStore from './coinStore.js';
 import { mergeCoins, validMint, readMintAccount } from './coinService.js';
+import { readTokenMarketEvidence, readHolderSample, readPoolEvidence, fetchSellQuote, marketEvidenceError } from './tokenMarketEvidence.js';
 import * as launchFlywheels from './launchFlywheels.js';
 import * as userPrefs from './userPrefs.js';
 import {
@@ -1606,7 +1607,7 @@ app.post('/api/v2/discovery/inspect', async (req, res) => {
     const [metadataResult, compatibilityResult, largestResult, marketResult] = await Promise.allSettled([
       getTokenMetadata(mint, { rpcUrl: inspectionRpc.url }),
       getMintCompatibilityWithRaydiumClmm(connection, mintPublicKey),
-      connection.getTokenLargestAccounts(mintPublicKey, 'confirmed'),
+      connection.getTokenLargestAccounts(mintPublicKey, 'finalized'),
       fetchDiscoveryMarketData(mint),
     ]);
 
@@ -1628,6 +1629,20 @@ app.post('/api/v2/discovery/inspect', async (req, res) => {
     syncBrandShieldRegistryFromJournals();
     const metadataValue = metadataResult.status === 'fulfilled' ? metadataResult.value : null;
     const marketValue = marketResult.status === 'fulfilled' ? marketResult.value : null;
+    const inspectionNetwork = /devnet/i.test(`${inspectionRpc.name} ${inspectionRpc.url}`) ? 'devnet' : 'mainnet';
+    const [holders, reserveRead] = await Promise.allSettled([
+      largestResult.status === 'fulfilled'
+        ? readHolderSample(connection, mint, supply.amount, inspectionNetwork, largestResult.value)
+        : Promise.reject(largestResult.reason),
+      marketValue?.pool?.address
+        ? readPoolEvidence(connection, marketValue.pool.address, mint, inspectionNetwork, { includeLocks: false })
+        : Promise.resolve(null),
+    ]);
+    const marketWithReserves = marketValue ? {
+      ...marketValue,
+      reserves: reserveRead.status === 'fulfilled' ? reserveRead.value : null,
+      reserveError: reserveRead.status === 'rejected' ? marketEvidenceError(reserveRead.reason) : null,
+    } : null;
     const remoteFingerprint = metadataValue?.metadataUri
       ? await fetchMetadataFingerprint(metadataValue.metadataUri)
       : null;
@@ -1647,7 +1662,8 @@ app.post('/api/v2/discovery/inspect', async (req, res) => {
       compatibility: compatibilityResult.status === 'fulfilled' ? compatibilityResult.value : null,
       supply,
       largestAccounts: largestResult.status === 'fulfilled' ? largestResult.value?.value : null,
-      market: marketValue,
+      holderSample: holders.status === 'fulfilled' ? holders.value : null,
+      market: marketWithReserves,
       journal: matchingJournal,
       brandAssessment,
       rpcName: inspectionRpc.name,
@@ -3289,9 +3305,38 @@ app.get('/api/v2/coins/:mint', async (req, res) => {
   }
 });
 
-// Positions this app's wallets hold in a coin's pools (unlocked: buy support
-// and other positions they own), and withdrawing one. Withdraw re-reads the
-// position and refuses if it changed since it was shown.
+// Public market evidence and estimates use finalized account reads.
+app.get('/api/v2/coins/:mint/evidence', async (req, res) => {
+  try {
+    const mint = validMint(req.params.mint);
+    if (!mint) return res.status(400).json({ success: false, error: 'Enter a valid token mint.' });
+    const connection = new Connection(getRpcUrl(), 'finalized');
+    const account = await readMintAccount(connection, mint, 'finalized');
+    if (!account) return res.status(404).json({ success: false, error: 'Token mint needs verification.' });
+    const markets = await listTokenMarkets(mint).catch(() => ({ pools: [] }));
+    const evidence = await readTokenMarketEvidence(connection, mint, {
+      supply: account.supply, pools: markets.pools, network: getNetwork(),
+    });
+    res.json({ success: true, evidence });
+  } catch (error) { sendErrorResponse(res, error, 502); }
+});
+
+app.post('/api/v2/coins/:mint/sell-quote', async (req, res) => {
+  try {
+    const mint = validMint(req.params.mint);
+    if (!mint) return res.status(400).json({ success: false, error: 'Enter a valid token mint.' });
+    if (getNetwork() !== 'mainnet-beta' && getNetwork() !== 'mainnet') {
+      return res.status(400).json({ success: false, error: 'Sell route quotes use mainnet pools. Select a mainnet RPC.' });
+    }
+    const connection = new Connection(getRpcUrl(), 'finalized');
+    const account = await readMintAccount(connection, mint, 'finalized');
+    if (!account) return res.status(404).json({ success: false, error: 'Token mint needs verification.' });
+    const quote = await fetchSellQuote({ mint, decimals: account.decimals, amount: req.body?.amount });
+    res.json({ success: true, quote });
+  } catch (error) { sendErrorResponse(res, error, 400); }
+});
+
+// Positions held by this app's wallets. Withdrawal re-reads each position.
 app.get('/api/v2/coins/:mint/positions', async (req, res) => {
   try {
     const mint = String(req.params.mint || '').trim();

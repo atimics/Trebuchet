@@ -3,9 +3,9 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-09-28T06:28:32.596Z",
-  "durationMs": 3100,
-  "target": "file:///Users/ratimics/develop/trebuchet-wt-helius/public/v2/index.html",
+  "generatedAt": "2026-09-28T07:31:09.995Z",
+  "durationMs": 1776,
+  "target": "file:///Users/ratimics/.codex/worktrees/token-evidence-recovery/trebuchet/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
     "horizontalOverflow",
@@ -19,10 +19,10 @@
     "keyboardWalkthrough"
   ],
   "assetHashes": {
-    "index.html": "cf68d865c225e6c4fb714b79b1102d49ca8cebd321c5fb542e72ab249afc2458",
-    "styles.css": "2b4db010e90ed1d92a717b9f6e339f473532f26f694be189e6a3315b48c0adcf",
-    "api-client.js": "780fd86902d7da75f0e48dd68ef6b1e97f0a0ec0592ddab48bc5d06f4920e610",
-    "app.js": "ce235bf2d9f66d228b96b31dd60c195675175ed2d45b1187f4ec08f95162ff46"
+    "index.html": "cb37dea2ee83e4f978d607d8cf4da385613ccb607a8ffe999dfa3db1d5282245",
+    "styles.css": "fa391438bd80f9cdfe77fe0a3a6d9139ea907c3fbcad348e430506fd7c11e21e",
+    "api-client.js": "a9ed1d6f25459d605fb1696f6b09eb841685a030f352be842b42ce3ffb643706",
+    "app.js": "78f085f8ce330c2b31fa4afb75e93bf24787b8cf33ca11c5f6aeda53fc7ba65e"
   },
   "viewports": [
     {

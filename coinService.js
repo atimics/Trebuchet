@@ -122,8 +122,8 @@ export function validMint(value) {
  * On-chain identity of a mint: supply, decimals, token program, and
  * authorities, read from the mint account. Null when it is not a mint.
  */
-export async function readMintAccount(connection, mint) {
-  const info = await connection.getParsedAccountInfo(new PublicKey(mint), 'confirmed');
+export async function readMintAccount(connection, mint, commitment = 'confirmed') {
+  const info = await connection.getParsedAccountInfo(new PublicKey(mint), commitment);
   const parsed = info?.value?.data?.parsed;
   if (!parsed || parsed.type !== 'mint') return null;
   const account = parsed.info || {};

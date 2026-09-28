@@ -6168,8 +6168,8 @@ function renderSimpleConfig() {
   // Help text varies based on toggle state. When on, describe what the
   // flywheel does. When off, describe what the simple SOL launch does.
   const helpText = simpleConfig.flywheelEnabled
-    ? 'A flywheel routes a portion of trade fees into a reserve token like XLRT, building accumulation pressure on it. Recommended for most launches.'
-    : 'Your token will launch in a single SOL pool with all supply allocated. No flywheel mechanic — simple and standard.';
+    ? 'A flywheel adds a pool paired with another token. This allocation stays fixed. Trading fees belong to Fee Key holders; automatic fee routing is planned.'
+    : 'Your token will launch in a single SOL pool with all supply allocated.';
 
   // Ladder state. Disabled sliders when toggle is off — keeps the visible
   // values but conveys "this isn't doing anything" to the user.

@@ -101,7 +101,6 @@ import {
   Raydium,
   TxVersion,
   CLMM_PROGRAM_ID,
-  LockClPositionLayoutV2,
   DEVNET_PROGRAM_ID,
   getPdaTickArrayAddress,
   LiquidityMath,
@@ -115,6 +114,7 @@ import {
   getExtensionTypes,
   ExtensionType,
 } from '@solana/spl-token';
+import { clmmLockPrograms, findClmmPositionLock } from './clmmLockEvidence.js';
 import { transferTokenWithProgram } from './walletHelpers.js';
 import { tokenByKey, tokenByAddress, isAllowedQuote } from './tokenRegistry.js';
 import { discoverSwapRoute, probeRaydiumPriceStrict } from './swapService.js';
@@ -2924,75 +2924,12 @@ function feeKeyMintFromLockResult(lockRes) {
   }
 }
 
-// Raydium's CLMM lock program ("Burn & Earn"). A locked position's NFT is held
-// in this program's escrow; the program also stores a per-lock account that
-// maps the original position mint to the Fee Key (lock NFT) mint. The id is the
-// immutable deployed program address, taken from the SDK's constants.
-const CLMM_LOCK_PROGRAM_ID = new PublicKey('DLockwT7X7sxtLmGH9g5kmfcjaBtncdbUmi738m5bvQC');
-
-// Byte offset of the positionId field inside the lock program's
-// LockClPositionLayoutV2 account (8 discriminator + 1 bump + 32 lockOwner + 32
-// poolId = 73). Used ONLY to pre-filter the getProgramAccounts scan below, and
-// deliberately not load-bearing for correctness: if it were wrong the scan would
-// just return no match and the caller would record the original failure — it can
-// never produce a wrong Fee Key. The Fee Key itself is read with the SDK's own
-// decoder, not a hand-coded offset, and re-verified against positionId.
-const LOCK_ACCT_POSITION_ID_OFFSET = 73;
-
-// Look up the on-chain lock for a position directly from the lock program. A
-// lock account whose positionId matches means the position is already locked,
-// and that same account carries the Fee Key (lock NFT) mint — the value the
-// report needs and Phase 4 transfers. Returns the Fee Key mint as a base58
-// string, or null when no lock exists.
-//
-// Why look up by positionId (a getProgramAccounts memcmp) rather than the SDK's
-// getOwnerLockedPositionInfo: that method enumerates locks via the lock NFTs the
-// wallet currently holds, so it would miss a main position whose Fee Key has
-// already been transferred to a recipient. The lock account records the
-// immutable positionId, so looking up by it finds the lock no matter where the
-// Fee Key now lives. The matched account is decoded with the SDK's own
-// LockClPositionLayoutV2 — not hand-coded byte offsets — and its decoded
-// positionId is re-checked, so neither the filter offset nor any field offset is
-// load-bearing for correctness.
-//
-// This is only ever called from a lock failure path: a lock attempt threw, and
-// we are asking whether it nonetheless already happened (a confirmation timeout
-// throws even when the tx landed, and a resume re-locks a position whose prior
-// lock was never journaled). A throw or null here leaves the original failure
-// intact, so this can never invent a success — only reclassify a genuine
-// on-chain lock the journal missed. Cost is paid only when a lock fails, never
-// on the happy path.
+// Reconcile the same network and position account used by the lock builder.
 async function findLockFeeKeyForPosition(raydium, positionNftMint) {
-  const accounts = await raydium.connection.getProgramAccounts(CLMM_LOCK_PROGRAM_ID, {
-    filters: [
-      {
-        // Pre-filter to lock accounts whose positionId equals this position's
-        // mint; the decode below re-verifies, so this only narrows the scan.
-        memcmp: {
-          offset: LOCK_ACCT_POSITION_ID_OFFSET,
-          bytes: positionNftMint,
-          encoding: 'base58',
-        },
-      },
-    ],
-  });
-  for (const acct of accounts || []) {
-    let decoded;
-    try {
-      decoded = LockClPositionLayoutV2.decode(acct.account.data);
-    } catch (_) {
-      continue; // not a lock account we can read — ignore
-    }
-    if (
-      decoded &&
-      decoded.positionId &&
-      decoded.positionId.toString() === positionNftMint &&
-      decoded.lockNftMint
-    ) {
-      return decoded.lockNftMint.toString();
-    }
-  }
-  return null;
+  const lock = await findClmmPositionLock(
+    raydium.connection, positionNftMint, raydium.cluster || getNetwork(),
+  );
+  return lock?.feeKeyMint || null;
 }
 
 // Check whether a Fee Key (lock NFT) already sits in the recipient's wallet —
@@ -3121,6 +3058,7 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         const lockR = await executeSdkTx({
           label: `lock ${pos.nftMint}`,
           build: async () => raydium.clmm.lockPosition({
+            ...clmmLockPrograms(raydium.cluster || getNetwork()),
             ownerPosition: { nftMint: new PublicKey(pos.nftMint) },
             // Locks were the one SDK call in this file sent WITHOUT a priority
             // fee — the same dynamic, pool-scoped config every other builder
@@ -3230,6 +3168,7 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         const lockR = await executeSdkTx({
           label: `lock ${lp.nftMint}`,
           build: async () => raydium.clmm.lockPosition({
+            ...clmmLockPrograms(raydium.cluster || getNetwork()),
             ownerPosition: { nftMint: new PublicKey(lp.nftMint) },
             // Same priority-fee config as the main-position locks above.
             computeBudgetConfig: await lpComputeBudgetConfig(raydium, r.poolId),
@@ -3329,6 +3268,7 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         const lockR = await executeSdkTx({
           label: `lock ${sp.nftMint}`,
           build: async () => raydium.clmm.lockPosition({
+            ...clmmLockPrograms(raydium.cluster || getNetwork()),
             ownerPosition: { nftMint: new PublicKey(sp.nftMint) },
             // Same priority-fee config as the main-position locks above.
             computeBudgetConfig: await lpComputeBudgetConfig(raydium, r.poolId),
@@ -3409,6 +3349,7 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         const lockR = await executeSdkTx({
           label: `lock ${bs.nftMint}`,
           build: async () => raydium.clmm.lockPosition({
+            ...clmmLockPrograms(raydium.cluster || getNetwork()),
             ownerPosition: { nftMint: new PublicKey(bs.nftMint) },
             // Same priority-fee config as the main-position locks above.
             computeBudgetConfig: await lpComputeBudgetConfig(raydium, r.poolId),

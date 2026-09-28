@@ -1,0 +1,57 @@
+{
+  "source": "Solana finalized RPC, RUGOWEEN main pool, 2026-09-28. Public account data only.",
+  "locks": [
+    {
+      "pubkey": "9Ed6m2hwTHkMyPJgeqS3Mc7JuiKZXUC21HTFrh1XtesA",
+      "account": {
+        "lamports": 1874520,
+        "data": [
+          "NBcFB6pabNX+pFPHbfVllfz1dD52g3kTw8qGHBP66kthnTYB+yuAdpkVYum/PsxCeXQNzSuUpTqglERaP/TqgUtKqdWLs/zWG4vis3s5Tktn7nAxh+U/svL3S8N5toGCUb1Xajrnl7fN6TJuRVRwa+Wmm1EfG4PsfUdj3DpKgVl+yjUGzsSGSqzri96d61yIEgzVhMI8h1caD425R1fX+YkUWt/KpmP6/BMEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+          "base64"
+        ],
+        "owner": "LockrWmn6K5twhz3y9w1dQERbmgSaRkfnTeTKbpofwE",
+        "executable": false,
+        "rentEpoch": 18446744073709551615,
+        "space": 241
+      }
+    },
+    {
+      "pubkey": "Hx8WrY6Y7khkmQbiPAu3atJQTsRSCR3ZPWa81m4Pdn7T",
+      "account": {
+        "lamports": 1874520,
+        "data": [
+          "NBcFB6pabNX9pFPHbfVllfz1dD52g3kTw8qGHBP66kthnTYB+yuAdpkVYum/PsxCeXQNzSuUpTqglERaP/TqgUtKqdWLs/zWGwbRfWvhIZyXkWFl2p9nn/oC3zMaeTt/3WnVqK0YABKaH9uFn4kPZ6TdxU+IjJl/ULkq7Tppa8TyZktW7zzw7IYkvER7QXhDeUHZdp5+gfAILUl/lByrVrhxw8ooC+C5wxMEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+          "base64"
+        ],
+        "owner": "LockrWmn6K5twhz3y9w1dQERbmgSaRkfnTeTKbpofwE",
+        "executable": false,
+        "rentEpoch": 18446744073709551615,
+        "space": 241
+      }
+    }
+  ],
+  "positions": [
+    {
+      "data": [
+        "Rm+WfuYPGXX/qr7mTWFAtaJPEqGECt+NS/xk4vJxkCj+ax0eN7pSbGoVYum/PsxCeXQNzSuUpTqglERaP/TqgUtKqdWLs/zWG44A/v/0xAYAuXCWeLOHAQAAAAAAAAAAANDHOu1sLP0IAAAAAAAAAAAQtyPaOAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABQEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 2077720,
+      "owner": "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+      "rentEpoch": 18446744073709551615,
+      "space": 281
+    },
+    {
+      "data": [
+        "Rm+WfuYPGXX3EhQc4zYtg+0NaIH9q/EkGI5UBC378XUUWVrCgtj1RQQVYum/PsxCeXQNzSuUpTqglERaP/TqgUtKqdWLs/zWGxf7/f8DBv7/zoVEAQAAAAAAAAAAAAAAAESL2jlC7Z80AAAAAAAAAADM8ZBxuxUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABQEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "base64"
+      ],
+      "executable": false,
+      "lamports": 2077720,
+      "owner": "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+      "rentEpoch": 18446744073709551615,
+      "space": 281
+    }
+  ]
+}
