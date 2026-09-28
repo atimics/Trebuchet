@@ -156,6 +156,35 @@ export function openRuntimeStore(profileDir) {
       const row = db.prepare('SELECT * FROM launches WHERE id = ?').get(id);
       return row ? { id: row.id, walletPublicKey: row.wallet, network: row.network, planDigest: row.plan_digest, config: JSON.parse(row.body), createdAt: row.created_at } : null;
     },
+    getWalletWorkflow(walletPublicKey) {
+      return collection('runtime-wallet-workflows/v1').load().find((record) => record.walletPublicKey === walletPublicKey && record.state === 'active') || null;
+    },
+    reserveWalletWorkflow({ id, walletPublicKey, kind, context }) {
+      return transaction(() => {
+        if (![id, walletPublicKey, kind].every((value) => typeof value === 'string' && value)) throw new TypeError('Use a complete wallet workflow identity');
+        const records = collection('runtime-wallet-workflows/v1'), all = records.load();
+        const prior = all.find((record) => record.id === id), candidate = { id, walletPublicKey, kind, context, state: 'active' };
+        if (prior) {
+          if (publicJson(prior) !== publicJson(candidate)) conflict('Wallet workflow identity is immutable');
+          return prior;
+        }
+        if (store.getWalletWorkflow(walletPublicKey) || store.getActiveOperation(walletPublicKey)) conflict('Recover the active wallet work first', 'OPERATION_IN_FLIGHT');
+        records.save([...all, candidate]); return candidate;
+      });
+    },
+    finishWalletWorkflow(id, evidence) {
+      return transaction(() => {
+        const records = collection('runtime-wallet-workflows/v1'), all = records.load(), index = all.findIndex((record) => record.id === id);
+        if (index < 0) throw new Error('Use the saved wallet workflow');
+        if (!evidence || typeof evidence !== 'object' || !Object.keys(evidence).length) throw new Error('Verify the workflow result before completion');
+        if (all[index].state === 'confirmed') {
+          if (publicJson(all[index].evidence) !== publicJson(evidence)) conflict('Preserve the confirmed workflow evidence');
+          return;
+        }
+        if (store.getActiveOperation(all[index].walletPublicKey)) conflict('Recover the workflow transaction before completion', 'OPERATION_IN_FLIGHT');
+        all[index] = { ...all[index], state: 'confirmed', evidence }; records.save(all);
+      });
+    },
     prepareOperation({ launchId, kind, index = 0, payload = {} }) {
       return transaction(() => {
         const launch = store.getLaunch(launchId);
@@ -168,6 +197,8 @@ export function openRuntimeStore(profileDir) {
           if (existing.intentDigest !== intentDigest) conflict('Operation input changed under the same identity');
           return existing;
         }
+        const workflow = store.getWalletWorkflow(launch.walletPublicKey);
+        if (workflow && launch.config.workflowId !== workflow.id) conflict('Recover the saved wallet workflow first', 'OPERATION_IN_FLIGHT');
         const active = db.prepare("SELECT id FROM operations WHERE wallet = ? AND state IN ('prepared','submitted','recovery_required')").get(launch.walletPublicKey);
         if (active) conflict('Wallet has an operation that requires completion or recovery', 'OPERATION_IN_FLIGHT');
         const timestamp = now();

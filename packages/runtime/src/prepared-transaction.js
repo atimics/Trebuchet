@@ -20,10 +20,10 @@ export function createPreparedTransactionService({
   authorize, checkResult, now = Date.now, timeoutMs = 60_000, pollIntervalMs = 500,
 }) {
   if (!kind || typeof authorize !== 'function' || typeof checkResult !== 'function') throw new TypeError('Supply the operation kind, approval, and result checks');
-  const launchFor = ({ scopeId, walletPublicKey, key, plan }) => {
+  const launchFor = ({ scopeId, walletPublicKey, key, plan, workflowId }) => {
     if (![scopeId, walletPublicKey, key].every((value) => typeof value === 'string' && value)) throw new TypeError('A prepared transaction requires launch, wallet, and action identities');
     return { id: hash({ scopeId, walletPublicKey, network, kind, key }), walletPublicKey, network,
-      planDigest: hash(plan), config: { scopeId, key, genesisHash: expectedGenesisHash, plan } };
+      planDigest: hash(plan), config: { scopeId, key, genesisHash: expectedGenesisHash, plan, ...(workflowId ? { workflowId } : {}) } };
   };
   const messageFor = (payload, blockhash) => {
     const tx = VersionedTransaction.deserialize(Buffer.from(payload.template, 'base64'));
@@ -131,9 +131,9 @@ export function createPreparedTransactionService({
     }
   };
   return {
-    async execute({ scopeId, walletPublicKey, key, plan, approval, build }) {
+    async execute({ scopeId, walletPublicKey, key, plan, approval, build, workflowId }) {
       owner.assertActive();
-      const launch = launchFor({ scopeId, walletPublicKey, key, plan });
+      const launch = launchFor({ scopeId, walletPublicKey, key, plan, workflowId });
       const existingLaunch = store.getLaunch(launch.id);
       if (existingLaunch && publicJson(existingLaunch.config) !== publicJson(launch.config)) throw fail('OPERATION_CONFLICT', 'Use the saved launch plan when recovering this action');
       const active = store.getActiveOperation(walletPublicKey);
