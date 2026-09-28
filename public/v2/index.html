@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=95">
+  <link rel="stylesheet" href="./styles.css?v=96">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -357,41 +357,37 @@
                     <span>Contract address</span>
                     <strong id="vanitySummary">Random address · recommended</strong>
                   </summary>
-                  <div class="vanity-details-body" aria-label="Optional Vanity CA grinder">
-                  <div class="manifest-head">
-                    <span>
-                      <span class="eyebrow">Custom Vanity CA</span>
-                      <h3>Starts &amp; Ends With</h3>
-                    </span>
-                    <span class="risk-badge">Optional</span>
-                  </div>
-                  <div class="vanity-inputs">
-                    <label>
-                      <span>Start</span>
-                      <input id="vanityStart" type="text" value="" placeholder="eg MKT" autocomplete="off" aria-describedby="vanityFeedback">
+                  <div class="vanity-details-body grinder" aria-label="Optional custom contract address">
+                  <p class="grinder-intro">Optional. Grind an address that starts or ends with letters you choose, or launch with a random one.</p>
+                  <div class="vanity-inputs grinder-fields">
+                    <label class="grinder-field">
+                      <span>Starts with</span>
+                      <input id="vanityStart" type="text" value="" placeholder="e.g. MKT" autocomplete="off" spellcheck="false" aria-describedby="vanityFeedback">
                     </label>
-                    <label>
-                      <span>End</span>
-                      <input id="vanityEnd" type="text" value="" placeholder="eg K1T" autocomplete="off" aria-describedby="vanityFeedback">
+                    <label class="grinder-field">
+                      <span>Ends with</span>
+                      <input id="vanityEnd" type="text" value="" placeholder="e.g. K1T" autocomplete="off" spellcheck="false" aria-describedby="vanityFeedback">
                     </label>
                   </div>
-                  <label class="vanity-length-select" for="vanityLength">
-                    <span>Address length</span>
-                    <select id="vanityLength" data-choice="slider">
-                      <option value="">Any</option>
-                      <option value="44" data-short="44">44 characters</option>
-                      <option value="43" data-short="43">43 characters</option>
-                      <option value="42" data-short="42">42 characters</option>
-                      <option value="41" data-short="41">41 characters</option>
-                    </select>
-                  </label>
-                  <label class="vanity-case-toggle" for="vanityCaseInsensitive">
-                    <input id="vanityCaseInsensitive" type="checkbox">
-                    <span><strong>Any case</strong><small>rUg…RuG counts as RUG…RUG. Much faster.</small></span>
-                  </label>
-                  <div class="candidate-strip" id="vanityCandidates">
-                    <button class="pill-button is-active" type="button" data-action="select-vanity" data-public-key="" aria-pressed="true">Random CA</button>
-                    <button class="pill-button" type="button" data-action="start-vanity">Grind CA</button>
+                  <div class="grinder-options">
+                    <label class="grinder-field vanity-length-select" for="vanityLength">
+                      <span>Length</span>
+                      <select id="vanityLength" data-choice="slider">
+                        <option value="">Any</option>
+                        <option value="44" data-short="44">44 characters</option>
+                        <option value="43" data-short="43">43 characters</option>
+                        <option value="42" data-short="42">42 characters</option>
+                        <option value="41" data-short="41">41 characters</option>
+                      </select>
+                    </label>
+                    <label class="grinder-check vanity-case-toggle" for="vanityCaseInsensitive">
+                      <input id="vanityCaseInsensitive" type="checkbox">
+                      <span><strong>Any case</strong><small>rUg…RuG counts as RUG…RUG. Much faster.</small></span>
+                    </label>
+                  </div>
+                  <div class="candidate-strip grinder-results" id="vanityCandidates">
+                    <button class="pill-button is-active" type="button" data-action="select-vanity" data-public-key="" aria-pressed="true">Random</button>
+                    <button class="pill-button" type="button" data-action="start-vanity">Grind</button>
                   </div>
                   </div>
                 </details>
@@ -755,7 +751,7 @@
   <script src="./runtime-state.js?v=2"></script>
   <script src="./api-client.js?v=40"></script>
   <script src="../gif-optimizer.js?v=3"></script>
-  <script src="./app.js?v=187"></script>
+  <script src="./app.js?v=188"></script>
   <script src="./nfts.js?v=1"></script>
 </body>
 </html>
