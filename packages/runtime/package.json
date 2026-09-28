@@ -16,7 +16,8 @@
     "./token-transfer": "./src/token-transfer.js",
     "./metadata-update": "./src/metadata-update.js",
     "./prepared-transaction": "./src/prepared-transaction.js",
-    "./observed-airdrop": "./src/observed-airdrop.js"
+    "./observed-airdrop": "./src/observed-airdrop.js",
+    "./token-creation": "./src/token-creation.js"
   },
   "engines": {
     "node": ">=22.13.0"

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import bs58 from 'bs58';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { ExecutionEngine } from './engine.js';
@@ -62,9 +63,10 @@ export function createPreparedTransactionService({
   };
   const receiptFor = async (record, operation, minContextSlot) => {
     const message = validateWire(record, operation);
+    const signatures = VersionedTransaction.deserialize(Buffer.from(record.wire, 'base64')).signatures.map((value) => bs58.encode(value));
     const receipt = await connection.getTransaction(record.signature, { commitment: 'finalized', maxSupportedTransactionVersion: 0 });
     if (!receipt || !whole(receipt.slot) || receipt.slot < minContextSlot || receipt.meta?.err !== null
-        || receipt.transaction?.signatures?.[0] !== record.signature || typeof receipt.transaction?.message?.serialize !== 'function'
+        || publicJson(receipt.transaction?.signatures || []) !== publicJson(signatures) || typeof receipt.transaction?.message?.serialize !== 'function'
         || !Buffer.from(receipt.transaction.message.serialize()).equals(Buffer.from(message.serialize()))) throw uncertain('Verify the finalized transaction and its exact message');
     const loaded = receipt.meta.loadedAddresses;
     const keys = [...message.staticAccountKeys, ...(loaded?.writable || []), ...(loaded?.readonly || [])].map((key) => key.toBase58());
@@ -74,13 +76,14 @@ export function createPreparedTransactionService({
         || [...preBalances, ...postBalances, fee].some((value) => !whole(value)) || fee > operation.payload.feeCeilingLamports) throw uncertain('Read complete finalized balances and fees');
     const spentLamports = preBalances[0] - postBalances[0];
     if (spentLamports < fee || spentLamports > operation.payload.maxSpendLamports) throw uncertain('Verify the finalized payer debit against the saved ceiling');
-    return { signature: record.signature, slot: receipt.slot, feeLamports: fee, spentLamports };
+    return { evidence: { signature: record.signature, slot: receipt.slot, feeLamports: fee, spentLamports }, receipt };
   };
   const handler = {
     async checkState({ operation, launch, transactions, minContextSlot }) {
       const confirmed = transactions.find((record) => record.state === 'confirmed');
-      const receipt = confirmed ? await receiptFor(confirmed, operation, minContextSlot) : null;
-      const observed = await checkResult({ operation, launch, minContextSlot: Math.max(minContextSlot, receipt?.slot || 0), confirmed: !!confirmed });
+      const verified = confirmed ? await receiptFor(confirmed, operation, minContextSlot) : null;
+      const receipt = verified?.evidence || null;
+      const observed = await checkResult({ operation, launch, minContextSlot: Math.max(minContextSlot, receipt?.slot || 0), confirmed: !!confirmed, receipt: verified?.receipt || null });
       if (!whole(observed?.slot) || observed.slot < Math.max(minContextSlot, receipt?.slot || 0) || !['present', 'absent'].includes(observed.state)) throw uncertain('Read a complete finalized operation result');
       if (observed.state === 'present') {
         if (!confirmed && !operation.payload.allowExisting) throw uncertain('Recover the saved transaction receipt for this account identity');
@@ -98,6 +101,10 @@ export function createPreparedTransactionService({
     },
   };
   const run = async (operation, approval) => {
+    const launch = store.getLaunch(operation.launchId);
+    if (launch.network !== network || launch.config.genesisHash !== expectedGenesisHash) {
+      throw fail('NETWORK_MISMATCH', 'Recover this operation on its saved network and genesis hash', { operationId: operation.id });
+    }
     const chain = createSolanaChain({ connection, network, expectedGenesisHash,
       beforeSend: async (_transaction, context) => approvalFor(approval, context.operation, context.launch) });
     const engine = new ExecutionEngine({ owner, store, chain, signer, operations: { [kind]: handler }, authorize: async (context) => {
@@ -110,7 +117,13 @@ export function createPreparedTransactionService({
     const deadline = now() + timeoutMs;
     while (true) {
       let status;
-      try { status = await engine.resume(operation.id); } catch (cause) { cause.operationId = operation.id; throw cause; }
+      try {
+        // A saved finalized status can skip the chain adapter's status read.
+        // Check the RPC before reading the full receipt and account results.
+        if (!['confirmed', 'failed'].includes(store.getOperation(operation.id).state)
+            && await connection.getGenesisHash() !== expectedGenesisHash) throw fail('NETWORK_MISMATCH', 'Read recovery evidence from the saved chain');
+        status = await engine.resume(operation.id);
+      } catch (cause) { cause.operationId = operation.id; throw cause; }
       if (status.operation.state === 'confirmed') return { ...status.operation.evidence.chain, operationId: operation.id, txId: status.operation.evidence.chain.signature };
       if (status.operation.state === 'failed') throw fail('TRANSACTION_FAILED', 'Review the failed transaction before continuing the launch', { operationId: operation.id });
       if (now() >= deadline) throw uncertain('Resume the operation when its finalized result is available');
