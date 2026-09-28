@@ -14125,15 +14125,24 @@ function renderClassicBridge() {
     ? {
       eyebrow: 'Next step',
       title: 'Estimate the launch cost',
-      detail: 'Trebuchet will calculate one amount for the selected token and liquidity recipe.',
+      detail: 'Work out how much SOL this launch needs.',
       action: 'estimate-funding',
       actionLabel: fundingEstimateStatus.stale ? 'Update estimate' : 'Estimate cost',
     }
+    : state.demoActive
+      ? {
+        eyebrow: 'Test launch',
+        title: 'No SOL needed',
+        detail: `A live launch would need ${totalSol.toFixed(4)} SOL in the launch wallet. A test launch spends nothing.`,
+        action: null,
+        workspace: 'mint',
+        actionLabel: 'Continue to Create token',
+      }
     : !fundingBalanceKnown
       ? {
         eyebrow: 'Send to launch wallet',
         title: `${totalSol.toFixed(4)} SOL`,
-        detail: 'The estimate calculated this requirement; it did not move funds. Send SOL to the address below, then check the balance.',
+        detail: 'Send this much SOL to the address below, then check the balance.',
         action: 'refresh-manual-prefund',
         actionLabel: state.manualPrefund.polling ? 'Checking balance' : 'I funded it · check balance',
       }
@@ -14141,22 +14150,22 @@ function renderClassicBridge() {
         ? {
           eyebrow: 'Still needed',
           title: `${Number(funding.missingSol).toFixed(4)} SOL`,
-          detail: `Wallet has ${Number(funding.availableSol || 0).toFixed(4)} SOL of the ${totalSol.toFixed(4)} SOL requirement. Estimating did not move funds.`,
+          detail: `The launch wallet has ${Number(funding.availableSol || 0).toFixed(4)} of ${totalSol.toFixed(4)} SOL.`,
           action: 'refresh-manual-prefund',
           actionLabel: state.manualPrefund.polling ? 'Checking balance' : 'Check balance again',
         }
         : !quoteFundingReady
           ? {
-            eyebrow: 'One step remains',
-            title: 'Complete quote-token funding',
-            detail: 'Open the additional token funding section below and complete the listed route or transfer.',
+            eyebrow: 'Almost funded',
+            title: 'Get the pair tokens',
+            detail: 'Buy or send the pair tokens listed below.',
             action: routeCount ? 'start-quote-acquire' : 'refresh-manual-prefund',
             actionLabel: routeCount ? 'Acquire tokens' : 'Check token balance',
           }
           : {
-            eyebrow: 'Funding verified',
+            eyebrow: 'Funded',
             title: 'Launch wallet ready',
-            detail: `${Number(funding.availableSol || 0).toFixed(4)} SOL is available and the launch can continue.`,
+            detail: `${Number(funding.availableSol || 0).toFixed(4)} SOL is in the launch wallet.`,
             action: null,
             actionLabel: null,
           };
@@ -14167,7 +14176,7 @@ function renderClassicBridge() {
         <strong>${escapeHtml(fundingNeed.title)}</strong>
         <p>${escapeHtml(fundingNeed.detail)}</p>
       </div>
-      ${estimate && fundingWallet ? `
+      ${estimate && fundingWallet && !state.demoActive ? `
         <div class="funding-task-address">
           <small>Launch wallet</small>
           <code>${escapeHtml(fundingWallet)}</code>
@@ -14177,7 +14186,7 @@ function renderClassicBridge() {
       ${estimate ? renderFundingReceipt(estimate) : ''}
       ${renderPairTokenChecks()}
       <div class="funding-task-action">
-        ${fundingNeed.action ? `<button class="primary-button" type="button" data-action="${escapeHtml(fundingNeed.action)}" ${state.manualPrefund.polling || (fundingNeed.action === 'estimate-funding' && state.fundingEstimating) ? 'disabled' : ''}><span>${escapeHtml(fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'Estimating…' : fundingNeed.actionLabel)}</span><i class="fa-solid ${fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'fa-spinner fa-spin' : estimate ? 'fa-rotate' : 'fa-calculator'}"></i></button>` : '<span class="risk-badge">Ready</span>'}
+        ${fundingNeed.workspace ? `<button class="primary-button" type="button" data-launch-workspace="${escapeHtml(fundingNeed.workspace)}"><span>${escapeHtml(fundingNeed.actionLabel)}</span><i class="fa-solid fa-arrow-right"></i></button>` : fundingNeed.action ? `<button class="primary-button" type="button" data-action="${escapeHtml(fundingNeed.action)}" ${state.manualPrefund.polling || (fundingNeed.action === 'estimate-funding' && state.fundingEstimating) ? 'disabled' : ''}><span>${escapeHtml(fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'Estimating…' : fundingNeed.actionLabel)}</span><i class="fa-solid ${fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'fa-spinner fa-spin' : estimate ? 'fa-rotate' : 'fa-calculator'}"></i></button>` : '<span class="risk-badge">Ready</span>'}
       </div>
     </section>
   `;
@@ -18278,8 +18287,13 @@ function renderHistoryExecutionAudit() {
 }
 
 function currentRecoveryWizardModel() {
-  const wallets = state.apiStatus === 'connected' ? state.recovery.pendingWallets : [];
   const selectedPublicKey = selectedLaunchWalletPublicKey();
+  // The launch wallet in use is not something to recover unless an
+  // unfinished launch left work on it.
+  const selectedHasOpenJournal = (state.recovery.journals || [])
+    .some((journal) => !isTerminalJournal(journal) && journal.walletPublicKey === selectedPublicKey);
+  const wallets = (state.apiStatus === 'connected' ? state.recovery.pendingWallets : [])
+    .filter((wallet) => wallet.publicKey !== selectedPublicKey || selectedHasOpenJournal);
   return recoveryWizardModel({
     wallets,
     selectedPublicKey,
@@ -24045,6 +24059,14 @@ function handleDynamicInput(event) {
 function handleClick(event) {
   const nav = event.target.closest('[data-view]');
   if (nav) {
+    // Coins in the nav always opens the list, freshly read: a launch may
+    // have added a coin since it was last loaded.
+    if (nav.dataset.view === 'coins') {
+      state.coins = { ...state.coins, key: null };
+      setView('coins');
+      refreshCoins().catch(() => null);
+      return;
+    }
     setView(nav.dataset.view);
     return;
   }
