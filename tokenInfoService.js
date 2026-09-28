@@ -71,6 +71,27 @@ const DEXSCREENER_BASE = 'https://api.dexscreener.com/tokens/v1/solana';
 // the price field name both changed — see fetchPriceFromJupiter below.
 const JUPITER_PRICE_BASE = 'https://lite-api.jup.ag/price/v3';
 
+// Helius. When the configured RPC is Helius, its DAS getAsset call returns a
+// token's USD price (for tokens with enough trading), name, symbol, and logo
+// in one request on the user's own key, so it goes before the free public
+// APIs, which rate-limit (HTTP 429) quickly.
+const HELIUS_HOST_RE = /(^|\.)helius-rpc\.com$/i;
+const HELIUS_ASSET_TTL_MS = 60 * 1000;
+const heliusAssets = new Map();
+
+// Last resort: price from the token's own on-chain pools. lpService
+// registers the reader, since it imports this module and can't be imported
+// back. USDC and USDT are the $1 anchors pool prices are measured in, so
+// they are never priced this way; SOL is, from its USDC/USDT pools.
+const ON_CHAIN_ANCHOR_MINTS = new Set([
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+]);
+let onChainPriceFallback = null;
+
+export function setOnChainPriceFallback(fn) {
+  onChainPriceFallback = typeof fn === 'function' ? fn : null;
+}
+
 // ---------------------------------------------------------------------------
 // Cache
 // ---------------------------------------------------------------------------
@@ -529,6 +550,71 @@ async function fetchPriceFromJupiter(mintAddress) {
   }
 }
 
+function heliusRpcUrl() {
+  const url = getRpcUrl();
+  try {
+    return HELIUS_HOST_RE.test(new URL(url).hostname) ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+// One getAsset per mint per minute, shared by the price and display lookups.
+async function fetchHeliusAsset(mintAddress) {
+  const url = heliusRpcUrl();
+  if (!url) return null;
+  const hit = heliusAssets.get(mintAddress);
+  if (hit && Date.now() < hit.expiresAt) return hit.asset;
+  return singleflight('helius-asset:' + mintAddress, async () => {
+    let asset = null;
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'trebuchet-token-info',
+          method: 'getAsset',
+          params: { id: mintAddress, displayOptions: { showFungible: true } },
+        }),
+      });
+      if (resp.ok) {
+        const json = await resp.json();
+        asset = json?.result || null;
+      } else if (resp.status >= 500 || resp.status === 429) {
+        console.warn(`tokenInfoService: Helius getAsset returned HTTP ${resp.status} for ${mintAddress}`);
+      }
+    } catch (e) {
+      console.warn(`tokenInfoService: Helius error for ${mintAddress}:`, e.message);
+    }
+    heliusAssets.set(mintAddress, { asset, expiresAt: Date.now() + HELIUS_ASSET_TTL_MS });
+    while (heliusAssets.size > CACHE_MAX_ENTRIES) heliusAssets.delete(heliusAssets.keys().next().value);
+    return asset;
+  });
+}
+
+// Pure helper: the USD price from a getAsset result, or null. Helius prices
+// in USDC; anything else is not a USD price.
+export function extractPriceFromHeliusAsset(asset) {
+  const info = asset?.token_info?.price_info;
+  const price = Number(info?.price_per_token);
+  if (!info || !Number.isFinite(price) || price <= 0) return null;
+  if (!/^(usdc|usd)$/i.test(String(info.currency || ''))) return null;
+  return new Decimal(info.price_per_token);
+}
+
+// Pure helper: name and logo from a getAsset result.
+export function extractDisplayMetaFromHeliusAsset(asset) {
+  const name = String(asset?.content?.metadata?.name || '').trim() || null;
+  const image = String(asset?.content?.links?.image || '').trim();
+  const imageUrl = /^(https?:|ipfs:|ar:)/i.test(image) ? image : null;
+  return name || imageUrl ? { name, imageUrl } : null;
+}
+
+async function fetchPriceFromHelius(mintAddress) {
+  return extractPriceFromHeliusAsset(await fetchHeliusAsset(mintAddress));
+}
+
 // Last-resort fallback: DexScreener. Used after both Gecko and Jupiter
 // miss. DexScreener tracks pairs across many DEXes and indexes the long
 // tail more aggressively than the others — particularly useful for
@@ -821,11 +907,17 @@ async function fetchDisplayMetaFromGecko(mintAddress) {
 //   - Fallback when Raydium has no route at all
 //
 // Priority order:
+//   0. Helius getAsset — only when the configured RPC is Helius. Uses the
+//      user's own key, so it doesn't hit the public APIs' rate limits.
+//      Has no price for thinly traded tokens; those fall through.
 //   1. Jupiter Price V3 — uses Jupiter's router under the hood,
 //      which routes the same pool universe Raydium does. Closest
 //      proxy to "the price our pool will be measured against."
 //   2. GeckoTerminal — alternative when Jupiter has no entry.
-//   3. DexScreener — last resort for long-tail tokens.
+//   3. DexScreener — for long-tail tokens.
+//   4. The token's own on-chain Raydium pools (deepest in-range pool with
+//      at least $100 of liquidity), registered by lpService. Never rate
+//      limited by an indexer; declines to price a pool that thin.
 //
 // We try sequentially (not in parallel) because the chained-fallback
 // pattern means we only need later sources when earlier ones fail.
@@ -852,10 +944,19 @@ async function _resolvePriceUsdUncached(mintAddress) {
   let source = null;
 
   try {
-    price = await fetchPriceFromJupiter(mintAddress);
-    if (price != null) source = 'jupiter';
+    price = await fetchPriceFromHelius(mintAddress);
+    if (price != null) source = 'helius';
   } catch (e) {
-    console.warn(`tokenInfoService: Jupiter threw for ${mintAddress}:`, e.message);
+    console.warn(`tokenInfoService: Helius threw for ${mintAddress}:`, e.message);
+  }
+
+  if (price == null) {
+    try {
+      price = await fetchPriceFromJupiter(mintAddress);
+      if (price != null) source = 'jupiter';
+    } catch (e) {
+      console.warn(`tokenInfoService: Jupiter threw for ${mintAddress}:`, e.message);
+    }
   }
 
   if (price == null) {
@@ -876,9 +977,21 @@ async function _resolvePriceUsdUncached(mintAddress) {
     }
   }
 
+  if (price == null && onChainPriceFallback && !ON_CHAIN_ANCHOR_MINTS.has(mintAddress)) {
+    try {
+      const onChain = await onChainPriceFallback(mintAddress);
+      if (onChain != null) {
+        price = new Decimal(onChain.toString());
+        source = 'on-chain pool';
+      }
+    } catch (e) {
+      console.warn(`tokenInfoService: on-chain pool price failed for ${mintAddress}:`, e.message);
+    }
+  }
+
   if (price == null) {
     console.warn(
-      `tokenInfoService: no USD price for ${mintAddress} from Jupiter, Gecko, or DexScreener`,
+      `tokenInfoService: no USD price for ${mintAddress} from Helius, Jupiter, Gecko, DexScreener, or its on-chain pools`,
     );
   } else {
     // Log every successful price resolution with the source. Invaluable
@@ -1009,6 +1122,12 @@ export async function getTokenInfo(
   let name = cacheEntry?.friendlyName ?? null;
 
   if (!alreadyResolved) {
+    // Step 0: Helius, on the user's own RPC key, when it is the RPC.
+    const helius = extractDisplayMetaFromHeliusAsset(await fetchHeliusAsset(mintAddress));
+    if (helius) {
+      imageUrl = helius.imageUrl ?? imageUrl;
+      name = name ?? helius.name ?? null;
+    }
     // Step 1: Metaplex URI. Most reliable when present and reachable;
     // skipped when the on-chain account has no uri at all.
     if (imageUrl == null && onChainUri) {
