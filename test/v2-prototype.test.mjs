@@ -6564,7 +6564,7 @@ test('v2 launch mechanism stages one Trebuchet-managed local wallet run', () => 
   assert.doesNotMatch(js, /<small>Queued<\/small>|% complete</);
   assert.match(js, /class="live-launch-facts"/);
   assert.match(combined, /Current operation/);
-  assert.match(combined, /Next checkpoint/);
+  assert.doesNotMatch(js, /Next checkpoint|'Next step'|Run every step|Step 6 as reviewable/);
   assert.match(combined, /Execution ledger/);
   assert.match(combined, /Latest guarded operations/);
   assert.match(combined, /historyExecutionAudit/);
