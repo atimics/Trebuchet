@@ -565,6 +565,7 @@ function loadClassicRetirementGateHarness() {
         : null;
     },
     shortAddress: (value) => String(value || '').slice(0, 8),
+    fullAddress: (value) => String(value || ''),
     selectedLaunchWalletPublicKey: () => harnessState.selectedWalletPublicKey || harnessState.managedWallets[0]?.publicKey || null,
     selectedManagedWallet: () => {
       const publicKey = harnessState.selectedWalletPublicKey || harnessState.managedWallets[0]?.publicKey || null;
@@ -1784,6 +1785,7 @@ function loadQuoteAcquireHarness() {
     selectedLaunchWalletPublicKey: () => harnessState.selectedWalletPublicKey,
     clampPercent: (value) => Math.max(0, Math.min(100, Number(value) || 0)),
     shortAddress: (value) => String(value || '').slice(0, 8),
+    fullAddress: (value) => String(value || ''),
   };
   vm.runInNewContext(
     [
@@ -6669,14 +6671,16 @@ test('v2 contract address grinder lists saved addresses as rows with Signal grad
   assert.match(js, /function vanityRarityGrade/);
   assert.match(renderSource, /grinder-list/);
   assert.match(renderSource, /grinder-row/);
-  assert.match(renderSource, /\$\{escapeHtml\(shortAddress\(candidate\.publicKey\)\)\}/);
-  assert.match(js, /return `\$\{text\.slice\(0, 4\)\}\.\.\.\$\{text\.slice\(-4\)\}`/);
+  assert.match(renderSource, /\$\{escapeHtml\(fullAddress\(candidate\.publicKey\)\)\}/);
+  assert.match(js, /: `\$\{text\.slice\(0, 4\)\}\.\.\.\$\{text\.slice\(-4\)\}`;/);
   assert.match(renderSource, /aria-pressed/);
   assert.match(renderSource, /Random address/);
   // No terminal chrome: no "$" prompts, slot numbers, or epochs.
   assert.doesNotMatch(renderSource, /<span aria-hidden="true">\$<\/span>/);
   assert.doesNotMatch(renderSource, /padStart\(2, '0'\)/);
-  assert.doesNotMatch(renderSource, /epochs/);
+  assert.doesNotMatch(renderSource, /\} epochs`/);
+  // Luck is explained in words on hover, not shown as "epochs".
+  assert.match(renderSource, /the expected tries/);
   assert.match(css, /--rarity-common: #c8dce6/);
   assert.match(css, /--rarity-fine: #8cdcff/);
   assert.match(css, /--rarity-rare: #be82ff/);
@@ -6745,12 +6749,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=96/);
+  assert.match(html, /styles\.css\?v=98/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=40/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=188/);
-  assert.doesNotMatch(html, /app\.js\?v=188" type="module"/);
+  assert.match(html, /app\.js\?v=190/);
+  assert.doesNotMatch(html, /app\.js\?v=190" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -6981,7 +6985,7 @@ test('v2 retirement gate requires terminal final sweep evidence', () => {
   assert.match(js, /proof\?\.journalId \? 'pass' : proof \? 'warn' : state\.recovery\?\.journalCount \? 'warn' : 'missing'/);
   assert.match(js, /attach the completed launch journal id to the proof before retiring Classic/);
   assert.match(js, /const hasProofLaunchWallet = Boolean\(proof\?\.walletPublicKey\)/);
-  assert.match(js, /Mint \$\{shortAddress\(token\.mint\)\} is recorded, but launch wallet proof is missing/);
+  assert.match(js, /Mint \$\{fullAddress\(token\.mint\)\} is recorded, but launch wallet proof is missing/);
 });
 
 test('v2 local terminal journal proof binds pool records, not only pool ids', () => {
