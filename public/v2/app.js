@@ -21855,10 +21855,16 @@ function hydrateCoinCards() {
   $$('.coin-card-ui__mark img').forEach((image) => {
     if (image.dataset.bound) return;
     image.dataset.bound = '1';
-    image.addEventListener('error', () => {
+    const showInitials = () => {
       const mark = image.parentElement;
       if (mark) mark.textContent = mark.dataset.initials || '';
-    }, { once: true });
+    };
+    // The image may have failed before this ran; then no error event comes.
+    if (image.complete && image.naturalWidth === 0) {
+      showInitials();
+      return;
+    }
+    image.addEventListener('error', showInitials, { once: true });
   });
   const apply = (src, palette) => {
     $$('[data-coin-image]').forEach((node) => {

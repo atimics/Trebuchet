@@ -40,3 +40,10 @@ test('practice coins appear only in Practice', () => {
   assert.equal(mergeCoins({ journals, practice: false }).length, 0);
   assert.equal(mergeCoins({ journals, practice: true })[0].practice, true);
 });
+
+test('a stand-in placeholder image URL is not a coin image', async () => {
+  const { realImageUrl } = await import('../coinService.js');
+  assert.equal(realImageUrl('https://gateway.irys.xyz/placeholder-token-image'), null);
+  assert.equal(realImageUrl(''), null);
+  assert.equal(realImageUrl('https://gateway.irys.xyz/-pEACkpm9px9ThmiXCZ'), 'https://gateway.irys.xyz/-pEACkpm9px9ThmiXCZ');
+});
