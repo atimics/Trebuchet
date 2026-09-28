@@ -12635,13 +12635,12 @@ function buildV2ReportParityAuditSection(audit = buildV2ReportParityAudit(), ret
     </table>
     <div class="banner banner-${audit?.status === 'pass' ? 'ok' : 'warn'}">
       <strong>${escapeHtml(audit?.status === 'pass' ? 'Classic evidence complete.' : 'Review before retiring Classic.')}</strong>
-      ${escapeHtml(`${audit?.score || 0}% complete · ${audit?.passCount || 0}/${audit?.itemCount || items.length || 0} checks passing · ${audit?.missingCount || 0} missing · ${audit?.warnCount || 0} warning${Number(audit?.warnCount || 0) === 1 ? '' : 's'}.`)}
+      ${escapeHtml(`${audit?.passCount || 0} of ${audit?.itemCount || items.length || 0} checks pass · ${audit?.missingCount || 0} missing · ${audit?.warnCount || 0} warning${Number(audit?.warnCount || 0) === 1 ? '' : 's'}.`)}
     </div>
     <div class="token-summary-grid">
       <div class="token-stat"><div class="token-stat-label">Pass</div><div class="token-stat-value">${Number(audit?.passCount || 0)}</div></div>
       <div class="token-stat"><div class="token-stat-label">Warnings</div><div class="token-stat-value">${Number(audit?.warnCount || 0)}</div></div>
       <div class="token-stat"><div class="token-stat-label">Missing</div><div class="token-stat-value">${Number(audit?.missingCount || 0)}</div></div>
-      <div class="token-stat"><div class="token-stat-label">Score</div><div class="token-stat-value">${Number(audit?.score || 0)}%</div></div>
     </div>
     <h3 class="subsection">Evidence checklist</h3>
     <table class="report-table">
@@ -13685,7 +13684,7 @@ function renderReportParityAuditPanel(audit = buildV2ReportParityAudit()) {
         <span>
           <span class="eyebrow">Classic report parity audit</span>
           <strong>${escapeHtml(audit?.status === 'pass' ? 'Classic evidence complete' : audit?.status === 'missing' ? 'Proof fields missing' : 'Ready for review')}</strong>
-          <em>${escapeHtml(`${audit?.score || 0}% complete · ${audit?.passCount || 0}/${audit?.itemCount || items.length || 0} checks passing`)}</em>
+          <em>${escapeHtml(`${audit?.passCount || 0} of ${audit?.itemCount || items.length || 0} checks pass`)}</em>
         </span>
         <span class="risk-badge ${escapeHtml(reportParityClass(audit?.status))}">${escapeHtml(audit?.status || 'missing')}</span>
       </div>

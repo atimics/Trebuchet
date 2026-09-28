@@ -11719,3 +11719,8 @@ test('a coin page names its creation facts as nouns', () => {
   }
   assert.doesNotMatch(serverJs, /label: '(Create the token|Open the pools|Lock the liquidity|Return the assets)/);
 });
+
+test('the parity audit states which checks pass, not a percentage score', () => {
+  assert.doesNotMatch(js, /audit\?\.score \|\| 0\}% complete|token-stat-label">Score</);
+  assert.match(js, /checks pass · \$\{audit\?\.missingCount \|\| 0\} missing/);
+});
