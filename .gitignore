@@ -34,3 +34,6 @@ docs/RELEASE-AUDIT-BACKLOG.md
 /execution.sqlite*
 /runtime-owner.sqlite*
 /runtime.json
+
+# Private local runtime output
+/runtime.log

@@ -51,3 +51,9 @@ idempotency contracts are already in Core (see `docs/secure-launch-packet.md`
 for the gate table and the recovery drill); the remaining coverage is the
 liquidity-stage recovery drill, which needs a local validator with cloned
 Raydium programs because Raydium's CLMM is mainnet-only.
+
+## Local runtime
+
+`trebuchet runtime start --config-dir <profile>` starts a real local API process or attaches to the profile's existing owner. `runtime status` reports its identity, address, and state. `runtime stop` stops an idle owner. These commands support `--json`.
+
+The runtime stays available after a CLI client exits. It binds to loopback, holds the profile's process lock, and publishes a private connection descriptor. Its log is `<profile>/runtime.log`. Execution commands will use this connection when the shared engine and custody checks are connected.

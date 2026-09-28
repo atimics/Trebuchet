@@ -1,4 +1,6 @@
 import express from 'express';
+import { acquireProfileOwner } from '@trebuchet/runtime/owner';
+import { createRuntimeControl } from '@trebuchet/runtime/control';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -674,7 +676,7 @@ const __dirname = path.dirname(__filename);
  */
 const AUTOSWAP_CONCURRENCY = 1;
 
-export function createLocalApiApp() {
+export function createLocalApiApp({ runtimeControl = null } = {}) {
 // The Raydium SDK prints every simulated transaction ("simulate tx
 // string: [<base64>...]") with a bare console.log. It is noise in the app
 // log; drop just that message.
@@ -803,6 +805,7 @@ function migrateSecretsToUnlockedPin() {
 //      session gate so we don't waste memory parsing rejected requests.
 app.use(hostCheckMiddleware);
 app.use(securityHeadersMiddleware);
+if (runtimeControl) app.use(runtimeControl);
 
 // CORS is intentionally not configured. The Trebuchet frontend loads from
 // http://127.0.0.1:<port> and the API serves from the same origin, so no
@@ -9858,6 +9861,9 @@ app.post('/api/find-funder', async (req, res) => {
   }
 });
 
+app.locals.runtimeBusy = () => launchOpsInFlight.size > 0
+  || airdropsInFlight.size > 0
+  || [...acquireJobs.values()].some((job) => job.status === 'running');
 return app;
 }
 
@@ -9906,6 +9912,7 @@ export function createLocalApiServer({
   host = '127.0.0.1',
   port = Number(process.env.PORT || 3000),
   onStarted = logLocalApiStartup,
+  onStopped = () => {},
 } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new TypeError('Local API port must be an integer from 0 to 65535');
@@ -9913,62 +9920,100 @@ export function createLocalApiServer({
   if (host !== '127.0.0.1') {
     throw new TypeError('Trebuchet Local API must bind to 127.0.0.1');
   }
-  const localApplication = application || createLocalApiApp();
-  if (typeof localApplication.listen !== 'function') {
+  if (application && typeof application.listen !== 'function') {
     throw new TypeError('Local API application must provide listen(port, host, callback)');
   }
-  if (typeof onStarted !== 'function') {
-    throw new TypeError('Local API onStarted hook must be a function');
+  if (typeof onStarted !== 'function' || typeof onStopped !== 'function') {
+    throw new TypeError('Local API lifecycle hooks must be functions');
   }
 
+  let localApplication = application;
   let httpServer = null;
   let startPromise = null;
+  let stopPromise = null;
+  let owner = null;
+  let control = null;
 
-  return Object.freeze({
-    application: localApplication,
-    get server() {
-      return httpServer;
-    },
+  const runtime = Object.freeze({
+    get application() { return localApplication; },
+    get server() { return httpServer; },
     get address() {
       const bound = httpServer?.address();
       if (!bound || typeof bound === 'string') return null;
       return { host, port: bound.port, url: `http://${host}:${bound.port}` };
     },
-    async start() {
-      if (httpServer?.listening) return this.address;
+    start() {
+      if (stopPromise) return stopPromise.then(() => runtime.start());
+      if (httpServer?.listening) return Promise.resolve(runtime.address);
       if (startPromise) return startPromise;
-      startPromise = new Promise((resolve, reject) => {
-        const candidate = localApplication.listen(port, host, () => {
-          httpServer = candidate;
-          const address = this.address;
+      startPromise = Promise.resolve().then(async () => {
+        // Production hosts acquire ownership before constructing any routes.
+        // An injected listener supports lifecycle tests without profile I/O.
+        if (!application) {
+          owner = acquireProfileOwner(process.env.TREBUCHET_CONFIG_DIR || __dirname);
+          control = createRuntimeControl({ owner, stop: () => runtime.stop(), isBusy: () => localApplication?.locals?.runtimeBusy?.() === true });
+          localApplication = createLocalApiApp({ runtimeControl: control });
+        }
+        try {
+          const address = await new Promise((resolve, reject) => {
+            const candidate = localApplication.listen(port, host, () => {
+              httpServer = candidate;
+              resolve(runtime.address);
+            });
+            candidate.once('error', reject);
+            httpServer = candidate;
+          });
+          owner?.publish(address.port);
           onStarted(address.port);
-          resolve(address);
-        });
-        candidate.once('error', (error) => {
-          if (httpServer === candidate) httpServer = null;
-          startPromise = null;
-          reject(error);
-        });
-        httpServer = candidate;
+          return address;
+        } catch (error) {
+          if (httpServer?.listening) await new Promise((resolve) => httpServer.close(resolve));
+          httpServer = null;
+          owner?.release();
+          owner = null;
+          throw error;
+        }
+      }).catch((error) => {
+        // Route construction can fail before the listener starts.
+        owner?.release();
+        owner = null;
+        startPromise = null;
+        throw error;
       });
       return startPromise;
     },
     async stop() {
+      if (stopPromise) return stopPromise;
+      if (startPromise) await startPromise;
+      if (stopPromise) return stopPromise;
+      if (control?.busy()) throw Object.assign(new Error('The runtime has active work. Retry after it finishes.'), { code: 'RUNTIME_BUSY' });
       const current = httpServer;
       if (!current) return;
-      startPromise = null;
-      httpServer = null;
-      await new Promise((resolve, reject) => {
-        current.close((error) => error ? reject(error) : resolve());
-      });
+      stopPromise = (async () => {
+        await new Promise((resolve, reject) => {
+          current.close((error) => error ? reject(error) : resolve());
+          current.closeAllConnections?.();
+        });
+        httpServer = null;
+        startPromise = null;
+        owner?.release();
+        owner = null;
+        control = null;
+        onStopped();
+      })();
+      try { await stopPromise; } finally { stopPromise = null; }
     },
   });
+  return runtime;
 }
 
 const isDirectRun = process.argv[1]
   && path.resolve(process.argv[1]) === path.resolve(__filename);
 
 if (isDirectRun) {
-  const localApi = createLocalApiServer();
-  await localApi.start();
+  const localApi = createLocalApiServer({ onStopped: () => process.exit(0) });
+  try { await localApi.start(); } catch (error) {
+    console.error(error.code || 'RUNTIME_START_FAILED', error.message);
+    process.exitCode = 1;
+  }
 }

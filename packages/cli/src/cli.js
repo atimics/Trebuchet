@@ -1,5 +1,6 @@
 import process from 'node:process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createTrebuchetCore,
   TREBUCHET_CORE_VERSION,
@@ -280,6 +281,25 @@ export async function runCli(argv = [], {
         throw commandError(TrebuchetCoreErrorCode.INTEGRITY_MISMATCH, 'Trebuchet proof is invalid.', data);
       }
       humanOutput = () => humanVerification('Trebuchet proof', data, stdout, stderr);
+    } else if (positionals[0] === 'runtime') {
+      const usage = 'trebuchet runtime <start|status|stop> [--config-dir <dir>] [--json]';
+      const action = positionals[1];
+      if (positionals.length !== 2 || !['start', 'status', 'stop'].includes(action)) {
+        throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `Usage: ${usage}`);
+      }
+      requireOptions(options, ['config-dir', 'json'], usage);
+      const profile = path.resolve(options['config-dir'] || process.env.TREBUCHET_CONFIG_DIR || process.cwd());
+      const { connectRuntime, ensureRuntime } = await import('@trebuchet/runtime/client');
+      const runtime = action === 'start'
+        ? await ensureRuntime(profile, { args: [fileURLToPath(new URL('../../../server.js', import.meta.url))] })
+        : await connectRuntime(profile);
+      data = runtime
+        ? action === 'stop' ? await runtime.request('/api/runtime/stop', { method: 'POST' }) : { ...runtime.identity, url: runtime.url }
+        : { profile, state: 'stopped' };
+      humanOutput = () => {
+        writeLine(stdout, `Runtime ${data.state}${data.url ? ` at ${data.url}` : ''}`);
+        writeLine(stdout, `Profile: ${profile}`);
+      };
     } else if (positionals[0] === 'execute') {
       const usage = 'trebuchet execute --config <launch.json> [--network demo] [--out <run.json>] [--server <server.js>] [--timeout <seconds>] [--json]';
       requirePositionals(positionals, ['execute'], usage);

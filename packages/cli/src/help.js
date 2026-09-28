@@ -2,6 +2,7 @@ export const CLI_HELP = `Trebuchet CLI (experimental; demo execution)
 
 Usage:
   trebuchet doctor [--json]
+  trebuchet runtime <start|status|stop> [--config-dir <dir>] [--json]
   trebuchet plan build --config <launch.json> [--out <plan.json>] [--json]
   trebuchet plan verify <plan.json> [--json]
   trebuchet estimate (--plan <plan.json> | --config <launch.json>) [--json]
