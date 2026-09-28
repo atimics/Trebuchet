@@ -6564,7 +6564,7 @@ test('v2 launch mechanism stages one Trebuchet-managed local wallet run', () => 
   assert.doesNotMatch(js, /<small>Queued<\/small>|% complete</);
   assert.match(js, /class="live-launch-facts"/);
   assert.match(combined, /Current operation/);
-  assert.match(combined, /Next checkpoint/);
+  assert.doesNotMatch(js, /Next checkpoint|'Next step'|Run every step|Step 6 as reviewable/);
   assert.match(combined, /Execution ledger/);
   assert.match(combined, /Latest guarded operations/);
   assert.match(combined, /historyExecutionAudit/);
@@ -11732,4 +11732,26 @@ test('the coin page and the create view share one facts vocabulary', () => {
   assert.match(js, /unrecorded: \{ icon: 'fa-circle-question'/);
   // The same action words in both places.
   assert.match(js, /return: 'Sweep the launch wallet'/);
+});
+
+test('an NFT collection shows its facts, not numbered phases', () => {
+  const nfts = read('public/v2/nfts.js');
+  assert.match(nfts, /<nav class="nft-fact-list" aria-label="What is true about this collection">/);
+  assert.doesNotMatch(nfts, /nft-tab-n|Collection phases|<span class="eyebrow">0[1-6]<\/span>|'Not started'|'After import'/);
+  assert.doesNotMatch(css, /\.nft-tabs\b|\.nft-tab-n/);
+  // The rail keeps one action; the facts list replaces its checks.
+  assert.doesNotMatch(nfts, /nft-gap">Checks</);
+});
+
+test('a coin is called Live only once the chain agrees', () => {
+  const source = js.match(/function coinChainStatus[\s\S]*?\n}\n/)?.[0];
+  assert.ok(source, 'coinChainStatus should be extractable');
+  const sandbox = {};
+  vm.runInNewContext(`${source}\nglobalThis.coinChainStatus = coinChainStatus;`, sandbox);
+  const steps = (...states) => ({ steps: states.map((state, index) => ({ id: `s${index}`, state })) });
+  assert.equal(sandbox.coinChainStatus(null), null, 'no chain read yet: keep what the record claims');
+  assert.equal(sandbox.coinChainStatus(steps('done', 'done', 'recorded', 'done')), 'Live');
+  assert.equal(sandbox.coinChainStatus(steps('done', 'done', 'unrecorded', 'mismatch')), 'Chain disagrees');
+  assert.equal(sandbox.coinChainStatus(steps('done', 'todo', 'unrecorded', 'todo')), 'Unfinished');
+  assert.doesNotMatch(js, /transferHasWalletEmptyFinalSweepEvidence\(proof\?\.transfer\) \? 'Live'/);
 });

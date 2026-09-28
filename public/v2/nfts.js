@@ -1,7 +1,9 @@
 // NFTs view for Trebuchet v2.
 //
-// Six phases per collection, the same shape as a launch:
-//   Collection → Items → Addresses → Fund → Mint → Verify
+// A collection shows what is true about it, one fact per row, the same way
+// a coin being created does: Collection, Items, Addresses, Funding, Mints,
+// Proof. The rail offers the one action the first fact that doesn't hold
+// asks for.
 // The local API (nftRoutes.js) owns every rule; this file renders its state
 // and sends the operator's choices. Nothing here holds or sees a key.
 (function installTrebuchetNfts(global) {
@@ -9,10 +11,19 @@
     { id: 'collection', label: 'Collection' },
     { id: 'items', label: 'Items' },
     { id: 'addresses', label: 'Addresses' },
-    { id: 'fund', label: 'Fund' },
-    { id: 'mint', label: 'Mint' },
-    { id: 'verify', label: 'Verify' },
+    { id: 'fund', label: 'Funding' },
+    { id: 'mint', label: 'Mints' },
+    { id: 'verify', label: 'Proof' },
   ];
+  // One mark per kind of fact, as in the coin's facts list.
+  const FACT_MARKS = {
+    ok: { icon: 'fa-check', label: 'True' },
+    run: { icon: 'fa-spinner fa-spin', label: 'Happening now' },
+    warn: { icon: 'fa-circle-exclamation', label: 'Needs attention' },
+    bad: { icon: 'fa-triangle-exclamation', label: 'Has errors' },
+    model: { icon: 'fa-pen', label: 'Can change until it is on-chain' },
+    draft: { icon: 'fa-circle', label: 'Not yet' },
+  };
   const PAGE_SIZE = 20;
   const IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i;
 
@@ -263,32 +274,32 @@
       case 'collection':
         return detail.configIssues.some((i) => i.level === 'error')
           ? { kind: 'warn', text: 'Needs input' }
-          : detail.collectionSignature ? { kind: 'ok', text: 'On chain' } : { kind: 'ok', text: 'Configured' };
+          : detail.collectionSignature ? { kind: 'ok', text: 'On-chain' } : { kind: 'model', text: 'Configured' };
       case 'items':
-        if (!n.items) return { kind: 'draft', text: 'Not imported' };
+        if (!n.items) return { kind: 'draft', text: 'None imported' };
         if (n.errors) return { kind: 'bad', text: `${n.errors} error${n.errors === 1 ? '' : 's'}` };
         if (detail.images.missing.length) return { kind: 'warn', text: `${detail.images.missing.length} images missing` };
         if (n.review) return { kind: 'warn', text: `${n.items.toLocaleString()} · ${n.review} to review` };
         return { kind: 'ok', text: `${n.items.toLocaleString()} ready` };
       case 'addresses':
-        if (job?.kind === 'grind') return { kind: 'run', text: `${job.done} / ${job.total}` };
-        if (!n.items) return { kind: 'draft', text: 'After import' };
+        if (job?.kind === 'grind') return { kind: 'run', text: `Grinding · ${job.done} of ${job.total} made` };
+        if (!n.items) return { kind: 'draft', text: 'No items yet' };
         return n.ground === n.items && detail.collectionKey
           ? { kind: 'ok', text: `${n.items.toLocaleString()} ground` }
-          : { kind: 'draft', text: `${n.ground} / ${n.items} ground` };
+          : { kind: 'draft', text: `${n.ground} of ${n.items} ground` };
       case 'fund':
-        if (n.items && n.minted === n.items && detail.collectionSignature) return { kind: 'ok', text: 'Nothing left' };
+        if (n.items && n.minted === n.items && detail.collectionSignature) return { kind: 'ok', text: 'Nothing more needed' };
         if (ui.estimate?.shortfallSol > 0) return { kind: 'warn', text: `Short ${sol(ui.estimate.shortfallSol, 3)}` };
-        if (ui.estimate) return { kind: 'ok', text: 'Funded' };
-        return { kind: 'model', text: `Model ≈${sol(detail.cost.totalSol, 3)}` };
+        if (ui.estimate) return { kind: 'ok', text: 'Wallet holds enough' };
+        return { kind: 'model', text: `About ${sol(detail.cost.totalSol, 3)} needed` };
       case 'mint':
-        if (job?.kind === 'run') return { kind: 'run', text: job.step === 'mint' ? `${job.done} / ${job.total}` : job.step || 'Starting' };
-        if (n.items && n.minted === n.items) return { kind: 'ok', text: 'Minted' };
-        if (n.failed) return { kind: 'warn', text: `${n.failed} failed` };
-        return n.minted ? { kind: 'warn', text: `${n.minted} / ${n.items}` } : { kind: 'draft', text: 'Not started' };
+        if (job?.kind === 'run') return { kind: 'run', text: job.step === 'mint' ? `Minting · ${job.done} of ${job.total} on-chain` : job.step || 'Starting' };
+        if (n.items && n.minted === n.items) return { kind: 'ok', text: `All ${n.items.toLocaleString()} on-chain` };
+        if (n.failed) return { kind: 'warn', text: `${n.minted} of ${n.items} on-chain · ${n.failed} failed` };
+        return n.minted ? { kind: 'warn', text: `${n.minted} of ${n.items} on-chain` } : { kind: 'draft', text: 'None minted' };
       case 'verify':
-        if (detail.verification?.passed) return { kind: 'ok', text: 'Proof' };
-        return detail.verification ? { kind: 'warn', text: 'Needs proof' } : { kind: 'draft', text: 'Needs proof' };
+        if (detail.verification?.passed) return { kind: 'ok', text: 'Every asset checked on-chain' };
+        return detail.verification ? { kind: 'warn', text: 'Some assets fail the check' } : { kind: 'draft', text: 'Not checked' };
       default:
         return { kind: 'draft', text: '' };
     }
@@ -332,8 +343,8 @@
         ${renderHeader(d)}
         ${ui.error ? `<div class="nft-banner nft-banner-bad" role="alert">${esc(ui.error)}<button type="button" class="nft-link" data-nft-action="dismiss">Dismiss</button></div>` : ''}
         ${ui.notice ? `<div class="nft-banner nft-banner-ok" role="status">${esc(ui.notice)}<button type="button" class="nft-link" data-nft-action="dismiss">Dismiss</button></div>` : ''}
-        ${d ? renderTabs(d) : ''}
-        <div class="nft-grid">
+        <div class="nft-grid ${d ? 'has-facts' : ''}">
+          ${d ? renderTabs(d) : ''}
           <div class="nft-main">${d ? renderTab(d) : renderEmpty()}</div>
           ${renderRail(d)}
         </div>
@@ -378,12 +389,14 @@
       </div>`;
   }
 
+  // The collection's facts. Which one is open is a view, not progress.
   function renderTabs(d) {
-    return `<nav class="nft-tabs" role="tablist" aria-label="Collection phases">${TABS.map((t, i) => {
+    return `<nav class="nft-fact-list" aria-label="What is true about this collection">${TABS.map((t) => {
       const s = phaseState(t.id, d);
-      return `<button type="button" role="tab" class="nft-tab ${ui.tab === t.id ? 'is-selected' : ''}" aria-selected="${ui.tab === t.id}" data-nft-tab="${t.id}">
-        <span class="nft-tab-n">0${i + 1}</span>
-        <span><strong>${t.label}</strong><small class="nft-tone-${s.kind}">${esc(s.text)}</small></span>
+      const mark = FACT_MARKS[s.kind] || FACT_MARKS.draft;
+      return `<button type="button" class="nft-fact is-${esc(s.kind)} ${ui.tab === t.id ? 'is-selected' : ''}" aria-pressed="${ui.tab === t.id}" data-nft-tab="${t.id}" title="${esc(mark.label)}">
+        <i class="fa-solid ${mark.icon}" aria-hidden="true"></i>
+        <span><strong>${t.label}</strong><small>${esc(s.text)}</small></span>
       </button>`;
     }).join('')}</nav>`;
   }
@@ -401,15 +414,6 @@
       ...d.configIssues.map((i) => ({ level: i.level, text: i.detail })),
       ...(d.images?.missing?.length ? [{ level: 'error', text: `${d.images.missing.length} item image${d.images.missing.length === 1 ? '' : 's'} missing` }] : []),
     ] : [];
-    const n = counts(d);
-    const checks = d ? [
-      { ok: !d.configIssues.some((i) => i.level === 'error'), text: 'Collection config complete' },
-      { ok: n.items > 0 && !n.errors && !d.images.missing.length, text: `${n.items.toLocaleString()} items imported` },
-      { ok: n.items > 0 && !n.review && !n.errors, warn: n.review > 0, text: n.review ? `${n.review} items to review` : 'Items reviewed' },
-      { ok: Boolean(d.collectionKey) && n.ground === n.items && n.items > 0, text: `Addresses ${n.ground} / ${n.items}` },
-      { ok: n.minted === n.items && n.items > 0, text: `Minted ${n.minted} / ${n.items}` },
-      { ok: d.verification?.passed === true, text: d.verification?.passed ? 'Verified on chain' : 'Not verified' },
-    ] : [];
     return `
       <aside class="nft-panel nft-rail" aria-label="Next action">
         <div class="nft-panel-head"><span class="eyebrow">Next action</span></div>
@@ -419,7 +423,6 @@
           <button class="${next.secondary ? 'secondary-button' : 'primary-button'} nft-wide" type="button" data-nft-action="${esc(next.action)}" ${next.tab ? `data-nft-goto="${esc(next.tab)}"` : ''} ${ui.busy ? 'disabled' : ''}>
             ${ui.busy ? `<span>${esc(ui.busy)}…</span>` : `<span>${esc(next.label)}</span>`}
           </button>
-          ${checks.length ? `<div class="nft-label nft-gap">Checks</div><ul class="nft-checks">${checks.map((c) => `<li><span class="${c.ok ? 'nft-ok' : c.warn ? 'nft-warn' : 'nft-muted'}">${c.ok ? '✓' : c.warn ? '▲' : '○'}</span><span>${esc(c.text)}</span></li>`).join('')}</ul>` : ''}
           ${issues.length ? `<div class="nft-label nft-gap">Issues</div><ul class="nft-checks">${issues.map((i) => `<li><span class="${i.level === 'error' ? 'nft-bad' : 'nft-warn'}">${i.level === 'error' ? '✕' : '▲'}</span><span>${esc(i.text)}</span></li>`).join('')}</ul>` : ''}
         </div>
       </aside>`;
@@ -474,7 +477,7 @@
     const total = dr.creators.reduce((s, c) => s + (Number(c.percentage) || 0), 0);
     return `
       <section class="nft-panel">
-        <div class="nft-panel-head"><span class="eyebrow">01</span><h3>Collection</h3>${onChain ? stateTag('ok', 'On chain · fixed') : stateTag('draft', 'Draft')}</div>
+        <div class="nft-panel-head"><h3>Collection</h3>${onChain ? stateTag('ok', 'On chain · fixed') : stateTag('draft', 'Draft')}</div>
         <div class="nft-panel-body">
           <div class="nft-form-grid">
             ${field('Name', 'name', dr.name, `maxlength="32" ${onChain ? 'disabled' : ''}`)}
@@ -511,7 +514,7 @@
           ${d.collectionKey ? `<div class="nft-big-addr">${addr(d.collectionKey.address, d.config.collectionVanity)} <button type="button" class="text-button" data-nft-copy="${esc(d.collectionKey.address)}">Copy</button></div>` : ''}
           ${vanityControls('collection', dr.collectionVanity, onChain)}
           ${oddsTable(ui.odds.collection, false)}
-          <p class="nft-muted nft-small">Changing the pattern discards an unused collection key that no longer matches. Grinding happens in the Addresses phase.</p>
+          <p class="nft-muted nft-small">Changing the pattern discards an unused collection key that no longer matches. Addresses are ground under Addresses.</p>
         </div>
       </section>
       <div class="nft-actions">
@@ -551,7 +554,7 @@
     const importing = ui.importing;
     return `
       <section class="nft-panel">
-        <div class="nft-panel-head"><span class="eyebrow">02</span><h3>Items</h3><span class="nft-muted">${n.items ? `${n.items.toLocaleString()} items · ${bytes(d.items.reduce((s, it) => s + (it.imageBytes || 0), 0))}` : 'Nothing imported'}</span>
+        <div class="nft-panel-head"><h3>Items</h3><span class="nft-muted">${n.items ? `${n.items.toLocaleString()} items · ${bytes(d.items.reduce((s, it) => s + (it.imageBytes || 0), 0))}` : 'Nothing imported'}</span>
           <label class="secondary-button compact nft-file nft-push" ${n.uploaded ? 'aria-disabled="true"' : ''}><span>${n.items ? 'Re-import folder' : 'Import folder'}</span><input type="file" webkitdirectory multiple data-nft-file="folder" ${n.uploaded ? 'disabled' : ''}></label>
         </div>
         ${importing ? `<div class="nft-progress-row"><span>${esc(importing.label)}</span><span class="nft-bar"><span style="width:${importing.total ? (100 * importing.done) / importing.total : 0}%"></span></span><span>${importing.done} / ${importing.total}</span></div>` : ''}
@@ -602,7 +605,7 @@
     const recent = d.items.filter((it) => it.address).slice(-6).reverse();
     return `
       <section class="nft-panel">
-        <div class="nft-panel-head"><span class="eyebrow">03</span><h3>Collection address</h3>${d.collectionKey ? stateTag('ok', 'Ground') : stateTag('draft', 'Not ground')}</div>
+        <div class="nft-panel-head"><h3>Collection address</h3>${d.collectionKey ? stateTag('ok', 'Ground') : stateTag('draft', 'Not ground')}</div>
         <div class="nft-panel-body nft-facts">
           <div><span class="nft-label">Address</span><div class="nft-big-addr">${addr(d.collectionKey?.address, d.config.collectionVanity)}</div></div>
           <div><span class="nft-label">Pattern</span><div>${d.config.collectionVanity.mode === 'none' ? 'any address' : `${esc(d.config.collectionVanity.mode)} ${esc(d.config.collectionVanity.pattern)}${d.config.collectionVanity.caseInsensitive ? ' · any case' : ''}`}</div></div>
@@ -611,7 +614,7 @@
         </div>
       </section>
       <section class="nft-panel">
-        <div class="nft-panel-head"><span class="eyebrow">03</span><h3>Item addresses</h3><span class="nft-muted">one pattern for every item</span></div>
+        <div class="nft-panel-head"><h3>Item addresses</h3><span class="nft-muted">one pattern for every item</span></div>
         <div class="nft-panel-body">
           ${vanityControls('item', dr.itemVanity, locked)}
           ${draftChanged() ? '<div class="nft-actions"><button class="primary-button" type="button" data-nft-action="save">Save pattern</button><span class="nft-muted nft-small">Saving discards unused keys that do not match.</span></div>' : ''}
@@ -648,7 +651,7 @@
     const c = e || d.cost;
     return `
       <section class="nft-panel">
-        <div class="nft-panel-head"><span class="eyebrow">04</span><h3>Fund</h3>${e ? stateTag(e.shortfallSol > 0 ? 'warn' : 'ok', e.shortfallSol > 0 ? 'Short' : 'Funded') : stateTag('model', 'Model')}</div>
+        <div class="nft-panel-head"><h3>Funding</h3>${e ? stateTag(e.shortfallSol > 0 ? 'warn' : 'ok', e.shortfallSol > 0 ? 'Short' : 'Funded') : stateTag('model', 'Model')}</div>
         <div class="nft-panel-body">
           <div class="nft-row-controls"><span class="nft-label">Signing wallet</span>${walletOptions()}
             <button class="primary-button compact" type="button" data-nft-action="estimate" ${ui.walletPublicKey ? '' : 'disabled'}>${e ? 'Estimate again' : 'Estimate funding'}</button></div>
@@ -686,7 +689,7 @@
     const labels = { ok: 'Proof', run: 'Running', warn: 'Review', draft: 'Waiting' };
     return `
       <section class="nft-panel">
-        <div class="nft-panel-head"><span class="eyebrow">05</span><h3>Run</h3>${running ? stateTag('run', 'Running') : n.minted === n.items && n.items ? stateTag('ok', 'Minted') : stateTag('staged', 'Staged')}
+        <div class="nft-panel-head"><h3>Mints</h3>${running ? stateTag('run', 'Running') : n.minted === n.items && n.items ? stateTag('ok', 'Minted') : stateTag('staged', 'Staged')}
           <span class="nft-muted nft-push">${n.minted} minted · ${n.failed} failed · ${n.items - n.minted - n.failed} queued</span></div>
         <div class="nft-progress-row"><span>${running ? esc(job.detail || '') : ''}</span><span class="nft-bar"><span style="width:${running && job.total ? (100 * job.done) / job.total : n.items ? (100 * n.minted) / n.items : 0}%"></span></span><span>${running && job.total ? `${job.done} / ${job.total}` : ''}</span></div>
         <table class="nft-table">
@@ -723,7 +726,7 @@
     };
     return `
       <section class="nft-panel">
-        <div class="nft-panel-head"><span class="eyebrow">06</span><h3>Verify</h3>${v?.passed ? stateTag('ok', 'Proof') : stateTag('warn', 'Needs proof')}
+        <div class="nft-panel-head"><h3>Proof</h3>${v?.passed ? stateTag('ok', 'Proof') : stateTag('warn', 'Needs proof')}
           <span class="nft-push"><button class="primary-button compact" type="button" data-nft-action="verify" ${d.collectionSignature ? '' : 'disabled'}>Verify on chain</button></span></div>
         ${v ? `
         <table class="nft-table">

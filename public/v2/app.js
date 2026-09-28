@@ -447,7 +447,7 @@ const state = {
   poolSupport: { status: 'idle', plan: null, result: null, error: null },
   // Coins are what the app is organized around. `key` is the open coin
   // ("draft:<id>" or "mint:<address>"); null shows the list.
-  coins: { list: [], loaded: false, loading: false, error: null, key: null, detail: null, detailLoading: false, detailError: null },
+  coins: { list: [], loaded: false, loading: false, error: null, key: null, detail: null, detailLoading: false, detailError: null, checked: {} },
   // Positions this app's wallets hold in the open coin's pools.
   coinPositions: { mint: null, list: [], loading: false, error: null, withdrawing: null },
   // How far above the SOL pool's price pair pools open. Restored launches
@@ -3298,7 +3298,7 @@ function liveRunProgressContext() {
     rows,
     activeId: activeRow?.id || null,
     source,
-    focusLabel: state.fullRunRunning || state.realExecutionRunning || state.demoLaunchRunning ? 'Current operation' : 'Next checkpoint',
+    focusLabel: state.fullRunRunning || state.realExecutionRunning || state.demoLaunchRunning ? 'Current operation' : 'Needed',
     headingLabel: 'Live launch progress',
   };
 }
@@ -13698,7 +13698,7 @@ function finalizationNoticeRows({
   if (state.prefs.publishLaunchReport === false && !localDossier) {
     rows.push({
       state: 'warn',
-      text: 'Report publishing is off. Download the saved launch record before treating Step 6 as reviewable.',
+      text: 'Report publishing is off. Download the saved launch record before treating the launch as reviewable.',
     });
   }
   const airdropIssue = airdropCompletionIssue(airdropStatus, 'publishing the report or sweeping');
@@ -14107,7 +14107,7 @@ function renderClassicBridge() {
     && finishReturn.address !== walletPublicKey;
   const fundingNeed = !estimate
     ? {
-      eyebrow: 'Next step',
+      eyebrow: 'Not estimated',
       title: 'Estimate the launch cost',
       detail: 'Work out how much SOL this launch needs.',
       action: 'estimate-funding',
@@ -14139,7 +14139,7 @@ function renderClassicBridge() {
         }
         : !quoteFundingReady
           ? {
-            eyebrow: 'Almost funded',
+            eyebrow: 'Pair tokens missing',
             title: 'Get the pair tokens',
             detail: 'Buy or send the pair tokens listed below.',
             action: routeCount ? 'start-quote-acquire' : 'refresh-manual-prefund',
@@ -14212,7 +14212,7 @@ function renderClassicBridge() {
       : complete
         ? 'Done'
         : needsFunding
-          ? 'Next step'
+          ? 'Needs funding'
           : finalizationIssue
             ? 'Needed first'
           : needsRunEnvelope
@@ -14221,7 +14221,7 @@ function renderClassicBridge() {
               ? 'Ready'
               : 'Checking';
     const panelTitle = state.demoActive && !complete
-      ? 'Run every step as a test'
+      ? 'Run the whole launch as a test'
       : complete
       ? title
       : needsFunding
@@ -20004,7 +20004,7 @@ async function reviewAndArmRun() {
   }
   if (state.lastRunEnvelope?.status === 'armed') {
     renderClassicBridge();
-    notify('Approved. The next step is ready.');
+    notify('Approved. It can run now.');
     return;
   }
   const recoveryEndpoint = recoveryAuthorizationEndpoint();
@@ -21653,6 +21653,20 @@ function openCoinByMint(mint) {
   openCoin(key);
 }
 
+// A launched coin's status from the chain, once its page has read it: the
+// same check its creation facts show. Unknown until then.
+function coinChainStatus(creation) {
+  const steps = creation?.steps || [];
+  if (!steps.length) return null;
+  if (steps.some((step) => step.state === 'mismatch')) return 'Chain disagrees';
+  if (steps.some((step) => ['todo', 'unrecorded'].includes(step.state))) return 'Unfinished';
+  return 'Live';
+}
+
+function coinStatus(coin) {
+  return (coin?.mint && state.coins.checked?.[coin.mint]) || coin?.status || '';
+}
+
 async function loadCoinDetail(mint) {
   if (!state.apiClient?.getCoin) return;
   state.coins = { ...state.coins, detailLoading: true, detailError: null };
@@ -21660,7 +21674,13 @@ async function loadCoinDetail(mint) {
   try {
     const response = await state.apiClient.getCoin(mint);
     if (state.coins.key !== `mint:${mint}`) return;
-    state.coins = { ...state.coins, detail: response.coin, detailLoading: false };
+    const checkedStatus = coinChainStatus(response.coin?.creation);
+    state.coins = {
+      ...state.coins,
+      detail: response.coin,
+      detailLoading: false,
+      checked: checkedStatus ? { ...(state.coins.checked || {}), [mint]: checkedStatus } : state.coins.checked,
+    };
   } catch (error) {
     state.coins = { ...state.coins, detailLoading: false, detailError: error.message || 'Could not read the coin' };
   }
@@ -21859,7 +21879,7 @@ function renderCoins() {
       variant: 'row',
       tag: 'button',
       attrs: `type="button" data-action="open-coin" data-coin-key="${escapeHtml(item.key)}"`,
-      status: item.status,
+      status: coinStatus(item),
     },
   )).join('');
   hydrateCoinCards();
@@ -22012,7 +22032,7 @@ function renderCoinPage(coin) {
     name,
     symbol,
     image: detail?.image || coin.image || coin.logoDataUrl || null,
-    status: coin.status || '',
+    status: coinStatus(coin),
     address: coin.mint || coin.reservedAddress || null,
     links: Boolean(coin.mint && !coin.practice),
   });
@@ -22053,6 +22073,16 @@ function renderCoinPage(coin) {
 // The coin being created: its identity is the page title (name, ticker,
 // status, address), over its creation steps. It takes no extra height, so
 // the steps keep the whole page.
+// The create view's status for a live mint, from the same facts its list shows.
+function launchViewChainStatus() {
+  const facts = coinFacts();
+  if (facts.some((fact) => fact.state === 'mismatch')) return 'Chain disagrees';
+  // "Recorded" holds: the chain can't read every fact (liquidity locks).
+  return ['mint', 'liquidity', 'finish'].every((id) => ['done', 'recorded'].includes(facts.find((fact) => fact.id === id)?.state))
+    ? 'Live'
+    : 'Being created';
+}
+
 function renderCoinContext() {
   const bar = $('#coinContext');
   if (bar) {
@@ -22067,7 +22097,7 @@ function renderCoinContext() {
   const practice = isDemoLaunchProof(proof);
   const reserved = state.selectedVanityPublicKey || null;
   const status = mint
-    ? practice ? 'Test coin' : transferHasWalletEmptyFinalSweepEvidence(proof?.transfer) ? 'Live' : 'Being created'
+    ? practice ? 'Test coin' : launchViewChainStatus()
     : reserved ? 'Address reserved' : 'Draft';
   const address = mint || reserved;
   const eyebrow = $('#viewEyebrow');

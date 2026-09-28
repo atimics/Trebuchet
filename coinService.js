@@ -18,10 +18,12 @@ function journalMint(journal) {
   return String(journal?.token?.mint || journal?.token?.tokenMint || '').trim();
 }
 
+// What the launch record claims. The app says "Live" only once the chain
+// agrees (see coinChainStatus in the client), never from the record alone.
 function journalStatus(journal) {
-  if (journal.status === 'completed') return 'Live';
+  if (journal.status === 'completed') return 'Launch recorded';
   if (journal.status === 'archived') return 'Launch stopped';
-  return 'Launch in progress';
+  return 'Being created';
 }
 
 /**
