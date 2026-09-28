@@ -21,7 +21,8 @@
     "./lp-constants": "./src/lp-constants.js",
     "./split-key": "./src/split-key.js",
     "./nft-plan": "./src/nft-plan.js",
-    "./browser": "./src/browser.js"
+    "./browser": "./src/browser.js",
+    "./packet-approval": "./src/packet-approval.js"
   },
   "dependencies": {
     "@noble/curves": "^1.9.7",

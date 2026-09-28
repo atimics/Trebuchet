@@ -16,6 +16,9 @@ Usage:
   trebuchet confirm --plan <plan.json> --keyfile <custody.json> --network <n>
                     --max-spend-sol <n> [--wallet <pubkey>] [--expires-in <h>]
                     [--passphrase <p>] [--out <confirmation.json>] [--json]
+  trebuchet packet approve --manifest <manifest.json> --plan <plan.json>
+                    --keyfile <custody.json> --network <n> --max-spend-sol <n>
+                    [--expires-in <hours>] [--out <approval.json>] [--json]
   trebuchet confirmation verify <confirmation.json> [--expect-plan <plan.json>] [--json]
   trebuchet launch save --config <launch.json> [--name <label>] [--config-dir <dir>] [--json]
   trebuchet launch list [--config-dir <dir>] [--json]

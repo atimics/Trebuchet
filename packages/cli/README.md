@@ -57,3 +57,7 @@ Raydium programs because Raydium's CLMM is mainnet-only.
 `trebuchet runtime start --config-dir <profile>` starts a real local API process or attaches to the profile's existing owner. `runtime status` reports its identity, address, and state. `runtime stop` stops an idle owner. These commands support `--json`.
 
 The runtime stays available after a CLI client exits. It binds to loopback, holds the profile's process lock, and publishes a private connection descriptor. Its log is `<profile>/runtime.log`. Execution commands will use this connection when the shared engine and custody checks are connected.
+
+## Packet approval
+
+`trebuchet packet approve --manifest <manifest.json> --plan <plan.json> --keyfile <custody.json> --network <network> --max-spend-sol <amount> --out <approval.json>` signs the packet's exact manifest and verified plan with the encrypted operator key. The plan must already name its launch wallet. The spending limit accepts up to nine decimal places and is stored as integer lamports. Supply the keyfile passphrase with `TREBUCHET_CUSTODY_PASSPHRASE`; `--expires-in` sets the lifetime in hours and defaults to 24. Use `--json` for the complete signed envelope.

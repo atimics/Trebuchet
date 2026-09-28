@@ -16,7 +16,7 @@ This work implements the architecture requested in the attached review. The targ
 - [ ] Runner retains durable state and operator-controlled recovery material through final sweep verification.
 - [x] Packet paths and entry types are checked before extraction, with bounds on size and entry count.
 - [x] Every packet input is covered by the manifest. Rebuilt configuration matches the plan.
-- [ ] Signed spending approval binds the complete manifest, operator, network, wallet, expiry, and spending ceiling.
+- [x] Signed spending approval binds the complete manifest, operator, network, wallet, expiry, and spending ceiling.
 - [ ] Live CLI and runner use the shared engine and its recovery checks.
 - [ ] Tests cover competing clients, interrupted submission before receipt storage, and liquidity recovery.
 - [ ] Relevant repository checks and CI pass. Work is committed and delivered through a PR.
@@ -39,7 +39,7 @@ The journal now throws `RECOVERY_STORAGE_UNAVAILABLE` on a failed read or commit
 
 The local API journal and saved-launch adapters now use `execution.sqlite`. Saved-launch CLI commands use the same store. Legacy JSON import commits as one transaction, and the source files are preserved. The database also has immutable launch identities, operation IDs, signed transaction bytes, and receipts for the engine to adopt.
 
-`packages/runtime/test/` covers separate writers, process death, ownership release, migration, rollback, and transaction records after a simulated broadcast. The owner module holds a real exclusive SQLite write transaction. Runtime hosts still need to acquire it during startup; engine and chain integration remain open requirements above.
+`packages/runtime/test/` covers separate writers, process death, ownership release, migration, rollback, and transaction records after a simulated broadcast. The owner module holds a real exclusive SQLite write transaction. The local API acquires it during startup. Engine and chain integration remain open requirements above.
 
 Node 22.13 is the minimum for built-in SQLite without an extra runtime flag. CI is pinned to Node 22.23.3, and the runtime process tests were also run on that version.
 
@@ -58,3 +58,11 @@ Production local API startup now acquires the profile owner before creating rout
 `test/local-runtime.test.mjs` starts two separate CLI processes together. Both attach to one real server. The server remains available after those clients exit. The test verifies token rejection, kills the owner process, attaches to a fresh owner, and stops it through the CLI. `packages/runtime/test/control.test.mjs` verifies that active requests and background jobs hold stop requests until work finishes.
 
 The desktop process split has a prepared source edit. Automatic approval review requires explicit user approval for the change to desktop processes, IPC, and OS-keychain custody. That edit remains outside the worktree while approval is pending. The existing desktop still owns its runtime in its main process; CLI clients can attach to that owner.
+
+### Signed packet approval stage
+
+`trebuchet packet approve` signs `trebuchet-packet-approval/v1` with the encrypted operator key. It checks the exact plan file listed in the manifest. The envelope binds the complete manifest digest, plan digest, configured operator key, launch wallet, network, expiry, and integer lamport ceiling. The runner re-verifies the packet and the approval before accepting it as execution input.
+
+Core tests cover signature changes, every required binding, missing trusted context, malformed signatures, expiry boundaries, and spending ceilings. Runner tests cover a configured operator, wrong keys and wallets, network changes, expired approval, and a manifest changed after approval. The CLI test signs through the real binary with an encrypted test keyfile and rejects a plan whose file bytes changed.
+
+The wider suite also exposed a lock lifetime bug: garbage collection could close an unused SQLite owner handle. Active handles now stay referenced until explicit release. The process test forces garbage collection, verifies exclusive ownership, kills the owner, and verifies takeover by a new process.
