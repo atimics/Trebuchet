@@ -25,11 +25,12 @@ test('profile ownership is exclusive and publishes a private local descriptor', 
   acquireProfileOwner(dir).release();
 });
 
-test('a second process acquires ownership after the first owner is killed', { timeout: 20_000 }, async (t) => {
+test('ownership survives garbage collection and transfers after process death', { timeout: 20_000 }, async (t) => {
   const dir = profile(t);
   const code = `import { acquireProfileOwner } from ${JSON.stringify(moduleUrl)};
-    const owner=acquireProfileOwner(process.argv[1]); owner.publish(3210); process.stdout.write('owned\\n'); setInterval(()=>{},1000);`;
-  const child = spawn(process.execPath, ['--input-type=module', '-e', code, dir], { stdio: ['ignore', 'pipe', 'pipe'] });
+    acquireProfileOwner(process.argv[1]).publish(3210); global.gc();
+    setImmediate(()=>{global.gc(); process.stdout.write('owned\\n');}); setInterval(()=>{},1000);`;
+  const child = spawn(process.execPath, ['--expose-gc', '--input-type=module', '-e', code, dir], { stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
   let stderr = ''; child.stderr.on('data', (chunk) => { stderr += chunk; });
   await Promise.race([once(child.stdout, 'data'), once(child, 'exit').then(() => { throw new Error(stderr); })]);

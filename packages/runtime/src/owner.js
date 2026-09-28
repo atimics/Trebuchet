@@ -4,6 +4,10 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// A process owns the lock until release() or exit, even if its caller drops
+// the handle. DatabaseSync closes on garbage collection, so retain it here.
+const activeOwners = new Set();
+
 export function acquireProfileOwner(profileDir) {
   fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
   const profile = fs.realpathSync(profileDir);
@@ -18,6 +22,7 @@ export function acquireProfileOwner(profileDir) {
     const busy = /locked|busy/i.test(cause.message);
     throw Object.assign(new Error(busy ? 'Another process owns this profile' : 'Profile ownership storage needs recovery', { cause }), { code: busy ? 'RUNTIME_OWNED' : 'RECOVERY_STORAGE_UNAVAILABLE' });
   }
+  activeOwners.add(db);
   const id = randomUUID();
   const token = randomBytes(32).toString('base64url');
   const descriptorPath = path.join(profile, 'runtime.json');
@@ -39,7 +44,10 @@ export function acquireProfileOwner(profileDir) {
         const descriptor = JSON.parse(fs.readFileSync(descriptorPath, 'utf8'));
         if (descriptor.id === id) fs.unlinkSync(descriptorPath);
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      finally { released = true; db.exec('ROLLBACK'); db.close(); }
+      finally {
+        released = true;
+        try { db.exec('ROLLBACK'); } finally { db.close(); activeOwners.delete(db); }
+      }
     },
   };
 }
