@@ -116,3 +116,11 @@ The service verifies the exact signed message against the saved transfer intent.
 `packages/runtime/test/sol-sweep.test.mjs` covers receipt integrity, failed approval and transaction commits, fee and message changes, expiry during RPC calls, owner release, concurrent clients, and approved rebroadcast of identical saved bytes. `test/local-runtime.test.mjs` verifies that a saved pending transfer holds token creation and airdrops through the real HTTP runtime. The architecture suite passes 129 tests, and package coverage checks 93 required files.
 
 Token, metadata, liquidity, token-asset, and NFT transaction adapters still need engine integration. Full launch and runner spending limits remain separate requirements from the bounded local transfer request implemented here.
+
+### Wallet recovery file preservation
+
+Wallet recovery updates now keep each original record beside its decoded in-memory form. Saving or removing one wallet preserves another wallet's unreadable ciphertext and extra recovery fields. Replacement of an encrypted key requires encrypted custody. Encoding verifies a complete decrypt round trip before saving.
+
+Recovery file reads require valid records and distinct public keys. Damaged bytes remain at their original path, and a recovery error stops further work. Updates sync a private temporary file before atomic rename and sync the directory on POSIX. Migration saves an exact private backup of the source bytes before replacing the active file.
+
+`test/pending-wallets.test.mjs` covers mixed readable and unreadable records, encrypted key repair, exact migration backups, file permissions, interrupted rename and sync, backup failure, and preservation of damaged input. Encrypted storage for every fresh funded wallet remains an open requirement in the completion checklist.

@@ -4,6 +4,8 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
+  statSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -88,10 +90,10 @@ test('adds pending wallets idempotently and removes them', async (t) => {
   });
 });
 
-test('repairs an existing wallet when its saved secret cannot be decrypted', async (t) => {
+test('repairs an existing encrypted wallet through an available encrypted backend', async (t) => {
   await withMutedConsole(async () => {
     const configDir = makeTempConfigDir(t);
-    secretStore.setSafeStorage(null);
+    secretStore.setSafeStorage(fakeSafeStorage());
     writeFileSync(
       pendingWalletFile(configDir),
       `${JSON.stringify([{
@@ -128,7 +130,7 @@ test('fails closed when a generated wallet cannot be persisted', async (t) => {
 
     assert.throws(
       () => pendingWallets.add('Unsaved11111111111111111111111111111111', [1, 2, 3], 'seed words'),
-      (error) => error?.code === 'WALLET_PERSIST_FAILED' && error?.statusCode === 500,
+      (error) => error?.code === 'RECOVERY_STORAGE_UNAVAILABLE' && error?.statusCode === 500,
     );
   });
 });
@@ -198,7 +200,7 @@ test('migrates legacy plaintext entries when encryption is available', async (t)
   });
 });
 
-test('treats malformed pending-wallet files as empty and non-fatal', async (t) => {
+test('preserves malformed pending-wallet bytes and requires recovery for reads and writes', async (t) => {
   await withMutedConsole(async () => {
     const configDir = makeTempConfigDir(t);
     secretStore.lockSecretPin();
@@ -207,8 +209,10 @@ test('treats malformed pending-wallet files as empty and non-fatal', async (t) =
 
     const pendingWallets = await importFreshPendingWallets(configDir);
 
-    assert.deepEqual(pendingWallets.list(), []);
-    assert.equal(existsSync(pendingWalletFile(configDir)), true);
+    for (const action of [() => pendingWallets.list(), () => pendingWallets.add('new', [1, 2, 3]), () => pendingWallets.remove('old'), () => pendingWallets.removePinEncrypted()]) {
+      assert.throws(action, { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+      assert.equal(readFileSync(pendingWalletFile(configDir), 'utf8'), '{not json');
+    }
   });
 });
 
@@ -270,5 +274,93 @@ test('removes only PIN-encrypted pending wallets during destructive PIN reset', 
         mnemonic: 'still recoverable',
       },
     ]);
+  });
+});
+
+test('adding and removing another wallet preserves unreadable ciphertext and record metadata', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    secretStore.lockSecretPin();
+    secretStore.setSafeStorage(null);
+    const original = { publicKey: 'encrypted-wallet', createdAt: '2026-01-01T00:00:00Z', secretKeyEnc: 'enc:device-key', mnemonicEnc: 'enc:device-words', recoveryNote: 'Retain this record' };
+    writeFileSync(pendingWalletFile(configDir), JSON.stringify([original]) + '\n');
+    const pendingWallets = await importFreshPendingWallets(configDir);
+    pendingWallets.add('new-wallet', [1, 2, 3]);
+    assert.deepEqual(JSON.parse(readFileSync(pendingWalletFile(configDir)))[0], original);
+    pendingWallets.remove('new-wallet');
+    assert.deepEqual(JSON.parse(readFileSync(pendingWalletFile(configDir))), [original]);
+    assert.equal(pendingWallets.get('encrypted-wallet').secretKey, undefined);
+  });
+});
+
+test('migration retains exact original bytes and commits private encrypted records', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    secretStore.setSafeStorage(fakeSafeStorage());
+    const source = '[ { "publicKey": "legacy", "secretKey": [4,5,6], "mnemonic": "original words" } ]\n';
+    writeFileSync(pendingWalletFile(configDir), source);
+    const pendingWallets = await importFreshPendingWallets(configDir);
+    assert.deepEqual(pendingWallets.get('legacy').secretKey, [4, 5, 6]);
+    const files = readdirSync(configDir);
+    const backups = files.filter((name) => name.includes('.migration-'));
+    assert.equal(backups.length, 1);
+    assert.equal(readFileSync(path.join(configDir, backups[0]), 'utf8'), source);
+    assert.match(JSON.parse(readFileSync(pendingWalletFile(configDir)))[0].secretKeyEnc, /^enc:/);
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(pendingWalletFile(configDir)).mode & 0o777, 0o600);
+      assert.equal(statSync(path.join(configDir, backups[0])).mode & 0o777, 0o600);
+    }
+    pendingWallets.list();
+    assert.equal(readdirSync(configDir).filter((name) => name.includes('.migration-')).length, 1);
+  });
+});
+
+test('a failed rename or sync preserves the previous wallet file and clears temporary files', async (t) => {
+  const { default: fs } = await import('node:fs');
+  for (const method of ['renameSync', 'fsyncSync']) {
+    await withMutedConsole(async () => {
+      const configDir = makeTempConfigDir(t);
+      secretStore.setSafeStorage(null);
+      const pendingWallets = await importFreshPendingWallets(configDir);
+      pendingWallets.add('prior-wallet', [1, 2, 3]);
+      const original = readFileSync(pendingWalletFile(configDir));
+      const saved = fs[method];
+      fs[method] = () => { throw new Error(`Interrupted ${method}`); };
+      try {
+        assert.throws(() => pendingWallets.add('new-wallet', [4, 5, 6]), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+      } finally { fs[method] = saved; }
+      assert.deepEqual(readFileSync(pendingWalletFile(configDir)), original);
+      assert.deepEqual(readdirSync(configDir), ['pendingWallets.json']);
+      assert.deepEqual(pendingWallets.get('prior-wallet').secretKey, [1, 2, 3]);
+    });
+  }
+});
+
+test('migration backup failure preserves the original recovery file', async (t) => {
+  await withMutedConsole(async () => {
+    const { default: fs } = await import('node:fs');
+    const configDir = makeTempConfigDir(t);
+    secretStore.setSafeStorage(fakeSafeStorage());
+    const original = '[{"publicKey":"legacy","secretKey":[1,2,3]}]\n';
+    writeFileSync(pendingWalletFile(configDir), original);
+    const pendingWallets = await importFreshPendingWallets(configDir);
+    const saved = fs.fsyncSync;
+    fs.fsyncSync = () => { throw new Error('Backup sync interrupted'); };
+    try { assert.throws(() => pendingWallets.list(), { code: 'RECOVERY_STORAGE_UNAVAILABLE' }); }
+    finally { fs.fsyncSync = saved; }
+    assert.equal(readFileSync(pendingWalletFile(configDir), 'utf8'), original);
+    assert.deepEqual(pendingWallets.list()[0].secretKey, [1, 2, 3]);
+  });
+});
+
+test('an existing encrypted key requires encrypted custody for replacement', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    secretStore.setSafeStorage(null);
+    const original = '[{"publicKey":"repair","secretKeyEnc":"enc:device-key"}]\n';
+    writeFileSync(pendingWalletFile(configDir), original);
+    const pendingWallets = await importFreshPendingWallets(configDir);
+    assert.throws(() => pendingWallets.add('repair', [1, 2, 3]), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+    assert.equal(readFileSync(pendingWalletFile(configDir), 'utf8'), original);
   });
 });

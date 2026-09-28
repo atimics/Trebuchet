@@ -28,12 +28,20 @@
 // form on the next load.
 
 import fs from 'fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { RecoveryStorageError } from '@trebuchet/runtime/store';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as secretStore from './secretStore.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const sourceRecords = new WeakMap();
+
+function storageError(cause) {
+  if (cause?.code === 'RECOVERY_STORAGE_UNAVAILABLE') return cause;
+  return Object.assign(new RecoveryStorageError('Wallet recovery storage requires attention before continuing.', { cause }), { statusCode: 500 });
+}
 
 // Same env-var convention as rpcConfig.js. main.js sets this to
 // app.getPath('userData') in the Electron build; left unset by the web
@@ -82,43 +90,101 @@ function decodeEntry(raw) {
     out.mnemonic = raw.mnemonic;          // legacy plaintext
   }
 
+  sourceRecords.set(out, raw);
   return out;
 }
 
 // Encrypt one in-memory entry into the on-disk shape.
 function encodeEntry(decoded) {
-  const out = {
-    publicKey: decoded.publicKey,
-    createdAt: decoded.createdAt,
-  };
-  if (typeof decoded.rarity === 'string' && decoded.rarity.trim()) {
-    out.rarity = decoded.rarity.trim();
-  }
+  const prior = sourceRecords.get(decoded) || {};
+  const out = { ...prior, publicKey: decoded.publicKey, createdAt: decoded.createdAt };
+  if (typeof decoded.rarity === 'string' && decoded.rarity.trim()) out.rarity = decoded.rarity.trim();
   if (decoded.vanity === true) out.vanity = true;
-  if (Array.isArray(decoded.secretKey)) {
-    out.secretKeyEnc = secretStore.encryptString(JSON.stringify(decoded.secretKey));
-  }
-  if (typeof decoded.mnemonic === 'string' && decoded.mnemonic.length > 0) {
-    out.mnemonicEnc = secretStore.encryptString(decoded.mnemonic);
-  }
+  const encodeSecret = (field, tokenField, text) => {
+    const original = prior[tokenField];
+    const same = typeof original === 'string' && secretStore.decryptString(original) === text;
+    if (same && !secretStore.shouldReencryptToken(original)) { delete out[field]; return; }
+    const token = secretStore.encryptString(text);
+    if (secretStore.decryptString(token) !== text) throw new Error('Verify the recovery ciphertext before saving it');
+    if (typeof original === 'string' && /^(enc|pin):/.test(original) && token.startsWith('plain:')) {
+      throw new Error('Use encrypted custody when replacing an encrypted recovery secret');
+    }
+    out[tokenField] = token;
+    delete out[field];
+  };
+  if (Array.isArray(decoded.secretKey)) encodeSecret('secretKey', 'secretKeyEnc', JSON.stringify(decoded.secretKey));
+  if (typeof decoded.mnemonic === 'string' && decoded.mnemonic.length > 0) encodeSecret('mnemonic', 'mnemonicEnc', decoded.mnemonic);
   return out;
 }
 
 // ---------------------------------------------------------------------------
-// File I/O. Reads remain tolerant so Recovery can surface damaged entries,
-// but writes must fail closed. A newly generated wallet is not safe to fund
+// File I/O. Reads preserve damaged records for recovery. Writes commit atomically. A newly generated wallet is not safe to fund
 // until its secret has been durably persisted and can be read back.
 // ---------------------------------------------------------------------------
 
 function readRaw() {
   try {
-    if (!fs.existsSync(walletFile())) return [];
-    const txt = fs.readFileSync(walletFile(), 'utf8');
-    const parsed = JSON.parse(txt);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (e) {
-    console.warn('pendingWallets: failed to read, treating as empty:', e.message);
-    return [];
+    let stat;
+    try { stat = fs.lstatSync(walletFile()); }
+    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Use a regular file for wallet recovery');
+    const parsed = JSON.parse(fs.readFileSync(walletFile(), 'utf8'));
+    const identities = new Set();
+    if (!Array.isArray(parsed)) throw new Error('Wallet recovery requires an array of records');
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry) || typeof entry.publicKey !== 'string' || !entry.publicKey || identities.has(entry.publicKey)) {
+        throw new Error('Wallet recovery records require distinct public keys');
+      }
+      identities.add(entry.publicKey);
+    }
+    return parsed;
+  } catch (error) { throw storageError(error); }
+}
+
+function syncDirectory() {
+  if (process.platform === 'win32') return;
+  const descriptor = fs.openSync(configDir(), 'r');
+  try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+}
+
+function preserveMigrationSource() {
+  const bytes = fs.readFileSync(walletFile());
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const backup = `${walletFile()}.migration-${digest}.bak`;
+  let descriptor;
+  try {
+    descriptor = fs.openSync(backup, 'wx', 0o600);
+    fs.writeFileSync(descriptor, bytes);
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (!fs.lstatSync(backup).isFile() || fs.lstatSync(backup).isSymbolicLink() || !fs.readFileSync(backup).equals(bytes)) throw new Error('Verify the saved migration source before continuing');
+    descriptor = fs.openSync(backup, 'r');
+    fs.fsyncSync(descriptor);
+  } finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
+  syncDirectory();
+}
+
+function persistRaw(records, { migration = false } = {}) {
+  let temporary;
+  let descriptor;
+  try {
+    // Validate the current file before every replacement. Damaged bytes stay
+    // available for recovery, even when the caller removes a wallet.
+    readRaw();
+    fs.mkdirSync(configDir(), { recursive: true, mode: 0o700 });
+    if (migration) preserveMigrationSource();
+    temporary = `${walletFile()}.${randomUUID()}.tmp`;
+    descriptor = fs.openSync(temporary, 'wx', 0o600);
+    fs.writeFileSync(descriptor, JSON.stringify(records, null, 2) + '\n');
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor); descriptor = undefined;
+    fs.renameSync(temporary, walletFile()); temporary = undefined;
+    syncDirectory();
+  } catch (error) { throw storageError(error); }
+  finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    if (temporary) { try { fs.unlinkSync(temporary); } catch { /* retain the commit error */ } }
   }
 }
 
@@ -144,46 +210,24 @@ function load() {
     (secretStore.shouldReencryptToken(e.secretKeyEnc) && !Array.isArray(decoded[idx]?.secretKey)) ||
     (secretStore.shouldReencryptToken(e.mnemonicEnc) && typeof decoded[idx]?.mnemonic !== 'string')
   );
-  if (hasLegacyPlaintext || (hasReencryptableTokens && !hasReencryptFailure)) {
-    try {
-      persist(decoded);
-      console.log('pendingWallets: migrated entries to encrypted form');
-    } catch (e) {
-      console.warn('pendingWallets: migration write failed (non-fatal):', e.message);
-    }
-  } else if (hasReencryptableTokens && hasReencryptFailure) {
-    console.warn('pendingWallets: skipped secret migration because at least one entry could not be decrypted');
+  if ((hasLegacyPlaintext || hasReencryptableTokens) && !hasReencryptFailure && secretStore.isEncrypting()) {
+    persist(decoded, { migration: true });
   }
+
 
   return decoded;
 }
 
-function persist(list) {
-  try {
-    // mkdirSync with recursive:true is a no-op if the dir exists.
-    // Necessary on first run when CONFIG_DIR is a userData path that
-    // hasn't been touched yet.
-    fs.mkdirSync(configDir(), { recursive: true });
-    const encoded = list.map(encodeEntry);
-    fs.writeFileSync(walletFile(), JSON.stringify(encoded, null, 2) + '\n');
-  } catch (e) {
-    console.error('pendingWallets: failed to save:', e.message);
-    const error = new Error('Trebuchet could not save wallet recovery data.');
-    error.code = 'WALLET_PERSIST_FAILED';
-    error.statusCode = 500;
-    error.cause = e;
-    throw error;
-  }
+function persist(list, options) {
+  try { persistRaw(list.map(encodeEntry), options); }
+  catch (error) { throw storageError(error); }
 }
 
 function verifyPersistedWallet(publicKey) {
   const raw = readRaw().find((entry) => entry?.publicKey === publicKey);
   const decoded = raw ? decodeEntry(raw) : null;
   if (!decoded || !Array.isArray(decoded.secretKey)) {
-    const error = new Error('Trebuchet could not verify the saved wallet recovery secret.');
-    error.code = 'WALLET_PERSIST_FAILED';
-    error.statusCode = 500;
-    throw error;
+    throw storageError(new Error('Verify the saved wallet recovery secret before continuing.'));
   }
   return decoded;
 }
@@ -257,8 +301,7 @@ export function removePinEncrypted() {
     secretStore.isSecretPinToken(entry?.mnemonicEnc)
   ));
   if (filteredRaw.length !== raw.length) {
-    fs.mkdirSync(configDir(), { recursive: true });
-    fs.writeFileSync(walletFile(), JSON.stringify(filteredRaw, null, 2) + '\n');
+    persistRaw(filteredRaw);
   }
   return raw.length - filteredRaw.length;
 }
