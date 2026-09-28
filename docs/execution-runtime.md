@@ -11,7 +11,7 @@ This work implements the architecture requested in the attached review. The targ
 - [ ] ExecutionEngine exposes prepare, executeNext, resume, and getStatus. HTTP routes call ordinary engine methods.
 - [ ] Desktop starts a separate runtime process. Closing a client has defined behavior for active work.
 - [ ] Core exposes browser-safe plans, costs, validation, and proof rules. Hosts supply storage and signer interfaces.
-- [ ] Browser and CLI share calculations. Renderer source is split into launch, wallet, recovery, discovery, and proof features.
+- [x] Browser and CLI share calculations. Renderer source is split into launch, wallet, recovery, discovery, and proof features.
 - [ ] Fresh funded wallets require encrypted recovery storage. Existing recovery material survives migration.
 - [ ] Runner retains durable state and operator-controlled recovery material through final sweep verification.
 - [x] Packet paths and entry types are checked before extraction, with bounds on size and entry count.
@@ -42,3 +42,11 @@ The local API journal and saved-launch adapters now use `execution.sqlite`. Save
 `packages/runtime/test/` covers separate writers, process death, ownership release, migration, rollback, and transaction records after a simulated broadcast. The owner module holds a real exclusive SQLite write transaction. Runtime hosts still need to acquire it during startup; engine and chain integration remain open requirements above.
 
 Node 22.13 is the minimum for built-in SQLite without an extra runtime flag. CI is pinned to Node 22.23.3, and the runtime process tests were also run on that version.
+
+### Shared browser rules stage
+
+`@trebuchet/core/browser` now exposes planning, costs, validation, execution-context decisions, and proof checks. The browser uses the same SHA-256 code and image byte validation as Node. Existing plan digests match Node crypto, including PNG, JPEG, and GIF inputs.
+
+The v2 page loads a generated Core bundle. Its Quick Launch costs, airdrop costs, and vanity estimates call Core. The renderer source is grouped into 46 files under `public/v2/features/`; these files retain the existing shared page scope and startup order. CI compares both shipped bundles with their source builds.
+
+`test/web-bundle.test.mjs` exercises the actual shipped Core bundle using browser globals. It compares plans, image validation, recovery decisions, proof checks, and displayed cost values with Node. The API-backed browser smoke passed through session setup, wallet creation, the secure dialog, and a complete practice launch. The 89 architecture contract tests and package coverage also pass. Signer interfaces and engine wiring remain in the checklist above.

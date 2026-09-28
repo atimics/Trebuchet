@@ -17,7 +17,7 @@
 // Extracted from server.js so the sealed runner and CLI can resume with
 // the exact same idempotency contract the desktop app uses.
 
-import { tokenCreationComplete } from './launch-journal.js';
+import { tokenCreationComplete } from './journal-state.js';
 
 export const V2_LP_RECOVERABLE_STAGES = new Set([
   'lp_created',

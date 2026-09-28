@@ -185,9 +185,16 @@ export function normalizeVanityTargetBase58(prefixValue = '', suffixValue = '') 
   return { prefix, suffix };
 }
 
+function asciiBytes(bytes, start, end) {
+  return String.fromCharCode(...bytes.subarray(start, end));
+}
+
+function byteView(bytes) {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
 export function detectLogoImageMime(buffer) {
-  const isByteView = buffer instanceof Uint8Array
-    || (typeof Buffer !== 'undefined' && Buffer.isBuffer(buffer));
+  const isByteView = buffer instanceof Uint8Array;
   if (!isByteView) return null;
 
   const isPng =
@@ -200,7 +207,7 @@ export function detectLogoImageMime(buffer) {
     buffer[5] === 0x0a &&
     buffer[6] === 0x1a &&
     buffer[7] === 0x0a &&
-    buffer.toString('ascii', 12, 16) === 'IHDR';
+    asciiBytes(buffer, 12, 16) === 'IHDR';
   if (isPng) return 'image/png';
 
   const isJpeg =
@@ -211,7 +218,7 @@ export function detectLogoImageMime(buffer) {
   if (isJpeg) return 'image/jpeg';
 
   const gifHeader = buffer.length >= 13
-    ? buffer.toString('ascii', 0, 6)
+    ? asciiBytes(buffer, 0, 6)
     : '';
   if (gifHeader === 'GIF87a' || gifHeader === 'GIF89a') return 'image/gif';
 
@@ -220,8 +227,8 @@ export function detectLogoImageMime(buffer) {
 
 function pngImageDimensions(buffer) {
   if (detectLogoImageMime(buffer) !== 'image/png') return null;
-  const width = buffer.readUInt32BE(16);
-  const height = buffer.readUInt32BE(20);
+  const width = byteView(buffer).getUint32(16);
+  const height = byteView(buffer).getUint32(20);
   if (width <= 0 || height <= 0) return null;
   return { width, height };
 }
@@ -241,13 +248,13 @@ function jpegImageDimensions(buffer) {
     if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
     if (offset + 2 > buffer.length) return null;
 
-    const segmentLength = buffer.readUInt16BE(offset);
+    const segmentLength = byteView(buffer).getUint16(offset);
     if (segmentLength < 2 || offset + segmentLength > buffer.length) return null;
 
     if (JPEG_SOF_MARKERS.has(marker)) {
       if (segmentLength < 7) return null;
-      const height = buffer.readUInt16BE(offset + 3);
-      const width = buffer.readUInt16BE(offset + 5);
+      const height = byteView(buffer).getUint16(offset + 3);
+      const width = byteView(buffer).getUint16(offset + 5);
       if (width <= 0 || height <= 0) return null;
       return { width, height };
     }
@@ -260,8 +267,8 @@ function jpegImageDimensions(buffer) {
 
 function gifImageDimensions(buffer) {
   if (detectLogoImageMime(buffer) !== 'image/gif') return null;
-  const width = buffer.readUInt16LE(6);
-  const height = buffer.readUInt16LE(8);
+  const width = byteView(buffer).getUint16(6, true);
+  const height = byteView(buffer).getUint16(8, true);
   if (width <= 0 || height <= 0) return null;
   return { width, height };
 }
