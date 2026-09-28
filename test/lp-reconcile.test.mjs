@@ -1,9 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PublicKey } from '@solana/web3.js';
-import { CLMM_PROGRAM_ID, CLMM_LOCK_PROGRAM_ID, LockClPositionLayoutV2, getPdaPersonalPositionAddress } from '@raydium-io/raydium-sdk-v2';
+import { CLMM_PROGRAM_ID, CLMM_LOCK_PROGRAM_ID, LockClPositionLayoutV2, PositionInfoLayout, getPdaPersonalPositionAddress, getPdaLockClPositionIdV2 } from '@raydium-io/raydium-sdk-v2';
 
 import { unrecordedPositionsAtRange, findUnrecordedPositionAt, positionLockedOnChain } from '../lpService.js';
+
+function positionAccount(mint) {
+  const data = Buffer.alloc(PositionInfoLayout.span);
+  PositionInfoLayout.encode({ ...PositionInfoLayout.decode(data), nftMint: new PublicKey(mint) }, data);
+  return { owner: CLMM_PROGRAM_ID, data };
+}
 
 // unrecordedPositionsAtRange is the pure core of the resume-time on-chain
 // reconciliation: given the positions the launch wallet actually holds and a
@@ -74,13 +80,17 @@ test('liquidity position reconciliation propagates failed and incomplete reads',
 
 test('liquidity lock reconciliation requires a complete finalized read', async () => {
   let calls = 0;
-  const raydium = { connection: { getProgramAccounts: async (_program, options) => {
+  const raydium = { cluster: 'mainnet', connection: {
+    getAccountInfo: async () => positionAccount(PublicKey.default),
+    getProgramAccounts: async (_program, options) => {
     calls++;
     assert.equal(options.commitment, 'finalized');
     if (calls === 1) throw new Error('RPC timed out after the lock send');
     if (calls === 2) return null;
+    if (calls === 3) return 'partial response';
     return [];
   } } };
+  await assert.rejects(positionLockedOnChain(raydium, '11111111111111111111111111111111'));
   await assert.rejects(positionLockedOnChain(raydium, '11111111111111111111111111111111'));
   await assert.rejects(positionLockedOnChain(raydium, '11111111111111111111111111111111'));
   assert.equal(await positionLockedOnChain(raydium, '11111111111111111111111111111111'), null);
@@ -104,10 +114,16 @@ test('lock recovery queries the deployed program and the derived personal positi
   const position = getPdaPersonalPositionAddress(CLMM_PROGRAM_ID, mint).publicKey;
   const data = Buffer.alloc(LockClPositionLayoutV2.span);
   LockClPositionLayoutV2.encode({ ...LockClPositionLayoutV2.decode(data), positionId: position, lockNftMint: feeKey }, data);
-  const raydium = { connection: { getProgramAccounts: async (program, options) => {
+  const raydium = { cluster: 'mainnet', connection: {
+    getAccountInfo: async (address, commitment) => {
+      assert.equal(address.toBase58(), position.toBase58());
+      assert.equal(commitment, 'finalized');
+      return positionAccount(mint);
+    },
+    getProgramAccounts: async (program, options) => {
     assert.equal(program.toBase58(), CLMM_LOCK_PROGRAM_ID.toBase58());
-    assert.equal(options.filters[0].memcmp.bytes, position.toBase58());
-    return [{ account: { data } }];
+    assert.equal(options.filters.find((filter) => filter.memcmp).memcmp.bytes, position.toBase58());
+    return [{ pubkey: getPdaLockClPositionIdV2(CLMM_LOCK_PROGRAM_ID, feeKey).publicKey, account: { owner: CLMM_LOCK_PROGRAM_ID, data } }];
   } } };
   assert.equal(await positionLockedOnChain(raydium, mint.toBase58()), feeKey.toBase58());
 });

@@ -451,6 +451,59 @@ function formatTokenAmount(raw, decimals) {
   return compactAmount(value);
 }
 
+
+const coinEvidence = new Map();
+
+function coinMarketEvidenceHtml(mint) {
+  if (mint.startsWith('Demo')) return '<section class="coin-section"><h2>Reserves and fee rights</h2><p class="pool-support-intro">Open a live coin to check pool reserves, Fee Key owners and sell quotes.</p></section>';
+  const entry = coinEvidence.get(mint) || {};
+  const renderer = window.TrebuchetMarketEvidence;
+  return `<section class="coin-section" aria-label="Market evidence">
+    <div class="section-heading"><div><span class="eyebrow">Verification</span><h2>Reserves and fee rights</h2></div>
+      <button class="pill-button" type="button" data-action="read-coin-evidence" data-mint="${escapeHtml(mint)}" ${entry.loading ? 'disabled' : ''}>${entry.loading ? 'Checking chain…' : 'Check chain'}</button>
+    </div>
+    <p class="pool-support-intro">Trading fees accrue to Fee Key holders. The current flywheel uses static pool allocations.</p>
+    ${entry.error ? `<p class="pool-support-error" role="status">${escapeHtml(entry.error)}</p>` : ''}
+    ${renderer?.render(entry.evidence) || ''}
+    ${entry.evidence ? `<button class="pill-button" type="button" data-action="download-coin-evidence" data-mint="${escapeHtml(mint)}">Download market evidence</button>` : ''}
+    <div class="market-sell-quote">
+      <label for="sellQuoteAmount">Tokens to sell</label>
+      <input id="sellQuoteAmount" data-sell-quote-mint="${escapeHtml(mint)}" inputmode="decimal" autocomplete="off" value="${escapeHtml(entry.amount || '')}" placeholder="1000">
+      <button class="pill-button" type="button" data-action="quote-coin-sale" data-mint="${escapeHtml(mint)}" ${entry.quoting ? 'disabled' : ''}>${entry.quoting ? 'Reading route…' : 'Get sell quote'}</button>
+      <div role="status">${entry.quoteError ? `<p class="pool-support-error">${escapeHtml(entry.quoteError)}</p>` : renderer?.sellQuote(entry.quote) || ''}</div>
+    </div>
+  </section>`;
+}
+
+async function readCoinMarketEvidence(mint) {
+  const previous = coinEvidence.get(mint) || {};
+  if (previous.loading || !state.apiClient?.getCoinEvidence) return;
+  coinEvidence.set(mint, { ...previous, loading: true, error: null });
+  renderCoins();
+  try {
+    const result = await state.apiClient.getCoinEvidence(mint);
+    coinEvidence.set(mint, { ...coinEvidence.get(mint), evidence: result.evidence, loading: false });
+  } catch (error) {
+    coinEvidence.set(mint, { ...coinEvidence.get(mint), loading: false, error: error.message || 'Chain inspection needs another try.' });
+  }
+  if (state.coins.key === `mint:${mint}`) renderCoins();
+}
+
+async function quoteCoinSale(mint) {
+  const previous = coinEvidence.get(mint) || {};
+  if (previous.quoting || !state.apiClient?.getSellQuote) return;
+  const amount = String(previous.amount || '').trim();
+  coinEvidence.set(mint, { ...previous, amount, quoting: true, quote: null, quoteError: null });
+  renderCoins();
+  try {
+    const result = await state.apiClient.getSellQuote(mint, amount);
+    coinEvidence.set(mint, { ...coinEvidence.get(mint), quote: result.quote, quoting: false });
+  } catch (error) {
+    coinEvidence.set(mint, { ...coinEvidence.get(mint), quoting: false, quoteError: error.message || 'Sell quote needs another try.' });
+  }
+  if (state.coins.key === `mint:${mint}`) renderCoins();
+}
+
 function coinMarketsHtml(markets) {
   if (!markets) return '';
   if (markets.error) return `<p class="pool-support-error">Could not read the markets: ${escapeHtml(markets.error)}</p>`;
@@ -460,13 +513,13 @@ function coinMarketsHtml(markets) {
   return `
     ${drains.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> This coin is cheaper in its ${drains.map((pool) => escapeHtml(pool.quoteSymbol || 'pair')).join(', ')} pool${drains.length === 1 ? '' : 's'} than in its SOL pool. Bots buy it there and sell it into the SOL pool, taking SOL buyers' money, until the gap closes. Buy support only holds below that price.</p>` : ''}
     <div class="coin-markets" role="table" aria-label="Markets">
-      <div class="coin-market-row is-head" role="row"><span role="columnheader">Pool</span><span role="columnheader">Price in SOL</span><span role="columnheader">vs SOL pool</span><span role="columnheader">SOL side</span><span role="columnheader">Coin side</span><span role="columnheader">Fee</span></div>
+      <div class="coin-market-row is-head" role="row"><span role="columnheader">Pool</span><span role="columnheader">Price in SOL</span><span role="columnheader">vs SOL pool</span><span role="columnheader">Quote reserve</span><span role="columnheader">Coin side</span><span role="columnheader">Fee</span></div>
       ${pools.map((pool) => `
         <div class="coin-market-row ${pool.isMainSolPool ? 'is-main' : ''} ${pool.drainsSolPool ? 'is-drain' : ''}" role="row">
           <span role="cell"><strong>${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}</strong><small>${escapeHtml(pool.isMainSolPool ? 'main SOL pool' : shortAddress(pool.poolId))}</small></span>
           <span role="cell">${escapeHtml(fmtPoolPrice(pool.priceSol))}</span>
           <span role="cell">${pool.gapPct === null || pool.gapPct === undefined ? '—' : `${pool.gapPct > 0 ? '+' : ''}${pool.gapPct.toFixed(1)}%`}</span>
-          <span role="cell">${pool.quoteReserveSol === null || pool.quoteReserveSol === undefined ? '—' : `${Number(pool.quoteReserveSol).toFixed(4)} SOL`}</span>
+          <span role="cell">${pool.quoteReserve === null || pool.quoteReserve === undefined ? '—' : `${escapeHtml(Number(pool.quoteReserve).toLocaleString('en-US', { maximumFractionDigits: 9 }))} ${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}`}${!pool.isSolPool && pool.quoteReserveSol != null ? `<small>valued at ${escapeHtml(fmtPoolPrice(pool.quoteReserveSol))}</small>` : ''}</span>
           <span role="cell">${escapeHtml(compactAmount(pool.tokenReserve))}</span>
           <span role="cell">${pool.feeRate === null ? '—' : `${Number((pool.feeRate * 100).toFixed(3))}%`}</span>
         </div>`).join('')}
@@ -618,6 +671,7 @@ function renderCoinPage(coin) {
     ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl></section>` : ''}
     ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Unfinished' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation, coin)}</section>` : ''}
     ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
+    ${coinMarketEvidenceHtml(coin.mint)}
     <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Positions</span><h2>Your positions</h2></div><button class="pill-button" type="button" data-action="refresh-coin-positions">Refresh</button></div>${coinPositionsHtml()}</section>
     <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>
     ${coin.status === 'Added' ? `<div class="coin-actions"><button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button></div>` : ''}`;

@@ -255,7 +255,7 @@ function renderDiscovery() {
           <span class="market-line">
             <strong>${formatDiscoveryPrice(token.priceUsd)}</strong>
             <span class="${discoveryTrendClass(change24h)}">${formatDiscoveryPercent(change24h, '24h —')}</span>
-            <span>${formatDiscoveryUsd(liquidityUsd)} liquidity</span>
+            <span>${formatDiscoveryUsd(liquidityUsd)} pool value</span>
             <span>${formatDiscoveryUsd(volume24hUsd)} volume</span>
             ${provenance.proof || provenance.journal ? '<span class="has-provenance" title="Local launch proof">✓</span>' : ''}
           </span>
@@ -391,11 +391,15 @@ function renderDiscovery() {
       ` : ''}
     </section>
     <div class="market-stats">
-      <span><small>Liquidity</small><strong>${formatDiscoveryUsd(market?.liquidityUsd)}</strong></span>
+      <span><small>Pool inventory value</small><strong>${formatDiscoveryUsd(market?.liquidityUsd)}</strong></span>
       <span><small>Volume</small><strong>${formatDiscoveryUsd(market?.volume24hUsd)}</strong></span>
       <span><small>${market?.marketCapUsd != null ? 'Market cap' : 'FDV'}</small><strong>${formatDiscoveryUsd(market?.marketCapUsd ?? market?.fdvUsd)}</strong></span>
       <span><small>Trades</small><strong>${tradeCount || '—'}</strong></span>
     </div>
+    ${window.TrebuchetMarketEvidence?.reserves(market?.reserves) || ''}
+    <p class="pool-support-intro">Pool value includes the token inventory. Quote reserves span price ranges. Check a sell quote for the amount you plan to sell.</p>
+    <p class="pool-support-intro">Volume: ${formatDiscoveryUsd(market?.volume6hUsd)} over 6 hours · ${formatDiscoveryUsd(market?.volume24hUsd)} over 24 hours.</p>
+    <button class="secondary-button compact" type="button" data-action="open-market-evidence" data-mint="${escapeHtml(selected.mint)}">Pool locks, fee owners and sell quotes</button>
     <div class="detail-section-label">
       <span>Chain</span>
       <small>${selected.score} · ${escapeHtml(selected.status)}</small>

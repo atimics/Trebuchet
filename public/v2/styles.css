@@ -16927,6 +16927,18 @@ select[data-choice-ready][hidden] {
   font-size: 12px !important;
 }
 
+/* Public market evidence stays readable at desktop and phone widths. */
+.market-evidence-pool { padding: 10px 0; border-top: 1px solid var(--line); }
+.market-evidence-pool summary { cursor: pointer; overflow-wrap: anywhere; }
+.market-evidence-locks { padding-left: 18px; }
+.market-evidence-locks li { margin: 8px 0; }
+.market-evidence-locks dl { display: grid; gap: 4px; }
+.market-evidence-locks dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; }
+.market-evidence-locks dd { margin: 0; overflow-wrap: anywhere; }
+.market-sell-quote { display: grid; gap: 8px; margin-top: 14px; }
+.market-sell-quote input { width: min(100%, 280px); }
+.market-sell-quote .pill-button { justify-self: start; }
+
 /* Addresses copy in full on click, wherever they appear. */
 .address-copy {
   border-bottom: 1px dotted color-mix(in srgb, currentColor 45%, transparent);

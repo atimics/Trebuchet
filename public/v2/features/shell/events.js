@@ -72,6 +72,11 @@ const VORTEX_INPUT_IDS = new Set([
 ]);
 
 function handleDynamicInput(event) {
+  const quoteMint = event.target?.dataset?.sellQuoteMint;
+  if (quoteMint) {
+    coinEvidence.set(quoteMint, { ...coinEvidence.get(quoteMint), amount: event.target.value });
+    return;
+  }
   if (SUPPLY_SHARE_INPUT_IDS.has(event.target?.id)
       || event.target?.dataset?.customPoolField === 'supplyPercent') {
     scheduleMainPoolRebalance();
@@ -399,6 +404,23 @@ function handleClick(event) {
   }
   if (action === 'remove-coin') {
     removeAddedCoin(actionTarget.dataset.mint).catch(() => null);
+    return;
+  }
+  if (action === 'open-market-evidence') {
+    openCoinByMint(actionTarget.dataset.mint);
+    return;
+  }
+  if (action === 'read-coin-evidence') {
+    readCoinMarketEvidence(actionTarget.dataset.mint);
+    return;
+  }
+  if (action === 'quote-coin-sale') {
+    quoteCoinSale(actionTarget.dataset.mint);
+    return;
+  }
+  if (action === 'download-coin-evidence') {
+    const evidence = coinEvidence.get(actionTarget.dataset.mint)?.evidence;
+    if (evidence) downloadJsonFile(`trebuchet-${evidence.mint}-market-evidence.json`, evidence, 'Market evidence');
     return;
   }
   if (action === 'refresh-coin') {

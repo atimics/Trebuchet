@@ -156,6 +156,24 @@ known or discovered token runs the separate evidence inspection for authority,
 Token-2022 compatibility, Raydium route, market, concentration, provenance, and
 confidence. Unavailable evidence is labeled unavailable; it is not invented.
 
+### Market evidence
+
+A coin page can read its Raydium CLMM vault balances, position ranges, lock
+accounts, and current Fee Key owners. **Check chain** reads fresh public data;
+**Download market evidence** saves the timestamped JSON with the inspected
+addresses and any partial reads. The holder sample separates verified pool
+vaults from wallets and other accounts. Coverage is limited to the largest
+20 token accounts, 12 discovered pools, and 32 lock records per pool.
+
+Discovery shows the pool inventory value alongside the quote reserve. The coin
+page labels each reserve in the asset the pool actually holds. **Get sell quote**
+reads a Raydium route estimate for the entered token amount into SOL, with a
+1% slippage threshold and a timestamp. Network fees apply separately. Use a
+fresh quote when assessing a sale.
+
+The current flywheel is a static pool allocation. Trading fees accrue to the
+current Fee Key holder. Automatic fee routing remains planned work.
+
 ### History
 
 History owns durable recovery and audit work:

@@ -12,6 +12,12 @@ import {
 
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
+test('zero supply keeps holder percentages explicitly unavailable', () => {
+  const record = buildDiscoveryRecord({ mint: MINT, supply: { amount: '0', decimals: 6 },
+    holderSample: { poolSupplyPercent: null, sampledWalletSupplyPercent: null, otherSupplyPercent: null } });
+  assert.equal(record.evidence.find((row) => row.label === 'Verified pool vaults (sample)').value, 'Supply percentage unavailable');
+});
+
 test('discovery prefers a saved mainnet RPC when the active launch RPC is devnet', () => {
   const candidates = discoveryRpcCandidates({
     active: 'https://api.devnet.solana.com',
