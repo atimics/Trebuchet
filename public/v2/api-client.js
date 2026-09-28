@@ -723,6 +723,16 @@
       return request(`/api/v2/coins/${encodeURIComponent(mint)}`, { timeoutMs: 90_000 });
     }
 
+    async function getCoinEvidence(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}/evidence`, { timeoutMs: 180_000 });
+    }
+
+    async function getSellQuote(mint, amount) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}/sell-quote`, {
+        method: 'POST', body: { amount }, timeoutMs: 30_000,
+      });
+    }
+
     // Buy support for an existing token/SOL pool. Preview never signs.
     async function previewSolSupport({ walletPublicKey = null, poolId = null, tokenMint = null, solAmount, depthPct } = {}) {
       return request('/api/v2/support/preview', {
@@ -1118,6 +1128,8 @@
       addCoin,
       removeCoin,
       getCoin,
+      getCoinEvidence,
+      getSellQuote,
       listCoinPositions,
       withdrawPosition,
       getClmmFeeTiers,

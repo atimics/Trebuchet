@@ -302,3 +302,14 @@ After the production v2 token-launch gate is satisfied:
 - more modular v2 renderer/proof packages;
 - browser-compatible read/configuration surfaces that do not weaken custody or
   execution boundaries.
+
+## Market evidence and lock recovery
+
+- Resolve a landed lock using the active network's lock program and the
+  derived position account. Verify its pool and Fee Key before resuming.
+- Show pool inventory value and quote reserves separately. Price quotes name
+  their asset, amount, route source, slippage threshold, and read time.
+- Classify verified Raydium CLMM vaults separately from sampled wallets.
+- Export observed position ranges, lock accounts and current Fee Key owners.
+- Preserve successful reads when an RPC fails. Show the scope and read time.
+- Describe flywheels as static allocations and automatic fee routing as planned.

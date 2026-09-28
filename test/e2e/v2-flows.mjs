@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -413,6 +413,45 @@ try {
   await page.click('#operatorPromptSubmit');
   await page.waitForFunction(() => document.querySelectorAll('.coin-positions li').length === 0, null, { timeout: 30_000 });
   await page.waitForFunction(() => /Position withdrawn/.test(document.querySelector('.coin-activity')?.textContent || ''), null, { timeout: 30_000 });
+  assert.equal(await page.locator('[data-action="read-coin-evidence"]').count(), 0, 'Practice coins explain how to inspect a live coin');
+
+  // Public evidence stays usable when a lock scan has only partial coverage.
+  const evidenceMint = 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG';
+  const evidence = {
+    schema: 'trebuchet-market-evidence/v1', mint: evidenceMint, network: 'mainnet', inspectedAt: '2026-09-28T07:00:00Z',
+    holderSample: null, holderError: 'Holder RPC needs another try',
+    feeRights: 'Trading fees accrue to the current Fee Key holder.', flywheel: 'Static pool allocation. Fee routing is a planned feature.',
+    poolCoverage: { requested: 1, inspected: 1 }, pools: [{
+      poolId: '2SV3NWgJes9mHkWdBeuHFg8kNqfJS1XQKtNb1eJStVDC',
+      token: { mint: evidenceMint, amount: '300000000000000000', decimals: 9 },
+      quote: { mint: 'So11111111111111111111111111111111111111112', amount: '427512764', decimals: 9 },
+      locks: [], lockStatus: 'unavailable', lockError: 'Lock RPC needs another try',
+    }],
+  };
+  await page.route(`**/api/v2/coins/${evidenceMint}`, (route) => route.fulfill({ json: { success: true, coin: { mint: evidenceMint, info: { name: 'RUGOWEEN', symbol: 'RUG' }, events: [], markets: { pools: [] } } } }));
+  await page.route(`**/api/v2/coins/${evidenceMint}/positions`, (route) => route.fulfill({ json: { success: true, positions: [] } }));
+  await page.route(`**/api/v2/coins/${evidenceMint}/evidence`, (route) => route.fulfill({ json: { success: true, evidence } }));
+  let quotedAmount;
+  await page.route(`**/api/v2/coins/${evidenceMint}/sell-quote`, (route) => {
+    quotedAmount = route.request().postDataJSON().amount;
+    return route.fulfill({ json: { success: true, quote: { amount: quotedAmount, outputLamports: '1234567', minimumLamports: '1222221', quotedAt: '2026-09-28T07:00:00Z', source: 'Raydium Trade API', scope: 'Route estimate at the quoted time.' } } });
+  });
+  await page.evaluate((mint) => openCoinByMint(mint), evidenceMint);
+  await page.waitForSelector('[data-action="read-coin-evidence"]');
+  await page.fill('#sellQuoteAmount', '1000.000000001');
+  await page.click('[data-action="read-coin-evidence"]');
+  await page.waitForSelector('[data-action="download-coin-evidence"]');
+  assert.equal(await page.inputValue('#sellQuoteAmount'), '1000.000000001', 'A chain refresh preserves the exact typed amount');
+  await page.click('.market-evidence-pool summary');
+  assert.match(await page.locator('.market-evidence').innerText(), /0\.427512764 SOL/);
+  assert.match(await page.locator('.market-evidence').innerText(), /Lock RPC needs another try/);
+  await page.click('[data-action="quote-coin-sale"]');
+  await page.waitForFunction(() => /0\.001234567 SOL/.test(document.querySelector('.market-sell-quote')?.textContent || ''));
+  assert.equal(quotedAmount, '1000.000000001');
+  const downloadEvent = page.waitForEvent('download');
+  await page.click('[data-action="download-coin-evidence"]');
+  const evidenceDownload = await downloadEvent;
+  assert.deepEqual(JSON.parse(readFileSync(await evidenceDownload.path(), 'utf8')), evidence);
   assert.deepEqual(nativeDialogs, [], 'Trebuchet opened a native prompt/confirm dialog');
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');

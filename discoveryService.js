@@ -109,6 +109,7 @@ export function parseDiscoveryMarketPool(mint, payload) {
       },
       liquidityUsd: finiteNumber(attributes.reserve_in_usd),
       volume24hUsd: finiteNumber(volume.h24),
+      volume6hUsd: finiteNumber(volume.h6),
       fdvUsd: finiteNumber(attributes.fdv_usd),
       marketCapUsd: finiteNumber(attributes.market_cap_usd),
       transactions24h: {
@@ -122,6 +123,8 @@ export function parseDiscoveryMarketPool(mint, payload) {
         name: attributes.name || null,
         dex: relationships?.dex?.data?.id || null,
         createdAt: attributes.pool_created_at || null,
+        quoteMint: String((isBase ? relationships?.quote_token : relationships?.base_token)?.data?.id || '').replace(/^solana_/, '') || null,
+        quotePriceUsd: positiveNumber(isBase ? attributes.quote_token_price_usd : attributes.base_token_price_usd),
       },
       history: null,
     };
@@ -256,6 +259,7 @@ export function buildDiscoveryRecord({
   compatibility = null,
   supply = null,
   largestAccounts = null,
+  holderSample = null,
   market = null,
   journal = null,
   brandAssessment = null,
@@ -316,7 +320,10 @@ export function buildDiscoveryRecord({
   const authoritySummary = mintAuthorityRenounced === true && freezeAuthorityDisabled === true
     ? 'mint and freeze authorities are disabled'
     : 'authority posture needs review';
-  const concentrationSummary = topTenPercent == null
+  const samplePercent = (value) => Number.isFinite(value) ? `${value.toFixed(2)}% of supply` : 'Supply percentage unavailable';
+  const concentrationSummary = Number.isFinite(holderSample?.poolSupplyPercent)
+    ? `verified pool vaults hold ${holderSample.poolSupplyPercent.toFixed(2)}% of supply in the largest-account sample`
+    : topTenPercent == null
     ? 'token-account concentration is unavailable'
     : `the ten largest token accounts hold ${topTenPercent.toFixed(2)}%`;
 
@@ -363,6 +370,7 @@ export function buildDiscoveryRecord({
       freezeAuthorityDisabled: freezeAuthorityDisabled ?? null,
     } : null,
     journal: localJournal,
+    holderSample,
     brand: brandAssessment || null,
     warnings: Array.isArray(warnings) ? warnings.filter(Boolean).map(String) : [],
     evidence: [
@@ -385,8 +393,13 @@ export function buildDiscoveryRecord({
       {
         label: 'Top 10 token accounts',
         value: topTenPercent == null ? 'Unavailable' : `${topTenPercent.toFixed(2)}% of supply`,
-        state: topTenPercent == null ? 'unknown' : topTenPercent <= 50 ? 'pass' : 'warn',
+        state: holderSample ? 'info' : topTenPercent == null ? 'unknown' : topTenPercent <= 50 ? 'pass' : 'warn',
       },
+      ...(holderSample ? [
+        { label: 'Verified pool vaults (sample)', value: samplePercent(holderSample.poolSupplyPercent), state: 'info' },
+        { label: 'Wallets (sample)', value: samplePercent(holderSample.sampledWalletSupplyPercent), state: 'info' },
+        { label: 'Other accounts (sample)', value: samplePercent(holderSample.otherSupplyPercent), state: 'unknown' },
+      ] : []),
       {
         label: 'Market price',
         value: priceUsd != null ? `$${priceUsd}` : 'No indexed price',
