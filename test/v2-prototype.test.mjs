@@ -11690,3 +11690,22 @@ test('v2 API client bridges classic vanity, funding, and diagnostics APIs', asyn
   assert.equal(report.tokenMint, 'Mint111');
   assert.equal(calls.filter((call) => call.url === '/api/session').length, 1);
 });
+
+test('a finished launch is matched to the coin by its mint, never its name', () => {
+  const source = js.match(/function completedLaunchJournal[\s\S]*?\n}\n/)?.[0];
+  const mintHelpers = ['proofTokenMint', 'journalTokenMint']
+    .map((name) => js.match(new RegExp(`function ${name}[\\s\\S]*?\\n}\\n`))?.[0]);
+  assert.ok(source && mintHelpers.every(Boolean), 'completedLaunchJournal and mint helpers should be extractable');
+  const finished = { status: 'completed', token: { mint: 'MintA', name: 'Pepe', symbol: 'PEPE' }, launchConfig: { token: { name: 'Pepe', symbol: 'PEPE' } } };
+  const sandbox = {
+    state: { recovery: { journals: [finished] } },
+    currentLaunchProof: () => null,
+    Date,
+  };
+  vm.runInNewContext([...mintHelpers, source, 'globalThis.completedLaunchJournal = completedLaunchJournal;'].join('\n'), sandbox);
+  // A new draft with the same name and ticker is not that launch.
+  assert.equal(sandbox.completedLaunchJournal(null), null);
+  assert.equal(sandbox.completedLaunchJournal({ token: { name: 'Pepe', symbol: 'PEPE' } }), null);
+  assert.equal(sandbox.completedLaunchJournal({ token: { mint: 'MintB' } }), null);
+  assert.equal(sandbox.completedLaunchJournal({ token: { mint: 'MintA' } }), finished);
+});

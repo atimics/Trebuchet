@@ -1391,15 +1391,13 @@ function parsePositiveInteger(value, fallback = 0) {
 
 // The most recent completed journal for the launch being edited: same token
 // identity. Survives restarts (journals are on disk), unlike browser proof.
-function completedLaunchJournal(config = currentLaunchConfig()) {
-  const token = config?.token || {};
-  const same = (journal) => {
-    const other = journal?.launchConfig?.token || {};
-    return String(other.symbol || '').toUpperCase() === String(token.symbol || '').toUpperCase()
-      && String(other.name || '') === String(token.name || '');
-  };
+// The finished launch of the coin being worked on, matched by its mint:
+// a coin's name and ticker are set by its creator and prove nothing.
+function completedLaunchJournal(proof = currentLaunchProof()) {
+  const mint = proofTokenMint(proof);
+  if (!mint) return null;
   return (state.recovery?.journals || [])
-    .filter((journal) => String(journal?.status || '').toLowerCase() === 'completed' && journal?.token?.mint && same(journal))
+    .filter((journal) => String(journal?.status || '').toLowerCase() === 'completed' && journalTokenMint(journal) === mint)
     .sort((a, b) => Date.parse(b.completedAt || b.updatedAt || 0) - Date.parse(a.completedAt || a.updatedAt || 0))[0] || null;
 }
 
@@ -5646,7 +5644,7 @@ function launchWorkspaceStatus() {
   );
   const sweepComplete = transferHasWalletEmptyFinalSweepEvidence(proof?.transfer);
   // A finished launch of this exact config: every step is done.
-  if (completedLaunchJournal(currentLaunchConfig())) {
+  if (completedLaunchJournal()) {
     return {
       wallet: 'Done',
       configure: 'Done',
@@ -14117,7 +14115,7 @@ function renderClassicBridge() {
   const revealCanRun = canExecuteNext && readiness?.nextEndpoint === '/api/reveal-sealed-metadata';
   const finishCanRun = canExecuteNext && readiness?.nextEndpoint === '/api/transfer-assets';
   const finishReturn = returnWalletStatus();
-  const completedJournal = completedLaunchJournal(config);
+  const completedJournal = completedLaunchJournal();
   const finishDestinationReady = finishReturn.kind !== 'unverified'
     && Boolean(finishReturn.address)
     && finishReturn.address !== walletPublicKey;
