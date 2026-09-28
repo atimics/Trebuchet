@@ -2238,7 +2238,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="sliceShares"/);
   assert.match(html, /id="ladderBands" type="number" value="0" min="0" max="20"/);
   assert.match(js, /Round slices to 100%/);
-  assert.match(html, /Starts &amp; Ends With/);
+  assert.match(html, /<span>Starts with<\/span>[\s\S]*<span>Ends with<\/span>/);
   assert.match(combined, /Diagnostics/);
   assert.match(combined, /System status/);
   assert.match(combined, /Custom Vanity CA grinder/);
@@ -2541,9 +2541,9 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /vanityEstimateSummary/);
   assert.match(js, /VANITY_BASE58_ALPHABET/);
   assert.match(js, /VANITY_PLANNING_RATE/);
-  assert.match(js, /Invalid Base58/);
+  assert.match(js, /Not allowed/);
   assert.match(js, /Expected/);
-  assert.match(js, /50% by/);
+  assert.match(js, /95% by/);
   assert.match(js, /95% by/);
   assert.match(js, /vanityProgressStats/);
   assert.match(js, /removeVanityCandidateByPublicKey/);
@@ -2552,7 +2552,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /prune-hidden-vanity/);
   assert.match(js, /Remove selected/);
   assert.match(js, /Prune hidden/);
-  assert.match(js, /Native grinder ready/);
+  assert.match(js, /Ready to grind/);
   assert.match(js, /Grinder unavailable/);
   assert.match(js, /Unlock to grind/);
   assert.match(js, /const unlocked = await unlockSecretPin\(\{ reason: 'vanity' \}\)/);
@@ -6661,7 +6661,7 @@ test('v2 sealed identity reveal cannot replace liquidity creation before pools e
   assert.match(bridgeSource, /metadataRevealPending \? 'Reveal & lock identity'[\s\S]*?: readiness\?\.nextEndpoint === '\/api\/resume-launch' \? 'Resume missing work' : 'Create liquidity'/);
 });
 
-test('v2 Vanity CA candidates use a compact terminal list and Signal grade colors', () => {
+test('v2 contract address grinder lists saved addresses as rows with Signal grade colors', () => {
   const renderStart = js.indexOf('function renderVanityCandidates()');
   const renderEnd = js.indexOf('function poolLadderCount', renderStart);
   const renderSource = js.slice(renderStart, renderEnd);
@@ -6669,20 +6669,25 @@ test('v2 Vanity CA candidates use a compact terminal list and Signal grade color
   assert.ok(renderStart >= 0 && renderEnd > renderStart);
   assert.match(js, /const VANITY_VISIBLE_CANDIDATE_LIMIT = 4/);
   assert.match(js, /function vanityRarityGrade/);
-  assert.match(renderSource, /vanity-candidate-list/);
-  assert.doesNotMatch(renderSource, /vanity-candidate-grid/);
-  assert.match(renderSource, /vanity-ca-address[^\n]+\$\{escapeHtml\(shortAddress\(candidate\.publicKey\)\)\}/);
+  assert.match(renderSource, /grinder-list/);
+  assert.match(renderSource, /grinder-row/);
+  assert.match(renderSource, /\$\{escapeHtml\(shortAddress\(candidate\.publicKey\)\)\}/);
   assert.match(js, /return `\$\{text\.slice\(0, 4\)\}\.\.\.\$\{text\.slice\(-4\)\}`/);
-  assert.match(renderSource, /vanity-candidate-meta/);
   assert.match(renderSource, /aria-pressed/);
-  assert.match(renderSource, /aria-label="Select random CA"/);
+  assert.match(renderSource, /Random address/);
+  // No terminal chrome: no "$" prompts, slot numbers, or epochs.
+  assert.doesNotMatch(renderSource, /<span aria-hidden="true">\$<\/span>/);
+  assert.doesNotMatch(renderSource, /padStart\(2, '0'\)/);
+  assert.doesNotMatch(renderSource, /epochs/);
   assert.match(css, /--rarity-common: #c8dce6/);
   assert.match(css, /--rarity-fine: #8cdcff/);
   assert.match(css, /--rarity-rare: #be82ff/);
   assert.match(css, /--rarity-rati: #ffc85a/);
   assert.match(css, /--rarity-commissioned: #fff082/);
-  assert.match(css, /\.vanity-candidate-list\s*\{[\s\S]*?display: flex;[\s\S]*?flex-direction: column;/);
-  assert.match(css, /#view-launch \.vanity-candidate\s*\{[\s\S]*?font-family: inherit;/);
+  // The grinder uses only theme colors, so light and dark mode both read.
+  const grinderCss = css.slice(css.indexOf('/* Contract address grinder.'));
+  assert.ok(grinderCss.length > 0);
+  assert.doesNotMatch(grinderCss.slice(0, grinderCss.indexOf('@media (max-width: 700px)')), /#[0-9a-f]{3,8}\b/i);
 });
 
 test('v2 active wallet identity uses its rarity color without replacing status colors', () => {
@@ -6742,12 +6747,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=95/);
+  assert.match(html, /styles\.css\?v=96/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=40/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=187/);
-  assert.doesNotMatch(html, /app\.js\?v=187" type="module"/);
+  assert.match(html, /app\.js\?v=188/);
+  assert.doesNotMatch(html, /app\.js\?v=188" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');

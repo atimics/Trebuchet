@@ -109,8 +109,8 @@ function vanityEstimateSummary(prefix, suffix) {
   const estimate = vanityPatternEstimate(prefix, suffix);
   if (estimate.invalid.length) {
     return {
-      label: 'Invalid Base58',
-      detail: `Remove ${estimate.invalid.map((ch) => `"${ch}"`).join(', ')}; Solana addresses cannot contain 0, O, I, or l.`,
+      label: 'Not allowed',
+      detail: `Remove ${estimate.invalid.map((ch) => `"${ch}"`).join(', ')}. Addresses can't contain 0, O, I or l.`,
       className: 'danger',
     };
   }
@@ -127,8 +127,8 @@ function vanityEstimateSummary(prefix, suffix) {
   }
   if (!estimate.targetLength) {
     return {
-      label: 'Random CA',
-      detail: 'No start/end target. Grind is optional and instant random mint generation remains available.',
+      label: 'Nothing to grind',
+      detail: 'Type a start or an end, or launch with a random address.',
       className: '',
     };
   }
@@ -136,20 +136,20 @@ function vanityEstimateSummary(prefix, suffix) {
     ? `Live ${formatVanityRate(estimate.rate)}/s, ETA ${formatVanityDuration(estimate.liveEtaSeconds)}`
     : `At ${formatVanityAttempts(VANITY_PLANNING_RATE)}/s: ~${formatVanityDuration(estimate.planningSeconds)}`;
   return {
-    label: `${estimate.difficulty[0].toUpperCase()}${estimate.difficulty.slice(1)} pattern`,
-    detail: `Expected ${formatVanityAttempts(estimate.expectedAttempts)} tries; 50% by ${formatVanityAttempts(estimate.p50)}, 95% by ${formatVanityAttempts(estimate.p95)}. ${live}.`,
+    label: { easy: 'Quick', moderate: 'Takes a while', hard: 'Slow', extreme: 'Very slow' }[estimate.difficulty] || 'Estimate',
+    detail: `About ${formatVanityAttempts(estimate.expectedAttempts)} tries (95% by ${formatVanityAttempts(estimate.p95)}). ${live}.`,
     className: estimate.difficulty === 'extreme' ? 'danger' : estimate.difficulty === 'hard' ? 'warn' : '',
   };
 }
 
 function vanityAvailabilityMeta() {
   if (state.vanityRunning) {
-    return { label: 'Grinding', detail: state.vanityProgress || 'Native grinder is searching.', className: 'warn', icon: 'fa-spinner fa-spin' };
+    return { label: 'Grinding', detail: state.vanityProgress || 'Searching…', className: 'warn', icon: 'fa-spinner fa-spin' };
   }
   if (state.apiStatus === 'connected' && !state.vanityAvailable) {
     return {
       label: 'Grinder unavailable',
-      detail: state.vanityReason || 'Native vanity_keygen helper is not available in this build.',
+      detail: state.vanityReason || 'This build has no grinder.',
       className: 'danger',
       icon: 'fa-triangle-exclamation',
     };
@@ -157,15 +157,15 @@ function vanityAvailabilityMeta() {
   if (state.apiStatus === 'connected' && state.secretPin.locked) {
     return {
       label: 'Unlock to grind',
-      detail: 'Grind will ask for the Recovery PIN, then save the Vanity CA locally.',
+      detail: 'Grinding asks for your Recovery PIN, then saves the address on this computer.',
       className: 'warn',
       icon: 'fa-lock',
     };
   }
   if (state.apiStatus === 'connected') {
-    return { label: 'Native grinder ready', detail: 'Saved Vanity CA options stay selectable across runs.', className: '', icon: 'fa-wand-magic-sparkles' };
+    return { label: 'Ready to grind', detail: 'Saved addresses stay here for later launches.', className: '', icon: 'fa-wand-magic-sparkles' };
   }
-  return { label: 'Static preview', detail: 'Open through the Trebuchet desktop app to run the native grinder.', className: 'warn', icon: 'fa-eye' };
+  return { label: 'Desktop app only', detail: 'Open the Trebuchet desktop app to grind.', className: 'warn', icon: 'fa-eye' };
 }
 
 const ACTIVE_LAUNCH_KEY = 'trebuchet-v2-active-launch';
@@ -300,63 +300,55 @@ function renderVanityCandidates() {
   const hiddenCount = Math.max(0, state.vanityCandidates.length - candidates.length);
   const canGrind = state.vanityRunning || (!rawEstimate.invalid.length && (state.apiStatus !== 'connected' || state.vanityAvailable));
   const canRemoveSelected = Boolean(selected?.publicKey);
-  const candidateButtons = candidates.map((candidate, index) => {
+  const candidateButtons = candidates.map((candidate) => {
     const isActive = candidate.publicKey === state.selectedVanityPublicKey;
     const rarity = String(candidate.rarity || 'Common').trim();
     const grade = vanityRarityGrade(rarity);
     const attempts = Number(candidate.attempts);
-    const epochs = Number(candidate.epochs);
-    const mode = candidate.mode || (candidate.prefix && candidate.suffix ? 'both' : candidate.prefix ? 'prefix' : candidate.suffix ? 'suffix' : 'saved');
     const details = [
       vanityCandidateTarget(candidate),
       Number.isFinite(attempts) && attempts > 0 ? `${formatVanityAttempts(attempts)} tries` : null,
-      Number.isFinite(epochs) && epochs >= 0 ? `${epochs.toFixed(2)} epochs` : null,
-      mode,
     ].filter(Boolean);
     return `
-    <button class="vanity-candidate grade-${escapeHtml(grade)} ${isActive ? 'is-active' : ''}" type="button" data-action="select-vanity" data-public-key="${escapeHtml(candidate.publicKey)}" title="${escapeHtml(candidate.publicKey)}" aria-pressed="${isActive ? 'true' : 'false'}">
-      <span class="vanity-candidate-slot">${String(index + 1).padStart(2, '0')}</span>
-      <span class="vanity-candidate-main">
-        <code class="vanity-ca-address" aria-label="Contract address ${escapeHtml(candidate.publicKey)}">${escapeHtml(shortAddress(candidate.publicKey))}</code>
-        <small class="vanity-candidate-meta">
-          <b class="vanity-grade grade-${escapeHtml(grade)}">${escapeHtml(rarity)}</b>
-          ${details.map((detail) => `<span>${escapeHtml(detail)}</span>`).join('')}
-        </small>
+    <button class="vanity-candidate grinder-row grade-${escapeHtml(grade)} ${isActive ? 'is-active' : ''}" type="button" data-action="select-vanity" data-public-key="${escapeHtml(candidate.publicKey)}" title="${escapeHtml(candidate.publicKey)}" aria-pressed="${isActive ? 'true' : 'false'}">
+      <span class="grinder-radio" aria-hidden="true"></span>
+      <span class="grinder-row-main">
+        <code aria-label="Contract address ${escapeHtml(candidate.publicKey)}">${escapeHtml(shortAddress(candidate.publicKey))}</code>
+        <small>${/^common$/i.test(rarity) ? '' : `<b class="vanity-grade grade-${escapeHtml(grade)}">${escapeHtml(rarity)}</b> · `}${details.map(escapeHtml).join(' · ')}</small>
       </span>
-      <span class="vanity-candidate-state">${isActive ? 'selected' : 'saved'}</span>
+      ${isActive ? '<span class="grinder-row-state">In use</span>' : ''}
     </button>
   `;
   }).join('');
+  const statusLine = (item) => `
+      <li class="grinder-status ${escapeHtml(item.className)}">
+        <i class="fa-solid ${escapeHtml(item.icon)}" aria-hidden="true"></i>
+        <strong>${escapeHtml(item.label)}</strong>
+        <span>${escapeHtml(item.detail)}</span>
+      </li>`;
   $('#vanityCandidates').innerHTML = `
-    <div class="vanity-terminal-status" aria-label="Vanity grinder status">
-      <div class="vanity-status ${escapeHtml(meta.className)}">
-        <i class="fa-solid ${escapeHtml(meta.icon)}"></i>
-        <strong>${escapeHtml(meta.label)}</strong>
-        <small>${escapeHtml(meta.detail)}</small>
-      </div>
-      <div class="vanity-status vanity-estimate ${escapeHtml(estimate.className)}">
-        <i class="fa-solid fa-gauge-high"></i>
-        <strong>${escapeHtml(estimate.label)}</strong>
-        <small>${escapeHtml(estimate.detail)}</small>
-      </div>
-    </div>
-    ${state.vanityInputError ? `<p class="vanity-feedback" id="vanityFeedback" role="alert">${escapeHtml(state.vanityInputError)}</p>` : '<p class="vanity-feedback" id="vanityFeedback">Enter a start, an end, or both. Base58 only.</p>'}
-    <div class="vanity-candidate-list" aria-label="Saved contract addresses">
-      <div class="vanity-list-head" aria-hidden="true">
-        <span>Slot</span>
-        <span>Contract address / grade / grind proof</span>
-        <span>State</span>
-      </div>
-      ${candidateButtons || '<div class="vanity-empty"><span>--</span><code>NO SAVED CONTRACT ADDRESSES</code><small>Run the grinder to retain a local CA.</small></div>'}
-    </div>
-    <div class="vanity-actions">
-      <button class="pill-button ${selected ? '' : 'is-active'}" type="button" data-action="select-vanity" data-public-key="" aria-label="Select random CA" aria-pressed="${selected ? 'false' : 'true'}"><span aria-hidden="true">$</span> random</button>
-      <button class="pill-button" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
-        <span aria-hidden="true">$</span> ${state.vanityRunning ? 'cancel' : 'grind'}
+    <ul class="grinder-statuses" aria-label="Grinder status">
+      ${statusLine(meta)}
+      ${statusLine({ ...estimate, icon: 'fa-gauge-high' })}
+    </ul>
+    ${state.vanityInputError
+      ? `<p class="grinder-note is-error" id="vanityFeedback" role="alert">${escapeHtml(state.vanityInputError)}</p>`
+      : '<p class="grinder-note" id="vanityFeedback">Letters and numbers only, without 0, O, I or l.</p>'}
+    <div class="grinder-list" role="group" aria-label="Saved contract addresses">
+      <button class="grinder-row ${selected ? '' : 'is-active'}" type="button" data-action="select-vanity" data-public-key="" aria-pressed="${selected ? 'false' : 'true'}">
+        <span class="grinder-radio" aria-hidden="true"></span>
+        <span class="grinder-row-main"><code>Random address</code><small>Made at launch. Nothing to grind.</small></span>
+        ${selected ? '' : '<span class="grinder-row-state">In use</span>'}
       </button>
-      <button class="pill-button" type="button" data-action="remove-selected-vanity" aria-label="Remove selected" ${canRemoveSelected ? '' : 'disabled'}><span aria-hidden="true">$</span> remove</button>
-      <button class="pill-button" type="button" data-action="prune-hidden-vanity" aria-label="Prune hidden" ${hiddenCount ? '' : 'disabled'}><span aria-hidden="true">$</span> prune${hiddenCount ? ` ${hiddenCount}` : ''}</button>
-      <span class="vanity-progress">${state.vanityCandidates.length} saved${hiddenCount ? ` · ${hiddenCount} hidden` : ''}</span>
+      ${candidateButtons}
+    </div>
+    <div class="grinder-actions">
+      <button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
+        <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>
+      </button>
+      <button class="secondary-button compact" type="button" data-action="remove-selected-vanity" ${canRemoveSelected ? '' : 'disabled'}>Remove selected</button>
+      ${hiddenCount ? `<button class="text-button" type="button" data-action="prune-hidden-vanity">Delete ${hiddenCount} older</button>` : ''}
+      <span class="grinder-count">${state.vanityCandidates.length} saved${hiddenCount ? `, ${hiddenCount} not shown` : ''}</span>
     </div>
   `;
 }
