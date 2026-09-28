@@ -276,6 +276,7 @@ export async function sweepNftsToDestination({
   tempWalletSecretKey,
   destinationWallet,
   excludeMints = [],
+  transferToken = transferTokenWithProgram,
 }) {
   const connection = makeConnection();
   const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
@@ -299,7 +300,7 @@ export async function sweepNftsToDestination({
     try {
       const txId = await withSweepRetries(
         `nft ${nft.mint}`,
-        () => transferTokenWithProgram({
+        () => transferToken({
           connection,
           ownerKeypair,
           mint: new PublicKey(nft.mint),
@@ -353,6 +354,7 @@ export async function sweepAllTokensToDestination({
   tempWalletSecretKey,
   destinationWallet,
   excludeMints = [],
+  transferToken = transferTokenWithProgram,
 }) {
   const connection = makeConnection();
   const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
@@ -410,7 +412,7 @@ export async function sweepAllTokensToDestination({
           : TOKEN_PROGRAM_ID;
         const txId = await withSweepRetries(
           `token ${t.mint} (${acct.address || 'derived ATA'})`,
-          () => transferTokenWithProgram({
+          () => transferToken({
             connection,
             ownerKeypair,
             mint: new PublicKey(t.mint),

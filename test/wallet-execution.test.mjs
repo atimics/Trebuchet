@@ -6,6 +6,9 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { PublicKey } from '@solana/web3.js';
+import { tokenTransferChain } from '../packages/runtime/test/fixtures/token-transfer-chain.mjs';
+import * as walletHelpers from '../walletHelpers.js';
 import { acquireProfileOwner } from '../packages/runtime/src/owner.js';
 import { openRuntimeStore } from '../packages/runtime/src/store.js';
 import { createWalletExecutionRuntime } from '../walletExecution.js';
@@ -68,9 +71,10 @@ test('local approval requires the saved launch and the same network at send time
   assert.equal(changed.state.sends.length, 0);
 });
 
-test('the production SOL adapter recovers after its process dies between chain acceptance and receipt storage', { timeout: 20_000 }, async (t) => {
+for (const mode of ['SOL', 'token', 'nft']) {
+test(`the production ${mode} adapter recovers after its process dies between chain acceptance and receipt storage`, { timeout: 20_000 }, async (t) => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-wallet-crash-'));
-  const ledger = solSweepChain();
+  const ledger = mode === 'SOL' ? solSweepChain() : tokenTransferChain(mode === 'nft' ? { token2022: true, decimals: 0, sourceAmount: 1n } : {});
   const children = [];
   let running;
   const rpcErrors = [];
@@ -83,7 +87,19 @@ test('the production SOL adapter recovers after its process dies between chain a
       switch (body.method) {
         case 'getGenesisHash': result = await ledger.connection.getGenesisHash(); break;
         case 'getBalance': result = await ledger.connection.getBalanceAndContext(); break;
-        case 'getMinimumBalanceForRentExemption': result = await ledger.connection.getMinimumBalanceForRentExemption(); break;
+        case 'getMinimumBalanceForRentExemption': result = await ledger.connection.getMinimumBalanceForRentExemption(...body.params); break;
+        case 'getMultipleAccounts': {
+          result = await ledger.connection.getMultipleAccountsInfoAndContext(body.params[0].map((key) => new PublicKey(key)), body.params[1]);
+          result.value = result.value.map((account) => account && ({ ...account, owner: account.owner.toBase58(), data: [account.data.toString('base64'), 'base64'] }));
+          break;
+        }
+        case 'getTokenAccountsByOwner': {
+          result = await ledger.connection.getParsedTokenAccountsByOwner(new PublicKey(body.params[0]), { programId: new PublicKey(body.params[1].programId) });
+          result = { context: { slot: ledger.state.slot }, value: result.value.map((entry) => ({ pubkey: entry.pubkey.toBase58(), account: {
+            ...entry.account, owner: body.params[1].programId, lamports: ledger.state.sourceLamports, rentEpoch: 0, executable: false,
+          } })) };
+          break;
+        }
         case 'getRecentPrioritizationFees': result = []; break;
         case 'getFeeForMessage': result = await ledger.connection.getFeeForMessage(); break;
         case 'getLatestBlockhash': result = { context: { slot: ledger.state.slot }, value: await ledger.connection.getLatestBlockhash() }; break;
@@ -119,7 +135,7 @@ test('the production SOL adapter recovers after its process dies between chain a
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const run = () => {
-    const child = spawn(process.execPath, [new URL('./fixtures/wallet-execution-worker.mjs', import.meta.url).pathname, profile, `http://127.0.0.1:${server.address().port}`], {
+    const child = spawn(process.execPath, [new URL('./fixtures/wallet-execution-worker.mjs', import.meta.url).pathname, profile, `http://127.0.0.1:${server.address().port}`, mode], {
       stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, TREBUCHET_CONFIG_DIR: profile },
     });
     running = child; children.push(child);
@@ -132,14 +148,21 @@ test('the production SOL adapter recovers after its process dies between chain a
   assert.equal(firstExit, null, first.output().err);
   assert.equal(signal, 'SIGKILL');
   assert.equal(ledger.state.sends.length, 1);
-  assert.equal(ledger.state.balance, 900880);
+  if (mode === 'SOL') assert.equal(ledger.state.balance, 900880);
+  else assert.equal(ledger.state.sourceAmount, 0n);
   const second = run();
   const [secondExit] = await once(second.child, 'close');
   assert.equal(secondExit, 0, second.output().err);
   assert.deepEqual(rpcErrors, []);
   const recovered = JSON.parse(second.output().out.split('RESULT:')[1]);
   assert.equal(recovered.txId, ledger.state.sends[0].signature);
-  assert.equal(recovered.solTransferred, 0.00909312);
+  if (mode === 'SOL') assert.equal(recovered.solTransferred, 0.00909312);
+  else {
+    assert.equal(recovered.amountRaw, mode === 'nft' ? '1' : '5000000');
+    const third = run();
+    assert.equal((await once(third.child, 'close'))[0], 0, third.output().err);
+    assert.deepEqual(JSON.parse(third.output().out.split('RESULT:')[1]), recovered);
+  }
   assert.equal(ledger.state.sends.length, 1);
   const store = openRuntimeStore(profile);
   try {
@@ -147,3 +170,41 @@ test('the production SOL adapter recovers after its process dies between chain a
     assert.equal(store.getTransactions(recovered.operationId).length, 1);
   } finally { store.close(); }
 });
+
+
+}
+
+for (const [label, config, helper] of [
+  ['classic token', {}, 'sweepAllTokensToDestination'],
+  ['Token-2022 fee token', { token2022: true, transferFee: true }, 'sweepAllTokensToDestination'],
+  ['Fee Key NFT', { token2022: true, decimals: 0, sourceAmount: 1n }, 'sweepNftsToDestination'],
+]) {
+  test(`the production ${label} sweep uses the engine and retains receipts after completion`, async (t) => {
+    const ledger = tokenTransferChain(config);
+    let scope = 'journal-a', network = 'devnet';
+    const f = fixture(t, { getScopeId: () => scope, networkForRequest: () => network, createConnection: () => ledger.connection });
+    walletHelpers.setConnectionFactoryForTests(() => ledger.connection);
+    t.after(() => walletHelpers.resetConnectionFactoryForTests());
+    const result = await walletHelpers[helper]({ ...input, transferToken: f.runtime.transferTokenWithProgram });
+    assert.equal(result.transferred.length, 1);
+    assert.deepEqual(result.errors, []);
+    assert.equal(ledger.state.sends.length, 1);
+    assert.equal(await f.runtime.recover(input), null);
+    const receipts = f.runtime.getTransferReceipts(walletPublicKey);
+    assert.equal(receipts.length, 1);
+    assert.equal(receipts[0].txId, result.transferred[0].txId);
+    assert.equal(receipts[0].decimals, config.decimals ?? 6);
+    assert.equal(receipts[0].sourceTokenAccount, ledger.source.toBase58());
+    assert.equal(receipts[0].receivedRaw, config.transferFee ? '4995000' : config.sourceAmount?.toString() || '5000000');
+    const second = await walletHelpers[helper]({ ...input, transferToken: f.runtime.transferTokenWithProgram });
+    assert.deepEqual(second.transferred, []);
+    assert.deepEqual(f.runtime.getTransferReceipts(walletPublicKey), receipts);
+    scope = 'journal-b';
+    assert.deepEqual(f.runtime.getTransferReceipts(walletPublicKey), []);
+    scope = 'journal-a'; network = 'mainnet';
+    assert.deepEqual(f.runtime.getTransferReceipts(walletPublicKey), []);
+    network = 'devnet';
+    assert.deepEqual(f.runtime.getTransferReceipts(sweepDestination), []);
+    assert.deepEqual(f.runtime.getTransferReceipts(walletPublicKey), receipts);
+  });
+}

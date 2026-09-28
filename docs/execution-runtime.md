@@ -115,7 +115,7 @@ The service verifies the exact signed message against the saved transfer intent.
 
 `packages/runtime/test/sol-sweep.test.mjs` covers receipt integrity, failed approval and transaction commits, fee and message changes, expiry during RPC calls, owner release, concurrent clients, and approved rebroadcast of identical saved bytes. `test/local-runtime.test.mjs` verifies that a saved pending transfer holds token creation and airdrops through the real HTTP runtime. The architecture suite passes 129 tests, and package coverage checks 93 required files.
 
-Token, metadata, liquidity, token-asset, and NFT transaction adapters still need engine integration. Full launch and runner spending limits remain separate requirements from the bounded local transfer request implemented here.
+Token creation, metadata, and liquidity transaction adapters still need engine integration. Full launch and runner spending limits remain separate requirements from the bounded local transfer request implemented here.
 
 ### Wallet recovery file preservation
 
@@ -131,3 +131,14 @@ Recovery file reads require valid records and distinct public keys. Damaged byte
 A new pending wallet now uses the strict recovery encryption interface. Its key and mnemonic must round-trip through the protected host backend before a private file commit. Device encryption can be supplied directly by the desktop, or by an unlocked Recovery PIN whose device secret has OS protection. An unavailable backend, Linux basic-text backend, keychain error, or changed decrypt result returns `RECOVERY_ENCRYPTION_REQUIRED` before the API returns a wallet for funding. The existing recovery-read interface retains access to legacy material.
 
 The PIN state file now syncs its temporary contents before rename and syncs its directory on POSIX. An interrupted rotation preserves the previous key and PIN. Tests cover both generation endpoints and wallet import through the real headless API, protected PIN storage, legacy reads, backend errors, and interrupted PIN commits. Demo wallets continue to use the practice ledger. The runner will need its own encrypted host backend when live execution is connected.
+
+
+### Token and NFT transfers through the engine
+
+The asset sweep now uses durable operations for classic tokens, Token-2022 tokens, and Fee Key NFTs. Each operation records the exact mint, token program, source account, destination, raw amount, decimals, account rent limit, and transaction fee limit. The service signs a fixed message, saves its bytes, and verifies finalized token and SOL balance changes. Token-2022 transfer fees use the explicit expected fee instruction. Tokens with transfer hooks, private transfers, or a nontransferable mint require a dedicated adapter.
+
+The final launch report reads all confirmed transfer receipts for the wallet, launch journal, and network. It includes transfers completed in an earlier process and keeps exact raw amounts, each signature, fees, and actual destinations. Receipt reads and the final journal commit both complete before recovery keys are removed.
+
+The production host tests kill the token and NFT sweep processes after the local RPC fixture accepts their signed transactions. The next process recovers each receipt with one send in total. A third process rebuilds the same report from the durable receipt. Tests also cover competing clients, renewed approval before an identical rebroadcast, approval expiry during RPC, changed source ownership, fee changes, missing receipt data, failed storage writes, and exact large token amounts.
+
+The adapter covers the final asset sweep. Liquidity's direct Fee Key distribution and airdrops will join it as their launch-wide recovery paths move into the engine.

@@ -176,6 +176,11 @@ export function openRuntimeStore(profileDir) {
       });
     },
     getOperation,
+    listWalletOperations(walletPublicKey) {
+      try {
+        return db.prepare('SELECT * FROM operations WHERE wallet = ? ORDER BY created_at, rowid').all(walletPublicKey).map(decodeOperation);
+      } catch (error) { throw fail(error); }
+    },
     getActiveOperation(walletPublicKey) {
       return decodeOperation(db.prepare("SELECT * FROM operations WHERE wallet = ? AND state IN ('prepared','submitted','recovery_required')").get(walletPublicKey));
     },

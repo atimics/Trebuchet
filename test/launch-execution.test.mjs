@@ -26,6 +26,7 @@ function fixture() {
   const deps = {
     PublicKey, launchJournal,
     reconcileWalletOperation: async () => null,
+    getTransferReceipts: async () => [],
     requireSecretPinUnlocked: () => { if (state.locked) throw new LaunchRejection(423, { success: false, code: 'SECRET_PIN_LOCKED', error: 'Unlock recovery storage.' }); },
     requireTokenCompleteForLiquidity: async () => {},
     claimLaunchOp: (key, op) => claimLaunchOperation(operations, key, op, 1000),
@@ -235,4 +236,51 @@ test('an unresolved engine transfer stops before further asset sends and preserv
   assert.deepEqual(f.calls, ['signer']);
   assert.equal(f.state.removed, 0);
   assert.equal(f.operations.size, 0);
+});
+
+
+test('the final report includes durable transfers from earlier attempts and both sweep passes', async () => {
+  const f = fixture();
+  const receipt = (txId, amountRaw, extra = {}) => ({ txId, signature: txId, mint: 'mint-a', programId: 'token-program', decimals: 6,
+    amountRaw, receivedRaw: amountRaw, transferFeeRaw: '0', destinationWallet: destination, ...extra });
+  const old = receipt('old', '18446744073709551615', { destinationWallet: input.walletPublicKey });
+  const current = receipt('current', '2'), second = receipt('second', '3');
+  const nft = receipt('nft-old', '1', { mint: 'fee-key', decimals: 0 });
+  f.deps.getTransferReceipts = async () => [old, current, second, nft, old];
+  f.deps.sweepAllTokensToDestination = async () => ({ transferred: [{ mint: 'mint-a', decimals: 6, amount: 0.000002, txId: 'current', txIds: ['current'] }], errors: [] });
+  f.deps.finishSweepWithSolGate = async ({ tokenSweep }) => {
+    tokenSweep.transferred.push({ mint: 'mint-a', decimals: 6, amount: 0.000003, txId: 'second', txIds: ['second'] });
+    return { solSweep: { solTransferred: 0.1 } };
+  };
+  const result = await f.services().transferAssets(input);
+  assert.equal(result.tokensTransferred, 1);
+  assert.equal(result.nftSweep.transferred.length, 1);
+  assert.equal(result.nftSweep.transferred[0].txId, 'nft-old');
+  const token = result.tokenSweep.transferred[0];
+  assert.equal(token.amountRaw, '18446744073709551620');
+  assert.equal(token.amountText, '18446744073709.551620');
+  assert.deepEqual(token.txIds, ['old', 'current', 'second']);
+  assert.deepEqual(token.destinationWallets, [input.walletPublicKey, destination]);
+  assert.equal(token.receipts[0].destinationWallet, input.walletPublicKey);
+  assert.deepEqual(f.state.journal.transfer.tokenSweep, result.tokenSweep);
+  assert.equal(f.state.removed, 1);
+});
+
+test('receipt replay preserves older report entries with legacy signatures', async () => {
+  const f = fixture();
+  const receipt = (txId) => ({ mint: 'mint-a', programId: 'token-program', decimals: 6, txId, amountRaw: '1000000', receivedRaw: '1000000', transferFeeRaw: '0', destinationWallet: destination });
+  f.deps.sweepAllTokensToDestination = async () => ({ transferred: [{ mint: 'mint-a', amount: 2, decimals: 6, txId: 'legacy', txIds: ['legacy', 'current'] }], errors: [] });
+  f.deps.getTransferReceipts = async () => [receipt('current'), receipt('old')];
+  const result = await f.services().transferAssets(input);
+  assert.deepEqual(result.tokenSweep.transferred.map((entry) => entry.txIds), [['legacy', 'current'], ['old']]);
+  assert.equal(result.tokenSweep.transferred[0].amount, 2);
+  assert.equal(result.tokenSweep.transferred[0].receipts[0].txId, 'current');
+});
+
+test('a failed durable receipt read keeps wallet recovery and leaves completion pending', async () => {
+  const f = fixture();
+  f.deps.getTransferReceipts = async () => { throw new RecoveryStorageError('Receipt read interrupted'); };
+  await assert.rejects(f.services().transferAssets(input), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+  assert.equal(f.state.removed, 0);
+  assert.equal(f.writes.some((entry) => entry.stage === 'transfer_completed'), false);
 });

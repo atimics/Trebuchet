@@ -53,8 +53,8 @@ import { estimateAirdropExecutionCostSol } from './lpConstants.js';
 
 import {
   checkWalletBalanceMultiToken,
-  sweepNftsToDestination,
-  sweepAllTokensToDestination,
+  sweepNftsToDestination as sweepNftsWithSigner,
+  sweepAllTokensToDestination as sweepTokensWithSigner,
   executeAirdrop,
 } from './walletHelpers.js';
 
@@ -662,6 +662,8 @@ const requireWalletExecution = () => {
 };
 const sweepSolToDestination = (input) => requireWalletExecution().sweepSolToDestination(input);
 const reconcileWalletOperation = (input) => requireWalletExecution().recover(input);
+const sweepNftsToDestination = (input) => sweepNftsWithSigner({ ...input, transferToken: requireWalletExecution().transferTokenWithProgram });
+const sweepAllTokensToDestination = (input) => sweepTokensWithSigner({ ...input, transferToken: requireWalletExecution().transferTokenWithProgram });
 
 // Live services and HTTP jobs share wallet admission and durable recovery state.
 function claimLaunchOp(walletPublicKey, op) {
@@ -5164,6 +5166,7 @@ const launchServices = createLaunchExecutionServices({
   recordLpJournalProgress,
   recordTokenJournalProgress,
   reconcileWalletOperation,
+  getTransferReceipts: (wallet) => requireWalletExecution().getTransferReceipts(wallet),
   registerOfficialBrandLaunch,
   requireSecretPinUnlocked,
   requireTokenCompleteForLiquidity,

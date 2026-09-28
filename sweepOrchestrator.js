@@ -141,3 +141,46 @@ export async function finishSweepWithSolGate({
 
   return { solSweep, solSweepError, solSweepSkipped, secondPassRan };
 }
+
+
+// Rebuild the report from durable receipts, including earlier attempts.
+// Keep legacy results while each signature contributes to the report once.
+export function mergeTransferReceipts({ nftSweep, tokenSweep, receipts }) {
+  const bySignature = new Map(receipts.map((receipt) => [receipt.txId, receipt]));
+  const retainedSignatures = new Set();
+  for (const sweep of [nftSweep, tokenSweep]) {
+    sweep.transferred = sweep.transferred.filter((entry) => {
+      const signatures = entry.txIds || (entry.txId ? [entry.txId] : []);
+      if (signatures.length && signatures.every((signature) => bySignature.has(signature))) return false;
+      for (const signature of signatures) retainedSignatures.add(signature);
+      const known = signatures.filter((signature) => bySignature.has(signature)).map((signature) => bySignature.get(signature));
+      if (known.length) entry.receipts = known;
+      return true;
+    });
+  }
+  const tokens = new Map();
+  for (const receipt of bySignature.values()) {
+    if (retainedSignatures.has(receipt.txId)) continue;
+    if (receipt.decimals === 0 && receipt.amountRaw === '1') {
+      nftSweep.transferred.push({ ...receipt, receipts: [receipt] });
+      continue;
+    }
+    const key = JSON.stringify([receipt.mint, receipt.programId, receipt.decimals]);
+    if (!tokens.has(key)) tokens.set(key, []);
+    tokens.get(key).push(receipt);
+  }
+  for (const group of tokens.values()) {
+    const first = group[0];
+    const sum = (field) => group.reduce((total, receipt) => total + BigInt(receipt[field]), 0n).toString();
+    const amountRaw = sum('amountRaw');
+    const digits = amountRaw.padStart(first.decimals + 1, '0');
+    const amountText = first.decimals ? `${digits.slice(0, -first.decimals)}.${digits.slice(-first.decimals)}` : digits;
+    const destinations = [...new Set(group.map((receipt) => receipt.destinationWallet))];
+    tokenSweep.transferred.push({
+      mint: first.mint, programId: first.programId, decimals: first.decimals,
+      amount: Number(amountText), amountText, amountRaw, receivedRaw: sum('receivedRaw'), transferFeeRaw: sum('transferFeeRaw'),
+      txId: first.txId, txIds: group.map((receipt) => receipt.txId), receipts: group,
+      ...(destinations.length === 1 ? { destinationWallet: destinations[0] } : { destinationWallets: destinations }),
+    });
+  }
+}

@@ -1,4 +1,5 @@
 import { throwIfExecutionPaused } from './chainRetry.js';
+import { mergeTransferReceipts } from './sweepOrchestrator.js';
 // Live launch services use ordinary inputs and shared host interfaces.
 // HTTP routes translate the result; the runtime can call these methods directly.
 
@@ -66,6 +67,7 @@ export function createLaunchExecutionServices({
   recordLpJournalProgress,
   recordTokenJournalProgress,
   reconcileWalletOperation,
+  getTransferReceipts,
   registerOfficialBrandLaunch,
   requireSecretPinUnlocked,
   requireTokenCompleteForLiquidity,
@@ -1320,6 +1322,10 @@ export function createLaunchExecutionServices({
           recordEvent: (event) => launchJournal.recordEvent(walletPublicKey, event),
         },
       });
+
+      // Receipts survive a restart even when the transferred assets have
+      // left the source wallet. Commit this complete report before cleanup.
+      mergeTransferReceipts({ nftSweep, tokenSweep, receipts: await getTransferReceipts(walletPublicKey) });
 
       // 4. Verify the wallet is on-chain empty before clearing the
       //    recovery cache entry. Anything still there → leave the cached
