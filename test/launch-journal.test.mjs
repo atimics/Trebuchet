@@ -222,14 +222,15 @@ test('archives journals without deleting history', async (t) => {
   assert.equal(archived[0].events.at(-1).stage, 'journal_archived');
 });
 
-test('treats malformed journal files as empty and non-fatal', async (t) => {
+test('preserves malformed journal files and requires recovery', async (t) => {
   await withMutedConsole(async () => {
     const configDir = makeTempConfigDir(t);
     writeFileSync(journalFile(configDir), '{not json');
 
     const launchJournal = await importFreshLaunchJournal(configDir);
 
-    assert.deepEqual(launchJournal.list(), []);
-    assert.equal(existsSync(journalFile(configDir)), true);
+    assert.throws(() => launchJournal.list(), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+    assert.throws(() => launchJournal.start({ walletPublicKey: 'NewWallet' }), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+    assert.equal(readFileSync(journalFile(configDir), 'utf8'), '{not json');
   });
 });

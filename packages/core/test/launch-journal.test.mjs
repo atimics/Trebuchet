@@ -1,4 +1,5 @@
 import test from 'node:test';
+import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -105,23 +106,23 @@ test('error helpers sanitize and truncate', () => {
   assert.ok(details.stack.length <= 8000 + 40);
 });
 
-test('storage failures are reported, never thrown', (t) => {
-  const warnings = [];
-  const dir = mkdtempSync(path.join(tmpdir(), 'trebuchet-core-journal-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const file = path.join(dir, 'launchJournals.json');
-  // Corrupt file: read path warns and treats as empty.
-  writeFileSync(file, '{not json');
-  const store = createLaunchJournalStore({ filePath: file, onWarn: (m) => warnings.push(m) });
-  assert.equal(store.start({ walletPublicKey: 'WalletE1111111111111111111111111111111' }).id.length > 0, true);
-  assert.ok(warnings.some((message) => message.includes('failed to read')));
+test('corrupt recovery data stays byte-for-byte intact and blocks new records', (t) => {
+  const store = makeStore(t);
+  for (const bytes of ['{damaged journal', '{}', '[null]', '[{"id":"incomplete"}]']) {
+    writeFileSync(store.filePath, bytes);
+    assert.throws(() => store.start({ walletPublicKey: 'WalletE' }), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+    assert.equal(readFileSync(store.filePath, 'utf8'), bytes);
+  }
+});
 
-  // File path is an existing directory: write path reports and continues.
+test('a failed commit throws and preserves the prior checkpoint', (t) => {
   const errors = [];
-  const badStore = createLaunchJournalStore({
-    filePath: dir,
-    onError: (m) => errors.push(m),
-  });
-  badStore.start({ walletPublicKey: 'WalletF1111111111111111111111111111111' });
-  assert.ok(errors.some((message) => message.includes('failed to save')));
+  const store = makeStore(t);
+  const original = store.start({ walletPublicKey: 'WalletF' });
+  const before = readFileSync(store.filePath, 'utf8');
+  t.mock.method(fs, 'renameSync', () => { throw Object.assign(new Error('disk unavailable'), { code: 'EIO' }); });
+  assert.throws(() => store.update(original.id, { stage: 'mint_sent' }), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+  assert.equal(readFileSync(store.filePath, 'utf8'), before);
+  assert.equal(store.get(original.id).stage, 'wallet_generated');
+  assert.deepEqual(fs.readdirSync(path.dirname(store.filePath)), ['launchJournals.json']);
 });

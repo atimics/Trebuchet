@@ -94,7 +94,7 @@ function buildPacketArchive(dir, { tamper = null } = {}) {
   }
 
   const archive = path.join(dir, 'packet.tar.gz');
-  execFileSync('tar', ['-czf', archive, '-C', dir, 'packet']);
+  execFileSync('tar', ['-czf', archive, '-C', dir, 'packet'], { env: { ...process.env, COPYFILE_DISABLE: '1' } });
   return archive;
 }
 
@@ -131,7 +131,7 @@ test('a valid packet uploads, verifies, and becomes launchable input', async (t)
     headers: { 'content-type': 'application/octet-stream' },
     body: readFileSync(archive),
   }));
-  assert.equal(upload.status, 201);
+  assert.equal(upload.status, 201, await upload.clone().text());
   const payload = await upload.json();
   assert.ok(payload.packetId);
   assert.equal(payload.token.symbol, 'RUNT');
@@ -158,7 +158,7 @@ test('launch requests hit the custody gate with NOT_READY, unknown packets 404',
   const { base, authed } = await startRunner(t);
   const unknown = await fetch(`${base}/v1/launches`, authed('/v1/launches', {
     method: 'POST',
-    body: JSON.stringify({ packetId: 'does-not-exist' }),
+    body: JSON.stringify({ packetId: 'f'.repeat(24) }),
   }));
   assert.equal(unknown.status, 404);
 

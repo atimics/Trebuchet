@@ -145,15 +145,19 @@ export function createRunnerServer({ token, stateDir, coreVersion = TREBUCHET_CO
         const archive = await readBody(req, MAX_PACKET_BYTES);
         if (!archive.length) return sendJson(res, 400, { ok: false, error: 'empty body' });
         const packetId = crypto.createHash('sha256').update(archive).digest('hex').slice(0, 24);
-        const dir = path.join(state, 'packets', packetId);
-        fs.mkdirSync(dir, { recursive: true });
+        const dir = await fsp.mkdtemp(path.join(state, 'packets', '.upload-'));
         const archivePath = path.join(dir, 'packet.tar.gz');
         await fsp.writeFile(archivePath, archive, { mode: 0o600 });
         try {
           const extractDir = path.join(dir, 'extract');
-          fs.mkdirSync(extractDir, { recursive: true });
           await extractPacketArchive(archivePath, extractDir);
           const verified = await verifyPacketDir(locatePacketRoot(extractDir));
+          try {
+            await fsp.rename(dir, path.join(state, 'packets', packetId));
+          } catch (error) {
+            if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
+            await fsp.rm(dir, { recursive: true, force: true });
+          }
           return sendJson(res, 201, {
             ok: true,
             packetId,
@@ -178,7 +182,7 @@ export function createRunnerServer({ token, stateDir, coreVersion = TREBUCHET_CO
       if (route === 'POST /v1/launches') {
         const body = await readJsonBody(req).catch(() => null);
         const packetId = String(body?.packetId || '').trim();
-        if (!packetId) return sendJson(res, 400, { ok: false, error: 'packetId required' });
+        if (!/^[a-f0-9]{24}$/.test(packetId)) return sendJson(res, 400, { ok: false, error: 'packetId must be 24 lowercase hex characters' });
         if (!fs.existsSync(path.join(state, 'packets', packetId))) {
           return sendJson(res, 404, { ok: false, error: 'unknown packetId — upload it first' });
         }

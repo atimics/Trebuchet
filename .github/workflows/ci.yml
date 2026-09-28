@@ -74,6 +74,9 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Core and runner contracts
+        run: npm run test:architecture
+
       - name: CLI contract and binary smoke
         run: |
           npm run test:cli

@@ -201,12 +201,11 @@ function touch(journal) {
  *
  * Options:
  *   filePath  absolute path of the journal file (required)
- *   onWarn    callback for non-fatal storage read problems
- *   onError   callback for non-fatal storage write problems
+ *   onWarn    callback for storage read problems
+ *   onError   callback for storage write problems
  *
- * Storage failures never throw: the journal is a best-effort audit trail,
- * and launch execution must not die because a sidecar file was unreadable.
- * Problems are reported through onWarn/onError so hosts can surface them.
+ * A successful return means the checkpoint reached durable storage. Callers
+ * enter recovery on a storage error before sending another transaction.
  */
 export function createLaunchJournalStore({ filePath, onWarn = () => {}, onError = () => {} } = {}) {
   if (!filePath || typeof filePath !== 'string') {
@@ -214,29 +213,59 @@ export function createLaunchJournalStore({ filePath, onWarn = () => {}, onError 
   }
   const file = path.resolve(filePath);
 
+  const storageError = (action, cause) => {
+    const error = new Error(`Launch journal ${action} failed. Restore storage access and resume recovery.`, { cause });
+    error.code = 'RECOVERY_STORAGE_UNAVAILABLE';
+    error.filePath = file;
+    return error;
+  };
+
   const readRaw = () => {
+    let bytes;
     try {
-      if (!fs.existsSync(file)) return [];
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-      return Array.isArray(parsed) ? parsed : [];
+      bytes = fs.readFileSync(file, 'utf8');
     } catch (error) {
-      onWarn(`launchJournal: failed to read, treating as empty: ${errorMessage(error)}`);
-      return [];
+      if (error.code === 'ENOENT') return [];
+      onWarn(`launchJournal: failed to read: ${errorMessage(error)}`);
+      throw storageError('read', error);
+    }
+    try {
+      const parsed = JSON.parse(bytes);
+      if (!Array.isArray(parsed) || parsed.some((entry) => !entry || typeof entry !== 'object' || !entry.walletPublicKey)) {
+        throw new Error('Journal must contain an array of wallet records');
+      }
+      return parsed;
+    } catch (error) {
+      onWarn(`launchJournal: preserve damaged journal for recovery: ${errorMessage(error)}`);
+      throw storageError('read', error);
     }
   };
 
-  const load = () => readRaw()
-    .map(normalizeJournal)
-    .filter((journal) => typeof journal.walletPublicKey === 'string' && journal.walletPublicKey);
+  const load = () => readRaw().map(normalizeJournal);
 
   const persist = (list) => {
+    const tmp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    let descriptor;
     try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(list, null, 2) + '\n');
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      descriptor = fs.openSync(tmp, 'wx', 0o600);
+      fs.writeFileSync(descriptor, JSON.stringify(list, null, 2) + '\n');
+      fs.fsyncSync(descriptor);
+      fs.closeSync(descriptor);
+      descriptor = undefined;
       fs.renameSync(tmp, file);
+      if (process.platform !== 'win32') {
+        descriptor = fs.openSync(path.dirname(file), 'r');
+        fs.fsyncSync(descriptor);
+        fs.closeSync(descriptor);
+        descriptor = undefined;
+      }
     } catch (error) {
       onError(`launchJournal: failed to save: ${errorMessage(error)}`);
+      throw storageError('commit', error);
+    } finally {
+      if (descriptor !== undefined) fs.closeSync(descriptor);
+      fs.rmSync(tmp, { force: true });
     }
   };
 

@@ -59,3 +59,6 @@ packet.
   must stay inside the packet directory).
 - The runner runs as an unprivileged user in a minimal image
   (node:22-slim + Core source + runner source, nothing else).
+## Packet input checks
+
+The runner parses the complete archive before extraction. Limits are 20 MiB compressed, 40 MiB expanded, 10 MiB per file, and 256 entries. Entries must use portable relative paths and regular files or directories. Every input is listed in the manifest, and rebuilding the plan from `launch.json` must reproduce the verified plan digest. The packet builder omits macOS metadata sidecars. Rebuild older archives that include those sidecars.

@@ -67,7 +67,8 @@
     "build:c": "node scripts/build-c.mjs",
     "check:package": "node scripts/check-package-files.mjs",
     "check:audit": "node scripts/audit-policy.mjs",
-    "release:gate": "node scripts/production-release-gate.mjs"
+    "release:gate": "node scripts/production-release-gate.mjs",
+    "test:architecture": "node --test packages/core/test/*.test.mjs packages/runner/test/*.mjs"
   },
   "files": [
     "build/**/*",
