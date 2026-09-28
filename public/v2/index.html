@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=94">
+  <link rel="stylesheet" href="./styles.css?v=95">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -109,7 +109,7 @@
           <div class="pool-support-form">
             <input id="poolSupportTarget" data-support-field="target" type="hidden">
             <label><span>SOL to add</span><input id="poolSupportSol" data-support-field="solAmount" type="text" inputmode="decimal" autocomplete="off" value="0.1"></label>
-            <label><span>Spread down to</span><select id="poolSupportDepth" data-support-field="depthPct">
+            <label><span>Spread down to</span><select id="poolSupportDepth" data-support-field="depthPct" data-choice="slider">
               <option value="12">−12%</option>
               <option value="25">−25%</option>
               <option value="50" selected>−50%</option>
@@ -143,8 +143,8 @@
               <div class="quick-launch-fields">
                 <label><span>Token name</span><input id="quickTokenName" type="text" maxlength="32" value="Your Token" autocomplete="off"></label>
                 <label><span>Symbol</span><input id="quickTokenSymbol" type="text" maxlength="10" value="TOK" autocomplete="off"></label>
-                <label><span>Pool quote</span><select id="quickQuote"><option value="SOL">SOL</option><option value="USDC">USDC</option><option value="USDT">USDT</option></select></label>
-                <label><span>Swap fees</span><select id="quickFee"><option value="0">none</option><option value="100">1% buy · 1% sell</option><option value="250">2.5% buy · 2.5% sell</option><option value="500">5% buy · 5% sell</option></select></label>
+                <label><span>Pool quote</span><select id="quickQuote" data-choice="buttons"><option value="SOL">SOL</option><option value="USDC">USDC</option><option value="USDT">USDT</option></select></label>
+                <label><span>Swap fees</span><select id="quickFee" data-choice="buttons" aria-label="Swap fee on each buy and sell"><option value="0" data-short="None">none</option><option value="100" data-short="1%">1% buy · 1% sell</option><option value="250" data-short="2.5%">2.5% buy · 2.5% sell</option><option value="500" data-short="5%">5% buy · 5% sell</option></select></label>
                 <label><span>Treasury</span><input id="quickTreasury" type="text" maxlength="44" placeholder="Fee collector address" autocomplete="off"></label>
               </div>
               <div class="quick-cost" id="quickCost" aria-live="polite"></div>
@@ -346,9 +346,9 @@
                     </label>
                     <label>
                       <span>Mint standard</span>
-                      <select id="mintFormat">
-                        <option value="token-2022" selected>Token-2022 · on-mint identity</option>
-                        <option value="classic-spl">Classic SPL · compatibility</option>
+                      <select id="mintFormat" data-choice="buttons">
+                        <option value="token-2022" data-short="Token-2022" selected>Token-2022 · on-mint identity</option>
+                        <option value="classic-spl" data-short="Classic SPL">Classic SPL · compatibility</option>
                       </select>
                     </label>
                 </div>
@@ -377,12 +377,12 @@
                   </div>
                   <label class="vanity-length-select" for="vanityLength">
                     <span>Address length</span>
-                    <select id="vanityLength">
+                    <select id="vanityLength" data-choice="slider">
                       <option value="">Any</option>
-                      <option value="44">44 characters</option>
-                      <option value="43">43 characters</option>
-                      <option value="42">42 characters</option>
-                      <option value="41">41 characters</option>
+                      <option value="44" data-short="44">44 characters</option>
+                      <option value="43" data-short="43">43 characters</option>
+                      <option value="42" data-short="42">42 characters</option>
+                      <option value="41" data-short="41">41 characters</option>
                     </select>
                   </label>
                   <label class="vanity-case-toggle" for="vanityCaseInsensitive">
@@ -575,7 +575,7 @@
                   <small id="personalDiscoveryTokenCount">0</small>
                 </span>
                 <label class="visually-hidden" for="personalDiscoverySort">Sort tokens</label>
-                <select id="personalDiscoverySort" aria-label="Sort tokens">
+                <select id="personalDiscoverySort" aria-label="Sort tokens" data-choice="buttons">
                   <option value="relevance">Relevance</option>
                   <option value="connections">Connections</option>
                   <option value="name">Name</option>
@@ -755,7 +755,7 @@
   <script src="./runtime-state.js?v=2"></script>
   <script src="./api-client.js?v=40"></script>
   <script src="../gif-optimizer.js?v=3"></script>
-  <script src="./app.js?v=186"></script>
+  <script src="./app.js?v=187"></script>
   <script src="./nfts.js?v=1"></script>
 </body>
 </html>
