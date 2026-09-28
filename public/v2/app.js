@@ -6165,9 +6165,12 @@ function tokenLogoStampMarkup() {
     const reason = LOGO_STAMP_SKIP_REASONS[stamp.reason] || 'CA stamp preview unavailable.';
     return `<p class="token-logo-stamp-note">${escapeHtml(reason)}</p>`;
   }
-  const caption = stamp.sample
-    ? 'The contract address is printed on the logo at launch (sample shown).'
-    : `Printed on the logo: ${fullAddress(stamp.mint)}`;
+  // Before the address exists the preview can only show a made-up one,
+  // which reads as a broken logo; say what will happen instead.
+  if (stamp.sample) {
+    return '<p class="token-logo-stamp-note">The contract address is printed along the bottom of the logo at launch.</p>';
+  }
+  const caption = `Printed on the logo: ${fullAddress(stamp.mint)}`;
   return `
     <figure class="token-logo-stamp-preview">
       <img src="${escapeHtml(stamp.dataUrl)}" alt="Logo with the contract address stamped along the bottom">
@@ -14400,7 +14403,7 @@ function renderClassicBridge() {
             ? 'Mints the supply and removes mint and freeze control. The name and logo stay hidden until the pool is locked.'
             : 'Mints the supply and removes mint and freeze control.'}</p>
         </div>
-        ${state.demoActive ? '' : `<aside><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span><strong>Can't be undone.</strong> Fix mistakes in Token &amp; pools first.</span></aside>`}
+        ${state.demoActive || tokenComplete ? '' : `<aside><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span><strong>Can't be undone.</strong> Fix mistakes in Token &amp; pools first.</span></aside>`}
       </section>
       <div class="launch-fact-grid">
         <span><small>Name</small><strong>${escapeHtml(config.token.name || 'Untitled')}</strong></span>
@@ -14423,7 +14426,7 @@ function renderClassicBridge() {
         <div>
           <h2 id="liquidityStepTitle">Create &amp; lock liquidity</h2>
         </div>
-        <aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>
+        ${state.demoActive || liquidityComplete ? '' : `<aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>`}
       </section>
       <div class="launch-fact-grid">
         <span><small>Pools</small><strong>${poolCount}</strong></span>
@@ -14710,8 +14713,8 @@ function renderExecutionLedger() {
     <section class="execution-ledger" aria-label="Execution ledger">
       <div class="execution-ledger-head">
         <span>
-          <span class="eyebrow">Execution ledger</span>
-          <strong>${entries.length ? entries[0]?.status === 'running' ? 'Operation running' : 'Latest guarded operations' : 'Classic proof trail'}</strong>
+          <span class="eyebrow">Launch steps sent</span>
+          <strong>${entries.length ? entries[0]?.status === 'running' ? 'A step is running' : 'Latest steps' : 'Nothing sent yet'}</strong>
         </span>
         <span>${entries.length} event${entries.length === 1 ? '' : 's'}</span>
       </div>
@@ -18008,7 +18011,9 @@ function renderSecretPinResetAudit(reset) {
 }
 
 function renderRecoveryWalletWorkspace() {
-  const wallets = state.apiStatus === 'connected' ? state.recovery.pendingWallets : [];
+  // Old launch wallets only: the one in use is on the Wallet page and is not
+  // something to recover unless an unfinished launch left work on it.
+  const wallets = recoveryWalletsNeedingAttention();
   const selectedPublicKey = selectedLaunchWalletPublicKey();
   const secretLocked = state.secretPin.locked;
   const busy = Boolean(state.fullRunRunning || state.realExecutionRunning);
@@ -18028,19 +18033,16 @@ function renderRecoveryWalletWorkspace() {
   $('#recoveryWalletWorkspace').innerHTML = `
     <div class="recovery-wallet-head">
       <span>
-        <span class="eyebrow">Pending launch wallets</span>
-        <h3>${wallets.length ? `${wallets.length} local recovery entr${wallets.length === 1 ? 'y' : 'ies'}` : 'No pending launch wallets'}</h3>
-        <p>${state.apiStatus === 'connected'
-          ? 'Select a wallet to inspect funding QR, reveal the secret, sweep assets, or discard the local recovery entry after manual cleanup.'
-          : 'Open through the Trebuchet desktop app to inspect recoverable launch wallets.'}</p>
-      </span>
-      <span class="recovery-wallet-stats">
-        <span><small>Recoverable</small><strong>${recoverableCount}</strong></span>
-        <span><small>Selected</small><strong>${selectedPending ? 'Yes' : 'No'}</strong></span>
-        <span><small>PIN</small><strong>${state.secretPin.configured ? secretLocked ? 'Locked' : 'Ready' : 'Unset'}</strong></span>
+        <span class="eyebrow">Old launch wallets</span>
+        <h3>${wallets.length ? `${wallets.length} may still hold assets` : 'None'}</h3>
+        <p>${state.apiStatus !== 'connected'
+          ? 'Open the Trebuchet desktop app to see old launch wallets.'
+          : wallets.length
+            ? 'Sweep what is left to your return wallet, or reveal the secret to recover it yourself.'
+            : 'The launch wallet in use is on the Wallet page.'}</p>
       </span>
     </div>
-    ${renderRecoveryGuide(guide)}
+    ${wallets.length ? renderRecoveryGuide(guide) : ''}
     ${wallets.length ? `
       <div class="recovery-wallet-list">
         ${wallets.map((wallet) => {
@@ -18059,7 +18061,6 @@ function renderRecoveryWalletWorkspace() {
                 <span class="eyebrow">${escapeHtml(formatDate(wallet.createdAt))}</span>
                 <h3>${escapeHtml(fullAddress(wallet.publicKey))}</h3>
                 <p>${escapeHtml(walletState.detail)}</p>
-                <code>${escapeHtml(wallet.publicKey)}</code>
               </span>
               <span class="timeline-actions">
                 <span class="risk-badge ${escapeHtml(walletState.className)}">${escapeHtml(walletState.label)}</span>
@@ -18092,31 +18093,7 @@ function renderHistoryExecutionAudit() {
   if (!entries.length) {
     return `
       <section class="history-audit-panel">
-        <div class="history-audit-head">
-          <span>
-            <span class="eyebrow">Guarded execution audit</span>
-            <strong>Classic proof trail</strong>
-            <em>Run a guarded operation to record retries, duration, and observed wallet SOL deltas.</em>
-          </span>
-          <span class="history-audit-actions">
-            <span class="risk-badge">Clear</span>
-          </span>
-        </div>
-        <div class="history-audit-stats">
-          <span><small>Complete</small><strong>0</strong></span>
-          <span><small>Running</small><strong>0</strong></span>
-          <span><small>Retries</small><strong>0</strong></span>
-          <span><small>Observed SOL</small><strong>Waiting</strong></span>
-        </div>
-        <div class="history-audit-list">
-          <article class="idle">
-            <i class="fa-solid fa-shield-halved"></i>
-            <span>
-              <strong>No guarded Trebuchet operations recorded in this session.</strong>
-              <small>Local wallet execution evidence will appear here after the first run.</small>
-            </span>
-          </article>
-        </div>
+        <p class="history-empty">Nothing sent yet. Each step of a live launch is listed here with how it ended and the SOL it used.</p>
       </section>
     `;
   }
@@ -18134,9 +18111,9 @@ function renderHistoryExecutionAudit() {
     <section class="history-audit-panel ${attention ? 'warn' : ''}">
       <div class="history-audit-head">
         <span>
-          <span class="eyebrow">Guarded execution audit</span>
-          <strong>${escapeHtml(latest?.label || 'Classic operations')}</strong>
-          <em>${escapeHtml(latest?.detail || 'Recent Trebuchet local-wallet operations.')}</em>
+          <span class="eyebrow">Launch steps sent</span>
+          <strong>${escapeHtml(latest?.label || 'Launch steps')}</strong>
+          <em>${escapeHtml(latest?.detail || 'Steps sent from the launch wallet.')}</em>
         </span>
         <span class="history-audit-actions">
           <span class="risk-badge ${attention ? 'warn' : ''}">${attention ? `${attention} attention` : 'Clear'}</span>
@@ -18194,7 +18171,7 @@ function renderHistory() {
     id: journal.id,
     kind: 'journal',
     status: journal.status || 'journal',
-    title: `${journal.status || 'journal'} / ${journal.token?.symbol || shortAddress(journal.walletPublicKey)}`,
+    title: `${journal.token?.symbol || shortAddress(journal.walletPublicKey)} · ${journal.status || 'launch'}`,
     detail: `${humanizeStage(journal.stage)} for ${fullAddress(journal.walletPublicKey)}`,
     time: formatDate(journal.updatedAt || journal.createdAt),
     journal,
@@ -18204,18 +18181,11 @@ function renderHistory() {
   $('#recoveryWizard').innerHTML = renderRecoveryWizard(wizard);
   renderRecoveryWalletWorkspace();
   $('#historyExecutionAudit').innerHTML = renderHistoryExecutionAudit();
+  // Launches only: the app's own connection state is not a launch.
   const items = state.apiStatus === 'connected'
-    ? [
-      {
-        kind: 'summary',
-        title: state.recovery.journalCount ? 'Local launch journals loaded' : 'Local API connected',
-        detail: state.recovery.journalCount
-          ? `${state.recovery.activeJournalCount} active, ${state.recovery.failedJournalCount} failed, ${state.recovery.pendingWalletCount} pending wallets.`
-          : 'No launch journals found in the local recovery store.',
-        time: 'Now',
-      },
-      ...journalHistory,
-    ]
+    ? journalHistory.length
+      ? journalHistory
+      : [{ kind: 'summary', title: 'No launches yet', detail: 'Each launch you run is kept here, with where it stopped if it did not finish.', time: '' }]
     : history;
 
   $('#timeline').innerHTML = items.map((item) => `
@@ -22184,6 +22154,14 @@ function renderCoinPage(coin) {
     ${coin.status === 'Added' ? `<div class="coin-actions"><button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button></div>` : ''}`;
   if (supportPanel) {
     supportPanel.hidden = false;
+    // A test coin has no real pool: buy support is simulated against a
+    // sample pool, and the panel says so.
+    const intro = supportPanel.querySelector('.pool-support-intro');
+    if (intro) {
+      intro.textContent = coin.practice
+        ? 'Test: this runs against a sample pool in the simulator. Nothing is sent. On a real coin it puts SOL below the price in its Raydium SOL pool, so sellers have something to sell into.'
+        : "Put SOL below this coin's price in its Raydium SOL pool, so sellers have something to sell into. It is signed by the selected wallet and is not locked: you can withdraw it later.";
+    }
     const target = $('#poolSupportTarget');
     if (target && target.value !== coin.mint) {
       target.value = coin.mint;
