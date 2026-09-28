@@ -211,11 +211,11 @@ function renderExecutionLedger() {
         <i class="fa-solid fa-shield-halved"></i>
       </span>
       <span class="execution-ledger-copy">
-        <strong>No guarded operations yet</strong>
-        <small>Executed classic operations will appear here with retries, duration, and observed SOL deltas.</small>
+        <strong>No launch steps sent yet</strong>
+        <small>Each step of a live launch shows here with how it ended and the SOL it used.</small>
       </span>
       <span class="execution-ledger-meta">
-        <strong>armed run</strong>
+        <strong>live only</strong>
         <small>waiting</small>
       </span>
     </article>
@@ -224,8 +224,8 @@ function renderExecutionLedger() {
     <section class="execution-ledger" aria-label="Execution ledger">
       <div class="execution-ledger-head">
         <span>
-          <span class="eyebrow">Execution ledger</span>
-          <strong>${entries.length ? entries[0]?.status === 'running' ? 'Operation running' : 'Latest guarded operations' : 'Classic proof trail'}</strong>
+          <span class="eyebrow">Launch steps sent</span>
+          <strong>${entries.length ? entries[0]?.status === 'running' ? 'A step is running' : 'Latest steps' : 'Nothing sent yet'}</strong>
         </span>
         <span>${entries.length} event${entries.length === 1 ? '' : 's'}</span>
       </div>

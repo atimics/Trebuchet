@@ -2525,18 +2525,18 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /executionLedgerAttemptLabel/);
   assert.match(js, /renderHistoryExecutionAudit/);
   assert.match(js, /Execution ledger/);
-  assert.match(js, /Latest guarded operations/);
-  assert.match(js, /Classic proof trail/);
-  assert.match(js, /No guarded operations yet/);
-  assert.match(js, /Guarded execution audit/);
+  assert.match(js, /Latest steps/);
+  assert.match(js, /Nothing sent yet/);
+  assert.match(js, /No launch steps sent yet/);
+  assert.match(js, /Launch steps sent/);
   assert.match(js, /Observed SOL/);
   assert.match(js, /clear-execution-audit/);
   assert.match(js, /Live launch progress/);
-  assert.match(js, /Wallet SOL/);
-  assert.match(js, /Planned SOL/);
-  assert.match(js, /Missing SOL/);
-  assert.match(js, /Observed spend/);
-  assert.match(js, /Acquired quotes/);
+  assert.match(js, /In the wallet/);
+  assert.match(js, /'Budget'/);
+  assert.match(js, /Still needed/);
+  assert.match(js, /Spent so far/);
+  assert.match(js, /Pair tokens bought/);
   assert.match(js, /vanityCandidateDetail/);
   assert.match(js, /vanityAvailabilityMeta/);
   assert.match(js, /vanityPatternEstimate/);
@@ -3600,7 +3600,7 @@ test('v2 funding meter requires a selected-wallet detailed balance snapshot', ()
   let snapshot = harness.fundingMeterSnapshot(config);
   assert.equal(snapshot.hasWalletBalance, false);
   assert.equal(snapshot.availableSol, 5);
-  assert.equal(snapshot.availableLabel, 'Planned SOL');
+  assert.equal(snapshot.availableLabel, 'Budget');
   assert.equal(snapshot.estimateAvailable, true);
   assert.equal(snapshot.estimatedCost, 2);
 
@@ -3615,7 +3615,7 @@ test('v2 funding meter requires a selected-wallet detailed balance snapshot', ()
   assert.equal(snapshot.hasWalletBalance, true);
   assert.equal(snapshot.walletBalanceFresh, true);
   assert.equal(snapshot.availableSol, 3.25);
-  assert.equal(snapshot.availableLabel, 'Wallet SOL');
+  assert.equal(snapshot.availableLabel, 'In the wallet');
 
   harness.state.manualPrefund.lastUpdatedAt = '2000-01-01T00:00:00.000Z';
   snapshot = harness.fundingMeterSnapshot(config);
@@ -3623,7 +3623,7 @@ test('v2 funding meter requires a selected-wallet detailed balance snapshot', ()
   assert.equal(snapshot.walletBalanceFresh, false);
   assert.equal(snapshot.walletBalanceStale, true);
   assert.equal(snapshot.availableSol, 5);
-  assert.equal(snapshot.availableLabel, 'Planned SOL');
+  assert.equal(snapshot.availableLabel, 'Budget');
   assert.equal(snapshot.badge.label, 'Stale balance');
 
   harness.state.selectedWalletPublicKey = 'Wallet222';
@@ -6568,7 +6568,7 @@ test('v2 launch mechanism stages one Trebuchet-managed local wallet run', () => 
   assert.match(combined, /Current operation/);
   assert.doesNotMatch(js, /Next checkpoint|'Next step'|Run every step|Step 6 as reviewable/);
   assert.match(combined, /Execution ledger/);
-  assert.match(combined, /Latest guarded operations/);
+  assert.match(combined, /Latest steps/);
   assert.match(combined, /historyExecutionAudit/);
   assert.match(combined, /Retries/);
   assert.match(combined, /attempt/);
@@ -6751,12 +6751,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=99/);
+  assert.match(html, /styles\.css\?v=100/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=41/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=191/);
-  assert.doesNotMatch(html, /app\.js\?v=191" type="module"/);
+  assert.match(html, /app\.js\?v=192/);
+  assert.doesNotMatch(html, /app\.js\?v=192" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -10740,7 +10740,7 @@ test('v2 API client bootstraps local session and read-only app state', async () 
   assert.equal(boot.prefs.publishLaunchReport, false);
   assert.equal(boot.rpc.label, 'Dedicated RPC');
   assert.equal(boot.rpc.saved[0].url, 'https://rpc.example.test');
-  assert.equal(boot.rpc.healthLabel, 'healthy 42ms');
+  assert.equal(boot.rpc.healthLabel, 'Connected · 42 ms');
   assert.equal(boot.recovery.activeJournalCount, 1);
   assert.equal(boot.recovery.pendingWalletCount, 1);
   assert.equal(boot.secretPin.configured, true);

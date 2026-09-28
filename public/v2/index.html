@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=99">
+  <link rel="stylesheet" href="./styles.css?v=100">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -119,6 +119,7 @@
           </div>
           <div class="pool-support-result" id="poolSupportResult" aria-live="polite"></div>
         </section>
+        <div class="coin-page-footer" id="coinPageFooter"></div>
         </div>
       </section>
 
@@ -293,7 +294,8 @@
                   </label>
                   <label>
                     <span>Target market cap (USD)</span>
-                    <input id="targetMarketCapUsd" type="text" value="250,000" autocomplete="off">
+                    <input id="targetMarketCapUsd" type="text" value="250,000" autocomplete="off" aria-describedby="targetMarketCapHint">
+                    <small class="field-hint" id="targetMarketCapHint">With the supply, this sets the launch price.</small>
                   </label>
                   <div class="logo-input-row">
                     <span class="logo-input-label">Logo</span>
@@ -420,7 +422,7 @@
                   </form>
 
                   <details class="drawer-section" id="airdropSection" aria-label="Airdrop CSV import">
-                    <summary><span>Airdrop</span><span class="risk-badge warn" id="airdropSummary">Off</span></summary>
+                    <summary><span>Airdrop</span><span class="risk-badge is-neutral" id="airdropSummary">Off</span></summary>
                     <label class="supply-field" for="airdropCsvText"><span>CSV recipients</span></label>
                     <textarea id="airdropCsvText" rows="4" spellcheck="false" placeholder="wallet,tokens&#10;Recipient111...,1000"></textarea>
                     <div class="airdrop-budget-controls">
@@ -753,7 +755,7 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=1"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=191"></script>
+  <script src="./app.js?v=192"></script>
   <script src="./nfts.js?v=1"></script>
 </body>
 </html>

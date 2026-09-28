@@ -732,9 +732,12 @@ function tokenLogoStampMarkup() {
     const reason = LOGO_STAMP_SKIP_REASONS[stamp.reason] || 'CA stamp preview unavailable.';
     return `<p class="token-logo-stamp-note">${escapeHtml(reason)}</p>`;
   }
-  const caption = stamp.sample
-    ? 'The contract address is printed on the logo at launch (sample shown).'
-    : `Printed on the logo: ${fullAddress(stamp.mint)}`;
+  // Before the address exists the preview can only show a made-up one,
+  // which reads as a broken logo; say what will happen instead.
+  if (stamp.sample) {
+    return '<p class="token-logo-stamp-note">The contract address is printed along the bottom of the logo at launch.</p>';
+  }
+  const caption = `Printed on the logo: ${fullAddress(stamp.mint)}`;
   return `
     <figure class="token-logo-stamp-preview">
       <img src="${escapeHtml(stamp.dataUrl)}" alt="Logo with the contract address stamped along the bottom">
@@ -836,7 +839,7 @@ function fundingMeterSnapshot(config = currentLaunchConfig()) {
 
   return {
     availableSol,
-    availableLabel: hasWalletBalance ? 'Wallet SOL' : 'Planned SOL',
+    availableLabel: hasWalletBalance ? 'In the wallet' : 'Budget',
     availableClass: fundingEstimateStatus.matchesConfig && !hasWalletBalance ? 'warn' : '',
     hasWalletBalance,
     walletBalanceFresh,
@@ -1093,9 +1096,9 @@ function renderChartDeck() {
   const supportSolTotal = topology.pools.reduce((sum, pool) => sum + Number(pool.support?.solValue || 0), 0);
   const bands = [
     ...liquidityDepthRows(topology),
-    ['Slices', clampPercent(sliceCount * 16), `${sliceCount} keys`],
-    ['Ladder', clampPercent(ladderCount * 12), `${ladderCount} bands`],
-    ['Support', clampPercent(supportSolTotal * 60), `${supportSolTotal.toFixed(2)} SOL`],
+    ['Locked positions', clampPercent(sliceCount * 16), String(sliceCount)],
+    ['Extra bands', clampPercent(ladderCount * 12), ladderCount ? String(ladderCount) : 'none'],
+    ['Buy support', clampPercent(supportSolTotal * 60), `${supportSolTotal.toFixed(2)} SOL`],
   ].slice(0, 5);
 
   $('#tokenomicsChart').classList.add('has-svg');
@@ -1137,10 +1140,10 @@ function renderChartDeck() {
     <div class="funding-track" aria-label="Funding progress">
       <span style="width:${funding.fundedPercent}%"></span>
     </div>
-    <div class="funding-row ${escapeHtml(funding.availableClass)}"><span>${escapeHtml(funding.availableLabel)}</span><strong>${funding.estimateAvailable ? `${funding.availableSol.toFixed(2)} / ${funding.estimatedCost.toFixed(2)} SOL` : `${funding.availableSol.toFixed(2)} SOL planned`}</strong></div>
-    <div class="funding-row ${escapeHtml(funding.missingClass)}"><span>${funding.estimateAvailable ? 'Missing SOL' : 'Cost estimate'}</span><strong>${funding.estimateAvailable ? `${funding.missingSol.toFixed(2)} SOL` : 'Run estimator first'}</strong></div>
-    <div class="funding-row ${escapeHtml(funding.acquireClass)}"><span>Acquired quotes</span><strong>${escapeHtml(funding.acquireLabel)}</strong></div>
-    <div class="funding-row ${escapeHtml(funding.manualClass)}"><span>Manual quote</span><strong>${escapeHtml(funding.manualLabel)}</strong></div>
-    <div class="funding-row ${escapeHtml(funding.observedClass)}"><span>Observed spend</span><strong>${escapeHtml(funding.observedLabel)}</strong></div>
+    <div class="funding-row ${escapeHtml(funding.availableClass)}"><span>${escapeHtml(funding.availableLabel)}</span><strong>${funding.estimateAvailable ? `${funding.availableSol.toFixed(2)} / ${funding.estimatedCost.toFixed(2)} SOL` : `${funding.availableSol.toFixed(2)} SOL`}</strong></div>
+    <div class="funding-row ${escapeHtml(funding.missingClass)}"><span>${funding.estimateAvailable ? 'Still needed' : 'Cost'}</span><strong>${funding.estimateAvailable ? `${funding.missingSol.toFixed(2)} SOL` : 'Not estimated yet'}</strong></div>
+    <div class="funding-row ${escapeHtml(funding.acquireClass)}"><span>Pair tokens bought</span><strong>${escapeHtml(funding.acquireLabel)}</strong></div>
+    <div class="funding-row ${escapeHtml(funding.manualClass)}"><span>Pair tokens to send</span><strong>${escapeHtml(funding.manualLabel)}</strong></div>
+    <div class="funding-row ${escapeHtml(funding.observedClass)}"><span>Spent so far</span><strong>${escapeHtml(funding.observedLabel)}</strong></div>
   `;
 }

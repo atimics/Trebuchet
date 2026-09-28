@@ -175,7 +175,8 @@ function renderRpcSettingsPanel() {
       </div>
       ${isPublic ? '<div class="rpc-warning">Public Solana RPCs are launch hazards. Save a dedicated endpoint before creating pools.</div>' : ''}
       <div class="rpc-saved-list">
-        ${saved.length ? saved.map((entry) => {
+        ${saved.filter((entry) => entry.url !== activeUrl).length ? `<small class="rpc-saved-title">Other saved endpoints</small>` : ''}
+        ${saved.some((entry) => entry.url !== activeUrl) ? saved.filter((entry) => entry.url !== activeUrl).map((entry) => {
           const selected = entry.url === activeUrl;
           return `
             <article class="${selected ? 'is-active' : ''}">
@@ -189,7 +190,7 @@ function renderRpcSettingsPanel() {
               </span>
             </article>
           `;
-        }).join('') : '<div class="empty-state compact">No saved RPC endpoints loaded.</div>'}
+        }).join('') : ''}
       </div>
       <div class="rpc-add-grid">
         <label>
@@ -238,15 +239,12 @@ function renderSettings() {
         <button class="pill-button" type="button" data-action="${escapeHtml(pinMeta.primaryAction)}" ${pinMeta.disabled || state.secretPin.busy ? 'disabled' : ''}>
           ${escapeHtml(state.secretPin.busy || pinMeta.primaryLabel)}
         </button>
-        <button class="pill-button" type="button" data-action="refresh-secret-pin" ${state.apiStatus !== 'connected' || state.secretPin.busy ? 'disabled' : ''}>
-          Refresh
-        </button>
-        <button class="pill-button" type="button" data-action="change-secret-pin" ${state.apiStatus !== 'connected' || !state.secretPin.configured || state.secretPin.busy ? 'disabled' : ''}>
+        ${state.secretPin.configured ? `<button class="pill-button" type="button" data-action="change-secret-pin" ${state.apiStatus !== 'connected' || state.secretPin.busy ? 'disabled' : ''}>
           Change
         </button>
-        <button class="pill-button danger" type="button" data-action="reset-secret-pin" ${state.apiStatus !== 'connected' || !state.secretPin.configured || state.secretPin.busy ? 'disabled' : ''}>
+        <button class="pill-button danger" type="button" data-action="reset-secret-pin" ${state.apiStatus !== 'connected' || state.secretPin.busy ? 'disabled' : ''}>
           Reset
-        </button>
+        </button>` : ''}
       </span>
     </article>
     ${renderReleasePanel()}

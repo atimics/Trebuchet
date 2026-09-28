@@ -907,7 +907,7 @@ function renderClassicBridge() {
             ? 'Mints the supply and removes mint and freeze control. The name and logo stay hidden until the pool is locked.'
             : 'Mints the supply and removes mint and freeze control.'}</p>
         </div>
-        ${state.demoActive ? '' : `<aside><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span><strong>Can't be undone.</strong> Fix mistakes in Token &amp; pools first.</span></aside>`}
+        ${state.demoActive || tokenComplete ? '' : `<aside><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span><strong>Can't be undone.</strong> Fix mistakes in Token &amp; pools first.</span></aside>`}
       </section>
       <div class="launch-fact-grid">
         <span><small>Name</small><strong>${escapeHtml(config.token.name || 'Untitled')}</strong></span>
@@ -930,7 +930,7 @@ function renderClassicBridge() {
         <div>
           <h2 id="liquidityStepTitle">Create &amp; lock liquidity</h2>
         </div>
-        <aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>
+        ${state.demoActive || liquidityComplete ? '' : `<aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>`}
       </section>
       <div class="launch-fact-grid">
         <span><small>Pools</small><strong>${poolCount}</strong></span>

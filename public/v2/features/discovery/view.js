@@ -116,7 +116,7 @@ function renderPersonalDiscovery() {
         ` : ''}
       </details>
     ` : ''}
-    <p class="discovery-scan-budget">${enabledWatchOnlyCount + enabledManagedCount} enabled · ${scanConcurrency} at a time</p>
+    ${enabledWatchOnlyCount + enabledManagedCount ? `<p class="discovery-scan-budget">Refresh looks through ${enabledWatchOnlyCount + enabledManagedCount} wallet${enabledWatchOnlyCount + enabledManagedCount === 1 ? '' : 's'}, ${scanConcurrency} at a time.</p>` : ''}
   `;
 
   const progressLabel = personalDiscoveryProgressLabel();
@@ -145,6 +145,12 @@ function renderPersonalDiscovery() {
   ['personalDiscoveryStatus', 'discoveryWalletStatus'].forEach((id) => {
     const statusNode = $(`#${id}`);
     if (!statusNode) return;
+    // The Wallets tab already says to add an address; don't say it twice.
+    if (id === 'discoveryWalletStatus' && !snapshot && !state.discovery.personalError && !state.discovery.scanning
+      && enabledWatchOnlyCount + enabledManagedCount === 0) {
+      statusNode.innerHTML = '';
+      return;
+    }
     statusNode.classList.toggle('is-error', Boolean(state.discovery.personalError));
     statusNode.classList.toggle('is-warning', !state.discovery.personalError && scanWarnings.length > 0);
     statusNode.title = scanWarnings.join('\n');

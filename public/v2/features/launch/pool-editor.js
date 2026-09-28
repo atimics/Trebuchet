@@ -478,7 +478,8 @@ function renderAirdropPanel() {
     : airdrop.enabled
       ? `${airdrop.recipientCount} / ${formatPercent(airdrop.supplyPercent)}%`
       : 'Off';
-  summary.className = `risk-badge ${hasError ? 'danger' : airdrop.enabled ? '' : 'warn'}`;
+  // Off is the normal state, not a warning.
+  summary.className = `risk-badge ${hasError ? 'danger' : airdrop.enabled ? '' : 'is-neutral'}`;
   const requested = Number(airdrop.requestedSupplyPercent || 0);
   const effective = Number(airdrop.supplyPercent || 0);
   const required = Number(airdrop.requiredSupplyPercent || 0);

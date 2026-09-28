@@ -242,3 +242,7 @@ Validation for the upload adapter stage: all 275 architecture tests and all 105 
 `npm run test:e2e:runtime-upload:localnet` starts a private loopback Solana validator and a local storage fixture. The fixture uses real Solana-signed data items and RSA-signed storage receipts. Each of three cases kills the client after the validator accepts a deposit, the storage fixture acknowledges that deposit, or the fixture accepts the upload. Fresh clients recover each case, then replay the saved receipt with zero remote requests.
 
 The drill passed on Node 25.8.2 and Node 22.23.3. It verified three distinct finalized deposits, three verified uploads, the exact storage-recipient credits, and payer debits including fees. On Node 22 the first recovery resubmitted the same signed deposit while its receipt became visible; it still produced one finalized payment. The test cleans up its clients, validator, and ledger. Production Irys-node delivery and the pending host connection remain separate requirements.
+
+### Base UI changes retained in feature sources
+
+Base changes through `17ed596` are integrated. Its 24 renderer edits now live in the eight matching feature files. The rebuilt renderer matches the merged renderer byte for byte, so the build retains the updated wallet, launch, recovery, history, and coin views. All 115 renderer and shared-browser tests passed. This resolves the CI bundle drift caused by merging the newer base's direct renderer edits with this branch's feature build.

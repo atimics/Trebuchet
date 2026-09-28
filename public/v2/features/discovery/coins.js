@@ -635,6 +635,7 @@ function coinHeaderHtml({ name, symbol, image = null, status = '', address = nul
 }
 
 function renderCoinPage(coin) {
+  if ($('#coinPageFooter')) $('#coinPageFooter').innerHTML = '';
   const body = $('#coinPageBody');
   const supportPanel = $('#poolSupportPanel');
   if (!body) return;
@@ -673,10 +674,25 @@ function renderCoinPage(coin) {
     ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
     ${coinMarketEvidenceHtml(coin.mint)}
     <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Positions</span><h2>Your positions</h2></div><button class="pill-button" type="button" data-action="refresh-coin-positions">Refresh</button></div>${coinPositionsHtml()}</section>
-    <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>
-    ${coin.status === 'Added' ? `<div class="coin-actions"><button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button></div>` : ''}`;
+    <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>`;
+  // Removing a coin is the page's last, least-used action: it sits after
+  // buy support, not between the coin's activity and its actions.
+  const footer = $('#coinPageFooter');
+  if (footer) {
+    footer.innerHTML = coin.status === 'Added'
+      ? `<button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button>`
+      : '';
+  }
   if (supportPanel) {
     supportPanel.hidden = false;
+    // A test coin has no real pool: buy support is simulated against a
+    // sample pool, and the panel says so.
+    const intro = supportPanel.querySelector('.pool-support-intro');
+    if (intro) {
+      intro.textContent = coin.practice
+        ? 'Test: this runs against a sample pool in the simulator. Nothing is sent. On a real coin it puts SOL below the price in its Raydium SOL pool, so sellers have something to sell into.'
+        : "Put SOL below this coin's price in its Raydium SOL pool, so sellers have something to sell into. It is signed by the selected wallet and is not locked: you can withdraw it later.";
+    }
     const target = $('#poolSupportTarget');
     if (target && target.value !== coin.mint) {
       target.value = coin.mint;
