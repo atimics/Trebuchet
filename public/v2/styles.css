@@ -16385,8 +16385,10 @@ body[data-active-view="launch"] #launchIdentityChip {
 .live-launch-facts .is-mismatch i,
 .live-launch-facts .is-mismatch strong { color: var(--red); }
 
-/* Mode is always visible: which one is on, and what it means. */
+/* Mode is always visible: which one is on, and what it means. It keeps its
+   own height when the Plan drawer beside it opens. */
 .launch-mode {
+  align-self: start;
   display: flex;
   align-items: center;
   gap: 10px;
