@@ -29,3 +29,24 @@ test('Helius display meta gives the name and a usable logo URL', () => {
   );
   assert.equal(extractDisplayMetaFromHeliusAsset({ content: {} }), null);
 });
+
+test('the on-chain pool price is the last fallback, and never for USDC or USDT', async () => {
+  const { getUsdPrice, setOnChainPriceFallback } = await import('../tokenInfoService.js');
+  const realFetch = globalThis.fetch;
+  const asked = [];
+  // Every price API is rate-limited.
+  globalThis.fetch = async () => new Response('rate limited', { status: 429 });
+  setOnChainPriceFallback(async (mint) => { asked.push(mint); return '0.5'; });
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const mint = 'Fa11backMint1111111111111111111111111111111';
+    assert.equal((await getUsdPrice(mint)).toString(), '0.5');
+    assert.equal(await getUsdPrice('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'), null);
+    assert.deepEqual(asked, [mint]);
+  } finally {
+    globalThis.fetch = realFetch;
+    console.warn = warn;
+    setOnChainPriceFallback(null);
+  }
+});

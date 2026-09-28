@@ -142,7 +142,7 @@ import { getRpcUrl, getNetwork } from './rpcConfig.js';
 // USD lookups call getUsdPrice directly. A bare `export { ... } from` is only a
 // re-export and would leave these undefined locally (which silently sent every
 // SOL price into the fallback path).
-import { getTokenMetadata, getUsdPrice } from './tokenInfoService.js';
+import { getTokenMetadata, getUsdPrice, setOnChainPriceFallback } from './tokenInfoService.js';
 import { landTxWithRetry } from './chainRetry.js';
 import { getOnChainPriceUsd, clmmPriceBPerA } from './onChainPriceService.js';
 import { normalizeDistribution } from './lpDistribution.js';
@@ -5708,9 +5708,20 @@ export async function getQuoteTokenOnChainPrice({ mint, solUsd }) {
     // POOL_SPREAD is surfaced to the user as a warning by the caller, not
     // hidden — return the error shape so it can be shown.
     if (e && e.code === 'POOL_SPREAD') return { spreadError: e.message, spreadPct: e.spreadPct };
+    if (process.env.TREBUCHET_DEBUG_TOKEN_INFO) console.warn(`on-chain price for ${mint}: ${e?.message || e}`);
     return null;
   }
 }
+// Token prices fall back to the token's own on-chain pools when every price
+// API misses, using the same rules as the launch (see tokenInfoService).
+// SOL itself is priced from its USDC/USDT pools; a token's SOL pools need
+// SOL's price, and without one only its stablecoin pools count.
+setOnChainPriceFallback(async (mint) => {
+  const solUsd = mint === WSOL_MINT ? null : await getUsdPrice(WSOL_MINT);
+  const result = await getQuoteTokenOnChainPrice({ mint, solUsd });
+  return result?.priceUsd ?? null;
+});
+
 function _launchGetUsdPrice(mint) {
   return __launchOracleForTests ? __launchOracleForTests(mint) : getUsdPrice(mint);
 }

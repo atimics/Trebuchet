@@ -79,6 +79,19 @@ const HELIUS_HOST_RE = /(^|\.)helius-rpc\.com$/i;
 const HELIUS_ASSET_TTL_MS = 60 * 1000;
 const heliusAssets = new Map();
 
+// Last resort: price from the token's own on-chain pools. lpService
+// registers the reader, since it imports this module and can't be imported
+// back. USDC and USDT are the $1 anchors pool prices are measured in, so
+// they are never priced this way; SOL is, from its USDC/USDT pools.
+const ON_CHAIN_ANCHOR_MINTS = new Set([
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+]);
+let onChainPriceFallback = null;
+
+export function setOnChainPriceFallback(fn) {
+  onChainPriceFallback = typeof fn === 'function' ? fn : null;
+}
+
 // ---------------------------------------------------------------------------
 // Cache
 // ---------------------------------------------------------------------------
@@ -901,7 +914,10 @@ async function fetchDisplayMetaFromGecko(mintAddress) {
 //      which routes the same pool universe Raydium does. Closest
 //      proxy to "the price our pool will be measured against."
 //   2. GeckoTerminal — alternative when Jupiter has no entry.
-//   3. DexScreener — last resort for long-tail tokens.
+//   3. DexScreener — for long-tail tokens.
+//   4. The token's own on-chain Raydium pools (deepest in-range pool with
+//      at least $100 of liquidity), registered by lpService. Never rate
+//      limited by an indexer; declines to price a pool that thin.
 //
 // We try sequentially (not in parallel) because the chained-fallback
 // pattern means we only need later sources when earlier ones fail.
@@ -961,9 +977,21 @@ async function _resolvePriceUsdUncached(mintAddress) {
     }
   }
 
+  if (price == null && onChainPriceFallback && !ON_CHAIN_ANCHOR_MINTS.has(mintAddress)) {
+    try {
+      const onChain = await onChainPriceFallback(mintAddress);
+      if (onChain != null) {
+        price = new Decimal(onChain.toString());
+        source = 'on-chain pool';
+      }
+    } catch (e) {
+      console.warn(`tokenInfoService: on-chain pool price failed for ${mintAddress}:`, e.message);
+    }
+  }
+
   if (price == null) {
     console.warn(
-      `tokenInfoService: no USD price for ${mintAddress} from Helius, Jupiter, Gecko, or DexScreener`,
+      `tokenInfoService: no USD price for ${mintAddress} from Helius, Jupiter, Gecko, DexScreener, or its on-chain pools`,
     );
   } else {
     // Log every successful price resolution with the source. Invaluable
