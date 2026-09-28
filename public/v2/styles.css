@@ -16926,3 +16926,55 @@ select[data-choice-ready][hidden] {
   padding: 0 12px;
   font-size: 12px !important;
 }
+
+/* Addresses copy in full on click, wherever they appear. */
+.address-copy {
+  border-bottom: 1px dotted color-mix(in srgb, currentColor 45%, transparent);
+  cursor: copy;
+  overflow-wrap: anywhere;
+}
+
+.address-copy:hover,
+.address-copy:focus-visible {
+  border-bottom-style: solid;
+  color: var(--green);
+  outline: none;
+}
+
+/* Rarity colors in the grinder: each saved address and its grade in its
+   rarity color, and the one in use accented with it. */
+#view-launch .grinder-row.vanity-candidate .grinder-row-main code {
+  color: var(--candidate-grade, var(--ink));
+}
+
+#view-launch .grinder-row .vanity-grade {
+  color: var(--candidate-grade, var(--muted));
+  font-weight: 700;
+}
+
+#view-launch .grinder-row.vanity-candidate.is-active {
+  background: color-mix(in srgb, var(--candidate-grade, var(--green)) 11%, transparent);
+  box-shadow: inset 3px 0 0 var(--candidate-grade, var(--green));
+}
+
+#view-launch .grinder-row.vanity-candidate.is-active .grinder-radio {
+  border-color: var(--candidate-grade, var(--green));
+  background: radial-gradient(circle, var(--candidate-grade, var(--green)) 45%, transparent 50%);
+}
+
+/* The rarity palette is pale for dark backgrounds; light mode gets the same
+   hues dark enough to read. */
+body.light-mode {
+  --rarity-common: #3f6273;
+  --rarity-fine: #006d99;
+  --rarity-rare: #7433c4;
+  --rarity-rati: #9a5b00;
+  --rarity-commissioned: #7c6b00;
+}
+
+/* The older "#view-launch .vanity-candidate" rule pins every row to the
+   common color; each grade needs the same weight to take effect. */
+#view-launch .vanity-candidate.grade-fine { --candidate-grade: var(--rarity-fine); }
+#view-launch .vanity-candidate.grade-rare { --candidate-grade: var(--rarity-rare); }
+#view-launch .vanity-candidate.grade-rati { --candidate-grade: var(--rarity-rati); }
+#view-launch .vanity-candidate.grade-commissioned { --candidate-grade: var(--rarity-commissioned); }
