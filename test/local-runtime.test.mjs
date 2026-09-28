@@ -54,6 +54,19 @@ test('CLI clients share one production runtime and recover its ownership after p
     assert.equal(staleRequest.status, 403);
     assert.equal((await ensureRuntime(profile, { args: [server] })).identity.id, first.id);
 
+    // Exercise live request translation using inputs rejected before any chain call.
+    fs.writeFileSync(path.join(profile, 'userPrefs.json'), JSON.stringify({ demoMode: false }));
+    await assert.rejects(
+      runtime.request('/api/transfer-assets', { method: 'POST', body: { destinationWallet: 'invalid address' } }),
+      (error) => error.statusCode === 400 && /valid Solana address/.test(error.message),
+    );
+    for (const endpoint of ['/api/create-lp', '/api/resume-launch']) {
+      await assert.rejects(
+        runtime.request(endpoint, { method: 'POST', body: { allocations: [{}], priorResults: [] } }),
+        (error) => error.statusCode === 400 && error.code === 'TOKEN_PLAN_INCOMPLETE',
+      );
+    }
+
     process.kill(first.pid, 'SIGKILL');
     await waitFor(async () => (await connectRuntime(profile)) === null);
     const restarted = await ensureRuntime(profile, { args: [server] });

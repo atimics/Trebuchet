@@ -6644,7 +6644,9 @@ test('v2 interrupted mints finish safely before liquidity resumes', () => {
   assert.match(js, /'\/api\/finish-token-creation': 'Finishing interrupted token'/);
   assert.match(apiClientJs, /V2_RUN_EXECUTE_NEXT_PATH[\s\S]*?timeoutMs: 0/);
   assert.match(serverJs, /async function rejectIfTokenIncompleteForLiquidity/);
-  assert.equal((serverJs.match(/rejectIfTokenIncompleteForLiquidity\(res/g) || []).length, 4);
+  assert.equal((serverJs.match(/rejectIfTokenIncompleteForLiquidity\(res/g) || []).length, 2);
+  const services = readFileSync(new URL('../launchExecution.js', import.meta.url), 'utf8');
+  assert.equal((services.match(/await requireTokenCompleteForLiquidity\(/g) || []).length, 2);
   assert.match(serverJs, /code: 'TOKEN_CREATION_INCOMPLETE'/);
 });
 

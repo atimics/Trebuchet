@@ -12,6 +12,7 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..');
 const serverSrc = readFileSync(path.join(REPO, 'server.js'), 'utf8');
+const serviceSrc = readFileSync(path.join(REPO, 'launchExecution.js'), 'utf8');
 const lpSrc = readFileSync(path.join(REPO, 'lpService.js'), 'utf8');
 // The journal contract moved into @trebuchet/core; the app-level
 // launchJournal.js is a thin adapter. Audit the Core module's source.
@@ -72,11 +73,11 @@ function loadV2ServerFingerprintHarness() {
 // ---------------------------------------------------------------------------
 
 // The transfer-assets route is a named handler; slice its function body.
-function transferAssetsHandlerSource(serverSrc) {
-  const start = serverSrc.indexOf('async function transferAssetsHandler(');
-  assert.ok(start >= 0, 'transferAssetsHandler must exist');
-  const end = serverSrc.indexOf('\n}\n', start);
-  return serverSrc.slice(start, end);
+function transferAssetsHandlerSource() {
+  const start = serviceSrc.indexOf('async function transferAssets(');
+  assert.ok(start >= 0, 'transferAssets service must exist');
+  const end = serviceSrc.indexOf('\n  }\n', start);
+  return serviceSrc.slice(start, end);
 }
 
 test('journal replay covers support locks (and keys on supportIndex)', () => {
@@ -126,21 +127,21 @@ test('transfer-assets airdrop step skips recipients already delivered', () => {
   // Reads the journal record, filters by delivered wallet set, and runs
   // executeAirdrop with the pending subset only.
   assert.ok(
-    /const priorAirdrop = launchJournal\.activeForWallet\(walletPublicKey\)\?\.airdrop \|\| null;[\s\S]{0,700}?const pendingRecipients = req\.body\.airdrop\.recipients\.filter\(/.test(serverSrc),
+    /const priorAirdrop = launchJournal\.activeForWallet\(walletPublicKey\)\?\.airdrop \|\| null;[\s\S]{0,700}?const pendingRecipients = input\.airdrop\.recipients\.filter\(/.test(serviceSrc),
     'transfer airdrop must filter against the journal delivered record',
   );
   assert.ok(
-    /recipients: pendingRecipients,[\s\S]{0,200}?onProgress: \(s\) => airdropProgressStep/.test(serverSrc),
+    /recipients: pendingRecipients,[\s\S]{0,200}?onProgress: \(s\) => airdropProgressStep/.test(serviceSrc),
     'executeAirdrop must receive the pending subset, not the raw request list',
   );
   // The persistent per-recipient record is written at completion.
   assert.ok(
-    /\{ airdrop: airdropResult \},[\s\S]{0,200}?stage: 'airdrop_completed',/.test(serverSrc),
+    /\{ airdrop: airdropResult \},[\s\S]{0,200}?stage: 'airdrop_completed',/.test(serviceSrc),
     'completion must persist the merged record on journal.airdrop',
   );
   // The all-delivered fast path skips execution entirely.
   assert.ok(
-    /airdrop_skipped_already_delivered/.test(serverSrc),
+    /airdrop_skipped_already_delivered/.test(serviceSrc),
     'a fully-delivered re-run must skip the airdrop with a journal event',
   );
 });
@@ -180,7 +181,7 @@ test('airdrop plan is journaled at create-lp and restored on resume', () => {
   );
   // Server stores it under poolPlan.airdropPlan.
   assert.ok(
-    /airdropPlan: \(req\.body\.airdrop/.test(serverSrc),
+    /airdropPlan: \(input\.airdrop/.test(serviceSrc),
     'create-lp handler must journal poolPlan.airdropPlan',
   );
   // Resume restores both the plan and the result record.
@@ -206,9 +207,9 @@ test('airdrop plan is journaled at create-lp and restored on resume', () => {
 
 test('classic resume materializes recoverable Phase 1 pool events before retrying', () => {
   assert.match(serverSrc, /app\.post\('\/api\/resume-launch', resumeLaunchHandler\);/);
-  const resumeStart = serverSrc.indexOf('async function resumeLaunchHandler(');
+  const resumeStart = serviceSrc.indexOf('async function resumeLiquidity(');
   assert.ok(resumeStart >= 0, 'resume-launch handler must exist');
-  const resumeSrc = serverSrc.slice(resumeStart, resumeStart + 6500);
+  const resumeSrc = serviceSrc.slice(resumeStart, serviceSrc.indexOf('async function transferAssets(', resumeStart));
   assert.ok(
     /const activeJournal = launchJournal\.activeForWallet\(walletPublicKey\);/.test(resumeSrc),
     'resume-launch must inspect the active journal before starting another attempt',
@@ -730,10 +731,9 @@ test('run-airdrop claims the per-wallet launch-op mutex', () => {
 });
 
 test('transfer-assets validates an explicit destination before resolving a saved signer', () => {
-  const handlerStart = serverSrc.indexOf('async function transferAssetsHandler(');
-  const handler = serverSrc.slice(handlerStart, handlerStart + 4000);
+  const handler = transferAssetsHandlerSource();
   const validIndex = handler.indexOf('destinationWallet must be a valid Solana address');
-  const signerIndex = handler.indexOf('resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey })');
+  const signerIndex = handler.indexOf('resolveSigner({ tempWalletSecretKey, walletPublicKey: input.walletPublicKey })');
   const funderIndex = handler.indexOf('findFundingWallet(walletPublicKey)');
   const requiredIndex = handler.indexOf('destinationWallet required');
   const unsafeIndex = handler.indexOf('unsafeSweepDestinationReason(destinationWallet');
@@ -747,11 +747,9 @@ test('transfer-assets validates an explicit destination before resolving a saved
 });
 
 test('transfer-assets response exposes authoritative sweep verification', () => {
-  const handlerStart = serverSrc.indexOf('async function transferAssetsHandler(');
-  const handlerEnd = serverSrc.indexOf("app.post('/api/transfer-assets'", handlerStart);
-  const handler = serverSrc.slice(handlerStart, handlerEnd);
+  const handler = transferAssetsHandlerSource();
 
-  assert.match(handler, /res\.json\(\{[\s\S]*?walletEmpty,[\s\S]*?hasPartialFailure,/);
+  assert.match(handler, /return \{[\s\S]*?walletEmpty,[\s\S]*?hasPartialFailure,/);
 });
 
 test('index.html has no duplicate element ids', () => {
@@ -847,10 +845,10 @@ test('an existing mint account is adopted instead of re-created forever', () => 
   // earlier attempt landed without finishing), the server must adopt the
   // known address so readiness routes to finish-token-creation. Without this
   // the launch dies on "already in use" on every retry.
-  assert.match(serverSrc, /const accountAlreadyInUse = \/already in use\|custom program error: 0x0\/i\.test/);
-  assert.match(serverSrc, /stage: 'token_account_adopted'/);
-  assert.match(serverSrc, /code: 'TOKEN_ACCOUNT_ALREADY_EXISTS'/);
-  assert.match(serverSrc, /token: \{ mint: existingMint \}/);
+  assert.match(serviceSrc, /const accountAlreadyInUse = \/already in use\|custom program error: 0x0\/i\.test/);
+  assert.match(serviceSrc, /stage: 'token_account_adopted'/);
+  assert.match(serviceSrc, /code: 'TOKEN_ACCOUNT_ALREADY_EXISTS'/);
+  assert.match(serviceSrc, /token: \{ mint: existingMint \}/);
   // The service surfaces the derived mint address when mint creation fails.
   assert.match(tokenServiceSrc, /if \(derived && !mintError\.tokenMint\) mintError\.tokenMint = derived;/);
 });

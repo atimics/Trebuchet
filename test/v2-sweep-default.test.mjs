@@ -45,8 +45,8 @@ test('an explicit return wallet is used as the sweep destination', () => {
 
 test('the live sweep handler resolves a blank destination to the funder and refuses unsafe ones', async () => {
   const { readFile } = await import('node:fs/promises');
-  const server = await readFile(new URL('../server.js', import.meta.url), 'utf8');
-  const handler = server.slice(server.indexOf('async function transferAssetsHandler'), server.indexOf('const nftSweep = await sweepNftsToDestination'));
+  const services = await readFile(new URL('../launchExecution.js', import.meta.url), 'utf8');
+  const handler = services.slice(services.indexOf('async function transferAssets('), services.indexOf('const nftSweep = await sweepNftsToDestination'));
   assert.match(handler, /findFundingWallet\(walletPublicKey\)/);
   assert.match(handler, /unsafeSweepDestinationReason\(destinationWallet, \{ launchWallet: walletPublicKey \}\)/);
 });

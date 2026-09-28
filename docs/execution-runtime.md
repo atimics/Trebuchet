@@ -81,3 +81,12 @@ The Solana adapter verifies every Ed25519 signature, the exact wire bytes, the f
 Existing token and liquidity retry paths now propagate failed chain checks. Position and lock queries require complete responses, and lock queries use finalized state. This closes an existing path that could send again after a failed recovery read.
 
 The engine interfaces are ready for host integration. The existing live token, upload, liquidity, and sweep services still need adapters, durable spending approval, and ordinary service methods. The desktop process split still awaits the pending approval described above. Live CLI and runner wiring remain in the completion checklist.
+
+
+### Ordinary live service methods
+
+Token creation, interrupted token recovery, metadata reveal, liquidity creation, liquidity recovery, and asset transfer now live in `launchExecution.js`. Each method takes an ordinary input object and explicit host interfaces. Classic HTTP routes translate success or typed errors. The v2 live dispatcher calls these same methods directly.
+
+The service tests exercise all six methods. They verify shared wallet admission, validation before signing, liquidity failure details, saved authority choices, airdrop recovery, and recovery-key retention. A concurrent rejected request preserves the active request's lock and progress. The final sweep record commits before the wallet recovery key is removed. A failed final commit therefore preserves the key.
+
+The runtime process test also sends invalid live HTTP requests. It verifies their error status and payload before any chain call. Browser practice launch and package coverage pass after extraction. Production transaction adapters, durable approval, and engine integration remain in the completion checklist.
