@@ -78,7 +78,7 @@ const discoveryPreview = {
 const chapters = [
   ['01', 'Practice launch', 'Run a complete launch recipe with no transaction and no SOL spent.'],
   ['02', 'Wallet custody', 'Create and select the isolated local signer used by Trebuchet.'],
-  ['03', 'Six launch phases', 'Inspect every control and proof in each phase.'],
+  ['03', 'The coin\'s facts', 'Inspect what is true about the coin, one fact at a time.'],
   ['04', 'Token discovery', 'Review scored assets and the user-owned wallet graph.'],
   ['05', 'Recovery and history', 'Inspect resumable journals, wallets, audit evidence, and checkpoints.'],
   ['06', 'Runtime settings', 'Review RPC, security, release, and execution policy.'],
@@ -388,9 +388,9 @@ try {
   await caption(page, 'Token & pools', 'Attach the token image', 'Images are validated and automatically compressed into the launch envelope.', 450);
   await page.setInputFiles('#tokenLogoFile', path.join(root, 'public', 'release-assets', 'frames', 'f01.png'));
   await hold(1100);
-  await clickStep(page, '.launch-workspace-tab[data-launch-workspace="wallet"]', 'Wallet', 'Create the launch wallet', 'An isolated, app-managed signer runs the launch. Your own wallet only funds it and receives the assets.');
+  await clickStep(page, '.coin-fact[data-coin-fact="wallet"]', 'Wallet', 'Create the launch wallet', 'An isolated, app-managed signer runs the launch. Your own wallet only funds it and receives the assets.');
   await clickStep(page, '[data-classic-workspace="wallet"] button:has-text("Create")', 'Wallet', 'Generate the signer', 'The keypair is created and encrypted on this device.', { after: 2200 });
-  await clickStep(page, '.launch-workspace-tab[data-launch-workspace="mint"]', 'Create token', 'Review the token', 'Creating the token is permanent in a live launch. Practice runs it in the simulator.');
+  await clickStep(page, '.coin-fact[data-coin-fact="mint"]', 'Create token', 'Review the token', 'Creating the token is permanent in a live launch. Practice runs it in the simulator.');
   await clickStep(page, '[data-classic-workspace="mint"] [data-action="run-demo-launch"]', 'Practice', 'Run the practice launch', 'Trebuchet checkpoints each guarded operation in order.', { after: 700 });
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'finish', null, { timeout: 120_000 });
   await caption(page, 'Practice · Complete', 'The entire recipe passed', 'The simulator created the token, verified authorities, built and locked liquidity, returned assets, and saved a local record.', 3200);
@@ -407,28 +407,28 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('#accountList .account-row').length >= 2);
   await caption(page, 'Wallets', 'Custody remains explicit', 'Copy the funding address, inspect balances, manage the Recovery PIN, or reveal a secret only during manual recovery.', 2200);
 
-  await chapter(page, '03', 'Six launch phases', 'Every launch runs through the same visible phases: wallet, token and pools, funding, token creation, liquidity, and final proof.');
-  await clickStep(page, '[data-view="launch"]', 'Phase 1 of 6', 'Choose the launch wallet', 'The selected Trebuchet wallet is the only signer for this run.');
-  await clickStep(page, '.launch-workspace-tab[data-launch-workspace="wallet"]', 'Phase 1 of 6', 'Wallet', 'Unlocking the selected launch wallet advances directly to token and pool design.');
+  await chapter(page, '03', 'The coin\'s facts', 'A coin being created shows what is true about it: signer, plan, funding, token, liquidity, and the launch wallet. The first fact that does not hold is the one to do.');
+  await clickStep(page, '[data-view="launch"]', 'Signer', 'Choose the launch wallet', 'The selected Trebuchet wallet is the only signer for this run.');
+  await clickStep(page, '.coin-fact[data-coin-fact="wallet"]', 'Signer', 'Wallet', 'Once the launch wallet is unlocked, the signer holds and the next fact opens.');
   await clickStep(page, '.launch-wallet-choice', 'Phase 1 → 2', 'Unlock and continue', 'A locked wallet opens the Recovery PIN gate; an already-ready wallet advances immediately.');
-  await caption(page, 'Phase 2 of 6', 'Design token and pools', 'Set permanent identity, liquidity strategy, allocations, Fee Key recipients, and the final return wallet.', 2100);
+  await caption(page, 'Plan', 'Design token and pools', 'Set permanent identity, liquidity strategy, allocations, Fee Key recipients, and the final return wallet.', 2100);
   const recipeSummary = page.locator('.launch-design-details > summary');
   if (await recipeSummary.isVisible()) {
     await clickStep(page, '.launch-design-details > summary', 'Phase 2 · Advanced controls', 'Open liquidity and distribution', 'Optional controls remain grouped behind the simple default recipe.');
     await caption(page, 'Phase 2 · Return wallet', 'Every remaining asset has a destination', 'The Return wallet field receives Fee Keys, remaining tokens, and leftover SOL after launch.', 1800);
   }
-  await clickStep(page, '.launch-workspace-tab[data-launch-workspace="fund"]', 'Phase 3 of 6', 'Estimate and fund', 'Trebuchet calculates rent, pool costs, liquidity SOL, and any quote-token requirements.');
+  await clickStep(page, '.coin-fact[data-coin-fact="fund"]', 'Funding', 'Estimate and fund', 'Trebuchet calculates rent, pool costs, liquidity SOL, and any quote-token requirements.');
   const estimateButton = page.locator('.classic-workspace-fund [data-action="estimate-funding"]');
   if (await estimateButton.count() && await estimateButton.first().isVisible()) {
     await clickStep(page, '.classic-workspace-fund [data-action="estimate-funding"]', 'Phase 3 · Estimate', 'Calculate the funding envelope', 'Only the isolated launch wallet should receive the estimated deposit.');
     await page.waitForSelector('.classic-workspace-fund .funding-task-address');
   }
   await caption(page, 'Phase 3 · Return wallet', 'Destination status is actionable', 'If history cannot infer the funding source, Set return wallet links directly back to the correct Phase 2 field.', 1900);
-  await clickStep(page, '.launch-workspace-tab[data-launch-workspace="mint"]', 'Phase 4 of 6', 'Create token', 'Review the permanent mint facts, create metadata, and revoke mint, freeze, and update authorities.');
+  await clickStep(page, '.coin-fact[data-coin-fact="mint"]', 'Token', 'Create token', 'Review the permanent mint facts, create metadata, and revoke mint, freeze, and update authorities.');
   await caption(page, 'Phase 4 · Guardrail', 'First irreversible phase', 'Trebuchet will not enable execution until the wallet, funding, destination, and preflight checks pass.', 2100);
-  await clickStep(page, '.launch-workspace-tab[data-launch-workspace="liquidity"]', 'Phase 5 of 6', 'Create and lock liquidity', 'Create pools and positions, lock every required position, and deliver the resulting Fee Keys.');
+  await clickStep(page, '.coin-fact[data-coin-fact="liquidity"]', 'Liquidity', 'Create and lock liquidity', 'Create pools and positions, lock every required position, and deliver the resulting Fee Keys.');
   await caption(page, 'Phase 5 · Recovery', 'Every position is checkpointed', 'Interrupted runs resume from recorded pool, position, lock, and Fee Key evidence instead of repeating completed work.', 2100);
-  await clickStep(page, '.launch-workspace-tab[data-launch-workspace="finish"]', 'Phase 6 of 6', 'Distribute, return, and prove', 'Run airdrops, transfer Fee Keys, sweep remaining assets, verify the launch wallet is empty, and save the dossier.');
+  await clickStep(page, '.coin-fact[data-coin-fact="finish"]', 'Launch wallet', 'Distribute, return, and prove', 'Run airdrops, transfer Fee Keys, sweep remaining assets, verify the launch wallet is empty, and save the dossier.');
   await caption(page, 'Phase 6 · Proof', 'Completion requires evidence', 'A launch is complete only after terminal sweep evidence, pool identities, authority facts, and the final report agree.', 2600);
 
   await chapter(page, '04', 'Token discovery', 'Discovery starts from wallets the user knows—including Trebuchet-managed wallets—then ranks the tokens found through that private graph.');
