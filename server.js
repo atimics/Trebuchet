@@ -3385,7 +3385,7 @@ app.post('/api/v2/launch-configs', (req, res) => {
       id: req.body?.id ? String(req.body.id) : null,
       name: req.body?.name ? String(req.body.name) : null,
       config: req.body?.config || {},
-      source: 'app',
+      source: req.body?.source === 'cli' ? 'cli' : 'app',
     });
     res.json({ success: true, launch: saved });
   } catch (error) {

@@ -37,7 +37,7 @@ The journal now throws `RECOVERY_STORAGE_UNAVAILABLE` on a failed read or commit
 
 ### Durable storage stage
 
-The local API journal and saved-launch adapters now use `execution.sqlite`. Saved-launch CLI commands use the same store. Legacy JSON import commits as one transaction, and the source files are preserved. The database also has immutable launch identities, operation IDs, signed transaction bytes, and receipts for the engine to adopt.
+The local API journal and saved-launch adapters now use `execution.sqlite`. Saved-launch CLI commands use the same store through the owned runtime. Legacy JSON import commits as one transaction, and the source files are preserved. The database also has immutable launch identities, operation IDs, signed transaction bytes, and receipts for the engine to adopt.
 
 `packages/runtime/test/` covers separate writers, process death, ownership release, migration, rollback, and transaction records after a simulated broadcast. The owner module holds a real exclusive SQLite write transaction. The local API acquires it during startup. Engine and chain integration remain open requirements above.
 
@@ -99,3 +99,8 @@ Journal callbacks now propagate storage failures through token creation, token r
 Injected failure tests reproduced continued execution in the earlier code. They now verify that a failed logo receipt stops the metadata upload, a failed token checkpoint stops the next step, a failed lock receipt stops further locks, and a failed airdrop receipt stops later sweeps. Asset-loop tests count exactly one attempted transfer when that transfer or its receipt reports a recovery error. An uncertain lock lookup stops before building a transaction. Failed writes with timeout text also stop the retry loop.
 
 These checks cover the existing callbacks and error paths. Production adapters must still save each signed transaction and spending reservation through the engine before broadcast. That full requirement remains open above.
+
+
+### Saved launches use the profile owner
+
+CLI saved-launch commands now attach to the local runtime, or start it under the profile lock. The runtime handles save, list, and remove through the same API used by the desktop. CLI output retains the database path and saved-launch fields. The integration test checks that the app can read a CLI save and that the same owner remains active across all three commands.

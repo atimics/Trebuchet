@@ -64,7 +64,7 @@ function commandError(code, message, details = null) {
   return new TrebuchetCoreError(code, message, { details });
 }
 
-// Saved-launch store resolution: explicit --config-dir, then the app's
+// Profile resolution: explicit --config-dir, then the app's
 // TREBUCHET_CONFIG_DIR, then the current directory (matching the fallback the
 // root compat entrypoints use).
 function cliFlywheelStore(configDirOption) {
@@ -76,10 +76,27 @@ function cliFlywheelStore(configDirOption) {
   });
 }
 
-async function cliLaunchStore(configDirOption) {
-  const { createProfileLaunchStore } = await import('@trebuchet/runtime/profile-stores');
-  const dir = configDirOption || process.env.TREBUCHET_CONFIG_DIR || process.cwd();
-  return createProfileLaunchStore(dir);
+async function cliLaunchClient(configDirOption) {
+  const { ensureRuntime } = await import('@trebuchet/runtime/client');
+  const profile = path.resolve(configDirOption || process.env.TREBUCHET_CONFIG_DIR || process.cwd());
+  const runtime = await ensureRuntime(profile, {
+    args: [fileURLToPath(new URL('../../../server.js', import.meta.url))],
+  });
+  const request = async (endpoint, options) => {
+    try { return await runtime.request(endpoint, options); }
+    catch (error) {
+      if (error.statusCode === 400 && error.code === 'RUNTIME_REQUEST_FAILED') {
+        throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, error.message);
+      }
+      throw error;
+    }
+  };
+  return {
+    filePath: path.join(runtime.identity.profile, 'execution.sqlite'),
+    list: async () => (await request('/api/v2/launch-configs')).launches,
+    save: async (input) => (await request('/api/v2/launch-configs', { method: 'POST', body: input })).launch,
+    remove: async (id) => (await request('/api/v2/launch-configs/remove', { method: 'POST', body: { id } })).removed,
+  };
 }
 
 function requirePositionals(positionals, expected, usage) {
@@ -343,8 +360,8 @@ export async function runCli(argv = [], {
       requireOptions(options, ['config', 'name', 'id', 'config-dir', 'json'], usage);
       if (!options.config) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--config is required.');
       const input = await readJsonFile(options.config, 'Launch config');
-      const store = await cliLaunchStore(options['config-dir']);
-      const saved = store.save({
+      const store = await cliLaunchClient(options['config-dir']);
+      const saved = await store.save({
         id: options.id || null,
         name: options.name || null,
         config: input.value,
@@ -361,8 +378,8 @@ export async function runCli(argv = [], {
       const usage = 'trebuchet launch list [--config-dir <dir>] [--json]';
       requirePositionals(positionals, ['launch', 'list'], usage);
       requireOptions(options, ['config-dir', 'json'], usage);
-      const store = await cliLaunchStore(options['config-dir']);
-      const launches = store.list().map((entry) => ({
+      const store = await cliLaunchClient(options['config-dir']);
+      const launches = (await store.list()).map((entry) => ({
         id: entry.id,
         name: entry.name,
         symbol: entry.config?.token?.symbol ?? null,
@@ -387,8 +404,8 @@ export async function runCli(argv = [], {
       requirePositionals(positionals, ['launch', 'remove'], usage);
       requireOptions(options, ['id', 'config-dir', 'json'], usage);
       if (!options.id) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--id is required.');
-      const store = await cliLaunchStore(options['config-dir']);
-      const removed = store.remove(options.id);
+      const store = await cliLaunchClient(options['config-dir']);
+      const removed = await store.remove(options.id);
       if (!removed) {
         throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `No saved launch with id ${options.id}.`);
       }

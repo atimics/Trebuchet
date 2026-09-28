@@ -1,6 +1,7 @@
-import { createProfileLaunchStore } from '@trebuchet/runtime/profile-stores';
+import { connectRuntime } from '@trebuchet/runtime/client';
+import { readRuntimeDescriptor } from '@trebuchet/runtime/owner';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -40,6 +41,28 @@ async function withTempDirectory(fn) {
     return await fn(directory);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+}
+
+
+async function stopTestRuntime(configDir) {
+  const runtime = await connectRuntime(configDir);
+  if (!runtime) return;
+  try {
+    await runtime.request('/api/runtime/stop', { method: 'POST' });
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { readRuntimeDescriptor(configDir); }
+      catch (error) { if (error.code === 'ENOENT') return; throw error; }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  } finally {
+    let remaining = null;
+    try { remaining = readRuntimeDescriptor(configDir); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (remaining?.id === runtime.identity.id) {
+      try { process.kill(runtime.identity.pid, 'SIGKILL'); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+    }
   }
 }
 
@@ -225,7 +248,7 @@ test('the workspace bin entry executes without Electron or the Local API', () =>
   assert.equal(payload.data.transactionExecution, false);
 });
 
-test('the packed root package bundles Core and runs the published CLI in isolation', async () => withTempDirectory(async (directory) => {
+test('the packed CLI runs isolated planning and starts its installed host for saved launches', async () => withTempDirectory(async (directory) => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const npmCache = process.env.TREBUCHET_NPM_PACK_CACHE
@@ -263,11 +286,20 @@ test('the packed root package bundles Core and runs the published CLI in isolati
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.ok, true);
   assert.equal(payload.data.transactionExecution, false);
-  const stored = spawnSync(process.execPath, [
-    'packages/cli/bin/trebuchet.js', 'launch', 'list', '--config-dir', path.join(directory, 'profile'), '--json',
-  ], { cwd: path.join(extractDirectory, 'package'), encoding: 'utf8' });
-  assert.equal(stored.status, 0, stored.stderr);
-  assert.deepEqual(JSON.parse(stored.stdout).data.launches, []);
+  // Supply installed host dependencies while keeping the packed Core and
+  // runtime packages in the extracted package's own node_modules directory.
+  await symlink(path.join(root, 'node_modules'), path.join(extractDirectory, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+  const profile = path.join(directory, 'profile');
+  try {
+    const stored = spawnSync(process.execPath, [
+      'packages/cli/bin/trebuchet.js', 'launch', 'list', '--config-dir', profile, '--json',
+    ], { cwd: path.join(extractDirectory, 'package'), encoding: 'utf8', timeout: 40_000 });
+    assert.equal(stored.status, 0, stored.stdout + stored.stderr);
+    assert.deepEqual(JSON.parse(stored.stdout).data.launches, []);
+    assert.ok(await connectRuntime(profile), 'packaged CLI starts its runtime');
+  } finally {
+    await stopTestRuntime(profile);
+  }
 }));
 
 test('execute runs a complete demo-runtime launch with a disposable wallet', async () => withTempDirectory(async (directory) => {
@@ -295,34 +327,47 @@ test('execute runs a complete demo-runtime launch with a disposable wallet', asy
   assert.equal(JSON.stringify(run).includes('secretKey'), false);
 }), { timeout: 180_000 });
 
-test('launch save/list/remove persist a launch configuration for the app', async () => withTempDirectory(async (directory) => {
+test('launch save/list/remove share the profile runtime with the app', async () => withTempDirectory(async (directory) => {
   const configPath = path.join(directory, 'launch.json');
   await writeFile(configPath, JSON.stringify(launchIntent));
   const configDir = path.join(directory, 'config');
   await mkdir(configDir, { recursive: true });
 
-  const saved = await invoke(['launch', 'save', '--config', configPath, '--name', 'CLI launch', '--config-dir', configDir, '--json']);
-  assert.equal(saved.exitCode, CliExitCode.SUCCESS, saved.stdout + saved.stderr);
-  const savedPayload = JSON.parse(saved.stdout);
-  assert.equal(savedPayload.ok, true);
-  assert.ok(savedPayload.data.id);
-  assert.equal(savedPayload.data.name, 'CLI launch');
-  const stored = createProfileLaunchStore(configDir).list();
-  assert.equal(stored.length, 1);
-  assert.equal(stored[0].config.token.symbol, launchIntent.token.symbol);
-  assert.equal(stored[0].source, 'cli');
+  try {
+    const saved = await invoke(['launch', 'save', '--config', configPath, '--name', 'CLI launch', '--config-dir', configDir, '--json']);
+    assert.equal(saved.exitCode, CliExitCode.SUCCESS, saved.stdout + saved.stderr);
+    const savedPayload = JSON.parse(saved.stdout);
+    assert.equal(savedPayload.ok, true);
+    assert.ok(savedPayload.data.id);
+    assert.equal(savedPayload.data.name, 'CLI launch');
+    const runtime = await connectRuntime(configDir);
+    assert.ok(runtime);
+    assert.notEqual(runtime.identity.pid, process.pid);
+    const ownerId = runtime.identity.id;
+    const stored = (await runtime.request('/api/v2/launch-configs')).launches;
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].config.token.symbol, launchIntent.token.symbol);
+    assert.equal(stored[0].source, 'cli');
+    await runtime.request('/api/v2/launch-configs', { method: 'POST', body: { id: savedPayload.data.id, name: 'App edit', config: launchIntent } });
 
-  const listed = await invoke(['launch', 'list', '--config-dir', configDir, '--json']);
-  assert.equal(listed.exitCode, CliExitCode.SUCCESS);
-  const listPayload = JSON.parse(listed.stdout);
-  assert.equal(listPayload.data.launches.length, 1);
-  assert.equal(listPayload.data.launches[0].symbol, launchIntent.token.symbol);
-  assert.equal(listPayload.data.launches[0].pools, 1);
+    const listed = await invoke(['launch', 'list', '--config-dir', configDir, '--json']);
+    assert.equal(listed.exitCode, CliExitCode.SUCCESS);
+    const listPayload = JSON.parse(listed.stdout);
+    assert.equal(listPayload.data.launches.length, 1);
+    assert.equal(listPayload.data.launches[0].symbol, launchIntent.token.symbol);
+    assert.equal(listPayload.data.launches[0].pools, 1);
+    assert.equal(listPayload.data.launches[0].name, 'App edit');
+    assert.equal(listPayload.data.launches[0].source, 'app');
+    assert.equal(listPayload.data.storePath, savedPayload.data.storePath);
 
-  const removed = await invoke(['launch', 'remove', '--id', savedPayload.data.id, '--config-dir', configDir, '--json']);
-  assert.equal(removed.exitCode, CliExitCode.SUCCESS);
-  const afterRemove = await invoke(['launch', 'list', '--config-dir', configDir, '--json']);
-  assert.equal(JSON.parse(afterRemove.stdout).data.launches.length, 0);
+    const removed = await invoke(['launch', 'remove', '--id', savedPayload.data.id, '--config-dir', configDir, '--json']);
+    assert.equal(removed.exitCode, CliExitCode.SUCCESS);
+    const afterRemove = await invoke(['launch', 'list', '--config-dir', configDir, '--json']);
+    assert.equal(JSON.parse(afterRemove.stdout).data.launches.length, 0);
+    assert.equal((await connectRuntime(configDir)).identity.id, ownerId);
+  } finally {
+    await stopTestRuntime(configDir);
+  }
 }), { timeout: 60_000 });
 
 test('confirm refuses to sign a placeholder sweep destination on a real network', async () => withTempDirectory(async (directory) => {
