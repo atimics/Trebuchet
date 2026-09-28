@@ -143,7 +143,7 @@ try {
   await page.evaluate(() => document.querySelector('.nav-item[data-view="nfts"]').click());
   await page.waitForSelector('#nftRoot .nft-shell');
   await page.click('[data-nft-action="new"]');
-  await page.waitForSelector('.nft-tabs');
+  await page.waitForSelector('.nft-fact-list');
   await shot('01-new');
 
   await page.click('[data-nft-tab="items"]');
@@ -171,7 +171,7 @@ try {
   await page.click('.nft-main [data-nft-action="save"]');
   await idle();
   await page.click('.nft-main [data-nft-action="grind"]');
-  await page.waitForFunction((n) => document.querySelector('.nft-tabs [data-nft-tab="addresses"] small')?.textContent.includes(`${n} ground`), ITEM_COUNT, { timeout: 120_000 });
+  await page.waitForFunction((n) => document.querySelector('.nft-fact-list [data-nft-tab="addresses"] small')?.textContent === `${n} ground`, ITEM_COUNT, { timeout: 120_000 });
   await noError();
   await shot('03-addresses');
 
@@ -185,13 +185,13 @@ try {
   await page.click('[data-nft-tab="mint"]');
   await page.check('[data-nft-field="approved"]');
   await page.click('.nft-main [data-nft-action="run"]');
-  await page.waitForFunction(() => document.querySelector('.nft-tabs [data-nft-tab="mint"] small')?.textContent === 'Minted', null, { timeout: 180_000 });
+  await page.waitForFunction((n) => document.querySelector('.nft-fact-list [data-nft-tab="mint"] small')?.textContent === `All ${n} on-chain`, ITEM_COUNT, { timeout: 180_000 });
   await noError();
   await shot('05-minted');
 
   await page.click('[data-nft-tab="verify"]');
   await page.click('.nft-main [data-nft-action="verify"]');
-  await page.waitForFunction(() => document.querySelector('.nft-tabs [data-nft-tab="verify"] small')?.textContent === 'Proof', null, { timeout: 120_000 });
+  await page.waitForFunction(() => document.querySelector('.nft-fact-list [data-nft-tab="verify"] small')?.textContent === 'Every asset checked on-chain', null, { timeout: 120_000 });
   await shot('06-verified');
 
   const list = await (await fetch(`${baseUrl}/api/v2/nfts`, { headers })).json();

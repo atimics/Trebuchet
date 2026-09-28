@@ -15309,19 +15309,31 @@ body[data-launch-running="true"] .workspace {
 .nft-banner-ok { border-color: var(--green); color: var(--green); background: color-mix(in srgb, var(--green) 5%, var(--panel)); }
 .nft-link { background: none; border: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }
 
-.nft-tabs { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border: 1px solid var(--line); background: var(--panel); }
-.nft-tab {
-  display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 12px; background: transparent; border: 0;
-  border-right: 1px solid var(--line); color: var(--muted); text-align: left; cursor: pointer; font: inherit; min-width: 0;
+/* A collection's facts, as a coin being created shows its own: one row
+   each, no numbers, beside the open one. */
+.nft-fact-list { display: grid; align-content: start; border: 1px solid var(--line); background: var(--panel); min-width: 0; }
+.nft-fact {
+  display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 9px; min-width: 0; min-height: 46px;
+  padding: 7px 10px; background: transparent; border: 0; border-bottom: 1px solid var(--line); border-left: 2px solid transparent;
+  color: var(--muted); text-align: left; cursor: pointer; font: inherit;
 }
-.nft-tab:last-child { border-right: 0; }
-.nft-tab strong { display: block; color: var(--ink); font-size: 11px; }
-.nft-tab small { display: block; font-size: 9px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nft-tab.is-selected { background: var(--panel-strong); box-shadow: inset 0 -2px 0 var(--green); }
-.nft-tab:focus-visible { outline: 1px solid var(--green); outline-offset: -2px; }
-.nft-tab-n { font-size: 9px; color: var(--subtle); }
+.nft-fact:last-child { border-bottom: 0; }
+.nft-fact span { display: grid; gap: 2px; min-width: 0; }
+.nft-fact strong { color: var(--ink); font-size: 11px; }
+.nft-fact small { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nft-fact i { color: var(--subtle); font-size: 10px; text-align: center; }
+.nft-fact.is-draft i { font-size: 6px; }
+.nft-fact.is-ok i { color: var(--green); }
+.nft-fact.is-model i { color: var(--muted); }
+.nft-fact.is-run i, .nft-fact.is-warn i { color: var(--amber); }
+.nft-fact.is-bad i, .nft-fact.is-bad small { color: var(--red); }
+.nft-fact:hover { background: color-mix(in srgb, var(--panel-strong) 70%, transparent); color: var(--ink); }
+.nft-fact.is-selected { border-left-color: var(--green); background: linear-gradient(90deg, color-mix(in srgb, var(--green) 10%, var(--panel)), var(--panel)); }
+.nft-fact.is-selected small { color: var(--ink); }
+.nft-fact:focus-visible { outline: 1px solid var(--green); outline-offset: -2px; }
 
 .nft-grid { display: grid; grid-template-columns: minmax(0, 1fr) 272px; gap: 12px; align-items: start; }
+.nft-grid.has-facts { grid-template-columns: 220px minmax(0, 1fr) 272px; }
 .nft-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .nft-panel { background: var(--panel); border: 1px solid var(--line); min-width: 0; }
 .nft-panel-head { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
@@ -15408,12 +15420,18 @@ body[data-launch-running="true"] .workspace {
 .nft-addr { font-family: var(--mono); white-space: nowrap; }
 
 @media (max-width: 1100px) {
-  .nft-grid { grid-template-columns: minmax(0, 1fr); }
+  .nft-grid.has-facts { grid-template-columns: 200px minmax(0, 1fr); }
+  .nft-grid.has-facts .nft-rail { grid-column: 1 / -1; order: -1; }
+}
+@media (max-width: 900px) {
+  .nft-grid, .nft-grid.has-facts { grid-template-columns: minmax(0, 1fr); }
   .nft-rail { position: static; order: -1; }
+  .nft-fact-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .nft-fact { border-right: 1px solid var(--line); }
+  .nft-fact:nth-child(2n) { border-right: 0; }
+  .nft-fact:nth-last-child(2) { border-bottom: 0; }
 }
 @media (max-width: 760px) {
-  .nft-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .nft-tab { border-bottom: 1px solid var(--line); }
   .nft-form-grid, .nft-form-grid-2, .nft-facts { grid-template-columns: minmax(0, 1fr); }
   .nft-items th:nth-child(4), .nft-items td:nth-child(4), .nft-items th:nth-child(5), .nft-items td:nth-child(5) { display: none; }
 }
