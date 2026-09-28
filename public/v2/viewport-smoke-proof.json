@@ -3,8 +3,8 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-09-28T07:31:09.995Z",
-  "durationMs": 1776,
+  "generatedAt": "2026-09-28T07:37:02.772Z",
+  "durationMs": 1823,
   "target": "file:///Users/ratimics/.codex/worktrees/token-evidence-recovery/trebuchet/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
@@ -22,7 +22,7 @@
     "index.html": "cb37dea2ee83e4f978d607d8cf4da385613ccb607a8ffe999dfa3db1d5282245",
     "styles.css": "fa391438bd80f9cdfe77fe0a3a6d9139ea907c3fbcad348e430506fd7c11e21e",
     "api-client.js": "a9ed1d6f25459d605fb1696f6b09eb841685a030f352be842b42ce3ffb643706",
-    "app.js": "78f085f8ce330c2b31fa4afb75e93bf24787b8cf33ca11c5f6aeda53fc7ba65e"
+    "app.js": "4f3ba12787359c6b77510f5e9344c2be2739961bf69bba2a414f140481983e11"
   },
   "viewports": [
     {
