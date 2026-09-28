@@ -290,7 +290,11 @@ const history = [];
 const state = {
   activeView: 'launch',
   activeHistoryPane: 'recovery',
-  launchWorkspace: 'configure',
+  // The open row of the coin's facts; null opens the row that needs doing.
+  launchWorkspace: null,
+  launchFactStates: null,
+  launchChainCheck: null,
+  launchChainCheckKey: null,
   verifyPanel: 'proof',
   accountId: null,
   selectedDiscoveryId: null,
@@ -5631,79 +5635,210 @@ function setView(view) {
   drawLaunchCanvas();
 }
 
-function launchWorkspaceStatus() {
-  const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig());
-  const estimate = fundingEstimateStatus.matchesConfig ? state.classicFundingEstimate : null;
+// What is true about the coin being created, one fact per row, read from
+// the launch proof, the funding check, and (for a live mint) the chain.
+// No row is a place in a sequence: a row says what holds now, and the
+// first row that doesn't hold yet is the one that needs doing.
+const COIN_FACT_MARKS = {
+  done: { icon: 'fa-check', label: 'True' },
+  recorded: { icon: 'fa-file-circle-check', label: 'Recorded; not checked on-chain' },
+  mismatch: { icon: 'fa-triangle-exclamation', label: 'Recorded, but the chain disagrees' },
+  draft: { icon: 'fa-pen', label: 'Can change until the token is created' },
+  running: { icon: 'fa-spinner fa-spin', label: 'Happening now' },
+  todo: { icon: 'fa-circle', label: 'Not yet' },
+};
+
+function coinFacts() {
+  const config = currentLaunchConfig();
   const proof = currentLaunchProof();
-  const readinessStatus = state.executionReadiness?.status;
-  const poolCount = currentLaunchConfig().poolTopology.pools.length;
-  const tokenComplete = Boolean(isReadinessPhaseComplete('token') || proof?.token?.mint);
+  const readiness = state.executionReadiness;
+  const practice = Boolean(state.demoActive);
+  const sol = (value) => `${Number(value || 0).toFixed(4)} SOL`;
+  const poolCount = config.poolTopology.pools.length;
+  const pools = `${poolCount} pool${poolCount === 1 ? '' : 's'}`;
+  const mint = proofTokenMint(proof);
+  const proofToken = proof?.token || {};
+  const tokenComplete = Boolean(
+    isReadinessPhaseComplete('token')
+    || (mint && proofToken.mintAuthorityRenounced === true && proofToken.freezeAuthorityDisabled === true)
+  );
+  const recordedPools = launchProofPoolIds(proof).length;
   const liquidityComplete = Boolean(
     isReadinessPhaseComplete('liquidity')
-    || (poolCount > 0 && launchProofPoolIds(proof).length >= poolCount)
+    || (poolCount > 0 && recordedPools >= poolCount)
   );
+  const revealPending = readiness?.nextEndpoint === '/api/reveal-sealed-metadata'
+    || (liquidityComplete && (readiness?.completion?.metadataRevealPending === true || proofToken.sealedMetadataPending === true));
   const sweepComplete = transferHasWalletEmptyFinalSweepEvidence(proof?.transfer);
-  // A finished launch of this exact config: every step is done.
-  if (completedLaunchJournal()) {
-    return {
-      wallet: 'Done',
-      configure: 'Done',
-      fund: 'Done',
-      mint: 'Created',
-      liquidity: 'Locked',
-      finish: 'Complete',
-    };
-  }
-  return {
-    wallet: selectedLaunchWalletPublicKey()
-      ? walletIsUnlocked() ? 'Ready' : 'Unlock'
-      : 'Choose signer',
-    configure: state.launchPlan ? 'Plan staged' : 'Design launch',
-    fund: fundingEstimateStatus.stale
-      ? 'Refresh estimate'
-      : estimate?.totalSol
-        ? `${Number(estimate.totalSol).toFixed(2)} SOL`
-        : 'Estimate',
-    mint: tokenComplete
-      ? 'Created'
-      : state.fullRunRunning || state.realExecutionRunning || state.demoLaunchRunning
-      ? 'Running'
-      : readinessStatus === 'ready'
-        ? 'Ready'
-        : readinessStatus === 'blocked'
-          ? 'Blocked'
-          : 'Review mint',
-    liquidity: liquidityComplete
-      ? 'Locked'
-      : state.fullRunRunning || state.realExecutionRunning
-        ? 'Running'
-        : tokenComplete ? 'Create pools' : 'Waiting',
-    finish: sweepComplete ? 'Complete' : liquidityComplete ? 'Sweep & proof' : 'Waiting',
+  const running = state.fullRunRunning || state.realExecutionRunning || state.demoLaunchRunning;
+  const nextEndpoint = readiness?.nextEndpoint || '';
+  // A finished launch's record, when the proof doesn't carry every detail.
+  const finishedRecord = Boolean(completedLaunchJournal(proof));
+  // The chain's answer for this mint, when it has been read (live mints only).
+  const chain = state.launchChainCheck?.mint && state.launchChainCheck.mint === mint
+    ? Object.fromEntries((state.launchChainCheck.steps || []).map((step) => [step.id, step]))
+    : null;
+  // A recorded fact becomes true once the chain agrees, and a mismatch when it disagrees.
+  const checked = (fact, ...stepIds) => {
+    if (fact.state !== 'done' || practice) return fact;
+    const steps = stepIds.map((id) => chain?.[id]).filter(Boolean);
+    const mismatch = steps.find((step) => step.state === 'mismatch' || step.state === 'todo');
+    if (mismatch) return { ...fact, state: 'mismatch', value: mismatch.detail, action: fact.repair };
+    if (steps.length && steps.every((step) => step.state === 'done')) return fact;
+    return { ...fact, state: 'recorded' };
   };
+
+  // Practice needs a wallet to name the signer, but never its secret.
+  const walletKey = practice
+    ? state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || ''
+    : selectedLaunchWalletPublicKey();
+  const signer = practice && walletKey
+    ? { state: 'done', value: `${shortAddress(walletKey)} · Practice` }
+    : !walletKey
+      ? { state: 'todo', value: 'None chosen', action: state.managedWallets.length ? 'Choose a launch wallet' : 'Create a launch wallet' }
+      : walletIsUnlocked()
+        ? { state: 'done', value: `${shortAddress(walletKey)} · unlocked` }
+        : { state: 'todo', value: `${shortAddress(walletKey)} · locked`, action: 'Unlock the launch wallet' };
+
+  const symbol = String(proofToken.symbol || config.token.symbol || '').trim().toUpperCase();
+  const named = Boolean(String(proofToken.name || config.token.name || '').trim() && symbol);
+  const plan = mint
+    ? { state: 'done', value: symbol ? `$${symbol} · fixed by the mint` : 'Fixed by the mint' }
+    : !named
+      ? { state: 'todo', value: 'Not named yet', action: 'Name the token' }
+      : { state: 'draft', value: `$${symbol} · ${pools}` };
+
+  const estimateStatus = classicFundingEstimateStatus(config);
+  const estimate = estimateStatus.matchesConfig ? state.classicFundingEstimate : null;
+  const funding = fundingMeterSnapshot(config);
+  const balanceKnown = Boolean(funding.hasWalletBalance && funding.walletBalanceFresh);
+  const quoteReady = quoteAcquireStatus(config).ready
+    && (!quoteAcquireManualCount() || manualPrefundSummary(quoteManualPrefundItems()).className === '');
+  const total = Number(estimate?.totalSol || 0);
+  const fund = practice
+    ? { state: 'done', value: 'Not needed in Practice' }
+    : mint
+      ? { state: 'done', value: 'Not needed now the token exists' }
+      : estimateStatus.stale
+        ? { state: 'todo', value: 'Estimate out of date', action: 'Estimate the cost again' }
+        : !estimate
+          ? { state: 'todo', value: 'Not estimated', action: 'Estimate the cost' }
+          : !balanceKnown
+            ? { state: 'todo', value: `Needs ${sol(total)} · balance not checked`, action: `Send ${sol(total)} to the launch wallet` }
+            : Number(funding.missingSol || 0) > 0.001
+              ? { state: 'todo', value: `Needs ${sol(total)} · holds ${sol(funding.availableSol)}`, action: `Send ${sol(funding.missingSol)} more` }
+              : !quoteReady
+                ? { state: 'todo', value: `Holds ${sol(funding.availableSol)} · pair tokens missing`, action: 'Get the pair tokens' }
+                : { state: 'done', value: `Holds ${sol(funding.availableSol)} of ${sol(total)} needed` };
+
+  const tokenRunning = (running && ['/api/create-token', '/api/finish-token-creation'].includes(nextEndpoint))
+    || (state.demoLaunchRunning && !tokenComplete);
+  const token = checked(
+    tokenComplete || (finishedRecord && mint)
+      ? { state: 'done', value: practice ? 'Created in Practice' : 'On-chain · mint authority revoked', repair: 'Finish the token' }
+      : tokenRunning
+        ? { state: 'running', value: 'Being created' }
+        : mint
+          ? { state: 'todo', value: 'On-chain · not finished', action: 'Finish the token' }
+          : { state: 'todo', value: 'Not on-chain', action: practice ? 'Run the practice launch' : 'Create the token' },
+    'token',
+  );
+
+  const liquidityRunning = running && ['/api/create-lp', '/api/resume-launch', '/api/reveal-sealed-metadata'].includes(nextEndpoint);
+  const liquidity = checked(
+    revealPending
+      ? { state: 'todo', value: `${pools} locked · identity still sealed`, action: 'Reveal the identity' }
+      : liquidityComplete || (finishedRecord && mint)
+        ? { state: 'done', value: practice ? `${pools} opened in Practice` : recordedPools ? `${recordedPools} pool${recordedPools === 1 ? '' : 's'} open · locked` : 'Pools open · locked', repair: 'Open and lock the rest' }
+        : liquidityRunning
+          ? { state: 'running', value: 'Being opened' }
+          : !mint && !tokenComplete
+            ? { state: 'todo', value: 'No pools yet', action: 'Open the pools' }
+            : { state: 'todo', value: `${Math.min(recordedPools, poolCount)} of ${pools} open`, action: 'Open the pools' },
+    'pools', 'locks', 'reveal',
+  );
+
+  const sweepRunning = running && nextEndpoint === '/api/transfer-assets';
+  const wallet = checked(
+    practice
+      ? { state: 'done', value: 'Not needed in Practice' }
+      : sweepComplete || finishedRecord
+        ? { state: 'done', value: 'Empty · assets returned', repair: 'Sweep the launch wallet' }
+        : sweepRunning
+          ? { state: 'running', value: 'Being swept' }
+          : { state: 'todo', value: balanceKnown ? `Holds ${sol(funding.availableSol)}` : 'Balance not checked', action: 'Sweep the launch wallet' },
+    'return',
+  );
+
+  return [
+    { id: 'wallet', ...signer },
+    { id: 'configure', ...plan },
+    { id: 'fund', ...fund },
+    { id: 'mint', ...token },
+    { id: 'liquidity', ...liquidity },
+    { id: 'finish', ...wallet },
+  ];
+}
+
+// The row that needs doing: happening now, or the first that doesn't hold.
+function nextCoinFact(facts = coinFacts()) {
+  return facts.find((fact) => fact.state === 'running')
+    || facts.find((fact) => ['todo', 'mismatch'].includes(fact.state))
+    || null;
+}
+
+// Read a live mint's creation steps from the chain once per change in what
+// the launch record says, not on every render: each read costs RPC calls.
+function refreshLaunchChainCheck(facts) {
+  const proof = currentLaunchProof();
+  const mint = proofTokenMint(proof);
+  if (!mint || state.demoActive || isDemoLaunchProof(proof) || state.apiStatus !== 'connected' || !state.apiClient?.getCoin) return;
+  const key = `${mint}:${facts.map((fact) => `${fact.id}=${fact.state === 'mismatch' || fact.state === 'recorded' ? 'done' : fact.state}`).join(',')}`;
+  if (state.launchChainCheckKey === key) return;
+  state.launchChainCheckKey = key;
+  state.apiClient.getCoin(mint)
+    .then((response) => {
+      if (proofTokenMint(currentLaunchProof()) !== mint) return;
+      state.launchChainCheck = { mint, steps: response?.coin?.creation?.steps || [] };
+      renderLaunchWorkspace();
+    })
+    .catch(() => null);
 }
 
 function renderLaunchWorkspace() {
-  const workspace = launchWorkspaces.some((item) => item.id === state.launchWorkspace)
-    ? state.launchWorkspace
-    : 'wallet';
+  const facts = coinFacts();
+  const next = nextCoinFact(facts);
+  const previous = state.launchFactStates || {};
+  const open = launchWorkspaces.some((item) => item.id === state.launchWorkspace) ? state.launchWorkspace : null;
+  // The open row stays open while you look at it. When what it shows becomes
+  // true, the row that needs doing opens instead: that is the only "next".
+  const openFact = facts.find((fact) => fact.id === open);
+  const openJustHeld = openFact && previous[open] && previous[open] !== openFact.state && ['done', 'recorded'].includes(openFact.state);
+  const workspace = !open || openJustHeld ? (next?.id || open || 'finish') : open;
   state.launchWorkspace = workspace;
+  state.launchFactStates = Object.fromEntries(facts.map((fact) => [fact.id, fact.state]));
   document.body.dataset.launchWorkspace = workspace;
 
-  const statuses = launchWorkspaceStatus();
-  $$('.launch-workspace-tab').forEach((button) => {
-    const selected = button.dataset.launchWorkspace === workspace;
-    button.classList.toggle('is-selected', selected);
-    button.setAttribute('aria-selected', selected ? 'true' : 'false');
-    button.tabIndex = selected ? 0 : -1;
-  });
-  // Narrow windows scroll the phase tabs sideways; keep the current phase in view.
-  const tabs = $('#launchWorkspaceTabs');
-  const selectedTab = tabs?.querySelector('.launch-workspace-tab.is-selected');
-  if (tabs && selectedTab && tabs.scrollWidth > tabs.clientWidth) {
-    tabs.scrollLeft = selectedTab.offsetLeft - (tabs.clientWidth - selectedTab.offsetWidth) / 2;
+  for (const fact of facts) {
+    const button = $(`.coin-fact[data-coin-fact="${fact.id}"]`);
+    if (!button) continue;
+    const mark = COIN_FACT_MARKS[fact.state] || COIN_FACT_MARKS.todo;
+    const selected = fact.id === workspace;
+    button.className = `coin-fact is-${fact.state}${selected ? ' is-selected' : ''}${next?.id === fact.id ? ' is-next' : ''}`;
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    const icon = button.querySelector('.coin-fact-mark');
+    if (icon) icon.className = `fa-solid ${mark.icon} coin-fact-mark`;
+    const value = button.querySelector('[data-coin-fact-value]');
+    if (value) value.textContent = fact.value || '';
+    button.title = mark.label;
   }
-  $$('[data-launch-workspace-state]').forEach((label) => {
-    label.textContent = statuses[label.dataset.launchWorkspaceState] || '';
+  // The one action the coin's state asks for, offered wherever it isn't already open.
+  $$('[data-next-fact]').forEach((button) => {
+    const show = Boolean(next && next.action && next.id !== workspace && next.state !== 'running');
+    button.hidden = !show;
+    if (!show) return;
+    button.dataset.launchWorkspace = next.id;
+    button.innerHTML = `<span>${escapeHtml(next.action)}</span><i class="fa-solid fa-arrow-right" aria-hidden="true"></i>`;
   });
   $$('[data-launch-pane]').forEach((panel) => {
     const workspaces = String(panel.dataset.launchPane || '').split(/\s+/).filter(Boolean);
@@ -5721,32 +5856,19 @@ function renderLaunchWorkspace() {
   if (viewport && selectedWorkspace) {
     viewport.setAttribute('aria-label', `${selectedWorkspace.title}: ${selectedWorkspace.detail}`);
   }
+  refreshLaunchChainCheck(facts);
 }
 
+// Open a row. Which row is open is a view, never saved and never progress.
 function setLaunchWorkspace(workspace, { focus = false } = {}) {
   if (!launchWorkspaces.some((item) => item.id === workspace)) return;
   state.launchWorkspace = workspace;
-  try {
-    window.localStorage?.setItem('trebuchet-v2-launch-workspace', workspace);
-  } catch {
-    // Local storage is optional in file previews and restricted browser contexts.
-  }
   renderLaunchWorkspace();
   renderLaunchIdentity();
   const viewport = $('#launchWorkspaceViewport');
   if (viewport) viewport.scrollTop = 0;
   if (focus) {
-    const tab = $(`.launch-workspace-tab[data-launch-workspace="${workspace}"]`);
-    tab?.focus();
-  }
-}
-
-function restoreLaunchWorkspace() {
-  try {
-    const saved = window.localStorage?.getItem('trebuchet-v2-launch-workspace');
-    if (launchWorkspaces.some((item) => item.id === saved)) state.launchWorkspace = saved;
-  } catch {
-    // Start on Configure when local storage is unavailable.
+    $(`.coin-fact[data-coin-fact="${workspace}"]`)?.focus();
   }
 }
 
@@ -5830,7 +5952,6 @@ function launchIdentityModel() {
     || '',
   ).trim();
   const workspaceIndex = Math.max(0, launchWorkspaces.findIndex((item) => item.id === state.launchWorkspace));
-  const signaturePercent = signatureStats().percent;
   const sweepComplete = transferHasWalletEmptyFinalSweepEvidence(proof?.transfer);
   const liquidityComplete = Boolean(
     isReadinessPhaseComplete('liquidity')
@@ -5838,13 +5959,6 @@ function launchIdentityModel() {
     || state.lastDemoLaunchRun?.liquidity?.success,
   );
   const tokenComplete = Boolean(mint || isReadinessPhaseComplete('token'));
-  const progress = sweepComplete
-    ? 100
-    : Math.max(
-      logo ? 8 : 0,
-      Math.round(((workspaceIndex + 0.3) / launchWorkspaces.length) * 100),
-      signaturePercent,
-    );
   const status = sweepComplete
     ? state.demoActive ? 'Practice complete' : 'Launch complete'
     : liquidityComplete
@@ -5857,7 +5971,7 @@ function launchIdentityModel() {
             ? 'Identity attached'
             : 'Awaiting identity';
   const phase = launchWorkspaces[workspaceIndex] || launchWorkspaces[0];
-  return { config, proof, logo, name, symbol, mint, progress, status, phase, workspaceIndex };
+  return { config, proof, logo, name, symbol, mint, status, phase, workspaceIndex };
 }
 
 function launchOperationIsActive() {
@@ -6002,10 +6116,8 @@ function renderLaunchIdentity() {
   } else if (dock) {
     dock.hidden = false;
     dock.className = `launch-identity-dock ${hero ? 'is-hero' : 'is-compact'} ${animated ? 'is-animated' : ''}`;
-    dock.style.setProperty('--identity-progress', `${Math.max(0, Math.min(100, model.progress)) * 3.6}deg`);
     dock.innerHTML = `
       <div class="launch-identity-visual">
-        <span class="launch-identity-progress-ring" aria-hidden="true"></span>
         <span class="launch-identity-coin"><img src="${escapeHtml(heroSrc)}" alt="${escapeHtml(`${model.name} logo`)}"></span>
         ${animated ? '<span class="launch-identity-motion"><i class="fa-solid fa-wave-square"></i> Live artwork</span>' : ''}
       </div>
@@ -6016,7 +6128,6 @@ function renderLaunchIdentity() {
         <div class="launch-identity-facts">
           <span><small>Identity</small><strong>${escapeHtml(model.status)}</strong></span>
           <span><small>Contract</small><strong>${escapeHtml(mintLabel)}</strong></span>
-          <span><small>Progress</small><strong>${model.progress}%</strong></span>
         </div>
       </div>
       <div class="launch-identity-palette" aria-label="Palette extracted from token artwork">
@@ -14185,7 +14296,6 @@ function renderClassicBridge() {
     canRun,
     runLabel,
     complete,
-    nextWorkspace,
     endpoint,
     primary = false,
     finalizationIssue = null,
@@ -14215,7 +14325,7 @@ function renderClassicBridge() {
       && quoteSafety.blockers.length === 0;
     const needsRunEnvelope = nextOperationReady && !armedRunEnvelopeId && !finalizationIssue;
     const panelEyebrow = complete
-      ? 'Phase complete'
+      ? 'Done'
       : needsFunding
         ? 'Next step'
         : finalizationIssue
@@ -14265,7 +14375,7 @@ function renderClassicBridge() {
       </div>
       <div class="launch-phase-actions">
         ${complete
-          ? `<button class="primary-button compact" type="button" data-launch-workspace="${escapeHtml(nextWorkspace)}"><span>Continue</span><i class="fa-solid fa-arrow-right"></i></button>`
+          ? '<button class="primary-button compact" type="button" data-next-fact hidden></button>'
           : state.demoActive
             ? `<button class="primary-button compact" type="button" data-action="run-demo-launch" ${state.demoLaunchRunning ? 'disabled' : ''}><span>${escapeHtml(demoRunLabel)}</span><i class="fa-solid fa-flask"></i></button>`
             : finalSweepProofMissing
@@ -14278,7 +14388,7 @@ function renderClassicBridge() {
                 ? `<button class="primary-button compact" type="button" data-action="review-and-arm-run"><span>${finalSweepAction ? 'Review &amp; arm final sweep' : recoveringToken ? 'Review &amp; arm recovery' : 'Review &amp; arm launch'}</span><i class="fa-solid fa-shield-halved"></i></button>`
               : fundingReady || recoveryDoesNotNeedFreshEstimate
                 ? `<button class="primary-button compact" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}><span>${state.executionChecking ? 'Checking' : 'Check again'}</span><i class="fa-solid fa-rotate"></i></button>`
-                : '<button class="primary-button compact" type="button" data-launch-workspace="fund"><span>Fund launch wallet</span><i class="fa-solid fa-arrow-left"></i></button>'}
+                : '<button class="primary-button compact" type="button" data-launch-workspace="fund"><span>Fund the launch wallet</span><i class="fa-solid fa-coins"></i></button>'}
       </div>
     </div>
   `;
@@ -14323,9 +14433,8 @@ function renderClassicBridge() {
       ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
       ${!completedJournal && (state.destinations.funders || []).length ? `<section class="return-wallet fund-asset-destinations" aria-label="Where assets go">${assetDestinationsHtml()}</section>` : ''}
       ${estimate && (routeCount || manualQuoteCount) ? `<details class="drawer funding-extra" open><summary><span>Pair tokens</span><strong>${routeCount + manualQuoteCount} item${routeCount + manualQuoteCount === 1 ? '' : 's'}</strong></summary>${renderQuoteAcquirePanel()}</details>` : ''}
-      <div class="launch-phase-actions launch-phase-actions-split">
-        <button class="text-button" type="button" data-launch-workspace="configure"><i class="fa-solid fa-arrow-left"></i><span>Token &amp; pools</span></button>
-        ${fundingReady ? '<button class="primary-button" type="button" data-launch-workspace="mint"><span>Continue to create token</span><i class="fa-solid fa-arrow-right"></i></button>' : ''}
+      <div class="launch-phase-actions">
+        <button class="primary-button" type="button" data-next-fact hidden></button>
       </div>
     </section>
     <section class="classic-workspace-section classic-workspace-execute" data-classic-workspace="mint">
@@ -14350,11 +14459,9 @@ function renderClassicBridge() {
         canRun: mintCanRun,
         runLabel: mintEndpoint === '/api/finish-token-creation' ? 'Finish token safely' : 'Create token',
         complete: tokenComplete,
-        nextWorkspace: 'liquidity',
         endpoint: mintEndpoint,
         primary: true,
       })}
-      ${fundingReady ? '<div class="launch-phase-secondary"><button class="text-button" type="button" data-launch-workspace="fund"><i class="fa-solid fa-arrow-left"></i> Review funding</button></div>' : ''}
     </section>
     <section class="classic-workspace-section classic-workspace-execute" data-classic-workspace="liquidity">
       <section class="launch-step-guide irreversible" aria-labelledby="liquidityStepTitle">
@@ -14377,7 +14484,6 @@ function renderClassicBridge() {
         canRun: metadataRevealPending ? revealCanRun : liquidityCanRun,
         runLabel: metadataRevealPending ? 'Reveal & lock identity' : readiness?.nextEndpoint === '/api/resume-launch' ? 'Resume missing work' : 'Create liquidity',
         complete: liquidityComplete && !metadataRevealPending,
-        nextWorkspace: 'finish',
         endpoint: metadataRevealPending ? '/api/reveal-sealed-metadata' : readiness?.nextEndpoint === '/api/resume-launch' ? '/api/resume-launch' : '/api/create-lp',
         primary: true,
       })}
@@ -14385,7 +14491,6 @@ function renderClassicBridge() {
         <summary><span>Progress by position</span><strong>${poolCount} pool${poolCount === 1 ? '' : 's'} / ${sliceCount} position${sliceCount === 1 ? '' : 's'}</strong></summary>
         <div class="phase-tree">${renderClassicPhaseTree(topology)}</div>
       </details>
-      <div class="launch-phase-secondary"><button class="text-button" type="button" data-launch-workspace="mint"><i class="fa-solid fa-arrow-left"></i> Back to token</button></div>
     </section>
     <section class="classic-workspace-section classic-workspace-verify" data-classic-workspace="finish">
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
@@ -14403,13 +14508,12 @@ function renderClassicBridge() {
         canRun: finishCanRun,
         runLabel: 'Run final sweep',
         complete: false,
-        nextWorkspace: 'finish',
         endpoint: '/api/transfer-assets',
         primary: true,
         finalizationIssue: executeNextTransferFinalizationIssue(readiness, config),
       }) : ''}
       ${completedJournal && !finalSweepComplete ? '' : `<details class="drawer launch-proof-details" ${finalSweepComplete ? 'open' : ''}>
-        <summary><span>${finalSweepComplete ? 'Launch proof' : 'Proof status'}</span><strong>${finalSweepComplete ? 'Ready' : 'Waiting'}</strong></summary>
+        <summary><span>${finalSweepComplete ? 'Launch proof' : 'Proof status'}</span><strong>${finalSweepComplete ? 'Ready' : 'Not ready'}</strong></summary>
         ${renderFinalizationPanel()}
       </details>`}
       ${!finalSweepComplete && !completedJournal ? `<details class="drawer launch-recovery-details">
@@ -22224,7 +22328,7 @@ function renderCoinPage(coin) {
     ${state.coins.detailError ? `<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>` : ''}
     ${coin.practice ? '<p class="pool-support-intro">Practice coin: it exists only in the local simulator.</p>' : ''}
     ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl></section>` : ''}
-    ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Launch steps' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation, coin)}</section>` : ''}
+    ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Unfinished' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation, coin)}</section>` : ''}
     ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
     <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Positions</span><h2>Your positions</h2></div><button class="pill-button" type="button" data-action="refresh-coin-positions">Refresh</button></div>${coinPositionsHtml()}</section>
     <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>
@@ -24050,7 +24154,7 @@ function handleClick(event) {
   const workspaceControl = event.target.closest('button[data-launch-workspace]');
   if (workspaceControl) {
     setLaunchWorkspace(workspaceControl.dataset.launchWorkspace, {
-      focus: workspaceControl.classList.contains('launch-workspace-tab'),
+      focus: workspaceControl.classList.contains('coin-fact'),
     });
     return;
   }
@@ -25237,7 +25341,6 @@ restoreExecutionLedger();
 restoreLaunchProof();
 restoreClassicReportComparison();
 restoreDiscoveryRegistry();
-restoreLaunchWorkspace();
 bindEvents();
 initializeSolflareWallet();
 setView('coins');

@@ -3,9 +3,9 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-09-28T00:46:00.277Z",
-  "durationMs": 2904,
-  "target": "file:///Users/ratimics/develop/trebuchet-wt-coincard/public/v2/index.html",
+  "generatedAt": "2026-09-28T01:25:15.703Z",
+  "durationMs": 1790,
+  "target": "file:///Users/ratimics/develop/trebuchet-wt-facts/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
     "horizontalOverflow",
@@ -19,10 +19,10 @@
     "keyboardWalkthrough"
   ],
   "assetHashes": {
-    "index.html": "f19e1c17999279952fc69c576f33140801305773686d044b39be8cf88c633175",
-    "styles.css": "93bd5cb668c680899b70ddff952f22dc3daf59e8bdec220353b5ea353394443b",
+    "index.html": "48b250d72316257144062d6c1db17ed7314c0ca46f30b8bd34c89cf349e75129",
+    "styles.css": "25f6d2cd57fffdb0f42b02fc7a04ffabf61fd0f3a65ddd2392dfcef48b25b9be",
     "api-client.js": "780fd86902d7da75f0e48dd68ef6b1e97f0a0ec0592ddab48bc5d06f4920e610",
-    "app.js": "37d04ba83ddf311ddf65158d8fe63ab20e6231bf5b6c467a22b1138f21c47c1a"
+    "app.js": "1a9fb000d8ada2fd33e869e5b3d66e865e950ab2703bb8128333643e5df9a201"
   },
   "viewports": [
     {
