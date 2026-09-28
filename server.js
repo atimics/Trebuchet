@@ -18,7 +18,6 @@ import {
   revealSealedTokenMetadata,
   uploadSealedIdentity,
   inspectTokenCreationStatus,
-  transferMetadataAuthority,
   generateTemporaryWallet,
   getWalletQRCode,
   checkWalletBalance,
@@ -661,6 +660,7 @@ const requireWalletExecution = () => {
   return walletExecution;
 };
 const sweepSolToDestination = (input) => requireWalletExecution().sweepSolToDestination(input);
+const transferMetadataAuthority = (input) => requireWalletExecution().transferMetadataAuthority(input);
 const reconcileWalletOperation = (input) => requireWalletExecution().recover(input);
 const sweepNftsToDestination = (input) => sweepNftsWithSigner({ ...input, transferToken: requireWalletExecution().transferTokenWithProgram });
 const sweepAllTokensToDestination = (input) => sweepTokensWithSigner({ ...input, transferToken: requireWalletExecution().transferTokenWithProgram });
@@ -668,8 +668,10 @@ const sweepAllTokensToDestination = (input) => sweepTokensWithSigner({ ...input,
 // Live services and HTTP jobs share wallet admission and durable recovery state.
 function claimLaunchOp(walletPublicKey, op) {
   const pending = walletExecution?.active(walletPublicKey);
-  if (pending && op !== 'transfer-assets') {
-    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: 'Resume the saved asset transfer before starting another wallet action.' });
+  const canResumeMetadata = pending?.kind === 'metadata-update' && pending.payload.makeImmutable
+    && ['reveal-sealed-metadata', 'create-lp', 'resume-launch'].includes(op);
+  if (pending && op !== 'transfer-assets' && !canResumeMetadata) {
+    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: 'Resume the saved wallet operation before starting another wallet action.' });
   }
   claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
 }
@@ -5166,6 +5168,7 @@ const launchServices = createLaunchExecutionServices({
   recordLpJournalProgress,
   recordTokenJournalProgress,
   reconcileWalletOperation,
+  reconcileMetadataReveal: (input) => requireWalletExecution().recoverMetadataReveal(input),
   getTransferReceipts: (wallet) => requireWalletExecution().getTransferReceipts(wallet),
   registerOfficialBrandLaunch,
   requireSecretPinUnlocked,
@@ -6244,6 +6247,7 @@ async function revealSealedMetadataForJournal({ walletPublicKey, secretKeyArr })
     metadataUri,
     metadataHash: token.metadataHash,
     imageSha256: identity?.imageSha256 || null,
+    metadataExecution: { update: requireWalletExecution().updateMetadata, recover: requireWalletExecution().recoverMetadataReveal },
     onProgress: (event) => recordTokenJournalProgress(walletPublicKey, event),
   });
   const finalMetadataHash = result.finalMetadataHash || token.metadataHash;
@@ -6259,6 +6263,8 @@ async function revealSealedMetadataForJournal({ walletPublicKey, secretKeyArr })
         metadataUri,
         metadataHash: finalMetadataHash,
         sealedCommitment: token.metadataHash,
+        metadataOperationId: result.operationId || token.metadataOperationId,
+        metadataTransactionId: result.txId || token.metadataTransactionId,
         onChainMetadataUri: metadataUri,
         mintFormat: result.mintFormat || token.mintFormat,
         tokenProgram: result.tokenProgram || token.tokenProgram,
@@ -6270,7 +6276,7 @@ async function revealSealedMetadataForJournal({ walletPublicKey, secretKeyArr })
         isSafe: true,
       },
     },
-    { stage: 'metadata_revealed', tokenMint: token.mint, metadataUri },
+    { stage: 'metadata_revealed', tokenMint: token.mint, metadataUri, operationId: result.operationId, txId: result.txId },
   );
   removeSealedIdentity(token.mint);
   const updated = launchJournal.get(journal.id);

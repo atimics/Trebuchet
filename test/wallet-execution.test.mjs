@@ -6,9 +6,10 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { tokenTransferChain } from '../packages/runtime/test/fixtures/token-transfer-chain.mjs';
 import * as walletHelpers from '../walletHelpers.js';
+import { metadataChain, metadataMint, metadataRevealFields } from '../packages/runtime/test/fixtures/metadata-chain.mjs';
 import { acquireProfileOwner } from '../packages/runtime/src/owner.js';
 import { openRuntimeStore } from '../packages/runtime/src/store.js';
 import { createWalletExecutionRuntime } from '../walletExecution.js';
@@ -71,10 +72,10 @@ test('local approval requires the saved launch and the same network at send time
   assert.equal(changed.state.sends.length, 0);
 });
 
-for (const mode of ['SOL', 'token', 'nft']) {
+for (const mode of ['SOL', 'token', 'nft', 'metadata-handoff', 'metadata-reveal']) {
 test(`the production ${mode} adapter recovers after its process dies between chain acceptance and receipt storage`, { timeout: 20_000 }, async (t) => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-wallet-crash-'));
-  const ledger = mode === 'SOL' ? solSweepChain() : tokenTransferChain(mode === 'nft' ? { token2022: true, decimals: 0, sourceAmount: 1n } : {});
+  const ledger = mode === 'SOL' ? solSweepChain() : mode.startsWith('metadata-') ? metadataChain({ inline: mode === 'metadata-reveal' }) : tokenTransferChain(mode === 'nft' ? { token2022: true, decimals: 0, sourceAmount: 1n } : {});
   const children = [];
   let running;
   const rpcErrors = [];
@@ -149,6 +150,7 @@ test(`the production ${mode} adapter recovers after its process dies between cha
   assert.equal(signal, 'SIGKILL');
   assert.equal(ledger.state.sends.length, 1);
   if (mode === 'SOL') assert.equal(ledger.state.balance, 900880);
+  else if (mode.startsWith('metadata-')) assert.equal(ledger.state.authority, mode === 'metadata-reveal' ? SystemProgram.programId.toBase58() : sweepDestination);
   else assert.equal(ledger.state.sourceAmount, 0n);
   const second = run();
   const [secondExit] = await once(second.child, 'close');
@@ -158,7 +160,8 @@ test(`the production ${mode} adapter recovers after its process dies between cha
   assert.equal(recovered.txId, ledger.state.sends[0].signature);
   if (mode === 'SOL') assert.equal(recovered.solTransferred, 0.00909312);
   else {
-    assert.equal(recovered.amountRaw, mode === 'nft' ? '1' : '5000000');
+    if (mode.startsWith('metadata-')) assert.equal(recovered.newAuthority, ledger.state.authority);
+    else assert.equal(recovered.amountRaw, mode === 'nft' ? '1' : '5000000');
     const third = run();
     assert.equal((await once(third.child, 'close'))[0], 0, third.output().err);
     assert.deepEqual(JSON.parse(third.output().out.split('RESULT:')[1]), recovered);
@@ -208,3 +211,19 @@ for (const [label, config, helper] of [
     assert.deepEqual(f.runtime.getTransferReceipts(walletPublicKey), receipts);
   });
 }
+
+
+test('metadata recovery accepts the saved reveal before other liquidity work', async (t) => {
+  const ledger = metadataChain({ inline: true });
+  const f = fixture(t, { createConnection: () => ledger.connection });
+  const update = { tempWalletSecretKey: input.tempWalletSecretKey, tokenMint: metadataMint.toBase58(), newAuthority: SystemProgram.programId.toBase58(), fields: metadataRevealFields, makeImmutable: true };
+  ledger.state.afterSend = () => { throw new Error('Response lost'); };
+  await assert.rejects(f.runtime.updateMetadata(update), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  assert.throws(() => f.runtime.recoverMetadataReveal({ ...update, name: 'Changed' }), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  assert.throws(() => f.runtime.recoverMetadataReveal({ ...update, tokenMint: sweepDestination }), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  ledger.state.afterSend = null;
+  const result = await f.runtime.recoverMetadataReveal({ ...update, name: metadataRevealFields.name, symbol: metadataRevealFields.symbol, metadataUri: metadataRevealFields.uri });
+  assert.equal(result.txId, ledger.state.sends[0].signature);
+  assert.equal(f.runtime.active(walletPublicKey), null);
+  assert.equal(ledger.state.sends.length, 1);
+});

@@ -89,7 +89,8 @@ test('CLI clients share one production runtime and recover its ownership after p
   }
 });
 
-test('a pending durable transfer holds later live API wallet actions across runtime startup', { timeout: 45_000 }, async () => {
+for (const kind of ['sol-sweep', 'token-transfer', 'metadata-update']) {
+test(`a pending durable ${kind} holds later live API wallet actions across runtime startup`, { timeout: 45_000 }, async () => {
   const { openRuntimeStore } = await import('../packages/runtime/src/store.js');
   const { sweepWallet, sweepDestination } = await import('../packages/runtime/test/fixtures/sol-sweep-chain.mjs');
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-runtime-pending-'));
@@ -99,7 +100,7 @@ test('a pending durable transfer holds later live API wallet actions across runt
   let operation;
   try {
     store.saveLaunch({ id: 'pending-sweep', walletPublicKey, network: 'devnet', planDigest: 'b'.repeat(64), config: { purpose: 'sol-sweep' } });
-    operation = store.prepareOperation({ launchId: 'pending-sweep', kind: 'sol-sweep', payload: { destinationWallet: sweepDestination, amountLamports: 1000 } });
+    operation = store.prepareOperation({ launchId: 'pending-sweep', kind, payload: { destinationWallet: sweepDestination, amountLamports: 1000, newAuthority: sweepDestination, makeImmutable: false } });
   } finally { store.close(); }
   let runtime;
   try {
@@ -134,3 +135,5 @@ test('a pending durable transfer holds later live API wallet actions across runt
     fs.rmSync(profile, { recursive: true, force: true });
   }
 });
+
+}

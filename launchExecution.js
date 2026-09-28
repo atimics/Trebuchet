@@ -67,6 +67,7 @@ export function createLaunchExecutionServices({
   recordLpJournalProgress,
   recordTokenJournalProgress,
   reconcileWalletOperation,
+  reconcileMetadataReveal,
   getTransferReceipts,
   registerOfficialBrandLaunch,
   requireSecretPinUnlocked,
@@ -575,6 +576,7 @@ export function createLaunchExecutionServices({
       // someone else does (leave it alone).
       claimLaunchOp(walletPublicKey, 'create-lp');
       claimedLaunchOp = true;
+      await reconcileMetadataReveal({ tempWalletSecretKey: secretKeyArr, tokenMint });
       const poolPlan = {
         tokenMint,
         tokenDecimals: tokenDecimals || 9,
@@ -804,6 +806,7 @@ export function createLaunchExecutionServices({
       // this guard, two orchestrators would race over the same positions.
       claimLaunchOp(walletPublicKey, 'resume-launch');
       claimedLaunchOp = true;
+      await reconcileMetadataReveal({ tempWalletSecretKey: secretKeyArr, tokenMint });
 
       const activeJournal = launchJournal.activeForWallet(walletPublicKey);
       const phase1Recovery = materializePhase1RecoveryResults(
@@ -1121,15 +1124,15 @@ export function createLaunchExecutionServices({
       if (typeof input.keepMetadataAuthorityMint === 'string'
           && input.keepMetadataAuthorityMint) {
         console.log('Transferring metadata update authority to destination...');
-        await transferMetadataAuthority({
+        const handoff = await transferMetadataAuthority({
           tempWalletSecretKey: secretKeyArr,
           tokenMint: input.keepMetadataAuthorityMint,
           newAuthority: destinationWallet,
         });
         launchJournal.upsertForWallet(
           walletPublicKey,
-          { stage: 'metadata_authority_transferred' },
-          { stage: 'metadata_authority_transferred', destinationWallet },
+          { stage: 'metadata_authority_transferred', token: { metadataAuthority: destinationWallet, metadataAuthorityOperationId: handoff.operationId, metadataAuthorityTransactionId: handoff.txId } },
+          { stage: 'metadata_authority_transferred', destinationWallet, operationId: handoff.operationId, txId: handoff.txId },
         );
       }
 

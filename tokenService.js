@@ -1677,9 +1677,9 @@ export async function uploadSealedIdentity({ tempWalletSecretKey, identity, onPr
 }
 
 // A document uploaded moments ago can take a few seconds to reach the gateway.
-async function fetchFreshMetadataDocument(uri, { attempts = 8, delayMs = 1500 } = {}) {
+async function fetchFreshMetadataDocument(uri, { attempts = 8, delayMs = 1500, fetchDocument = fetchMetadataDocument } = {}) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const document = await fetchMetadataDocument(uri);
+    const document = await fetchDocument(uri);
     if (document) return document;
     if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
@@ -1695,6 +1695,8 @@ export async function revealSealedTokenMetadata({
   metadataHash,
   imageSha256 = null,
   onProgress,
+  metadataExecution = null,
+  fetchDocument = fetchMetadataDocument,
 }) {
   const progress = (event) => onProgress?.(event);
   if (!tokenMint || !metadataUri) {
@@ -1703,6 +1705,11 @@ export async function revealSealedTokenMetadata({
   const expectedMetadataHash = String(metadataHash || '').trim().toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(expectedMetadataHash)) {
     throw new Error('Sealed metadata reveal requires the recorded SHA-256 identity commitment.');
+  }
+  let operationResult = null;
+  if (metadataExecution) {
+    if (typeof metadataExecution.recover !== 'function' || typeof metadataExecution.update !== 'function') throw new TypeError('Metadata execution requires update and recovery interfaces');
+    operationResult = await metadataExecution.recover({ tempWalletSecretKey, tokenMint, name, symbol, metadataUri });
   }
   const tempWallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
   const umi = _umiFactory(tempWallet);
@@ -1736,7 +1743,7 @@ export async function revealSealedTokenMetadata({
 
   const before = await inspect();
   if (before.uri === metadataUri && before.updateAuthority === SYSTEM_PROGRAM_ADDRESS) {
-    const finalDocument = await fetchFreshMetadataDocument(metadataUri);
+    const finalDocument = await fetchFreshMetadataDocument(metadataUri, { fetchDocument });
     const { finalHash: revealedHash } = verifySealedMetadataCommitment({
       finalDocument,
       metadataHash: expectedMetadataHash,
@@ -1747,6 +1754,7 @@ export async function revealSealedTokenMetadata({
       requirePlaceholder: false,
     });
     return {
+      ...(operationResult ? { operationId: operationResult.operationId, txId: operationResult.txId } : {}),
       finalMetadataHash: revealedHash,
       tokenMint,
       metadataUri,
@@ -1768,8 +1776,8 @@ export async function revealSealedTokenMetadata({
   }
 
   const [placeholderDocument, finalDocument] = await Promise.all([
-    fetchMetadataDocument(before.uri),
-    fetchFreshMetadataDocument(metadataUri),
+    fetchDocument(before.uri),
+    fetchFreshMetadataDocument(metadataUri, { fetchDocument }),
   ]);
   const { finalHash } = verifySealedMetadataCommitment({
     placeholderDocument,
@@ -1782,7 +1790,12 @@ export async function revealSealedTokenMetadata({
   });
 
   progress({ stage: 'metadata_reveal_started', tokenMint, metadataUri });
-  if (isToken2022) {
+  if (metadataExecution) {
+    operationResult = await metadataExecution.update({
+      tempWalletSecretKey, tokenMint, newAuthority: SYSTEM_PROGRAM_ADDRESS, makeImmutable: true,
+      fields: { name, symbol, uri: metadataUri, ...(isToken2022 && finalHash !== expectedMetadataHash ? { 'trebuchet:sha256': finalHash } : {}) },
+    });
+  } else if (isToken2022) {
     // URI is written last, so a retry after an interrupted reveal can still
     // load and validate the sealed placeholder commitment. Authority is
     // retired only after every final identity field has landed.
@@ -1856,6 +1869,7 @@ export async function revealSealedTokenMetadata({
     metadataImmutable: true,
     sealedMetadataPending: false,
     finalMetadataHash: finalHash,
+    ...(operationResult ? { operationId: operationResult.operationId, txId: operationResult.txId } : {}),
     skipped: false,
   };
   progress({ stage: 'metadata_revealed', ...result });

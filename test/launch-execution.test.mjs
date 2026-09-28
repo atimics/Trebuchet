@@ -26,6 +26,7 @@ function fixture() {
   const deps = {
     PublicKey, launchJournal,
     reconcileWalletOperation: async () => null,
+    reconcileMetadataReveal: async () => null,
     getTransferReceipts: async () => [],
     requireSecretPinUnlocked: () => { if (state.locked) throw new LaunchRejection(423, { success: false, code: 'SECRET_PIN_LOCKED', error: 'Unlock recovery storage.' }); },
     requireTokenCompleteForLiquidity: async () => {},
@@ -48,7 +49,7 @@ function fixture() {
     mergePriorResults: (old, recovered) => [...old, ...recovered],
     validateTransferAirdropPayload: () => {}, unsafeSweepDestinationReason: () => null,
     unverifiedDestinationReason: async () => null, findFundingWallet: async () => ({ funder: destination }),
-    transferMetadataAuthority: async () => { calls.push('handoff'); },
+    transferMetadataAuthority: async () => { calls.push('handoff'); return { operationId: 'metadata-op', txId: 'metadata-tx' }; },
     sweepNftsToDestination: async () => { calls.push('nfts'); return { transferred: [], errors: [] }; },
     sweepAllTokensToDestination: async () => { calls.push('tokens'); return { transferred: [], errors: [] }; },
     sweepSolToDestination: async () => { calls.push('sol'); return { solTransferred: 0.1 }; },
@@ -284,3 +285,29 @@ test('a failed durable receipt read keeps wallet recovery and leaves completion 
   assert.equal(f.state.removed, 0);
   assert.equal(f.writes.some((entry) => entry.stage === 'transfer_completed'), false);
 });
+
+
+test('metadata handoff receipts commit before the wallet recovery key is removed', async () => {
+  const f = fixture();
+  await f.services().transferAssets({ ...input, keepMetadataAuthorityMint: 'mint-a' });
+  assert.equal(f.state.journal.token.metadataAuthority, destination);
+  assert.equal(f.state.journal.token.metadataAuthorityOperationId, 'metadata-op');
+  assert.equal(f.state.journal.token.metadataAuthorityTransactionId, 'metadata-tx');
+  const write = f.writes.find((entry) => entry.stage === 'metadata_authority_transferred');
+  assert.equal(write.event.operationId, 'metadata-op');
+  assert.equal(f.state.removed, 1);
+});
+
+for (const method of ['createLiquidity', 'resumeLiquidity']) {
+  test(`${method} reconciles an interrupted metadata reveal before the next liquidity action`, async () => {
+    const f = fixture();
+    f.deps.reconcileMetadataReveal = async ({ tokenMint }) => {
+      assert.equal(tokenMint, input.tokenMint);
+      throw Object.assign(new Error('Metadata receipt needs recovery'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+    };
+    await assert.rejects(f.services()[method](input), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+    assert.equal(f.calls.includes('liquidity'), false);
+    assert.equal(f.writes.length, 0);
+    assert.equal(f.operations.size, 0);
+  });
+}

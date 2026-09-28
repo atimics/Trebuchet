@@ -1,5 +1,6 @@
 import * as walletHelpers from '../../walletHelpers.js';
-import { Connection } from '@solana/web3.js';
+import { metadataMint, metadataRevealFields } from '../../packages/runtime/test/fixtures/metadata-chain.mjs';
+import { Connection, SystemProgram } from '@solana/web3.js';
 import { acquireProfileOwner } from '../../packages/runtime/src/owner.js';
 import { createWalletExecutionRuntime } from '../../walletExecution.js';
 import { sweepWallet, sweepDestination } from '../../packages/runtime/test/fixtures/sol-sweep-chain.mjs';
@@ -12,7 +13,11 @@ try {
   const input = { tempWalletSecretKey: Array.from(sweepWallet.secretKey), destinationWallet: sweepDestination };
   let result;
   if (mode === 'SOL') result = await runtime.sweepSolToDestination(input);
-  else {
+  else if (mode === 'metadata-handoff') result = await runtime.transferMetadataAuthority({ tempWalletSecretKey: input.tempWalletSecretKey, tokenMint: metadataMint.toBase58(), newAuthority: sweepDestination });
+  else if (mode === 'metadata-reveal') {
+    await runtime.recoverMetadataReveal({ tempWalletSecretKey: input.tempWalletSecretKey, tokenMint: metadataMint.toBase58() });
+    result = await runtime.updateMetadata({ tempWalletSecretKey: input.tempWalletSecretKey, tokenMint: metadataMint.toBase58(), newAuthority: SystemProgram.programId.toBase58(), fields: metadataRevealFields, makeImmutable: true });
+  } else {
     await runtime.recover(input);
     walletHelpers.setConnectionFactoryForTests(() => new Connection(rpcUrl, 'finalized'));
     const helper = mode === 'nft' ? walletHelpers.sweepNftsToDestination : walletHelpers.sweepAllTokensToDestination;

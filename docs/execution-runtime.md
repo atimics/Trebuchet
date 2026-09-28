@@ -142,3 +142,14 @@ The final launch report reads all confirmed transfer receipts for the wallet, la
 The production host tests kill the token and NFT sweep processes after the local RPC fixture accepts their signed transactions. The next process recovers each receipt with one send in total. A third process rebuilds the same report from the durable receipt. Tests also cover competing clients, renewed approval before an identical rebroadcast, approval expiry during RPC, changed source ownership, fee changes, missing receipt data, failed storage writes, and exact large token amounts.
 
 The adapter covers the final asset sweep. Liquidity's direct Fee Key distribution and airdrops will join it as their launch-wide recovery paths move into the engine.
+
+
+### Metadata handoff and sealed reveal through the engine
+
+The local runtime now handles metadata authority handoff and sealed reveal through `metadata-update` operations. Each saved intent binds the mint, new authority, content fields, immutable state, network, fee limit, and added account rent. The adapter supports classic Metaplex fungible metadata and Token-2022 inline metadata. A sealed inline reveal writes its fields and retires authority in one atomic transaction. The Metaplex update keeps the existing creator and fee data.
+
+Completion requires the exact finalized transaction, bounded fee and rent changes, and matching metadata at or after the receipt slot. An already completed handoff can be saved as an observed result with zero spending. Metadata receipt identities survive an interrupted final journal checkpoint. Liquidity retries reconcile a pending metadata reveal before the next liquidity action.
+
+The production host crash tests cover both a Metaplex handoff and an inline reveal. The RPC fixture accepts the real signed transaction, kills its caller, and allows a new process to recover with one send in total. Service tests verify the sealed document before execution, preserve authority after a failed initial checkpoint, and recover a completed receipt after a failed final checkpoint. Other tests cover changed signing bytes, stale account reads, exact approvals, renewed approval for saved bytes, and competing clients.
+
+Metadata upload payments and token creation still need their own durable operations. Launch-wide spending limits, remaining liquidity and airdrop work, and runner execution remain in the full completion checklist.
