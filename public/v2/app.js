@@ -14701,11 +14701,11 @@ function renderExecutionLedger() {
         <i class="fa-solid fa-shield-halved"></i>
       </span>
       <span class="execution-ledger-copy">
-        <strong>No guarded operations yet</strong>
-        <small>Executed classic operations will appear here with retries, duration, and observed SOL deltas.</small>
+        <strong>No launch steps sent yet</strong>
+        <small>Each step of a live launch shows here with how it ended and the SOL it used.</small>
       </span>
       <span class="execution-ledger-meta">
-        <strong>armed run</strong>
+        <strong>live only</strong>
         <small>waiting</small>
       </span>
     </article>
@@ -18087,7 +18087,7 @@ function renderRecoveryWalletWorkspace() {
           `;
         }).join('')}
       </div>
-    ` : '<div class="empty-state">No abandoned launch wallets are waiting for recovery or cleanup.</div>'}
+    ` : ''}
     ${renderSecretPinResetAudit(state.lastSecretPinReset)}
     ${renderRecoverySweepResult(lastSweep)}
   `;
@@ -22117,6 +22117,7 @@ function coinHeaderHtml({ name, symbol, image = null, status = '', address = nul
 }
 
 function renderCoinPage(coin) {
+  if ($('#coinPageFooter')) $('#coinPageFooter').innerHTML = '';
   const body = $('#coinPageBody');
   const supportPanel = $('#poolSupportPanel');
   if (!body) return;
@@ -22155,8 +22156,15 @@ function renderCoinPage(coin) {
     ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
     ${coinMarketEvidenceHtml(coin.mint)}
     <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Positions</span><h2>Your positions</h2></div><button class="pill-button" type="button" data-action="refresh-coin-positions">Refresh</button></div>${coinPositionsHtml()}</section>
-    <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>
-    ${coin.status === 'Added' ? `<div class="coin-actions"><button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button></div>` : ''}`;
+    <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>`;
+  // Removing a coin is the page's last, least-used action: it sits after
+  // buy support, not between the coin's activity and its actions.
+  const footer = $('#coinPageFooter');
+  if (footer) {
+    footer.innerHTML = coin.status === 'Added'
+      ? `<button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button>`
+      : '';
+  }
   if (supportPanel) {
     supportPanel.hidden = false;
     // A test coin has no real pool: buy support is simulated against a
