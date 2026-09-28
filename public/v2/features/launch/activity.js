@@ -140,7 +140,7 @@ function renderLiveOpsPanel() {
     <div class="live-ops-head">
       <span>
         <span class="eyebrow">Live operations</span>
-        <h3>${walletPublicKey ? escapeHtml(shortAddress(walletPublicKey)) : 'No launch wallet'}</h3>
+        <h3>${walletPublicKey ? escapeHtml(fullAddress(walletPublicKey)) : 'No launch wallet'}</h3>
       </span>
       <span class="live-ops-actions">
         <span class="risk-badge ${state.liveOps.polling ? '' : 'warn'}">${state.liveOps.polling ? 'Polling' : state.apiStatus === 'connected' ? 'Ready' : 'Static'}</span>

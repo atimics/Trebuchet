@@ -87,7 +87,7 @@ function v2ReportSweepAssetCell(value) {
   const text = String(value || '').trim();
   if (!text) return '-';
   if (text.length >= 32 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(text)) {
-    return `<a href="${escapeHtml(solscanAccountUrl(text))}" target="_blank" rel="noopener">${escapeHtml(shortAddress(text))}</a>`;
+    return `<a href="${escapeHtml(solscanAccountUrl(text))}" target="_blank" rel="noopener">${escapeHtml(fullAddress(text))}</a>`;
   }
   return escapeHtml(text);
 }
@@ -948,7 +948,7 @@ function renderV2ReportPositionCard(entry) {
       ${renderV2ReportFactRow('Range', v2ReportPositionRange(position))}
       ${share ? renderV2ReportFactRow('Supply share', share) : ''}
       ${depth ? renderV2ReportFactRow('Support', depth) : ''}
-      ${recipient ? renderV2ReportFactRow(position.transferredTo ? 'Fee Key sent to' : 'Fee Key recipient', shortAddress(recipient)) : ''}
+      ${recipient ? renderV2ReportFactRow(position.transferredTo ? 'Fee Key sent to' : 'Fee Key recipient', fullAddress(recipient)) : ''}
     </div>
     ${renderV2ReportAddressRow('Position NFT', positionMint)}
     ${renderV2ReportAddressRow('Fee Key NFT', feeKeyMint)}
@@ -1040,7 +1040,7 @@ function buildV2ReportPoolSections(results, config) {
     const support = userPool.support || {};
     const feeTierSummary = v2ReportPoolFeeTierLabel(pool, userPool);
     const distributionRows = distribution.length
-      ? distribution.map((slice, sliceIndex) => `<span>${escapeHtml(`Slice ${sliceIndex + 1}`)} <strong>${reportPercent(slice.sharePercent)}</strong>${slice.recipient ? ` <em>${escapeHtml(shortAddress(slice.recipient))}</em>` : ''}</span>`).join('')
+      ? distribution.map((slice, sliceIndex) => `<span>${escapeHtml(`Slice ${sliceIndex + 1}`)} <strong>${reportPercent(slice.sharePercent)}</strong>${slice.recipient ? ` <em>${escapeHtml(fullAddress(slice.recipient))}</em>` : ''}</span>`).join('')
       : '<span>Main liquidity <strong>100%</strong></span>';
     const poolEnum = String(index + 1).padStart(2, '0');
     return `<section class="pool-section">
@@ -1453,8 +1453,8 @@ function renderReportPanel() {
   const destination = topology.sweepDestination;
   const funder = state.fundingWallet?.funder || null;
   const destinationState = destination
-    ? isProbablySolanaAddress(destination) ? shortAddress(destination) : 'Check address'
-    : funder ? `Funding wallet · ${shortAddress(funder)}` : 'Funding wallet';
+    ? isProbablySolanaAddress(destination) ? fullAddress(destination) : 'Check address'
+    : funder ? `Funding wallet · ${fullAddress(funder)}` : 'Funding wallet';
   const publish = topology.report.publish;
   const summary = $('#reportSummary');
   summary.textContent = publish ? 'Publish on' : 'Local only';
@@ -1463,6 +1463,6 @@ function renderReportPanel() {
     <div class="mini-row"><span>Report</span><strong>${publish ? 'Arweave + local' : 'Local download'}</strong></div>
     <div class="mini-row ${destination && !isProbablySolanaAddress(destination) ? 'danger' : ''}"><span>Return wallet</span><strong>${escapeHtml(destinationState)}</strong></div>
     <div class="mini-row"><span>Airdrop rows</span><strong>${topology.airdrop.recipients.length || topology.airdrop.recipientCount}</strong></div>
-    <div class="mini-row"><span>Fee Key recipient</span><strong>${topology.feeKeyRecipient ? escapeHtml(shortAddress(topology.feeKeyRecipient)) : 'Same as sweep'}</strong></div>
+    <div class="mini-row"><span>Fee Key recipient</span><strong>${topology.feeKeyRecipient ? escapeHtml(fullAddress(topology.feeKeyRecipient)) : 'Same as sweep'}</strong></div>
   `;
 }

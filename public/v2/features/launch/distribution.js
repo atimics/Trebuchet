@@ -282,9 +282,25 @@ function compactAmount(value) {
   }).format(amount);
 }
 
+// Addresses are shown in full wherever there is room (fullAddress). The
+// short form is only for tight spots, and it is remembered (shortAddressFull,
+// below) so that clicking it still copies the whole address.
 function shortAddress(value) {
   const text = String(value || '');
-  if (window.TrebuchetV2Api?.shortAddress) return window.TrebuchetV2Api.shortAddress(text);
   if (text.length <= 12) return text || 'Unknown';
-  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+  const short = window.TrebuchetV2Api?.shortAddress
+    ? window.TrebuchetV2Api.shortAddress(text)
+    : `${text.slice(0, 4)}...${text.slice(-4)}`;
+  if (short !== text) {
+    shortAddressFull.set(short, text);
+    if (shortAddressFull.size > 2000) shortAddressFull.delete(shortAddressFull.keys().next().value);
+  }
+  return short;
 }
+
+function fullAddress(value) {
+  const text = String(value || '').trim();
+  return text || 'Unknown';
+}
+
+const shortAddressFull = new Map();

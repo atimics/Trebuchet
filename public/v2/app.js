@@ -1830,7 +1830,7 @@ function journalResumePlan(journal) {
   if (unsafeEvents.length > 0) {
     pushUnique(items, `${unsafeEvents.length} pool create checkpoint lacks a completed position result.`);
     pushUnique(items, 'Automatic resume is blocked to avoid duplicate pool work.');
-    if (unsafeEvents[0]?.poolId) pushUnique(items, `Recorded pool: ${shortAddress(unsafeEvents[0].poolId)}`);
+    if (unsafeEvents[0]?.poolId) pushUnique(items, `Recorded pool: ${fullAddress(unsafeEvents[0].poolId)}`);
     return {
       state: 'danger',
       badge: 'Manual',
@@ -2191,12 +2191,28 @@ function compactAmount(value) {
   }).format(amount);
 }
 
+// Addresses are shown in full wherever there is room (fullAddress). The
+// short form is only for tight spots, and it is remembered (shortAddressFull,
+// below) so that clicking it still copies the whole address.
 function shortAddress(value) {
   const text = String(value || '');
-  if (window.TrebuchetV2Api?.shortAddress) return window.TrebuchetV2Api.shortAddress(text);
   if (text.length <= 12) return text || 'Unknown';
-  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+  const short = window.TrebuchetV2Api?.shortAddress
+    ? window.TrebuchetV2Api.shortAddress(text)
+    : `${text.slice(0, 4)}...${text.slice(-4)}`;
+  if (short !== text) {
+    shortAddressFull.set(short, text);
+    if (shortAddressFull.size > 2000) shortAddressFull.delete(shortAddressFull.keys().next().value);
+  }
+  return short;
 }
+
+function fullAddress(value) {
+  const text = String(value || '').trim();
+  return text || 'Unknown';
+}
+
+const shortAddressFull = new Map();
 
 function solflarePublicKeyText(publicKey) {
   if (!publicKey) return '';
@@ -2328,7 +2344,7 @@ function setConnectedSolflareWallet(provider, publicKey) {
   solflareWalletProvider = provider;
   state.solflare = {
     publicKey: address,
-    status: shortAddress(address),
+    status: fullAddress(address),
     connecting: false,
     disconnecting: false,
     error: null,
@@ -2358,7 +2374,7 @@ function syncConnectedSolflareProvider(provider, { publicKey = null, quiet = fal
     || provider?.wallet?.accounts?.[0]?.publicKey;
   if (nextPublicKey) {
     const wallet = setConnectedSolflareWallet(provider, nextPublicKey);
-    if (!quiet) notify(`Solflare connected: ${shortAddress(wallet.publicKey)}`);
+    if (!quiet) notify(`Solflare connected: ${fullAddress(wallet.publicKey)}`);
   } else {
     clearSolflareWallet();
     if (!quiet) notify('Solflare disconnected');
@@ -2636,7 +2652,7 @@ function airdropProgressLogLabel(airdrop) {
   if (total > 0) parts.push(`${seen}/${total} recipients`);
   if (completed > 0) parts.push(`${completed} delivered`);
   if (failed > 0) parts.push(`${failed} failed`);
-  if (airdrop?.lastWallet) parts.push(`last ${shortAddress(airdrop.lastWallet)}`);
+  if (airdrop?.lastWallet) parts.push(`last ${fullAddress(airdrop.lastWallet)}`);
   if (Number(airdrop?.lastTokens || 0) > 0) parts.push(`${compactAmount(airdrop.lastTokens)} tokens`);
   return parts.join(' / ');
 }
@@ -3182,10 +3198,10 @@ function liveRunProgressContext() {
       }),
       stage: 'mint',
       effects: [tokenComplete
-        ? `Mint ${shortAddress(tokenMint || state.lastDemoLaunchRun?.token?.tokenMint || state.executionReadiness?.tokenMint)} and authority posture are recorded.`
+        ? `Mint ${fullAddress(tokenMint || state.lastDemoLaunchRun?.token?.tokenMint || state.executionReadiness?.tokenMint)} and authority posture are recorded.`
         : tokenNeedsAuthorityProof
           ? tokenMint
-            ? `Mint ${shortAddress(tokenMint)} recorded; authority proof is ${tokenAuthorityPassCount}/${tokenAuthorityFields.length}.`
+            ? `Mint ${fullAddress(tokenMint)} recorded; authority proof is ${tokenAuthorityPassCount}/${tokenAuthorityFields.length}.`
             : 'Token phase is past; mint and authority proof are still missing.'
           : 'Create mint, metadata, and revoke authorities.'],
     },
@@ -4909,7 +4925,7 @@ async function shuffleMemeFlywheel() {
   state.memeFlywheelMint = mint;
   renderFlywheelPick();
   scheduleLaunchAutoSave();
-  notify(`Flywheel pairing drawn: ${shortAddress(mint)}`);
+  notify(`Flywheel pairing drawn: ${fullAddress(mint)}`);
 }
 
 // The liquidity budget is SOL that goes INTO the SOL pool. A launch pool
@@ -6147,7 +6163,7 @@ function tokenLogoStampMarkup() {
   }
   const caption = stamp.sample
     ? 'The contract address is printed on the logo at launch (sample shown).'
-    : `Printed on the logo: ${shortAddress(stamp.mint)}`;
+    : `Printed on the logo: ${fullAddress(stamp.mint)}`;
   return `
     <figure class="token-logo-stamp-preview">
       <img src="${escapeHtml(stamp.dataUrl)}" alt="Logo with the contract address stamped along the bottom">
@@ -6865,16 +6881,19 @@ function renderVanityCandidates() {
     const rarity = String(candidate.rarity || 'Common').trim();
     const grade = vanityRarityGrade(rarity);
     const attempts = Number(candidate.attempts);
+    const epochs = Number(candidate.epochs);
+    // The rarity is luck: how many of the expected tries the grind needed.
+    const luck = Number.isFinite(epochs) && epochs > 0 ? ` · found in ${epochs.toFixed(2)}× the expected tries` : '';
     const details = [
       vanityCandidateTarget(candidate),
       Number.isFinite(attempts) && attempts > 0 ? `${formatVanityAttempts(attempts)} tries` : null,
     ].filter(Boolean);
     return `
-    <button class="vanity-candidate grinder-row grade-${escapeHtml(grade)} ${isActive ? 'is-active' : ''}" type="button" data-action="select-vanity" data-public-key="${escapeHtml(candidate.publicKey)}" title="${escapeHtml(candidate.publicKey)}" aria-pressed="${isActive ? 'true' : 'false'}">
+    <button class="vanity-candidate grinder-row grade-${escapeHtml(grade)} ${isActive ? 'is-active' : ''}" type="button" data-action="select-vanity" data-public-key="${escapeHtml(candidate.publicKey)}" title="${escapeHtml(`${rarity}${luck}`)}" aria-pressed="${isActive ? 'true' : 'false'}">
       <span class="grinder-radio" aria-hidden="true"></span>
       <span class="grinder-row-main">
-        <code aria-label="Contract address ${escapeHtml(candidate.publicKey)}">${escapeHtml(shortAddress(candidate.publicKey))}</code>
-        <small>${/^common$/i.test(rarity) ? '' : `<b class="vanity-grade grade-${escapeHtml(grade)}">${escapeHtml(rarity)}</b> · `}${details.map(escapeHtml).join(' · ')}</small>
+        <code aria-label="Contract address ${escapeHtml(candidate.publicKey)}">${escapeHtml(fullAddress(candidate.publicKey))}</code>
+        <small><b class="vanity-grade grade-${escapeHtml(grade)}">${escapeHtml(rarity)}</b> · ${details.map(escapeHtml).join(' · ')}</small>
       </span>
       ${isActive ? '<span class="grinder-row-state">In use</span>' : ''}
     </button>
@@ -10657,8 +10676,8 @@ function buildV2ReportParityAudit(proof = currentLaunchProof(), config = current
       token.mint && hasProofLaunchWallet ? 'pass' : token.mint ? 'warn' : 'missing',
       token.mint
         ? hasProofLaunchWallet
-          ? `Mint ${shortAddress(token.mint)} / wallet ${shortAddress(proof.walletPublicKey)}.`
-          : `Mint ${shortAddress(token.mint)} is recorded, but launch wallet proof is missing.`
+          ? `Mint ${fullAddress(token.mint)} / wallet ${fullAddress(proof.walletPublicKey)}.`
+          : `Mint ${fullAddress(token.mint)} is recorded, but launch wallet proof is missing.`
         : 'Token mint is not recorded yet.',
     ),
     v2ReportParityItem(
@@ -10773,7 +10792,7 @@ function buildV2ReportParityAudit(proof = currentLaunchProof(), config = current
         : staleReport ? 'warn' : proof?.canPublishReport || token.mint ? 'warn' : 'missing',
       reportUri
         ? reportArtifactSweepBound
-          ? `Published at ${shortAddress(reportUri)}.`
+          ? `Published at ${fullAddress(reportUri)}.`
           : 'Published report is missing terminal sweep evidence hash; republish after final sweep.'
         : localDossier
           ? reportArtifactSweepBound
@@ -10788,7 +10807,7 @@ function buildV2ReportParityAudit(proof = currentLaunchProof(), config = current
       'Final sweep proof',
       sweepComplete ? 'pass' : transfer || proof?.canSweep ? 'warn' : 'missing',
       sweepComplete
-        ? `Sweep recorded to ${shortAddress(transfer.destinationWallet || proof?.destinationWallet || config?.poolTopology?.sweepDestination || '')}.`
+        ? `Sweep recorded to ${fullAddress(transfer.destinationWallet || proof?.destinationWallet || config?.poolTopology?.sweepDestination || '')}.`
         : transfer
           ? 'Sweep record exists but is missing wallet-empty, error-free final-sweep evidence.'
         : proof?.canSweep ? 'Sweep is ready but not recorded.' : 'Final sweep is not recorded yet.',
@@ -11413,7 +11432,7 @@ function v2ReportSweepAssetCell(value) {
   const text = String(value || '').trim();
   if (!text) return '-';
   if (text.length >= 32 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(text)) {
-    return `<a href="${escapeHtml(solscanAccountUrl(text))}" target="_blank" rel="noopener">${escapeHtml(shortAddress(text))}</a>`;
+    return `<a href="${escapeHtml(solscanAccountUrl(text))}" target="_blank" rel="noopener">${escapeHtml(fullAddress(text))}</a>`;
   }
   return escapeHtml(text);
 }
@@ -12274,7 +12293,7 @@ function renderV2ReportPositionCard(entry) {
       ${renderV2ReportFactRow('Range', v2ReportPositionRange(position))}
       ${share ? renderV2ReportFactRow('Supply share', share) : ''}
       ${depth ? renderV2ReportFactRow('Support', depth) : ''}
-      ${recipient ? renderV2ReportFactRow(position.transferredTo ? 'Fee Key sent to' : 'Fee Key recipient', shortAddress(recipient)) : ''}
+      ${recipient ? renderV2ReportFactRow(position.transferredTo ? 'Fee Key sent to' : 'Fee Key recipient', fullAddress(recipient)) : ''}
     </div>
     ${renderV2ReportAddressRow('Position NFT', positionMint)}
     ${renderV2ReportAddressRow('Fee Key NFT', feeKeyMint)}
@@ -12366,7 +12385,7 @@ function buildV2ReportPoolSections(results, config) {
     const support = userPool.support || {};
     const feeTierSummary = v2ReportPoolFeeTierLabel(pool, userPool);
     const distributionRows = distribution.length
-      ? distribution.map((slice, sliceIndex) => `<span>${escapeHtml(`Slice ${sliceIndex + 1}`)} <strong>${reportPercent(slice.sharePercent)}</strong>${slice.recipient ? ` <em>${escapeHtml(shortAddress(slice.recipient))}</em>` : ''}</span>`).join('')
+      ? distribution.map((slice, sliceIndex) => `<span>${escapeHtml(`Slice ${sliceIndex + 1}`)} <strong>${reportPercent(slice.sharePercent)}</strong>${slice.recipient ? ` <em>${escapeHtml(fullAddress(slice.recipient))}</em>` : ''}</span>`).join('')
       : '<span>Main liquidity <strong>100%</strong></span>';
     const poolEnum = String(index + 1).padStart(2, '0');
     return `<section class="pool-section">
@@ -12779,8 +12798,8 @@ function renderReportPanel() {
   const destination = topology.sweepDestination;
   const funder = state.fundingWallet?.funder || null;
   const destinationState = destination
-    ? isProbablySolanaAddress(destination) ? shortAddress(destination) : 'Check address'
-    : funder ? `Funding wallet · ${shortAddress(funder)}` : 'Funding wallet';
+    ? isProbablySolanaAddress(destination) ? fullAddress(destination) : 'Check address'
+    : funder ? `Funding wallet · ${fullAddress(funder)}` : 'Funding wallet';
   const publish = topology.report.publish;
   const summary = $('#reportSummary');
   summary.textContent = publish ? 'Publish on' : 'Local only';
@@ -12789,7 +12808,7 @@ function renderReportPanel() {
     <div class="mini-row"><span>Report</span><strong>${publish ? 'Arweave + local' : 'Local download'}</strong></div>
     <div class="mini-row ${destination && !isProbablySolanaAddress(destination) ? 'danger' : ''}"><span>Return wallet</span><strong>${escapeHtml(destinationState)}</strong></div>
     <div class="mini-row"><span>Airdrop rows</span><strong>${topology.airdrop.recipients.length || topology.airdrop.recipientCount}</strong></div>
-    <div class="mini-row"><span>Fee Key recipient</span><strong>${topology.feeKeyRecipient ? escapeHtml(shortAddress(topology.feeKeyRecipient)) : 'Same as sweep'}</strong></div>
+    <div class="mini-row"><span>Fee Key recipient</span><strong>${topology.feeKeyRecipient ? escapeHtml(fullAddress(topology.feeKeyRecipient)) : 'Same as sweep'}</strong></div>
   `;
 }
 
@@ -13453,23 +13472,23 @@ function proofExplorerItems(proof = currentLaunchProof(), reportUri = null, conf
   ].filter((value, index, list) => value && list.indexOf(value) === index);
   const items = [];
   if (proof?.token?.mint) {
-    items.push({ label: 'Mint', value: shortAddress(proof.token.mint), href: solscanAccountUrl(proof.token.mint) });
+    items.push({ label: 'Mint', value: fullAddress(proof.token.mint), href: solscanAccountUrl(proof.token.mint) });
   }
   if (proof?.walletPublicKey) {
-    items.push({ label: 'Launch wallet', value: shortAddress(proof.walletPublicKey), href: solscanAccountUrl(proof.walletPublicKey) });
+    items.push({ label: 'Launch wallet', value: fullAddress(proof.walletPublicKey), href: solscanAccountUrl(proof.walletPublicKey) });
   }
   poolIds.slice(0, 3).forEach((poolId, index) => {
-    items.push({ label: `Pool ${index + 1}`, value: shortAddress(poolId), href: solscanAccountUrl(poolId) });
+    items.push({ label: `Pool ${index + 1}`, value: fullAddress(poolId), href: solscanAccountUrl(poolId) });
   });
   if (poolIds.length > 3) {
     items.push({ label: 'More pools', value: `${poolIds.length - 3} more`, href: null });
   }
   const destination = proofEffectiveDestination(proof, config);
   if (destination) {
-    items.push({ label: 'Destination', value: shortAddress(destination), href: solscanAccountUrl(destination) });
+    items.push({ label: 'Destination', value: fullAddress(destination), href: solscanAccountUrl(destination) });
   }
   if (reportUri) {
-    items.push({ label: 'Report', value: shortAddress(reportUri), href: reportUri });
+    items.push({ label: 'Report', value: fullAddress(reportUri), href: reportUri });
   } else {
     const localDossier = currentLocalDossier(proof, config);
     if (localDossier) {
@@ -13862,8 +13881,8 @@ function renderFinalizationPanel() {
           <span class="eyebrow">Launch completion</span>
           <h3>${finalSweepComplete ? 'Launch complete' : 'Report, airdrop, and proof'}</h3>
           <p>${finalSweepComplete
-            ? `Mint ${tokenMint ? shortAddress(tokenMint) : 'recorded'} · ${poolCount} pool${poolCount === 1 ? '' : 's'} · launch wallet empty.`
-            : tokenMint ? `Mint ${shortAddress(tokenMint)} has ${poolCount} recorded pool ID${poolCount === 1 ? '' : 's'}.` : 'Create token and liquidity before final proof.'}</p>
+            ? `Mint ${tokenMint ? fullAddress(tokenMint) : 'recorded'} · ${poolCount} pool${poolCount === 1 ? '' : 's'} · launch wallet empty.`
+            : tokenMint ? `Mint ${fullAddress(tokenMint)} has ${poolCount} recorded pool ID${poolCount === 1 ? '' : 's'}.` : 'Create token and liquidity before final proof.'}</p>
         </span>
         <span class="finalize-head-status">
           <span class="risk-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
@@ -13874,7 +13893,7 @@ function renderFinalizationPanel() {
         <span>
           <small>Report</small>
           <strong>${escapeHtml(reportNeedsFinalArtifact ? 'Needs final proof' : reportUri ? 'Published' : localDossier ? 'Saved launch record' : staleReport ? 'Stale' : state.prefs.publishLaunchReport === false ? 'Local' : canPublish ? 'Ready' : 'Waiting')}</strong>
-          <em>${reportNeedsFinalArtifact ? 'download after sweep' : reportUri ? escapeHtml(shortAddress(reportUri)) : localDossier ? escapeHtml(localDossier.filename) : staleReport ? 'regenerate required' : `${poolCount} pool ID proof${poolCount === 1 ? '' : 's'}`}</em>
+          <em>${reportNeedsFinalArtifact ? 'download after sweep' : reportUri ? escapeHtml(fullAddress(reportUri)) : localDossier ? escapeHtml(localDossier.filename) : staleReport ? 'regenerate required' : `${poolCount} pool ID proof${poolCount === 1 ? '' : 's'}`}</em>
         </span>
         <span>
           <small>Airdrop</small>
@@ -13889,7 +13908,7 @@ function renderFinalizationPanel() {
         <span>
           <small>Sweep</small>
           <strong>${finalSweepComplete ? 'Recorded' : proof?.transfer ? 'Needs proof' : proof?.canSweep ? 'Ready' : 'Waiting'}</strong>
-          <em>${finalDestination ? escapeHtml(shortAddress(finalDestination)) : 'no destination'}</em>
+          <em>${finalDestination ? escapeHtml(fullAddress(finalDestination)) : 'no destination'}</em>
         </span>
       </div>
       <div class="verify-panel-stage">
@@ -13981,8 +14000,8 @@ function renderCancelRefundPanel(config = currentLaunchConfig()) {
         <span class="risk-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
       </div>
       <div class="cancel-refund-grid">
-        <span><small>Launch wallet</small><strong>${walletPublicKey ? escapeHtml(shortAddress(walletPublicKey)) : 'Select'}</strong></span>
-        <span><small>Destination</small><strong>${destinationWallet ? escapeHtml(shortAddress(destinationWallet)) : 'Set sweep'}</strong></span>
+        <span><small>Launch wallet</small><strong>${walletPublicKey ? escapeHtml(fullAddress(walletPublicKey)) : 'Select'}</strong></span>
+        <span><small>Destination</small><strong>${destinationWallet ? escapeHtml(fullAddress(destinationWallet)) : 'Set sweep'}</strong></span>
         <span><small>Tokens</small><strong>${metrics ? metrics.tokens : '-'}</strong></span>
         <span><small>NFTs</small><strong>${metrics ? metrics.nfts : '-'}</strong></span>
         <span><small>SOL</small><strong>${metrics ? metrics.sol.toFixed(4) : '-'}</strong></span>
@@ -14084,7 +14103,7 @@ function renderClassicBridge() {
   const restoredPlanNotice = state.restoredLaunchJournalId && !finalSweepComplete ? `
     <aside class="recovered-plan-notice" role="status">
       <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
-      <span><strong>Recovery loaded</strong><small>Journal ${escapeHtml(shortAddress(state.restoredLaunchJournalId))} restored this launch. Only unfinished work remains.</small></span>
+      <span><strong>Recovery loaded</strong><small>Journal ${escapeHtml(fullAddress(state.restoredLaunchJournalId))} restored this launch. Only unfinished work remains.</small></span>
       <button class="text-button" type="button" data-view="history">View record</button>
     </aside>
   ` : '';
@@ -14338,7 +14357,7 @@ function renderClassicBridge() {
         <span><small>Name</small><strong>${escapeHtml(config.token.name || 'Untitled')}</strong></span>
         <span><small>Symbol</small><strong>${escapeHtml(config.token.symbol || 'TOK')}</strong></span>
         <span><small>Supply</small><strong>${escapeHtml(String(config.token.supply || '0'))}</strong></span>
-        <span><small>Contract address</small><strong>${escapeHtml(state.selectedVanityPublicKey ? shortAddress(state.selectedVanityPublicKey) : 'Random')}</strong></span>
+        <span><small>Contract address</small><strong>${escapeHtml(state.selectedVanityPublicKey ? fullAddress(state.selectedVanityPublicKey) : 'Random')}</strong></span>
       </div>
       ${readinessPanel({
         title: tokenComplete ? 'Token created' : mintEndpoint === '/api/finish-token-creation' ? 'Finish interrupted token' : 'Create token',
@@ -14558,7 +14577,7 @@ function renderLiveOpsPanel() {
     <div class="live-ops-head">
       <span>
         <span class="eyebrow">Live operations</span>
-        <h3>${walletPublicKey ? escapeHtml(shortAddress(walletPublicKey)) : 'No launch wallet'}</h3>
+        <h3>${walletPublicKey ? escapeHtml(fullAddress(walletPublicKey)) : 'No launch wallet'}</h3>
       </span>
       <span class="live-ops-actions">
         <span class="risk-badge ${state.liveOps.polling ? '' : 'warn'}">${state.liveOps.polling ? 'Polling' : state.apiStatus === 'connected' ? 'Ready' : 'Static'}</span>
@@ -15679,7 +15698,7 @@ function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, 
       pass: Boolean(reportArtifact && reportArtifactSweepBound),
       detail: reportUri
         ? reportArtifactSweepBound
-          ? `Permanent report proof is attached: ${shortAddress(reportUri)}.`
+          ? `Permanent report proof is attached: ${fullAddress(reportUri)}.`
           : 'Permanent report proof is missing the terminal sweep evidence hash; republish after final sweep before replacing Classic.'
         : localDossier
           ? reportArtifactSweepBound
@@ -15995,7 +16014,7 @@ function buildV2ReplacementCriteriaAudit({
       label: 'Full demo launch',
       pass: Boolean(demoRunComplete || hasCompletedLiveProof),
       evidence: demoRunComplete
-        ? `Test launch ${shortAddress(state.lastDemoLaunchRun?.token?.tokenMint || state.lastDemoLaunchRun?.token?.mint)} completed with terminal readiness proof.`
+        ? `Test launch ${fullAddress(state.lastDemoLaunchRun?.token?.tokenMint || state.lastDemoLaunchRun?.token?.mint)} completed with terminal readiness proof.`
         : hasCompletedLiveProof
           ? 'Completed live Trebuchet proof is stronger than the demo path.'
           : state.lastDemoLaunchRun
@@ -16009,8 +16028,8 @@ function buildV2ReplacementCriteriaAudit({
       pass: walletEvidence,
       evidence: walletEvidence
         ? proofWalletEvidence
-          ? `Launch wallet ${shortAddress(proof.walletPublicKey)} is attached to completed proof.`
-          : `Selected launch wallet ${shortAddress(selectedWalletPublicKey)} has an available local signing secret.`
+          ? `Launch wallet ${fullAddress(proof.walletPublicKey)} is attached to completed proof.`
+          : `Selected launch wallet ${fullAddress(selectedWalletPublicKey)} has an available local signing secret.`
         : selectedWalletPublicKey
           ? !selectedWallet
             ? 'This address is not one of your saved launch wallets.'
@@ -16029,11 +16048,11 @@ function buildV2ReplacementCriteriaAudit({
       label: 'Vanity CA options',
       pass: vanityEvidence,
       evidence: selectedVanityCandidate
-        ? `Selected persisted Vanity CA ${shortAddress(selectedVanityCandidate.publicKey)}.`
+        ? `Selected persisted Vanity CA ${fullAddress(selectedVanityCandidate.publicKey)}.`
         : persistedVanityCandidates.length
           ? `${persistedVanityCandidates.length} persisted Vanity CA option${persistedVanityCandidates.length === 1 ? '' : 's'} available.`
           : state.selectedVanityPublicKey
-            ? `Selected Vanity CA ${shortAddress(state.selectedVanityPublicKey)} is preview-only or missing its saved secret; grind or select a persisted candidate from the desktop app.`
+            ? `Selected Vanity CA ${fullAddress(state.selectedVanityPublicKey)} is preview-only or missing its saved secret; grind or select a persisted candidate from the desktop app.`
             : nativeVanityAvailable
             ? 'Native grinder is available.'
             : state.apiStatus === 'connected'
@@ -16047,7 +16066,7 @@ function buildV2ReplacementCriteriaAudit({
       pass: tokenConfigEvidence,
       evidence: tokenConfig.ready
         ? hasCompletedLiveProof
-          ? `Completed live proof minted ${shortAddress(proof?.token?.mint)} from the frozen token config.`
+          ? `Completed live proof minted ${fullAddress(proof?.token?.mint)} from the frozen token config.`
           : localApiLaunchPlanEvidence
             ? `Token ${tokenConfig.name} / ${tokenConfig.symbol} / ${tokenConfig.supply} is staged in the current local launch plan${tokenConfig.hasLogo ? ' with validated logo handoff' : ''}.`
             : state.apiStatus === 'connected'
@@ -16145,7 +16164,7 @@ function buildV2ReplacementCriteriaAudit({
       label: 'Run and resume safety',
       pass: resumeEvidence,
       evidence: hasCompletedLiveProof
-        ? `Completed live proof includes guarded execution journal ${shortAddress(proof.journalId)}.`
+        ? `Completed live proof includes guarded execution journal ${fullAddress(proof.journalId)}.`
         : proof && !proofJournalEvidence
           ? 'Completed launch record is missing its launch journal id.'
           : proof?.journalId && !matchingLocalJournal && proofFinalSweepEvidence
@@ -16159,11 +16178,11 @@ function buildV2ReplacementCriteriaAudit({
           : proofJournalEvidence && matchingLocalJournal && isTerminalJournal(matchingLocalJournal)
           ? 'Matching launch journal is terminal, but the proof is missing terminal final-sweep evidence.'
           : proofJournalEvidence && matchingLocalJournal && !journalHasRecoveryPlanningEvidence(matchingLocalJournal)
-          ? `Journal ${shortAddress(proof.journalId)} is loaded, but it lacks pool-plan or checkpoint evidence needed to prove resume safety.`
+          ? `Journal ${fullAddress(proof.journalId)} is loaded, but it lacks pool-plan or checkpoint evidence needed to prove resume safety.`
           : proofJournalEvidence && matchingLocalJournal
-          ? `Journal ${shortAddress(proof.journalId)} is loaded for the launch record.`
+          ? `Journal ${fullAddress(proof.journalId)} is loaded for the launch record.`
           : proofJournalEvidence
-            ? `Launch record has journal ${shortAddress(proof.journalId)}, but the matching local journal is not loaded.`
+            ? `Launch record has journal ${fullAddress(proof.journalId)}, but the matching local journal is not loaded.`
             : localJournalEvidence
               ? `${localRecoveryJournal.count} active or failed launch journal${localRecoveryJournal.count === 1 ? '' : 's'} with pool-plan or checkpoint evidence loaded for recovery planning${localRecoveryJournal.failed ? ` (${localRecoveryJournal.failed} failed/partial)` : ''}.`
             : recoveryResultJournalEvidence
@@ -16384,7 +16403,7 @@ function renderParityPanel() {
           : state.lastRealExecution
             ? `${state.lastRealExecution.action || 'Classic operation'} completed; keep running until token, liquidity, and final sweep proof are all present.`
             : state.lastDemoLaunchRun
-              ? `Test launch completed for ${shortAddress(state.lastDemoLaunchRun.token?.tokenMint)}; live parity still needs a real proof.`
+              ? `Test launch completed for ${fullAddress(state.lastDemoLaunchRun.token?.tokenMint)}; live parity still needs a real proof.`
               : demoExecutionReady
                 ? 'Trebuchet can run the complete demo token, LP, and sweep path; real launch routing remains guarded.'
                 : realBridgeReady
@@ -16590,7 +16609,7 @@ function renderWallet() {
     <div class="wallet-detail-grid">
       <div class="wallet-qr-box ${qrCode ? 'has-qr' : ''}">
         ${qrCode
-          ? `<img src="${escapeHtml(qrCode)}" alt="Funding QR code for ${escapeHtml(shortAddress(selectedPublicKey))}">`
+          ? `<img src="${escapeHtml(qrCode)}" alt="Funding QR code for ${escapeHtml(fullAddress(selectedPublicKey))}">`
           : `<span><i class="fa-solid ${qrLoading ? 'fa-spinner fa-spin' : 'fa-qrcode'}"></i></span>`}
       </div>
       <div class="wallet-funding-box">
@@ -16727,7 +16746,7 @@ function discoveryWalletChip(wallet) {
     <span class="discovery-wallet-chip ${wallet.enabled === false ? 'is-paused' : ''}" title="${escapeHtml(wallet.publicKey)}">
       <i class="fa-solid ${wallet.source === 'managed' ? 'fa-key' : 'fa-eye'}"></i>
       <strong>${escapeHtml(wallet.label || shortAddress(wallet.publicKey))}</strong>
-      <span>${escapeHtml(shortAddress(wallet.publicKey))}</span>
+      <span>${escapeHtml(fullAddress(wallet.publicKey))}</span>
       <button type="button" data-action="toggle-discovery-wallet" data-wallet="${escapeHtml(wallet.publicKey)}" data-enabled="${wallet.enabled === false ? 'true' : 'false'}" aria-label="${wallet.enabled === false ? 'Resume' : 'Pause'} ${escapeHtml(wallet.label || 'wallet')}" ${state.discovery.walletBusy || state.discovery.scanning ? 'disabled' : ''}>
         <i class="fa-solid ${wallet.enabled === false ? 'fa-play' : 'fa-pause'}"></i>
       </button>
@@ -17052,7 +17071,7 @@ function renderDiscovery() {
       <span class="evidence-identity">
         <h3>${escapeHtml(selected.name)} <span>${escapeHtml(selected.symbol)}</span></h3>
         <span class="evidence-identity-meta">
-          <code title="${escapeHtml(selected.mint)}">${escapeHtml(shortAddress(selected.mint))}</code>
+          <code title="${escapeHtml(selected.mint)}">${escapeHtml(fullAddress(selected.mint))}</code>
           ${brand ? `<span class="risk-badge ${brandRiskClass}" title="${escapeHtml(brandDetail)}"><i class="fa-solid ${brand.official ? 'fa-shield-halved' : 'fa-shield'}"></i>${escapeHtml(brand.classification)}</span>` : ''}
         </span>
       </span>
@@ -17986,7 +18005,7 @@ function renderRecoveryWalletWorkspace() {
               <span class="ident" aria-hidden="true">${escapeHtml(shortAddress(wallet.publicKey).slice(0, 2))}</span>
               <span class="recovery-wallet-copy">
                 <span class="eyebrow">${escapeHtml(formatDate(wallet.createdAt))}</span>
-                <h3>${escapeHtml(shortAddress(wallet.publicKey))}</h3>
+                <h3>${escapeHtml(fullAddress(wallet.publicKey))}</h3>
                 <p>${escapeHtml(walletState.detail)}</p>
                 <code>${escapeHtml(wallet.publicKey)}</code>
               </span>
@@ -18124,7 +18143,7 @@ function renderHistory() {
     kind: 'journal',
     status: journal.status || 'journal',
     title: `${journal.status || 'journal'} / ${journal.token?.symbol || shortAddress(journal.walletPublicKey)}`,
-    detail: `${humanizeStage(journal.stage)} for ${shortAddress(journal.walletPublicKey)}`,
+    detail: `${humanizeStage(journal.stage)} for ${fullAddress(journal.walletPublicKey)}`,
     time: formatDate(journal.updatedAt || journal.createdAt),
     journal,
     resumePlan: journalResumePlan(journal),
@@ -18423,9 +18442,9 @@ function renderFundingWalletHint({ compact = false } = {}) {
         ? 'Returning to the funding wallet'
         : 'Funding wallet not found yet';
   const detail = status.kind === 'unverified'
-    ? `${shortAddress(status.address)} was typed, not proven. Sign with it or use the funding wallet.`
+    ? `${fullAddress(status.address)} was typed, not proven. Sign with it or use the funding wallet.`
     : status.address
-      ? `${shortAddress(status.address)} receives Fee Keys, remaining tokens, and leftover SOL.`
+      ? `${fullAddress(status.address)} receives Fee Keys, remaining tokens, and leftover SOL.`
       : 'Fund the launch wallet from your own wallet. That wallet receives everything after launch.';
   const className = status.kind === 'unverified' ? 'danger' : status.address ? '' : 'warn';
   const detectLabel = hint.checking ? 'Checking history' : 'Find funding wallet';
@@ -18457,7 +18476,7 @@ function renderSolflarePanel() {
           ? 'Unavailable'
           : 'Optional';
   const detail = connected
-    ? `Connected as ${shortAddress(state.solflare.publicKey)}.`
+    ? `Connected as ${fullAddress(state.solflare.publicKey)}.`
     : state.solflare.error
       ? state.solflare.error
       : 'Optional. Connect it to fund the launch wallet, or to use it as the return wallet.';
@@ -18509,7 +18528,7 @@ async function connectSolflareWallet() {
     wireSolflareProviderEvents(provider);
     const result = await provider.connect();
     const wallet = setConnectedSolflareWallet(provider, provider.publicKey || result?.publicKey);
-    notify(`Solflare connected: ${shortAddress(wallet.publicKey)}`);
+    notify(`Solflare connected: ${fullAddress(wallet.publicKey)}`);
     return wallet;
   } catch (error) {
     state.solflare = {
@@ -20474,7 +20493,7 @@ async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()
   const typed = await openOperatorPrompt({
     eyebrow: 'Destructive wallet operation',
     title: 'Discard local recovery entry',
-    detail: `This deletes Trebuchet's local secret for ${shortAddress(publicKey)}. Continue only if the wallet is empty, intentionally abandoned, or backed up elsewhere.`,
+    detail: `This deletes Trebuchet's local secret for ${fullAddress(publicKey)}. Continue only if the wallet is empty, intentionally abandoned, or backed up elsewhere.`,
     label: 'Type the full wallet address',
     placeholder: publicKey,
     confirmLabel: 'Discard local secret',
@@ -20571,7 +20590,7 @@ function renderRecoverySweepResult(sweep) {
       <div class="recovery-sweep-head">
         <span>
           <span class="eyebrow">Post-sweep cleanup</span>
-          <strong>${escapeHtml(shortAddress(sweep.publicKey))} to ${escapeHtml(shortAddress(sweep.destinationWallet))}</strong>
+          <strong>${escapeHtml(fullAddress(sweep.publicKey))} to ${escapeHtml(fullAddress(sweep.destinationWallet))}</strong>
         </span>
         <span class="risk-badge ${state}">${escapeHtml(badge)}</span>
       </div>
@@ -20778,7 +20797,7 @@ async function cancelRefundLaunch() {
   const typed = await openOperatorPrompt({
     eyebrow: 'Launch recovery operation',
     title: 'Cancel and refund launch',
-    detail: `Trebuchet will sweep tokens, SOL, and Fee Key NFTs from ${shortAddress(walletPublicKey)} to ${shortAddress(destinationWallet)}. Token mints and pools already created on-chain cannot be undone.`,
+    detail: `Trebuchet will sweep tokens, SOL, and Fee Key NFTs from ${fullAddress(walletPublicKey)} to ${fullAddress(destinationWallet)}. Token mints and pools already created on-chain cannot be undone.`,
     label: 'Type the full launch wallet address',
     placeholder: walletPublicKey,
     confirmLabel: 'Cancel and refund',
@@ -20797,7 +20816,7 @@ async function cancelRefundLaunch() {
   const ledgerId = startExecutionLedgerEntry({
     kind: 'cancel-refund',
     endpoint: '/api/transfer-assets',
-    detail: `Sweeping ${shortAddress(walletPublicKey)} to ${shortAddress(destinationWallet)}.`,
+    detail: `Sweeping ${fullAddress(walletPublicKey)} to ${fullAddress(destinationWallet)}.`,
   });
   renderAll();
   try {
@@ -20866,7 +20885,7 @@ async function removeVanityCandidateByPublicKey(publicKey, { confirm = true } = 
   if (confirm) {
     const ok = await confirmOperatorAction({
       title: 'Remove saved Vanity CA',
-      detail: `Remove ${shortAddress(publicKey)} from local options?`,
+      detail: `Remove ${fullAddress(publicKey)} from local options?`,
       confirmLabel: 'Remove',
       danger: true,
     });
@@ -21336,7 +21355,7 @@ function openWalletSigning() {
     if (added) {
       state.destinations.waiting = false;
       setReturnWallet(added);
-      notify(`Return wallet verified: ${shortAddress(added)}`);
+      notify(`Return wallet verified: ${fullAddress(added)}`);
       return;
     }
     if (Date.now() < deadline && state.destinations.waiting) {
@@ -21416,7 +21435,7 @@ function assetDestinationsHtml() {
         ${status.kind !== 'funder' || String($('#sweepDestination')?.value || '').trim()
           ? '<button class="pill-button" type="button" data-action="use-funding-wallet-sweep">Use funding wallet</button>'
           : ''}
-        ${others.map((other) => `<button class="pill-button" type="button" data-action="use-signed-wallet" data-address="${escapeHtml(other)}">Use ${escapeHtml(shortAddress(other))}</button>`).join('')}
+        ${others.map((other) => `<button class="pill-button" type="button" data-action="use-signed-wallet" data-address="${escapeHtml(other)}">Use ${escapeHtml(fullAddress(other))}</button>`).join('')}
       </div>
     </div>
     ${share.heldPercent > 0 || share.active ? `<div class="asset-destination asset-share">
@@ -21592,7 +21611,7 @@ async function withdrawCoinPosition(nftMint) {
     title: 'Withdraw position',
     detail: `Withdraw everything from this ${symbol}/${quote} position and close it: about `
       + `${Number(position.quoteAmount).toFixed(4)} ${quote} and ${compactAmount(position.tokenAmount)} ${symbol} `
-      + `go back to ${shortAddress(position.owner)}, with the position's account rent. The buy support it gave is removed.`,
+      + `go back to ${fullAddress(position.owner)}, with the position's account rent. The buy support it gave is removed.`,
     confirmLabel: 'Withdraw',
     danger: true,
     confirmationText: 'WITHDRAW',
@@ -21632,7 +21651,7 @@ function coinPositionsHtml() {
   const rows = (list || []).map((position) => `
     <li>
       <span>
-        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${escapeHtml(shortAddress(position.owner))}</strong>
+        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${escapeHtml(fullAddress(position.owner))}</strong>
         <small>${escapeHtml(fmtQuotePrice(position.priceLow, position))} to ${escapeHtml(fmtQuotePrice(position.priceHigh, position))} per coin · ${position.inRange ? 'the price is inside this range' : 'the price is outside this range'}</small>
       </span>
       <span class="coin-position-holds">${Number(position.quoteAmount).toFixed(4)} ${escapeHtml(position.quoteSymbol || '')} + ${escapeHtml(compactAmount(position.tokenAmount))} ${escapeHtml(coinSymbol)}</span>
@@ -21710,7 +21729,7 @@ async function addCoinByMint() {
 async function removeAddedCoin(mint) {
   const ok = await confirmOperatorAction({
     title: 'Remove from coins',
-    detail: `Hide ${shortAddress(mint)} from your coins. Nothing on-chain changes, and its activity is kept.`,
+    detail: `Hide ${fullAddress(mint)} from your coins. Nothing on-chain changes, and its activity is kept.`,
     confirmLabel: 'Remove',
   });
   if (!ok) return;
@@ -22005,7 +22024,7 @@ function draftPlanHtml(entry) {
     ['Pools', pools.length ? pools.map((pool) => `${pool.quoteSymbol || pool.quoteToken || 'pair'} ${Number(pool.supplyPercent || 0)}%`).join(' · ') : 'None yet'],
     ['SOL in the pool', supportSol > 0 ? fmtSol(supportSol) : 'None'],
     ['Held back', held > 0 ? `${held}%` : 'None'],
-    ['Address', config.vanity?.selectedPublicKey ? `${shortAddress(config.vanity.selectedPublicKey)} (reserved)` : 'Chosen when the token is created'],
+    ['Address', config.vanity?.selectedPublicKey ? `${fullAddress(config.vanity.selectedPublicKey)} (reserved)` : 'Chosen when the token is created'],
   ];
   return `<dl class="pool-support-facts">${facts.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>`;
 }
@@ -22044,9 +22063,9 @@ function renderCoinPage(coin) {
 
   const identity = account ? [
     ['Supply', formatTokenAmount(account.supply, account.decimals)],
-    ['Mint authority', account.mintAuthority ? shortAddress(account.mintAuthority) : 'Revoked'],
-    ['Freeze authority', account.freezeAuthority ? shortAddress(account.freezeAuthority) : 'Revoked'],
-    ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${shortAddress(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
+    ['Mint authority', account.mintAuthority ? fullAddress(account.mintAuthority) : 'Revoked'],
+    ['Freeze authority', account.freezeAuthority ? fullAddress(account.freezeAuthority) : 'Revoked'],
+    ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${fullAddress(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
   ] : [];
   body.innerHTML = `${header}
     ${state.coins.detailLoading ? '<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading the coin from the chain…</p>' : ''}
@@ -22194,7 +22213,7 @@ async function openPoolSupport() {
   const symbol = plan.token?.symbol || shortAddress(plan.token?.mint);
   const ok = await confirmOperatorAction({
     title: 'Add buy support',
-    detail: `Put ${deposit.toFixed(4)} SOL into the ${symbol}/SOL pool from ${shortAddress(walletPublicKey)}, `
+    detail: `Put ${deposit.toFixed(4)} SOL into the ${symbol}/SOL pool from ${fullAddress(walletPublicKey)}, `
       + `between ${fmtPoolPrice(plan.topPriceSol)} and ${fmtPoolPrice(plan.bottomPriceSol)} per ${symbol}.`
       + (rent > 0 ? ` ${rent.toFixed(4)} SOL is tick-array rent that is never returned.` : ''),
     confirmLabel: 'Add support',
@@ -22247,7 +22266,7 @@ function renderPoolSupport() {
   const rent = solFromLamports(plan.newArrayRentLamports);
   const wallet = plan.walletLamports === null ? null : solFromLamports(plan.walletLamports);
   const facts = [
-    ['Pool', `${symbol}/SOL · ${shortAddress(plan.poolId)}`],
+    ['Pool', `${symbol}/SOL · ${fullAddress(plan.poolId)}`],
     ['Current price', fmtPoolPrice(plan.currentPriceSol)],
     ['Cheapest elsewhere', plan.ceiling ? `${fmtPoolPrice(plan.ceiling.priceSol)} in the ${plan.ceiling.quoteSymbol || 'other'} pool` : 'No other pool with this token'],
     ['Support range', `${fmtPoolPrice(plan.topPriceSol)} (−${pctBelow(plan.topPriceSol)}%) to ${fmtPoolPrice(plan.bottomPriceSol)} (−${pctBelow(plan.bottomPriceSol)}%)`],
@@ -22265,12 +22284,12 @@ function renderPoolSupport() {
       <dl class="pool-support-facts">${facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>
       <ul class="pool-support-costs">
         ${costs.map(([label, sol, note]) => `<li><span>${escapeHtml(label)}<small>${escapeHtml(note)}</small></span><strong>${sol.toFixed(4)}</strong></li>`).join('')}
-        <li class="is-total"><span>Needed in the wallet${wallet === null ? '' : `<small>${escapeHtml(shortAddress(selectedLaunchWalletPublicKey()))} has ${wallet.toFixed(4)} SOL</small>`}</span><strong>${solFromLamports(plan.totalLamports).toFixed(4)} SOL</strong></li>
+        <li class="is-total"><span>Needed in the wallet${wallet === null ? '' : `<small>${escapeHtml(fullAddress(selectedLaunchWalletPublicKey()))} has ${wallet.toFixed(4)} SOL</small>`}</span><strong>${solFromLamports(plan.totalLamports).toFixed(4)} SOL</strong></li>
       </ul>
       ${plan.warnings?.length ? `<ul class="pool-support-warnings">${plan.warnings.map((warning) => `<li><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>${escapeHtml(warning)}</li>`).join('')}</ul>` : ''}
       ${error ? `<p class="pool-support-error" role="alert">${escapeHtml(error)}</p>` : ''}
       ${done
-        ? `<p class="pool-support-done"><i class="fa-solid fa-check" aria-hidden="true"></i> Added. Position ${escapeHtml(shortAddress(result.nftMint))}${result.txId && !String(result.txId).startsWith('Demo') ? ` · <a href="${escapeHtml(solscanTxUrl(result.txId))}" target="_blank" rel="noopener">transaction</a>` : ''}</p>`
+        ? `<p class="pool-support-done"><i class="fa-solid fa-check" aria-hidden="true"></i> Added. Position ${escapeHtml(fullAddress(result.nftMint))}${result.txId && !String(result.txId).startsWith('Demo') ? ` · <a href="${escapeHtml(solscanTxUrl(result.txId))}" target="_blank" rel="noopener">transaction</a>` : ''}</p>`
         : `<div class="operator-toolbar compact"><button class="primary-button compact" type="button" data-action="open-pool-support" ${opening || plan.enoughSol === false ? 'disabled' : ''}><span>${opening ? 'Adding support…' : `Add ${solFromLamports(plan.depositLamports).toFixed(4)} SOL of support`}</span><i class="fa-solid fa-arrow-right" aria-hidden="true"></i></button></div>`}
     </div>`;
 }
@@ -22326,7 +22345,7 @@ async function detectFundingWallet({ quiet = false } = {}) {
     // address into the return wallet.
     if (funder) state.destinations = { ...state.destinations, funder };
     if (funder) {
-      if (!quiet) notify(`Funding wallet detected: ${shortAddress(funder)}`);
+      if (!quiet) notify(`Funding wallet detected: ${fullAddress(funder)}`);
     } else if (!quiet) {
       notify('Wallet history could not identify a funder. Sign with your wallet before the final sweep.');
     }
@@ -22450,7 +22469,7 @@ async function runDemoLaunch() {
     state.approvalOpen = false;
     history.unshift({
       title: `${state.lastDemoLaunchRun.token?.symbol || config.token.symbol} demo launch completed`,
-      detail: `${shortAddress(state.lastDemoLaunchRun.token?.tokenMint)} minted, ${state.lastDemoLaunchRun.liquidity?.results?.length || 0} pool${state.lastDemoLaunchRun.liquidity?.results?.length === 1 ? '' : 's'}, sweep simulated.`,
+      detail: `${fullAddress(state.lastDemoLaunchRun.token?.tokenMint)} minted, ${state.lastDemoLaunchRun.liquidity?.results?.length || 0} pool${state.lastDemoLaunchRun.liquidity?.results?.length === 1 ? '' : 's'}, sweep simulated.`,
       time: 'Just now',
     });
     pollLiveOps().catch(() => null);
@@ -22507,7 +22526,7 @@ async function executeNextRunOperation() {
   {
     const ok = await confirmOperatorAction({
       title: readiness.nextAction || 'Execute next launch operation',
-      detail: `Trebuchet will run ${readiness.nextEndpoint} with ${shortAddress(walletPublicKey)}. This can send a real transaction through the configured RPC.`,
+      detail: `Trebuchet will run ${readiness.nextEndpoint} with ${fullAddress(walletPublicKey)}. This can send a real transaction through the configured RPC.`,
       confirmLabel: 'Execute operation',
       danger: true,
       confirmationText: 'EXECUTE',
@@ -22521,7 +22540,7 @@ async function executeNextRunOperation() {
     kind: 'endpoint',
     endpoint: readiness.nextEndpoint,
     label: readiness.nextAction || fullRunEndpointLabel(readiness.nextEndpoint),
-    detail: `Confirmed ${readiness.nextEndpoint} for ${shortAddress(walletPublicKey)}.`,
+    detail: `Confirmed ${readiness.nextEndpoint} for ${fullAddress(walletPublicKey)}.`,
   });
   renderAll();
   try {
@@ -22543,13 +22562,13 @@ async function executeNextRunOperation() {
     if (result.executed?.endpoint === '/api/create-token' && result.executed.result?.tokenMint) {
       history.unshift({
         title: `${config.token.symbol} token created`,
-        detail: `${shortAddress(result.executed.result.tokenMint)} minted by the launch wallet.`,
+        detail: `${fullAddress(result.executed.result.tokenMint)} minted by the launch wallet.`,
         time: 'Just now',
       });
     } else if (result.executed?.endpoint === '/api/finish-token-creation' && result.executed.result?.mint) {
       history.unshift({
         title: `${config.token.symbol} token recovered`,
-        detail: `${shortAddress(result.executed.result.mint)} finished without creating another mint.`,
+        detail: `${fullAddress(result.executed.result.mint)} finished without creating another mint.`,
         time: 'Just now',
       });
     } else if (Array.isArray(result.executed?.result?.results)) {
@@ -22867,7 +22886,7 @@ async function runFullLaunch() {
   {
     const ok = await confirmOperatorAction({
       title: 'Run full launch',
-      detail: `Trebuchet will use ${shortAddress(walletPublicKey)} until sweep or a blocker. This can send multiple real transactions through the configured RPC.`,
+      detail: `Trebuchet will use ${fullAddress(walletPublicKey)} until sweep or a blocker. This can send multiple real transactions through the configured RPC.`,
       confirmLabel: 'Run live launch',
       danger: true,
       confirmationText: 'RUN LIVE',
@@ -22955,7 +22974,7 @@ async function runFullLaunch() {
         kind: 'endpoint',
         endpoint: endpointToRun,
         label: fullRunEndpointLabel(endpointToRun),
-        detail: readiness.nextAction || `Confirmed ${endpointToRun} for ${shortAddress(walletPublicKey)}.`,
+        detail: readiness.nextAction || `Confirmed ${endpointToRun} for ${fullAddress(walletPublicKey)}.`,
       });
       renderAll();
       try {
@@ -24819,7 +24838,7 @@ function quickLaunchDemoRun() {
     `Add ${quote} + ${symbol} liquidity`,
   ];
   if (bps > 0) {
-    steps.push(`Add swap fees (${(bps / 100).toFixed(2)}%)${treasury ? ` → ${shortAddress(treasury)}` : ''}`);
+    steps.push(`Add swap fees (${(bps / 100).toFixed(2)}%)${treasury ? ` → ${fullAddress(treasury)}` : ''}`);
   }
   steps.push(`Lock the liquidity`);
   log.innerHTML = steps.map((step) => `<li class="is-todo">${escapeHtml(step)}</li>`).join('');
@@ -25205,3 +25224,97 @@ renderAll = ((render) => function renderAllWithChoices(...args) {
   enhanceChoiceControls();
   return result;
 })(renderAll);
+
+// Every address on screen can be copied in full with a click. A pass over
+// new text wraps each full address, and each short form this app produced
+// (shortAddress remembers them), in a copy control whose value is the whole
+// address. Links keep opening their page. Clicking an address inside a
+// larger button copies instead of pressing the button.
+const BASE58 = '1-9A-HJ-NP-Za-km-z';
+const ADDRESS_TEXT_RE = new RegExp(
+  `(?<![${BASE58}.])(?:[${BASE58}]{32,44}|[${BASE58}]{4}\\.\\.\\.[${BASE58}]{4})(?![${BASE58}])`,
+  'g',
+);
+// Skipped: form fields, links (they open their page), toasts, and narrow
+// rows whose click opens a panel that shows the full, copyable address.
+const ADDRESS_SKIP = '.address-copy, script, style, textarea, input, select, option, a, [contenteditable="true"], .toast, .coin-fact, summary, #walletButton, .nav-item';
+
+function copyableAddress(text) {
+  if (text.includes('...')) return shortAddressFull.get(text) || null;
+  return text;
+}
+
+function wrapAddressText(node) {
+  const text = node.nodeValue || '';
+  ADDRESS_TEXT_RE.lastIndex = 0;
+  let match;
+  let last = 0;
+  const fragment = document.createDocumentFragment();
+  let wrapped = false;
+  while ((match = ADDRESS_TEXT_RE.exec(text))) {
+    const full = copyableAddress(match[0]);
+    if (!full) continue;
+    fragment.append(text.slice(last, match.index));
+    const span = document.createElement('span');
+    span.className = 'address-copy';
+    span.dataset.copyAddress = full;
+    span.setAttribute('role', 'button');
+    span.setAttribute('tabindex', '0');
+    span.title = `${full}\nClick to copy`;
+    span.textContent = match[0];
+    fragment.append(span);
+    last = match.index + match[0].length;
+    wrapped = true;
+  }
+  if (!wrapped) return;
+  fragment.append(text.slice(last));
+  node.replaceWith(fragment);
+}
+
+function makeAddressesCopyable(root = document.body) {
+  if (!root) return;
+  if (root.nodeType === Node.TEXT_NODE) {
+    if (root.parentElement && !root.parentElement.closest(ADDRESS_SKIP)) wrapAddressText(root);
+    return;
+  }
+  if (root.nodeType !== Node.ELEMENT_NODE || root.closest?.(ADDRESS_SKIP)) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if ((node.nodeValue || '').length < 11) return NodeFilter.FILTER_REJECT;
+      if (node.parentElement?.closest(ADDRESS_SKIP)) return NodeFilter.FILTER_REJECT;
+      ADDRESS_TEXT_RE.lastIndex = 0;
+      return ADDRESS_TEXT_RE.test(node.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(wrapAddressText);
+}
+
+function copyAddressFrom(target) {
+  const control = target?.closest?.('[data-copy-address]');
+  if (!control) return false;
+  copyText(control.dataset.copyAddress, `Address ${control.dataset.copyAddress}`);
+  return true;
+}
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest?.('[data-copy-address]')) return;
+  event.preventDefault();
+  event.stopPropagation();
+  copyAddressFrom(event.target);
+}, true);
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  if (!event.target.matches?.('[data-copy-address]')) return;
+  event.preventDefault();
+  event.stopPropagation();
+  copyAddressFrom(event.target);
+}, true);
+new MutationObserver((records) => {
+  records.forEach((record) => {
+    if (record.type === 'characterData') makeAddressesCopyable(record.target);
+    record.addedNodes.forEach((node) => makeAddressesCopyable(node));
+  });
+}).observe(document.body, { childList: true, subtree: true, characterData: true });
+makeAddressesCopyable();

@@ -296,10 +296,10 @@ function liveRunProgressContext() {
       }),
       stage: 'mint',
       effects: [tokenComplete
-        ? `Mint ${shortAddress(tokenMint || state.lastDemoLaunchRun?.token?.tokenMint || state.executionReadiness?.tokenMint)} and authority posture are recorded.`
+        ? `Mint ${fullAddress(tokenMint || state.lastDemoLaunchRun?.token?.tokenMint || state.executionReadiness?.tokenMint)} and authority posture are recorded.`
         : tokenNeedsAuthorityProof
           ? tokenMint
-            ? `Mint ${shortAddress(tokenMint)} recorded; authority proof is ${tokenAuthorityPassCount}/${tokenAuthorityFields.length}.`
+            ? `Mint ${fullAddress(tokenMint)} recorded; authority proof is ${tokenAuthorityPassCount}/${tokenAuthorityFields.length}.`
             : 'Token phase is past; mint and authority proof are still missing.'
           : 'Create mint, metadata, and revoke authorities.'],
     },

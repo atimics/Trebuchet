@@ -37,7 +37,7 @@ function discoveryWalletChip(wallet) {
     <span class="discovery-wallet-chip ${wallet.enabled === false ? 'is-paused' : ''}" title="${escapeHtml(wallet.publicKey)}">
       <i class="fa-solid ${wallet.source === 'managed' ? 'fa-key' : 'fa-eye'}"></i>
       <strong>${escapeHtml(wallet.label || shortAddress(wallet.publicKey))}</strong>
-      <span>${escapeHtml(shortAddress(wallet.publicKey))}</span>
+      <span>${escapeHtml(fullAddress(wallet.publicKey))}</span>
       <button type="button" data-action="toggle-discovery-wallet" data-wallet="${escapeHtml(wallet.publicKey)}" data-enabled="${wallet.enabled === false ? 'true' : 'false'}" aria-label="${wallet.enabled === false ? 'Resume' : 'Pause'} ${escapeHtml(wallet.label || 'wallet')}" ${state.discovery.walletBusy || state.discovery.scanning ? 'disabled' : ''}>
         <i class="fa-solid ${wallet.enabled === false ? 'fa-play' : 'fa-pause'}"></i>
       </button>
@@ -362,7 +362,7 @@ function renderDiscovery() {
       <span class="evidence-identity">
         <h3>${escapeHtml(selected.name)} <span>${escapeHtml(selected.symbol)}</span></h3>
         <span class="evidence-identity-meta">
-          <code title="${escapeHtml(selected.mint)}">${escapeHtml(shortAddress(selected.mint))}</code>
+          <code title="${escapeHtml(selected.mint)}">${escapeHtml(fullAddress(selected.mint))}</code>
           ${brand ? `<span class="risk-badge ${brandRiskClass}" title="${escapeHtml(brandDetail)}"><i class="fa-solid ${brand.official ? 'fa-shield-halved' : 'fa-shield'}"></i>${escapeHtml(brand.classification)}</span>` : ''}
         </span>
       </span>

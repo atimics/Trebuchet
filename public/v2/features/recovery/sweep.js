@@ -58,7 +58,7 @@ function renderRecoverySweepResult(sweep) {
       <div class="recovery-sweep-head">
         <span>
           <span class="eyebrow">Post-sweep cleanup</span>
-          <strong>${escapeHtml(shortAddress(sweep.publicKey))} to ${escapeHtml(shortAddress(sweep.destinationWallet))}</strong>
+          <strong>${escapeHtml(fullAddress(sweep.publicKey))} to ${escapeHtml(fullAddress(sweep.destinationWallet))}</strong>
         </span>
         <span class="risk-badge ${state}">${escapeHtml(badge)}</span>
       </div>
@@ -265,7 +265,7 @@ async function cancelRefundLaunch() {
   const typed = await openOperatorPrompt({
     eyebrow: 'Launch recovery operation',
     title: 'Cancel and refund launch',
-    detail: `Trebuchet will sweep tokens, SOL, and Fee Key NFTs from ${shortAddress(walletPublicKey)} to ${shortAddress(destinationWallet)}. Token mints and pools already created on-chain cannot be undone.`,
+    detail: `Trebuchet will sweep tokens, SOL, and Fee Key NFTs from ${fullAddress(walletPublicKey)} to ${fullAddress(destinationWallet)}. Token mints and pools already created on-chain cannot be undone.`,
     label: 'Type the full launch wallet address',
     placeholder: walletPublicKey,
     confirmLabel: 'Cancel and refund',
@@ -284,7 +284,7 @@ async function cancelRefundLaunch() {
   const ledgerId = startExecutionLedgerEntry({
     kind: 'cancel-refund',
     endpoint: '/api/transfer-assets',
-    detail: `Sweeping ${shortAddress(walletPublicKey)} to ${shortAddress(destinationWallet)}.`,
+    detail: `Sweeping ${fullAddress(walletPublicKey)} to ${fullAddress(destinationWallet)}.`,
   });
   renderAll();
   try {

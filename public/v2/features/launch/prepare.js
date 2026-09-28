@@ -15,7 +15,7 @@ async function removeVanityCandidateByPublicKey(publicKey, { confirm = true } = 
   if (confirm) {
     const ok = await confirmOperatorAction({
       title: 'Remove saved Vanity CA',
-      detail: `Remove ${shortAddress(publicKey)} from local options?`,
+      detail: `Remove ${fullAddress(publicKey)} from local options?`,
       confirmLabel: 'Remove',
       danger: true,
     });

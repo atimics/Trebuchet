@@ -386,7 +386,7 @@ async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()
   const typed = await openOperatorPrompt({
     eyebrow: 'Destructive wallet operation',
     title: 'Discard local recovery entry',
-    detail: `This deletes Trebuchet's local secret for ${shortAddress(publicKey)}. Continue only if the wallet is empty, intentionally abandoned, or backed up elsewhere.`,
+    detail: `This deletes Trebuchet's local secret for ${fullAddress(publicKey)}. Continue only if the wallet is empty, intentionally abandoned, or backed up elsewhere.`,
     label: 'Type the full wallet address',
     placeholder: publicKey,
     confirmLabel: 'Discard local secret',

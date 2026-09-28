@@ -365,3 +365,97 @@ renderAll = ((render) => function renderAllWithChoices(...args) {
   enhanceChoiceControls();
   return result;
 })(renderAll);
+
+// Every address on screen can be copied in full with a click. A pass over
+// new text wraps each full address, and each short form this app produced
+// (shortAddress remembers them), in a copy control whose value is the whole
+// address. Links keep opening their page. Clicking an address inside a
+// larger button copies instead of pressing the button.
+const BASE58 = '1-9A-HJ-NP-Za-km-z';
+const ADDRESS_TEXT_RE = new RegExp(
+  `(?<![${BASE58}.])(?:[${BASE58}]{32,44}|[${BASE58}]{4}\\.\\.\\.[${BASE58}]{4})(?![${BASE58}])`,
+  'g',
+);
+// Skipped: form fields, links (they open their page), toasts, and narrow
+// rows whose click opens a panel that shows the full, copyable address.
+const ADDRESS_SKIP = '.address-copy, script, style, textarea, input, select, option, a, [contenteditable="true"], .toast, .coin-fact, summary, #walletButton, .nav-item';
+
+function copyableAddress(text) {
+  if (text.includes('...')) return shortAddressFull.get(text) || null;
+  return text;
+}
+
+function wrapAddressText(node) {
+  const text = node.nodeValue || '';
+  ADDRESS_TEXT_RE.lastIndex = 0;
+  let match;
+  let last = 0;
+  const fragment = document.createDocumentFragment();
+  let wrapped = false;
+  while ((match = ADDRESS_TEXT_RE.exec(text))) {
+    const full = copyableAddress(match[0]);
+    if (!full) continue;
+    fragment.append(text.slice(last, match.index));
+    const span = document.createElement('span');
+    span.className = 'address-copy';
+    span.dataset.copyAddress = full;
+    span.setAttribute('role', 'button');
+    span.setAttribute('tabindex', '0');
+    span.title = `${full}\nClick to copy`;
+    span.textContent = match[0];
+    fragment.append(span);
+    last = match.index + match[0].length;
+    wrapped = true;
+  }
+  if (!wrapped) return;
+  fragment.append(text.slice(last));
+  node.replaceWith(fragment);
+}
+
+function makeAddressesCopyable(root = document.body) {
+  if (!root) return;
+  if (root.nodeType === Node.TEXT_NODE) {
+    if (root.parentElement && !root.parentElement.closest(ADDRESS_SKIP)) wrapAddressText(root);
+    return;
+  }
+  if (root.nodeType !== Node.ELEMENT_NODE || root.closest?.(ADDRESS_SKIP)) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if ((node.nodeValue || '').length < 11) return NodeFilter.FILTER_REJECT;
+      if (node.parentElement?.closest(ADDRESS_SKIP)) return NodeFilter.FILTER_REJECT;
+      ADDRESS_TEXT_RE.lastIndex = 0;
+      return ADDRESS_TEXT_RE.test(node.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(wrapAddressText);
+}
+
+function copyAddressFrom(target) {
+  const control = target?.closest?.('[data-copy-address]');
+  if (!control) return false;
+  copyText(control.dataset.copyAddress, `Address ${control.dataset.copyAddress}`);
+  return true;
+}
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest?.('[data-copy-address]')) return;
+  event.preventDefault();
+  event.stopPropagation();
+  copyAddressFrom(event.target);
+}, true);
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  if (!event.target.matches?.('[data-copy-address]')) return;
+  event.preventDefault();
+  event.stopPropagation();
+  copyAddressFrom(event.target);
+}, true);
+new MutationObserver((records) => {
+  records.forEach((record) => {
+    if (record.type === 'characterData') makeAddressesCopyable(record.target);
+    record.addedNodes.forEach((node) => makeAddressesCopyable(node));
+  });
+}).observe(document.body, { childList: true, subtree: true, characterData: true });
+makeAddressesCopyable();

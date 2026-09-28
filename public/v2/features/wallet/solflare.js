@@ -128,7 +128,7 @@ function setConnectedSolflareWallet(provider, publicKey) {
   solflareWalletProvider = provider;
   state.solflare = {
     publicKey: address,
-    status: shortAddress(address),
+    status: fullAddress(address),
     connecting: false,
     disconnecting: false,
     error: null,
@@ -158,7 +158,7 @@ function syncConnectedSolflareProvider(provider, { publicKey = null, quiet = fal
     || provider?.wallet?.accounts?.[0]?.publicKey;
   if (nextPublicKey) {
     const wallet = setConnectedSolflareWallet(provider, nextPublicKey);
-    if (!quiet) notify(`Solflare connected: ${shortAddress(wallet.publicKey)}`);
+    if (!quiet) notify(`Solflare connected: ${fullAddress(wallet.publicKey)}`);
   } else {
     clearSolflareWallet();
     if (!quiet) notify('Solflare disconnected');

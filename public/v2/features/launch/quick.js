@@ -96,7 +96,7 @@ function quickLaunchDemoRun() {
     `Add ${quote} + ${symbol} liquidity`,
   ];
   if (bps > 0) {
-    steps.push(`Add swap fees (${(bps / 100).toFixed(2)}%)${treasury ? ` → ${shortAddress(treasury)}` : ''}`);
+    steps.push(`Add swap fees (${(bps / 100).toFixed(2)}%)${treasury ? ` → ${fullAddress(treasury)}` : ''}`);
   }
   steps.push(`Lock the liquidity`);
   log.innerHTML = steps.map((step) => `<li class="is-todo">${escapeHtml(step)}</li>`).join('');

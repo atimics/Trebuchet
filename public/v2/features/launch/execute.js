@@ -100,7 +100,7 @@ async function runDemoLaunch() {
     state.approvalOpen = false;
     history.unshift({
       title: `${state.lastDemoLaunchRun.token?.symbol || config.token.symbol} demo launch completed`,
-      detail: `${shortAddress(state.lastDemoLaunchRun.token?.tokenMint)} minted, ${state.lastDemoLaunchRun.liquidity?.results?.length || 0} pool${state.lastDemoLaunchRun.liquidity?.results?.length === 1 ? '' : 's'}, sweep simulated.`,
+      detail: `${fullAddress(state.lastDemoLaunchRun.token?.tokenMint)} minted, ${state.lastDemoLaunchRun.liquidity?.results?.length || 0} pool${state.lastDemoLaunchRun.liquidity?.results?.length === 1 ? '' : 's'}, sweep simulated.`,
       time: 'Just now',
     });
     pollLiveOps().catch(() => null);
@@ -157,7 +157,7 @@ async function executeNextRunOperation() {
   {
     const ok = await confirmOperatorAction({
       title: readiness.nextAction || 'Execute next launch operation',
-      detail: `Trebuchet will run ${readiness.nextEndpoint} with ${shortAddress(walletPublicKey)}. This can send a real transaction through the configured RPC.`,
+      detail: `Trebuchet will run ${readiness.nextEndpoint} with ${fullAddress(walletPublicKey)}. This can send a real transaction through the configured RPC.`,
       confirmLabel: 'Execute operation',
       danger: true,
       confirmationText: 'EXECUTE',
@@ -171,7 +171,7 @@ async function executeNextRunOperation() {
     kind: 'endpoint',
     endpoint: readiness.nextEndpoint,
     label: readiness.nextAction || fullRunEndpointLabel(readiness.nextEndpoint),
-    detail: `Confirmed ${readiness.nextEndpoint} for ${shortAddress(walletPublicKey)}.`,
+    detail: `Confirmed ${readiness.nextEndpoint} for ${fullAddress(walletPublicKey)}.`,
   });
   renderAll();
   try {
@@ -193,13 +193,13 @@ async function executeNextRunOperation() {
     if (result.executed?.endpoint === '/api/create-token' && result.executed.result?.tokenMint) {
       history.unshift({
         title: `${config.token.symbol} token created`,
-        detail: `${shortAddress(result.executed.result.tokenMint)} minted by the launch wallet.`,
+        detail: `${fullAddress(result.executed.result.tokenMint)} minted by the launch wallet.`,
         time: 'Just now',
       });
     } else if (result.executed?.endpoint === '/api/finish-token-creation' && result.executed.result?.mint) {
       history.unshift({
         title: `${config.token.symbol} token recovered`,
-        detail: `${shortAddress(result.executed.result.mint)} finished without creating another mint.`,
+        detail: `${fullAddress(result.executed.result.mint)} finished without creating another mint.`,
         time: 'Just now',
       });
     } else if (Array.isArray(result.executed?.result?.results)) {
@@ -517,7 +517,7 @@ async function runFullLaunch() {
   {
     const ok = await confirmOperatorAction({
       title: 'Run full launch',
-      detail: `Trebuchet will use ${shortAddress(walletPublicKey)} until sweep or a blocker. This can send multiple real transactions through the configured RPC.`,
+      detail: `Trebuchet will use ${fullAddress(walletPublicKey)} until sweep or a blocker. This can send multiple real transactions through the configured RPC.`,
       confirmLabel: 'Run live launch',
       danger: true,
       confirmationText: 'RUN LIVE',
@@ -605,7 +605,7 @@ async function runFullLaunch() {
         kind: 'endpoint',
         endpoint: endpointToRun,
         label: fullRunEndpointLabel(endpointToRun),
-        detail: readiness.nextAction || `Confirmed ${endpointToRun} for ${shortAddress(walletPublicKey)}.`,
+        detail: readiness.nextAction || `Confirmed ${endpointToRun} for ${fullAddress(walletPublicKey)}.`,
       });
       renderAll();
       try {

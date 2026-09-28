@@ -142,9 +142,9 @@ function renderFundingWalletHint({ compact = false } = {}) {
         ? 'Returning to the funding wallet'
         : 'Funding wallet not found yet';
   const detail = status.kind === 'unverified'
-    ? `${shortAddress(status.address)} was typed, not proven. Sign with it or use the funding wallet.`
+    ? `${fullAddress(status.address)} was typed, not proven. Sign with it or use the funding wallet.`
     : status.address
-      ? `${shortAddress(status.address)} receives Fee Keys, remaining tokens, and leftover SOL.`
+      ? `${fullAddress(status.address)} receives Fee Keys, remaining tokens, and leftover SOL.`
       : 'Fund the launch wallet from your own wallet. That wallet receives everything after launch.';
   const className = status.kind === 'unverified' ? 'danger' : status.address ? '' : 'warn';
   const detectLabel = hint.checking ? 'Checking history' : 'Find funding wallet';
@@ -176,7 +176,7 @@ function renderSolflarePanel() {
           ? 'Unavailable'
           : 'Optional';
   const detail = connected
-    ? `Connected as ${shortAddress(state.solflare.publicKey)}.`
+    ? `Connected as ${fullAddress(state.solflare.publicKey)}.`
     : state.solflare.error
       ? state.solflare.error
       : 'Optional. Connect it to fund the launch wallet, or to use it as the return wallet.';
@@ -228,7 +228,7 @@ async function connectSolflareWallet() {
     wireSolflareProviderEvents(provider);
     const result = await provider.connect();
     const wallet = setConnectedSolflareWallet(provider, provider.publicKey || result?.publicKey);
-    notify(`Solflare connected: ${shortAddress(wallet.publicKey)}`);
+    notify(`Solflare connected: ${fullAddress(wallet.publicKey)}`);
     return wallet;
   } catch (error) {
     state.solflare = {

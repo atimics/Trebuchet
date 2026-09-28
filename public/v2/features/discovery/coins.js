@@ -155,7 +155,7 @@ async function withdrawCoinPosition(nftMint) {
     title: 'Withdraw position',
     detail: `Withdraw everything from this ${symbol}/${quote} position and close it: about `
       + `${Number(position.quoteAmount).toFixed(4)} ${quote} and ${compactAmount(position.tokenAmount)} ${symbol} `
-      + `go back to ${shortAddress(position.owner)}, with the position's account rent. The buy support it gave is removed.`,
+      + `go back to ${fullAddress(position.owner)}, with the position's account rent. The buy support it gave is removed.`,
     confirmLabel: 'Withdraw',
     danger: true,
     confirmationText: 'WITHDRAW',
@@ -195,7 +195,7 @@ function coinPositionsHtml() {
   const rows = (list || []).map((position) => `
     <li>
       <span>
-        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${escapeHtml(shortAddress(position.owner))}</strong>
+        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${escapeHtml(fullAddress(position.owner))}</strong>
         <small>${escapeHtml(fmtQuotePrice(position.priceLow, position))} to ${escapeHtml(fmtQuotePrice(position.priceHigh, position))} per coin · ${position.inRange ? 'the price is inside this range' : 'the price is outside this range'}</small>
       </span>
       <span class="coin-position-holds">${Number(position.quoteAmount).toFixed(4)} ${escapeHtml(position.quoteSymbol || '')} + ${escapeHtml(compactAmount(position.tokenAmount))} ${escapeHtml(coinSymbol)}</span>
@@ -273,7 +273,7 @@ async function addCoinByMint() {
 async function removeAddedCoin(mint) {
   const ok = await confirmOperatorAction({
     title: 'Remove from coins',
-    detail: `Hide ${shortAddress(mint)} from your coins. Nothing on-chain changes, and its activity is kept.`,
+    detail: `Hide ${fullAddress(mint)} from your coins. Nothing on-chain changes, and its activity is kept.`,
     confirmLabel: 'Remove',
   });
   if (!ok) return;
@@ -568,7 +568,7 @@ function draftPlanHtml(entry) {
     ['Pools', pools.length ? pools.map((pool) => `${pool.quoteSymbol || pool.quoteToken || 'pair'} ${Number(pool.supplyPercent || 0)}%`).join(' · ') : 'None yet'],
     ['SOL in the pool', supportSol > 0 ? fmtSol(supportSol) : 'None'],
     ['Held back', held > 0 ? `${held}%` : 'None'],
-    ['Address', config.vanity?.selectedPublicKey ? `${shortAddress(config.vanity.selectedPublicKey)} (reserved)` : 'Chosen when the token is created'],
+    ['Address', config.vanity?.selectedPublicKey ? `${fullAddress(config.vanity.selectedPublicKey)} (reserved)` : 'Chosen when the token is created'],
   ];
   return `<dl class="pool-support-facts">${facts.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>`;
 }
@@ -607,9 +607,9 @@ function renderCoinPage(coin) {
 
   const identity = account ? [
     ['Supply', formatTokenAmount(account.supply, account.decimals)],
-    ['Mint authority', account.mintAuthority ? shortAddress(account.mintAuthority) : 'Revoked'],
-    ['Freeze authority', account.freezeAuthority ? shortAddress(account.freezeAuthority) : 'Revoked'],
-    ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${shortAddress(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
+    ['Mint authority', account.mintAuthority ? fullAddress(account.mintAuthority) : 'Revoked'],
+    ['Freeze authority', account.freezeAuthority ? fullAddress(account.freezeAuthority) : 'Revoked'],
+    ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${fullAddress(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
   ] : [];
   body.innerHTML = `${header}
     ${state.coins.detailLoading ? '<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading the coin from the chain…</p>' : ''}

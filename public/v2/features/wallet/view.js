@@ -107,7 +107,7 @@ function renderWallet() {
     <div class="wallet-detail-grid">
       <div class="wallet-qr-box ${qrCode ? 'has-qr' : ''}">
         ${qrCode
-          ? `<img src="${escapeHtml(qrCode)}" alt="Funding QR code for ${escapeHtml(shortAddress(selectedPublicKey))}">`
+          ? `<img src="${escapeHtml(qrCode)}" alt="Funding QR code for ${escapeHtml(fullAddress(selectedPublicKey))}">`
           : `<span><i class="fa-solid ${qrLoading ? 'fa-spinner fa-spin' : 'fa-qrcode'}"></i></span>`}
       </div>
       <div class="wallet-funding-box">

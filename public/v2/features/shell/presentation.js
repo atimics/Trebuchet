@@ -233,7 +233,7 @@ function airdropProgressLogLabel(airdrop) {
   if (total > 0) parts.push(`${seen}/${total} recipients`);
   if (completed > 0) parts.push(`${completed} delivered`);
   if (failed > 0) parts.push(`${failed} failed`);
-  if (airdrop?.lastWallet) parts.push(`last ${shortAddress(airdrop.lastWallet)}`);
+  if (airdrop?.lastWallet) parts.push(`last ${fullAddress(airdrop.lastWallet)}`);
   if (Number(airdrop?.lastTokens || 0) > 0) parts.push(`${compactAmount(airdrop.lastTokens)} tokens`);
   return parts.join(' / ');
 }

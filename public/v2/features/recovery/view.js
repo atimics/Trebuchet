@@ -577,7 +577,7 @@ function renderRecoveryWalletWorkspace() {
               <span class="ident" aria-hidden="true">${escapeHtml(shortAddress(wallet.publicKey).slice(0, 2))}</span>
               <span class="recovery-wallet-copy">
                 <span class="eyebrow">${escapeHtml(formatDate(wallet.createdAt))}</span>
-                <h3>${escapeHtml(shortAddress(wallet.publicKey))}</h3>
+                <h3>${escapeHtml(fullAddress(wallet.publicKey))}</h3>
                 <p>${escapeHtml(walletState.detail)}</p>
                 <code>${escapeHtml(wallet.publicKey)}</code>
               </span>
@@ -715,7 +715,7 @@ function renderHistory() {
     kind: 'journal',
     status: journal.status || 'journal',
     title: `${journal.status || 'journal'} / ${journal.token?.symbol || shortAddress(journal.walletPublicKey)}`,
-    detail: `${humanizeStage(journal.stage)} for ${shortAddress(journal.walletPublicKey)}`,
+    detail: `${humanizeStage(journal.stage)} for ${fullAddress(journal.walletPublicKey)}`,
     time: formatDate(journal.updatedAt || journal.createdAt),
     journal,
     resumePlan: journalResumePlan(journal),

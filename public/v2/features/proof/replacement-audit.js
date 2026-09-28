@@ -150,7 +150,7 @@ function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, 
       pass: Boolean(reportArtifact && reportArtifactSweepBound),
       detail: reportUri
         ? reportArtifactSweepBound
-          ? `Permanent report proof is attached: ${shortAddress(reportUri)}.`
+          ? `Permanent report proof is attached: ${fullAddress(reportUri)}.`
           : 'Permanent report proof is missing the terminal sweep evidence hash; republish after final sweep before replacing Classic.'
         : localDossier
           ? reportArtifactSweepBound
@@ -466,7 +466,7 @@ function buildV2ReplacementCriteriaAudit({
       label: 'Full demo launch',
       pass: Boolean(demoRunComplete || hasCompletedLiveProof),
       evidence: demoRunComplete
-        ? `Test launch ${shortAddress(state.lastDemoLaunchRun?.token?.tokenMint || state.lastDemoLaunchRun?.token?.mint)} completed with terminal readiness proof.`
+        ? `Test launch ${fullAddress(state.lastDemoLaunchRun?.token?.tokenMint || state.lastDemoLaunchRun?.token?.mint)} completed with terminal readiness proof.`
         : hasCompletedLiveProof
           ? 'Completed live Trebuchet proof is stronger than the demo path.'
           : state.lastDemoLaunchRun
@@ -480,8 +480,8 @@ function buildV2ReplacementCriteriaAudit({
       pass: walletEvidence,
       evidence: walletEvidence
         ? proofWalletEvidence
-          ? `Launch wallet ${shortAddress(proof.walletPublicKey)} is attached to completed proof.`
-          : `Selected launch wallet ${shortAddress(selectedWalletPublicKey)} has an available local signing secret.`
+          ? `Launch wallet ${fullAddress(proof.walletPublicKey)} is attached to completed proof.`
+          : `Selected launch wallet ${fullAddress(selectedWalletPublicKey)} has an available local signing secret.`
         : selectedWalletPublicKey
           ? !selectedWallet
             ? 'This address is not one of your saved launch wallets.'
@@ -500,11 +500,11 @@ function buildV2ReplacementCriteriaAudit({
       label: 'Vanity CA options',
       pass: vanityEvidence,
       evidence: selectedVanityCandidate
-        ? `Selected persisted Vanity CA ${shortAddress(selectedVanityCandidate.publicKey)}.`
+        ? `Selected persisted Vanity CA ${fullAddress(selectedVanityCandidate.publicKey)}.`
         : persistedVanityCandidates.length
           ? `${persistedVanityCandidates.length} persisted Vanity CA option${persistedVanityCandidates.length === 1 ? '' : 's'} available.`
           : state.selectedVanityPublicKey
-            ? `Selected Vanity CA ${shortAddress(state.selectedVanityPublicKey)} is preview-only or missing its saved secret; grind or select a persisted candidate from the desktop app.`
+            ? `Selected Vanity CA ${fullAddress(state.selectedVanityPublicKey)} is preview-only or missing its saved secret; grind or select a persisted candidate from the desktop app.`
             : nativeVanityAvailable
             ? 'Native grinder is available.'
             : state.apiStatus === 'connected'
@@ -518,7 +518,7 @@ function buildV2ReplacementCriteriaAudit({
       pass: tokenConfigEvidence,
       evidence: tokenConfig.ready
         ? hasCompletedLiveProof
-          ? `Completed live proof minted ${shortAddress(proof?.token?.mint)} from the frozen token config.`
+          ? `Completed live proof minted ${fullAddress(proof?.token?.mint)} from the frozen token config.`
           : localApiLaunchPlanEvidence
             ? `Token ${tokenConfig.name} / ${tokenConfig.symbol} / ${tokenConfig.supply} is staged in the current local launch plan${tokenConfig.hasLogo ? ' with validated logo handoff' : ''}.`
             : state.apiStatus === 'connected'
@@ -616,7 +616,7 @@ function buildV2ReplacementCriteriaAudit({
       label: 'Run and resume safety',
       pass: resumeEvidence,
       evidence: hasCompletedLiveProof
-        ? `Completed live proof includes guarded execution journal ${shortAddress(proof.journalId)}.`
+        ? `Completed live proof includes guarded execution journal ${fullAddress(proof.journalId)}.`
         : proof && !proofJournalEvidence
           ? 'Completed launch record is missing its launch journal id.'
           : proof?.journalId && !matchingLocalJournal && proofFinalSweepEvidence
@@ -630,11 +630,11 @@ function buildV2ReplacementCriteriaAudit({
           : proofJournalEvidence && matchingLocalJournal && isTerminalJournal(matchingLocalJournal)
           ? 'Matching launch journal is terminal, but the proof is missing terminal final-sweep evidence.'
           : proofJournalEvidence && matchingLocalJournal && !journalHasRecoveryPlanningEvidence(matchingLocalJournal)
-          ? `Journal ${shortAddress(proof.journalId)} is loaded, but it lacks pool-plan or checkpoint evidence needed to prove resume safety.`
+          ? `Journal ${fullAddress(proof.journalId)} is loaded, but it lacks pool-plan or checkpoint evidence needed to prove resume safety.`
           : proofJournalEvidence && matchingLocalJournal
-          ? `Journal ${shortAddress(proof.journalId)} is loaded for the launch record.`
+          ? `Journal ${fullAddress(proof.journalId)} is loaded for the launch record.`
           : proofJournalEvidence
-            ? `Launch record has journal ${shortAddress(proof.journalId)}, but the matching local journal is not loaded.`
+            ? `Launch record has journal ${fullAddress(proof.journalId)}, but the matching local journal is not loaded.`
             : localJournalEvidence
               ? `${localRecoveryJournal.count} active or failed launch journal${localRecoveryJournal.count === 1 ? '' : 's'} with pool-plan or checkpoint evidence loaded for recovery planning${localRecoveryJournal.failed ? ` (${localRecoveryJournal.failed} failed/partial)` : ''}.`
             : recoveryResultJournalEvidence
@@ -855,7 +855,7 @@ function renderParityPanel() {
           : state.lastRealExecution
             ? `${state.lastRealExecution.action || 'Classic operation'} completed; keep running until token, liquidity, and final sweep proof are all present.`
             : state.lastDemoLaunchRun
-              ? `Test launch completed for ${shortAddress(state.lastDemoLaunchRun.token?.tokenMint)}; live parity still needs a real proof.`
+              ? `Test launch completed for ${fullAddress(state.lastDemoLaunchRun.token?.tokenMint)}; live parity still needs a real proof.`
               : demoExecutionReady
                 ? 'Trebuchet can run the complete demo token, LP, and sweep path; real launch routing remains guarded.'
                 : realBridgeReady

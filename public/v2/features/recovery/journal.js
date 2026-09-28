@@ -433,7 +433,7 @@ function journalResumePlan(journal) {
   if (unsafeEvents.length > 0) {
     pushUnique(items, `${unsafeEvents.length} pool create checkpoint lacks a completed position result.`);
     pushUnique(items, 'Automatic resume is blocked to avoid duplicate pool work.');
-    if (unsafeEvents[0]?.poolId) pushUnique(items, `Recorded pool: ${shortAddress(unsafeEvents[0].poolId)}`);
+    if (unsafeEvents[0]?.poolId) pushUnique(items, `Recorded pool: ${fullAddress(unsafeEvents[0].poolId)}`);
     return {
       state: 'danger',
       badge: 'Manual',

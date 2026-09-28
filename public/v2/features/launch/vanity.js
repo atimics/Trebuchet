@@ -305,16 +305,19 @@ function renderVanityCandidates() {
     const rarity = String(candidate.rarity || 'Common').trim();
     const grade = vanityRarityGrade(rarity);
     const attempts = Number(candidate.attempts);
+    const epochs = Number(candidate.epochs);
+    // The rarity is luck: how many of the expected tries the grind needed.
+    const luck = Number.isFinite(epochs) && epochs > 0 ? ` · found in ${epochs.toFixed(2)}× the expected tries` : '';
     const details = [
       vanityCandidateTarget(candidate),
       Number.isFinite(attempts) && attempts > 0 ? `${formatVanityAttempts(attempts)} tries` : null,
     ].filter(Boolean);
     return `
-    <button class="vanity-candidate grinder-row grade-${escapeHtml(grade)} ${isActive ? 'is-active' : ''}" type="button" data-action="select-vanity" data-public-key="${escapeHtml(candidate.publicKey)}" title="${escapeHtml(candidate.publicKey)}" aria-pressed="${isActive ? 'true' : 'false'}">
+    <button class="vanity-candidate grinder-row grade-${escapeHtml(grade)} ${isActive ? 'is-active' : ''}" type="button" data-action="select-vanity" data-public-key="${escapeHtml(candidate.publicKey)}" title="${escapeHtml(`${rarity}${luck}`)}" aria-pressed="${isActive ? 'true' : 'false'}">
       <span class="grinder-radio" aria-hidden="true"></span>
       <span class="grinder-row-main">
-        <code aria-label="Contract address ${escapeHtml(candidate.publicKey)}">${escapeHtml(shortAddress(candidate.publicKey))}</code>
-        <small>${/^common$/i.test(rarity) ? '' : `<b class="vanity-grade grade-${escapeHtml(grade)}">${escapeHtml(rarity)}</b> · `}${details.map(escapeHtml).join(' · ')}</small>
+        <code aria-label="Contract address ${escapeHtml(candidate.publicKey)}">${escapeHtml(fullAddress(candidate.publicKey))}</code>
+        <small><b class="vanity-grade grade-${escapeHtml(grade)}">${escapeHtml(rarity)}</b> · ${details.map(escapeHtml).join(' · ')}</small>
       </span>
       ${isActive ? '<span class="grinder-row-state">In use</span>' : ''}
     </button>

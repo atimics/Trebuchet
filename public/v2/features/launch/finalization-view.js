@@ -28,23 +28,23 @@ function proofExplorerItems(proof = currentLaunchProof(), reportUri = null, conf
   ].filter((value, index, list) => value && list.indexOf(value) === index);
   const items = [];
   if (proof?.token?.mint) {
-    items.push({ label: 'Mint', value: shortAddress(proof.token.mint), href: solscanAccountUrl(proof.token.mint) });
+    items.push({ label: 'Mint', value: fullAddress(proof.token.mint), href: solscanAccountUrl(proof.token.mint) });
   }
   if (proof?.walletPublicKey) {
-    items.push({ label: 'Launch wallet', value: shortAddress(proof.walletPublicKey), href: solscanAccountUrl(proof.walletPublicKey) });
+    items.push({ label: 'Launch wallet', value: fullAddress(proof.walletPublicKey), href: solscanAccountUrl(proof.walletPublicKey) });
   }
   poolIds.slice(0, 3).forEach((poolId, index) => {
-    items.push({ label: `Pool ${index + 1}`, value: shortAddress(poolId), href: solscanAccountUrl(poolId) });
+    items.push({ label: `Pool ${index + 1}`, value: fullAddress(poolId), href: solscanAccountUrl(poolId) });
   });
   if (poolIds.length > 3) {
     items.push({ label: 'More pools', value: `${poolIds.length - 3} more`, href: null });
   }
   const destination = proofEffectiveDestination(proof, config);
   if (destination) {
-    items.push({ label: 'Destination', value: shortAddress(destination), href: solscanAccountUrl(destination) });
+    items.push({ label: 'Destination', value: fullAddress(destination), href: solscanAccountUrl(destination) });
   }
   if (reportUri) {
-    items.push({ label: 'Report', value: shortAddress(reportUri), href: reportUri });
+    items.push({ label: 'Report', value: fullAddress(reportUri), href: reportUri });
   } else {
     const localDossier = currentLocalDossier(proof, config);
     if (localDossier) {
@@ -437,8 +437,8 @@ function renderFinalizationPanel() {
           <span class="eyebrow">Launch completion</span>
           <h3>${finalSweepComplete ? 'Launch complete' : 'Report, airdrop, and proof'}</h3>
           <p>${finalSweepComplete
-            ? `Mint ${tokenMint ? shortAddress(tokenMint) : 'recorded'} · ${poolCount} pool${poolCount === 1 ? '' : 's'} · launch wallet empty.`
-            : tokenMint ? `Mint ${shortAddress(tokenMint)} has ${poolCount} recorded pool ID${poolCount === 1 ? '' : 's'}.` : 'Create token and liquidity before final proof.'}</p>
+            ? `Mint ${tokenMint ? fullAddress(tokenMint) : 'recorded'} · ${poolCount} pool${poolCount === 1 ? '' : 's'} · launch wallet empty.`
+            : tokenMint ? `Mint ${fullAddress(tokenMint)} has ${poolCount} recorded pool ID${poolCount === 1 ? '' : 's'}.` : 'Create token and liquidity before final proof.'}</p>
         </span>
         <span class="finalize-head-status">
           <span class="risk-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
@@ -449,7 +449,7 @@ function renderFinalizationPanel() {
         <span>
           <small>Report</small>
           <strong>${escapeHtml(reportNeedsFinalArtifact ? 'Needs final proof' : reportUri ? 'Published' : localDossier ? 'Saved launch record' : staleReport ? 'Stale' : state.prefs.publishLaunchReport === false ? 'Local' : canPublish ? 'Ready' : 'Waiting')}</strong>
-          <em>${reportNeedsFinalArtifact ? 'download after sweep' : reportUri ? escapeHtml(shortAddress(reportUri)) : localDossier ? escapeHtml(localDossier.filename) : staleReport ? 'regenerate required' : `${poolCount} pool ID proof${poolCount === 1 ? '' : 's'}`}</em>
+          <em>${reportNeedsFinalArtifact ? 'download after sweep' : reportUri ? escapeHtml(fullAddress(reportUri)) : localDossier ? escapeHtml(localDossier.filename) : staleReport ? 'regenerate required' : `${poolCount} pool ID proof${poolCount === 1 ? '' : 's'}`}</em>
         </span>
         <span>
           <small>Airdrop</small>
@@ -464,7 +464,7 @@ function renderFinalizationPanel() {
         <span>
           <small>Sweep</small>
           <strong>${finalSweepComplete ? 'Recorded' : proof?.transfer ? 'Needs proof' : proof?.canSweep ? 'Ready' : 'Waiting'}</strong>
-          <em>${finalDestination ? escapeHtml(shortAddress(finalDestination)) : 'no destination'}</em>
+          <em>${finalDestination ? escapeHtml(fullAddress(finalDestination)) : 'no destination'}</em>
         </span>
       </div>
       <div class="verify-panel-stage">
@@ -556,8 +556,8 @@ function renderCancelRefundPanel(config = currentLaunchConfig()) {
         <span class="risk-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
       </div>
       <div class="cancel-refund-grid">
-        <span><small>Launch wallet</small><strong>${walletPublicKey ? escapeHtml(shortAddress(walletPublicKey)) : 'Select'}</strong></span>
-        <span><small>Destination</small><strong>${destinationWallet ? escapeHtml(shortAddress(destinationWallet)) : 'Set sweep'}</strong></span>
+        <span><small>Launch wallet</small><strong>${walletPublicKey ? escapeHtml(fullAddress(walletPublicKey)) : 'Select'}</strong></span>
+        <span><small>Destination</small><strong>${destinationWallet ? escapeHtml(fullAddress(destinationWallet)) : 'Set sweep'}</strong></span>
         <span><small>Tokens</small><strong>${metrics ? metrics.tokens : '-'}</strong></span>
         <span><small>NFTs</small><strong>${metrics ? metrics.nfts : '-'}</strong></span>
         <span><small>SOL</small><strong>${metrics ? metrics.sol.toFixed(4) : '-'}</strong></span>
@@ -659,7 +659,7 @@ function renderClassicBridge() {
   const restoredPlanNotice = state.restoredLaunchJournalId && !finalSweepComplete ? `
     <aside class="recovered-plan-notice" role="status">
       <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
-      <span><strong>Recovery loaded</strong><small>Journal ${escapeHtml(shortAddress(state.restoredLaunchJournalId))} restored this launch. Only unfinished work remains.</small></span>
+      <span><strong>Recovery loaded</strong><small>Journal ${escapeHtml(fullAddress(state.restoredLaunchJournalId))} restored this launch. Only unfinished work remains.</small></span>
       <button class="text-button" type="button" data-view="history">View record</button>
     </aside>
   ` : '';
@@ -913,7 +913,7 @@ function renderClassicBridge() {
         <span><small>Name</small><strong>${escapeHtml(config.token.name || 'Untitled')}</strong></span>
         <span><small>Symbol</small><strong>${escapeHtml(config.token.symbol || 'TOK')}</strong></span>
         <span><small>Supply</small><strong>${escapeHtml(String(config.token.supply || '0'))}</strong></span>
-        <span><small>Contract address</small><strong>${escapeHtml(state.selectedVanityPublicKey ? shortAddress(state.selectedVanityPublicKey) : 'Random')}</strong></span>
+        <span><small>Contract address</small><strong>${escapeHtml(state.selectedVanityPublicKey ? fullAddress(state.selectedVanityPublicKey) : 'Random')}</strong></span>
       </div>
       ${readinessPanel({
         title: tokenComplete ? 'Token created' : mintEndpoint === '/api/finish-token-creation' ? 'Finish interrupted token' : 'Create token',

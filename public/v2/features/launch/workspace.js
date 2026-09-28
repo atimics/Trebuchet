@@ -734,7 +734,7 @@ function tokenLogoStampMarkup() {
   }
   const caption = stamp.sample
     ? 'The contract address is printed on the logo at launch (sample shown).'
-    : `Printed on the logo: ${shortAddress(stamp.mint)}`;
+    : `Printed on the logo: ${fullAddress(stamp.mint)}`;
   return `
     <figure class="token-logo-stamp-preview">
       <img src="${escapeHtml(stamp.dataUrl)}" alt="Logo with the contract address stamped along the bottom">

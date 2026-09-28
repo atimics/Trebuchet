@@ -68,7 +68,7 @@ function openWalletSigning() {
     if (added) {
       state.destinations.waiting = false;
       setReturnWallet(added);
-      notify(`Return wallet verified: ${shortAddress(added)}`);
+      notify(`Return wallet verified: ${fullAddress(added)}`);
       return;
     }
     if (Date.now() < deadline && state.destinations.waiting) {
@@ -148,7 +148,7 @@ function assetDestinationsHtml() {
         ${status.kind !== 'funder' || String($('#sweepDestination')?.value || '').trim()
           ? '<button class="pill-button" type="button" data-action="use-funding-wallet-sweep">Use funding wallet</button>'
           : ''}
-        ${others.map((other) => `<button class="pill-button" type="button" data-action="use-signed-wallet" data-address="${escapeHtml(other)}">Use ${escapeHtml(shortAddress(other))}</button>`).join('')}
+        ${others.map((other) => `<button class="pill-button" type="button" data-action="use-signed-wallet" data-address="${escapeHtml(other)}">Use ${escapeHtml(fullAddress(other))}</button>`).join('')}
       </div>
     </div>
     ${share.heldPercent > 0 || share.active ? `<div class="asset-destination asset-share">

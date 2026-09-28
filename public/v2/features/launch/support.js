@@ -74,7 +74,7 @@ async function openPoolSupport() {
   const symbol = plan.token?.symbol || shortAddress(plan.token?.mint);
   const ok = await confirmOperatorAction({
     title: 'Add buy support',
-    detail: `Put ${deposit.toFixed(4)} SOL into the ${symbol}/SOL pool from ${shortAddress(walletPublicKey)}, `
+    detail: `Put ${deposit.toFixed(4)} SOL into the ${symbol}/SOL pool from ${fullAddress(walletPublicKey)}, `
       + `between ${fmtPoolPrice(plan.topPriceSol)} and ${fmtPoolPrice(plan.bottomPriceSol)} per ${symbol}.`
       + (rent > 0 ? ` ${rent.toFixed(4)} SOL is tick-array rent that is never returned.` : ''),
     confirmLabel: 'Add support',
@@ -127,7 +127,7 @@ function renderPoolSupport() {
   const rent = solFromLamports(plan.newArrayRentLamports);
   const wallet = plan.walletLamports === null ? null : solFromLamports(plan.walletLamports);
   const facts = [
-    ['Pool', `${symbol}/SOL · ${shortAddress(plan.poolId)}`],
+    ['Pool', `${symbol}/SOL · ${fullAddress(plan.poolId)}`],
     ['Current price', fmtPoolPrice(plan.currentPriceSol)],
     ['Cheapest elsewhere', plan.ceiling ? `${fmtPoolPrice(plan.ceiling.priceSol)} in the ${plan.ceiling.quoteSymbol || 'other'} pool` : 'No other pool with this token'],
     ['Support range', `${fmtPoolPrice(plan.topPriceSol)} (−${pctBelow(plan.topPriceSol)}%) to ${fmtPoolPrice(plan.bottomPriceSol)} (−${pctBelow(plan.bottomPriceSol)}%)`],
@@ -145,12 +145,12 @@ function renderPoolSupport() {
       <dl class="pool-support-facts">${facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>
       <ul class="pool-support-costs">
         ${costs.map(([label, sol, note]) => `<li><span>${escapeHtml(label)}<small>${escapeHtml(note)}</small></span><strong>${sol.toFixed(4)}</strong></li>`).join('')}
-        <li class="is-total"><span>Needed in the wallet${wallet === null ? '' : `<small>${escapeHtml(shortAddress(selectedLaunchWalletPublicKey()))} has ${wallet.toFixed(4)} SOL</small>`}</span><strong>${solFromLamports(plan.totalLamports).toFixed(4)} SOL</strong></li>
+        <li class="is-total"><span>Needed in the wallet${wallet === null ? '' : `<small>${escapeHtml(fullAddress(selectedLaunchWalletPublicKey()))} has ${wallet.toFixed(4)} SOL</small>`}</span><strong>${solFromLamports(plan.totalLamports).toFixed(4)} SOL</strong></li>
       </ul>
       ${plan.warnings?.length ? `<ul class="pool-support-warnings">${plan.warnings.map((warning) => `<li><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>${escapeHtml(warning)}</li>`).join('')}</ul>` : ''}
       ${error ? `<p class="pool-support-error" role="alert">${escapeHtml(error)}</p>` : ''}
       ${done
-        ? `<p class="pool-support-done"><i class="fa-solid fa-check" aria-hidden="true"></i> Added. Position ${escapeHtml(shortAddress(result.nftMint))}${result.txId && !String(result.txId).startsWith('Demo') ? ` · <a href="${escapeHtml(solscanTxUrl(result.txId))}" target="_blank" rel="noopener">transaction</a>` : ''}</p>`
+        ? `<p class="pool-support-done"><i class="fa-solid fa-check" aria-hidden="true"></i> Added. Position ${escapeHtml(fullAddress(result.nftMint))}${result.txId && !String(result.txId).startsWith('Demo') ? ` · <a href="${escapeHtml(solscanTxUrl(result.txId))}" target="_blank" rel="noopener">transaction</a>` : ''}</p>`
         : `<div class="operator-toolbar compact"><button class="primary-button compact" type="button" data-action="open-pool-support" ${opening || plan.enoughSol === false ? 'disabled' : ''}><span>${opening ? 'Adding support…' : `Add ${solFromLamports(plan.depositLamports).toFixed(4)} SOL of support`}</span><i class="fa-solid fa-arrow-right" aria-hidden="true"></i></button></div>`}
     </div>`;
 }
@@ -206,7 +206,7 @@ async function detectFundingWallet({ quiet = false } = {}) {
     // address into the return wallet.
     if (funder) state.destinations = { ...state.destinations, funder };
     if (funder) {
-      if (!quiet) notify(`Funding wallet detected: ${shortAddress(funder)}`);
+      if (!quiet) notify(`Funding wallet detected: ${fullAddress(funder)}`);
     } else if (!quiet) {
       notify('Wallet history could not identify a funder. Sign with your wallet before the final sweep.');
     }

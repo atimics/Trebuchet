@@ -165,8 +165,8 @@ function buildV2ReportParityAudit(proof = currentLaunchProof(), config = current
       token.mint && hasProofLaunchWallet ? 'pass' : token.mint ? 'warn' : 'missing',
       token.mint
         ? hasProofLaunchWallet
-          ? `Mint ${shortAddress(token.mint)} / wallet ${shortAddress(proof.walletPublicKey)}.`
-          : `Mint ${shortAddress(token.mint)} is recorded, but launch wallet proof is missing.`
+          ? `Mint ${fullAddress(token.mint)} / wallet ${fullAddress(proof.walletPublicKey)}.`
+          : `Mint ${fullAddress(token.mint)} is recorded, but launch wallet proof is missing.`
         : 'Token mint is not recorded yet.',
     ),
     v2ReportParityItem(
@@ -281,7 +281,7 @@ function buildV2ReportParityAudit(proof = currentLaunchProof(), config = current
         : staleReport ? 'warn' : proof?.canPublishReport || token.mint ? 'warn' : 'missing',
       reportUri
         ? reportArtifactSweepBound
-          ? `Published at ${shortAddress(reportUri)}.`
+          ? `Published at ${fullAddress(reportUri)}.`
           : 'Published report is missing terminal sweep evidence hash; republish after final sweep.'
         : localDossier
           ? reportArtifactSweepBound
@@ -296,7 +296,7 @@ function buildV2ReportParityAudit(proof = currentLaunchProof(), config = current
       'Final sweep proof',
       sweepComplete ? 'pass' : transfer || proof?.canSweep ? 'warn' : 'missing',
       sweepComplete
-        ? `Sweep recorded to ${shortAddress(transfer.destinationWallet || proof?.destinationWallet || config?.poolTopology?.sweepDestination || '')}.`
+        ? `Sweep recorded to ${fullAddress(transfer.destinationWallet || proof?.destinationWallet || config?.poolTopology?.sweepDestination || '')}.`
         : transfer
           ? 'Sweep record exists but is missing wallet-empty, error-free final-sweep evidence.'
         : proof?.canSweep ? 'Sweep is ready but not recorded.' : 'Final sweep is not recorded yet.',

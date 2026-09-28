@@ -539,7 +539,7 @@ async function shuffleMemeFlywheel() {
   state.memeFlywheelMint = mint;
   renderFlywheelPick();
   scheduleLaunchAutoSave();
-  notify(`Flywheel pairing drawn: ${shortAddress(mint)}`);
+  notify(`Flywheel pairing drawn: ${fullAddress(mint)}`);
 }
 
 // The liquidity budget is SOL that goes INTO the SOL pool. A launch pool
