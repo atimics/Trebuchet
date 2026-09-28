@@ -261,10 +261,10 @@ inspection path.
 
 ### NFTs
 
-Each collection moves through the same phase strip as a launch: Collection,
-Items, Addresses, Fund, Mint, Verify. A collection or item is **Minted** only
-when its create signature is recorded, and **Proof** only after the Verify
-phase has read every asset back from chain. Vanity addresses keep the whole
+Each collection shows its facts the way a coin being created does: Collection,
+Items, Addresses, Funding, Mints, Proof, one row each with its value. An item is
+on-chain only when its create signature is recorded, and the collection has
+**Proof** only after every asset has been read back from chain. Vanity addresses keep the whole
 pattern visible and highlighted, not just the last four characters.
 
 ### Discovery

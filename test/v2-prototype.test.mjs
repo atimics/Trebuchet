@@ -11733,3 +11733,12 @@ test('the coin page and the create view share one facts vocabulary', () => {
   // The same action words in both places.
   assert.match(js, /return: 'Sweep the launch wallet'/);
 });
+
+test('an NFT collection shows its facts, not numbered phases', () => {
+  const nfts = read('public/v2/nfts.js');
+  assert.match(nfts, /<nav class="nft-fact-list" aria-label="What is true about this collection">/);
+  assert.doesNotMatch(nfts, /nft-tab-n|Collection phases|<span class="eyebrow">0[1-6]<\/span>|'Not started'|'After import'/);
+  assert.doesNotMatch(css, /\.nft-tabs\b|\.nft-tab-n/);
+  // The rail keeps one action; the facts list replaces its checks.
+  assert.doesNotMatch(nfts, /nft-gap">Checks</);
+});
