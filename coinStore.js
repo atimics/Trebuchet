@@ -53,7 +53,7 @@ export function get(mint) {
 }
 
 /** Add a coin by mint, or refresh its name and symbol. Keeps its activity. */
-export function add({ mint, name = null, symbol = null, source = 'added' } = {}) {
+export function add({ mint, name = null, symbol = null, image = null, source = 'added' } = {}) {
   if (!mint) throw new Error('mint is required');
   const coins = load();
   const index = coins.findIndex((item) => item.mint === mint);
@@ -63,11 +63,12 @@ export function add({ mint, name = null, symbol = null, source = 'added' } = {})
       ...coins[index],
       name: name || coins[index].name || null,
       symbol: symbol || coins[index].symbol || null,
+      image: image || coins[index].image || null,
       updatedAt: ts,
-      hidden: false,
+      hidden: source === 'added' ? false : coins[index].hidden === true,
     };
   } else {
-    coins.push({ mint, name, symbol, source, addedAt: ts, updatedAt: ts, hidden: false, events: [] });
+    coins.push({ mint, name, symbol, image, source, addedAt: ts, updatedAt: ts, hidden: false, events: [] });
   }
   persist(coins);
   return clone(coins[index >= 0 ? index : coins.length - 1]);

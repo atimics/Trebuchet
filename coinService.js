@@ -35,7 +35,8 @@ export function mergeCoins({ launches = [], journals = [], added = [], practice 
     const mint = journalMint(journal);
     if (!mint) continue;
     const isPractice = journal.demo === true || isPracticeMint(mint);
-    if (isPractice !== practice) continue;
+    // Real coins show in both modes; practice coins only in Practice.
+    if (isPractice && !practice) continue;
     const token = { ...(journal.launchConfig?.token || {}), ...(journal.token || {}) };
     const existing = byMint.get(mint);
     if (existing && String(existing.updatedAt) > String(journal.updatedAt)) continue;
@@ -47,6 +48,7 @@ export function mergeCoins({ launches = [], journals = [], added = [], practice 
       symbol: token.symbol || null,
       status: journalStatus(journal),
       journalId: journal.id || null,
+      image: token.imageUri || null,
       launchedHere: true,
       practice: isPractice,
       updatedAt: journal.updatedAt || journal.createdAt || null,
@@ -54,13 +56,14 @@ export function mergeCoins({ launches = [], journals = [], added = [], practice 
   }
   for (const coin of added) {
     if (!coin?.mint || coin.hidden) continue;
-    if (isPracticeMint(coin.mint) !== practice) continue;
+    if (isPracticeMint(coin.mint) && !practice) continue;
     const existing = byMint.get(coin.mint);
     if (existing) {
       byMint.set(coin.mint, {
         ...existing,
         name: existing.name || coin.name || null,
         symbol: existing.symbol || coin.symbol || null,
+        image: coin.image || existing.image || null,
         eventCount: (coin.events || []).length,
       });
       continue;
@@ -72,6 +75,7 @@ export function mergeCoins({ launches = [], journals = [], added = [], practice 
       name: coin.name || null,
       symbol: coin.symbol || null,
       status: coin.source === 'added' ? 'Added' : coin.source === 'practice' ? 'Practice coin' : 'On-chain',
+      image: coin.image || null,
       launchedHere: false,
       practice: isPracticeMint(coin.mint),
       eventCount: (coin.events || []).length,
@@ -95,6 +99,7 @@ export function mergeCoins({ launches = [], journals = [], added = [], practice 
       name: token.name || entry.name || null,
       symbol: token.symbol || null,
       logoDataUrl: typeof token.logo?.dataUrl === 'string' ? token.logo.dataUrl : null,
+      image: typeof token.logo?.dataUrl === 'string' ? token.logo.dataUrl : null,
       status: reserved ? 'Address reserved' : 'Draft',
       updatedAt: entry.updatedAt || entry.createdAt || null,
     });

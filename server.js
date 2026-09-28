@@ -3076,6 +3076,38 @@ app.post('/api/v2/support/open', async (req, res) => {
 
 // Coins: drafts (saved plans), launched coins (journals), and coins added
 // by address. On-chain facts are read fresh; records are claims.
+// A coin's image, from its on-chain metadata document. Fetched through the
+// same SSRF checks as the image proxy; ipfs:// and ar:// map to gateways.
+function publicContentUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  if (text.startsWith('ipfs://')) return `https://ipfs.io/ipfs/${text.slice('ipfs://'.length).replace(/^ipfs\//, '')}`;
+  if (text.startsWith('ar://')) return `https://arweave.net/${text.slice('ar://'.length)}`;
+  return /^https?:\/\//i.test(text) ? text : null;
+}
+
+async function metadataImageUrl(metadataUri) {
+  const url = publicContentUrl(metadataUri);
+  if (!url) return null;
+  const parsed = new URL(url);
+  assertAllowedProxyUrl(parsed);
+  await assertHostResolvesPublic(parsed.hostname);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(parsed.toString(), { signal: controller.signal, headers: { Accept: 'application/json' } });
+    if (!response.ok) return null;
+    const text = await response.text();
+    if (text.length > 512 * 1024) return null;
+    const document = JSON.parse(text);
+    return publicContentUrl(document?.image);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 app.get('/api/v2/coins', (_req, res) => {
   try {
     const coins = mergeCoins({
@@ -3096,6 +3128,7 @@ app.post('/api/v2/coins', async (req, res) => {
     if (!mint) return res.status(400).json({ success: false, error: 'Paste a valid token mint address.' });
     let name = null;
     let symbol = null;
+    let image = null;
     if (!/^Demo/.test(mint)) {
       const connection = new Connection(getRpcUrl(), 'confirmed');
       const account = await readMintAccount(connection, mint).catch(() => null);
@@ -3104,13 +3137,12 @@ app.post('/api/v2/coins', async (req, res) => {
       }
       name = account.metadata?.name || null;
       symbol = account.metadata?.symbol || null;
-      if (!name || !symbol) {
-        const info = await getTokenMetadata(mint).catch(() => null);
-        name = name || info?.name || null;
-        symbol = symbol || info?.symbol || null;
-      }
+      const info = await getTokenMetadata(mint).catch(() => null);
+      name = name || info?.name || null;
+      symbol = symbol || info?.symbol || null;
+      image = (await metadataImageUrl(account.metadata?.uri).catch(() => null)) || publicContentUrl(info?.imageUrl);
     }
-    const coin = coinStore.add({ mint, name, symbol, source: 'added' });
+    const coin = coinStore.add({ mint, name, symbol, image, source: 'added' });
     res.json({ success: true, coin });
   } catch (error) {
     sendErrorResponse(res, error, 400);
@@ -3238,7 +3270,13 @@ app.get('/api/v2/coins/:mint', async (req, res) => {
     const creation = latestJournal
       ? coinCreationSteps(latestJournal, { account, markets, launchWalletLamports })
       : null;
-    res.json({ success: true, coin: { mint, practice: false, account, info, markets, events, creation } });
+    const image = (account && !account.error ? await metadataImageUrl(account.metadata?.uri).catch(() => null) : null)
+      || publicContentUrl(info?.imageUrl)
+      || publicContentUrl(latestJournal?.token?.imageUri)
+      || record?.image
+      || null;
+    if (image && record && record.image !== image) coinStore.add({ mint, image, source: record.source });
+    res.json({ success: true, coin: { mint, practice: false, account, info, markets, events, creation, image } });
   } catch (error) {
     sendErrorResponse(res, error, 400);
   }
@@ -5232,6 +5270,9 @@ app.post('/api/v2/demo-launch/run', async (req, res) => {
       mint: tokenMint,
       name: config?.token?.name || tokenResult?.name || null,
       symbol: config?.token?.symbol || tokenResult?.symbol || null,
+      image: typeof config?.token?.logo?.dataUrl === 'string' && config.token.logo.dataUrl.length < 400_000
+        ? config.token.logo.dataUrl
+        : null,
       source: 'practice',
     });
     coinStore.recordEvent(tokenMint, { type: 'practice_launch', practice: true, outcome: 'landed' });

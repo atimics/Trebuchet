@@ -2488,16 +2488,11 @@ function discoveryDisplayToken(token = {}) {
   };
 }
 
+// Same colors as the coin cards: hue from the address.
 function discoveryFallbackPalette(token = {}) {
-  const identity = String(token.mint || token.symbol || token.name || 'trebuchet');
-  let hash = 2166136261;
-  for (const character of identity) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  const hue = (hash >>> 0) % 360;
-  const primary = launchIdentityHslToRgb([hue / 360, 0.72, 0.58]);
-  const accent = launchIdentityHslToRgb([((hue + 42 + ((hash >>> 8) % 82)) % 360) / 360, 0.7, 0.56]);
+  const hue = coinAddressHue(token.mint || token.symbol || token.name || 'trebuchet');
+  const primary = launchIdentityHslToRgb([hue / 360, 0.72, 0.6]);
+  const accent = launchIdentityHslToRgb([((hue + 137) % 360) / 360, 0.66, 0.6]);
   return {
     primary,
     accent,
@@ -2528,7 +2523,7 @@ function hydrateDiscoveryTokenPalettes() {
   $$('[data-token-palette]').forEach((node) => {
     const mint = node.dataset.tokenPalette;
     const imageUrl = node.dataset.tokenImage;
-    const cached = state.discovery.paletteByMint?.[mint];
+    const cached = state.discovery.paletteByMint?.[mint] || COIN_PALETTES.get(discoveryTokenImageSource(imageUrl));
     if (cached) applyDiscoveryPalette(mint, cached);
     if (!mint || !imageUrl || cached || state.discovery.palettePending.has(mint)) return;
     state.discovery.palettePending.add(mint);
@@ -2537,6 +2532,7 @@ function hydrateDiscoveryTokenPalettes() {
     image.onload = () => {
       const palette = extractLaunchIdentityArt(image).palette;
       state.discovery.paletteByMint[mint] = palette;
+      COIN_PALETTES.set(discoveryTokenImageSource(imageUrl), palette);
       state.discovery.palettePending.delete(mint);
       applyDiscoveryPalette(mint, palette);
     };
@@ -4010,7 +4006,11 @@ function defaultLaunchIdentityArt() {
 
 function tuneLaunchIdentityColor(rgb = []) {
   const luminance = launchIdentityRelativeLuminance(rgb);
-  if (luminance < 0.08) return launchIdentityMixRgb(rgb, [255, 255, 255], 0.32);
+  if (luminance < 0.08) {
+    // Lift dark colors in HSL so they keep their hue instead of greying out.
+    const [hue, saturation, lightness] = launchIdentityRgbToHsl(rgb);
+    return launchIdentityHslToRgb([hue, saturation, Math.max(lightness, 0.46)]).map((value) => Math.round(value));
+  }
   if (luminance > 0.88) return launchIdentityMixRgb(rgb, [0, 0, 0], 0.22);
   return rgb.map((value) => Math.round(value));
 }
@@ -4040,21 +4040,30 @@ function extractLaunchIdentityArt(image, { includePoster = false } = {}) {
       bucket.b += b;
       buckets.set(key, bucket);
     }
-    const candidates = [...buckets.values()].map((bucket) => {
+    const scored = [...buckets.values()].map((bucket) => {
       const rgb = [bucket.r, bucket.g, bucket.b].map((sum) => sum / bucket.count);
       const [, saturation, lightness] = launchIdentityRgbToHsl(rgb);
       const middleBias = 1 - Math.min(0.72, Math.abs(lightness - 0.52));
       return {
         rgb,
         count: bucket.count,
+        chromatic: saturation >= 0.28 && lightness >= 0.12 && lightness <= 0.9,
         score: (bucket.count ** 0.72) * (0.42 + saturation * 1.8) * middleBias,
       };
-    }).sort((a, b) => b.score - a.score);
+    });
+    // Dark or white backgrounds would win on pixel count alone; use the
+    // logo's colors whenever it has enough of them.
+    const total = scored.reduce((sum, candidate) => sum + candidate.count, 0);
+    const chromatic = scored.filter((candidate) => candidate.chromatic);
+    const chromaticCount = chromatic.reduce((sum, candidate) => sum + candidate.count, 0);
+    const candidates = (chromaticCount >= total * 0.04 ? chromatic : scored)
+      .sort((a, b) => b.score - a.score);
     if (!candidates.length) return fallback;
 
     const primary = tuneLaunchIdentityColor(candidates[0].rgb);
     const distance = (a, b) => Math.sqrt(a.reduce((sum, value, index) => sum + ((value - b[index]) ** 2), 0));
     const accentCandidate = candidates.slice(1)
+      .map((candidate) => ({ ...candidate, rgb: tuneLaunchIdentityColor(candidate.rgb) }))
       .filter((candidate) => distance(candidate.rgb, primary) >= 72)
       .sort((a, b) => (b.score * distance(b.rgb, primary)) - (a.score * distance(a.rgb, primary)))[0];
     const primaryHsl = launchIdentityRgbToHsl(primary);
@@ -5937,6 +5946,30 @@ function renderLiveLaunchMonitor() {
   `;
 }
 
+// The coin being worked on, in the sidebar and the top bar: the same coin
+// card as everywhere else, shown once the coin has a name or a logo.
+function renderWorkingCoinCards(model = launchIdentityModel()) {
+  const sidebar = $('#launchIdentitySidebar');
+  const chip = $('#launchIdentityChip');
+  const typedName = String($('#tokenName')?.value || '').trim();
+  const typedSymbol = String($('#tokenSymbol')?.value || '').trim();
+  const show = Boolean(typedName || typedSymbol || model.logo?.dataUrl || model.mint);
+  const coin = {
+    name: typedName || (model.mint ? model.name : ''),
+    symbol: typedSymbol || (model.mint ? model.symbol : ''),
+    address: model.mint || state.selectedVanityPublicKey || null,
+    image: model.logo?.dataUrl ? launchIdentityImageSrc(model.logo, { animate: false }) : null,
+  };
+  [[sidebar, 'Working on'], [chip, '']].forEach(([element, status]) => {
+    if (!element) return;
+    element.hidden = !show;
+    element.innerHTML = show ? coinCardHtml(coin, { variant: 'mini', tag: 'span', status }) : '';
+    element.setAttribute('aria-label', show ? `Open ${coin.name || coin.symbol || 'the coin being worked on'}` : '');
+  });
+  if (show) hydrateCoinCards();
+  renderCoinContext();
+}
+
 function renderLaunchIdentity() {
   const model = launchIdentityModel();
   const active = Boolean(model.logo?.dataUrl);
@@ -5944,13 +5977,13 @@ function renderLaunchIdentity() {
   const sidebar = $('#launchIdentitySidebar');
   const chip = $('#launchIdentityChip');
   document.body.dataset.launchIdentity = active ? 'active' : 'empty';
+  renderWorkingCoinCards(model);
   if (!active) {
     applyLaunchIdentityPalette(null);
-    [dock, sidebar, chip].forEach((element) => {
-      if (!element) return;
-      element.hidden = true;
-      element.innerHTML = '';
-    });
+    if (dock) {
+      dock.hidden = true;
+      dock.innerHTML = '';
+    }
     return;
   }
 
@@ -5996,24 +6029,6 @@ function renderLaunchIdentity() {
     `;
   }
 
-  if (sidebar) {
-    sidebar.hidden = false;
-    sidebar.innerHTML = `
-      <span class="launch-identity-mini-coin"><img src="${escapeHtml(stillSrc)}" alt=""></span>
-      <span><small>Working on</small><strong>${escapeHtml(model.symbol)}</strong><em>${escapeHtml(model.status)}</em></span>
-      <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
-    `;
-    sidebar.setAttribute('aria-label', `Open ${model.name} launch`);
-  }
-
-  if (chip) {
-    chip.hidden = false;
-    chip.innerHTML = `
-      <span class="launch-identity-chip-coin"><img src="${escapeHtml(heroSrc)}" alt=""></span>
-      <span><small>Launching</small><strong>$${escapeHtml(model.symbol)}</strong></span>
-    `;
-    chip.setAttribute('aria-label', `Open ${model.name} launch`);
-  }
 }
 
 function renderLaunchPreview() {
@@ -21881,10 +21896,118 @@ function coinTitle(coin) {
   return coin?.name || coin?.symbol || (coin?.mint ? shortAddress(coin.mint) : 'Untitled coin');
 }
 
-function coinMark(coin, detail = null) {
-  const image = detail?.info?.imageUrl || coin?.logoDataUrl || null;
-  if (image) return `<span class="coin-mark"><img src="${escapeHtml(image)}" alt=""></span>`;
-  return `<span class="coin-mark">${escapeHtml(String(coin?.symbol || coin?.name || '?').slice(0, 2).toUpperCase())}</span>`;
+// ---------------------------------------------------------------------------
+// Coin cards: one way to show a coin, everywhere
+// ---------------------------------------------------------------------------
+//
+// A card's base color comes from the coin's address (CA): a hue hashed from
+// it, so a coin always looks the same and two coins rarely look alike. A
+// coin with no address yet (a draft) has a neutral base. The accents come
+// from the coin's logo colors, read once per image and cached; until then
+// (or without a logo) they are derived from the address too.
+
+const COIN_PALETTES = new Map(); // image src -> { primaryHex, accentHex }
+const COIN_PALETTES_PENDING = new Set();
+
+function coinAddressHue(address) {
+  let hash = 2166136261;
+  for (const character of String(address || '')) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 360;
+}
+
+// Remote images go through the same-origin proxy: they load reliably and
+// their colors can be read.
+function coinImageSrc(url) {
+  let value = String(url || '').trim();
+  if (!value) return '';
+  if (value.startsWith('ipfs://')) value = `https://ipfs.io/ipfs/${value.slice(7).replace(/^ipfs\//, '')}`;
+  if (value.startsWith('ar://')) value = `https://arweave.net/${value.slice(5)}`;
+  if (/^(data:|blob:|\/)/i.test(value)) return value;
+  return /^https?:\/\//i.test(value) ? `/api/proxy-image?url=${encodeURIComponent(value)}` : '';
+}
+
+function coinAccentFallback(address) {
+  if (!address) return null;
+  const hue = coinAddressHue(address);
+  return {
+    primaryHex: launchIdentityRgbHex(launchIdentityHslToRgb([hue / 360, 0.72, 0.6])),
+    accentHex: launchIdentityRgbHex(launchIdentityHslToRgb([((hue + 137) % 360) / 360, 0.66, 0.6])),
+  };
+}
+
+function coinCardStyle(address, src) {
+  const vars = [];
+  if (address) vars.push(`--coin-hue:${coinAddressHue(address)}`);
+  const palette = (src && COIN_PALETTES.get(src)) || coinAccentFallback(address);
+  if (palette) vars.push(`--coin-accent:${palette.primaryHex}`, `--coin-accent-2:${palette.accentHex}`);
+  return vars.join(';');
+}
+
+/**
+ * One coin card. `coin` is { name, symbol, address, image }; `variant` is
+ * row (Coins list), header (coin page), title (page title while creating),
+ * or mini (sidebar and top bar). `tag`/`attrs` make it a button or link.
+ */
+function coinCardHtml(coin = {}, { variant = 'row', tag = 'div', attrs = '', status = '', trailing = '' } = {}) {
+  const address = String(coin.address || '').trim() || null;
+  const src = coinImageSrc(coin.image);
+  const initials = escapeHtml(String(coin.symbol || coin.name || '').slice(0, 2).toUpperCase());
+  const name = coin.name || coin.symbol || 'New coin';
+  const addressText = address
+    ? (variant === 'header' ? address : shortAddress(address))
+    : 'no address yet';
+  return `
+    <${tag} class="coin-card-ui coin-card-ui--${variant} ${address ? '' : 'is-unaddressed'}" ${attrs} data-coin-image="${escapeHtml(src)}" style="${escapeHtml(coinCardStyle(address, src))}">
+      <span class="coin-card-ui__mark" data-initials="${initials}">${src ? `<img src="${escapeHtml(src)}" alt="">` : initials}</span>
+      <span class="coin-card-ui__copy">
+        ${status ? `<small class="coin-card-ui__status">${escapeHtml(status)}</small>` : ''}
+        <strong>${escapeHtml(name)}${coin.symbol && coin.name ? ` <em>${escapeHtml(coin.symbol)}</em>` : ''}</strong>
+        ${variant === 'mini' ? '' : `<code>${escapeHtml(addressText)}</code>`}
+      </span>
+      ${trailing}
+    </${tag}>`;
+}
+
+// Read each card's logo colors once, then paint every card for that image.
+function hydrateCoinCards() {
+  $$('.coin-card-ui__mark img').forEach((image) => {
+    if (image.dataset.bound) return;
+    image.dataset.bound = '1';
+    image.addEventListener('error', () => {
+      const mark = image.parentElement;
+      if (mark) mark.textContent = mark.dataset.initials || '';
+    }, { once: true });
+  });
+  const apply = (src, palette) => {
+    $$('[data-coin-image]').forEach((node) => {
+      if (node.dataset.coinImage !== src) return;
+      node.style.setProperty('--coin-accent', palette.primaryHex);
+      node.style.setProperty('--coin-accent-2', palette.accentHex);
+    });
+  };
+  $$('[data-coin-image]').forEach((node) => {
+    const src = node.dataset.coinImage;
+    if (!src) return;
+    const cached = COIN_PALETTES.get(src);
+    if (cached) {
+      apply(src, cached);
+      return;
+    }
+    if (COIN_PALETTES_PENDING.has(src)) return;
+    COIN_PALETTES_PENDING.add(src);
+    const image = new Image();
+    image.onload = () => {
+      const palette = extractLaunchIdentityArt(image).palette;
+      COIN_PALETTES.set(src, palette);
+      COIN_PALETTES_PENDING.delete(src);
+      apply(src, palette);
+    };
+    image.onerror = () => COIN_PALETTES_PENDING.delete(src);
+    image.src = src;
+  });
 }
 
 function renderCoins() {
@@ -21914,15 +22037,16 @@ function renderCoins() {
     target.innerHTML = `<p class="coins-empty">No coins yet. Start a new one, or add one that already exists by its mint address.${state.coins.error ? ` (${escapeHtml(state.coins.error)})` : ''}</p>`;
     return;
   }
-  target.innerHTML = coins.map((item) => `
-    <button class="coin-card" type="button" data-action="open-coin" data-coin-key="${escapeHtml(item.key)}">
-      ${coinMark(item)}
-      <span class="coin-card-copy">
-        <strong>${escapeHtml(coinTitle(item))}${item.symbol && item.name ? ` <small>${escapeHtml(item.symbol)}</small>` : ''}</strong>
-        <small>${escapeHtml(item.mint ? shortAddress(item.mint) : item.reservedAddress ? `Address ${shortAddress(item.reservedAddress)} reserved` : 'No address yet')}</small>
-      </span>
-      <span class="risk-badge ${item.kind === 'draft' ? '' : item.status === 'Launch in progress' ? 'warn' : ''}">${escapeHtml(item.status)}</span>
-    </button>`).join('');
+  target.innerHTML = coins.map((item) => coinCardHtml(
+    { name: item.name, symbol: item.symbol, address: item.mint || item.reservedAddress, image: item.image || item.logoDataUrl },
+    {
+      variant: 'row',
+      tag: 'button',
+      attrs: `type="button" data-action="open-coin" data-coin-key="${escapeHtml(item.key)}"`,
+      status: item.status,
+    },
+  )).join('');
+  hydrateCoinCards();
 }
 
 function formatTokenAmount(raw, decimals) {
@@ -22059,21 +22183,12 @@ function draftPlanHtml(entry) {
   return `<dl class="pool-support-facts">${facts.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>`;
 }
 
-// The coin header, the same at every stage of a coin's life.
-function coinHeaderHtml({ coin = {}, name, symbol, image = null, status = '', address = null, links = false }) {
-  const mark = image
-    ? `<span class="coin-mark"><img src="${escapeHtml(image)}" alt=""></span>`
-    : `<span class="coin-mark">${escapeHtml(String(symbol || name || '').slice(0, 2).toUpperCase())}</span>`;
-  return `
-    <header class="coin-header">
-      ${mark}
-      <span class="coin-header-copy">
-        <span class="eyebrow">${escapeHtml(status)}</span>
-        <h2>${escapeHtml(name || symbol || 'New coin')}${symbol && name ? ` <small>${escapeHtml(symbol)}</small>` : ''}</h2>
-        <code>${escapeHtml(address || 'No address yet')}</code>
-      </span>
-      ${links && address ? `<span class="coin-links"><a class="pill-button link-button" href="https://solscan.io/token/${escapeHtml(address)}" target="_blank" rel="noopener">Solscan</a><a class="pill-button link-button" href="https://raydium.io/swap/?inputMint=sol&outputMint=${escapeHtml(address)}" target="_blank" rel="noopener">Raydium</a></span>` : ''}
-    </header>`;
+// The coin page header: the coin's card, with its explorer links.
+function coinHeaderHtml({ name, symbol, image = null, status = '', address = null, links = false }) {
+  const trailing = links && address
+    ? `<span class="coin-links"><a class="pill-button link-button" href="https://solscan.io/token/${escapeHtml(address)}" target="_blank" rel="noopener">Solscan</a><a class="pill-button link-button" href="https://raydium.io/swap/?inputMint=sol&outputMint=${escapeHtml(address)}" target="_blank" rel="noopener">Raydium</a></span>`
+    : '';
+  return coinCardHtml({ name, symbol, address, image }, { variant: 'header', tag: 'header', status, trailing });
 }
 
 function renderCoinPage(coin) {
@@ -22085,10 +22200,9 @@ function renderCoinPage(coin) {
   const name = account?.metadata?.name || detail?.info?.name || coin.name;
   const symbol = account?.metadata?.symbol || detail?.info?.symbol || coin.symbol;
   const header = coinHeaderHtml({
-    coin,
     name,
     symbol,
-    image: detail?.info?.imageUrl || coin.logoDataUrl || null,
+    image: detail?.image || coin.image || coin.logoDataUrl || null,
     status: coin.status || '',
     address: coin.mint || coin.reservedAddress || null,
     links: Boolean(coin.mint && !coin.practice),
@@ -22149,10 +22263,18 @@ function renderCoinContext() {
   const address = mint || reserved;
   const eyebrow = $('#viewEyebrow');
   const title = $('#viewTitle');
-  if (eyebrow) {
-    eyebrow.innerHTML = `<button class="text-button coin-back-inline" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> Coins</button> · ${escapeHtml(status)} · <code>${escapeHtml(address ? shortAddress(address) : 'no address yet')}</code>`;
+  // Written once: redrawing it on every change would replace the button
+  // under a click that is still in progress (a blur fires "change").
+  if (eyebrow && !eyebrow.querySelector('[data-action="coins-back"]')) {
+    eyebrow.innerHTML = `<button class="text-button coin-back-inline" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> Coins</button>`;
   }
-  if (title) title.textContent = name ? `${name}${symbol ? ` · ${symbol}` : ''}` : symbol || 'New coin';
+  if (title) {
+    title.innerHTML = coinCardHtml(
+      { name, symbol, address, image: state.tokenLogo?.dataUrl ? launchIdentityImageSrc(state.tokenLogo, { animate: false }) : null },
+      { variant: 'title', tag: 'span', status },
+    );
+    hydrateCoinCards();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -23850,7 +23972,7 @@ function handleDynamicInput(event) {
   }
   if (handleOperatorPromptInput(event)) return;
   if (handleRecoveryPinInput(event)) return;
-  if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary(); if (['tokenName', 'tokenSymbol'].includes(event.target?.id)) renderCoinContext();
+  if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary(); if (['tokenName', 'tokenSymbol'].includes(event.target?.id)) { renderCoinContext(); renderWorkingCoinCards(); }
   if (event.target?.dataset?.supportField) {
     resetPoolSupport();
     return;
@@ -24893,7 +25015,7 @@ function bindEvents() {
   document.addEventListener('input', scheduleLaunchAutoSave);
   // A pasted pair mint resolves its symbol as soon as the field is left.
   document.addEventListener('change', (event) => {
-    if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary(); if (['tokenName', 'tokenSymbol'].includes(event.target?.id)) renderCoinContext();
+    if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary(); if (['tokenName', 'tokenSymbol'].includes(event.target?.id)) { renderCoinContext(); renderWorkingCoinCards(); }
     const mint = event.target.closest?.('.supply-mint');
     if (mint?.value.trim()) {
       resolveCustomQuoteToken(mint.dataset.poolId).catch((error) => notify(error.message || 'Token lookup failed'));

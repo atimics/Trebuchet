@@ -13389,143 +13389,11 @@ body[data-launch-identity="active"] .topbar-copy .eyebrow::before {
   background: var(--identity-primary);
 }
 
-.launch-identity-sidebar {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 12px;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  min-width: 0;
-  min-height: 58px;
-  padding: 8px;
-  border: 1px solid rgb(var(--identity-primary-rgb) / .42);
-  border-left: 2px solid var(--identity-primary);
-  border-radius: 0;
-  background:
-    linear-gradient(110deg, rgb(var(--identity-primary-rgb) / .11), transparent 64%),
-    var(--panel);
-  color: var(--ink);
-  text-align: left;
-  cursor: pointer;
-}
-
-.launch-identity-sidebar:hover,
-.launch-identity-sidebar:focus-visible {
-  border-color: var(--identity-primary);
-  outline: none;
-  background: rgb(var(--identity-primary-rgb) / .12);
-}
-
-.launch-identity-mini-coin,
-.launch-identity-chip-coin {
-  display: block;
-  overflow: hidden;
-  border: 1px solid rgb(var(--identity-primary-rgb) / .58);
-  border-radius: 50%;
-  background: var(--panel-strong);
-  box-shadow: 0 0 20px rgb(var(--identity-primary-rgb) / .18);
-}
-
-.launch-identity-mini-coin {
-  width: 38px;
-  height: 38px;
-}
-
-.launch-identity-mini-coin img,
-.launch-identity-chip-coin img,
 .launch-identity-coin img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
-}
-
-.launch-identity-sidebar > span:nth-child(2),
-.launch-identity-sidebar small,
-.launch-identity-sidebar strong,
-.launch-identity-sidebar em {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.launch-identity-sidebar small {
-  color: var(--identity-primary);
-  font-size: 7px;
-  font-weight: 700;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
-
-.launch-identity-sidebar strong {
-  margin-top: 2px;
-  color: var(--ink);
-  font-size: 11px;
-}
-
-.launch-identity-sidebar em {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 7px;
-  font-style: normal;
-}
-
-.launch-identity-sidebar > i {
-  color: var(--identity-accent);
-  font-size: 8px;
-}
-
-.launch-identity-chip {
-  display: inline-grid;
-  grid-template-columns: 32px minmax(0, auto);
-  align-items: center;
-  gap: 8px;
-  min-height: 38px;
-  max-width: 190px;
-  padding: 3px 9px 3px 4px;
-  border: 1px solid rgb(var(--identity-primary-rgb) / .42);
-  border-radius: 999px;
-  background: rgb(var(--identity-primary-rgb) / .075);
-  color: var(--ink);
-  text-align: left;
-  cursor: pointer;
-}
-
-.launch-identity-chip:hover,
-.launch-identity-chip:focus-visible {
-  border-color: var(--identity-primary);
-  outline: none;
-}
-
-.launch-identity-chip-coin {
-  width: 30px;
-  height: 30px;
-}
-
-.launch-identity-chip > span:last-child,
-.launch-identity-chip small,
-.launch-identity-chip strong {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.launch-identity-chip small {
-  color: var(--muted);
-  font-size: 6px;
-  font-weight: 700;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
-
-.launch-identity-chip strong {
-  margin-top: 1px;
-  color: var(--identity-primary);
-  font-size: 9px;
 }
 
 .launch-identity-dock {
@@ -13784,11 +13652,7 @@ body[data-launch-identity="active"] #view-launch .asset-mark.has-logo {
 }
 
 @media (max-width: 900px) {
-  .launch-identity-chip {
-    grid-template-columns: 30px minmax(0, auto);
-    max-width: 110px;
-    padding-right: 7px;
-  }
+  
 
   .launch-identity-dock,
   .launch-identity-dock.is-hero {
@@ -13806,16 +13670,9 @@ body[data-launch-identity="active"] #view-launch .asset-mark.has-logo {
 }
 
 @media (max-width: 620px) {
-  .launch-identity-chip > span:last-child {
-    display: none;
-  }
+  
 
-  .launch-identity-chip {
-    display: grid;
-    grid-template-columns: 30px;
-    width: 38px;
-    padding: 3px;
-  }
+  
 
   .launch-identity-dock,
   .launch-identity-dock.is-hero {
@@ -16237,61 +16094,6 @@ body[data-launch-running="true"] .workspace {
   gap: 10px;
 }
 
-.coin-card {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  padding: 12px;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--ink);
-  text-align: left;
-  cursor: pointer;
-}
-
-.coin-card:hover,
-.coin-card:focus-visible {
-  border-color: var(--green);
-}
-
-.coin-card-copy {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.coin-card-copy strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.coin-card-copy small,
-.coin-header small {
-  color: var(--subtle);
-  font-weight: 400;
-}
-
-.coin-mark {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  overflow: hidden;
-  border: 1px solid var(--line-strong);
-  background: var(--panel-2);
-  color: var(--green);
-  font-weight: 700;
-  font-size: 13px;
-}
-
-.coin-mark img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
 .coins-empty {
   margin: 0;
   color: var(--muted);
@@ -16305,35 +16107,6 @@ body[data-launch-running="true"] .workspace {
 .coin-page-body {
   display: grid;
   gap: 16px;
-}
-
-.coin-header {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 14px;
-  align-items: center;
-}
-
-.coin-header .coin-mark {
-  width: 56px;
-  height: 56px;
-  font-size: 16px;
-}
-
-.coin-header-copy {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.coin-header h2 {
-  margin: 0;
-}
-
-.coin-header code {
-  color: var(--muted);
-  font-size: 11px;
-  overflow-wrap: anywhere;
 }
 
 .coin-links {
@@ -16359,49 +16132,6 @@ body[data-launch-running="true"] .workspace {
   color: var(--amber);
   font-size: 12px;
   line-height: 1.45;
-}
-
-.coin-markets {
-  display: grid;
-  gap: 0;
-  overflow-x: auto;
-}
-
-.coin-market-row {
-  display: grid;
-  grid-template-columns: minmax(130px, 1.4fr) repeat(4, minmax(90px, 1fr)) minmax(60px, 0.6fr);
-  gap: 10px;
-  align-items: center;
-  min-width: 640px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--line);
-  font-size: 12px;
-}
-
-.coin-market-row.is-head {
-  color: var(--subtle);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.coin-market-row span {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.coin-market-row small {
-  color: var(--subtle);
-  font-size: 10px;
-}
-
-.coin-market-row.is-main strong {
-  color: var(--green);
-}
-
-.coin-market-row.is-drain {
-  color: var(--amber);
 }
 
 .coin-activity {
@@ -16450,9 +16180,7 @@ body[data-launch-running="true"] .workspace {
 }
 
 @media (max-width: 620px) {
-  .coin-header {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
+  
 
   .coin-links {
     grid-column: 1 / -1;
@@ -16562,4 +16290,250 @@ body[data-launch-running="true"] .workspace {
   .coin-position-holds {
     grid-column: 1;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Coin card: one component for a coin everywhere (Coins list, coin page
+   header, the title while creating, sidebar, top bar).
+   --coin-hue comes from the coin's address; --coin-accent/-2 from its logo.
+   A coin without an address yet has a neutral base.
+   ------------------------------------------------------------------------- */
+.coin-card-ui {
+  --coin-base: hsl(var(--coin-hue, 210) 62% 50%);
+  --coin-accent: var(--green);
+  --coin-accent-2: var(--green);
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px 14px 12px 16px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--coin-base) 38%, var(--line));
+  background:
+    radial-gradient(circle at 100% 0, color-mix(in srgb, var(--coin-accent) 16%, transparent), transparent 55%),
+    linear-gradient(135deg, color-mix(in srgb, var(--coin-base) 16%, var(--panel)), color-mix(in srgb, var(--coin-base) 6%, var(--panel)));
+  color: var(--ink);
+  text-align: left;
+}
+
+/* Accent edge: the logo's two colors. */
+.coin-card-ui::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--coin-accent), var(--coin-accent-2));
+}
+
+.coin-card-ui.is-unaddressed {
+  border-color: var(--line);
+  background: var(--panel);
+}
+
+button.coin-card-ui {
+  cursor: pointer;
+  font: inherit;
+}
+
+button.coin-card-ui:hover,
+button.coin-card-ui:focus-visible {
+  border-color: var(--coin-accent);
+}
+
+.coin-card-ui__mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border: 1px solid var(--coin-accent);
+  background: color-mix(in srgb, var(--coin-base) 22%, var(--panel-2));
+  color: var(--coin-accent);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.coin-card-ui__mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.coin-card-ui__copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.coin-card-ui__copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.coin-card-ui__copy em {
+  color: var(--coin-accent);
+  font-style: normal;
+  font-weight: 600;
+}
+
+.coin-card-ui__status {
+  color: var(--coin-accent-2);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.coin-card-ui__copy code {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  text-transform: none;
+}
+
+/* Coin page header: larger mark and name. */
+.coin-card-ui--header {
+  padding: 16px 18px 16px 20px;
+}
+
+.coin-card-ui--header .coin-card-ui__mark {
+  width: 56px;
+  height: 56px;
+  font-size: 16px;
+}
+
+.coin-card-ui--header .coin-card-ui__copy strong {
+  font-size: 18px;
+  white-space: normal;
+}
+
+/* Page title while creating: one line, no extra height. */
+.coin-card-ui--title {
+  display: inline-grid;
+  gap: 10px;
+  padding: 4px 12px 4px 10px;
+  vertical-align: middle;
+  font-size: 13px;
+}
+
+.coin-card-ui--title .coin-card-ui__mark {
+  width: 28px;
+  height: 28px;
+  font-size: 11px;
+}
+
+.coin-card-ui--title .coin-card-ui__copy {
+  grid-auto-flow: column;
+  align-items: baseline;
+  gap: 10px;
+}
+
+/* Sidebar and top bar. */
+.coin-card-ui--mini {
+  gap: 8px;
+  padding: 6px 10px 6px 12px;
+  font-size: 12px;
+}
+
+.coin-card-ui--mini .coin-card-ui__mark {
+  width: 28px;
+  height: 28px;
+  font-size: 10px;
+}
+
+.launch-identity-sidebar,
+.launch-identity-chip {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.launch-identity-chip {
+  width: auto;
+  max-width: 260px;
+}
+
+.launch-identity-sidebar:hover .coin-card-ui,
+.launch-identity-sidebar:focus-visible .coin-card-ui,
+.launch-identity-chip:hover .coin-card-ui,
+.launch-identity-chip:focus-visible .coin-card-ui {
+  border-color: var(--coin-accent);
+}
+
+@media (max-width: 620px) {
+  .coin-card-ui--header {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .coin-card-ui--header .coin-links {
+    grid-column: 1 / -1;
+  }
+
+  .coin-card-ui--title .coin-card-ui__copy {
+    grid-auto-flow: row;
+    gap: 2px;
+  }
+}
+
+/* The logo picker keeps its own height beside a tall stamp preview. */
+.logo-input-row {
+  align-self: start;
+}
+
+/* Coin page markets table. */
+
+.coin-markets {
+  display: grid;
+  gap: 0;
+  overflow-x: auto;
+}
+
+
+.coin-market-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1.4fr) repeat(4, minmax(90px, 1fr)) minmax(60px, 0.6fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 640px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+
+.coin-market-row.is-head {
+  color: var(--subtle);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+
+.coin-market-row span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+
+.coin-market-row small {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+
+.coin-market-row.is-main strong {
+  color: var(--green);
+}
+
+
+.coin-market-row.is-drain {
+  color: var(--amber);
 }
