@@ -51,7 +51,7 @@ test('no launch asset row hardcodes a Verified state', () => {
 
   // Every row must derive its state; a literal 'Verified' here is the defect.
   assert.doesNotMatch(block[0], /state: 'Verified'/);
-  assert.match(app, /const proofAssetState = proofIsDemo \? 'Demo' : 'Verified';/);
+  assert.match(app, /const proofAssetState = proofIsDemo \? 'Test' : 'Verified';/);
   assert.equal((block[0].match(/state: proofAssetState,/g) || []).length, 3);
 });
 

@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TREBUCHET · makesometokens</title>
+  <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=91">
+  <link rel="stylesheet" href="./styles.css?v=92">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -13,33 +13,33 @@
       <a class="brand" href="#launch" data-nav="launch" aria-label="Trebuchet launch view">
         <span class="brand-mark" aria-hidden="true"></span>
         <span>
-          <strong>T R E B U C H E T</strong>
+          <strong>Trebuchet</strong>
           <small>makesometokens.com</small>
         </span>
       </a>
 
       <nav class="nav-list" id="primaryNav" aria-label="Primary">
-        <button class="nav-item is-active" type="button" data-view="coins" data-key="01">
+        <button class="nav-item is-active" type="button" data-view="coins">
           <i class="fa-solid fa-coins"></i>
           <span>Coins</span>
         </button>
-        <button class="nav-item" type="button" data-view="nfts" data-key="02">
+        <button class="nav-item" type="button" data-view="nfts">
           <i class="fa-solid fa-images"></i>
           <span>NFTs</span>
         </button>
-        <button class="nav-item" type="button" data-view="wallet" data-key="03">
+        <button class="nav-item" type="button" data-view="wallet">
           <i class="fa-solid fa-wallet"></i>
           <span>Wallet</span>
         </button>
-        <button class="nav-item" type="button" data-view="discovery" data-key="04">
+        <button class="nav-item" type="button" data-view="discovery">
           <i class="fa-solid fa-compass"></i>
           <span>Discovery</span>
         </button>
-        <button class="nav-item" type="button" data-view="history" data-key="05">
+        <button class="nav-item" type="button" data-view="history">
           <i class="fa-solid fa-clock-rotate-left"></i>
           <span>History</span>
         </button>
-        <button class="nav-item" type="button" data-view="settings" data-key="06">
+        <button class="nav-item" type="button" data-view="settings">
           <i class="fa-solid fa-sliders"></i>
           <span>Settings</span>
         </button>
@@ -48,27 +48,22 @@
       <button class="launch-identity-sidebar" id="launchIdentitySidebar" type="button" data-action="open-launch-identity" aria-label="Open active launch identity" hidden></button>
 
       <div class="sidebar-footer">
-        <span class="eyebrow">Network</span>
-        <button class="network-button" type="button" id="networkButton" aria-label="Open authoritative RPC settings">
+        <button class="network-button" type="button" id="networkButton" aria-label="Mode and network settings">
           <span class="status-dot"></span>
-          <span id="networkLabel">Checking</span>
+          <span class="network-button-copy"><strong id="custodySignalLabel">Checking…</strong><small id="networkLabel"></small></span>
           <i class="fa-solid fa-sliders"></i>
         </button>
       </div>
     </aside>
 
     <main class="workspace">
-      <section class="terminal-tape" aria-label="Trebuchet terminal status">
-        <span class="terminal-ident"><i aria-hidden="true"></i><strong>TREBUCHET</strong></span>
-        <span><small>ENV</small><strong id="environmentLabel">CHECKING</strong></span>
-        <span class="terminal-tape-wide"><small>CUSTODY</small><strong id="custodySignalLabel">CHECKING ENVIRONMENT</strong></span>
-      </section>
+
       <header class="topbar">
         <div class="topbar-copy">
           <span class="topbar-brand" aria-hidden="true">
             <span class="brand-mark" aria-hidden="true"></span>
             <span>
-              <strong>T R E B U C H E T</strong>
+              <strong>Trebuchet</strong>
               <small>makesometokens.com</small>
             </span>
           </span>
@@ -80,9 +75,9 @@
           <button class="icon-button" type="button" id="themeButton" aria-label="Toggle contrast">
             <i class="fa-solid fa-circle-half-stroke"></i>
           </button>
-          <button class="wallet-button" type="button" id="walletButton" aria-label="Open managed wallet">
+          <button class="wallet-button" type="button" id="walletButton" aria-label="Open launch wallet">
             <span class="wallet-led"></span>
-            <span id="walletLabel">Trebuchet wallet</span>
+            <span id="walletLabel">Launch wallet</span>
           </button>
         </div>
       </header>
@@ -165,36 +160,14 @@
             <details class="cockpit-board launch-summary-drawer" aria-label="Launch plan">
               <summary>
                 <span><i class="fa-solid fa-chart-pie" aria-hidden="true"></i><strong>Plan</strong></span>
-                <small>Supply · liquidity · cost</small>
+                <small>Supply, liquidity and cost</small>
               </summary>
-              <section class="agent-console" aria-label="Trebuchet launch agent">
-                <div class="agent-status">
-                  <span class="agent-orb" aria-hidden="true"><i class="fa-solid fa-bolt"></i></span>
-                  <span>
-                    <span class="eyebrow">Trebuchet agent</span>
-                    <h3 id="agentStatusTitle">Ready to build the launch plan</h3>
-                  </span>
-                </div>
-                <div class="agent-next">
-                  <small>Next move</small>
-                  <strong id="agentNextTitle">Review run plan</strong>
-                  <span id="agentNextDetail">Trebuchet holds the launch key locally and signs the run after you arm it.</span>
-                </div>
-                <div class="agent-checks" aria-label="Launch checkpoints">
-                  <button class="is-active" type="button" data-agent-check="setup" data-launch-workspace="configure">Setup</button>
-                  <button type="button" data-agent-check="fund" data-launch-workspace="fund">Fund</button>
-                  <button type="button" data-agent-check="run" data-launch-workspace="mint">Run</button>
-                  <button type="button" data-agent-check="recover" data-launch-workspace="finish">Finish</button>
-                </div>
-                <p class="agent-footnote">Launch Solana tokens. No middleman. Your machine / your keys / your launch.</p>
-              </section>
 
               <section class="chart-deck" id="chartDeck" aria-label="Launch charts">
                 <article class="chart-card tokenomics-card">
                   <div class="chart-head">
                     <span>
-                      <span class="eyebrow">Tokenomics</span>
-                      <strong>Supply split</strong>
+                      <strong>Supply</strong>
                     </span>
                     <span class="risk-badge warn" id="tokenomicsState">Preview</span>
                   </div>
@@ -207,8 +180,7 @@
                 <article class="chart-card liquidity-card">
                   <div class="chart-head">
                     <span>
-                      <span class="eyebrow">Liquidity</span>
-                      <strong>Depth bands</strong>
+                      <strong>Liquidity</strong>
                     </span>
                     <span class="risk-badge warn" id="liquidityState">Preview</span>
                   </div>
@@ -218,8 +190,7 @@
                 <article class="chart-card funding-card">
                   <div class="chart-head">
                     <span>
-                      <span class="eyebrow">Funding</span>
-                      <strong>Cost envelope</strong>
+                      <strong>Cost</strong>
                     </span>
                     <span class="risk-badge" id="fundingState">Ready</span>
                   </div>
@@ -227,7 +198,7 @@
                 </article>
               </section>
 
-              <aside class="action-panel" aria-label="Next action">
+              <aside class="action-panel" aria-label="Next action" hidden>
                 <div class="section-heading">
                   <div>
                     <span class="eyebrow">Next action</span>
@@ -243,7 +214,7 @@
                   </button>
                   <button class="secondary-button" type="button" id="simulateButton">
                     <i class="fa-solid fa-wave-square"></i>
-                    <span>Practice run</span>
+                    <span>Test launch</span>
                   </button>
                 </div>
               </aside>
@@ -251,21 +222,20 @@
 
             <details class="launch-settings-drawer">
               <summary>
-                <span><i class="fa-solid fa-sliders" aria-hidden="true"></i><strong>Environment</strong></span>
-                <small><span id="launchSettingsEnvironment">Practice</span></small>
+                <span><i class="fa-solid fa-sliders" aria-hidden="true"></i><strong>Mode</strong></span>
+                <small><span id="launchSettingsEnvironment">Test</span></small>
               </summary>
 
               <div class="launch-choice-bar" aria-label="Launch choices">
                 <div class="launch-choice-group">
-                  <span class="launch-choice-label">Environment</span>
-                  <div class="environment-row" role="tablist" aria-label="Execution environment">
+                  <div class="environment-row" role="tablist" aria-label="Mode">
                     <button class="environment-button" type="button" role="tab" aria-selected="false" data-action="select-environment" data-environment="practice">
                       <i class="fa-solid fa-flask" aria-hidden="true"></i>
-                      <span><strong>Practice</strong><small>Local simulation · 0 SOL</small></span>
+                      <span><strong>Test</strong><small>Nothing is sent</small></span>
                     </button>
                     <button class="environment-button" type="button" role="tab" aria-selected="false" data-action="select-environment" data-environment="live">
                       <i class="fa-solid fa-satellite-dish" aria-hidden="true"></i>
-                      <span><strong>Live</strong><small>On-chain · guarded</small></span>
+                      <span><strong>Live</strong><small>Real transactions and SOL</small></span>
                     </button>
                   </div>
                 </div>
@@ -273,30 +243,30 @@
             </details>
             </div>
 
-            <nav class="launch-workspace-tabs" id="launchWorkspaceTabs" role="tablist" aria-label="Six launch phases">
+            <nav class="launch-workspace-tabs" id="launchWorkspaceTabs" role="tablist" aria-label="Launch steps">
               <button class="launch-workspace-tab is-selected" id="launchWorkspaceTabWallet" type="button" role="tab" aria-selected="true" aria-controls="launchWorkspaceViewport" data-launch-workspace="wallet">
                 <i class="fa-solid fa-wallet" aria-hidden="true"></i>
-                <span><strong>Wallet</strong><small data-launch-workspace-state="wallet">Choose signer</small></span>
+                <span><strong>Wallet</strong><small data-launch-workspace-state="wallet"></small></span>
               </button>
               <button class="launch-workspace-tab" id="launchWorkspaceTabConfigure" type="button" role="tab" aria-selected="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="configure">
                 <i class="fa-solid fa-sliders" aria-hidden="true"></i>
-                <span><strong>Token &amp; pools</strong><small data-launch-workspace-state="configure">Design launch</small></span>
+                <span><strong>Token &amp; pools</strong><small data-launch-workspace-state="configure"></small></span>
               </button>
               <button class="launch-workspace-tab" id="launchWorkspaceTabFund" type="button" role="tab" aria-selected="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="fund">
                 <i class="fa-solid fa-coins" aria-hidden="true"></i>
-                <span><strong>Fund</strong><small data-launch-workspace-state="fund">Estimate</small></span>
+                <span><strong>Fund</strong><small data-launch-workspace-state="fund"></small></span>
               </button>
               <button class="launch-workspace-tab" id="launchWorkspaceTabMint" type="button" role="tab" aria-selected="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="mint">
                 <i class="fa-solid fa-coins" aria-hidden="true"></i>
-                <span><strong>Create token</strong><small data-launch-workspace-state="mint">Review mint</small></span>
+                <span><strong>Create token</strong><small data-launch-workspace-state="mint"></small></span>
               </button>
               <button class="launch-workspace-tab" id="launchWorkspaceTabLiquidity" type="button" role="tab" aria-selected="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="liquidity">
                 <i class="fa-solid fa-water" aria-hidden="true"></i>
-                <span><strong>Liquidity</strong><small data-launch-workspace-state="liquidity">Pools &amp; locks</small></span>
+                <span><strong>Liquidity</strong><small data-launch-workspace-state="liquidity"></small></span>
               </button>
               <button class="launch-workspace-tab" id="launchWorkspaceTabFinish" type="button" role="tab" aria-selected="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="finish">
                 <i class="fa-solid fa-flag-checkered" aria-hidden="true"></i>
-                <span><strong>Finish</strong><small data-launch-workspace-state="finish">Sweep &amp; proof</small></span>
+                <span><strong>Finish</strong><small data-launch-workspace-state="finish"></small></span>
               </button>
             </nav>
 
@@ -309,7 +279,7 @@
                   <strong id="setupSummary">Your first launch</strong>
                 </span>
                 <span class="setup-head-actions">
-                  <span class="setup-help" id="setupHelp">Practice only · no SOL spent</span>
+                  <span class="setup-help" id="setupHelp">Test · nothing is sent</span>
                 </span>
               </div>
               <div class="advanced-launch-controls" id="advancedLaunchControls">
@@ -333,11 +303,11 @@
                     <input id="targetMarketCapUsd" type="text" value="250,000" autocomplete="off">
                   </label>
                   <div class="logo-input-row">
-                    <span class="logo-input-label">Token logo / auto-compress</span>
+                    <span class="logo-input-label">Logo</span>
                     <label class="logo-upload-control" for="tokenLogoFile">
                       <input id="tokenLogoFile" type="file" accept="image/png,image/jpeg,image/gif">
-                      <span class="logo-upload-command"><i class="fa-solid fa-arrow-up-from-bracket"></i> Select image</span>
-                      <span class="logo-upload-meta">PNG/JPG/GIF · source ≤10MB · auto-compressed · CA stamped at launch</span>
+                      <span class="logo-upload-command"><i class="fa-solid fa-arrow-up-from-bracket"></i> Choose image</span>
+                      <span class="logo-upload-meta">PNG, JPG or GIF, up to 10 MB</span>
                     </label>
                   </div>
                   <div class="token-logo-preview" id="tokenLogoPreview"></div>
@@ -346,18 +316,18 @@
                   <input id="launchSol" type="hidden" value="1">
                   <div class="launch-budget-head">
                     <span>
-                      <h3 id="launchBudgetTitle">Liquidity budget</h3>
+                      <h3 id="launchBudgetTitle">SOL in the pool</h3>
                     </span>
                     <label class="launch-budget-input" for="liquidityBudgetSol">
-                      <span>Liquidity budget</span>
+                      <span class="visually-hidden">SOL in the pool</span>
                       <span><input id="liquidityBudgetSol" type="number" value="1" min="0" step="0.1"><strong>SOL</strong></span>
                     </label>
                   </div>
                   <div class="launch-budget-presets" role="group" aria-label="Liquidity budget presets">
-                    <button type="button" data-action="select-launch-budget" data-budget="0"><strong>Minimum</strong><small>Launch costs only</small></button>
-                    <button class="is-selected" type="button" data-action="select-launch-budget" data-budget="1"><strong>1 SOL</strong><small>Lean</small></button>
-                    <button type="button" data-action="select-launch-budget" data-budget="10"><strong>10 SOL</strong><small>Balanced</small></button>
-                    <button type="button" data-action="select-launch-budget" data-budget="100"><strong>100 SOL</strong><small>Deep</small></button>
+                    <button type="button" data-action="select-launch-budget" data-budget="0"><strong>None</strong></button>
+                    <button class="is-selected" type="button" data-action="select-launch-budget" data-budget="1"><strong>1 SOL</strong></button>
+                    <button type="button" data-action="select-launch-budget" data-budget="10"><strong>10 SOL</strong></button>
+                    <button type="button" data-action="select-launch-budget" data-budget="100"><strong>100 SOL</strong></button>
                   </div>
                   <div class="launch-budget-strategy" id="launchBudgetStrategy" aria-live="polite"></div>
                 </section>
@@ -564,8 +534,7 @@
           <section class="surface">
             <div class="section-heading">
               <div>
-                <span class="eyebrow">Trebuchet wallet</span>
-                <h2>App-managed wallets</h2>
+                <h2>Launch wallets</h2>
               </div>
               <div class="button-pair">
                 <button class="secondary-button compact" type="button" data-action="import-wallet">
@@ -581,20 +550,13 @@
             <div class="account-list" id="accountList"></div>
           </section>
           <section class="surface">
-            <div class="section-heading">
-              <div>
-                <span class="eyebrow">Custody workspace</span>
-                <h2>Wallet operations</h2>
-              </div>
-            </div>
-            <div class="wallet-recovery-inventory-slot" id="walletRecoveryInventory"></div>
             <div class="wallet-module-heading">
               <span>
-                <small>Active signer</small>
-                <strong>Selected launch wallet</strong>
+                <strong>Launch wallet in use</strong>
               </span>
-              <span class="risk-badge wallet-rarity-badge" id="activeWalletRarityBadge">No wallet</span>
+              <span class="risk-badge wallet-rarity-badge" id="activeWalletRarityBadge" hidden></span>
             </div>
+            <div class="wallet-recovery-inventory-slot" id="walletRecoveryInventory"></div>
             <div class="wallet-detail-panel" id="walletDetailPanel"></div>
             <div class="asset-table" id="assetTable"></div>
           </section>
@@ -694,17 +656,11 @@
 
       <section class="view" id="view-history" aria-labelledby="viewTitle">
         <section class="surface surface-main">
-          <div class="section-heading">
-            <div>
-              <span class="eyebrow">Launch journal</span>
-              <h2>Recent sessions</h2>
-            </div>
-          </div>
           <div class="history-pane-tabs" id="historyPaneTabs" role="tablist" aria-label="History workspace">
             <button class="history-pane-tab is-selected" id="historyTabRecovery" type="button" role="tab" aria-selected="true" aria-controls="historyPanelRecovery" data-action="select-history-pane" data-history-pane="recovery"><i class="fa-solid fa-rotate-left" aria-hidden="true"></i><strong>Recovery</strong></button>
             <button class="history-pane-tab" id="historyTabWallets" type="button" role="tab" aria-selected="false" aria-controls="historyPanelWallets" data-action="select-history-pane" data-history-pane="wallets"><i class="fa-solid fa-wallet" aria-hidden="true"></i><strong>Wallets</strong></button>
             <button class="history-pane-tab" id="historyTabAudit" type="button" role="tab" aria-selected="false" aria-controls="historyPanelAudit" data-action="select-history-pane" data-history-pane="audit"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><strong>Activity</strong></button>
-            <button class="history-pane-tab" id="historyTabJournal" type="button" role="tab" aria-selected="false" aria-controls="historyPanelJournal" data-action="select-history-pane" data-history-pane="journal"><i class="fa-solid fa-list" aria-hidden="true"></i><strong>Journal</strong></button>
+            <button class="history-pane-tab" id="historyTabJournal" type="button" role="tab" aria-selected="false" aria-controls="historyPanelJournal" data-action="select-history-pane" data-history-pane="journal"><i class="fa-solid fa-list" aria-hidden="true"></i><strong>Launches</strong></button>
           </div>
           <div class="history-pane-stage">
             <section class="history-pane is-active" id="historyPanelRecovery" data-history-pane-panel="recovery" role="tabpanel" aria-labelledby="historyTabRecovery"><div class="recovery-wizard" id="recoveryWizard"></div></section>
@@ -718,22 +674,7 @@
       <section class="view" id="view-settings" aria-labelledby="viewTitle">
         <div class="two-column">
           <section class="surface">
-            <div class="section-heading">
-              <div>
-                <span class="eyebrow">Security</span>
-                <h2>Default policy</h2>
-              </div>
-            </div>
             <div class="settings-list" id="settingsList"></div>
-          </section>
-          <section class="surface" hidden>
-            <div class="section-heading">
-              <div>
-                <span class="eyebrow">Build target</span>
-                <h2>Local modes</h2>
-              </div>
-            </div>
-            <div class="mode-stack" id="modeStack"></div>
           </section>
         </div>
       </section>
@@ -776,7 +717,7 @@
         <input id="operatorPromptInput" type="text" autocomplete="off" spellcheck="false">
         <textarea id="operatorPromptTextarea" rows="5" autocomplete="off" spellcheck="false" hidden></textarea>
       </label>
-      <p class="sweep-confirm-message operator-prompt-message" id="operatorPromptMessage" role="status" aria-live="assertive">This action stays inside the local Trebuchet app.</p>
+      <p class="sweep-confirm-message operator-prompt-message" id="operatorPromptMessage" role="status" aria-live="assertive"></p>
       <div class="sweep-confirm-actions operator-prompt-actions">
         <button class="pill-button" id="operatorPromptCancel" type="button" data-action="cancel-operator-prompt">Cancel</button>
         <button class="pill-button" id="operatorPromptSubmit" type="button" data-action="submit-operator-prompt">
@@ -820,10 +761,10 @@
   <div class="activity-drawer" id="activityLogDrawer" aria-hidden="true"></div>
   <div class="toast-stack" id="toastStack" aria-live="polite"></div>
 
-  <script src="./runtime-state.js?v=1"></script>
+  <script src="./runtime-state.js?v=2"></script>
   <script src="./api-client.js?v=40"></script>
   <script src="../gif-optimizer.js?v=3"></script>
-  <script src="./app.js?v=183"></script>
+  <script src="./app.js?v=184"></script>
   <script src="./nfts.js?v=1"></script>
 </body>
 </html>

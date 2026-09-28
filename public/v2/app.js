@@ -27,11 +27,11 @@ const views = {
 
 const launchWorkspaces = [
   { id: 'wallet', title: 'Launch wallet', detail: 'Choose the isolated local wallet that signs this launch.' },
-  { id: 'configure', title: 'Token & pools', detail: 'Define the token, liquidity, distribution, and final destination.' },
+  { id: 'configure', title: 'Token & pools', detail: 'Define the token, liquidity, distribution, and return wallet.' },
   { id: 'fund', title: 'Fund wallet', detail: 'Estimate the exact requirement, deposit SOL, and acquire quote tokens.' },
   { id: 'mint', title: 'Create token', detail: 'Review the permanent token facts, then mint and revoke authorities.' },
   { id: 'liquidity', title: 'Create liquidity', detail: 'Create pools and positions, lock liquidity, and deliver Fee Keys.' },
-  { id: 'finish', title: 'Finish launch', detail: 'Run airdrops, sweep every remaining asset, and save launch proof.' },
+  { id: 'finish', title: 'Finish launch', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
 ];
 
 
@@ -57,13 +57,13 @@ const launchStages = [
   {
     id: 'wallet',
     title: 'Choose launch wallet',
-    detail: 'Select the temporary local signer and confirm its recovery protection.',
+    detail: 'Select the launch wallet and confirm its recovery protection.',
     criteria: ['wallet-lifecycle', 'vanity-options'],
   },
   {
     id: 'model',
     title: 'Review token and pools',
-    detail: 'Confirm token metadata, liquidity, distribution, and the final destination.',
+    detail: 'Confirm token metadata, liquidity, distribution, and the return wallet.',
     criteria: ['token-config-parity', 'pool-config-parity'],
   },
   {
@@ -108,7 +108,7 @@ const baseTransactions = [
     risk: 'Medium',
     cost: 3.5,
     state: 'pending',
-    effects: ['Checks launch wallet SOL and quote-token balances', 'Confirms run envelope spend limit'],
+    effects: ['Checks launch wallet SOL and quote-token balances', 'Confirms the spending limit'],
   },
   {
     id: 'tx-mint',
@@ -161,7 +161,7 @@ const guardrails = [
 ];
 
 const parityFeatures = [
-  { id: 'wallet', title: 'Trebuchet launch wallet', real: true, preview: true, detail: 'Generate/import locally, show funding address, unlock with PIN.' },
+  { id: 'wallet', title: 'Launch wallet', real: true, preview: true, detail: 'Generate/import locally, show funding address, unlock with PIN.' },
   { id: 'grinder', title: 'Custom Vanity CA grinder', real: true, preview: true, detail: 'Starts, ends, starts-and-ends, saved candidates, native helper.' },
   { id: 'token', title: 'Token metadata', real: true, preview: true, detail: 'Name, ticker, supply, description, target market cap, logo handoff.' },
   { id: 'charts', title: 'Launch charts', real: true, preview: true, detail: 'Tokenomics, liquidity depth, funding, and run progress.' },
@@ -262,30 +262,20 @@ const DISCOVERY_STORAGE_KEY = 'trebuchet:v2:discovery-registry:v1';
 const DISCOVERY_STORAGE_MAX_ENTRIES = 40;
 const DISCOVERY_STORAGE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
-const signingPolicies = [
-  { title: 'Encrypted local keys', detail: 'Trebuchet stores launch-wallet secrets behind the Recovery PIN and device protection.', state: 'pass' },
-  { title: 'Managed wallet import', detail: 'Imported mnemonic, base58, or JSON keypairs become Trebuchet-controlled launch wallets after Recovery PIN unlock.', state: 'pass' },
-  { title: 'Fund before run', detail: 'Users transfer SOL or quote tokens into the selected Trebuchet-managed wallet.', state: 'pass' },
-  { title: 'Arm one run envelope', detail: 'A launch runs only after the user reviews decoded effects and spend limits.', state: 'pass' },
-  { title: 'Raw opaque operation', detail: 'Blocked until simulation and decoding succeed.', state: 'danger' },
-  { title: 'Third-party launch execution', detail: 'Blocked outside explicit Trebuchet launch sessions.', state: 'danger' },
-];
 
-const settings = [
-  { id: 'simulate', title: 'Simulation before local signing', detail: 'Every app-signed operation requires decoded effects and balance deltas.', status: 'Enforced' },
-  { id: 'unsafe', title: 'Unsafe preallocation guard', detail: 'Preallocation and authority constraints are validated before an envelope can be armed.', status: 'Enforced' },
-  { id: 'journal', title: 'Recovery journal', detail: 'Chain phases write resumable checkpoints through the authenticated local API.', status: 'Enforced' },
-  { id: 'batch', title: 'Armed run envelope', detail: 'A full run starts only after funding and readiness checks pass.', status: 'Guarded' },
-];
-
-const localModes = [
-  { title: 'Electron local wallet', detail: 'Full launch orchestration, encrypted keys, journals, native helpers, and filesystem access.', state: 'Current' },
-  { title: 'Browser prototype', detail: 'Browser UI uses the authenticated local API for wallets, discovery, reports, and guarded dry runs.', state: 'Current' },
-  { title: 'Imported wallet support', detail: 'Import mnemonic, base58, or JSON local wallets with Recovery PIN unlock and explicit funding addresses.', state: 'Current' },
-  { title: 'External wallet funding', detail: 'External wallets fund Trebuchet wallets; they do not sign every launch transaction.', state: 'Current' },
-];
 
 const history = [];
+
+// Developer checks (Classic comparison, proof audits, raw activity) stay out
+// of the way unless asked for: open the app with ?dev, or set
+// localStorage "trebuchet-developer" to "1".
+try {
+  const developer = new URLSearchParams(window.location.search).has('dev')
+    || window.localStorage?.getItem('trebuchet-developer') === '1';
+  if (developer) document.body.dataset.developer = '1';
+} catch {
+  // Storage can be unavailable; developer mode just stays off.
+}
 
 const state = {
   activeView: 'launch',
@@ -597,7 +587,7 @@ function renderEnvironmentControls() {
   const environment = executionEnvironmentId();
   document.body.dataset.executionEnvironment = environment;
   const settingsEnvironment = $('#launchSettingsEnvironment');
-  if (settingsEnvironment) settingsEnvironment.textContent = environment === 'live' ? 'Live' : 'Practice';
+  if (settingsEnvironment) settingsEnvironment.textContent = environment === 'live' ? 'Live' : 'Test';
   $$('.mode-button').forEach((button) => {
     button.classList.toggle('is-selected', button.dataset.mode === state.launchMode);
   });
@@ -623,12 +613,12 @@ async function setExecutionEnvironment(environment, { announce = true } = {}) {
     state.lastDemoLaunchRun = null;
     if (announce) {
       notify(targetPractice
-        ? 'Practice environment selected: local simulation, 0 SOL'
+        ? 'Test mode: nothing is sent'
         : 'Live environment selected: guarded on-chain execution');
     }
     return true;
   } catch (error) {
-    notify(error.message || `Could not select ${targetPractice ? 'Practice' : 'Live'}`);
+    notify(error.message || `Could not select ${targetPractice ? 'Test' : 'Live'}`);
     return false;
   } finally {
     state.environmentSwitching = false;
@@ -803,7 +793,7 @@ async function inspectDiscoveryMint(mint = $('#discoveryMintInput')?.value) {
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.inspectDiscoveryToken) {
-    state.discovery.error = 'Live inspection requires the local Trebuchet app.';
+    state.discovery.error = 'Live inspection requires the Trebuchet desktop app.';
     renderDiscovery();
     return;
   }
@@ -896,7 +886,7 @@ async function addTrackedDiscoveryWallet() {
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.addDiscoveryWallet) {
-    state.discovery.personalError = 'Wallet tracking requires the local Trebuchet app.';
+    state.discovery.personalError = 'Wallet tracking requires the Trebuchet desktop app.';
     renderDiscovery();
     return;
   }
@@ -955,7 +945,7 @@ async function startPersonalDiscoveryScan() {
     return;
   }
   if (!state.apiClient?.scanPersonalDiscovery) {
-    state.discovery.personalError = 'Personal Discovery requires the local Trebuchet app.';
+    state.discovery.personalError = 'Personal Discovery requires the Trebuchet desktop app.';
     renderDiscovery();
     return;
   }
@@ -1276,7 +1266,7 @@ function walletAccounts() {
         balance: Number(wallet.balanceSol || 0),
         role: wallet.source === 'imported-local'
           ? 'Imported local wallet'
-          : wallet.hasSecretKey ? 'Trebuchet-managed signer' : 'Locked local wallet',
+          : wallet.hasSecretKey ? 'Launch wallet' : 'Locked local wallet',
         rarity,
         rarityGrade: vanityRarityGrade(rarity),
         hasSecretKey: wallet.hasSecretKey === true,
@@ -2714,7 +2704,7 @@ function executionLedgerDescriptor(input = {}) {
       label: 'Cancel and refund',
       phase: 'refund',
       estimatedCostSol: null,
-      detail: 'Sweeping the selected launch wallet to the configured destination.',
+      detail: 'Sweeping the selected launch wallet to the return wallet.',
     };
   }
   if (kind === 'report') {
@@ -2722,7 +2712,7 @@ function executionLedgerDescriptor(input = {}) {
       label: 'Publish launch report',
       phase: 'report',
       estimatedCostSol: transactionCost('tx-report'),
-      detail: 'Writing the launch dossier and proof bundle.',
+      detail: 'Writing the launch record and proof bundle.',
     };
   }
   if (kind === 'airdrop' || kind === 'airdrop-retry') {
@@ -2758,7 +2748,7 @@ function executionLedgerDescriptor(input = {}) {
       label: fullRunEndpointLabel(endpoint),
       phase: executionLedgerPhase({ endpoint }),
       estimatedCostSol: null,
-      detail: 'Final sweep to the verified destination wallet.',
+      detail: 'Final sweep to the return wallet.',
     };
   }
   return {
@@ -3139,16 +3129,16 @@ function liveRunProgressContext() {
       state: runStepState({ complete: walletReady, blocked: isReadinessPhaseBlocked('wallet') || walletSecretLocked || walletSecretMissing }),
       stage: 'config',
       effects: [walletReady
-        ? 'Trebuchet-managed wallet and signing secret are ready.'
+        ? 'Launch wallet is ready.'
         : !selectedWalletPublicKey
-          ? 'Generate or import a Trebuchet-managed wallet.'
+          ? 'Generate or import a launch wallet.'
           : !selectedWallet
-            ? 'Selected address is not in Trebuchet managed-wallet storage.'
+            ? 'This address is not one of your saved launch wallets.'
             : walletSecretLocked
               ? 'Unlock the Recovery PIN before Trebuchet can sign launch calls.'
               : walletSecretMissing
-                ? 'Managed wallet exists, but its signing secret is unavailable.'
-                : 'Generate or import a Trebuchet-managed wallet.'],
+                ? 'Launch wallet exists, but its signing secret is unavailable.'
+                : 'Generate or import a launch wallet.'],
     },
     {
       id: 'live-funding',
@@ -3165,7 +3155,7 @@ function liveRunProgressContext() {
               ? 'Funding estimate is stale for the current token, pools, market cap, or airdrop model.'
             : !fundingBalanceKnown
               ? funding.walletBalanceStale
-                ? 'Selected launch-wallet balance is stale; wait for the local app refresh or click Check balance.'
+                ? 'Selected launch-wallet balance is stale; wait for the desktop app refresh or click Check balance.'
                 : 'Selected launch-wallet balance has not been verified yet.'
               : !fundingSolReady
                 ? `Launch wallet is short ${funding.missingSol.toFixed(3)} SOL.`
@@ -3225,7 +3215,7 @@ function liveRunProgressContext() {
         ? `${lockedPositionCount}/${recordedPositionCount} positions locked with ${lockTxCount} lock tx${lockTxCount === 1 ? '' : 's'}; ${feeKeyCount} Fee Key NFT${feeKeyCount === 1 ? '' : 's'} recorded${feeKeyRecipientTarget > 0 ? `; ${feeKeyRecipientTransferred}/${feeKeyRecipientTarget} recipient transfer${feeKeyRecipientTarget === 1 ? '' : 's'} delivered.` : '.'}`
         : lockNeedsProof
           ? locksRecorded && feeKeysRecorded && !feeKeyRecipientsDelivered
-            ? `${feeKeyRecipientTransferred}/${feeKeyRecipientTarget} Fee Key recipient transfer${feeKeyRecipientTarget === 1 ? '' : 's'} recorded; retry or forward from sweep destination before completion.`
+            ? `${feeKeyRecipientTransferred}/${feeKeyRecipientTarget} Fee Key recipient transfer${feeKeyRecipientTarget === 1 ? '' : 's'} recorded; retry or forward from return wallet before completion.`
             : locksRecorded
               ? `${feeKeyCount}/${lockedPositionCount} Fee Key NFT${lockedPositionCount === 1 ? '' : 's'} recorded; waiting for remaining transfer proof.`
             : `${lockedPositionCount}/${recordedPositionCount} positions are locked; lock tx proof is ${lockTxCount}/${recordedPositionCount}.`
@@ -3248,7 +3238,7 @@ function liveRunProgressContext() {
     },
     {
       id: 'live-report',
-      label: 'Publish dossier',
+      label: 'Publish launch record',
       state: runStepState({
         complete: reportDone,
         running: state.reportPublishing || /report/i.test(state.fullRunStep || ''),
@@ -3257,13 +3247,13 @@ function liveRunProgressContext() {
       }),
       stage: 'sweep',
       effects: [reportNeedsFinalArtifact
-        ? 'Terminal sweep is recorded; download a fresh proof dossier so the artifact carries the final sweep hash.'
+        ? 'Terminal sweep is recorded; download a fresh launch record so the artifact carries the final sweep hash.'
         : reportDone
         ? reportUri
-          ? 'Permanent launch dossier proof is attached.'
-          : 'Local launch dossier proof is attached.'
+          ? 'Permanent launch record proof is attached.'
+          : 'Local launch record proof is attached.'
         : reportLocalOnly && reportReady
-          ? 'Report publishing is off; download the local HTML/JSON dossier before review.'
+          ? 'Report publishing is off; download the local HTML/JSON launch record before review.'
           : reportReady ? 'Proof is ready for report publishing.' : 'Wait for token and liquidity proof.'],
     },
     {
@@ -3280,7 +3270,7 @@ function liveRunProgressContext() {
         ? 'Final transfer/sweep is recorded.'
         : sweepNeedsProof
           ? 'Readiness says sweep is past; wallet-empty, error-free final-sweep proof is still missing.'
-          : 'Sweep remaining assets to the verified destination wallet.'],
+          : 'Sweep remaining assets to the return wallet.'],
     },
   ];
 
@@ -3296,7 +3286,7 @@ function liveRunProgressContext() {
           : readiness
             ? 'execution readiness'
             : proof
-              ? proof.source || 'launch proof'
+              ? proof.source || 'launch record'
               : 'launch progress';
 
   return {
@@ -3355,55 +3345,6 @@ function runProgressContext() {
   };
 }
 
-function agentCheckForStage(stage, activeTx = null) {
-  if (state.recovery.failedJournalCount > 0 && !state.fullRunRunning && !state.realExecutionRunning && !state.demoLaunchRunning) {
-    return 'recover';
-  }
-  const normalized = String(stage || activeTx?.stage || '').toLowerCase();
-  if (normalized === 'fund') return 'fund';
-  if (['mint', 'liquidity', 'sweep'].includes(normalized)) return 'run';
-  if (normalized === 'recover' || normalized === 'recovery') return 'recover';
-  return 'setup';
-}
-
-function renderAgentConsole() {
-  const context = runProgressContext();
-  const activeTx = context.rows.find((tx) => tx.id === context.activeId) || context.rows[0] || null;
-  const waitingForPlan = !state.transactions.length && !context.isLive;
-  const complete = context.percent >= 100 && context.pending === 0;
-  const blocked = activeTx?.state === 'blocked';
-  const running = state.fullRunRunning || state.realExecutionRunning || state.demoLaunchRunning || state.quoteAcquire.running;
-  const statusTitle = complete
-    ? 'Run evidence complete'
-    : blocked
-      ? `Blocked at ${activeTx?.label || 'next checkpoint'}`
-      : running
-        ? `Running ${activeTx?.label || context.headingLabel}`
-        : state.transactions.length
-          ? 'Run envelope staged'
-          : context.isLive
-            ? 'Watching launch proof'
-            : 'Ready to build launch plan';
-  const nextTitle = waitingForPlan
-    ? 'Review run plan'
-    : complete
-      ? 'Review proof'
-      : activeTx?.label || 'Review run plan';
-  const nextDetail = waitingForPlan
-    ? 'Trebuchet will stage one decoded local-wallet run before you arm it.'
-    : complete
-      ? 'All visible run checkpoints are complete; inspect and save the final proof.'
-      : activeTx?.effects?.[0] || 'Trebuchet will show the next local-wallet operation here.';
-  const activeCheck = agentCheckForStage(activeTx?.stage, activeTx);
-
-  $('#agentStatusTitle').textContent = statusTitle;
-  $('#agentNextTitle').textContent = nextTitle;
-  $('#agentNextDetail').textContent = nextDetail;
-  $$('[data-agent-check]').forEach((item) => {
-    item.classList.toggle('is-active', item.dataset.agentCheck === activeCheck);
-  });
-}
-
 function notify(message) {
   const toast = document.createElement('div');
   toast.className = 'toast';
@@ -3423,11 +3364,11 @@ function updateResultLabel(result = state.updateCheck.lastResult) {
 }
 
 function updateResultDetail(result = state.updateCheck.lastResult) {
-  if (state.updateCheck.checking) return 'Checking GitHub releases through the Electron main process.';
+  if (state.updateCheck.checking) return 'Checking for a newer version…';
   if (!result) {
     return state.updateCheck.available
-      ? 'Manual update checks use the classic release checker and show results here.'
-      : 'Connect through the local OS X app to enable update checks.';
+      ? 'Not checked yet.'
+      : 'Update checks need the Trebuchet desktop app.';
   }
   if (result.status === 'available') {
     return `Version v${result.latest || '?'} is available${result.downloadFilename ? ` / ${result.downloadFilename}` : ''}.`;
@@ -3490,7 +3431,7 @@ function secretPinMeta() {
     return {
       label: 'Preview',
       className: 'warn',
-      detail: 'Open through the local Trebuchet app.',
+      detail: 'Open through the Trebuchet desktop app.',
       primaryAction: 'retry-local-api',
       primaryLabel: 'Local app',
       disabled: true,
@@ -3500,7 +3441,7 @@ function secretPinMeta() {
     return {
       label: 'Not set',
       className: 'warn',
-      detail: 'OS/device protection only; no Recovery PIN is configured.',
+      detail: 'Launch wallets are protected by this device only.',
       primaryAction: 'setup-secret-pin',
       primaryLabel: 'Set PIN',
       disabled: false,
@@ -3567,7 +3508,7 @@ function restoreDialogFocus(element) {
 function setOperatorPromptMessage(message, { error = false } = {}) {
   const messageNode = $('#operatorPromptMessage');
   if (messageNode) {
-    messageNode.textContent = message || 'This action stays inside the local Trebuchet app.';
+    messageNode.textContent = message || '';
     messageNode.classList.toggle('is-error', error);
   }
   const control = operatorPromptControl();
@@ -3635,7 +3576,7 @@ function openOperatorPrompt(options = {}) {
     trim: options.trim !== false,
     validate: options.validate,
     emptyMessage: options.emptyMessage,
-    message: options.message || 'This action stays inside the local Trebuchet app.',
+    message: options.message || '',
   };
 
   $('#operatorPromptEyebrow').textContent = options.eyebrow || 'Operator confirmation';
@@ -3896,12 +3837,8 @@ function handleRecoveryPinInput(event) {
 function logoSummary(logo = state.tokenLogo) {
   if (!logo) return 'No logo selected';
   const kb = Math.max(1, Math.ceil(Number(logo.sizeBytes || 0) / 1024));
-  const dimensions = Number(logo.width) > 0 && Number(logo.height) > 0
-    ? ` / ${logo.width}x${logo.height}`
-    : '';
-  const optimized = logo.compressed ? ' / AUTO-COMPRESSED' : '';
-  const animated = logo.animated ? ' / ANIMATED' : '';
-  return `${logo.name || 'token-logo'} / ${kb}KB${dimensions}${optimized}${animated}`;
+  const animated = logo.animated ? ' · animated' : '';
+  return `${logo.name || 'Logo'} · ${kb} KB${animated}`;
 }
 
 function loadLogoImage(file) {
@@ -4243,7 +4180,7 @@ function validateProofFile(file) {
     || (!type && /\.html?$/i.test(name))
     || /\.html?$/i.test(name);
   if (!jsonLike && !htmlLike) {
-    throw new Error('Proof import must be a Trebuchet JSON proof or HTML dossier');
+    throw new Error('Proof import must be a Trebuchet JSON proof or HTML launch record');
   }
   if (file.size <= 0 || file.size > LAUNCH_PROOF_IMPORT_LIMIT) {
     throw new Error('Proof import must be 2MB or smaller');
@@ -4637,8 +4574,8 @@ function sweepDestinationIssues(topology = {}) {
     return [{
       state: 'danger',
       poolId: 'sweep-destination',
-      title: 'Sweep destination invalid',
-      detail: 'Sweep destination does not look like a valid Solana address.',
+      title: 'Return wallet invalid',
+      detail: 'Return wallet does not look like a valid Solana address.',
     }];
   }
   // Only a real launch can lose assets: practice/demo runs sweep nothing.
@@ -4655,7 +4592,7 @@ function sweepDestinationIssues(topology = {}) {
     return [{
       state: 'danger',
       poolId: 'sweep-destination',
-      title: 'Sweep destination looks like a placeholder',
+      title: 'Return wallet looks like a placeholder',
       detail: 'Swept SOL, tokens, and the Fee Key NFTs would be unrecoverable, and trading fees could never be claimed. Use a wallet you control.',
     }];
   }
@@ -5028,22 +4965,14 @@ function renderLaunchBudgetRecommendation() {
   if (!target || !budgetInput) return;
   const budgetSol = Math.max(0, parseNumericInput(budgetInput.value, 0));
   const strategy = launchBudgetRecommendation(budgetSol);
-  let presetSelected = false;
   $$('.launch-budget-presets button').forEach((button) => {
-    const selected = Number(button.dataset.budget) === budgetSol;
-    presetSelected ||= selected;
-    button.classList.toggle('is-selected', selected);
+    button.classList.toggle('is-selected', Number(button.dataset.budget) === budgetSol);
   });
-  // A selected preset already names the band; only a custom amount needs it.
-  target.innerHTML = `
-    ${presetSelected ? '' : `<span class="recommended-band"><small>Band</small><strong>${escapeHtml(strategy.label)}</strong></span>`}
-    <span><small>SOL in the pool</small><strong>${fmtSol(strategy.supportSol)}</strong></span>
-    <span><small>Structure</small><strong>${escapeHtml(strategy.structure)}</strong></span>
-    <span><small>Where it sits</small><strong>${strategy.supportSol > 0
-      ? `Launch price to −${escapeHtml(String(clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50)))}%`
-      : 'No SOL in the pool'}</strong></span>
-  `;
-  target.title = strategy.detail;
+  const depth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
+  target.innerHTML = `<p>${strategy.supportSol > 0
+    ? `The SOL sits from the launch price down to −${escapeHtml(String(depth))}%, so early sellers are paid from it.${strategy.ladderBands ? ' One extra band of tokens sits above the launch price.' : ''}`
+    : 'No SOL goes in the pool. Sellers have nothing to sell into until someone buys.'}</p>`;
+  target.title = '';
 }
 
 function applyLaunchBudgetRecommendation(value, { announce = true } = {}) {
@@ -5658,14 +5587,16 @@ function launchWorkspaceStatus() {
   }
   return {
     wallet: selectedLaunchWalletPublicKey()
-      ? walletIsUnlocked() ? 'Ready' : 'Unlock'
-      : 'Choose signer',
-    configure: state.launchPlan ? 'Plan staged' : 'Design launch',
-    fund: fundingEstimateStatus.stale
-      ? 'Refresh estimate'
-      : estimate?.totalSol
-        ? `${Number(estimate.totalSol).toFixed(2)} SOL`
-        : 'Estimate',
+      ? walletIsUnlocked() ? 'Ready' : 'Locked'
+      : '',
+    configure: '',
+    fund: state.demoActive
+      ? 'Not needed'
+      : fundingEstimateStatus.stale
+        ? 'Estimate again'
+        : estimate?.totalSol
+          ? `${Number(estimate.totalSol).toFixed(2)} SOL`
+          : '',
     mint: tokenComplete
       ? 'Created'
       : state.fullRunRunning || state.realExecutionRunning || state.demoLaunchRunning
@@ -5674,13 +5605,13 @@ function launchWorkspaceStatus() {
         ? 'Ready'
         : readinessStatus === 'blocked'
           ? 'Blocked'
-          : 'Review mint',
+          : '',
     liquidity: liquidityComplete
       ? 'Locked'
       : state.fullRunRunning || state.realExecutionRunning
         ? 'Running'
-        : tokenComplete ? 'Create pools' : 'Waiting',
-    finish: sweepComplete ? 'Complete' : liquidityComplete ? 'Sweep & proof' : 'Waiting',
+        : '',
+    finish: sweepComplete ? 'Complete' : '',
   };
 }
 
@@ -5757,20 +5688,18 @@ function renderGlobalStrip() {
   // Stable hook for tests and tooling; the strip itself hides when healthy.
   document.body.dataset.apiStatus = state.apiStatus || 'unknown';
   const { pending, signed, total } = signatureStats();
-  const current = account();
-  const apiLabel = state.apiStatus === 'connected'
-    ? 'Local API connected'
-    : state.apiStatus === 'loading'
-      ? 'Checking local API'
-      : 'Static preview';
-  const recoveryCount = state.recovery.activeJournalCount + state.recovery.pendingWalletCount;
-  // Only what needs attention; a healthy idle app shows no strip.
+  const apiLabel = state.apiStatus === 'loading' ? 'Starting…' : 'Open the Trebuchet desktop app to launch.';
+  const recoveryWallets = recoveryWalletsNeedingAttention().length;
+  // Only what needs attention; a healthy idle app shows no strip. The wallet
+  // is in the top bar already.
   const metrics = [
-    walletIsUnlocked() ? ['Wallet', `${current.name} ${current.address}`] : null,
-    state.realExecutionRunning ? ['Run', `${signed}/${total} done / ${pending} queued`] : null,
-    state.apiStatus === 'connected' ? null : ['API', apiLabel],
-    recoveryCount > 0
-      ? ['Recovery', `${state.recovery.activeJournalCount} active / ${state.recovery.pendingWalletCount} wallets`]
+    state.realExecutionRunning ? ['Launch', `${signed} of ${total} steps done`] : null,
+    state.apiStatus === 'connected' ? null : ['App', apiLabel],
+    state.recovery.activeJournalCount + recoveryWallets > 0
+      ? ['Recovery', [
+        state.recovery.activeJournalCount ? `${state.recovery.activeJournalCount} unfinished launch${state.recovery.activeJournalCount === 1 ? '' : 'es'}` : null,
+        recoveryWallets ? `${recoveryWallets} old launch wallet${recoveryWallets === 1 ? '' : 's'}` : null,
+      ].filter(Boolean).join(' · ')]
       : null,
   ].filter(Boolean);
   const strip = $('#globalStrip');
@@ -5848,7 +5777,7 @@ function launchIdentityModel() {
       signaturePercent,
     );
   const status = sweepComplete
-    ? state.demoActive ? 'Practice complete' : 'Launch complete'
+    ? state.demoActive ? 'Test launch complete' : 'Launch complete'
     : liquidityComplete
       ? 'Liquidity locked'
       : tokenComplete
@@ -6051,12 +5980,11 @@ function renderLaunchPreview() {
   $('#launchName').textContent = `${name} token launch`;
   $('#launchStatus').textContent = state.transactions.length ? 'Staged' : state.simulated ? 'Simulated' : 'Draft';
   $('#launchStatus').className = `badge ${state.transactions.length ? 'warn' : ''}`;
-  renderAgentConsole();
   const poolCount = Math.max(0, Number(config.poolTopology?.pools?.length || 0));
   $('#setupSummary').textContent = `${symbol} / ${poolCount} pool${poolCount === 1 ? '' : 's'}`;
   $('#setupHelp').textContent = state.environmentReady
     ? practiceEnvironmentSelected()
-      ? 'Practice · no transaction · 0 SOL'
+      ? 'Test · nothing is sent'
       : 'Live · guarded on-chain launch'
     : 'Checking environment…';
   $('#runbookSummary').textContent = `${launchStages.length} phases`;
@@ -6108,8 +6036,8 @@ function tokenLogoStampMarkup() {
     return `<p class="token-logo-stamp-note">${escapeHtml(reason)}</p>`;
   }
   const caption = stamp.sample
-    ? 'CA stamp preview · sample address until you pick a vanity CA'
-    : `CA stamp preview · ${shortAddress(stamp.mint)}`;
+    ? 'The contract address is printed on the logo at launch (sample shown).'
+    : `Printed on the logo: ${shortAddress(stamp.mint)}`;
   return `
     <figure class="token-logo-stamp-preview">
       <img src="${escapeHtml(stamp.dataUrl)}" alt="Logo with the contract address stamped along the bottom">
@@ -6124,12 +6052,13 @@ function renderTokenLogoPreview() {
   const error = state.tokenLogoError;
   void refreshTokenLogoStamp();
   target.className = `token-logo-preview ${logo ? 'has-logo' : ''} ${error ? 'danger' : ''}`;
+  target.hidden = !logo && !error;
   target.innerHTML = `
     <span class="token-logo-thumb">
       ${logo?.dataUrl ? `<img src="${escapeHtml(launchIdentityImageSrc(logo, { animate: false }))}" alt="">` : '<i class="fa-solid fa-image"></i>'}
     </span>
     <span>
-      <small>${escapeHtml(error ? 'Logo rejected' : logo ? 'Logo attached' : 'Token logo')}</small>
+      <small>${escapeHtml(error ? 'Logo rejected' : 'Logo')}</small>
       <strong>${escapeHtml(error || logoSummary(logo))}</strong>
     </span>
     ${logo || error ? '<button class="pill-button" type="button" data-action="clear-token-logo">Clear</button>' : ''}
@@ -6262,15 +6191,15 @@ function custodySignalState() {
   if (!state.environmentReady) {
     return {
       id: 'loading',
-      label: 'CHECKING ENVIRONMENT',
-      detail: 'Trebuchet is restoring the authoritative practice or live environment.',
+      label: 'Checking…',
+      detail: 'Loading test or live mode.',
     };
   }
   if (practiceEnvironmentSelected()) {
     return {
       id: 'practice',
-      label: 'PRACTICE / NO CUSTODY',
-      detail: 'Practice mode does not place user funds under Trebuchet control.',
+      label: 'Test mode',
+      detail: 'Nothing is sent and no SOL is spent.',
     };
   }
   const detailedBalance = selectedWalletDetailedBalance();
@@ -6280,13 +6209,13 @@ function custodySignalState() {
   return hasFunds
     ? {
       id: 'funded',
-      label: 'LIVE / FUNDS IN CUSTODY',
-      detail: 'A Trebuchet-controlled wallet currently holds user assets.',
+      label: 'Live · funds in launch wallet',
+      detail: 'The launch wallet holds funds, and Trebuchet can spend them.',
     }
     : {
       id: 'live',
-      label: managedWallet ? 'LIVE / AWAITING FUNDS' : 'LIVE / NO WALLET',
-      detail: 'Live execution is selected, but no controlled funds are currently observed.',
+      label: managedWallet ? 'Live · waiting for funds' : 'Live · no wallet',
+      detail: 'Live mode. The launch wallet holds no funds yet.',
     };
 }
 
@@ -6298,6 +6227,7 @@ function renderCustodySignal() {
     label.textContent = signal.label;
     label.title = signal.detail;
   }
+  if ($('#networkLabel')) $('#networkLabel').textContent = authoritativeNetworkLabel();
   return signal;
 }
 
@@ -6728,7 +6658,7 @@ function vanityAvailabilityMeta() {
   if (state.apiStatus === 'connected') {
     return { label: 'Native grinder ready', detail: 'Saved Vanity CA options stay selectable across runs.', className: '', icon: 'fa-wand-magic-sparkles' };
   }
-  return { label: 'Static preview', detail: 'Open through the local Trebuchet app to run the native grinder.', className: 'warn', icon: 'fa-eye' };
+  return { label: 'Static preview', detail: 'Open through the Trebuchet desktop app to run the native grinder.', className: 'warn', icon: 'fa-eye' };
 }
 
 const ACTIVE_LAUNCH_KEY = 'trebuchet-v2-active-launch';
@@ -7035,7 +6965,7 @@ function supplyEditorRows() {
     key: 'team', kind: 'hold', label: 'Team',
     detail: share.active
       ? `Split across ${share.rows.length} funding wallet${share.rows.length === 1 ? '' : 's'}`
-      : 'Goes to the main return wallet',
+      : 'Goes to the return wallet',
     percent: parsePercentInput($('#preallocationSupplyPercent').value, 0), color: 'var(--amber)',
     target: '#preallocationSupplyPercent',
   });
@@ -7823,7 +7753,7 @@ function proofJournalEvidenceState(proof = currentLaunchProof()) {
     } else if (!journalTerminalSweepComplete) {
       missing.push('terminal journal sweep');
     }
-    if (proofDestination && !journalDestination) missing.push('journal sweep destination');
+    if (proofDestination && !journalDestination) missing.push('journal return wallet');
     const tokenEvidence = proofTokenJournalEvidenceState(proof, journal);
     missing.push(...tokenEvidence.missing);
     mismatches.push(...tokenEvidence.mismatches);
@@ -7844,7 +7774,7 @@ function proofJournalEvidenceState(proof = currentLaunchProof()) {
     mismatches.push(...transferEvidence.mismatches);
   }
 	  if (proofDestination && journalDestination && proofDestination !== journalDestination) {
-	    mismatches.push('sweep destination');
+	    mismatches.push('return wallet');
 	  }
 
   return {
@@ -9448,10 +9378,14 @@ function normalizeClassicReportArtifact(rawText) {
   const htmlRows = !parsed ? classicHtmlAddressRows(text) : [];
   const htmlMint = classicHtmlFirstValueForLabels(htmlRows, ['Token mint', 'Mint']);
   const htmlLaunchWallet = classicHtmlFirstValueForLabels(htmlRows, ['Launch wallet', 'Launch wallet public key']);
+  // Classic reports label it "sweep destination"; Trebuchet's own reports
+  // now say "return wallet".
   const htmlDestinationWallet = classicHtmlFirstValueForLabels(htmlRows, [
     'Planned sweep destination',
     'Destination wallet',
     'Sweep destination',
+    'Planned return wallet',
+    'Return wallet',
   ]);
   const poolsFromPayload = Array.isArray(launch?.pools)
     ? launch.pools
@@ -9818,7 +9752,7 @@ function classicComparisonRequiredEvidence(comparison, proof = currentLaunchProo
     structuredEvidence,
     missingRows,
     detail: !structuredEvidence
-      ? 'Classic comparison is missing structured Classic report evidence; load a Classic JSON export or HTML dossier, not loose text.'
+      ? 'Classic comparison is missing structured Classic report evidence; load a Classic JSON export or HTML launch record, not loose text.'
       : missingRows.length
       ? `Classic comparison is missing required passing row${missingRows.length === 1 ? '' : 's'}: ${missingRows.map((row) => row.label).slice(0, 4).join(', ')}${missingRows.length > 4 ? ', ...' : ''}.`
       : enoughFields
@@ -9999,7 +9933,7 @@ function currentReportArtifact(proof = currentLaunchProof(), config = currentLau
   if (dossier) {
     return {
       type: 'local-dossier',
-      label: dossier.kind === 'local-proof-json' ? 'Local proof JSON' : 'Local dossier',
+      label: dossier.kind === 'local-proof-json' ? 'Local proof JSON' : 'Saved launch record',
       record: dossier,
       uri: null,
       filename: dossier.filename || null,
@@ -10064,9 +9998,9 @@ function compareClassicReportArtifact(rawText, proof = currentLaunchProof(), con
       'artifact-source',
       'Artifact source',
       'completed Classic artifact',
-      'Trebuchet proof or dossier',
+      'Trebuchet proof or launch record',
       'mismatch',
-      'Load a completed Classic artifact, not the current Trebuchet proof or dossier.',
+      'Load a completed Classic artifact, not the current Trebuchet proof or launch record.',
     );
   }
   if (!current.mint && !current.poolIds.length && Number(current.positionCount || 0) <= 0) {
@@ -10076,7 +10010,7 @@ function compareClassicReportArtifact(rawText, proof = currentLaunchProof(), con
       'token and liquidity proof',
       null,
       'missing',
-      'Run or load a completed Trebuchet launch proof before comparing a Classic artifact.',
+      'Run or load a completed Trebuchet launch record before comparing a Classic artifact.',
     );
   }
   if (current.mint) {
@@ -10680,7 +10614,7 @@ function buildV2ReportParityAudit(proof = currentLaunchProof(), config = current
             : proofLaunchConfigSnapshot.state === 'mismatch'
               ? `Proof launch-config snapshot does not match launch evidence: ${proofLaunchConfigSnapshot.mismatches.join(', ')}.`
               : `Proof launch-config snapshot is incomplete: ${proofLaunchConfigSnapshot.missing.join(', ')}.`
-          : 'No launch proof is loaded yet.',
+          : 'No launch record is loaded yet.',
     ),
     v2ReportParityItem(
       'authority-proof',
@@ -10784,8 +10718,8 @@ function buildV2ReportParityAudit(proof = currentLaunchProof(), config = current
           : 'Published report is missing terminal sweep evidence hash; republish after final sweep.'
         : localDossier
           ? reportArtifactSweepBound
-            ? `Local dossier downloaded: ${localDossier.filename}.`
-            : 'Local dossier is missing terminal sweep evidence hash; download a fresh dossier after final sweep.'
+            ? `Saved launch record downloaded: ${localDossier.filename}.`
+            : 'Saved launch record is missing terminal sweep evidence hash; download a fresh launch record after final sweep.'
         : staleReport
           ? 'Report artifact belongs to another Trebuchet proof; regenerate it for the current launch.'
           : 'Local proof can be exported; permanent report publish is pending or disabled.',
@@ -10970,7 +10904,7 @@ const V2_FIELD_VERIFICATION_REQUIREMENTS = Object.freeze({
     action: 'run-non-demo-v2-launch',
   },
   'report-proof': {
-    label: 'Report or dossier',
+    label: 'Report or launch record',
     action: 'attach-terminal-report',
   },
   'classic-comparison': {
@@ -11572,7 +11506,7 @@ function renderV2ReportStatusBanner(results = []) {
   }
   return `<div class="banner banner-warn">
     <strong>${summary.locked} / ${summary.total} positions locked.</strong>
-    Any unlocked position is still controlled by the launch wallet or the final sweep destination. Re-lock it through Raydium Burn &amp; Earn before treating the launch as complete.
+    Any unlocked position is still controlled by the launch wallet or the final return wallet. Re-lock it through Raydium Burn &amp; Earn before treating the launch as complete.
     ${summary.totalRecipient > 0 && summary.transferred < summary.totalRecipient ? `<br><strong>${summary.transferred} / ${summary.totalRecipient} Fee Key NFTs reached their external recipients.</strong>` : ''}
   </div>`;
 }
@@ -11585,7 +11519,7 @@ function renderV2ReportDemoBanner(proof, results = []) {
   return demo
     ? `<div class="banner banner-demo">
         <strong>DEMO LAUNCH REPORT</strong>
-        Synthetic addresses, no real transactions. This report was generated in demo mode.
+        Synthetic addresses, no real transactions. This report was generated in test mode.
       </div>`
     : '';
 }
@@ -12676,7 +12610,7 @@ function buildV2LaunchReportHtml({ proof = currentLaunchProof(), config = curren
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#efe5cd">
-  <title>${escapeHtml(name)} (${escapeHtml(symbol)}) - Launch Dossier</title>
+  <title>${escapeHtml(name)} (${escapeHtml(symbol)}) - Launch Record</title>
   <style>
     ${v2ClassicReportCss()}
   </style>
@@ -12686,7 +12620,7 @@ function buildV2LaunchReportHtml({ proof = currentLaunchProof(), config = curren
     <div class="masthead">
       <div class="masthead-left">
         <span class="masthead-brand">T R E B U C H E T</span>
-        <span>FIG. 01 · Launch Dossier</span>
+        <span>FIG. 01 · Launch Record</span>
       </div>
       <div class="masthead-right">${escapeHtml(reportTimestamp(generatedAt))}</div>
     </div>
@@ -12717,7 +12651,7 @@ function buildV2LaunchReportHtml({ proof = currentLaunchProof(), config = curren
     <h3 class="subsection">Mint &amp; launch wallet</h3>
     ${renderV2ReportAddressRow('Token mint', token.mint)}
     ${renderV2ReportAddressRow('Launch wallet', proof?.walletPublicKey || data.launchWallet)}
-    ${renderV2ReportAddressRow('Planned sweep destination', finalDestination)}
+    ${renderV2ReportAddressRow('Planned return wallet', finalDestination)}
     ${renderV2ReportAddressRow('Metadata URI', token.metadataUri, 'url')}
     ${renderV2ReportAddressRow('Image URI', token.imageUri, 'url')}
 
@@ -12745,10 +12679,8 @@ function buildV2LaunchReportHtml({ proof = currentLaunchProof(), config = curren
 
     ${buildV2ReportRecoverySection(data)}
 
-    ${buildV2ReportParityAuditSection(data.reportParityAudit, data.classicRetirementGate, data.fieldVerification)}
-
     <hr class="section-rule">
-    <div class="enum-badge">[ 08 ] &nbsp; Verification</div>
+    <div class="enum-badge">[ 07 ] &nbsp; Verification</div>
     <h2 class="section-title">Auditing this launch</h2>
     <div class="audit-copy">
       <p><strong>Safe token contract</strong> - fetch the mint account and verify that mint and freeze authorities are unset. If metadata is recorded above, verify the metadata account shows the expected update-authority posture.</p>
@@ -12797,7 +12729,7 @@ function renderReportPanel() {
   summary.className = `risk-badge ${publish ? '' : 'warn'}`;
   $('#reportPreview').innerHTML = `
     <div class="mini-row"><span>Report</span><strong>${publish ? 'Arweave + local' : 'Local download'}</strong></div>
-    <div class="mini-row ${destination && !isProbablySolanaAddress(destination) ? 'danger' : ''}"><span>Sweep destination</span><strong>${escapeHtml(destinationState)}</strong></div>
+    <div class="mini-row ${destination && !isProbablySolanaAddress(destination) ? 'danger' : ''}"><span>Return wallet</span><strong>${escapeHtml(destinationState)}</strong></div>
     <div class="mini-row"><span>Airdrop rows</span><strong>${topology.airdrop.recipients.length || topology.airdrop.recipientCount}</strong></div>
     <div class="mini-row"><span>Fee Key recipient</span><strong>${topology.feeKeyRecipient ? escapeHtml(shortAddress(topology.feeKeyRecipient)) : 'Same as sweep'}</strong></div>
   `;
@@ -12984,10 +12916,10 @@ function manualPrefundStatus(item) {
   const walletPublicKey = selectedLaunchWalletPublicKey();
   const snapshot = manualPrefundBalanceSnapshotStatus(walletPublicKey);
   if (!walletPublicKey) {
-    return { label: 'No wallet', className: 'warn', detail: 'Generate or select a Trebuchet wallet first.' };
+    return { label: 'No wallet', className: 'warn', detail: 'Generate or select a launch wallet first.' };
   }
   if (state.apiStatus !== 'connected') {
-    return { label: 'Static', className: 'warn', detail: 'Open through the local Trebuchet app to check balances.' };
+    return { label: 'Static', className: 'warn', detail: 'Open through the Trebuchet desktop app to check balances.' };
   }
   if (state.manualPrefund.error) {
     return { label: 'Check failed', className: 'danger', detail: state.manualPrefund.error };
@@ -12996,7 +12928,7 @@ function manualPrefundStatus(item) {
     return {
       label: 'Check balance',
       className: 'warn',
-      detail: 'Balance snapshot belongs to another Trebuchet wallet; recheck the selected launch wallet.',
+      detail: 'Balance snapshot belongs to another launch wallet; recheck the selected launch wallet.',
     };
   }
   if (!snapshot.hasBalance) {
@@ -13214,8 +13146,8 @@ function quotePoolGuidanceItems() {
           className: 'warn',
           icon: 'fa-wallet',
           detail: displayAmount
-            ? `Send ${displayAmount} ${manual.symbol || quoteSymbol} to the selected Trebuchet wallet.`
-            : `Send the required ${manual.symbol || quoteSymbol} raw amount to the selected Trebuchet wallet.`,
+            ? `Send ${displayAmount} ${manual.symbol || quoteSymbol} to the selected launch wallet.`
+            : `Send the required ${manual.symbol || quoteSymbol} raw amount to the selected launch wallet.`,
         };
       }
       return {
@@ -13296,7 +13228,7 @@ function renderManualPrefundPanel() {
       <div class="manual-prefund-head">
         <span>
           <span class="eyebrow">Manual prefund checklist</span>
-          <h3>Send quote tokens to Trebuchet wallet</h3>
+          <h3>Send quote tokens to launch wallet</h3>
           <p>${escapeHtml(checkedLabel)}</p>
         </span>
         <span class="manual-prefund-head-actions">
@@ -13309,7 +13241,7 @@ function renderManualPrefundPanel() {
       <div class="manual-prefund-wallet">
         <span>
           <small>Destination wallet</small>
-          <code>${walletPublicKey ? escapeHtml(walletPublicKey) : 'Generate or select a Trebuchet wallet first'}</code>
+          <code>${walletPublicKey ? escapeHtml(walletPublicKey) : 'Generate or select a launch wallet first'}</code>
         </span>
         <button class="pill-button" type="button" data-action="copy-manual-prefund" data-copy="wallet" ${walletPublicKey ? '' : 'disabled'}>
           <i class="fa-solid fa-copy"></i><span>Copy wallet</span>
@@ -13380,10 +13312,10 @@ function renderQuoteAcquirePanel() {
   const detail = fundingEstimateStatus.stale
     ? 'Funding estimate is stale for this launch model; rerun it before acquiring quote tokens.'
     : acquireStatus.stale
-      ? 'Previous quote acquire belongs to another wallet or launch model; run it again for the selected Trebuchet wallet.'
+      ? 'Previous quote acquire belongs to another wallet or launch model; run it again for the selected launch wallet.'
       : hasCurrentEstimate
       ? (routes.length
-        ? `${routes.length} route${routes.length === 1 ? '' : 's'} can be auto-acquired from the managed wallet.`
+        ? `${routes.length} route${routes.length === 1 ? '' : 's'} can be auto-acquired from the launch wallet.`
         : manualCount
           ? `${manualCount} quote token${manualCount === 1 ? '' : 's'} require manual prefund.`
           : 'No quote-token acquire needed for this launch plan.')
@@ -13527,12 +13459,12 @@ function buildProofShareSummary(proof = currentLaunchProof(), config = currentLa
         ? 'Complete the final sweep and save proof'
         : 'Launch complete';
   const operationalSummary = [
-    `Trebuchet launch proof: ${symbol}`,
+    `Trebuchet launch record: ${symbol}`,
     `Mint: ${token.mint || 'pending'}`,
     `Liquidity: ${poolCount} recorded pool${poolCount === 1 ? '' : 's'} / ${positionCount} position${positionCount === 1 ? '' : 's'}`,
     `Airdrop: ${airdropSummary}`,
     `Destination: ${proofEffectiveDestination(proof, config) || 'pending'}`,
-    `Report: ${reportUri || (localDossier ? `local dossier ${localDossier.filename}` : 'local proof pending')}`,
+    `Report: ${reportUri || (localDossier ? `saved launch record ${localDossier.filename}` : 'local proof pending')}`,
     `Next: ${nextStep}`,
   ];
   if (!finalSweepComplete) return operationalSummary.join('\n');
@@ -13700,13 +13632,13 @@ function finalizationNoticeRows({
   if (reportNeedsFinalArtifact) {
     rows.push({
       state: 'warn',
-      text: 'Terminal sweep is recorded. Download a fresh final dossier so the artifact carries the final sweep hash.',
+      text: 'Terminal sweep is recorded. Download a fresh final launch record so the artifact carries the final sweep hash.',
     });
   }
   if (state.prefs.publishLaunchReport === false && !localDossier) {
     rows.push({
       state: 'warn',
-      text: 'Report publishing is off. Download the local dossier before treating Step 6 as reviewable.',
+      text: 'Report publishing is off. Download the saved launch record before treating Step 6 as reviewable.',
     });
   }
   const airdropIssue = airdropCompletionIssue(airdropStatus, 'publishing the report or sweeping');
@@ -13734,24 +13666,16 @@ function renderPracticeResultPanel() {
   const poolCount = Number(run?.liquidity?.results?.length || config.poolTopology?.pools?.length || 0);
   return `
     <div class="finalize-panel is-terminal practice-result">
-      <div class="finalize-head">
-        <span>
-          <span class="eyebrow">Practice result</span>
-          <h3>The complete launch recipe worked</h3>
-          <p>Token creation, authority removal, liquidity, locking, asset return, and proof all ran in the local simulator.</p>
-        </span>
-      </div>
       <div class="finalize-grid">
-        <span><small>Token</small><strong>${escapeHtml(symbol)}</strong><em>simulated mint</em></span>
-        <span><small>Pools</small><strong>${poolCount}</strong><em>simulated and locked</em></span>
-        <span><small>On-chain</small><strong>Nothing</strong><em>no transaction sent</em></span>
-        <span><small>Spent</small><strong>0 SOL</strong><em>practice is free</em></span>
+        <span><small>Token</small><strong>${escapeHtml(symbol)}</strong></span>
+        <span><small>Pools</small><strong>${poolCount} locked</strong></span>
+        <span><small>SOL spent</small><strong>0</strong></span>
       </div>
       <div class="operator-toolbar compact finalize-primary-actions">
-        <button class="pill-button" type="button" data-action="select-environment" data-environment="live">Switch to Live</button>
-        <button class="pill-button" type="button" data-action="run-demo-launch" ${state.demoLaunchRunning ? 'disabled' : ''}>Run practice again</button>
+        <button class="pill-button" type="button" data-action="select-environment" data-environment="live">Switch to live</button>
+        <button class="pill-button" type="button" data-action="run-demo-launch" ${state.demoLaunchRunning ? 'disabled' : ''}>Run test again</button>
         <button class="pill-button" type="button" data-launch-workspace="configure">Edit token &amp; pools</button>
-        <button class="pill-button" type="button" data-action="download-v2-proof">Download practice record</button>
+        <button class="pill-button" type="button" data-action="download-v2-proof">Download launch record</button>
       </div>
     </div>
   `;
@@ -13820,19 +13744,19 @@ function renderFinalizationPanel() {
       : reportUri
         ? 'Report published'
         : localDossier
-          ? 'Local dossier active'
+          ? 'Saved launch record active'
           : state.prefs.publishLaunchReport === false
             ? 'Publishing off'
             : canPublish
               ? 'Publish report'
               : 'Publishing unavailable';
   const dossierDownloadLabel = reportNeedsFinalArtifact
-    ? 'Download final dossier'
+    ? 'Download final launch record'
     : localDossier
-      ? 'Download dossier again'
+      ? 'Download launch record again'
       : localDossierReady
-        ? 'Use local dossier'
-        : 'Download dossier';
+        ? 'Use saved launch record'
+        : 'Download launch record';
   const airdropLabel = state.airdropRunning
     ? 'Airdropping'
     : airdropNeedsEvidenceRepair ? 'Repair proof'
@@ -13850,8 +13774,8 @@ function renderFinalizationPanel() {
     notices.unshift({
       state: 'warn',
       text: canPublish
-        ? 'Choose one proof path: publish the report, or use a local dossier. Either choice unlocks final sweep.'
-        : 'Publishing is unavailable for this proof. Use local dossier to save proof locally and unlock final sweep.',
+        ? 'Choose one proof path: publish the report, or use a saved launch record. Either choice unlocks final sweep.'
+        : 'Publishing is unavailable for this proof. Use saved launch record to save proof locally and unlock final sweep.',
     });
   }
 
@@ -13891,7 +13815,7 @@ function renderFinalizationPanel() {
       <div class="finalize-grid">
         <span>
           <small>Report</small>
-          <strong>${escapeHtml(reportNeedsFinalArtifact ? 'Needs final proof' : reportUri ? 'Published' : localDossier ? 'Local dossier' : staleReport ? 'Stale' : state.prefs.publishLaunchReport === false ? 'Local' : canPublish ? 'Ready' : 'Waiting')}</strong>
+          <strong>${escapeHtml(reportNeedsFinalArtifact ? 'Needs final proof' : reportUri ? 'Published' : localDossier ? 'Saved launch record' : staleReport ? 'Stale' : state.prefs.publishLaunchReport === false ? 'Local' : canPublish ? 'Ready' : 'Waiting')}</strong>
           <em>${reportNeedsFinalArtifact ? 'download after sweep' : reportUri ? escapeHtml(shortAddress(reportUri)) : localDossier ? escapeHtml(localDossier.filename) : staleReport ? 'regenerate required' : `${poolCount} pool ID proof${poolCount === 1 ? '' : 's'}`}</em>
         </span>
         <span>
@@ -13915,7 +13839,7 @@ function renderFinalizationPanel() {
         <div class="proof-review-head">
           <span>
             <span class="eyebrow">Proof review</span>
-            <strong>${tokenMint ? 'Explorer bundle ready' : 'Waiting for launch proof'}</strong>
+            <strong>${tokenMint ? 'Explorer bundle ready' : 'Waiting for launch record'}</strong>
           </span>
           <button class="pill-button" type="button" data-action="copy-v2-proof-summary" ${canDownload ? '' : 'disabled'}>Copy summary</button>
         </div>
@@ -14055,12 +13979,12 @@ function renderClassicBridge() {
   const readinessDetail = quoteSafety.blockers[0]?.detail
     || blockers[0]?.detail
     || readinessNextDetail
-    || (state.apiStatus === 'connected' ? '' : 'Open the local Trebuchet app to continue.');
+    || (state.apiStatus === 'connected' ? '' : 'Open the Trebuchet desktop app to continue.');
   const demoRunLabel = state.demoLaunchRunning
-    ? 'Running practice'
+    ? 'Running test launch'
     : state.lastDemoLaunchRun
-      ? 'Run practice again'
-      : 'Run practice launch';
+      ? 'Run test again'
+      : 'Run test launch';
   const armedRunEnvelopeId = state.lastRunEnvelope?.status === 'armed'
     ? String(state.lastRunEnvelope.id || '')
     : '';
@@ -14225,31 +14149,37 @@ function renderClassicBridge() {
       && blockers.length === 0
       && quoteSafety.blockers.length === 0;
     const needsRunEnvelope = nextOperationReady && !armedRunEnvelopeId && !finalizationIssue;
-    const panelEyebrow = complete
-      ? 'Phase complete'
-      : needsFunding
-        ? 'Next step'
-        : finalizationIssue
-          ? 'One required step'
-        : needsRunEnvelope
-          ? 'Final confirmation'
-          : canRun
-            ? 'Ready to execute'
-            : 'Ready check';
-    const panelTitle = complete
+    const panelEyebrow = state.demoActive && !complete
+      ? ''
+      : complete
+        ? 'Done'
+        : needsFunding
+          ? 'Next step'
+          : finalizationIssue
+            ? 'Needed first'
+          : needsRunEnvelope
+            ? 'Last check'
+            : canRun
+              ? 'Ready'
+              : 'Checking';
+    const panelTitle = state.demoActive && !complete
+      ? 'Run every step as a test'
+      : complete
       ? title
       : needsFunding
         ? 'Fund the launch wallet'
         : finalSweepProofMissing
-          ? 'Save local launch proof'
+          ? 'Save local launch record'
           : finalizationIssue
             ? 'Resolve the final-sweep requirement'
         : needsRunEnvelope
           ? finalSweepAction
             ? 'Authorize final sweep'
-            : recoveringToken ? 'Finish interrupted token safely' : 'Review and arm this launch'
+            : recoveringToken ? 'Finish interrupted token safely' : 'Review this launch'
           : readiness?.nextAction || title;
-    const panelDetail = complete
+    const panelDetail = state.demoActive && !complete
+      ? 'Creates the token, pool and locks in a simulator. Nothing is sent.'
+      : complete
       ? detail
       : needsFunding
         ? 'Send the estimated SOL on the Fund step.'
@@ -14257,22 +14187,22 @@ function renderClassicBridge() {
           ? String(finalizationIssue)
         : needsRunEnvelope
           ? finalSweepAction
-            ? 'Confirm the return wallet and arm the final sweep.'
+            ? 'Confirm the return wallet, then approve the final sweep.'
             : recoveringToken
             ? 'Review the recovery once. Trebuchet will finish the existing mint, not create another.'
-            : 'Review the operations and maximum spend once.'
+            : 'Check what will be sent and the most it can spend.'
         : readinessDetail;
-    const panelBadge = complete ? 'Done' : needsFunding || finalizationIssue ? 'Required' : needsRunEnvelope ? 'Action required' : effectiveReadinessMeta.label;
+    const panelBadge = state.demoActive && !complete ? '' : complete ? 'Done' : needsFunding || finalizationIssue ? 'Required' : needsRunEnvelope ? 'Review' : effectiveReadinessMeta.label;
     const panelClass = complete ? '' : needsFunding || finalizationIssue || needsRunEnvelope ? 'warn' : effectiveReadinessMeta.className;
     return `
     <div class="execution-readiness ${escapeHtml(panelClass)} ${primary ? 'is-primary-action' : ''}">
       <div class="readiness-main">
         <span>
-          <span class="eyebrow">${escapeHtml(panelEyebrow)}</span>
+          ${panelEyebrow ? `<span class="eyebrow">${escapeHtml(panelEyebrow)}</span>` : ''}
           <strong>${escapeHtml(panelTitle)}</strong>
           <small>${escapeHtml(panelDetail)}</small>
         </span>
-        <span class="risk-badge ${escapeHtml(panelClass)}">${escapeHtml(panelBadge)}</span>
+        ${panelBadge ? `<span class="risk-badge ${escapeHtml(panelClass)}">${escapeHtml(panelBadge)}</span>` : ''}
       </div>
       <div class="launch-phase-actions">
         ${complete
@@ -14280,13 +14210,13 @@ function renderClassicBridge() {
           : state.demoActive
             ? `<button class="primary-button compact" type="button" data-action="run-demo-launch" ${state.demoLaunchRunning ? 'disabled' : ''}><span>${escapeHtml(demoRunLabel)}</span><i class="fa-solid fa-flask"></i></button>`
             : finalSweepProofMissing
-              ? '<button class="primary-button compact" type="button" data-action="download-v2-dossier"><span>Save local dossier</span><i class="fa-solid fa-download"></i></button>'
+              ? '<button class="primary-button compact" type="button" data-action="download-v2-dossier"><span>Save launch record</span><i class="fa-solid fa-download"></i></button>'
               : finalizationIssue
                 ? `<button class="primary-button compact" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}><span>${state.executionChecking ? 'Checking' : 'Check requirement again'}</span><i class="fa-solid fa-rotate"></i></button>`
             : canRun
               ? `<button class="primary-button compact" type="button" data-action="execute-next-run" ${state.realExecutionRunning || state.fullRunRunning ? 'disabled' : ''}><span>${escapeHtml(state.realExecutionRunning ? 'Running' : runLabel)}</span><i class="fa-solid fa-arrow-right"></i></button>`
               : needsRunEnvelope
-                ? `<button class="primary-button compact" type="button" data-action="review-and-arm-run"><span>${finalSweepAction ? 'Review &amp; arm final sweep' : recoveringToken ? 'Review &amp; arm recovery' : 'Review &amp; arm launch'}</span><i class="fa-solid fa-shield-halved"></i></button>`
+                ? `<button class="primary-button compact" type="button" data-action="review-and-arm-run"><span>${finalSweepAction ? 'Review final sweep' : recoveringToken ? 'Review recovery' : 'Review launch'}</span><i class="fa-solid fa-shield-halved"></i></button>`
               : fundingReady || recoveryDoesNotNeedFreshEstimate
                 ? `<button class="primary-button compact" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}><span>${state.executionChecking ? 'Checking' : 'Check again'}</span><i class="fa-solid fa-rotate"></i></button>`
                 : '<button class="primary-button compact" type="button" data-launch-workspace="fund"><span>Fund launch wallet</span><i class="fa-solid fa-arrow-left"></i></button>'}
@@ -14314,9 +14244,9 @@ function renderClassicBridge() {
         <span class="launch-wallet-choice-copy">
           <small>${walletPublicKey ? 'Launch wallet' : 'No launch wallet yet'}</small>
           <strong>${escapeHtml(walletChoiceLabel)}</strong>
-          <code>${escapeHtml(walletPublicKey || 'A fresh keypair, encrypted on this device.')}</code>
+          <code>${escapeHtml(walletPublicKey || 'A new wallet, saved encrypted on this computer.')}</code>
         </span>
-        <span class="risk-badge ${walletReady ? '' : 'warn'}">${walletReady ? 'Continue' : walletPublicKey ? 'Unlock' : hasManagedWallets ? 'Choose' : 'Create'}</span>
+        ${walletPublicKey || hasManagedWallets ? `<span class="risk-badge ${walletReady ? '' : 'warn'}">${walletReady ? 'Continue' : walletPublicKey ? 'Unlock' : 'Choose'}</span>` : ''}
       </button>
       <details class="drawer phase-options">
         <summary><span>Wallet options</span><strong>Copy · lock · manage</strong></summary>
@@ -14342,12 +14272,12 @@ function renderClassicBridge() {
     <section class="classic-workspace-section classic-workspace-execute" data-classic-workspace="mint">
       <section class="launch-step-guide irreversible" aria-labelledby="mintStepTitle">
         <div>
-          <h2 id="mintStepTitle">${config.token.sealedLaunch ? 'Create sealed token' : 'Create token'}</h2>
+          <h2 id="mintStepTitle">Create token</h2>
           <p>${config.token.sealedLaunch
-            ? 'Commits identity, mints supply, then revokes control.'
-            : 'Mints supply, attaches metadata, then revokes control.'}</p>
+            ? 'Mints the supply and removes mint and freeze control. The name and logo stay hidden until the pool is locked.'
+            : 'Mints the supply and removes mint and freeze control.'}</p>
         </div>
-        <aside><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span><strong>Permanent.</strong> Edit mistakes in Token &amp; pools.</span></aside>
+        ${state.demoActive ? '' : `<aside><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span><strong>Can't be undone.</strong> Fix mistakes in Token &amp; pools first.</span></aside>`}
       </section>
       <div class="launch-fact-grid">
         <span><small>Name</small><strong>${escapeHtml(config.token.name || 'Untitled')}</strong></span>
@@ -14356,8 +14286,8 @@ function renderClassicBridge() {
         <span><small>Contract address</small><strong>${escapeHtml(state.selectedVanityPublicKey ? shortAddress(state.selectedVanityPublicKey) : 'Random')}</strong></span>
       </div>
       ${readinessPanel({
-        title: tokenComplete ? 'Token and authority proof recorded' : mintEndpoint === '/api/finish-token-creation' ? 'Finish interrupted token' : 'Create token',
-        detail: tokenComplete ? 'Mint, metadata, and authority posture are attached to the launch journal.' : mintEndpoint === '/api/finish-token-creation' ? 'Complete metadata, token account, supply, and authority revocation on the existing mint before liquidity.' : 'Preflight checks the selected wallet, funding evidence, metadata, and permanent authority policy.',
+        title: tokenComplete ? 'Token created' : mintEndpoint === '/api/finish-token-creation' ? 'Finish interrupted token' : 'Create token',
+        detail: tokenComplete ? 'Mint and freeze control are removed.' : mintEndpoint === '/api/finish-token-creation' ? 'The token was started but not finished. This finishes the same token; it does not make a new one.' : 'Checks the wallet, funding and token details first.',
         canRun: mintCanRun,
         runLabel: mintEndpoint === '/api/finish-token-creation' ? 'Finish token safely' : 'Create token',
         complete: tokenComplete,
@@ -14372,7 +14302,7 @@ function renderClassicBridge() {
         <div>
           <h2 id="liquidityStepTitle">Create &amp; lock liquidity</h2>
         </div>
-        <aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Permanent.</strong> Interrupted runs resume missing work only.</span></aside>
+        <aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>
       </section>
       <div class="launch-fact-grid">
         <span><small>Pools</small><strong>${poolCount}</strong></span>
@@ -14381,10 +14311,10 @@ function renderClassicBridge() {
         ${topology.pools.some((pool) => pool.support?.enabled) ? '<span><small>Buy support</small><strong>On</strong></span>' : ''}
       </div>
       ${readinessPanel({
-        title: metadataRevealPending ? 'Reveal the committed token identity' : liquidityComplete ? 'Liquidity and lock proof recorded' : 'Create and lock liquidity',
+        title: metadataRevealPending ? 'Reveal the name and logo' : liquidityComplete ? 'Liquidity created and locked' : 'Create and lock liquidity',
         detail: metadataRevealPending
-          ? 'Liquidity is locked. Publish the committed name, symbol, image, and URI, then permanently retire metadata control.'
-          : liquidityComplete ? 'Pool IDs, position NFTs, lock transactions, and Fee Keys are attached to the launch journal.' : 'Run this after the token phase completes. It can take several minutes; keep Trebuchet open.',
+          ? 'Liquidity is locked. Publish the name, symbol and logo, then lock them for good.'
+          : liquidityComplete ? 'Pools are open and positions are locked.' : 'Takes a few minutes. Keep Trebuchet open.',
         canRun: metadataRevealPending ? revealCanRun : liquidityCanRun,
         runLabel: metadataRevealPending ? 'Reveal & lock identity' : readiness?.nextEndpoint === '/api/resume-launch' ? 'Resume missing work' : 'Create liquidity',
         complete: liquidityComplete && !metadataRevealPending,
@@ -14401,16 +14331,17 @@ function renderClassicBridge() {
     <section class="classic-workspace-section classic-workspace-verify" data-classic-workspace="finish">
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
-          <h2 id="finishStepTitle">${practiceComplete ? 'Practice complete' : finalSweepComplete ? 'Launch complete' : 'Finish launch'}</h2>
-          <p>${practiceComplete ? 'Nothing went on-chain and no SOL was spent.' : finalSweepComplete ? 'Assets swept and launch wallet verified empty.' : 'Distribute, sweep remaining assets, and save proof.'}</p>
+          <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Finish launch'}</h2>
+          <p>${practiceComplete ? 'Every step ran. Nothing was sent.' : finalSweepComplete ? 'Everything is in the return wallet and the launch wallet is empty.' : 'Send the remaining assets to the return wallet and save the launch record.'}</p>
         </div>
-        <aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${practiceComplete ? 'Ready for a live launch.' : finalSweepComplete ? 'Proof is ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for final sweep.' : 'Resolve the requirement below.'}</span></aside>
+        ${practiceComplete ? '' : `<aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Launch record ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for the final sweep.' : 'Fix the item below.'}</span></aside>`}
       </section>`}
+      ${practiceComplete ? renderPracticeResultPanel() : ''}
       ${completedJournal && !finalSweepComplete ? renderLaunchCompleteCard(completedJournal) : ''}
       ${!completedJournal && !finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
       ${!finalSweepComplete && finishDestinationReady ? readinessPanel({
-        title: 'Finish distribution and sweep',
-        detail: 'The destination is checked again before Trebuchet transfers Fee Keys, airdrops, token balances, and SOL.',
+        title: 'Send everything to the return wallet',
+        detail: 'Fee Keys, airdrops, leftover tokens and SOL. The return wallet is checked again first.',
         canRun: finishCanRun,
         runLabel: 'Run final sweep',
         complete: false,
@@ -14419,8 +14350,8 @@ function renderClassicBridge() {
         primary: true,
         finalizationIssue: executeNextTransferFinalizationIssue(readiness, config),
       }) : ''}
-      ${completedJournal && !finalSweepComplete ? '' : `<details class="drawer launch-proof-details" ${finalSweepComplete ? 'open' : ''}>
-        <summary><span>${finalSweepComplete ? 'Launch proof' : 'Proof status'}</span><strong>${finalSweepComplete ? 'Ready' : 'Waiting'}</strong></summary>
+      ${(completedJournal && !finalSweepComplete) || practiceComplete ? '' : `<details class="drawer launch-proof-details" ${finalSweepComplete ? 'open' : ''}>
+        <summary><span>Launch record</span><strong>${finalSweepComplete ? 'Ready' : 'Waiting'}</strong></summary>
         ${renderFinalizationPanel()}
       </details>`}
       ${!finalSweepComplete && !completedJournal ? `<details class="drawer launch-recovery-details">
@@ -14833,7 +14764,7 @@ function fieldRunbookActionControl(action = '', stage = {}) {
 
   if (!action || action === 'none') return null;
   if (action === 'run-demo-launch') {
-    return { dataAction: 'run-demo-launch', label: 'Run practice launch', disabled: state.demoLaunchRunning === true };
+    return { dataAction: 'run-demo-launch', label: 'Run test launch', disabled: state.demoLaunchRunning === true };
   }
   if (action === 'generate-or-unlock-wallet') {
     if (walletPublicKey && walletLocked) return { dataAction: 'unlock-secret-pin', label: 'Unlock PIN' };
@@ -14846,7 +14777,7 @@ function fieldRunbookActionControl(action = '', stage = {}) {
     return { dataAction: 'review-plan', label: 'Stage plan' };
   }
   if (action === 'run-viewport-smoke') {
-    return fallback('Smoke test', 'Run `npm run test:v2:viewport`, then reconnect the local app so Trebuchet can verify the proof hash.');
+    return fallback('Smoke test', 'Run `npm run test:v2:viewport`, then reconnect the desktop app so Trebuchet can verify the proof hash.');
   }
   if (['run-funding-and-quote-checks', 'back-held-reserve'].includes(action)) {
     const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig());
@@ -14989,7 +14920,7 @@ function renderQueue() {
       <div class="queue-row compact ${escapeHtml(activeTx?.state || '')}">
         <span class="queue-copy">
           <h3>${escapeHtml(activeTx?.state === 'blocked' ? 'Live checkpoint blocked' : context.focusLabel)}</h3>
-          <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet is watching launch proof and readiness evidence.')}</p>
+          <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet is watching launch record and readiness evidence.')}</p>
         </span>
       </div>
       <div class="kv-row"><span>Source</span><strong>${escapeHtml(context.source)}</strong></div>
@@ -15030,7 +14961,7 @@ function bootGuardrails() {
     : 'pass';
   const recoveryDetail = state.apiStatus === 'connected'
     ? `${state.recovery.journalCount} launch journals, ${state.recovery.pendingWalletCount} pending wallets.`
-    : 'Recovery inventory is available after the local API connects.';
+    : 'Recovery inventory is available after the desktop app connects.';
   const planGuardrails = Array.isArray(state.launchPlan?.guardrails)
     ? state.launchPlan.guardrails.map((item) => ({
       id: item.id,
@@ -15052,7 +14983,7 @@ function bootGuardrails() {
       title: 'RPC health',
       detail: state.apiStatus === 'connected'
         ? `${state.rpcName}: ${state.rpcHealthLabel}`
-        : 'RPC health requires the local API.',
+        : 'RPC health requires the desktop app.',
       state: rpcState,
     },
     ...planGuardrails,
@@ -15677,7 +15608,7 @@ function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, 
       detail: hasCompletedLiveProof
         ? `Live Trebuchet proof has ${poolCount} pool${poolCount === 1 ? '' : 's'} and ${positionCount} position${positionCount === 1 ? '' : 's'}.`
         : isDemoProof
-          ? 'Demo proof proves wiring only; run a real Trebuchet launch before retiring Classic.'
+          ? 'Test launch record proves wiring only; run a real Trebuchet launch before retiring Classic.'
           : proof && proofLaunchConfigSnapshot.state === 'missing'
             ? 'Completed proof is missing its frozen launch-config snapshot; load proof-bound config before retiring Classic.'
             : proof && proofLaunchConfigSnapshot.state === 'mismatch'
@@ -15727,12 +15658,12 @@ function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, 
           : 'Permanent report proof is missing the terminal sweep evidence hash; republish after final sweep before replacing Classic.'
         : localDossier
           ? reportArtifactSweepBound
-            ? `Local dossier proof is attached: ${localDossier.filename}.`
-            : 'Local dossier proof is missing the terminal sweep evidence hash; download a fresh dossier after final sweep before replacing Classic.'
+            ? `Saved launch record proof is attached: ${localDossier.filename}.`
+            : 'Saved launch record proof is missing the terminal sweep evidence hash; download a fresh launch record after final sweep before replacing Classic.'
         : staleReport
           ? reportPublishMatchesProof(staleReport, proof, config) && !reportArtifactMatchesTerminalSweep(staleReport, proof)
             ? localDossierHasEvidence(staleReport)
-              ? 'Local dossier proof is missing the terminal sweep evidence hash; download a fresh dossier after final sweep before replacing Classic.'
+              ? 'Saved launch record proof is missing the terminal sweep evidence hash; download a fresh launch record after final sweep before replacing Classic.'
               : 'Permanent report proof is missing the terminal sweep evidence hash; republish after final sweep before replacing Classic.'
             : 'Report artifact belongs to another Trebuchet proof; regenerate it before replacing Classic.'
           : 'Publish or attach a proof-bound Trebuchet launch report before replacing Classic.',
@@ -15934,7 +15865,7 @@ function buildV2ReplacementCriteriaAudit({
   const viewportSmokeDetail = viewportSmokeProof
     ? viewportSmokeApiConnected
       ? `Viewport smoke passed${viewportSmokeNames.length ? ` for ${viewportSmokeNames.join(', ')}` : ''}${viewportSmokeProof.generatedAt ? ` at ${viewportSmokeProof.generatedAt}` : ''}.`
-    : 'Connect the local app to verify viewport smoke proof against current Trebuchet assets.'
+    : 'Connect the desktop app to verify viewport smoke proof against current Trebuchet assets.'
     : viewportSmokeStatus?.detail || 'Run `npm run test:v2:viewport` to generate desktop/mobile viewport-smoke proof.';
   const topologyIssues = typeof customQuoteSafetySummary === 'function'
     ? customQuoteSafetySummary(config?.poolTopology || {})
@@ -16039,11 +15970,11 @@ function buildV2ReplacementCriteriaAudit({
       label: 'Full demo launch',
       pass: Boolean(demoRunComplete || hasCompletedLiveProof),
       evidence: demoRunComplete
-        ? `Demo run ${shortAddress(state.lastDemoLaunchRun?.token?.tokenMint || state.lastDemoLaunchRun?.token?.mint)} completed with terminal readiness proof.`
+        ? `Test launch ${shortAddress(state.lastDemoLaunchRun?.token?.tokenMint || state.lastDemoLaunchRun?.token?.mint)} completed with terminal readiness proof.`
         : hasCompletedLiveProof
           ? 'Completed live Trebuchet proof is stronger than the demo path.'
           : state.lastDemoLaunchRun
-            ? 'Demo run exists, but terminal readiness or final sweep evidence is incomplete.'
+            ? 'Test launch exists, but terminal readiness or final sweep evidence is incomplete.'
           : 'Run the Trebuchet demo launch before replacing Classic.',
       detail: 'Covers token creation, LP creation, Fee Key recipient transfer, airdrop delivery, and final sweep routing.',
     },
@@ -16057,15 +15988,15 @@ function buildV2ReplacementCriteriaAudit({
           : `Selected launch wallet ${shortAddress(selectedWalletPublicKey)} has an available local signing secret.`
         : selectedWalletPublicKey
           ? !selectedWallet
-            ? 'Selected launch address is not in Trebuchet managed-wallet storage.'
+            ? 'This address is not one of your saved launch wallets.'
             : walletSecretLocked
               ? 'Selected launch wallet is PIN locked; unlock it before Trebuchet can replace Classic signing.'
             : selectedWallet.decryptionFailed || selectedWallet.hasSecretKey !== true
-                ? 'Selected managed wallet is missing a usable signing secret.'
+                ? 'Selected launch wallet is missing a usable signing secret.'
                 : state.apiStatus !== 'connected'
-                  ? 'Connect the local app to verify this managed wallet signing secret.'
-                : 'Select a Trebuchet-managed wallet with an available signing secret.'
-        : 'Generate, import, or load a Trebuchet-managed wallet.',
+                  ? 'Connect the desktop app to verify this launch wallet signing secret.'
+                : 'Select a launch wallet with an available signing secret.'
+        : 'Generate, import, or load a launch wallet.',
       detail: 'Replaces Classic temporary-wallet generation, funding address, QR, and Recovery PIN flows.',
     },
     {
@@ -16077,12 +16008,12 @@ function buildV2ReplacementCriteriaAudit({
         : persistedVanityCandidates.length
           ? `${persistedVanityCandidates.length} persisted Vanity CA option${persistedVanityCandidates.length === 1 ? '' : 's'} available.`
           : state.selectedVanityPublicKey
-            ? `Selected Vanity CA ${shortAddress(state.selectedVanityPublicKey)} is preview-only or missing its saved secret; grind or select a persisted candidate from the local app.`
+            ? `Selected Vanity CA ${shortAddress(state.selectedVanityPublicKey)} is preview-only or missing its saved secret; grind or select a persisted candidate from the desktop app.`
             : nativeVanityAvailable
             ? 'Native grinder is available.'
             : state.apiStatus === 'connected'
               ? 'Native grinder is not available in this local app.'
-              : 'Connect the local app to verify the native grinder; file preview only shows the UI contract.',
+              : 'Connect the desktop app to verify the native grinder; file preview only shows the UI contract.',
       detail: 'Preserves Classic grinding with split start/end targets and selectable saved candidates.',
     },
     {
@@ -16096,11 +16027,11 @@ function buildV2ReplacementCriteriaAudit({
             ? `Token ${tokenConfig.name} / ${tokenConfig.symbol} / ${tokenConfig.supply} is staged in the current local launch plan${tokenConfig.hasLogo ? ' with validated logo handoff' : ''}.`
             : state.apiStatus === 'connected'
               ? localApiLaunchPlan.stale
-                ? `Token fields are valid, but the staged launch plan is stale for the ${localApiLaunchPlanStaleReason(localApiLaunchPlan)}; stage it again through the local API.`
+                ? `Token fields are valid, but the staged launch plan is stale for the ${localApiLaunchPlanStaleReason(localApiLaunchPlan)}; stage it again through the desktop app.`
                 : localApiLaunchPlan.incomplete
-                  ? `Token fields are valid, but the staged launch plan is incomplete: ${localApiLaunchPlanIncompleteReason(localApiLaunchPlan)}. Stage it again through the local API.`
-                : 'Token fields are valid; stage the launch plan through the local API before replacing Classic token creation.'
-              : 'Token fields are valid; connect the local app and stage the launch plan before replacing Classic token creation.'
+                  ? `Token fields are valid, but the staged launch plan is incomplete: ${localApiLaunchPlanIncompleteReason(localApiLaunchPlan)}. Stage it again through the desktop app.`
+                : 'Token fields are valid; stage the launch plan through the desktop app before replacing Classic token creation.'
+              : 'Token fields are valid; connect the desktop app and stage the launch plan before replacing Classic token creation.'
         : tokenConfig.issues[0] || 'Token fields are not ready for Classic-compatible execution.',
       detail: 'Replaces Classic token name, symbol, supply, description, logo, and create-token payload validation.',
     },
@@ -16113,11 +16044,11 @@ function buildV2ReplacementCriteriaAudit({
         : chartRendererEvidence && viewportSmokeEvidence
           ? state.apiStatus === 'connected'
             ? localApiLaunchPlan.stale
-              ? `Chart renderers and viewport smoke are ready, but the staged launch plan is stale for the ${localApiLaunchPlanStaleReason(localApiLaunchPlan)}; stage it again through the local API.`
+              ? `Chart renderers and viewport smoke are ready, but the staged launch plan is stale for the ${localApiLaunchPlanStaleReason(localApiLaunchPlan)}; stage it again through the desktop app.`
               : localApiLaunchPlan.incomplete
-                ? `Chart renderers and viewport smoke are ready, but the staged launch plan is incomplete: ${localApiLaunchPlanIncompleteReason(localApiLaunchPlan)}. Stage it again through the local API.`
-                : 'Chart renderers and viewport smoke are ready; stage the launch plan through the local API so charts are bound to the executable token/pool model.'
-            : 'Chart renderers and viewport smoke are ready; connect the local app and stage the launch plan so charts are bound to the executable token/pool model.'
+                ? `Chart renderers and viewport smoke are ready, but the staged launch plan is incomplete: ${localApiLaunchPlanIncompleteReason(localApiLaunchPlan)}. Stage it again through the desktop app.`
+                : 'Chart renderers and viewport smoke are ready; stage the launch plan through the desktop app so charts are bound to the executable token/pool model.'
+            : 'Chart renderers and viewport smoke are ready; connect the desktop app and stage the launch plan so charts are bound to the executable token/pool model.'
         : chartRendererEvidence
           ? `Chart renderers are wired; ${viewportSmokeDetail}`
           : 'Tokenomics and liquidity chart renderers are missing.',
@@ -16133,11 +16064,11 @@ function buildV2ReplacementCriteriaAudit({
           : !hasCompletedLiveProof && !localApiLaunchPlanEvidence
             ? state.apiStatus === 'connected'
               ? localApiLaunchPlan.stale
-                ? `Staged launch plan is stale for the ${localApiLaunchPlanStaleReason(localApiLaunchPlan)}; stage it again through the local API.`
+                ? `Staged launch plan is stale for the ${localApiLaunchPlanStaleReason(localApiLaunchPlan)}; stage it again through the desktop app.`
                 : localApiLaunchPlan.incomplete
-                  ? `Staged launch plan is current, but incomplete: ${localApiLaunchPlanIncompleteReason(localApiLaunchPlan)}. Stage it again through the local API.`
-                : 'Stage the launch plan through the local API before replacing Classic pool configuration.'
-              : 'Connect the local app and stage a Classic-shaped launch plan before replacing Classic pool configuration.'
+                  ? `Staged launch plan is current, but incomplete: ${localApiLaunchPlanIncompleteReason(localApiLaunchPlan)}. Stage it again through the desktop app.`
+                : 'Stage the launch plan through the desktop app before replacing Classic pool configuration.'
+              : 'Connect the desktop app and stage a Classic-shaped launch plan before replacing Classic pool configuration.'
           : `${plannedPools.length} planned pool${plannedPools.length === 1 ? '' : 's'} available for proof comparison${poolWarningCount ? ` with ${poolWarningCount} warning${poolWarningCount === 1 ? '' : 's'}` : ''}.`
         : 'No planned pool rows are available for Classic comparison.',
       detail: 'Covers simple SOL, quote pools, slices, ladder bands, support positions, fee tiers, and Fee Key recipients.',
@@ -16154,8 +16085,8 @@ function buildV2ReplacementCriteriaAudit({
           : 'Run the Classic funding estimate before replacing Classic.'
           : !fundingBalanceEvidence
             ? funding.walletBalanceStale
-              ? 'Selected Trebuchet launch-wallet balance is stale; wait for the local app refresh or click Check balance.'
-              : 'Verify the selected Trebuchet launch-wallet balance from the local app.'
+              ? 'Selected Trebuchet launch-wallet balance is stale; wait for the desktop app refresh or click Check balance.'
+              : 'Verify the selected Trebuchet launch-wallet balance from the desktop app.'
             : !fundingSolEvidence
               ? `Launch wallet is short ${Number(funding.missingSol || 0).toFixed(3)} SOL.`
               : quoteStatus.stale
@@ -16180,7 +16111,7 @@ function buildV2ReplacementCriteriaAudit({
                 ? reportHeldReserveAudit.detail || 'Final report/dossier includes a passing held-reserve support audit.'
                 : reportHeldReserveAudit.detail || 'Final report/dossier held-reserve audit is not passing.'
               : 'Final report/dossier is missing the held-reserve audit; regenerate it with report data v14 or newer.'
-            : 'Attach a terminal-sweep-bound report or local dossier before trusting held-reserve backing proof.'
+            : 'Attach a terminal-sweep-bound report or saved launch record before trusting held-reserve backing proof.'
           : currentHeldReserveAudit?.detail || 'Run the Classic funding estimate so Trebuchet can verify held-reserve support backing.',
       detail: 'Blocks unsafe preallocation or airdrop reserves unless support backing is visible in readiness and the final report proof.',
     },
@@ -16191,7 +16122,7 @@ function buildV2ReplacementCriteriaAudit({
       evidence: hasCompletedLiveProof
         ? `Completed live proof includes guarded execution journal ${shortAddress(proof.journalId)}.`
         : proof && !proofJournalEvidence
-          ? 'Completed launch proof is missing its launch journal id.'
+          ? 'Completed launch record is missing its launch journal id.'
           : proof?.journalId && !matchingLocalJournal && proofFinalSweepEvidence
           ? 'Final sweep proof is attached, but the matching launch journal is not loaded locally.'
           : proofFinalSweepEvidence && localJournalEvidenceState.mismatches.length
@@ -16205,9 +16136,9 @@ function buildV2ReplacementCriteriaAudit({
           : proofJournalEvidence && matchingLocalJournal && !journalHasRecoveryPlanningEvidence(matchingLocalJournal)
           ? `Journal ${shortAddress(proof.journalId)} is loaded, but it lacks pool-plan or checkpoint evidence needed to prove resume safety.`
           : proofJournalEvidence && matchingLocalJournal
-          ? `Journal ${shortAddress(proof.journalId)} is loaded for the launch proof.`
+          ? `Journal ${shortAddress(proof.journalId)} is loaded for the launch record.`
           : proofJournalEvidence
-            ? `Launch proof has journal ${shortAddress(proof.journalId)}, but the matching local journal is not loaded.`
+            ? `Launch record has journal ${shortAddress(proof.journalId)}, but the matching local journal is not loaded.`
             : localJournalEvidence
               ? `${localRecoveryJournal.count} active or failed launch journal${localRecoveryJournal.count === 1 ? '' : 's'} with pool-plan or checkpoint evidence loaded for recovery planning${localRecoveryJournal.failed ? ` (${localRecoveryJournal.failed} failed/partial)` : ''}.`
             : recoveryResultJournalEvidence
@@ -16216,7 +16147,7 @@ function buildV2ReplacementCriteriaAudit({
                 ? 'Local launch history is loaded, but no active or failed journal exercises resume safety yet.'
               : state.apiStatus === 'connected'
                 ? 'Local API is connected, but no launch journal or proof has exercised resume safety yet.'
-                : 'Connect the local API and load a journal-backed proof.',
+                : 'Connect the desktop app and load a journal-backed proof.',
       detail: 'Keeps Classic journal recovery, resume-only-missing-work, and unsafe manual blockers visible.',
     },
     {
@@ -16424,11 +16355,11 @@ function renderParityPanel() {
         state: liveProofPassed ? 'pass' : 'warn',
         badge: liveProofPassed ? 'Live proof' : state.lastRealExecution ? 'In progress' : state.lastDemoLaunchRun ? 'Demo only' : demoExecutionReady ? 'Demo ready' : realBridgeReady ? 'Ready' : 'Bridge',
         detail: liveProofPassed
-          ? 'A non-demo launch proof has token, liquidity, and final sweep evidence.'
+          ? 'A non-demo launch record has token, liquidity, and final sweep evidence.'
           : state.lastRealExecution
             ? `${state.lastRealExecution.action || 'Classic operation'} completed; keep running until token, liquidity, and final sweep proof are all present.`
             : state.lastDemoLaunchRun
-              ? `Demo run completed for ${shortAddress(state.lastDemoLaunchRun.token?.tokenMint)}; live parity still needs a real proof.`
+              ? `Test launch completed for ${shortAddress(state.lastDemoLaunchRun.token?.tokenMint)}; live parity still needs a real proof.`
               : demoExecutionReady
                 ? 'Trebuchet can run the complete demo token, LP, and sweep path; real launch routing remains guarded.'
                 : realBridgeReady
@@ -16459,7 +16390,7 @@ function renderParityPanel() {
     retirementGate,
   });
   const finalSweepComplete = transferHasWalletEmptyFinalSweepEvidence(proof?.transfer);
-  const operationalTitle = finalSweepComplete ? 'Launch proof recorded' : 'Finish the launch first';
+  const operationalTitle = finalSweepComplete ? 'Launch record saved' : 'Finish the launch first';
   const operationalDetail = finalSweepComplete
     ? 'The operational launch is complete. Open the release proof audit only when preparing to retire the older workflow.'
     : state.launchWorkspace === 'mint'
@@ -16467,7 +16398,7 @@ function renderParityPanel() {
       : state.launchWorkspace === 'liquidity'
         ? 'Create and lock the configured liquidity positions. Release-comparison checks are not launch blockers.'
         : state.launchWorkspace === 'finish'
-          ? 'Complete the sweep and save the dossier. Release-comparison checks are secondary.'
+          ? 'Complete the sweep and save the launch record. Release-comparison checks are secondary.'
           : 'Continue the six launch phases. Release-comparison checks stay collapsed until you need them.';
 
   // Release-comparison evidence is useful only after the operational launch
@@ -16527,7 +16458,6 @@ function renderParityPanel() {
 
 function renderWallet() {
   const current = account();
-  const pinMeta = secretPinMeta();
   const unlocked = walletIsUnlocked();
   const walletRows = walletAccounts();
   const selectedPublicKey = selectedLaunchWalletPublicKey();
@@ -16539,7 +16469,7 @@ function renderWallet() {
   const secretBlocked = state.secretPin.locked || selectedRow?.secretPinLocked === true;
   $('#walletLabel').textContent = selectedPublicKey
     ? `${selectedRow?.name || current.name} ${secretBlocked || !unlocked ? 'Locked' : shortAddress(selectedPublicKey)}`
-    : 'Choose Trebuchet wallet';
+    : 'Choose launch wallet';
   $('.wallet-led').classList.toggle('is-on', Boolean(selectedPublicKey && unlocked && !secretBlocked));
   const activeRarity = selectedRow?.rarity || 'Common';
   const activeRarityGrade = selectedRow?.rarityGrade || 'common';
@@ -16553,7 +16483,7 @@ function renderWallet() {
   });
   if (walletButton) {
     const walletButtonLabel = !selectedRow
-      ? 'Choose a Trebuchet wallet'
+      ? 'Choose a launch wallet'
       : secretBlocked || !unlocked
         ? `Unlock ${selectedRow.name || 'launch wallet'} with Recovery PIN`
         : `Open ${selectedRow.name || 'launch wallet'}`;
@@ -16564,7 +16494,9 @@ function renderWallet() {
   const activeRarityBadge = $('#activeWalletRarityBadge');
   if (activeRarityBadge) {
     activeRarityBadge.className = `risk-badge wallet-rarity-badge${selectedRow ? ` ${activeRarityClass}` : ''}`;
-    activeRarityBadge.textContent = selectedRow ? activeRarity : 'No wallet';
+    activeRarityBadge.textContent = selectedRow ? activeRarity : '';
+    // A rarity grade only means something for a vanity address.
+    activeRarityBadge.hidden = !selectedRow || /^common$/i.test(String(activeRarity || ''));
   }
   const rawWallet = selectedManagedWallet();
   const qrCode = rawWallet?.qrCode || (
@@ -16579,28 +16511,7 @@ function renderWallet() {
   const revealBusy = state.revealingWalletPublicKey === selectedPublicKey;
   const discardBusy = state.discardingWalletPublicKey === selectedPublicKey;
   const revealError = state.revealError && !revealed ? state.revealError : null;
-  const routeCount = quoteAcquireRoutes().length;
-  const manualCount = quoteAcquireManualCount();
-  const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig());
-  const estimatedSol = fundingEstimateStatus.matchesConfig ? Number(state.classicFundingEstimate?.totalSol || 0) : 0;
-  const recoveryAssets = [
-    ...state.recovery.pendingWallets.map((wallet) => ({
-      type: 'Recovery wallet',
-      name: shortAddress(wallet.publicKey),
-      detail: wallet.decryptionFailed
-        ? 'Secret material unavailable on this machine'
-        : 'Recoverable launch wallet metadata from local API',
-      state: 'Recovery',
-      pane: 'wallets',
-    })),
-    ...state.recovery.journals.map((journal) => ({
-      type: 'Launch journal',
-      name: journal.token?.symbol || shortAddress(journal.walletPublicKey),
-      detail: `${humanizeStage(journal.stage)} / updated ${formatDate(journal.updatedAt || journal.createdAt)}`,
-      state: journal.status || 'Journal',
-      pane: 'journal',
-    })),
-  ];
+
   const proof = currentLaunchProof();
   const proofMint = proof?.token?.mint || proof?.mint || null;
   const proofPools = launchProofPoolIds(proof);
@@ -16608,25 +16519,25 @@ function renderWallet() {
   // A simulated run produces no chain evidence, so none of its artifacts may
   // claim 'Verified' — that word is reserved for proof-layer evidence.
   const proofIsDemo = isDemoLaunchProof(proof);
-  const proofAssetState = proofIsDemo ? 'Demo' : 'Verified';
+  const proofAssetState = proofIsDemo ? 'Test' : 'Verified';
   const proofAssets = proof ? [
     proofMint ? {
       kind: 'token',
-      type: proofIsDemo ? 'Token (practice)' : 'Token proof',
+      type: proofIsDemo ? 'Token (test)' : 'Token proof',
       name: proof?.token?.symbol || shortAddress(proofMint),
       detail: proofMint,
       state: proofAssetState,
     } : null,
     proofPools.length ? {
       kind: 'liquidity',
-      type: proofIsDemo ? 'Liquidity (practice)' : 'Liquidity proof',
+      type: proofIsDemo ? 'Liquidity (test)' : 'Liquidity proof',
       name: `${proofPools.length} recorded pool${proofPools.length === 1 ? '' : 's'}`,
       detail: proofPools.map(shortAddress).join(', '),
       state: proofAssetState,
     } : null,
     proofReportUri ? {
       kind: 'report',
-      type: proofIsDemo ? 'Launch report (practice)' : 'Launch report',
+      type: proofIsDemo ? 'Launch report (test)' : 'Launch report',
       name: proofIsDemo ? 'Simulated report artifact' : 'Published report artifact',
       detail: proofReportUri,
       state: proofAssetState,
@@ -16639,16 +16550,16 @@ function renderWallet() {
         <span class="ident">${escapeHtml(item.name.slice(0, 1))}</span>
         <span class="account-copy">
           <h3>${escapeHtml(item.name)}</h3>
-          <p>${escapeHtml(item.role)} / ${escapeHtml(item.address)}</p>
+          <p>${escapeHtml(item.address)}</p>
         </span>
         <span class="balance">
           <strong>${Number(item.balance || 0).toFixed(2)} SOL</strong>
-          <span class="wallet-rarity-label">${isActive ? 'Active' : 'Wallet'} / ${escapeHtml(item.rarity)}</span>
+          <span class="wallet-rarity-label">${[isActive ? 'In use' : null, /^common$/i.test(String(item.rarity || '')) ? null : item.rarity].filter(Boolean).map(escapeHtml).join(' · ')}</span>
         </span>
         <button class="pill-button" type="button" data-action="select-account" data-account="${escapeHtml(item.id)}">Select</button>
       </article>
     `;
-  }).join('') || '<div class="empty-state">Create or import a Trebuchet-managed wallet.</div>';
+  }).join('') || '<div class="empty-state">Create or import a launch wallet.</div>';
 
   $('#walletDetailPanel').innerHTML = selectedPublicKey && selectedRow ? `
     <div class="wallet-detail-grid">
@@ -16679,30 +16590,13 @@ function renderWallet() {
         ${renderFundingWalletHint()}
       </div>
     </div>
-    <div class="wallet-funding-stats">
-      <span><small>Estimated SOL</small><strong>${estimatedSol ? estimatedSol.toFixed(3) : 'Estimate'}</strong></span>
-      <span><small>Acquire routes</small><strong>${routeCount}</strong></span>
-      <span><small>Manual quote</small><strong>${manualCount}</strong></span>
-      <span><small>Secret</small><strong>${secretBlocked ? 'PIN locked' : selectedRow.hasSecretKey ? 'Available' : 'Missing'}</strong></span>
-    </div>
     ${renderSolflarePanel()}
-    <div class="secret-pin-callout ${escapeHtml(pinMeta.className)}">
-      <span>
-        <small>Recovery PIN</small>
-        <strong>${escapeHtml(pinMeta.label)}</strong>
-        <em>${escapeHtml(pinMeta.detail)}</em>
-      </span>
-      <button class="pill-button" type="button" data-action="${escapeHtml(pinMeta.primaryAction)}" ${pinMeta.disabled || state.secretPin.busy ? 'disabled' : ''}>
-        ${escapeHtml(state.secretPin.busy || pinMeta.primaryLabel)}
-      </button>
-    </div>
-    <div class="wallet-recovery-box ${revealed ? 'is-revealed' : ''}">
+    ${revealError ? `<p class="wallet-detail-error">${escapeHtml(revealError)}</p>` : ''}
+    ${revealed ? `<div class="wallet-recovery-box is-revealed">
       <div>
-        <span class="eyebrow">Recovery secret</span>
-        <h3>${revealed ? 'Visible until hidden' : 'Hidden by default'}</h3>
-        <p>${revealed ? 'Back it up only when recovering manually.' : secretBlocked ? 'Unlock the Recovery PIN to reveal this wallet.' : 'Reveal pulls the secret through the guarded pending-wallet endpoint.'}</p>
+        <span class="eyebrow">Wallet secret</span>
+        <p>Anyone with this can take the wallet's funds. Keep it out of screenshots.</p>
       </div>
-      ${revealed ? `
         <div class="secret-stack">
           ${mnemonic ? `
             <div class="secret-value">
@@ -16735,59 +16629,26 @@ function renderWallet() {
             <i class="fa-solid fa-eye-slash"></i><span>Hide</span>
           </button>
         </div>
-      ` : `
-        <div class="operator-toolbar compact">
-          <button class="pill-button" type="button" data-action="${secretBlocked ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy ? 'disabled' : ''}>
-            <i class="fa-solid fa-lock-open"></i><span>${revealBusy ? 'Revealing' : secretBlocked ? 'Unlock PIN' : 'Reveal secret'}</span>
-          </button>
-        </div>
-        ${revealError ? `<p class="wallet-detail-error">${escapeHtml(revealError)}</p>` : ''}
-      `}
-    </div>
-  ` : '<div class="empty-state">Generate or import a Trebuchet-managed wallet to see funding and recovery controls.</div>';
+    </div>` : ''}
+  ` : '<div class="empty-state">Generate or import a launch wallet to see funding and recovery controls.</div>';
 
-  const recoveryWalletCount = state.recovery.pendingWallets.length;
-  const recoveryJournalCount = state.recovery.journals.length;
-  $('#walletRecoveryInventory').innerHTML = `
-    <details class="wallet-inventory-drawer">
-      <summary>
-        <span class="wallet-inventory-summary-copy">
-          <small>Recovery inventory</small>
-          <strong>Pending wallets &amp; launch journals</strong>
-        </span>
-        <span class="wallet-inventory-summary-meta">
-          <span>${recoveryWalletCount} wallet${recoveryWalletCount === 1 ? '' : 's'} / ${recoveryJournalCount} journal${recoveryJournalCount === 1 ? '' : 's'}</span>
-          <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-        </span>
-      </summary>
-      <div class="wallet-inventory-body">
-        <div class="wallet-inventory-note">
-          <span>
-            <strong>Separate recovery queue</strong>
-            <small>These records are not children of the selected signer.</small>
-          </span>
-          <button class="pill-button" type="button" data-action="inspect-recovery">Open recovery center</button>
-        </div>
-        <div class="asset-table wallet-recovery-table">
-          ${recoveryAssets.length ? recoveryAssets.map((item) => `
-            <article class="asset-row">
-              <span>
-                <h3>${escapeHtml(item.name)}</h3>
-                <p>${escapeHtml(item.type)} / ${escapeHtml(item.detail)}</p>
-              </span>
-              <span class="risk-badge ${stateClass(item.state)}">${escapeHtml(item.state)}</span>
-              <button class="pill-button" type="button" data-action="inspect-recovery-record" data-recovery-pane="${escapeHtml(item.pane)}">Inspect</button>
-            </article>
-          `).join('') : '<div class="empty-state">No recovery wallets or launch journals need attention.</div>'}
-        </div>
-      </div>
-    </details>
-  `;
+  // Old launch wallets and unfinished launches live in History; here they
+  // only get a pointer, and only when there is something to look at.
+  const oldWallets = recoveryWalletsNeedingAttention().length;
+  const openJournals = state.recovery.activeJournalCount || 0;
+  $('#walletRecoveryInventory').innerHTML = oldWallets || openJournals ? `
+    <p class="wallet-recovery-pointer">
+      <span>${escapeHtml([
+        openJournals ? `${openJournals} unfinished launch${openJournals === 1 ? '' : 'es'}` : null,
+        oldWallets ? `${oldWallets} old launch wallet${oldWallets === 1 ? '' : 's'} may still hold assets` : null,
+      ].filter(Boolean).join(' · '))}.</span>
+      <button class="text-button" type="button" data-action="inspect-recovery">Open in History</button>
+    </p>
+  ` : '';
 
   $('#assetTable').innerHTML = proofAssets.length ? `
     <div class="wallet-proof-heading">
-      <small>${proofIsDemo ? 'Practice-run assets (no chain evidence)' : 'Verified launch assets'}</small>
-      <strong>${proofIsDemo ? 'Simulated inventory' : 'Proof inventory'}</strong>
+      <strong>${proofIsDemo ? 'From the test launch (not on-chain)' : 'From the last launch'}</strong>
     </div>
     ${proofAssets.map((item) => `
       <article class="asset-row">
@@ -16909,13 +16770,13 @@ function renderPersonalDiscovery() {
     ${managedWallets.length ? `
       <details class="managed-discovery-wallets">
         <summary>
-          <span><i class="fa-solid fa-key"></i> ${managedWallets.length} Trebuchet wallet${managedWallets.length === 1 ? '' : 's'}</span>
+          <span><i class="fa-solid fa-key"></i> ${managedWallets.length} launch wallet${managedWallets.length === 1 ? '' : 's'}</span>
           <small>Automatic</small>
         </summary>
         <div class="discovery-wallet-chip-list">${visibleManagedWallets.map(discoveryWalletChip).join('')}</div>
         ${managedWallets.length > visibleManagedWallets.length ? `
           <button class="pill-button discovery-wallet-show-more" type="button" data-action="show-more-discovery-wallets">
-            Show ${Math.min(100, managedWallets.length - visibleManagedWallets.length)} more Trebuchet wallets
+            Show ${Math.min(100, managedWallets.length - visibleManagedWallets.length)} more launch wallets
           </button>
         ` : ''}
       </details>
@@ -17280,16 +17141,14 @@ function approvalHtml() {
     return `
       <div class="approval-head">
         <span>
-          <span class="eyebrow">Trebuchet wallet</span>
+          <span class="eyebrow">Launch wallet</span>
           <h2>${walletIsUnlocked() ? 'Unlocked' : 'Locked'}</h2>
         </span>
         <span class="badge">${escapeHtml(authoritativeNetworkLabel())}</span>
       </div>
       <div class="approval-body">
-        <div class="kv-row"><span>Origin</span><strong>makesometokens.com</strong></div>
         <div class="kv-row"><span>Wallet</span><strong>${walletIsUnlocked() ? escapeHtml(current.name) : 'Locked'}</strong></div>
-        <div class="kv-row"><span>Policy</span><strong>Fund, simulate, arm</strong></div>
-        <p>No run is armed. Review the launch plan in Token &amp; pools, then fund the wallet before execution.</p>
+        <p>Nothing to approve yet. Set up the token, then fund the launch wallet.</p>
       </div>
       <div class="approval-actions">
         <button class="secondary-button" type="button" data-action="close-approval">Close</button>
@@ -17306,25 +17165,21 @@ function approvalHtml() {
       eyebrow: 'One saved step',
       title: 'Finish token',
       detail: 'Complete only the missing token work.',
-      button: 'Arm token repair',
     },
     '/api/resume-launch': {
       eyebrow: 'One saved step',
       title: 'Finish liquidity',
       detail: 'Reuse the recorded pools and finish only what is missing.',
-      button: 'Arm liquidity recovery',
     },
     '/api/reveal-sealed-metadata': {
       eyebrow: 'One saved step',
       title: 'Reveal identity',
-      detail: 'Publish the committed identity and retire metadata control.',
-      button: 'Arm identity reveal',
+      detail: 'Publish the name, symbol and logo, then lock them for good.',
     },
     '/api/transfer-assets': {
       eyebrow: 'Final saved step',
       title: 'Finish launch',
-      detail: 'Save proof, distribute assets, and sweep the launch wallet.',
-      button: 'Arm final sweep',
+      detail: 'Save the launch record, then send everything to the return wallet.',
     },
   }[recoveryEndpoint] || null;
   const fundingStatus = classicFundingEstimateStatus(config);
@@ -17334,19 +17189,14 @@ function approvalHtml() {
   }) || { available: false, value: null, label: 'Estimate required' };
   const finishingInterruptedToken = state.executionReadiness?.nextEndpoint === '/api/finish-token-creation';
   const armingTokenCreation = ['/api/create-token', '/api/finish-token-creation'].includes(state.executionReadiness?.nextEndpoint);
-  const primaryLabel = recoverySpec
-    ? `${walletIsUnlocked() ? '' : 'Unlock PIN &amp; '}${recoverySpec.button}`
-    : armingTokenCreation
-      ? `Arm &amp; return to ${finishingInterruptedToken ? 'Finish token' : 'Create token'}`
-      : 'Arm local run';
+  const primaryLabel = recoverySpec && !walletIsUnlocked() ? 'Unlock PIN &amp; approve' : 'Approve';
 
   return `
     <div class="approval-head">
       <span>
-        <span class="eyebrow">${escapeHtml(recoverySpec?.eyebrow || (armingTokenCreation ? 'Final confirmation' : 'Arm local run'))}</span>
-        <h2>${recoverySpec ? escapeHtml(recoverySpec.title) : armingTokenCreation ? `Review before ${finishingInterruptedToken ? 'finishing' : 'creating'} ${escapeHtml(state.launchPlan?.token?.symbol || $('#tokenSymbol').value || 'the token')}` : `${escapeHtml(state.launchPlan?.token?.symbol || $('#tokenSymbol').value || 'Token')} launch envelope`}</h2>
+        ${recoverySpec?.eyebrow ? `<span class="eyebrow">${escapeHtml(recoverySpec.eyebrow)}</span>` : ''}
+        <h2>${recoverySpec ? escapeHtml(recoverySpec.title) : armingTokenCreation ? `Review before ${finishingInterruptedToken ? 'finishing' : 'creating'} ${escapeHtml(state.launchPlan?.token?.symbol || $('#tokenSymbol').value || 'the token')}` : `Review the ${escapeHtml(state.launchPlan?.token?.symbol || $('#tokenSymbol').value || 'token')} launch`}</h2>
       </span>
-      <span class="risk-badge ${riskClass(tx.risk)}">${pendingRows.length} ${recoverySpec ? 'action' : 'ops'}</span>
     </div>
     <div class="approval-body">
       <div class="kv-row"><span>Wallet</span><strong>${escapeHtml(current.name)}</strong></div>
@@ -17354,7 +17204,7 @@ function approvalHtml() {
       ${recoverySpec
         ? `<div class="kv-row approval-pin-row"><span>PIN</span><strong>${walletIsUnlocked() ? 'Ready' : 'Unlock required'}</strong></div>`
         : `<div class="kv-row"><span>Estimate</span><strong>${currentEstimate.available ? fmtSol(currentEstimate.value) : 'Required'}</strong></div>`}
-      <p class="approval-scope-note"><i class="fa-solid fa-shield-halved"></i> ${escapeHtml(recoverySpec?.detail || 'Arm the reviewed plan.')} Arming sends nothing.</p>
+      <p class="approval-scope-note"><i class="fa-solid fa-shield-halved"></i> ${recoverySpec?.detail ? `${escapeHtml(recoverySpec.detail)} ` : ''}Approving sends nothing; each step still runs from its own button.</p>
       ${!recoverySpec ? pendingRows.slice(0, 2).map((item) => `<p><i class="fa-solid fa-check"></i> ${escapeHtml(item.label)}</p>`).join('') : ''}
       ${!recoverySpec && pendingRows.length > 2 ? `<p><i class="fa-solid fa-ellipsis"></i> ${pendingRows.length - 2} more</p>` : ''}
     </div>
@@ -17369,7 +17219,7 @@ function renderExtension() {
   const html = approvalHtml();
   const approvalInline = document.getElementById('approvalInline');
   const approvalFloating = $('#approvalFloating');
-  const policyList = document.getElementById('policyList');
+
   if (approvalInline) approvalInline.innerHTML = html;
   if (approvalFloating) {
     approvalFloating.innerHTML = html;
@@ -17377,20 +17227,7 @@ function renderExtension() {
     approvalFloating.classList.toggle('needs-pin', !walletIsUnlocked());
     approvalFloating.classList.toggle('is-open', state.approvalOpen && state.activeView === 'launch');
   }
-  if (policyList) {
-    policyList.innerHTML = signingPolicies.map((policy) => {
-      const icon = policy.state === 'pass' ? 'fa-check' : policy.state === 'warn' ? 'fa-triangle-exclamation' : 'fa-ban';
-      return `
-        <article class="policy-row ${policy.state}">
-          <span>
-            <h3><i class="fa-solid ${icon}"></i> ${escapeHtml(policy.title)}</h3>
-            <p>${escapeHtml(policy.detail)}</p>
-          </span>
-          <span class="risk-badge ${policy.state === 'danger' ? 'danger' : ''}">${policy.state === 'danger' ? 'Blocked' : 'Allowed'}</span>
-        </article>
-      `;
-    }).join('');
-  }
+
 }
 
 function renderReleasePanel() {
@@ -17432,7 +17269,6 @@ function applyRpcConfig(config = {}) {
   const active = state.rpcSaved.find((item) => item?.url === state.rpcActiveUrl);
   state.rpcName = active?.name || (state.rpcActiveUrl ? safeRpcUrl(state.rpcActiveUrl) : state.rpcName);
   $('#networkLabel').textContent = authoritativeNetworkLabel();
-  if ($('#environmentLabel')) $('#environmentLabel').textContent = state.demoActive ? 'DEMO' : 'RPC';
 }
 
 function renderRpcSettingsPanel() {
@@ -17459,9 +17295,9 @@ function renderRpcSettingsPanel() {
     <article class="rpc-settings-panel ${escapeHtml(healthClass)}">
       <div class="rpc-settings-head">
         <span>
-          <span class="eyebrow">RPC management</span>
+          <span class="eyebrow">RPC</span>
           <h3>${escapeHtml(state.rpcName || 'Unknown RPC')}</h3>
-          <p>${escapeHtml(activeUrl ? safeRpcUrl(activeUrl) : 'Connect through the local app to manage launch RPC endpoints.')}</p>
+          <p>${escapeHtml(activeUrl ? safeRpcUrl(activeUrl) : 'Connect through the desktop app to manage launch RPC endpoints.')}</p>
         </span>
         <span class="risk-badge ${escapeHtml(healthClass)}">${escapeHtml(isPublic ? 'Public RPC' : state.rpcHealthLabel)}</span>
       </div>
@@ -17504,51 +17340,16 @@ function renderRpcSettingsPanel() {
 
 function renderSettings() {
   const pinMeta = secretPinMeta();
-  const modeRows = [
-    {
-      title: 'Execution mode',
-      detail: state.demoActive
-        ? 'Practice adapter active. Chain-touching operations are simulated.'
-        : 'Live adapter active. Guarded operations use the configured RPC.',
-      state: state.demoActive ? 'Practice' : 'Live',
-    },
-    {
-      title: 'Recovery PIN',
-      detail: pinMeta.detail,
-      state: pinMeta.label,
-    },
-    {
-      title: 'Local API',
-      detail: state.apiDetail,
-      state: state.apiStatus === 'connected' ? 'Current' : 'Preview',
-    },
-    {
-      title: 'RPC endpoint',
-      detail: state.apiStatus === 'connected'
-        ? `${state.rpcName} / ${state.rpcHealthLabel}`
-        : 'Connect through the local app to read RPC health.',
-      state: state.rpcHealth === 'error' ? 'Warn' : 'Current',
-    },
-    {
-      title: 'Report publishing',
-      detail: state.prefs.publishLaunchReport
-        ? 'Launch reports are enabled in local preferences.'
-        : 'Launch report publishing is disabled in local preferences.',
-      state: state.prefs.publishLaunchReport ? 'On' : 'Off',
-    },
-    ...localModes,
-  ];
-
   $('#settingsList').innerHTML = `
     <article class="setting-row ${state.demoActive ? '' : 'warn'}">
       <span>
-        <h3>${state.demoActive ? 'Practice mode' : 'Live mode'}</h3>
+        <h3>${state.demoActive ? 'Test mode' : 'Live mode'}</h3>
         <p>${state.demoActive
-          ? 'All chain-touching API operations use the simulated demo ledger.'
-          : 'Actions can spend real assets through the authoritative RPC after readiness confirmation.'}</p>
+          ? 'Test launches send nothing and spend no SOL.'
+          : 'Launches send real transactions and spend real SOL.'}</p>
       </span>
       <button class="pill-button ${state.demoActive ? '' : 'danger'}" type="button" data-action="toggle-demo-mode" ${state.apiStatus === 'connected' ? '' : 'disabled'}>
-        ${state.demoActive ? 'Switch to live' : 'Switch to Practice'}
+        ${state.demoActive ? 'Switch to live' : 'Switch to test'}
       </button>
     </article>
     <article class="secret-pin-panel ${escapeHtml(pinMeta.className)}">
@@ -17577,26 +17378,7 @@ function renderSettings() {
       </span>
     </article>
     ${renderReleasePanel()}
-    ${renderRpcSettingsPanel()}
-    ${settings.map((setting) => `
-    <article class="setting-row">
-      <span>
-        <h3>${escapeHtml(setting.title)}</h3>
-        <p>${escapeHtml(setting.detail)}</p>
-      </span>
-      <span class="risk-badge">${escapeHtml(setting.status)}</span>
-    </article>
-  `).join('')}`;
-
-  $('#modeStack').innerHTML = modeRows.map((mode) => `
-    <article class="mode-row-card">
-      <span>
-        <h3>${escapeHtml(mode.title)}</h3>
-        <p>${escapeHtml(mode.detail)}</p>
-      </span>
-      <span class="risk-badge ${stateClass(mode.state) || (mode.state === 'Research' ? 'warn' : '')}">${escapeHtml(mode.state)}</span>
-    </article>
-  `).join('');
+    ${renderRpcSettingsPanel()}`;
 }
 
 function recoveryGuideModel({
@@ -17663,7 +17445,7 @@ function recoveryGuideModel({
       badge: 'Selected',
       title: 'Recover selected wallet',
       detail: 'Inspect, reveal for manual recovery, sweep stranded assets, or reuse this launch wallet for the next run.',
-      items: ['Copy the address and compare it with the failed launch journal.', 'Use for launch selects it as the Trebuchet-managed signer.', 'Reveal only if manual recovery is needed.', 'Sweep moves assets and clears the entry only after empty-wallet verification.'],
+      items: ['Copy the address and compare it with the failed launch journal.', 'Use for launch makes it the launch wallet.', 'Reveal only if manual recovery is needed.', 'Sweep moves assets and clears the entry only after empty-wallet verification.'],
       actions: [
         { label: 'Use for launch', action: 'use-recovery-wallet-for-launch', wallet: selectedWallet.publicKey },
         { label: 'Reveal secret', action: selectedWallet.secretPinLocked ? 'unlock-secret-pin' : 'reveal-recovery-wallet', wallet: selectedWallet.publicKey },
@@ -17934,10 +17716,10 @@ function recoveryWizardModel({
     {
       id: 'inventory',
       label: 'Find',
-      title: inventoryState === 'pass' ? 'No active recovery inventory' : 'Find failed launch state',
+      title: inventoryState === 'pass' ? 'Nothing to recover' : 'Unfinished launches and old wallets',
       detail: state.apiStatus !== 'connected'
-        ? 'History needs the local API to load journals and pending wallets.'
-        : `${activeJournals.length} active journal${activeJournals.length === 1 ? '' : 's'} / ${wallets.length} pending wallet${wallets.length === 1 ? '' : 's'}.`,
+        ? 'History needs the desktop app to load journals and pending wallets.'
+        : `${activeJournals.length} unfinished launch${activeJournals.length === 1 ? '' : 'es'} · ${wallets.length} old launch wallet${wallets.length === 1 ? '' : 's'}.`,
       state: inventoryState,
       stats: [
         ['Journals', activeJournals.length],
@@ -17945,7 +17727,7 @@ function recoveryWizardModel({
         ['Manual blockers', manualModels.length],
       ],
       items: state.apiStatus !== 'connected'
-        ? ['Open through the local Trebuchet app.', 'Keep recovery files in place until inventory loads.']
+        ? ['Open through the Trebuchet desktop app.', 'Keep recovery files in place until inventory loads.']
         : [
           selectedJournalModel ? `${selectedJournalModel.plan.title}: ${selectedJournalModel.plan.detail}` : 'No failed launch journal selected.',
           manualModels.length ? 'Manual recovery blockers are shown before automatic resume actions.' : 'Automatic resume is allowed only when prior checkpoints are safe.',
@@ -17955,9 +17737,9 @@ function recoveryWizardModel({
     {
       id: 'unlock',
       label: 'Unlock',
-      title: unlockState === 'pass' ? 'Secrets available or not needed' : 'Unlock recovery material',
+      title: unlockState === 'pass' ? 'Wallets unlocked' : 'Unlock old launch wallets',
       detail: recoverableCount
-        ? `${recoverableCount} launch wallet secret${recoverableCount === 1 ? '' : 's'} can be revealed or swept after PIN checks.`
+        ? `${recoverableCount} old launch wallet${recoverableCount === 1 ? '' : 's'} can be swept or revealed with the Recovery PIN.`
         : hasDecryptionFailures
           ? 'Some local wallet metadata exists but cannot be decrypted on this machine.'
           : 'No pending wallet secrets are waiting.',
@@ -18038,18 +17820,18 @@ function recoveryWizardModel({
     screens,
     active,
     headline: state.apiStatus !== 'connected'
-      ? 'Recovery needs local app'
+      ? 'Open the Trebuchet desktop app to see recovery'
       : manualModels.length
-      ? 'Recovery requires manual review'
+      ? 'A launch needs manual recovery'
       : tokenFinishModels.length
-        ? 'Interrupted token ready to finish'
+        ? 'A token was left unfinished'
       : finishModels.length
-        ? 'Launch ready to finish'
+        ? 'A launch is ready to finish'
       : resumableModels.length
-        ? 'Safe resume path available'
+        ? 'A launch can resume'
         : activeJournals.length || wallets.length
-          ? 'Recovery inventory needs review'
-          : 'Recovery clear',
+          ? 'Old launch wallets to check'
+          : 'Nothing to recover',
   };
 }
 
@@ -18063,7 +17845,6 @@ function renderRecoveryWizard(model) {
       <section class="recovery-wizard-panel pass" aria-label="Recovery next action">
         <div class="recovery-wizard-head">
           <strong>Nothing to recover.</strong>
-          <span class="risk-badge">Clear</span>
         </div>
       </section>
     `;
@@ -18123,7 +17904,7 @@ function renderSecretPinResetAudit(reset) {
       </div>
       <ul class="recovery-sweep-steps">
         <li>Do not discard journals that still point at a funded wallet unless you have the secret backed up elsewhere.</li>
-        <li>Generate or import a new Trebuchet wallet before the next launch.</li>
+        <li>Generate or import a new launch wallet before the next launch.</li>
       </ul>
     </div>
   `;
@@ -18154,7 +17935,7 @@ function renderRecoveryWalletWorkspace() {
         <h3>${wallets.length ? `${wallets.length} local recovery entr${wallets.length === 1 ? 'y' : 'ies'}` : 'No pending launch wallets'}</h3>
         <p>${state.apiStatus === 'connected'
           ? 'Select a wallet to inspect funding QR, reveal the secret, sweep assets, or discard the local recovery entry after manual cleanup.'
-          : 'Open through the local Trebuchet app to inspect recoverable launch wallets.'}</p>
+          : 'Open through the Trebuchet desktop app to inspect recoverable launch wallets.'}</p>
       </span>
       <span class="recovery-wallet-stats">
         <span><small>Recoverable</small><strong>${recoverableCount}</strong></span>
@@ -18286,14 +18067,20 @@ function renderHistoryExecutionAudit() {
   `;
 }
 
-function currentRecoveryWizardModel() {
+// Saved launch wallets that may still hold assets. The launch wallet in use
+// is not something to recover unless an unfinished launch left work on it.
+function recoveryWalletsNeedingAttention() {
+  if (state.apiStatus !== 'connected') return [];
   const selectedPublicKey = selectedLaunchWalletPublicKey();
-  // The launch wallet in use is not something to recover unless an
-  // unfinished launch left work on it.
   const selectedHasOpenJournal = (state.recovery.journals || [])
     .some((journal) => !isTerminalJournal(journal) && journal.walletPublicKey === selectedPublicKey);
-  const wallets = (state.apiStatus === 'connected' ? state.recovery.pendingWallets : [])
+  return (state.recovery.pendingWallets || [])
     .filter((wallet) => wallet.publicKey !== selectedPublicKey || selectedHasOpenJournal);
+}
+
+function currentRecoveryWizardModel() {
+  const selectedPublicKey = selectedLaunchWalletPublicKey();
+  const wallets = recoveryWalletsNeedingAttention();
   return recoveryWizardModel({
     wallets,
     selectedPublicKey,
@@ -18581,21 +18368,19 @@ function renderFundingReceipt(estimate) {
   const spent = Math.max(0, Number(estimate.totalSol || 0) - intoPools - returned);
   const split = `
       <div class="funding-split" role="group" aria-label="Where the SOL ends up">
-        <span class="is-pool"><small>Into the pool</small><strong>${intoPools.toFixed(4)}</strong><em>liquidity sellers are paid from</em></span>
-        <span class="is-spent"><small>Spent for good</small><strong>${spent.toFixed(4)}</strong><em>account rent and fees</em></span>
-        <span class="is-back"><small>Returned if unused</small><strong>${returned.toFixed(4)}</strong><em>safety buffer</em></span>
+        <span class="is-pool"><small>Into the pool</small><strong>${intoPools.toFixed(4)}</strong><em>buy support</em></span>
+        <span class="is-spent"><small>Rent and fees</small><strong>${spent.toFixed(4)}</strong><em>not returned</em></span>
+        <span class="is-back"><small>Buffer</small><strong>${returned.toFixed(4)}</strong><em>returned if unused</em></span>
       </div>
       ${groupSol('support') <= 0
         ? '<p class="funding-split-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> No SOL goes into the pool. Until someone buys, sellers have nothing to sell into. Set a liquidity budget on Token &amp; pools to add buy support.</p>'
         : ''}`;
   return `
     <div class="funding-receipt">
-      <small>Where the ${Number(estimate.totalSol || 0).toFixed(4)} SOL goes</small>
       ${split}
-      <ul>${rows}</ul>
       <div class="funding-receipt-total"><span>Total</span><strong>${Number(estimate.totalSol || 0).toFixed(4)} SOL</strong></div>
       ${manualHtml}
-      ${perPool.length ? `<details class="funding-receipt-lines"><summary>Every line (${lines.length})</summary><ul>${lines.map((line) => row(line.label, line.sol)).join('')}</ul></details>` : ''}
+      <details class="funding-receipt-lines"><summary>Breakdown</summary><ul>${perPool.length ? lines.map((line) => row(line.label, line.sol)).join('') : rows}</ul></details>
     </div>`;
 }
 
@@ -18620,7 +18405,7 @@ function renderFundingWalletHint({ compact = false } = {}) {
   const detectLabel = hint.checking ? 'Checking history' : 'Find funding wallet';
   return `<div class="funding-wallet-hint ${className} ${compact ? 'compact' : ''}">
     <span>
-      <small>Final asset return</small>
+      <small>Return wallet</small>
       <strong>${escapeHtml(title)}</strong>
       <em>${escapeHtml(detail)}</em>
     </span>
@@ -18646,38 +18431,25 @@ function renderSolflarePanel() {
           ? 'Unavailable'
           : 'Optional';
   const detail = connected
-    ? `${shortAddress(state.solflare.publicKey)} can fund the selected Trebuchet wallet or fill the sweep destination.`
+    ? `Connected as ${shortAddress(state.solflare.publicKey)}.`
     : state.solflare.error
       ? state.solflare.error
-      : 'Connect Solflare for funding and destination convenience.';
+      : 'Optional. Connect it to fund the launch wallet, or to use it as the return wallet.';
 
   return `
     <div class="solflare-panel ${escapeHtml(className)}">
       <div class="solflare-head">
         <span>
-          <small>External funding wallet</small>
           <strong>Solflare</strong>
           <em>${escapeHtml(detail)}</em>
         </span>
-        <span class="risk-badge ${state.solflare.error ? 'danger' : connected ? '' : 'warn'}">${escapeHtml(badgeLabel)}</span>
+        ${busy || state.solflare.error ? `<span class="risk-badge ${state.solflare.error ? 'danger' : 'warn'}">${escapeHtml(badgeLabel)}</span>` : ''}
       </div>
-      <div class="solflare-grid">
-        <span>
-          <small>Status</small>
-          <strong>${escapeHtml(state.solflare.status || 'Not connected')}</strong>
-          <em>Does not sign launch execution.</em>
-        </span>
-        <div class="operator-toolbar compact">
-          <button class="pill-button" type="button" data-action="connect-solflare" ${busy || connected ? 'disabled' : ''}>
-            <i class="fa-solid fa-link"></i><span>${state.solflare.connecting ? 'Connecting' : 'Connect'}</span>
-          </button>
-          <button class="pill-button" type="button" data-action="disconnect-solflare" ${busy || !connected ? 'disabled' : ''}>
-            <i class="fa-solid fa-link-slash"></i><span>${state.solflare.disconnecting ? 'Disconnecting' : 'Disconnect'}</span>
-          </button>
-          <button class="pill-button" type="button" data-action="use-solflare-destination" ${connected ? '' : 'disabled'}>
-            <i class="fa-solid fa-arrow-right"></i><span>Use as sweep</span>
-          </button>
-        </div>
+      <div class="operator-toolbar compact">
+        ${connected
+          ? `<button class="pill-button" type="button" data-action="use-solflare-destination"><i class="fa-solid fa-arrow-right"></i><span>Use as return wallet</span></button>
+             <button class="pill-button" type="button" data-action="disconnect-solflare" ${busy ? 'disabled' : ''}><i class="fa-solid fa-link-slash"></i><span>${state.solflare.disconnecting ? 'Disconnecting' : 'Disconnect'}</span></button>`
+          : `<button class="pill-button" type="button" data-action="connect-solflare" ${busy ? 'disabled' : ''}><i class="fa-solid fa-link"></i><span>${state.solflare.connecting ? 'Connecting' : 'Connect'}</span></button>`}
       </div>
     </div>
   `;
@@ -18771,11 +18543,11 @@ async function refreshManualPrefundBalance({ quiet = false } = {}) {
   const walletPublicKey = selectedLaunchWalletPublicKey();
   if (!walletPublicKey) {
     resetManualPrefundState();
-    if (!quiet) notify('Generate or select a Trebuchet wallet first');
+    if (!quiet) notify('Generate or select a launch wallet first');
     return null;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.checkDetailedBalance) {
-    if (!quiet) notify('Manual prefund balance check requires the local Trebuchet app');
+    if (!quiet) notify('Manual prefund balance check requires the Trebuchet desktop app');
     return null;
   }
 
@@ -19259,7 +19031,7 @@ function proofPayloadFromImportText(text) {
   }
   const match = raw.match(/<script\b(?=[^>]*\bid=["']trebuchet-v2-proof["'])[^>]*>([\s\S]*?)<\/script>/i);
   if (!match) {
-    throw new Error('Proof import does not contain a Trebuchet JSON proof or HTML dossier payload');
+    throw new Error('Proof import does not contain a Trebuchet JSON proof or HTML launch record payload');
   }
   try {
     return JSON.parse(String(match[1] || '').trim());
@@ -19338,7 +19110,7 @@ function downloadV2Proof() {
     downloadedAt,
   });
   renderAll();
-  notify('Launch proof downloaded');
+  notify('Launch record downloaded');
 }
 
 function downloadV2DossierHtml() {
@@ -19346,12 +19118,12 @@ function downloadV2DossierHtml() {
   const config = proofConfigForFingerprint(proof, currentLaunchConfig());
   if (proof?.token?.mint) {
     if (!proofCanCreateLocalDossier(proof, config)) {
-      notify('Record the token and pool IDs before downloading the launch dossier');
+      notify('Record the token and pool IDs before downloading the launch record');
       return;
     }
     const airdropIssue = airdropCompletionIssue(
       airdropCompletionStatus(proof, config.poolTopology),
-      'downloading the launch dossier',
+      'downloading the launch record',
     );
     if (airdropIssue) {
       notify(airdropIssue);
@@ -19390,7 +19162,7 @@ function downloadV2DossierHtml() {
   });
   renderAll();
   checkExecutionReadiness().catch(() => null);
-  notify('Local dossier attached · final sweep can continue without publishing');
+  notify('Saved launch record attached · final sweep can continue without publishing');
 }
 
 function proofFromImportedPayload(payload) {
@@ -19405,7 +19177,7 @@ function proofFromImportedPayload(payload) {
   }
   const proof = payload.proof || payload.launchData?.proof || null;
   if (!proof || typeof proof !== 'object') {
-    throw new Error('Proof JSON does not contain a Trebuchet launch proof');
+    throw new Error('Proof JSON does not contain a Trebuchet launch record');
   }
   if (importedProofPayloadHasClassicSource(payload, proof)) {
     throw new Error('Proof JSON is a Classic artifact, not a Trebuchet proof export');
@@ -19440,7 +19212,7 @@ function proofFromImportedPayload(payload) {
   }
   const normalized = normalizeStoredLaunchProof({ proof: proofForImport, savedAt: Date.now() });
   if (!normalized) {
-    throw new Error('Proof JSON does not contain a real Trebuchet launch proof');
+    throw new Error('Proof JSON does not contain a real Trebuchet launch record');
   }
   return normalized.proof;
 }
@@ -19625,9 +19397,9 @@ async function loadV2ProofFile(file) {
       : null;
     restoreImportedProofComparison(payload, mergedProof);
     renderAll();
-    notify('Launch proof loaded');
+    notify('Launch record loaded');
   } catch (error) {
-    notify(error.message || 'Launch proof import failed');
+    notify(error.message || 'Launch record import failed');
   }
 }
 
@@ -19761,7 +19533,7 @@ async function publishV2LaunchReport({ quiet = false, refreshReadiness = true, l
     return;
   }
   if (!proof?.journalId) {
-    const reason = 'Refresh journal-backed launch proof before publishing a report';
+    const reason = 'Refresh journal-backed launch record before publishing a report';
     if (!quiet) notify(reason);
     return { skipped: true, reason, launchJournalMissing: true };
   }
@@ -19770,7 +19542,7 @@ async function publishV2LaunchReport({ quiet = false, refreshReadiness = true, l
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.publishLaunchReport) {
-    if (!quiet) notify('Report publishing requires the local Trebuchet app');
+    if (!quiet) notify('Report publishing requires the Trebuchet desktop app');
     return;
   }
 
@@ -19815,7 +19587,7 @@ async function publishV2LaunchReport({ quiet = false, refreshReadiness = true, l
       state.lastReportPublish = attachProofFingerprint({ status: 'skipped', reason: result.reason }, proof, config);
       finishExecutionLedgerEntry(ledgerId, {
         status: 'warn',
-        detail: result.reason || 'Report publishing skipped by the local app.',
+        detail: result.reason || 'Report publishing skipped by the desktop app.',
       });
       if (!quiet) notify('Launch report publishing skipped');
     } else if (result.failed) {
@@ -19941,11 +19713,11 @@ async function runV2Airdrop({ retry = false, skipConfirm = false, quiet = false,
     return;
   }
   if (state.demoActive) {
-    if (!quiet) notify('The practice launch runs the airdrop for you');
+    if (!quiet) notify('The test launch runs the airdrop for you');
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.runAirdrop || !state.apiClient?.retryAirdrop) {
-    if (!quiet) notify('Airdrop requires the local Trebuchet app');
+    if (!quiet) notify('Airdrop requires the Trebuchet desktop app');
     return;
   }
   const allRecipients = Array.isArray(proof.airdrop?.recipients) ? proof.airdrop.recipients : [];
@@ -20090,11 +19862,11 @@ async function startQuoteAcquire() {
     return;
   }
   if (!walletPublicKey) {
-    notify('Generate or select a Trebuchet wallet first');
+    notify('Generate or select a launch wallet first');
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.acquireQuoteTokens) {
-    notify('Quote acquire requires the local Trebuchet app');
+    notify('Quote acquire requires the Trebuchet desktop app');
     return;
   }
   if (!state.demoActive) {
@@ -20204,7 +19976,7 @@ async function reviewAndArmRun() {
   }
   if (state.lastRunEnvelope?.status === 'armed') {
     renderClassicBridge();
-    notify('Launch is armed; the next operation is ready');
+    notify('Approved. The next step is ready.');
     return;
   }
   const recoveryEndpoint = recoveryAuthorizationEndpoint();
@@ -20260,7 +20032,7 @@ async function stageTransactions({ openApproval = true, announce = true } = {}) 
 
 async function setDemoMode(next, { announce = true } = {}) {
   if (state.apiStatus !== 'connected' || !state.apiClient?.setUserPrefs) {
-    notify('Practice mode requires the local Trebuchet app');
+    notify('Test mode requires the Trebuchet desktop app');
     return false;
   }
   const prefs = await state.apiClient.setUserPrefs({ demoMode: next === true });
@@ -20269,7 +20041,7 @@ async function setDemoMode(next, { announce = true } = {}) {
   state.launchMode = state.demoActive ? 'dry-run' : 'guarded';
   if (announce) {
     notify(state.demoActive
-      ? 'Practice mode active: chain operations are simulated'
+      ? 'Test mode on: nothing is sent'
       : 'Live mode active: guarded operations use the configured RPC');
   }
   renderAll();
@@ -20282,9 +20054,9 @@ async function simulateLaunch() {
     state.launchMode = 'dry-run';
     await stageTransactions();
     setLaunchWorkspace('mint', { focus: true });
-    notify('Practice mode active; review the plan and run the demo');
+    notify('Test mode on');
   } catch (error) {
-    notify(error.message || 'Could not enable Practice mode');
+    notify(error.message || 'Could not enable Test mode');
   }
 }
 
@@ -20327,17 +20099,17 @@ async function generateManagedWallet() {
     const wallet = await state.apiClient.generateManagedWallet();
     addManagedWallet(wallet);
     renderAll();
-    notify('Trebuchet-managed wallet generated');
+    notify('Launch wallet created');
     return wallet;
   }
 
-  notify('Launch wallet generation requires the local Trebuchet app');
+  notify('Launch wallet generation requires the Trebuchet desktop app');
   return null;
 }
 
 async function importManagedWallet() {
   if (state.apiStatus !== 'connected' || !state.apiClient?.importManagedWallet) {
-    notify('Import requires the local Trebuchet app');
+    notify('Import requires the Trebuchet desktop app');
     return;
   }
   const secret = await openOperatorPrompt({
@@ -20370,7 +20142,7 @@ async function refreshSecretPinStatus({ reloadBoot = false } = {}) {
 
 async function setupSecretPin() {
   if (state.apiStatus !== 'connected' || !state.apiClient?.setupSecretPin) {
-    notify('Recovery PIN requires the local Trebuchet app');
+    notify('Recovery PIN requires the Trebuchet desktop app');
     return false;
   }
   if (state.secretPin.configured) {
@@ -20412,7 +20184,7 @@ async function setupSecretPin() {
 
 async function unlockSecretPin({ reason = 'unlock' } = {}) {
   if (state.apiStatus !== 'connected' || !state.apiClient?.unlockSecretPin) {
-    notify('Recovery PIN requires the local Trebuchet app');
+    notify('Recovery PIN requires the Trebuchet desktop app');
     return false;
   }
   if (!state.secretPin.configured) {
@@ -20451,7 +20223,7 @@ async function unlockLaunchWalletAndContinue() {
 
 async function changeSecretPin() {
   if (state.apiStatus !== 'connected' || !state.apiClient?.changeSecretPin) {
-    notify('Recovery PIN change requires the local Trebuchet app');
+    notify('Recovery PIN change requires the Trebuchet desktop app');
     return;
   }
   if (!state.secretPin.configured) {
@@ -20496,7 +20268,7 @@ async function changeSecretPin() {
 
 async function lockSecretPin() {
   if (state.apiStatus !== 'connected' || !state.apiClient?.lockSecretPin) {
-    notify('Recovery PIN requires the local Trebuchet app');
+    notify('Recovery PIN requires the Trebuchet desktop app');
     return;
   }
 
@@ -20520,7 +20292,7 @@ async function lockSecretPin() {
 
 async function resetSecretPin() {
   if (state.apiStatus !== 'connected' || !state.apiClient?.resetSecretPin) {
-    notify('Recovery PIN reset requires the local Trebuchet app');
+    notify('Recovery PIN reset requires the Trebuchet desktop app');
     return;
   }
   if (!state.secretPin.configured) {
@@ -20571,7 +20343,7 @@ async function resetSecretPin() {
 
 async function loadWalletQr(publicKey = selectedLaunchWalletPublicKey()) {
   if (!publicKey) {
-    notify('Select a Trebuchet wallet first');
+    notify('Select a launch wallet first');
     return;
   }
   const wallet = state.managedWallets.find((item) => item.publicKey === publicKey);
@@ -20585,10 +20357,10 @@ async function loadWalletQr(publicKey = selectedLaunchWalletPublicKey()) {
       publicKey,
       qrCode: null,
       loading: false,
-      error: 'Open through the local Trebuchet app to render the funding QR.',
+      error: 'Open through the Trebuchet desktop app to render the funding QR.',
     };
     renderWallet();
-    notify('Wallet QR requires the local Trebuchet app');
+    notify('Wallet QR requires the Trebuchet desktop app');
     return;
   }
 
@@ -20621,11 +20393,11 @@ async function loadWalletQr(publicKey = selectedLaunchWalletPublicKey()) {
 
 async function revealWalletSecret(publicKey = selectedLaunchWalletPublicKey()) {
   if (!publicKey) {
-    notify('Select a Trebuchet wallet first');
+    notify('Select a launch wallet first');
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.revealPendingWallet) {
-    notify('Secret reveal requires the local Trebuchet app');
+    notify('Secret reveal requires the Trebuchet desktop app');
     return;
   }
   const revealConfirmed = await confirmOperatorAction({
@@ -20662,7 +20434,7 @@ function clearRevealedWalletSecret(publicKey = selectedLaunchWalletPublicKey()) 
 
 async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()) {
   if (!publicKey) {
-    notify('Select a Trebuchet wallet first');
+    notify('Select a launch wallet first');
     return;
   }
   if (state.fullRunRunning || state.realExecutionRunning) {
@@ -20670,7 +20442,7 @@ async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.dismissPendingWallet) {
-    notify('Wallet discard requires the local Trebuchet app');
+    notify('Wallet discard requires the Trebuchet desktop app');
     return;
   }
   const typed = await openOperatorPrompt({
@@ -20901,7 +20673,7 @@ async function sweepRecoveryWallet(publicKey) {
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.sweepPendingWallet) {
-    notify('Recovery sweep requires the local Trebuchet app');
+    notify('Recovery sweep requires the Trebuchet desktop app');
     return;
   }
   const defaultDestination = currentLaunchConfig().poolTopology.sweepDestination || '';
@@ -20954,7 +20726,7 @@ async function cancelRefundLaunch() {
   const walletPublicKey = selectedLaunchWalletPublicKey();
   const destinationWallet = currentLaunchConfig().poolTopology.sweepDestination || '';
   if (!walletPublicKey) {
-    notify('Select a Trebuchet launch wallet first');
+    notify('Select a launch wallet first');
     return;
   }
   if (state.fullRunRunning || state.realExecutionRunning || state.demoLaunchRunning || state.reportPublishing || state.airdropRunning || state.quoteAcquire.running) {
@@ -20966,11 +20738,11 @@ async function cancelRefundLaunch() {
     return;
   }
   if (state.apiStatus !== 'connected' || (!state.apiClient?.cancelLaunchRefund && !state.apiClient?.sweepPendingWallet)) {
-    notify('Cancel & Refund requires the local Trebuchet app');
+    notify('Cancel & Refund requires the Trebuchet desktop app');
     return;
   }
   if (!isProbablySolanaAddress(destinationWallet)) {
-    notify('Set a valid sweep destination before cancelling');
+    notify('Set a valid return wallet before cancelling');
     return;
   }
   if (destinationWallet === walletPublicKey) {
@@ -21348,7 +21120,7 @@ async function runClassicFundingEstimate() {
       return;
     }
   }
-  notify('Funding estimates require the authenticated local Trebuchet app');
+  notify('Funding estimates require the Trebuchet desktop app');
 }
 
 // Pair tokens are checked as part of funding, automatically: before every
@@ -21419,7 +21191,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
     return null;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.getQuoteTokenInfo) {
-    say('Quote-token verification requires the local Trebuchet app');
+    say('Quote-token verification requires the Trebuchet desktop app');
     return null;
   }
 
@@ -21522,7 +21294,7 @@ function setReturnWallet(address) {
 // watches for the newly signed wallet.
 function openWalletSigning() {
   if (state.apiStatus !== 'connected') {
-    notify('Wallet signing needs the local Trebuchet app');
+    notify('Wallet signing needs the Trebuchet desktop app');
     return;
   }
   window.open(`${window.location.origin}/v2/sign.html`, '_blank', 'noopener');
@@ -21556,15 +21328,13 @@ function openWalletSigning() {
 function assetDestinationsHtml() {
   const status = returnWalletStatus();
   const others = state.destinations.signed.filter((address) => address !== status.address);
-  const title = status.kind === 'signed' ? 'Signed wallet' : status.kind === 'funder' ? 'First funding wallet' : 'Not verified';
-  const badge = status.kind === 'signed'
-    ? '<span class="risk-badge">Signed</span>'
+  const title = status.kind === 'signed'
+    ? 'A wallet you signed with'
     : status.kind === 'funder'
-      ? `<span class="risk-badge ${status.address ? '' : 'warn'}">${status.address ? 'Proven by funding' : 'After funding'}</span>`
-      : '<span class="risk-badge danger">Not verified</span>';
-  const address = status.address
-    ? `<code>${escapeHtml(status.address)}</code>`
-    : '<small>The first wallet that funds the launch wallet. Detected once the SOL arrives.</small>';
+      ? status.address ? 'The wallet you funded from' : 'The wallet you fund from'
+      : 'Not verified';
+  const badge = status.kind === 'unverified' ? '<span class="risk-badge danger">Not verified</span>' : '';
+  const address = status.address ? `<code>${escapeHtml(status.address)}</code>` : '';
   const warning = status.kind === 'unverified'
     ? '<p class="return-wallet-warning">This address was typed, not proven. Assets will not be sent to it. Sign with it, or use the funding wallet.</p>'
     : '';
@@ -21602,16 +21372,16 @@ function assetDestinationsHtml() {
        <p class="return-wallet-note">${share.heldPercent > 0
          ? 'Ticked wallets split the held-back tokens by the SOL each sent. Anyone can send SOL to the launch wallet, so only tick wallets you recognize and check the full address.'
          : 'Hold back part of the supply (More options, Supply and pools) to share it with funding wallets.'}${locked ? ' Locked: the token is created.' : ''}</p>`
-    : '<p class="return-wallet-note">Funding wallets appear here once SOL reaches the launch wallet. You can then tick any or all of them to share the held-back tokens, split by the SOL each sent.</p>';
+    : `<p class="return-wallet-note">Funding wallets show here once SOL arrives. Tick any of them to share the ${escapeHtml(heldLabel)}, split by the SOL each sent.</p>`;
 
   return `
     <div class="return-wallet-head"><span>Where assets go</span>${badge}</div>
     <div class="asset-destination">
-      <small class="eyebrow">Main return wallet</small>
+      <small class="eyebrow">Return wallet</small>
       <strong>${escapeHtml(title)}</strong>
       ${address}
       ${warning}
-      <p class="return-wallet-note">Gets the Fee Keys, leftover SOL, and any held-back tokens not shared below.</p>
+      <p class="return-wallet-note">Gets the Fee Keys (they collect the pools' trading fees), leftover SOL and any held-back tokens.</p>
       <div class="operator-toolbar compact">
         <button class="pill-button" type="button" data-action="sign-return-wallet" ${state.destinations.waiting ? 'disabled' : ''}>
           ${state.destinations.waiting ? 'Waiting for signature…' : 'Sign with another wallet'}
@@ -21622,11 +21392,11 @@ function assetDestinationsHtml() {
         ${others.map((other) => `<button class="pill-button" type="button" data-action="use-signed-wallet" data-address="${escapeHtml(other)}">Use ${escapeHtml(shortAddress(other))}</button>`).join('')}
       </div>
     </div>
-    <div class="asset-destination asset-share">
-      <small class="eyebrow">Share held-back tokens · ${escapeHtml(heldLabel)}</small>
+    ${share.heldPercent > 0 || share.active ? `<div class="asset-destination asset-share">
+      <small class="eyebrow">Share the ${escapeHtml(heldLabel)}</small>
       <strong>${share.active ? `Split across ${share.rows.length} funding wallet${share.rows.length === 1 ? '' : 's'}` : 'Funding wallets'}</strong>
       ${shareBody}
-    </div>`;
+    </div>` : ''}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -21842,7 +21612,7 @@ function coinPositionsHtml() {
       <button class="pill-button danger" type="button" data-action="withdraw-coin-position" data-nft="${escapeHtml(position.nftMint)}" ${withdrawing ? 'disabled' : ''}>${withdrawing === position.nftMint ? 'Withdrawing…' : 'Withdraw'}</button>
     </li>`).join('');
   return `
-    ${rows ? `<ul class="coin-positions">${rows}</ul>` : '<p class="coins-empty">None of this app\'s wallets hold an unlocked position in this coin\'s pools. Locked launch positions are held by the lock program; their Fee Keys are the receipts.</p>'}
+    ${rows ? `<ul class="coin-positions">${rows}</ul>` : '<p class="coins-empty">No positions you can withdraw. Locked launch positions stay locked; their Fee Keys collect the trading fees.</p>'}
     ${error ? `<p class="pool-support-error">${escapeHtml(error)}</p>` : ''}`;
 }
 
@@ -21876,7 +21646,7 @@ async function addCoinByMint() {
     return;
   }
   if (!state.apiClient?.addCoin) {
-    notify('Adding a coin needs the local Trebuchet app');
+    notify('Adding a coin needs the Trebuchet desktop app');
     return;
   }
   try {
@@ -21970,9 +21740,12 @@ function coinCardHtml(coin = {}, { variant = 'row', tag = 'div', attrs = '', sta
   const src = coinImageSrc(coin.image);
   const initials = escapeHtml(String(coin.symbol || coin.name || '').slice(0, 2).toUpperCase());
   const name = coin.name || coin.symbol || 'New coin';
-  const addressText = address
-    ? (variant === 'header' ? address : shortAddress(address))
-    : 'no address yet';
+  // Test mints are simulator ids, not addresses anyone can look up.
+  const addressText = address?.startsWith('Demo')
+    ? 'not on-chain'
+    : address
+      ? (variant === 'header' ? address : shortAddress(address))
+      : 'no address yet';
   return `
     <${tag} class="coin-card-ui coin-card-ui--${variant} ${address ? '' : 'is-unaddressed'}" ${attrs} data-coin-image="${escapeHtml(src)}" style="${escapeHtml(coinCardStyle(address, src))}">
       <span class="coin-card-ui__mark" data-initials="${initials}">${src ? `<img src="${escapeHtml(src)}" alt="">` : initials}</span>
@@ -22039,7 +21812,7 @@ function renderCoins() {
   const target = $('#coinsList');
   if (!target) return;
   if (state.apiStatus !== 'connected') {
-    target.innerHTML = '<p class="coins-empty">Your coins appear here when the local Trebuchet app is connected.</p>';
+    target.innerHTML = '<p class="coins-empty">Your coins appear here when the Trebuchet desktop app is connected.</p>';
     return;
   }
   if (state.coins.loading && !state.coins.loaded) {
@@ -22169,13 +21942,13 @@ function coinActivityHtml(events = []) {
   if (!events.length) return '<p class="coins-empty">Nothing recorded yet.</p>';
   const label = {
     launched_here: 'Launched with Trebuchet',
-    practice_launch: 'Practice launch',
+    practice_launch: 'Test launch',
     support_added: 'Buy support added',
     position_withdrawn: 'Position withdrawn',
   };
   return `<ul class="coin-activity">${events.map((event) => `
     <li>
-      <span><strong>${escapeHtml(label[event.type] || event.type)}</strong><small>${escapeHtml(formatDate(event.at))}${event.sol ? ` · ${Number(event.sol).toFixed(4)} SOL` : ''}${event.practice ? ' · practice' : ''}</small></span>
+      <span><strong>${escapeHtml(label[event.type] || event.type)}</strong><small>${escapeHtml(formatDate(event.at))}${event.sol ? ` · ${Number(event.sol).toFixed(4)} SOL` : ''}${event.practice ? ' · test' : ''}</small></span>
       <em>${escapeHtml(event.outcome || '')}${event.txId && !String(event.txId).startsWith('Demo') ? ` · <a href="${escapeHtml(solscanTxUrl(event.txId))}" target="_blank" rel="noopener">tx</a>` : ''}</em>
     </li>`).join('')}</ul>`;
 }
@@ -22238,7 +22011,7 @@ function renderCoinPage(coin) {
   body.innerHTML = `${header}
     ${state.coins.detailLoading ? '<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading the coin from the chain…</p>' : ''}
     ${state.coins.detailError ? `<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>` : ''}
-    ${coin.practice ? '<p class="pool-support-intro">Practice coin: it exists only in the local simulator.</p>' : ''}
+
     ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl></section>` : ''}
     ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Launch steps' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation, coin)}</section>` : ''}
     ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
@@ -22272,7 +22045,7 @@ function renderCoinContext() {
   const practice = isDemoLaunchProof(proof);
   const reserved = state.selectedVanityPublicKey || null;
   const status = mint
-    ? practice ? 'Practice coin' : transferHasWalletEmptyFinalSweepEvidence(proof?.transfer) ? 'Live' : 'Being created'
+    ? practice ? 'Test coin' : transferHasWalletEmptyFinalSweepEvidence(proof?.transfer) ? 'Live' : 'Being created'
     : reserved ? 'Address reserved' : 'Draft';
   const address = mint || reserved;
   const eyebrow = $('#viewEyebrow');
@@ -22333,7 +22106,7 @@ async function previewPoolSupport() {
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.previewSolSupport) {
-    notify('Adding buy support needs the local Trebuchet app');
+    notify('Adding buy support needs the Trebuchet desktop app');
     return;
   }
   state.poolSupport = { status: 'previewing', plan: null, result: null, error: null };
@@ -22359,7 +22132,7 @@ async function openPoolSupport() {
   const walletPublicKey = selectedLaunchWalletPublicKey();
   if (!plan || !inputs) return;
   if (!walletPublicKey) {
-    notify('Select a Trebuchet wallet to sign with');
+    notify('Select a launch wallet to sign with');
     return;
   }
   if (plan.enoughSol === false) {
@@ -22471,11 +22244,11 @@ function editReturnWallet() {
 async function detectFundingWallet({ quiet = false } = {}) {
   const walletPublicKey = selectedLaunchWalletPublicKey();
   if (!walletPublicKey) {
-    if (!quiet) notify('Generate or select a Trebuchet wallet first');
+    if (!quiet) notify('Generate or select a launch wallet first');
     return null;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.findFundingWallet) {
-    if (!quiet) notify('Funding wallet detection requires the local Trebuchet app');
+    if (!quiet) notify('Funding wallet detection requires the Trebuchet desktop app');
     return null;
   }
 
@@ -22591,17 +22364,17 @@ function applyExecutionErrorReadiness(error) {
 
 async function runDemoLaunch() {
   if (!state.demoActive) {
-    notify('Demo mode is required for a Trebuchet practice launch');
+    notify('Switch to test mode for a test launch');
     return;
   }
   const config = currentLaunchConfig();
   const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
   if (!walletPublicKey) {
-    notify('Generate a Trebuchet wallet first');
+    notify('Generate a launch wallet first');
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.runDemoLaunch) {
-    notify('Demo launch requires the local Trebuchet app');
+    notify('Test launch requires the Trebuchet desktop app');
     return;
   }
 
@@ -22632,9 +22405,9 @@ async function runDemoLaunch() {
     });
     pollLiveOps().catch(() => null);
     setLaunchWorkspace('finish');
-    notify('Practice launch complete: no SOL was spent');
+    notify('Test launch complete: no SOL was spent');
   } catch (error) {
-    notify(error.message || 'Practice launch failed; no SOL was spent');
+    notify(error.message || 'Test launch failed; no SOL was spent');
   } finally {
     state.demoLaunchRunning = false;
     renderAll();
@@ -22645,15 +22418,15 @@ async function executeNextRunOperation() {
   const config = currentLaunchConfig();
   const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
   if (!walletPublicKey) {
-    notify('Generate or select a Trebuchet wallet first');
+    notify('Generate or select a launch wallet first');
     return;
   }
   if (state.demoActive) {
-    notify('Use Run practice launch while Practice is selected');
+    notify('Switch to live mode to launch for real');
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.executeNextRunOperation) {
-    notify('Real execution requires the local Trebuchet app');
+    notify('Real execution requires the Trebuchet desktop app');
     return;
   }
   const runEnvelopeId = state.lastRunEnvelope?.status === 'armed'
@@ -22720,7 +22493,7 @@ async function executeNextRunOperation() {
     if (result.executed?.endpoint === '/api/create-token' && result.executed.result?.tokenMint) {
       history.unshift({
         title: `${config.token.symbol} token created`,
-        detail: `${shortAddress(result.executed.result.tokenMint)} minted by the Trebuchet-managed wallet.`,
+        detail: `${shortAddress(result.executed.result.tokenMint)} minted by the launch wallet.`,
         time: 'Just now',
       });
     } else if (result.executed?.endpoint === '/api/finish-token-creation' && result.executed.result?.mint) {
@@ -22772,7 +22545,7 @@ function executeNextTransferFinalizationIssue(readiness, config = currentLaunchC
   const airdropStatus = airdropCompletionStatus(proof, safeConfig.poolTopology);
   const airdropIssue = airdropCompletionIssue(airdropStatus);
   if (airdropIssue) return airdropIssue;
-  if (!proof) return 'Refresh readiness so Trebuchet can verify the launch proof before final sweep.';
+  if (!proof) return 'Refresh readiness so Trebuchet can verify the launch record before final sweep.';
 
   const staleReport = staleReportPublishForProof(proof, safeConfig);
   if (staleReport) return 'Launch report is stale for this proof; republish before final sweep.';
@@ -22786,11 +22559,11 @@ function executeNextTransferFinalizationIssue(readiness, config = currentLaunchC
     ? localDossierFinalizationIssue(staleLocalDossier, proof, safeConfig)
     : null;
   if (!report?.jsonUri && !report?.htmlUri && staleLocalDossierIssue && staleLocalDossierIssue !== 'missing') {
-    return `Local dossier proof is stale or incomplete (${staleLocalDossierIssue}); download a fresh dossier before final sweep.`;
+    return `Saved launch record proof is stale or incomplete (${staleLocalDossierIssue}); download a fresh launch record before final sweep.`;
   }
   if (!report?.jsonUri && !report?.htmlUri && !localDossier) {
     return state.prefs.publishLaunchReport === false
-      ? 'Report publishing is off; download the local dossier before final sweep.'
+      ? 'Report publishing is off; download the saved launch record before final sweep.'
       : 'Publish or download the launch report before final sweep.';
   }
   return null;
@@ -22850,7 +22623,7 @@ function fullRunCompletionAudit(proof = currentLaunchProof(), config = currentLa
   const terminalJournalComplete = proofHasTerminalLaunchJournal(proof);
 
   if (!proof || typeof proof !== 'object') {
-    blockers.push('Launch proof is missing after the full run.');
+    blockers.push('Launch record is missing after the full run.');
   }
   if (proofLaunchConfigSnapshot.state === 'missing') {
     blockers.push('Frozen launch-config snapshot proof is missing.');
@@ -22919,10 +22692,10 @@ function fullRunCompletionAudit(proof = currentLaunchProof(), config = currentLa
     blockers.push('Launch report proof is stale for this launch.');
   } else if (!reportUri && !localDossier) {
     blockers.push(reportLocalOnly
-      ? 'Report publishing is off; download or attach the local dossier before marking the run complete.'
+      ? 'Report publishing is off; download or attach the saved launch record before marking the run complete.'
       : 'Launch report artifact proof is missing.');
   } else if (reportLocalOnly && !localDossier) {
-    blockers.push('Report publishing is off; download or attach the local dossier before marking the run complete.');
+    blockers.push('Report publishing is off; download or attach the saved launch record before marking the run complete.');
   }
   if (!finalSweepComplete) {
     blockers.push('Wallet-empty final-sweep proof is missing.');
@@ -22989,7 +22762,7 @@ async function runFullLaunch() {
   const config = currentLaunchConfig();
   const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
   if (!walletPublicKey) {
-    notify('Generate or select a Trebuchet wallet first');
+    notify('Generate or select a launch wallet first');
     return;
   }
   if (state.demoActive) {
@@ -22997,7 +22770,7 @@ async function runFullLaunch() {
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.executeNextRunOperation) {
-    notify('Full launch requires the local Trebuchet app');
+    notify('Full launch requires the Trebuchet desktop app');
     return;
   }
   const runEnvelopeId = state.lastRunEnvelope?.status === 'armed'
@@ -23110,7 +22883,7 @@ async function runFullLaunch() {
         const reportPublish = currentReportPublish(reportProof, reportConfig);
         const reportDone = reportPublish?.jsonUri || reportPublish?.htmlUri || currentLocalDossier(reportProof, reportConfig);
         if (!reportDone && state.prefs.publishLaunchReport === false) {
-          throw new Error('Report publishing is off; download the local dossier before final sweep.');
+          throw new Error('Report publishing is off; download the saved launch record before final sweep.');
         }
         if (!reportDone && reportProof?.canPublishReport && proofHasReportPublishEvidence(reportProof, reportConfig)) {
           state.fullRunStep = 'Publishing report';
@@ -23171,12 +22944,12 @@ async function runFullLaunch() {
       }
     }
 
-    state.fullRunStep = 'Verifying launch proof';
+    state.fullRunStep = 'Verifying launch record';
     renderAll();
     try {
       readiness = await refreshExecutionReadinessForFullRun(walletPublicKey, config);
     } catch (error) {
-      finalization.proofVerificationError = error.message || 'Launch proof refresh failed';
+      finalization.proofVerificationError = error.message || 'Launch record refresh failed';
     }
     try {
       await refreshLocalApiState();
@@ -23221,7 +22994,7 @@ async function runLaunchEnvelope() {
   if (!state.transactions.length) return;
   const walletPublicKey = state.selectedWalletPublicKey || account().publicKey || account().id;
   if (state.apiStatus !== 'connected' || !state.apiClient?.armRunEnvelope) {
-    notify('Arming requires the authenticated local Trebuchet app');
+    notify('Arming requires the Trebuchet desktop app');
     return;
   }
   if (!walletIsUnlocked()) {
@@ -23290,7 +23063,7 @@ async function runLaunchEnvelope() {
     : state.executionReadiness?.nextEndpoint === '/api/finish-token-creation'
       ? 'Finish token safely'
     : state.executionReadiness?.nextAction || 'the next operation';
-  notify(`Local run armed; execute only after readiness passes. Next: ${nextOperation}.`);
+  notify(`Approved. Next: ${nextOperation}.`);
   window.requestAnimationFrame(() => {
     document.querySelector(`[data-classic-workspace="${state.launchWorkspace}"] [data-action="execute-next-run"]`)?.focus();
   });
@@ -23298,7 +23071,7 @@ async function runLaunchEnvelope() {
 
 async function checkForUpdates() {
   if (state.apiStatus !== 'connected' || !state.apiClient?.checkForUpdates) {
-    notify('Update checks require the local Trebuchet app');
+    notify('Update checks require the Trebuchet desktop app');
     return;
   }
   if (state.updateCheck.checking) {
@@ -23363,7 +23136,7 @@ async function checkForUpdates() {
 async function toggleUpdateAutocheck() {
   const next = !state.prefs.checkForUpdatesOnStartup;
   if (state.apiStatus !== 'connected' || !state.apiClient?.setUserPrefs) {
-    notify('Auto-update preference requires the local Trebuchet app');
+    notify('Auto-update preference requires the Trebuchet desktop app');
     return;
   }
   state.prefs.checkForUpdatesOnStartup = next;
@@ -23383,7 +23156,7 @@ async function toggleUpdateAutocheck() {
 async function toggleReportPublishingPref() {
   const next = state.prefs.publishLaunchReport === false;
   if (state.apiStatus !== 'connected' || !state.apiClient?.setUserPrefs) {
-    notify('Report publishing preference requires the local Trebuchet app');
+    notify('Report publishing preference requires the Trebuchet desktop app');
     return;
   }
   state.prefs.publishLaunchReport = next;
@@ -23423,7 +23196,7 @@ async function testRpcEndpoint() {
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.testRpc) {
-    notify('RPC testing requires the local Trebuchet app');
+    notify('RPC testing requires the Trebuchet desktop app');
     return;
   }
   state.rpcBusy = 'test';
@@ -23449,7 +23222,7 @@ async function addRpcEndpoint() {
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.addRpc) {
-    notify('RPC management requires the local Trebuchet app');
+    notify('RPC management requires the Trebuchet desktop app');
     return;
   }
   state.rpcBusy = 'add';
@@ -23472,7 +23245,7 @@ async function addRpcEndpoint() {
 async function selectRpcEndpoint(url) {
   if (!url) return;
   if (state.apiStatus !== 'connected' || !state.apiClient?.selectRpc) {
-    notify('RPC management requires the local Trebuchet app');
+    notify('RPC management requires the Trebuchet desktop app');
     return;
   }
   state.rpcBusy = 'select';
@@ -23497,7 +23270,7 @@ async function removeRpcEndpoint(url) {
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.removeRpc) {
-    notify('RPC management requires the local Trebuchet app');
+    notify('RPC management requires the Trebuchet desktop app');
     return;
   }
   {
@@ -23595,7 +23368,6 @@ function applyBootState(boot) {
     state.accountId = state.selectedWalletPublicKey;
   }
   $('#networkLabel').textContent = authoritativeNetworkLabel();
-  if ($('#environmentLabel')) $('#environmentLabel').textContent = state.demoActive ? 'PRACTICE' : 'LIVE';
 }
 
 async function bootLocalApi() {
@@ -23645,7 +23417,6 @@ async function bootLocalApi() {
     // duplicates the launch flow and hides the saved launch below it.
     const quickCard = $('.quick-launch-card');
     if (quickCard) quickCard.hidden = true;
-    notify('Local API connected');
   } else {
     refreshQuickLaunchPrice();
   }
@@ -23785,7 +23556,7 @@ async function resumeJournal(journalId) {
     return;
   }
   if (!canResumeJournal(journal)) {
-    notify(state.demoActive ? 'Disable demo mode to resume real journals' : 'Journal is not resumable');
+    notify(state.demoActive ? 'Disable test mode to resume real journals' : 'Journal is not resumable');
     return;
   }
   const plan = journalResumePlan(journal);
@@ -23805,7 +23576,7 @@ async function resumeJournal(journalId) {
     if (!ok) return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.resumeLaunchJournal) {
-    notify('Resume requires the local Trebuchet app');
+    notify('Resume requires the Trebuchet desktop app');
     return;
   }
   state.recoveryActionId = journalId;
@@ -23879,7 +23650,7 @@ async function dismissJournal(journalId) {
     if (!ok) return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.dismissLaunchJournal) {
-    notify('Dismiss requires the local Trebuchet app');
+    notify('Dismiss requires the Trebuchet desktop app');
     return;
   }
   state.recoveryActionId = journalId;
@@ -24187,7 +23958,7 @@ function handleClick(event) {
   if (action === 'review') {
     if (!walletIsUnlocked()) {
       setView('wallet');
-      notify(selectedLaunchWalletPublicKey() ? 'Unlock the managed wallet before review' : 'Generate or select a managed wallet first');
+      notify(selectedLaunchWalletPublicKey() ? 'Unlock the launch wallet before review' : 'Generate or select a launch wallet first');
       return;
     }
     state.activeApprovalId = actionTarget.dataset.tx;
@@ -24540,7 +24311,7 @@ function handleClick(event) {
   }
 
   if (action === 'copy-v2-proof-summary') {
-    copyText(buildProofShareSummary(), 'Launch proof summary');
+    copyText(buildProofShareSummary(), 'Launch record summary');
     return;
   }
 
@@ -24642,7 +24413,7 @@ function handleClick(event) {
     state.approvalOpen = false;
     if (!selectedLaunchWalletPublicKey()) {
       setView('wallet');
-      notify('Generate or select a managed wallet first');
+      notify('Generate or select a launch wallet first');
       return;
     }
     if (!state.secretPin.configured) {
@@ -25139,7 +24910,7 @@ function bindEvents() {
     const selectedPublicKey = selectedLaunchWalletPublicKey();
     if (!selectedPublicKey) {
       setView('wallet');
-      notify('Generate or import a managed wallet');
+      notify('Generate or import a launch wallet');
       return;
     }
     const selected = selectedManagedWallet();
@@ -25152,7 +24923,7 @@ function bindEvents() {
       return;
     }
     setView('wallet');
-    notify('Managed wallet opened');
+    notify('Launch wallet opened');
   });
 
   $('#stageButton').addEventListener('click', stageTransactions);

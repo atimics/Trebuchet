@@ -85,7 +85,7 @@ async function smokeViewport(browser, viewport) {
     }));
     assert.equal(firstOpen.experienceMode, null, `${viewport.name}: a separate experience mode is back`);
     assert.equal(firstOpen.workspace, 'configure', `${viewport.name}: launch does not open on Token & pools`);
-    assert.match(firstOpen.setupHelp, /no transaction · 0 SOL/i);
+    assert.match(firstOpen.setupHelp, /nothing is sent/i);
     assert.equal(firstOpen.tabsVisible, true, `${viewport.name}: launch phases are hidden`);
     assert.equal(firstOpen.tokenNameVisible, true, `${viewport.name}: token name field is hidden`);
     assert.ok(
@@ -183,7 +183,7 @@ async function smokeViewport(browser, viewport) {
 
     assert.deepEqual(pageErrors, [], `${viewport.name}: page errors`);
     assert.deepEqual(consoleErrors, [], `${viewport.name}: console errors`);
-    assert.equal(metrics.title, 'TREBUCHET · makesometokens');
+    assert.equal(metrics.title, 'Trebuchet');
     assert.equal(metrics.launchVisible, true, `${viewport.name}: launch view is not active`);
     assert.ok(
       metrics.scrollWidth <= metrics.clientWidth + 1,

@@ -115,7 +115,7 @@ try {
   await page.goto(`${baseUrl}/v2/`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await page.waitForFunction(() => (
     document.body.dataset.apiStatus === 'connected'
-    && document.querySelector('#networkLabel')?.textContent?.trim() === 'Demo'
+    && document.querySelector('#networkLabel')?.textContent?.trim() === 'Nothing is sent'
   ), null, { timeout: 30_000 });
   assert.equal(new URL(page.url()).pathname, '/v2/');
 
@@ -215,15 +215,18 @@ try {
   // so estimating does not wait on a typed return wallet.
   assert.equal(await page.locator('.classic-workspace-fund button[data-launch-workspace="mint"]').count(), 0);
   await page.click('.classic-workspace-fund [data-action="estimate-funding"]');
-  await page.waitForSelector('.classic-workspace-fund .funding-task-address', { timeout: 30_000 });
+  // In test mode the estimate says no SOL is needed and links to the next
+  // step; there is no deposit address to show.
+  await page.waitForSelector('.classic-workspace-fund .funding-task .funding-receipt', { timeout: 30_000 });
   await page.evaluate(() => renderClassicBridge());
   assert.deepEqual(await page.evaluate(() => (
     [...document.querySelectorAll('[data-classic-workspace]')]
       .filter((panel) => !panel.hidden)
       .map((panel) => panel.dataset.classicWorkspace)
   )), ['fund'], 'An async funding refresh exposed multiple launch phases');
-  assert.match(await page.locator('.classic-workspace-fund .funding-task').innerText(), /did not move funds/i);
-  assert.equal(await page.locator('.classic-workspace-fund button[data-launch-workspace="mint"]').count(), 0);
+  assert.match(await page.locator('.classic-workspace-fund .funding-task').innerText(), /No SOL needed/i);
+  assert.equal(await page.locator('.classic-workspace-fund .funding-task-address').count(), 0);
+  assert.equal(await page.locator('.classic-workspace-fund .funding-task button[data-launch-workspace="mint"]').count(), 1);
   await page.evaluate(() => {
     const config = currentLaunchConfig();
     const walletPublicKey = selectedLaunchWalletPublicKey();
@@ -263,15 +266,15 @@ try {
   });
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'mint');
   const mintWorkspace = page.locator('[data-classic-workspace="mint"]');
-  assert.match(await mintWorkspace.innerText(), /Review and arm this launch/i);
-  assert.match(await mintWorkspace.innerText(), /Review & arm launch/i);
+  assert.match(await mintWorkspace.innerText(), /Review this launch/i);
+  assert.match(await mintWorkspace.innerText(), /Review launch/i);
   assert.doesNotMatch(await mintWorkspace.innerText(), /\/api\/create-token/i);
 
   await mintWorkspace.locator('[data-action="review-and-arm-run"]').click();
   await page.waitForSelector('#approvalFloating.is-open');
   assert.match(await page.locator('#approvalFloating').innerText(), /Review before creating/i);
-  assert.match(await page.locator('#approvalFloating').innerText(), /Arming sends nothing/i);
-  assert.match(await page.locator('#approvalFloating').innerText(), /Arm & return to Create token/i);
+  assert.match(await page.locator('#approvalFloating').innerText(), /Approving sends nothing/i);
+  assert.match(await page.locator('#approvalFloating').innerText(), /Approve/);
   await page.click('[data-action="close-approval"]');
   await page.evaluate(() => {
     state.lastRunEnvelope = { id: 'phase-4-e2e-envelope', status: 'armed' };
@@ -332,7 +335,7 @@ try {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await page.waitForFunction(() => document.querySelector('#mainPoolPercent').value === '90');
-  assert.match(await page.locator('#returnWalletCard').innerText(), /Funding wallets appear here once SOL reaches the launch wallet/);
+  assert.match(await page.locator('#returnWalletCard').innerText(), /Funding wallets show here once SOL arrives/);
   await page.evaluate(async () => {
     const session = await (await fetch('/api/session')).json();
     await fetch('/api/demo/inject-funds', {
@@ -354,10 +357,10 @@ try {
   await page.click('[data-classic-workspace="mint"] [data-action="run-demo-launch"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'finish', null, { timeout: 60_000 });
   const finishText = await page.locator('[data-classic-workspace="finish"]').innerText();
-  assert.match(finishText, /Practice complete/i);
-  assert.match(finishText, /The complete launch recipe worked/i);
-  assert.match(finishText, /0 SOL/);
-  assert.match(finishText, /Switch to Live/i);
+  assert.match(finishText, /Test launch complete/i);
+  assert.match(finishText, /Nothing was sent/i);
+  assert.match(finishText, /SOL spent\s*0/i);
+  assert.match(finishText, /Switch to live/i);
   assert.doesNotMatch(finishText, /Needs proof/i, 'Practice result showed live proof requirements');
   const delivered = await page.evaluate(() => (state.lastDemoLaunchRun?.transfer?.airdrop?.transferred || []).map((row) => row.tokens));
   assert.deepEqual(delivered, [70_000_000, 30_000_000], 'Practice run did not airdrop the shared tokens');
@@ -374,7 +377,7 @@ try {
   // The practiced coin is listed under Coins with its own page; buy support
   // is an action there.
   await page.click('#viewEyebrow [data-action="coins-back"]');
-  await page.click('.coin-card-ui:has-text("Practice coin")');
+  await page.click('.coin-card-ui:has-text("Test coin")');
   await page.waitForSelector('#view-coins.is-active #coinPage:not([hidden])');
   await page.waitForSelector('#poolSupportPanel:not([hidden])');
   await page.fill('#poolSupportSol', '0.1');
