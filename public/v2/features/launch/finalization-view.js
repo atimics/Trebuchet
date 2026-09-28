@@ -271,7 +271,7 @@ function finalizationNoticeRows({
   if (state.prefs.publishLaunchReport === false && !localDossier) {
     rows.push({
       state: 'warn',
-      text: 'Report publishing is off. Download the saved launch record before treating Step 6 as reviewable.',
+      text: 'Report publishing is off. Download the saved launch record before treating the launch as reviewable.',
     });
   }
   const airdropIssue = airdropCompletionIssue(airdropStatus, 'publishing the report or sweeping');
@@ -680,7 +680,7 @@ function renderClassicBridge() {
     && finishReturn.address !== walletPublicKey;
   const fundingNeed = !estimate
     ? {
-      eyebrow: 'Next step',
+      eyebrow: 'Not estimated',
       title: 'Estimate the launch cost',
       detail: 'Work out how much SOL this launch needs.',
       action: 'estimate-funding',
@@ -712,7 +712,7 @@ function renderClassicBridge() {
         }
         : !quoteFundingReady
           ? {
-            eyebrow: 'Almost funded',
+            eyebrow: 'Pair tokens missing',
             title: 'Get the pair tokens',
             detail: 'Buy or send the pair tokens listed below.',
             action: routeCount ? 'start-quote-acquire' : 'refresh-manual-prefund',
@@ -785,7 +785,7 @@ function renderClassicBridge() {
       : complete
         ? 'Done'
         : needsFunding
-          ? 'Next step'
+          ? 'Needs funding'
           : finalizationIssue
             ? 'Needed first'
           : needsRunEnvelope
@@ -794,7 +794,7 @@ function renderClassicBridge() {
               ? 'Ready'
               : 'Checking';
     const panelTitle = state.demoActive && !complete
-      ? 'Run every step as a test'
+      ? 'Run the whole launch as a test'
       : complete
       ? title
       : needsFunding

@@ -268,7 +268,7 @@ async function reviewAndArmRun() {
   }
   if (state.lastRunEnvelope?.status === 'armed') {
     renderClassicBridge();
-    notify('Approved. The next step is ready.');
+    notify('Approved. It can run now.');
     return;
   }
   const recoveryEndpoint = recoveryAuthorizationEndpoint();

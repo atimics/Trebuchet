@@ -412,7 +412,7 @@ function liveRunProgressContext() {
     rows,
     activeId: activeRow?.id || null,
     source,
-    focusLabel: state.fullRunRunning || state.realExecutionRunning || state.demoLaunchRunning ? 'Current operation' : 'Next checkpoint',
+    focusLabel: state.fullRunRunning || state.realExecutionRunning || state.demoLaunchRunning ? 'Current operation' : 'Needed',
     headingLabel: 'Live launch progress',
   };
 }

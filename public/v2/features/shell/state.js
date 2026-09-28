@@ -446,7 +446,7 @@ const state = {
   poolSupport: { status: 'idle', plan: null, result: null, error: null },
   // Coins are what the app is organized around. `key` is the open coin
   // ("draft:<id>" or "mint:<address>"); null shows the list.
-  coins: { list: [], loaded: false, loading: false, error: null, key: null, detail: null, detailLoading: false, detailError: null },
+  coins: { list: [], loaded: false, loading: false, error: null, key: null, detail: null, detailLoading: false, detailError: null, checked: {} },
   // Positions this app's wallets hold in the open coin's pools.
   coinPositions: { mint: null, list: [], loading: false, error: null, withdrawing: null },
   // How far above the SOL pool's price pair pools open. Restored launches

@@ -214,6 +214,20 @@ function openCoinByMint(mint) {
   openCoin(key);
 }
 
+// A launched coin's status from the chain, once its page has read it: the
+// same check its creation facts show. Unknown until then.
+function coinChainStatus(creation) {
+  const steps = creation?.steps || [];
+  if (!steps.length) return null;
+  if (steps.some((step) => step.state === 'mismatch')) return 'Chain disagrees';
+  if (steps.some((step) => ['todo', 'unrecorded'].includes(step.state))) return 'Unfinished';
+  return 'Live';
+}
+
+function coinStatus(coin) {
+  return (coin?.mint && state.coins.checked?.[coin.mint]) || coin?.status || '';
+}
+
 async function loadCoinDetail(mint) {
   if (!state.apiClient?.getCoin) return;
   state.coins = { ...state.coins, detailLoading: true, detailError: null };
@@ -221,7 +235,13 @@ async function loadCoinDetail(mint) {
   try {
     const response = await state.apiClient.getCoin(mint);
     if (state.coins.key !== `mint:${mint}`) return;
-    state.coins = { ...state.coins, detail: response.coin, detailLoading: false };
+    const checkedStatus = coinChainStatus(response.coin?.creation);
+    state.coins = {
+      ...state.coins,
+      detail: response.coin,
+      detailLoading: false,
+      checked: checkedStatus ? { ...(state.coins.checked || {}), [mint]: checkedStatus } : state.coins.checked,
+    };
   } catch (error) {
     state.coins = { ...state.coins, detailLoading: false, detailError: error.message || 'Could not read the coin' };
   }
@@ -420,7 +440,7 @@ function renderCoins() {
       variant: 'row',
       tag: 'button',
       attrs: `type="button" data-action="open-coin" data-coin-key="${escapeHtml(item.key)}"`,
-      status: item.status,
+      status: coinStatus(item),
     },
   )).join('');
   hydrateCoinCards();
@@ -573,7 +593,7 @@ function renderCoinPage(coin) {
     name,
     symbol,
     image: detail?.image || coin.image || coin.logoDataUrl || null,
-    status: coin.status || '',
+    status: coinStatus(coin),
     address: coin.mint || coin.reservedAddress || null,
     links: Boolean(coin.mint && !coin.practice),
   });
@@ -614,6 +634,16 @@ function renderCoinPage(coin) {
 // The coin being created: its identity is the page title (name, ticker,
 // status, address), over its creation steps. It takes no extra height, so
 // the steps keep the whole page.
+// The create view's status for a live mint, from the same facts its list shows.
+function launchViewChainStatus() {
+  const facts = coinFacts();
+  if (facts.some((fact) => fact.state === 'mismatch')) return 'Chain disagrees';
+  // "Recorded" holds: the chain can't read every fact (liquidity locks).
+  return ['mint', 'liquidity', 'finish'].every((id) => ['done', 'recorded'].includes(facts.find((fact) => fact.id === id)?.state))
+    ? 'Live'
+    : 'Being created';
+}
+
 function renderCoinContext() {
   const bar = $('#coinContext');
   if (bar) {
@@ -628,7 +658,7 @@ function renderCoinContext() {
   const practice = isDemoLaunchProof(proof);
   const reserved = state.selectedVanityPublicKey || null;
   const status = mint
-    ? practice ? 'Test coin' : transferHasWalletEmptyFinalSweepEvidence(proof?.transfer) ? 'Live' : 'Being created'
+    ? practice ? 'Test coin' : launchViewChainStatus()
     : reserved ? 'Address reserved' : 'Draft';
   const address = mint || reserved;
   const eyebrow = $('#viewEyebrow');
