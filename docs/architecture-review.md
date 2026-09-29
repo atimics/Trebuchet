@@ -1,6 +1,6 @@
 # Architecture review
 
-Review scope: the shared-runtime worktree through complete Raydium API bundles, temporary account refunds, and real-router validator recovery. The changes are delivered through draft PR #52. The completion checklist in [execution-runtime.md](execution-runtime.md) records the full build scope.
+Review scope: the shared-runtime worktree through durable acquisition across quote mints, complete Raydium API bundles, and real-router validator recovery. The changes are delivered through draft PR #52. The completion checklist in [execution-runtime.md](execution-runtime.md) records the full build scope.
 
 ## Assessment
 
@@ -43,9 +43,9 @@ Quote-token acquisition still stores jobs in `server.js`'s `acquireJobs` Map. `s
 
 Save the complete purchase plan and stable step IDs before the first spend. Reserve the wallet for the workflow. Commit each signed transaction before submission. Recover its original signature and finalized result before replacing it. Keep setup and cleanup receipts available after restart. A low output balance should lead to an explicit decision under the remaining budget.
 
-The swap review checks provider messages before signing. It binds the input amount, minimum output, wallet, network, token accounts, setup funding, cleanup destination, and resolved lookup-table addresses. The durable adapter now adds finalized account checks, fee and rent checks, saved jobs, and receipt recovery. Failed purchases now retain fee evidence and a separately approved cleanup plan. Balance reconciliation preserves outside transfers. The private-validator drill covers the real Raydium trade and process recovery. Production acquisition still needs durable management across quote mints and its service connection; see the latest stage in [execution-runtime.md](execution-runtime.md).
+The swap review checks provider messages before signing. It binds the input amount, minimum output, wallet, network, token accounts, setup funding, cleanup destination, and resolved lookup-table addresses. The durable adapter now adds finalized account checks, fee and rent checks, saved jobs, and receipt recovery. Failed purchases now retain fee evidence and a separately approved cleanup plan. Balance reconciliation preserves outside transfers. The private-validator drill covers the real Raydium trade and process recovery. The runtime now saves an ordered plan across quote mints and keeps one wallet reservation through every child purchase. It also accounts for failed fees and approved cleanup. Production acquisition still needs its quote builder, HTTP connection, and recovery controls; see the latest stage in [execution-runtime.md](execution-runtime.md).
 
-The validator drill now covers crashes after setup, trade, and cleanup acceptance, including delayed status replies and exact-byte resubmission. Extend that acceptance test through the acquisition HTTP service and its durable multi-mint job.
+The validator drill now covers crashes after setup, trade, and cleanup acceptance, including delayed status replies and exact-byte resubmission. Four acquisition process tests now cover purchases across mints and failed-trade cleanup. Extend the validator test through the production acquisition HTTP service.
 
 The current Raydium Trade API bundle now has a reviewed contract for SOL setup, trade, account creation, and cleanup. Its full bundle stays in the approval digest. The validator tests cover both host-built SPL setup and the complete API bundle, including temporary intermediate-account refunds. These contracts are ready for the acquisition service to adopt.
 

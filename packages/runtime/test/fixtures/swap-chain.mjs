@@ -9,9 +9,9 @@ import { key, wallet, mint, source, destination, intent, jupiter, raydium, raydi
 export const swapWallet = Keypair.fromSeed(new Uint8Array(32).fill(43));
 export { wallet, mint, source, destination, intent };
 export const compileSwap = (instructions) => new VersionedTransaction(new TransactionMessage({ payerKey: wallet, recentBlockhash: key(80).toBase58(), instructions }).compileToLegacyMessage());
-const output = (token2022) => {
+const output = (token2022, outputMint = mint) => {
   const program = token2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
-  return { program, account: getAssociatedTokenAddressSync(mint, wallet, false, program), size: token2022 ? 170 : 165 };
+  return { program, account: getAssociatedTokenAddressSync(outputMint, wallet, false, program), size: token2022 ? 170 : 165 };
 };
 export const swapSetup = (token2022 = false) => {
   const out = output(token2022);
@@ -20,8 +20,8 @@ export const swapSetup = (token2022 = false) => {
     SystemProgram.transfer({ fromPubkey: wallet, toPubkey: source, lamports: 50000 }), createSyncNativeInstruction(source)];
 };
 export const swapCleanup = () => createCloseAccountInstruction(source, wallet, wallet);
-export const swapTransactions = (combined = false, { token2022 = false, provider = 'jupiter' } = {}) => {
-  const out = output(token2022), trade = provider.startsWith('raydium') ? raydium('mainnet', { outputProgram: out.program, outputAccount: out.account }) : jupiter();
+export const swapTransactions = (combined = false, { token2022 = false, provider = 'jupiter', outputMint = mint } = {}) => {
+  const out = output(token2022, outputMint), trade = provider.startsWith('raydium') ? raydium('mainnet', { outputProgram: out.program, outputAccount: out.account, outputMint }) : jupiter();
   if (provider === 'jupiter') {
     trade.keys[3].pubkey = out.account;
     if (token2022) trade.keys.push({ pubkey: out.program, isWritable: false, isSigner: false });
@@ -32,8 +32,9 @@ export const swapTransactions = (combined = false, { token2022 = false, provider
     : [compileSwap(setup), compileSwap([trade]), compileSwap([cleanup])];
 };
 
-export function swapChain({ token2022 = false } = {}) {
-  const out = output(token2022), destinationAddress = out.account;
+export function swapChain({ token2022 = false, outputMint = mint } = {}) {
+  const mint = outputMint;
+  const out = output(token2022, mint), destinationAddress = out.account;
   const state = { slot: 200, fee: 5000, walletLamports: 20000000, sends: [], receipts: new Map(), status: 'finalized',
     source: null, destination: null, beforeSend: null, afterSend: null, genesisHash: SOLANA_GENESIS_HASHES.mainnet,
     failAt: null, blockhash: key(80).toBase58(), height: 200, valid: true, outputRaw: 1250n, drop: false, receiptTransform: (r) => r };
@@ -120,5 +121,5 @@ export function swapChain({ token2022 = false } = {}) {
       await state.afterSend?.(saved); return saved.signature;
     },
   };
-  return { connection, state, rent, intent: { ...intent, outputProgramId: out.program.toBase58(), destinationTokenAccount: out.account.toBase58() } };
+  return { connection, state, rent, intent: { ...intent, outputMint: mint.toBase58(), outputProgramId: out.program.toBase58(), destinationTokenAccount: out.account.toBase58() } };
 }

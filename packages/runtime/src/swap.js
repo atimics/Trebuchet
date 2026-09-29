@@ -5,6 +5,7 @@ import { reviewSwapBundle } from './swap-bundle.js';
 import { readSwapState, projectSwapStep, verifySwapEffects, assertSwapAccountIdentity } from './swap-state.js';
 import { createPreparedTransactionService } from './prepared-transaction.js';
 import { createSwapRecovery, validateSwapRecovery } from './swap-recovery.js';
+import { assertSwapWorkflow, finishSwapWorkflow, swapWorkflowId } from './swap-workflow.js';
 
 const hash = (value) => createHash('sha256').update(publicJson(value)).digest('hex');
 const copy = (value) => JSON.parse(publicJson(value));
@@ -38,7 +39,7 @@ export function createSwapService({ owner, store, connection, signer, network, e
             || job.receipts.length > review.steps.length || job.state === 'confirmed' && (job.receipts.length !== review.steps.length || !job.result)) throw new Error('Verify the saved swap identity and plan');
         if (new Set(job.approvals.map((item) => item.id)).size !== job.approvals.length || job.approvals.some((item) => !item.id
             || item.walletPublicKey !== job.walletPublicKey || item.scopeId !== plan.scopeId || item.key !== plan.key || item.network !== plan.network
-            || item.genesisHash !== plan.genesisHash || item.bundleDigest !== digest || !whole(item.expiresAtMs)
+            || item.genesisHash !== plan.genesisHash || item.bundleDigest !== digest || item.workflowId !== plan.workflowId || !whole(item.expiresAtMs)
             || !whole(item.maxSpendLamports) || item.maxSpendLamports < plan.maxSpendLamports)) throw new Error('Verify the saved swap approvals');
         validateSwapRecovery(job, store);
         if (job.state === 'confirmed' && publicJson(job.result) !== publicJson(summarize(job))) throw new Error('Verify the completed swap result against its receipts');
@@ -46,7 +47,7 @@ export function createSwapService({ owner, store, connection, signer, network, e
           const operation = store.getOperation(receipt.operationId), launch = operation && store.getLaunch(operation.launchId);
           const expected = operation && { ...operation.evidence?.chain, operationId: operation.id, txId: operation.evidence?.chain?.signature };
           if (operation?.state !== 'confirmed' || operation.kind !== SWAP_OPERATION_KIND || operation.payload.result.index !== index
-              || launch.config.workflowId !== job.id || publicJson(expected) !== publicJson(receipt)) throw new Error('Verify the original swap operation receipts');
+              || launch.config.workflowId !== swapWorkflowId(job) || publicJson(expected) !== publicJson(receipt)) throw new Error('Verify the original swap operation receipts');
         }
       }
       return jobs;
@@ -70,7 +71,7 @@ export function createSwapService({ owner, store, connection, signer, network, e
     owner.assertActive();
     const plan = job.plan;
     if (!approval?.id || approval.scopeId !== plan.scopeId || approval.key !== plan.key || approval.walletPublicKey !== job.walletPublicKey
-        || approval.network !== network || approval.genesisHash !== expectedGenesisHash || approval.bundleDigest !== plan.review.digest
+        || approval.network !== network || approval.genesisHash !== expectedGenesisHash || approval.bundleDigest !== plan.review.digest || approval.workflowId !== plan.workflowId
         || !whole(approval.expiresAtMs) || approval.expiresAtMs <= now() || !whole(approval.maxSpendLamports) || approval.maxSpendLamports < plan.maxSpendLamports
         || await authorize({ approval, job }) !== true) throw failure('EXECUTION_APPROVAL_REQUIRED', 'Approve the complete saved swap, wallet, network, budget, and expiry');
     owner.assertActive();
@@ -93,7 +94,7 @@ export function createSwapService({ owner, store, connection, signer, network, e
     if (job.plan.network !== network || job.plan.genesisHash !== expectedGenesisHash) throw failure('NETWORK_MISMATCH', 'Recover the swap on its saved chain');
     if (['confirmed', 'recovered'].includes(job.state)) return result(job);
     if (job.failure) throw failure('TRANSACTION_FAILED', 'Review the failed swap and prepare wrapped-SOL cleanup', { operationId: job.failure.operationId, jobId: job.id });
-    if (store.getWalletWorkflow(job.walletPublicKey)?.id !== job.id) throw failure('OPERATION_CONFLICT', 'Recover the saved swap wallet reservation');
+    assertSwapWorkflow(store, job);
     const { plan } = job;
     for (let index = job.receipts.length; index < plan.review.steps.length; index++) {
       const step = plan.review.steps[index], stepPlan = { jobId: job.id, bundleDigest: plan.review.digest, index };
@@ -118,7 +119,7 @@ export function createSwapService({ owner, store, connection, signer, network, e
       let receipt;
       try {
         receipt = await service.execute({ scopeId: plan.scopeId, walletPublicKey: job.walletPublicKey, key: `${plan.key}/${index}`, plan: stepPlan,
-          workflowId: job.id, approval: { ...approval, planDigest: hash(stepPlan) }, build: async () => {
+          workflowId: swapWorkflowId(job), approval: { ...approval, planDigest: hash(stepPlan) }, build: async () => {
             await approvalFor(approval, job); job = saveApproval(job, approval);
             const before = await readSwapState(connection, plan.review), projection = projectSwapStep(plan.review, step, before);
             const usedRent = job.receipts.reduce((sum, item) => sum + item.rentLamports, 0);
@@ -142,36 +143,44 @@ export function createSwapService({ owner, store, connection, signer, network, e
     const outcome = summarize(job);
     job = records.transaction(() => {
       const saved = update(job.id, (value) => ({ ...value, state: 'confirmed', result: outcome }));
-      store.finishWalletWorkflow(job.id, outcome); return saved;
+      finishSwapWorkflow(store, job, outcome); return saved;
     });
     return result(job);
   };
+  const preview = async ({ scopeId, key, transactions, intent, feeCeilingLamports, workflowId }) => {
+    if (![scopeId, key].every((value) => typeof value === 'string' && value && value.length <= 256) || intent.network !== network || !whole(feeCeilingLamports)) throw new TypeError('Use a complete saved swap identity and fee ceiling');
+    if (workflowId !== undefined && (typeof workflowId !== 'string' || !workflowId || workflowId.length > 256)) throw new TypeError('Use the saved parent workflow identity');
+    const walletPublicKey = new PublicKey(intent.walletPublicKey).toBase58();
+    if (!Array.isArray(transactions) || !transactions.length || transactions.length > 8 || transactions.some((tx) => !(tx instanceof VersionedTransaction) || tx.serialize().length > 1232)) throw new TypeError('Use a bounded swap transaction bundle');
+    await checkNetwork();
+    const lookups = new Map();
+    for (const transaction of transactions) for (const lookup of transaction.message.addressTableLookups || []) {
+      if (lookups.has(lookup.accountKey.toBase58())) continue;
+      const response = await connection.getAddressLookupTable(lookup.accountKey, { commitment: 'finalized' });
+      if (!response?.value || !whole(response.context?.slot)) throw failure('CHAIN_STATE_UNAVAILABLE', 'Read all finalized swap lookup tables');
+      lookups.set(lookup.accountKey.toBase58(), response.value);
+    }
+    const review = await reviewSwapBundle({ transactions, lookupTables: [...lookups.values()], intent });
+    const id = hash({ scopeId, key, walletPublicKey, network });
+    const maxSpendLamports = Number(review.intent.inputAmountRaw) + review.intent.rentCeilingLamports + review.steps.length * feeCeilingLamports;
+    if (!whole(maxSpendLamports)) throw new TypeError('Use an exact total swap spending ceiling');
+    const plan = { scopeId, key, network, genesisHash: expectedGenesisHash, review, feeCeilingLamports, maxSpendLamports, ...(workflowId ? { workflowId } : {}) };
+    return { id, walletPublicKey, plan, state: 'prepared', receipts: [], approvals: [], result: null };
+  };
   return {
     get, active,
-    async prepare({ scopeId, key, transactions, intent, feeCeilingLamports, approval }) {
-      if (![scopeId, key].every((value) => typeof value === 'string' && value && value.length <= 256) || intent.network !== network || !whole(feeCeilingLamports)) throw new TypeError('Use a complete saved swap identity and fee ceiling');
-      const walletPublicKey = new PublicKey(intent.walletPublicKey).toBase58();
-      return owned(walletPublicKey, async () => {
-        if (!Array.isArray(transactions) || !transactions.length || transactions.length > 8 || transactions.some((tx) => !(tx instanceof VersionedTransaction) || tx.serialize().length > 1232)) throw new TypeError('Use a bounded swap transaction bundle');
-        await checkNetwork();
-        const lookups = new Map();
-        for (const transaction of transactions) for (const lookup of transaction.message.addressTableLookups || []) {
-          if (lookups.has(lookup.accountKey.toBase58())) continue;
-          const response = await connection.getAddressLookupTable(lookup.accountKey, { commitment: 'finalized' });
-          if (!response?.value || !whole(response.context?.slot)) throw failure('CHAIN_STATE_UNAVAILABLE', 'Read all finalized swap lookup tables');
-          lookups.set(lookup.accountKey.toBase58(), response.value);
-        }
-        const review = await reviewSwapBundle({ transactions, lookupTables: [...lookups.values()], intent });
-        const id = hash({ scopeId, key, walletPublicKey, network });
-        const maxSpendLamports = Number(review.intent.inputAmountRaw) + review.intent.rentCeilingLamports + review.steps.length * feeCeilingLamports;
-        if (!whole(maxSpendLamports)) throw new TypeError('Use an exact total swap spending ceiling');
-        const plan = { scopeId, key, network, genesisHash: expectedGenesisHash, review, feeCeilingLamports, maxSpendLamports };
+    async preview(input) {
+      return owned(input.intent.walletPublicKey, () => preview(input));
+    },
+    async prepare(input) {
+      const { intent, approval } = input;
+      return owned(intent.walletPublicKey, async () => {
+        const job = await preview(input), { id, walletPublicKey, plan } = job, { review, feeCeilingLamports, maxSpendLamports } = plan;
         const prior = get(id);
         if (prior) {
           if (publicJson(prior.plan) !== publicJson(plan)) throw failure('OPERATION_CONFLICT', 'Recover the original swap bundle before requesting another quote');
           return prior;
         }
-        const job = { id, walletPublicKey, plan, state: 'prepared', receipts: [], approvals: [], result: null };
         await approvalFor(approval, job);
         let state = await readSwapState(connection, review), gross = 0, rent = 0;
         const expiry = await connection.getLatestBlockhash('finalized');
@@ -188,7 +197,8 @@ export function createSwapService({ owner, store, connection, signer, network, e
         }
         await approvalFor(approval, job);
         return records.transaction(() => {
-          store.reserveWalletWorkflow({ id, walletPublicKey, kind: SWAP_OPERATION_KIND, context: plan });
+          if (plan.workflowId) assertSwapWorkflow(store, job);
+          else store.reserveWalletWorkflow({ id, walletPublicKey, kind: SWAP_OPERATION_KIND, context: plan });
           const all = loadJobs(); records.save([...all, { ...job, approvals: [copy(approval)] }]); return get(id);
         });
       });

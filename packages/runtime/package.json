@@ -24,7 +24,8 @@
     "./irys-upload-transport": "./src/irys-upload-transport.js",
     "./swap-instruction": "./src/swap-instruction.js",
     "./swap-bundle": "./src/swap-bundle.js",
-    "./swap": "./src/swap.js"
+    "./swap": "./src/swap.js",
+    "./quote-acquisition": "./src/quote-acquisition.js"
   },
   "engines": {
     "node": ">=22.13.0"

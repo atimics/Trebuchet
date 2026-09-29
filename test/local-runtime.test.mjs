@@ -196,7 +196,7 @@ test('saved-journal and launch clients share wallet admission while a chain read
   await waitFor(() => !fs.existsSync(path.join(profile, 'runtime.json')));
 });
 
-for (const kind of ['quote-token-swap', 'storage-upload']) {
+for (const kind of ['quote-token-swap', 'storage-upload', 'quote-token-acquisition']) {
   test(`a saved ${kind} reservation holds HTTP spending between transactions after startup`, { timeout: 30000 }, async (t) => {
     const { openRuntimeStore } = await import('../packages/runtime/src/store.js');
     const { sweepWallet, sweepDestination } = await import('../packages/runtime/test/fixtures/sol-sweep-chain.mjs');

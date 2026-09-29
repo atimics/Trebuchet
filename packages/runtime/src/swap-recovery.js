@@ -5,6 +5,7 @@ import { publicJson } from './store.js';
 import { readPreparedFailure, verifyPreparedFailure } from './prepared-failure.js';
 import { createPreparedTransactionService } from './prepared-transaction.js';
 import { readSwapState, verifySwapEffects, assertSwapAccountIdentity } from './swap-state.js';
+import { assertSwapWorkflow, finishSwapWorkflow, swapWorkflowId } from './swap-workflow.js';
 
 const hash = (value) => createHash('sha256').update(publicJson(value)).digest('hex');
 const equal = (a, b) => publicJson(a) === publicJson(b);
@@ -20,7 +21,7 @@ const sum = (receipts, key) => receipts.reduce((total, receipt) => total + recei
 const cleanupPlan = (job, index, before) => ({
   jobId: job.id, index, walletPublicKey: job.walletPublicKey, scopeId: job.plan.scopeId, key: `${job.plan.key}/cleanup/${index}`,
   network: job.plan.network, genesisHash: job.plan.genesisHash, bundleDigest: job.plan.review.digest,
-  failedTxId: job.failure.txId, before,
+  failedTxId: job.failure.txId, before, ...(job.plan.workflowId ? { workflowId: job.plan.workflowId } : {}),
   feeCeilingLamports: before.accounts[job.plan.review.intent.sourceTokenAccount].exists ? job.plan.feeCeilingLamports : 0,
   maxSpendLamports: sum(costs(job, index), 'grossDebitLamports') + (before.accounts[job.plan.review.intent.sourceTokenAccount].exists ? job.plan.feeCeilingLamports : 0),
 });
@@ -45,7 +46,7 @@ export function validateSwapRecovery(job, store) {
   const checkFailure = (failure, kind, index, digest) => {
     const { witness, ...saved } = failure, verified = verifyPreparedFailure(store, saved.operationId, witness);
     const operation = store.getOperation(saved.operationId), launch = store.getLaunch(operation.launchId);
-    if (!equal(saved, verified) || operation.kind !== kind || operation.payload.result.index !== index || launch.config.workflowId !== job.id
+    if (!equal(saved, verified) || operation.kind !== kind || operation.payload.result.index !== index || launch.config.workflowId !== swapWorkflowId(job)
         || kind === SWAP_CLEANUP_KIND && operation.payload.result.cleanupDigest !== digest
         || kind === 'quote-token-swap' && launch.config.plan.bundleDigest !== job.plan.review.digest) throw new Error('Verify the saved swap failure witness');
   };
@@ -68,7 +69,7 @@ export function validateSwapRecovery(job, store) {
     if (attempt.receipt) {
       const operation = store.getOperation(attempt.receipt.operationId), launch = operation && store.getLaunch(operation.launchId);
       const expected = operation && { ...operation.evidence?.chain, operationId: operation.id, txId: operation.evidence?.chain?.signature };
-      if (operation?.state !== 'confirmed' || operation.kind !== SWAP_CLEANUP_KIND || launch.config.workflowId !== job.id
+      if (operation?.state !== 'confirmed' || operation.kind !== SWAP_CLEANUP_KIND || launch.config.workflowId !== swapWorkflowId(job)
           || operation.payload.result.cleanupDigest !== attempt.digest || !equal(expected, attempt.receipt)) throw new Error('Verify the saved cleanup receipt');
     }
     if (attempt.state === 'confirmed') {
@@ -85,7 +86,7 @@ function approvalMatches(approval, attempt) {
   const { plan } = attempt;
   return typeof approval?.id === 'string' && approval.id && approval.scopeId === plan.scopeId && approval.key === plan.key
     && approval.walletPublicKey === plan.walletPublicKey && approval.network === plan.network && approval.genesisHash === plan.genesisHash
-    && approval.bundleDigest === plan.bundleDigest && approval.recoveryDigest === attempt.digest && whole(approval.expiresAtMs)
+    && approval.bundleDigest === plan.bundleDigest && approval.workflowId === plan.workflowId && approval.recoveryDigest === attempt.digest && whole(approval.expiresAtMs)
     && whole(approval.maxSpendLamports) && approval.maxSpendLamports >= plan.maxSpendLamports;
 }
 
@@ -138,7 +139,7 @@ export function createSwapRecovery({ owner, store, connection, signer, network, 
       let attempt = job.cleanupAttempts?.at(-1);
       if (!attempt) throw fail('CLEANUP_PLAN_REQUIRED', 'Prepare and review the wrapped-SOL cleanup');
       if (attempt.failure) throw fail('TRANSACTION_FAILED', 'Prepare a new cleanup attempt after its finalized failure', { operationId: attempt.failure.operationId });
-      if (store.getWalletWorkflow(job.walletPublicKey)?.id !== job.id) throw fail('OPERATION_CONFLICT', 'Recover the saved swap wallet reservation');
+      assertSwapWorkflow(store, job);
       await checkNetwork(job);
       const { plan } = attempt, sourceAddress = job.plan.review.intent.sourceTokenAccount, before = plan.before;
       if (before.accounts[sourceAddress].exists && !attempt.receipt) {
@@ -152,7 +153,7 @@ export function createSwapRecovery({ owner, store, connection, signer, network, 
             return { state: 'absent', slot: state.slot };
           } });
         try {
-          const receipt = await service.execute({ scopeId: plan.scopeId, walletPublicKey: job.walletPublicKey, key: plan.key, workflowId: job.id,
+          const receipt = await service.execute({ scopeId: plan.scopeId, walletPublicKey: job.walletPublicKey, key: plan.key, workflowId: swapWorkflowId(job),
             plan: { cleanupDigest: attempt.digest }, approval: { ...approval, planDigest: hash({ cleanupDigest: attempt.digest }) },
             build: async () => ({ transaction: step.transaction, accountKeys: step.accountKeys, result: { index: plan.index, cleanupDigest: attempt.digest, before },
               allowExisting: false, maxSpendLamports: plan.feeCeilingLamports, feeCeilingLamports: plan.feeCeilingLamports, maxCreditLamports: before.accounts[sourceAddress].lamports }) });
@@ -171,7 +172,7 @@ export function createSwapRecovery({ owner, store, connection, signer, network, 
         const saved = saveAttempt(job, plan.index, (value) => ({ ...value, state: 'confirmed', completion: { slot: state.slot, source } }));
         const outcome = recoveredSwapResult(saved);
         const finished = update(saved.id, (value) => ({ ...value, state: 'recovered', result: outcome }));
-        store.finishWalletWorkflow(saved.id, outcome); return finished;
+        finishSwapWorkflow(store, saved, outcome); return finished;
       });
       return { jobId: job.id, ...job.result };
     },

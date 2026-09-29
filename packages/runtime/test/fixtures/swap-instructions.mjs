@@ -11,11 +11,11 @@ const meta = (pubkey, isWritable = false, isSigner = false) => ({ pubkey, isWrit
 export const intent = { network: 'mainnet', walletPublicKey: wallet.toBase58(), sourceTokenAccount: source.toBase58(), destinationTokenAccount: destination.toBase58(),
   outputMint: mint.toBase58(), outputProgramId: TOKEN_PROGRAM_ID.toBase58(), rentCeilingLamports: 5000000, inputAmountRaw: '50000', minimumOutputRaw: '1234', maxSlippageBps: 100 };
 
-export function raydium(network = 'mainnet', { outputProgram = TOKEN_PROGRAM_ID, outputAccount = destination } = {}) {
+export function raydium(network = 'mainnet', { outputProgram = TOKEN_PROGRAM_ID, outputAccount = destination, outputMint = mint } = {}) {
   const programs = network === 'devnet' ? DEVNET_PROGRAM_ID : ALL_PROGRAM_ID;
   const pool = { id: key(45).toBase58(), programId: ALL_PROGRAM_ID.CREATE_CPMM_POOL_PROGRAM.toBase58(),
     mintA: { address: NATIVE_MINT.toBase58(), programId: TOKEN_PROGRAM_ID.toBase58() },
-    mintB: { address: mint.toBase58(), programId: outputProgram.toBase58() },
+    mintB: { address: outputMint.toBase58(), programId: outputProgram.toBase58() },
     authority: key(46).toBase58(), config: { id: key(47).toBase58() }, vault: { A: key(48).toBase58(), B: key(49).toBase58() }, observationId: key(50).toBase58() };
   const routeInfo = { success: true, data: { inputMint: pool.mintA.address, outputMint: pool.mintB.address, otherAmountThreshold: '1234',
     routePlan: [{ poolId: pool.id, inputMint: pool.mintA.address, outputMint: pool.mintB.address }] } };
