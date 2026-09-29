@@ -6785,65 +6785,6 @@ export async function previewSolSupport({ walletPublicKey = null, poolId, solAmo
   return plan;
 }
 
-/**
- * Open the buy support position the user confirmed. Re-plans against the
- * chain first and refuses (code SUPPORT_PLAN_CHANGED) if the range or the
- * total cost moved from `expected`, so what is sent is what was shown.
- */
-export async function openSolSupport({ tempWalletSecretKey, poolId, solAmount, depthPct, expected, onProgress } = {}) {
-  const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
-  const raydium = await initSdk(ownerKeypair);
-  const { plan, poolInfo, poolKeys, launchedIsMintA } = await planSolSupport(raydium, {
-    walletPublicKey: ownerKeypair.publicKey.toBase58(),
-    poolId,
-    solAmount,
-    depthPct,
-  });
-  const moved = !expected
-    || Number(expected.tickLower) !== plan.tickLower
-    || Number(expected.tickUpper) !== plan.tickUpper
-    || BigInt(plan.totalLamports) > BigInt(String(expected.totalLamports || '0'));
-  if (moved) {
-    const error = new Error('The pool moved since the preview. Review the new range and cost, then confirm again. Nothing was sent.');
-    error.code = 'SUPPORT_PLAN_CHANGED';
-    error.plan = plan;
-    throw error;
-  }
-  if (plan.enoughSol === false) {
-    const error = new Error(`Not enough SOL: ${plan.warnings.at(-1) || 'the wallet is short'} Nothing was sent.`);
-    error.code = 'SUPPORT_INSUFFICIENT_SOL';
-    error.plan = plan;
-    throw error;
-  }
-
-  const recorded = new Set(
-    (await fetchOwnerClmmPositionsForPool(raydium, plan.poolId).catch(() => [])).map((position) => position.nftMint),
-  );
-  onProgress?.({ stage: 'support_open_start', poolId: plan.poolId, tickLower: plan.tickLower, tickUpper: plan.tickUpper });
-  const result = await executeSdkTx({
-    label: 'buy support position',
-    build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
-          ...signerOptions,
-      poolInfo,
-      poolKeys,
-      tickLower: plan.tickLower,
-      tickUpper: plan.tickUpper,
-      base: launchedIsMintA ? 'MintB' : 'MintA',
-      baseAmount: new BN(plan.depositLamports),
-      otherAmountMax: new BN(0),
-      ownerInfo: { useSOLBalance: true },
-      txVersion: TxVersion.V0,
-      computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
-    }),
-    alreadyDone: () => findUnrecordedPositionAt(raydium, plan.poolId, plan.tickLower, plan.tickUpper, recorded),
-    onAlreadyDone: (position) => ({ tx: { txId: null }, nftMint: position.nftMint, adopted: true }),
-  });
-  const nftMint = result.skipped ? result.value.nftMint : result.value.res.extInfo?.nftMint?.toBase58();
-  const txId = result.skipped ? null : result.value.tx.txId;
-  onProgress?.({ stage: 'support_open_done', poolId: plan.poolId, nftMint, txId });
-  return { ...plan, nftMint, txId, adopted: Boolean(result.skipped) };
-}
-
 // ---------------------------------------------------------------------------
 // Positions a coin's owner can manage
 // ---------------------------------------------------------------------------

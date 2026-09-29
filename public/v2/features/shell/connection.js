@@ -386,6 +386,10 @@ async function pollLiveOps() {
   if (walletPublicKey && state.apiClient.getActiveAcquireQuoteTokens && !state.demoActive) {
     tasks.push(state.apiClient.getActiveAcquireQuoteTokens(walletPublicKey).then((job) => ({ type: 'quotes', value: { walletPublicKey, job } })));
   }
+  if (walletPublicKey && state.apiClient.getSupportJobs && !state.demoActive) {
+    tasks.push(state.apiClient.getSupportJobs(walletPublicKey).then((response) => ({ type: 'support', value: { walletPublicKey, jobs: response.jobs || [] } }))
+      .catch((error) => ({ type: 'supportError', value: { walletPublicKey, error } })));
+  }
   if (walletPublicKey && state.apiClient.getAirdropProgress) {
     tasks.push(state.apiClient.getAirdropProgress(walletPublicKey).then((airdrop) => ({ type: 'airdrop', value: airdrop })));
   }
@@ -435,6 +439,10 @@ async function pollLiveOps() {
       state.quoteAcquire.jobId = value.job.jobId; applyQuoteAcquireJob(value.job);
       if (value.job.status === 'running') startQuoteAcquirePolling();
       classicBridgeDirty = true;
+    } else if (type === 'support') {
+      applySavedSupportJobs(value.walletPublicKey, value.jobs);
+    } else if (type === 'supportError') {
+      applySavedSupportJobs(value.walletPublicKey, state.supportJobs?.walletPublicKey === value.walletPublicKey ? state.supportJobs.jobs : [], value.error?.message || 'Read saved support jobs');
     } else if (type === 'airdrop') {
       state.liveOps.airdrop = value;
       rememberAirdropProgress(value);

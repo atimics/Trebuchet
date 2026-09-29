@@ -1,3 +1,5 @@
+import { createSupportPositionRuntime } from './supportPosition.js';
+import { installSupportPositionRoutes } from './supportPositionRoutes.js';
 import { createPositionWithdrawalRuntime } from './positionWithdrawal.js';
 import { installPositionWithdrawalRoutes } from './positionWithdrawalRoutes.js';
 import { createAirdropExecutionRuntime } from './airdropExecution.js';
@@ -47,7 +49,6 @@ import {
   KNOWN_SAFE_QUOTES,
   getQuoteTokenOnChainPrice,
   previewSolSupport,
-  openSolSupport,
   findSolClmmPoolForToken,
   listTokenMarkets,
   listCoinPositions,
@@ -648,7 +649,8 @@ const __dirname = path.dirname(__filename);
 // launch time — those aren't user-facing config, they're how the Electron
 // main process talks to this embedded server. They stay.
 
-export function createLocalApiApp({ runtimeControl = null, runtimeOwner = null, quoteRuntimeFactory = createQuoteAcquisitionRuntime, withdrawalRuntimeFactory = createPositionWithdrawalRuntime } = {}) {
+export function createLocalApiApp({ runtimeControl = null, runtimeOwner = null, quoteRuntimeFactory = createQuoteAcquisitionRuntime, withdrawalRuntimeFactory = createPositionWithdrawalRuntime, supportRuntimeFactory = createSupportPositionRuntime } = {}) {
+const supportPosition = runtimeOwner ? supportRuntimeFactory({ owner: runtimeOwner }) : null;
 const positionWithdrawal = runtimeOwner ? withdrawalRuntimeFactory({ owner: runtimeOwner }) : null;
 const walletExecution = runtimeOwner ? createWalletExecutionRuntime({
   owner: runtimeOwner,
@@ -717,9 +719,10 @@ const sweepAllTokensToDestination = (input) => sweepTokensWithSigner({ ...input,
 // Live services and HTTP jobs share wallet admission and durable recovery state.
 function claimLaunchOp(walletPublicKey, op, workflowId = null) {
   const workflow = walletExecution?.activeWorkflow(walletPublicKey);
+  const canResumeSupport = op === 'support-position' && workflow?.kind === 'support-position' && workflow.id === workflowId;
   const canResumeWithdrawal = op === 'withdraw-position' && workflow?.kind === 'position-withdrawal' && workflow.id === workflowId;
   const canResumeQuotes = op === 'acquire-quote-tokens' && workflow?.kind === 'quote-token-acquisition' && workflow.id === workflowId;
-  if (workflow && !canResumeQuotes && !canResumeWithdrawal) {
+  if (workflow && !canResumeQuotes && !canResumeWithdrawal && !canResumeSupport) {
     throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: workflow.id,
       workflowId: workflow.id, workflowKind: workflow.kind, error: 'Resume the saved wallet workflow before starting another wallet action.' });
   }
@@ -729,7 +732,7 @@ function claimLaunchOp(walletPublicKey, op, workflowId = null) {
   const canResumeLiquidity = pending?.kind === LIQUIDITY_OPERATION_KIND && ['create-lp', 'resume-launch'].includes(op);
   const canResumeFeeKey = pending?.kind === 'token-transfer' && ['create-lp', 'resume-launch'].includes(op) && feeKeyExecution?.canRecover(walletPublicKey);
   const canResumeAirdrop = ['token-transfer', 'airdrop-observed-delivery'].includes(pending?.kind) && op === 'run-airdrop' && airdropExecution?.canRecover(walletPublicKey);
-  if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity && !canResumeFeeKey && !canResumeAirdrop && !canResumeQuotes && !canResumeWithdrawal) {
+  if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity && !canResumeFeeKey && !canResumeAirdrop && !canResumeQuotes && !canResumeWithdrawal && !canResumeSupport) {
     throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: 'Resume the saved wallet operation before starting another wallet action.' });
   }
   claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
@@ -3067,100 +3070,9 @@ app.get('/api/v2/destinations', async (req, res) => {
   }
 });
 
-// Buy support for an existing token/SOL pool: one SOL-only position below
-// the price, capped under the token's cheapest other pool so arbitrage
-// cannot take it at once. Preview reads the chain and never signs; open
-// re-plans and refuses if the range or cost moved from what was confirmed.
-async function resolveSupportPoolId(body = {}) {
-  const poolId = String(body.poolId || '').trim();
-  if (poolId) return poolId;
-  const tokenMint = String(body.tokenMint || '').trim();
-  if (!tokenMint) throw new Error('poolId or tokenMint is required');
-  const found = await findSolClmmPoolForToken(tokenMint);
-  if (!found) throw new Error('No Raydium concentrated-liquidity SOL pool was found for that token.');
-  return found;
-}
-
-app.post('/api/v2/support/preview', async (req, res) => {
-  try {
-    const body = req.body || {};
-    const walletPublicKey = String(body.walletPublicKey || '').trim() || null;
-    if (isDemoMode()) {
-      // Practice reads real pools (read-only) and simulates only the send,
-      // with the practice wallet's balance. Practice coins have no real
-      // pool, so they plan against a sample one.
-      let plan = null;
-      try {
-        const poolId = await resolveSupportPoolId(body);
-        plan = await previewSolSupport({ walletPublicKey: null, poolId, solAmount: body.solAmount, depthPct: body.depthPct });
-      } catch {
-        plan = null;
-      }
-      if (!plan) return res.json({ success: true, plan: demoChainService.planDemoSolSupport({ ...body, walletPublicKey }) });
-      return res.json({ success: true, plan: demoChainService.practiceSupportPlan(plan, walletPublicKey) });
-    }
-    const poolId = await resolveSupportPoolId(body);
-    const plan = await previewSolSupport({
-      walletPublicKey,
-      poolId,
-      solAmount: body.solAmount,
-      depthPct: body.depthPct,
-    });
-    res.json({ success: true, plan });
-  } catch (error) {
-    sendErrorResponse(res, error, 400);
-  }
-});
-
-app.post('/api/v2/support/open', async (req, res) => {
-  const body = req.body || {};
-  const walletPublicKey = String(body.walletPublicKey || '').trim();
-  if (!walletPublicKey) {
-    return res.status(400).json({ success: false, error: 'walletPublicKey is required' });
-  }
-  if (isDemoMode()) {
-    try {
-      const result = demoChainService.openDemoSolSupport({ ...body, walletPublicKey });
-      if (body.tokenMint || result.token?.mint) {
-        coinStore.recordEvent(String(body.tokenMint || result.token.mint), {
-          type: 'support_added', practice: true, poolId: result.poolId, txId: null,
-          sol: Number(result.depositLamports) / 1e9, tickLower: result.tickLower, tickUpper: result.tickUpper,
-        });
-      }
-      return res.json({ success: true, result });
-    } catch (error) {
-      return res.status(409).json({ success: false, code: error.code || null, error: error.message, plan: error.plan || null });
-    }
-  }
-  if (rejectIfSecretPinLocked(res, 'adding buy support with a saved wallet')) return;
-  let claimed = false;
-  try {
-    const { secretKeyArr, walletPublicKey: signer } = resolveSigner({ walletPublicKey });
-    if (rejectOrClaimLaunchOp(res, signer, 'add buy support')) return;
-    claimed = true;
-    const poolId = await resolveSupportPoolId(body);
-    const result = await openSolSupport({
-      tempWalletSecretKey: secretKeyArr,
-      poolId,
-      solAmount: body.solAmount,
-      depthPct: body.depthPct,
-      expected: body.expected,
-    });
-    console.log(`Buy support opened in ${poolId}: nft=${result.nftMint} tx=${result.txId}`);
-    coinStore.recordEvent(result.token.mint, {
-      type: 'support_added', poolId: result.poolId, txId: result.txId, nftMint: result.nftMint, walletPublicKey,
-      sol: Number(result.depositLamports) / 1e9, tickLower: result.tickLower, tickUpper: result.tickUpper,
-      outcome: result.adopted ? 'landed (found on-chain after a retry)' : 'landed',
-    });
-    res.json({ success: true, result });
-  } catch (error) {
-    if (error.code === 'SUPPORT_PLAN_CHANGED' || error.code === 'SUPPORT_INSUFFICIENT_SOL') {
-      return res.status(409).json({ success: false, code: error.code, error: error.message, plan: error.plan || null });
-    }
-    sendErrorResponse(res, error, 400);
-  } finally {
-    if (claimed) clearLaunchOpInFlight(walletPublicKey);
-  }
+installSupportPositionRoutes(app, {
+  runtime: supportPosition, isDemoMode, demoChainService, coinStore, pendingWallets, findSolClmmPoolForToken, previewSolSupport,
+  resolveSigner, rejectIfSecretPinLocked, claim: claimLaunchOp, release: clearLaunchOpInFlight, sendErrorResponse,
 });
 
 // Coins: drafts (saved plans), launched coins (journals), and coins added

@@ -409,4 +409,17 @@ All 77 focused tests passed on Node 22.23.3. These include four child-process cr
 
 All amounts in the table are lamports. Paid account rent includes the temporary account; its rent is returned by the same transaction. The large tick-array rent is separately bounded in the saved plan. Every case created liquidity `228409972`, finalized one support transaction, and recovered one duplicate reply.
 
-The production buy-support HTTP route and its review and recovery controls still need to adopt this service. The existing direct SDK path remains until that integration is delivered. The wider completion checklist stays open.
+The following stage connects the production buy-support HTTP route and its client review and recovery controls to this service. The wider completion checklist stays open.
+
+
+### Production support review and recovery
+
+The live buy-support route now uses the owned runtime. Preparation saves the fixed unsigned plan and its public review fields. Execution requires the exact saved job, wallet, digest, and total spending ceiling. The host uses the existing wallet-based liquidity signer derivation to recover the same NFT identity after restart. The earlier direct SDK support submission has been removed.
+
+The client shows the saved wallet, network, position, pool, range, deposit, fee, rent, and total before typed approval. Saved support reviews and paused jobs remain visible when the client reconnects. A cancelled review keeps its saved draft. Polling preserves an active review, competing clicks share that review, and late responses preserve a newly selected wallet view. Finalized failures display the actual paid fee. The coin activity entry uses the saved job ID to keep receipt replay from adding duplicate entries.
+
+The real HTTP host test verifies session access, preparation with zero sends, changed approval rejection, competing wallet actions, runtime busy state, restart after a lost send reply, recovery of the original NFT and receipt, and cached replay while RPC is offline. A finalized failure retains its fee and terminal state. Nine client tests cover exact review, cancellation, recovery, wallet changes, late responses, competing clicks, recovery button dispatch, and practice mode.
+
+All 155 affected support, withdrawal, HTTP, and client tests passed on Node 25.8.2 and Node 22.23.3. The first Node 22 run timed out in three tests during a long pause; the complete rerun passed in 3.9 seconds. Package coverage passed for 124 required runtime files. The real client review and recovery controls were inspected in the in-app browser with local fixture data: cancellation retained the job, and typed approval displayed its receipt and fee. Public funds were untouched. The preceding service head `279dcd3` passed all six GitHub checks; the integration head's checks are recorded in PR #52.
+
+Remaining work includes the full-launch budget, production token creation and storage connections, other wallet actions, live CLI and runner execution, durable runner custody, desktop process separation, and full recovered-launch qualification. The completion checklist above remains active.

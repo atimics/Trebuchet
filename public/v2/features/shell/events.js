@@ -444,6 +444,7 @@ function handleClick(event) {
     previewPoolSupport().catch((error) => notify(error.message || 'Preview failed'));
     return;
   }
+  if (action === 'resume-support-job') { resumeSupportPositionJob(actionTarget.dataset.jobId); return; }
   if (action === 'open-pool-support') {
     openPoolSupport().catch((error) => notify(error.message || 'Adding support failed'));
     return;

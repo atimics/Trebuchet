@@ -112,7 +112,7 @@ export function createSupportPositionService(options) {
         priorityFeeMicroLamports = 50000, feePadLamports = 5000 } = input;
       if (![scopeId, key].every((value) => typeof value === 'string' && value && value.length <= 220)) throw new TypeError('Use a stable support scope and key');
       return owned(walletPublicKey, async () => {
-        const request = { scopeId, key, walletPublicKey, poolId, nftMint, depositLamports, tickLower, tickUpper, requestId, nft2022, lookupTables, priorityFeeMicroLamports, feePadLamports, network };
+        const request = { scopeId, key, walletPublicKey, poolId, nftMint, depositLamports, tickLower, tickUpper, requestId, nft2022, lookupTables, priorityFeeMicroLamports, feePadLamports, network, ...(input.review === undefined ? {} : { review: input.review }) };
         const id = identity(request), prior = get(id);
         if (prior) {
           checkHost(prior);

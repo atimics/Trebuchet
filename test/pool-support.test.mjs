@@ -9,7 +9,6 @@ import {
 } from '../lpMath.js';
 import {
   previewSolSupport,
-  openSolSupport,
   setSdkFactoryForTests,
   setConnectionFactoryForTests,
   resetTestFactories,
@@ -107,49 +106,6 @@ test('preview caps the range, prices each new tick array, and checks the balance
   assert.match(plan.warnings.join(' '), /cheaper in its RUG pool|cheaper in its .* pool/);
   assert.match(plan.warnings.join(' '), /The wallet has 0\.0500 SOL/);
   assert.equal(plan.locked, false);
-});
-
-test('open refuses when the pool moved since the preview, and sends nothing', async () => {
-  const { raydium, calls } = mockSdk();
-  setConnectionFactoryForTests(() => raydium.connection);
-  setSdkFactoryForTests(() => raydium);
-  const owner = Keypair.generate();
-  await assert.rejects(
-    openSolSupport({
-      tempWalletSecretKey: Array.from(owner.secretKey),
-      poolId: POOL,
-      solAmount: 0.1,
-      depthPct: 50,
-      expected: { tickLower: 0, tickUpper: 1, totalLamports: '1' },
-    }),
-    (error) => error.code === 'SUPPORT_PLAN_CHANGED' && Boolean(error.plan),
-  );
-  assert.equal(calls.opened.length, 0);
-});
-
-test('open sends one SOL-only position at the confirmed range', async () => {
-  const { raydium, calls } = mockSdk();
-  setConnectionFactoryForTests(() => raydium.connection);
-  setSdkFactoryForTests(() => raydium);
-  const owner = Keypair.generate();
-  const plan = await previewSolSupport({ walletPublicKey: owner.publicKey.toBase58(), poolId: POOL, solAmount: 0.1, depthPct: 50 });
-  const result = await openSolSupport({
-    tempWalletSecretKey: Array.from(owner.secretKey),
-    poolId: POOL,
-    solAmount: 0.1,
-    depthPct: 50,
-    expected: { tickLower: plan.tickLower, tickUpper: plan.tickUpper, totalLamports: plan.totalLamports },
-  });
-  assert.equal(calls.opened.length, 1);
-  const args = calls.opened[0];
-  assert.equal(args.base, 'MintB', 'SOL is mintB, so the deposit side is MintB');
-  assert.equal(args.baseAmount.toString(), '100000000');
-  assert.equal(args.otherAmountMax.toString(), '0');
-  assert.equal(args.tickLower, plan.tickLower);
-  assert.equal(args.tickUpper, plan.tickUpper);
-  assert.ok(args.tickUpper < -132326, 'SOL-only: the range sits below the current tick');
-  assert.equal(result.txId, 'sig-support');
-  assert.equal(result.adopted, false);
 });
 
 test('positions list reads each wallet and prices what a position holds', async () => {

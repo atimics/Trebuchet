@@ -750,10 +750,22 @@
       });
     }
 
-    async function openSolSupport({ walletPublicKey, poolId, tokenMint = null, solAmount, depthPct, expected } = {}) {
+    async function prepareSolSupport({ walletPublicKey, poolId, tokenMint = null, solAmount, depthPct, requestId } = {}) {
+      return request('/api/v2/support/prepare', { method: 'POST', body: { walletPublicKey, poolId, tokenMint, solAmount, depthPct, requestId }, timeoutMs: 90_000 });
+    }
+
+    async function getSupportJobs(walletPublicKey) {
+      return request(`/api/v2/support/jobs?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
+    }
+
+    async function getSupportJob(jobId) {
+      return request(`/api/v2/support/jobs/${encodeURIComponent(jobId)}`);
+    }
+
+    async function openSolSupport({ walletPublicKey, poolId, tokenMint = null, solAmount, depthPct, expected, jobId, planDigest, maxSpendLamports } = {}) {
       return request('/api/v2/support/open', {
         method: 'POST',
-        body: { walletPublicKey, poolId, tokenMint, solAmount, depthPct, expected },
+        body: { walletPublicKey, poolId, tokenMint, solAmount, depthPct, expected, jobId, planDigest, maxSpendLamports },
         timeoutMs: 180_000,
       });
     }
@@ -1149,6 +1161,9 @@
       findFundingWallet,
       listDestinations,
       previewSolSupport,
+      prepareSolSupport,
+      getSupportJobs,
+      getSupportJob,
       openSolSupport,
       listCoins,
       addCoin,
