@@ -21,7 +21,9 @@
     "./storage-payment": "./src/storage-payment.js",
     "./upload": "./src/upload.js",
     "./upload-store": "./src/upload-store.js",
-    "./irys-upload-transport": "./src/irys-upload-transport.js"
+    "./irys-upload-transport": "./src/irys-upload-transport.js",
+    "./swap-instruction": "./src/swap-instruction.js",
+    "./swap-bundle": "./src/swap-bundle.js"
   },
   "engines": {
     "node": ">=22.13.0"

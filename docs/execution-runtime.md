@@ -246,3 +246,13 @@ The drill passed on Node 25.8.2 and Node 22.23.3. It verified three distinct fin
 ### Base UI changes retained in feature sources
 
 Base changes through `17ed596` are integrated. Its 24 renderer edits now live in the eight matching feature files. The rebuilt renderer matches the merged renderer byte for byte, so the build retains the updated wallet, launch, recovery, history, and coin views. All 115 renderer and shared-browser tests passed. This resolves the CI bundle drift caused by merging the newer base's direct renderer edits with this branch's feature build.
+
+### Swap message review stage
+
+`swap-instruction` reads Raydium exact-input SDK messages and Jupiter V6 `route` and `shared_accounts_route` messages. Jupiter field coverage is pinned to the official `jupiter-amm-implementation` IDL at `cc068c9d1df0060c62f9a8a4fc37ea13ea7b9b39`. Independent wire fixtures cover all 90 swap variants in that schema, including PumpSwap and dynamic account slices. New instruction formats require a reviewed schema before signing.
+
+`swap-bundle` reviews the complete setup, trade, and cleanup sequence. It binds one wallet, input amount, minimum output, output token account, network, funding ceiling, and rent ceiling. It checks wrapped-SOL funding separately from rent, validates seeded and associated account creation, and pins cleanup to the wallet. Saved templates retain their instructions while normalizing the blockhash. The review digest also covers the resolved lookup-table addresses and all approved limits.
+
+The 41 focused tests cover real Raydium SDK bytes, all pinned Jupiter variants, malformed and appended fields, wrong accounts, extra transfers, duplicate funding, changed lookup tables, and altered limits. This stage provides message review for the planned durable purchase adapter. Production acquisition still needs finalized account and fee checks, durable jobs, engine execution, and crash recovery. The complete architecture critique and target diagram are in [architecture-review.md](architecture-review.md).
+
+Validation for this stage: all 316 architecture tests passed. All 41 focused swap tests also passed on Node 22.23.3. Package coverage passed for 102 required runtime files, and syntax checks passed for 395 files. The preceding head, `fc9611e`, passed all six GitHub checks.
