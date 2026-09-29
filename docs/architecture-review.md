@@ -1,6 +1,6 @@
 # Architecture review
 
-Review scope: the shared-runtime worktree through production quote drafts, reviewed spending, HTTP recovery, and real-router validator recovery. The changes are delivered through draft PR #52. The completion checklist in [execution-runtime.md](execution-runtime.md) records the full build scope.
+Review scope: the shared-runtime worktree through production quote drafts, reviewed spending, HTTP recovery, durable position withdrawal, and private-validator recovery. The changes are delivered through draft PR #52. The completion checklist in [execution-runtime.md](execution-runtime.md) records the full build scope.
 
 ## Assessment
 
@@ -41,9 +41,11 @@ Each local profile has one runtime owner. Each runner uses its own durable profi
 
 Buy Quotes now uses a durable acquisition workflow. The runtime combines allocations for each mint, checks existing balances, reviews the complete unsigned provider bundle, and saves its digest and spending ceiling before confirmation. Classic and v2 approve the saved wallet, network, input, fees, and rent. Each purchase and cleanup keeps its original receipts across restart.
 
-The next spending paths are production token creation, uploads, and wallet position management. Each path needs the same ownership, approval, signed-transaction record, and recovery rules. Token creation and upload host changes have pending approval requests described below.
+Wallet position withdrawal now saves its unsigned plan and spending limits before review. The runtime verifies the original receipt, returned tokens, closed position accounts, NFT burn, and exact fee and rent changes. A saved withdrawal remains recoverable after the position closes.
 
-Acceptance: extend the private-validator tests through each production host. Include interrupted submission, changed approval, failed storage commits, and cleanup after a finalized failure. The quote HTTP test now covers session access, competing requests, runtime restart, original receipt recovery, and separately approved cleanup. The production quote builder also passed a real Raydium transaction and process-recovery drill on the private validator.
+The next spending paths are production token creation, uploads, support-position creation, and other wallet actions. Each path needs the same ownership, approval, signed-transaction record, and recovery rules. Token creation and upload host changes have pending approval requests described below.
+
+Acceptance: extend the private-validator tests through each production host. Include interrupted submission, changed approval, failed storage commits, and cleanup after a finalized failure. The quote HTTP test now covers session access, competing requests, runtime restart, original receipt recovery, and separately approved cleanup. The production quote builder and the position withdrawal service also passed real Raydium transactions and process-recovery drills on the private validator. Withdrawal checks cover classic and Token-2022 position NFTs, transfer fees, new output accounts, and output accounts with existing SOL.
 
 ### 2. Enforce a budget for the whole launch
 
