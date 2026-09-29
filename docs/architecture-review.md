@@ -53,7 +53,9 @@ Acceptance: extend the private-validator tests through each production host. Inc
 
 Existing engine adapters approve bounded operations. A launch also needs one shared spending ledger across uploads, swaps, mint creation, liquidity, retries, and sweep fees.
 
-Store reservations, actual costs, and remaining approval in SQLite. Reserve funds before signing. Finalized failures still consume their transaction fees. Keep gross payments, returned rent, and net cost as separate fields. A returned rent balance should follow an explicit reuse policy.
+A shared launch budget ledger now saves the complete plan approval, operation reservations, and verified costs in SQLite. The engine has reservation checks before signing and every broadcast, plus cost settlement after terminal receipts. Failed fees consume approval. Gross spending, returned funds, and net cost remain separate; the initial policy keeps returned funds in the report while gross spending retains its budget charge.
+
+Production hosts still need to connect their exact operation ceilings and verified cost readers to this ledger. The launch review must approve one full ceiling across every spending phase. These connections remain the next budget delivery step.
 
 Acceptance: interrupt a launch at each spending phase, resume it, and compare the full ledger with finalized transaction receipts. Two clients must observe the same remaining budget.
 

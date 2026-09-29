@@ -423,3 +423,16 @@ The real HTTP host test verifies session access, preparation with zero sends, ch
 All 155 affected support, withdrawal, HTTP, and client tests passed on Node 25.8.2 and Node 22.23.3. The first Node 22 run timed out in three tests during a long pause; the complete rerun passed in 3.9 seconds. Package coverage passed for 124 required runtime files. The real client review and recovery controls were inspected in the in-app browser with local fixture data: cancellation retained the job, and typed approval displayed its receipt and fee. Public funds were untouched. The preceding service head `279dcd3` passed all six GitHub checks; the integration head's checks are recorded in PR #52.
 
 Remaining work includes the full-launch budget, production token creation and storage connections, other wallet actions, live CLI and runner execution, durable runner custody, desktop process separation, and full recovered-launch qualification. The completion checklist above remains active.
+
+
+### Shared launch budget ledger and engine contract
+
+`@trebuchet/runtime/launch-budget` saves the full launch scope, wallet, chain, plan digest, spending ceiling, and bound approval. Every operation reserves its exact ceiling before signing. Expired transaction replacements retain that reservation. The ledger releases unused reservation only after a host cost reader verifies the original finalized transaction. Failed transactions retain the actual fee. A failed settlement commit keeps the reservation available for recovery.
+
+The ledger keeps reserved funds, gross spending, returns, fees, net spending, and remaining approval separate. Its initial `report-only` return policy charges gross spending and reports returned funds separately. Approval expiry permits original receipt settlement; each new spending attempt requires current approval. Reads validate budget identities, approvals, operation bindings, proof digests, and exact totals. Damaged records remain available for recovery.
+
+The engine accepts a budget interface and calls its reservation check before signing and every broadcast. Completion settles the terminal receipt's cost. A later recovery of a terminal operation repeats pending settlement before returning the saved result. Tests cover lost send replies, interrupted settlement, expiry after signing, approval renewal before a first signature, failed fees, separate clients, changed bindings, corrupted costs, failed database commits, and owner loss.
+
+Production adapters still need their cost readers and exact ceilings connected to this interface. Whole-launch review must bind one approved limit across uploads, minting, swaps, liquidity, and final transfer. The full budget requirement remains open until those hosts and recovery drills pass.
+
+Validation for this stage: all 734 architecture tests passed on supported Node 22.23.3. The budget suite has 33 focused ledger and engine integration tests. The earlier Node 25 run passed 733 architecture tests before the final approval-renewal regression was added; all 33 budget tests then passed on Node 25. The complete v2 API-backed E2E flow also passed after correcting practice support refresh to use the practice coin identity.

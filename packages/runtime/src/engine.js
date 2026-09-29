@@ -9,7 +9,7 @@ const snapshot = (value) => JSON.parse(publicJson(value));
 const hasEvidence = (value) => value && typeof value === 'object' && Object.keys(value).length > 0;
 
 export class ExecutionEngine {
-  constructor({ store, owner, signer, chain, operations, authorize }) {
+  constructor({ store, owner, signer, chain, operations, authorize, budget = null }) {
     if (!store || !owner || typeof owner.assertActive !== 'function' || store.directory !== owner.profile) {
       throw new TypeError('Execution requires the active owner of its storage profile');
     }
@@ -23,6 +23,8 @@ export class ExecutionEngine {
     this.chain = chain;
     this.operations = operations;
     this.authorize = authorize;
+    if (budget && ['reserve', 'settle'].some((method) => typeof budget[method] !== 'function')) throw new TypeError('Execution budget requires reservation and settlement checks');
+    this.budget = budget;
     if (!busyOwners.has(owner)) busyOwners.set(owner, new Set());
   }
 
@@ -97,8 +99,24 @@ export class ExecutionEngine {
     return observed;
   }
 
+  async #reserve(context) {
+    this.owner.assertActive();
+    if (this.budget) await this.budget.reserve(context);
+    this.owner.assertActive();
+  }
+
+  async #finish(operationId) {
+    this.owner.assertActive();
+    if (this.budget) {
+      const operation = this.store.getOperation(operationId), launch = this.store.getLaunch(operation.launchId);
+      await this.budget.settle({ operation, launch });
+      this.owner.assertActive();
+    }
+    return this.getStatus(operationId);
+  }
+
   async #advance(operation) {
-    if (terminal.has(operation.state)) return this.getStatus(operation.id);
+    if (terminal.has(operation.state)) return this.#finish(operation.id);
     const launch = this.store.getLaunch(operation.launchId);
     if (launch.network !== this.chain.network) throw failure('NETWORK_MISMATCH', 'Launch and chain network must agree');
     const handler = this.#handler(operation.kind);
@@ -124,7 +142,7 @@ export class ExecutionEngine {
     }
     if (failed) {
       this.store.setOperationState(operation.id, 'failed', failed);
-      return this.getStatus(operation.id);
+      return this.#finish(operation.id);
     }
     const checked = await handler.checkState({ ...context, minContextSlot, transactions: this.store.getTransactions(operation.id) });
     this.owner.assertActive();
@@ -133,7 +151,7 @@ export class ExecutionEngine {
     }
     if (checked.state === 'complete') {
       this.store.setOperationState(operation.id, 'confirmed', { chain: checked.evidence, signatures: this.store.getTransactions(operation.id).filter((tx) => tx.state === 'confirmed').map((tx) => tx.signature) });
-      return this.getStatus(operation.id);
+      return this.#finish(operation.id);
     }
     if (confirmed) return this.#pause(operation.id, 'OPERATION_RESULT_PENDING');
 
@@ -143,6 +161,7 @@ export class ExecutionEngine {
     if (!built?.blockhash || !Number.isSafeInteger(built.lastValidBlockHeight) || built.lastValidBlockHeight < 0) {
       throw failure('TRANSACTION_INVALID', 'The transaction needs a blockhash and expiry');
     }
+    await this.#reserve(context);
     const signed = await this.signer.signTransaction({ ...context, transaction: built.transaction });
     this.owner.assertActive();
     const inspected = await this.chain.inspectTransaction(signed, context);
@@ -164,6 +183,7 @@ export class ExecutionEngine {
   async #broadcast(transaction, context, handler) {
     // Approval is checked again for stored bytes, including after a restart.
     await this.#approve({ ...context, phase: 'broadcast', transaction });
+    await this.#reserve(context);
     this.store.setOperationState(context.operation.id, 'submitted');
     const signature = await this.chain.sendTransaction(transaction, context);
     this.owner.assertActive();
@@ -172,13 +192,13 @@ export class ExecutionEngine {
     const observed = await this.#observe({ ...transaction, state: 'submitted' }, context);
     if (observed.state === 'failed') {
       this.store.setOperationState(context.operation.id, 'failed', { signature, receipt: observed.evidence });
-      return this.getStatus(context.operation.id);
+      return this.#finish(context.operation.id);
     }
     if (observed.state !== 'confirmed') return this.#pause(context.operation.id, 'TRANSACTION_PENDING');
     const checked = await handler.checkState({ ...context, minContextSlot: observed.evidence.slot || 0, transactions: this.store.getTransactions(context.operation.id) });
     this.owner.assertActive();
     if (checked?.state !== 'complete' || !hasEvidence(checked.evidence)) return this.#pause(context.operation.id, 'OPERATION_RESULT_PENDING');
     this.store.setOperationState(context.operation.id, 'confirmed', { chain: checked.evidence, signatures: [signature] });
-    return this.getStatus(context.operation.id);
+    return this.#finish(context.operation.id);
   }
 }
