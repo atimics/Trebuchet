@@ -3,8 +3,8 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-09-28T16:50:47.905Z",
-  "durationMs": 1827,
+  "generatedAt": "2026-09-28T17:58:22.334Z",
+  "durationMs": 1772,
   "target": "file:///Users/ratimics/develop/trebuchet-wt-helius/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
@@ -19,10 +19,10 @@
     "keyboardWalkthrough"
   ],
   "assetHashes": {
-    "index.html": "0d2959edfe9fa4f33632b1dcd186bdf189535cee253e36fed07d21f05da3584a",
+    "index.html": "1e44e430dedeb5906370cb5bd1f9b2b56a4e6a6d12833f6c9f2a0cc39e987c52",
     "styles.css": "e7280cb877a2d3f908204415ec7560e20efe098f2b0400bbfb5c5f006b6b2320",
     "api-client.js": "281250d236ab775867b90c5d38bfdd92d7fd123d4b610c3e3e53169e88fa31a3",
-    "app.js": "83149b61dbaf11e116b9d4ee5590d9c1f56787b08aa30af99e6b32dba7d15cba"
+    "app.js": "a290d3934c8922151a85e9a8916ae9528dd236f37eb24dafeab50def1faa3d8f"
   },
   "viewports": [
     {

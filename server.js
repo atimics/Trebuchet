@@ -3164,7 +3164,8 @@ app.post('/api/v2/support/open', async (req, res) => {
 // same SSRF checks as the image proxy; ipfs:// and ar:// map to gateways.
 function publicContentUrl(value) {
   const text = String(value || '').trim();
-  if (!text) return null;
+  // A stand-in URL from old launches never resolves; it is not an image.
+  if (!text || /placeholder/i.test(text)) return null;
   if (text.startsWith('ipfs://')) return `https://ipfs.io/ipfs/${text.slice('ipfs://'.length).replace(/^ipfs\//, '')}`;
   if (text.startsWith('ar://')) return `https://arweave.net/${text.slice('ar://'.length)}`;
   return /^https?:\/\//i.test(text) ? text : null;
