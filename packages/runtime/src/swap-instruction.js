@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { PublicKey, SystemProgram } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, NATIVE_MINT } from '@solana/spl-token';
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, NATIVE_MINT, getAssociatedTokenAddressSync } from '@solana/spl-token';
 
 export const SWAP_PROGRAMS = Object.freeze({
   raydium: 'routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS',
@@ -122,4 +122,29 @@ export function assertSwapInstruction(instruction, intent) {
     throw rejected('Match the encoded trade to the approved wallet, accounts, amount, and minimum output');
   }
   return value;
+}
+
+
+// Current Trade API helpers. Their exact accounts and data are checked before
+// the full bundle translates them into its saved funding and cleanup actions.
+export function readRaydiumAccountInstruction(instruction, intent) {
+  const program = intent.network === 'devnet' ? SWAP_PROGRAMS.raydiumDevnet : SWAP_PROGRAMS.raydium;
+  const data = Buffer.from(instruction.data), keys = instruction.keys;
+  if (!['mainnet', 'devnet', 'localnet'].includes(intent.network) || address(instruction.programId) !== program
+      || !Array.isArray(keys) || keys.length !== 6 || ![5, 6].includes(data[0]) || data.length !== (data[0] === 5 ? 9 : 1)) {
+    throw rejected('Use the complete reviewed Raydium account instruction');
+  }
+  const key = (index) => address(keys[index].pubkey), wallet = address(intent.walletPublicKey), source = address(intent.sourceTokenAccount);
+  const expected = data[0] === 5
+    ? [wallet, source, NATIVE_MINT.toBase58(), TOKEN_PROGRAM_ID.toBase58(), ASSOCIATED_TOKEN_PROGRAM_ID.toBase58(), SystemProgram.programId.toBase58()]
+    : [wallet, source, wallet, TOKEN_PROGRAM_ID.toBase58(), ASSOCIATED_TOKEN_PROGRAM_ID.toBase58(), SystemProgram.programId.toBase58()];
+  if (keys.some((value, index) => key(index) !== expected[index] || value.isSigner !== (index === 0 || data[0] === 6 && index === 2))
+      || !keys[0].isWritable || !keys[1].isWritable || keys.slice(3).some((value) => value.isWritable)
+      || source !== getAssociatedTokenAddressSync(NATIVE_MINT, new PublicKey(wallet)).toBase58()) {
+    throw rejected('Bind Raydium SOL setup and cleanup to the wallet and its native account');
+  }
+  if (data[0] === 6) return { kind: 'close' };
+  const lamports = Number(data.readBigUInt64LE(1));
+  if (!Number.isSafeInteger(lamports) || lamports > Number(intent.inputAmountRaw)) throw rejected('Keep Raydium SOL funding within the approved input');
+  return { kind: 'wrap', lamports };
 }

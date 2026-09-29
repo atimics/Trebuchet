@@ -86,6 +86,7 @@ export function assertSwapAccountIdentity(before, current, step) {
 export function projectSwapStep(review, step, before) {
   const accounts = structuredClone(before.accounts), { intent } = review;
   let grossDebitLamports = 0, createdRent = 0, returnedLamports = 0;
+  const temporary = new Set();
   const source = accounts[intent.sourceTokenAccount], destination = accounts[intent.destinationTokenAccount];
   const requireSource = () => {
     if (!source.exists || source.initialized === false) throw fail('Initialize the saved wrapped-SOL source before spending');
@@ -109,6 +110,7 @@ export function projectSwapStep(review, step, before) {
       }
       account.nativeReserveLamports = creation.mint === native ? mint.rentLamports : 0;
       account.exists = true;
+      if (action.temporary) temporary.add(action.address);
     } else if (action.kind === 'fund') {
       source.lamports += action.lamports; grossDebitLamports += action.lamports;
     } else if (action.kind === 'initialize' || action.kind === 'sync') {
@@ -122,9 +124,16 @@ export function projectSwapStep(review, step, before) {
       source.amountRaw = (amount(source.amountRaw) - amount(intent.inputAmountRaw)).toString();
       source.lamports -= Number(intent.inputAmountRaw);
       destination.amountRaw = (amount(destination.amountRaw) + amount(intent.minimumOutputRaw)).toString();
+    } else if (action.kind === 'close-created') {
+      if (!temporary.has(action.address)) continue;
+      const account = accounts[action.address];
+      if (!account?.exists || amount(account.amountRaw) !== 0n) throw fail('Close only the empty intermediate account created by this trade');
+      returnedLamports += account.lamports;
+      account.lamports = 0; account.exists = false; account.nativeReserveLamports = 0;
+      temporary.delete(action.address);
     } else if (action.kind === 'close') {
       requireSource();
-      returnedLamports = source.lamports; source.lamports = 0; source.amountRaw = '0'; source.exists = false; source.nativeReserveLamports = 0;
+      returnedLamports += source.lamports; source.lamports = 0; source.amountRaw = '0'; source.exists = false; source.nativeReserveLamports = 0;
     } else throw fail('Use the reviewed swap action order');
   }
   if (![createdRent, returnedLamports, grossDebitLamports].every(whole)) throw fail('Use exact swap funding and refund amounts');

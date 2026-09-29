@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { Keypair, PublicKey, TransactionInstruction } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID, NATIVE_MINT, getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { Keypair, PublicKey, SystemProgram, TransactionInstruction } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, NATIVE_MINT, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { swapBaseInAutoAccount, ALL_PROGRAM_ID, DEVNET_PROGRAM_ID } from '@raydium-io/raydium-sdk-v2';
 import BN from 'bn.js';
 import { SWAP_PROGRAMS } from '../../src/swap-instruction.js';
@@ -34,3 +34,12 @@ export function jupiter({ shared = false, steps = [Buffer.from([7, 100, 0, 1])],
 
 
 export { wallet, mint, source, destination, meta };
+
+
+export function raydiumAccount(kind, lamports = 50000n) {
+  const data = kind === 'wrap' ? Buffer.alloc(9) : Buffer.from([6]);
+  if (kind === 'wrap') { data[0] = 5; data.writeBigUInt64LE(lamports, 1); }
+  return new TransactionInstruction({ programId: new PublicKey(SWAP_PROGRAMS.raydium), data,
+    keys: [meta(wallet, true, true), meta(source, true), kind === 'wrap' ? meta(NATIVE_MINT) : meta(wallet, true, true),
+      meta(TOKEN_PROGRAM_ID), meta(ASSOCIATED_TOKEN_PROGRAM_ID), meta(SystemProgram.programId)] });
+}

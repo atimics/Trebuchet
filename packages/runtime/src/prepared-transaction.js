@@ -17,10 +17,15 @@ const whole = (value) => Number.isSafeInteger(value) && value >= 0;
 // Expiry changes only the recent blockhash; account identities stay fixed.
 export function createPreparedTransactionService({
   owner, store, connection, signer, kind, network, expectedGenesisHash,
-  authorize, checkResult, receiptCreditAccount = null, now = Date.now, timeoutMs = 60_000, pollIntervalMs = 500,
+  authorize, checkResult, receiptCreditAccount = null, receiptCreditAccounts = null, now = Date.now, timeoutMs = 60_000, pollIntervalMs = 500,
 }) {
   if (!kind || typeof authorize !== 'function' || typeof checkResult !== 'function') throw new TypeError('Supply the operation kind, approval, and result checks');
   if (receiptCreditAccount !== null && typeof receiptCreditAccount !== 'string') throw new TypeError('Name the reviewed refund account');
+  if (receiptCreditAccounts !== null && (receiptCreditAccount !== null || !Array.isArray(receiptCreditAccounts)
+      || receiptCreditAccounts.length > 64 || receiptCreditAccounts.some((value) => typeof value !== 'string' || !value)
+      || new Set(receiptCreditAccounts).size !== receiptCreditAccounts.length)) throw new TypeError('Name distinct reviewed refund accounts');
+  const creditAccounts = (receiptCreditAccounts ?? (receiptCreditAccount === null ? [] : [receiptCreditAccount])).slice().sort();
+  const creditPolicy = creditAccounts.length === 1 ? { receiptCreditAccount: creditAccounts[0] } : { receiptCreditAccounts: creditAccounts };
   const launchFor = ({ scopeId, walletPublicKey, key, plan, workflowId }) => {
     if (![scopeId, walletPublicKey, key].every((value) => typeof value === 'string' && value)) throw new TypeError('A prepared transaction requires launch, wallet, and action identities');
     return { id: hash({ scopeId, walletPublicKey, network, kind, key }), walletPublicKey, network,
@@ -47,18 +52,17 @@ export function createPreparedTransactionService({
     const keys = message.getAccountKeys({ addressLookupTableAccounts: tables });
     return Array.from({ length: keys.length }, (_, index) => keys.get(index).toBase58());
   };
-  const creditAccountIndex = (message, keys) => {
-    if (receiptCreditAccount === null) return null;
-    const index = keys.indexOf(receiptCreditAccount);
-    if (index <= 0 || !message.isAccountWritable(index)) throw uncertain('Use the reviewed writable refund account');
+  const creditAccountIndexes = (message, keys) => creditAccounts.map((account) => {
+    const index = keys.indexOf(account);
+    if (index <= 0 || !message.isAccountWritable(index)) throw uncertain('Use the reviewed writable refund accounts');
     return index;
-  };
+  });
   const checkFee = async (message, payload) => {
     const quote = await connection.getFeeForMessage(message, 'finalized');
     if (!whole(quote?.context?.slot) || !whole(quote.value)) throw uncertain('Read the complete transaction fee');
     if (quote.value > payload.feeCeilingLamports) throw fail('SPEND_LIMIT_EXCEEDED', 'The transaction fee exceeds the saved ceiling');
     if (publicJson(await accountKeys(message)) !== publicJson(payload.accountKeys)) throw uncertain('Verify the saved lookup table addresses');
-    creditAccountIndex(message, payload.accountKeys);
+    creditAccountIndexes(message, payload.accountKeys);
   };
   const approvalFor = async (approval, operation, launch) => {
     owner.assertActive();
@@ -82,8 +86,9 @@ export function createPreparedTransactionService({
     const { preBalances, postBalances, fee } = receipt.meta;
     if (!Array.isArray(preBalances) || !Array.isArray(postBalances) || preBalances.length !== keys.length || postBalances.length !== keys.length
         || [...preBalances, ...postBalances, fee].some((value) => !whole(value)) || fee > operation.payload.feeCeilingLamports) throw uncertain('Read complete finalized balances and fees');
-    const creditIndex = creditAccountIndex(message, keys);
-    const creditLimit = creditIndex === null ? operation.payload.maxCreditLamports || 0 : preBalances[creditIndex];
+    const creditIndexes = creditAccountIndexes(message, keys);
+    const creditLimit = creditIndexes.length ? creditIndexes.reduce((sum, index) => sum + preBalances[index], 0) : operation.payload.maxCreditLamports || 0;
+    if (!whole(creditLimit)) throw uncertain('Read the exact combined refund balance');
     const spentLamports = preBalances[0] - postBalances[0];
     if (spentLamports < fee - creditLimit || spentLamports > operation.payload.maxSpendLamports) throw uncertain('Verify the finalized payer debit against the saved ceiling');
     return { evidence: { signature: record.signature, slot: receipt.slot, feeLamports: fee, spentLamports }, receipt };
@@ -111,7 +116,8 @@ export function createPreparedTransactionService({
     },
   };
   const run = async (operation, approval) => {
-    if (Object.hasOwn(operation.payload, 'receiptCreditAccount') && operation.payload.receiptCreditAccount !== receiptCreditAccount) {
+    const savedCredits = operation.payload.receiptCreditAccounts ?? (Object.hasOwn(operation.payload, 'receiptCreditAccount') ? [operation.payload.receiptCreditAccount] : null);
+    if (savedCredits !== null && publicJson(savedCredits) !== publicJson(creditAccounts)) {
       throw fail('OPERATION_CONFLICT', 'Recover the action with its saved refund account');
     }
     const launch = store.getLaunch(operation.launchId);
@@ -162,11 +168,11 @@ export function createPreparedTransactionService({
       if (Buffer.from(template, 'base64').length > 1232 || unsigned.message.staticAccountKeys[0]?.toBase58() !== walletPublicKey) throw fail('TRANSACTION_INVALID', 'Use a complete transaction for the approved wallet');
       if (!whole(prepared.feeCeilingLamports) || !whole(prepared.maxSpendLamports) || prepared.maxSpendLamports < prepared.feeCeilingLamports) throw new TypeError('Save complete fee and spending ceilings');
       const resolvedKeys = await accountKeys(unsigned.message);
-      creditAccountIndex(unsigned.message, resolvedKeys);
+      creditAccountIndexes(unsigned.message, resolvedKeys);
       if (prepared.accountKeys && publicJson(prepared.accountKeys) !== publicJson(resolvedKeys)) throw uncertain('Keep the account addresses from the reviewed transaction');
       if (prepared.maxCreditLamports !== undefined && !whole(prepared.maxCreditLamports)) throw new TypeError('Save an exact bound for returned wallet funds');
       const payload = { key, template, accountKeys: resolvedKeys, result: prepared.result,
-        ...(receiptCreditAccount === null ? {} : { receiptCreditAccount }),
+        ...creditPolicy,
         allowExisting: prepared.allowExisting === true, feeCeilingLamports: prepared.feeCeilingLamports, maxSpendLamports: prepared.maxSpendLamports,
         ...(prepared.maxCreditLamports === undefined ? {} : { maxCreditLamports: prepared.maxCreditLamports }) };
       const candidate = { kind, payload };

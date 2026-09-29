@@ -4,7 +4,7 @@ import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, NATIVE_MINT, ASSOCIATED_TOKEN_
   createAssociatedTokenAccountIdempotentInstruction, createSyncNativeInstruction, createCloseAccountInstruction } from '@solana/spl-token';
 import { inspectSolanaTransaction, SOLANA_GENESIS_HASHES } from '../../src/solana.js';
 import { readSwapInstruction, SWAP_PROGRAMS } from '../../src/swap-instruction.js';
-import { key, wallet, mint, source, destination, intent, jupiter, raydium } from './swap-instructions.mjs';
+import { key, wallet, mint, source, destination, intent, jupiter, raydium, raydiumAccount } from './swap-instructions.mjs';
 
 export const swapWallet = Keypair.fromSeed(new Uint8Array(32).fill(43));
 export { wallet, mint, source, destination, intent };
@@ -21,13 +21,15 @@ export const swapSetup = (token2022 = false) => {
 };
 export const swapCleanup = () => createCloseAccountInstruction(source, wallet, wallet);
 export const swapTransactions = (combined = false, { token2022 = false, provider = 'jupiter' } = {}) => {
-  const out = output(token2022), trade = provider === 'raydium' ? raydium('mainnet', { outputProgram: out.program, outputAccount: out.account }) : jupiter();
+  const out = output(token2022), trade = provider.startsWith('raydium') ? raydium('mainnet', { outputProgram: out.program, outputAccount: out.account }) : jupiter();
   if (provider === 'jupiter') {
     trade.keys[3].pubkey = out.account;
     if (token2022) trade.keys.push({ pubkey: out.program, isWritable: false, isSigner: false });
   }
-  return combined ? [compileSwap([...swapSetup(token2022), trade, swapCleanup()])]
-    : [compileSwap(swapSetup(token2022)), compileSwap([trade]), compileSwap([swapCleanup()])];
+  const setup = provider === 'raydium-api' ? [raydiumAccount('wrap')] : swapSetup(token2022);
+  const cleanup = provider === 'raydium-api' ? raydiumAccount('close') : swapCleanup();
+  return combined ? [compileSwap([...setup, trade, cleanup])]
+    : [compileSwap(setup), compileSwap([trade]), compileSwap([cleanup])];
 };
 
 export function swapChain({ token2022 = false } = {}) {
@@ -77,13 +79,16 @@ export function swapChain({ token2022 = false } = {}) {
         const tx = VersionedTransaction.deserialize(bytes), decoded = TransactionMessage.decompile(tx.message), keys = tx.message.staticAccountKeys;
         const preBalances = keys.map((key) => info(key)?.lamports || 0), preTokenBalances = tokenBalances(keys);
         const failed = state.failAt === state.sends.length - 1;
+        const createAssociated = (name) => {
+          if (!state[name] || state[name].system) {
+            const reserve = rent(name === 'source' ? 165 : out.size), prior = state[name]?.lamports || 0, added = Math.max(0, reserve - prior);
+            state[name] = { amount: name === 'source' ? BigInt(prior + added - reserve) : 0n, lamports: prior + added }; state.walletLamports -= added;
+          }
+        };
         for (const ix of failed ? [] : decoded.instructions) {
           if (ix.programId.equals(ASSOCIATED_TOKEN_PROGRAM_ID)) {
             const name = ix.keys[1].pubkey.equals(source) ? 'source' : 'destination';
-            if (!state[name] || state[name].system) {
-              const reserve = rent(name === 'source' ? 165 : out.size), prior = state[name]?.lamports || 0, added = Math.max(0, reserve - prior);
-              state[name] = { amount: name === 'source' ? BigInt(prior + added - reserve) : 0n, lamports: prior + added }; state.walletLamports -= added;
-            }
+            createAssociated(name);
           } else if (ix.programId.equals(SystemProgram.programId)) {
             const transfer = SystemInstruction.decodeTransfer(ix);
             assert.equal(transfer.toPubkey.toBase58(), source.toBase58());
@@ -93,6 +98,13 @@ export function swapChain({ token2022 = false } = {}) {
             else if (ix.data[0] === 9) { state.walletLamports += state.source.lamports; state.source = null; }
             else assert.fail('reviewed token fixture instruction');
           } else if ([SWAP_PROGRAMS.jupiter, SWAP_PROGRAMS.raydium].includes(ix.programId.toBase58())) {
+            if (ix.programId.toBase58() === SWAP_PROGRAMS.raydium && ix.data[0] === 5) {
+              createAssociated('source');
+              const lamports = Number(ix.data.readBigUInt64LE(1)); state.walletLamports -= lamports; state.source.lamports += lamports;
+              state.source.amount = BigInt(state.source.lamports - rent(165)); continue;
+            }
+            if (ix.programId.toBase58() === SWAP_PROGRAMS.raydium && ix.data[0] === 6) { state.walletLamports += state.source.lamports; state.source = null; continue; }
+            if (ix.programId.toBase58() === SWAP_PROGRAMS.raydium) createAssociated('destination');
             const trade = readSwapInstruction(ix, intent);
             state.source.amount -= BigInt(trade.inputAmountRaw); state.source.lamports -= Number(trade.inputAmountRaw);
             assert.ok(state.source.amount >= 0n); state.destination.amount += state.outputRaw;

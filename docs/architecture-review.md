@@ -1,6 +1,6 @@
 # Architecture review
 
-Review scope: the shared-runtime worktree through balance reconciliation, failed-purchase cleanup, and real-router validator recovery. The changes are delivered through draft PR #52. The completion checklist in [execution-runtime.md](execution-runtime.md) records the full build scope.
+Review scope: the shared-runtime worktree through complete Raydium API bundles, temporary account refunds, and real-router validator recovery. The changes are delivered through draft PR #52. The completion checklist in [execution-runtime.md](execution-runtime.md) records the full build scope.
 
 ## Assessment
 
@@ -47,7 +47,7 @@ The swap review checks provider messages before signing. It binds the input amou
 
 The validator drill now covers crashes after setup, trade, and cleanup acceptance, including delayed status replies and exact-byte resubmission. Extend that acceptance test through the acquisition HTTP service and its durable multi-mint job.
 
-The live Trade API exposed another boundary: Raydium now uses router instructions for SOL setup and cleanup. Review those complete instruction layouts before accepting the full provider bundle, or build that setup and cleanup in the host. Keep the complete final bundle in the approval digest. The current validator test uses the host-built SPL path.
+The current Raydium Trade API bundle now has a reviewed contract for SOL setup, trade, account creation, and cleanup. Its full bundle stays in the approval digest. The validator tests cover both host-built SPL setup and the complete API bundle, including temporary intermediate-account refunds. These contracts are ready for the acquisition service to adopt.
 
 ### 2. Enforce a budget for the whole launch
 

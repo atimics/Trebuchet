@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { PublicKey, SystemProgram, ComputeBudgetProgram, TransactionMessage, VersionedTransaction, AddressLookupTableAccount } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID, NATIVE_MINT, createAssociatedTokenAccountIdempotentInstruction, createSyncNativeInstruction, createCloseAccountInstruction,
+import { TOKEN_PROGRAM_ID, NATIVE_MINT, createAssociatedTokenAccountInstruction, createAssociatedTokenAccountIdempotentInstruction, createSyncNativeInstruction, createCloseAccountInstruction,
   createTransferInstruction, createInitializeAccount3Instruction, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { reviewSwapBundle } from '../src/swap-bundle.js';
-import { key, wallet, mint, source, destination, intent, raydium, jupiter } from './fixtures/swap-instructions.mjs';
+import { key, wallet, mint, source, destination, intent, raydium, jupiter, raydiumAccount } from './fixtures/swap-instructions.mjs';
 
 const compile = (instructions, { legacy = false, tables = [] } = {}) => {
   const message = new TransactionMessage({ payerKey: wallet, recentBlockhash: key(52).toBase58(), instructions });
@@ -127,4 +128,64 @@ test('saved review identity includes its network, limits, token program, and res
   assert.equal(first.steps[0].template, second.steps[0].template);
   assert.notEqual(first.digest, second.digest, 'lookup changes alter the saved review identity even when serialized indexes match');
   await assert.rejects(reviewSwapBundle({ transactions: [tx], lookupTables: [table, changed], intent }), { code: 'SWAP_INTENT_MISMATCH' });
+});
+
+
+test('captured Trade API bytes preserve the full native setup, trade, and close bundle', async () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/raydium-trade-api-bundle.json', import.meta.url), 'utf8'));
+  const transactions = fixture.transactions.map((wire) => VersionedTransaction.deserialize(Buffer.from(wire, 'base64')));
+  const lookupTables = fixture.lookupTables.map(({ key, state }) => new AddressLookupTableAccount({ key: new PublicKey(key),
+    state: { ...state, deactivationSlot: BigInt(state.deactivationSlot), authority: state.authority ? new PublicKey(state.authority) : undefined, addresses: state.addresses.map((a) => new PublicKey(a)) } }));
+  const plan = await reviewSwapBundle({ transactions, lookupTables, intent: fixture.intent });
+  assert.equal(plan.trade.inputAmountRaw, '10000000'); assert.equal(plan.trade.minimumOutputRaw, '1169302');
+  assert.deepEqual(plan.steps[0].actions.map((action) => action.kind), ['create', 'fund', 'sync', 'create', 'trade', 'close']);
+  assert.equal(plan.explicitLamports, 10000000); assert.equal(plan.creations.length, 2);
+  assert.deepEqual(transactions.map((tx) => Buffer.from(tx.serialize()).toString('base64')), fixture.transactions);
+});
+
+for (const kind of ['wrap', 'close']) for (const index of [0, 1, 2, 3, 4, 5]) {
+  test(`Raydium ${kind} binds account ${index} before signing`, async () => {
+    const wrap = raydiumAccount('wrap'), close = raydiumAccount('close');
+    (kind === 'wrap' ? wrap : close).keys[index].pubkey = key(110 + index);
+    await assert.rejects(review([wrap, raydium(), close]), { code: 'SWAP_INTENT_MISMATCH' });
+  });
+}
+
+for (const change of ['excess-funding', 'unsafe-funding', 'appended-wrap', 'appended-close', 'extra-wrap-account', 'extra-close-account', 'duplicate-wrap', 'mixed-funding', 'writable-program', 'duplicate-close', 'late-wrap', 'early-close', 'other-network']) {
+  test(`Raydium API bundle rejects ${change} before signing`, async () => {
+    const wrap = raydiumAccount('wrap'), close = raydiumAccount('close'); let ixs = [wrap, raydium(), close], changedIntent = intent;
+    if (change === 'excess-funding') wrap.data.writeBigUInt64LE(50001n, 1);
+    if (change === 'unsafe-funding') wrap.data.writeBigUInt64LE(18446744073709551615n, 1);
+    if (change === 'appended-wrap') wrap.data = Buffer.concat([wrap.data, Buffer.from([0])]);
+    if (change === 'appended-close') close.data = Buffer.concat([close.data, Buffer.from([0])]);
+    if (change === 'extra-wrap-account') wrap.keys.push({ pubkey: key(120), isWritable: false, isSigner: false });
+    if (change === 'extra-close-account') close.keys.push({ pubkey: key(120), isWritable: false, isSigner: false });
+    if (change === 'duplicate-wrap') ixs = [wrap, wrap, raydium(), close];
+    if (change === 'mixed-funding') ixs.splice(1, 0, SystemProgram.transfer({ fromPubkey: wallet, toPubkey: source, lamports: 1 }));
+    if (change === 'writable-program') wrap.keys[3].isWritable = true;
+    if (change === 'duplicate-close') ixs.push(close);
+    if (change === 'late-wrap') ixs = [raydium(), wrap, close];
+    if (change === 'early-close') ixs = [wrap, close, raydium()];
+    if (change === 'other-network') changedIntent = { ...intent, network: 'devnet' };
+    await assert.rejects(review(ixs, { intent: changedIntent }), { code: 'SWAP_INTENT_MISMATCH' });
+  });
+}
+
+test('Raydium trade accounts include approved intermediate creation and exact token programs', async () => {
+  const intermediate = key(121), account = getAssociatedTokenAddressSync(intermediate, wallet), trade = raydium();
+  trade.keys.push({ pubkey: account, isWritable: true, isSigner: false }, { pubkey: intermediate, isWritable: false, isSigner: false });
+  const plan = await review([raydiumAccount('wrap'), trade, raydiumAccount('close')], { intent: {
+    ...intent, intermediateMints: [{ mint: intermediate.toBase58(), programId: TOKEN_PROGRAM_ID.toBase58() }] } });
+  assert.equal(plan.creations.length, 3);
+  assert.deepEqual(plan.creations.find((item) => item.address === account.toBase58()), {
+    address: account.toBase58(), mint: intermediate.toBase58(), programId: TOKEN_PROGRAM_ID.toBase58(), kind: 'associated', idempotent: true });
+});
+
+
+test('Raydium implicit creation keeps an earlier explicit account and rejects a later duplicate creation', async () => {
+  const explicit = createAssociatedTokenAccountInstruction(wallet, destination, wallet, mint);
+  const plan = await review([explicit, raydiumAccount('wrap'), raydium(), raydiumAccount('close')]);
+  assert.equal(plan.creations.find((item) => item.address === destination.toBase58()).idempotent, false);
+  assert.equal(plan.steps[0].actions.filter((action) => action.kind === 'create' && action.address === destination.toBase58()).length, 1);
+  await assert.rejects(review([raydiumAccount('wrap'), createAssociatedTokenAccountInstruction(wallet, source, wallet, NATIVE_MINT), raydium(), raydiumAccount('close')]), { code: 'SWAP_INTENT_MISMATCH' });
 });

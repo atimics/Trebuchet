@@ -24,7 +24,7 @@ async function fixture(t, { combined = false, token2022 = false, provider = 'jup
   return { profile, owner, store, ...ledger, input, approval, options, service: () => createSwapService(options), setNow: (n) => { now = n; } };
 }
 
-for (const combined of [false, true]) for (const token2022 of [false, true]) for (const provider of ['jupiter', 'raydium']) {
+for (const combined of [false, true]) for (const token2022 of [false, true]) for (const provider of ['jupiter', 'raydium', 'raydium-api']) {
   test(`${provider} ${token2022 ? 'Token-2022' : 'classic'} ${combined ? 'atomic' : 'three-step'} swap saves one purchase and exact receipts through cleanup`, async (t) => {
     const f = await fixture(t, { combined, token2022, provider }), service = f.service(), job = await service.prepare(f.input);
     assert.equal(f.state.sends.length, 0); assert.equal(f.store.getWalletWorkflow(job.walletPublicKey).id, job.id);
@@ -543,3 +543,25 @@ for (const combined of [true, false]) for (const token2022 of [true, false]) for
     assert.equal(f.state.sends.length, combined ? 1 : 3);
   });
 }
+
+
+for (const combined of [false, true]) for (const token2022 of [false, true]) for (const existing of ['native', 'prefunded']) {
+  test(`Raydium API ${combined ? 'atomic' : 'split'} ${token2022 ? 'Token-2022' : 'classic'} bundle returns its ${existing} source balance`, async (t) => {
+    const f = await fixture(t, { combined, token2022, provider: 'raydium-api' }), reserve = f.rent(165), gift = 1000000;
+    f.state.source = existing === 'native' ? { amount: BigInt(gift), lamports: reserve + gift } : { system: true, lamports: gift };
+    const starting = f.state.walletLamports, result = await f.service().execute({ id: (await f.service().prepare(f.input)).id, approval: f.approval });
+    const sourceRent = existing === 'native' ? 0 : reserve - gift, outputRent = f.rent(token2022 ? 170 : 165);
+    assert.equal(result.receivedRaw, '1250'); assert.equal(result.returnedLamports, existing === 'native' ? reserve + gift : reserve);
+    assert.equal(result.grossDebitLamports, 50000 + sourceRent + outputRent + result.feeLamports);
+    assert.equal(starting - f.state.walletLamports, result.grossDebitLamports - result.returnedLamports);
+    assert.equal(f.state.source, null); assert.equal(f.state.destination.amount, 1250n);
+  });
+}
+
+test('implicit Raydium output account rent is approved before the first send', async (t) => {
+  const f = await fixture(t, { combined: true, provider: 'raydium-api' });
+  f.input.intent = { ...f.input.intent, rentCeilingLamports: f.rent(165) };
+  f.approval.bundleDigest = (await reviewSwapBundle({ transactions: f.input.transactions, intent: f.input.intent })).digest;
+  await assert.rejects(f.service().prepare(f.input), { code: 'SPEND_LIMIT_EXCEEDED' });
+  assert.equal(f.state.sends.length, 0); assert.equal(f.store.getWalletWorkflow(f.input.intent.walletPublicKey), null);
+});

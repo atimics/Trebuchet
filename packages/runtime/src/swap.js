@@ -98,7 +98,8 @@ export function createSwapService({ owner, store, connection, signer, network, e
     for (let index = job.receipts.length; index < plan.review.steps.length; index++) {
       const step = plan.review.steps[index], stepPlan = { jobId: job.id, bundleDigest: plan.review.digest, index };
       const service = createPreparedTransactionService({ owner, store, connection, signer, kind: SWAP_OPERATION_KIND, network, expectedGenesisHash,
-        now, timeoutMs, pollIntervalMs, receiptCreditAccount: step.closesSource ? plan.review.intent.sourceTokenAccount : null,
+        now, timeoutMs, pollIntervalMs, receiptCreditAccounts: [...(step.closesSource ? [plan.review.intent.sourceTokenAccount] : []),
+          ...step.actions.filter((action) => action.kind === 'close-created').map((action) => action.address)],
         authorize: async () => {
           await approvalFor(approval, job);
           saveApproval(job, approval);

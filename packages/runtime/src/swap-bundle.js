@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { PublicKey, SystemProgram, SystemInstruction, ComputeBudgetProgram, SYSVAR_RENT_PUBKEY, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, NATIVE_MINT, getAssociatedTokenAddressSync } from '@solana/spl-token';
-import { assertSwapInstruction, SWAP_PROGRAMS } from './swap-instruction.js';
+import { assertSwapInstruction, readRaydiumAccountInstruction, SWAP_PROGRAMS } from './swap-instruction.js';
 import { publicJson } from './store.js';
 
 const rejected = (message) => Object.assign(new Error(message), { code: 'SWAP_INTENT_MISMATCH' });
@@ -33,8 +33,10 @@ export async function reviewSwapBundle({ transactions, lookupTables = [], intent
   const steps = [], created = new Map(), initialized = new Set();
   const createdAccount = (record) => {
     const existing = created.get(record.address);
-    if (existing && publicJson(existing) !== publicJson(record)) throw rejected('Use one creation plan for each swap account');
-    created.set(record.address, record);
+    if (existing && record.kind === 'associated' && !record.idempotent) throw rejected('Use idempotent creation for an account already prepared in this bundle');
+    if (existing && publicJson(existing) !== publicJson(record)
+        && !(existing.kind === 'associated' && record.kind === 'associated' && existing.mint === record.mint && existing.programId === record.programId)) throw rejected('Use one creation plan for each swap account');
+    if (!existing) created.set(record.address, record);
   };
   const setup = () => { lastSetupOrdinal = ordinal; };
   for (const [index, transaction] of transactions.entries()) {
@@ -47,6 +49,14 @@ export async function reviewSwapBundle({ transactions, lookupTables = [], intent
     const accountKeys = Array.from({ length: resolved.length }, (_, at) => address(resolved.get(at)));
     const step = { index, accountKeys, trade: false, closesSource: false, explicitLamports: 0, creates: [], actions: [] }, compute = new Set();
     let effects = 0;
+    const associated = (mint, programId, temporary = false) => {
+      const target = getAssociatedTokenAddressSync(new PublicKey(mint), wallet, false, new PublicKey(programId)).toBase58();
+      const record = { address: target, mint, programId, kind: 'associated', idempotent: true };
+      createdAccount(record);
+      if (!step.creates.some((item) => item.address === target)) {
+        step.creates.push(record); step.actions.push({ kind: 'create', address: target, ...(temporary ? { temporary: true } : {}) });
+      }
+    };
     for (const instruction of decoded.instructions) {
       ordinal++;
       const program = instruction.programId.toBase58(), data = Buffer.from(instruction.data), keys = instruction.keys;
@@ -61,9 +71,37 @@ export async function reviewSwapBundle({ transactions, lookupTables = [], intent
         compute.add(code); continue;
       }
       effects++;
-      if (Object.values(SWAP_PROGRAMS).includes(program)) {
+      if ([SWAP_PROGRAMS.raydium, SWAP_PROGRAMS.raydiumDevnet].includes(program) && [5, 6].includes(data[0])) {
+        const helper = readRaydiumAccountInstruction(instruction, intent);
+        if (helper.kind === 'wrap') {
+          associated(NATIVE_MINT.toBase58(), TOKEN_PROGRAM_ID.toBase58());
+          transferLamports += helper.lamports;
+          if (!whole(transferLamports) || transferLamports > Number(intent.inputAmountRaw)) throw rejected('Keep total wrapped-SOL funding within the approved input');
+          step.explicitLamports += helper.lamports;
+          step.actions.push({ kind: 'fund', lamports: helper.lamports }, { kind: 'sync' }); setup();
+        } else {
+          if (closeOrdinal >= 0) throw rejected('Return wrapped SOL once to its wallet');
+          closeOrdinal = ordinal; step.closesSource = true; step.actions.push({ kind: 'close' });
+        }
+      } else if (Object.values(SWAP_PROGRAMS).includes(program)) {
         if (trade) throw rejected('Use one approved trade in each purchase bundle');
-        trade = assertSwapInstruction(instruction, intent); tradeOrdinal = ordinal; step.trade = true; step.actions.push({ kind: 'trade' });
+        trade = assertSwapInstruction(instruction, intent); tradeOrdinal = ordinal; step.trade = true;
+        if (trade.provider === 'raydium') {
+          // The router creates missing wallet ATAs for its output and route
+          // mints. Include their rent and identity in the approved step.
+          for (const [mint, tokenProgram] of accounts) {
+            if (mint === NATIVE_MINT.toBase58()) continue;
+            const target = getAssociatedTokenAddressSync(new PublicKey(mint), wallet, false, new PublicKey(tokenProgram));
+            if (keys.some((value) => value.pubkey.equals(target))) {
+              if (!keys.some((value) => value.pubkey.equals(target) && value.isWritable)) throw rejected('Use writable route token accounts');
+              associated(mint, tokenProgram, mint !== outputMint);
+            }
+          }
+        }
+        step.actions.push({ kind: 'trade' });
+        for (const action of step.actions.filter((value) => value.kind === 'create' && value.temporary)) {
+          step.actions.push({ kind: 'close-created', address: action.address });
+        }
       } else if (program === SystemProgram.programId.toBase58()) {
         let type;
         try { type = SystemInstruction.decodeInstructionType(instruction); } catch { throw rejected('Read the complete SOL setup instruction'); }

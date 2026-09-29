@@ -15,6 +15,7 @@ import { solSweepChain, sweepWallet, sweepDestination } from './fixtures/sol-swe
 function fixture(t, options = {}) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-prepared-'));
   const owner = acquireProfileOwner(profile), store = openRuntimeStore(profile), ledger = solSweepChain();
+  t.after(() => { store.close(); owner.release(); fs.rmSync(profile, { recursive: true, force: true }); });
   let builds = 0, now = 1000;
   const plan = { action: 'fixture-transfer' };
   const approval = { id: 'approval-1', walletPublicKey: sweepWallet.publicKey.toBase58(), network: 'devnet', genesisHash: SOLANA_GENESIS_HASHES.devnet,
@@ -32,7 +33,6 @@ function fixture(t, options = {}) {
     return { transaction: VersionedTransaction.deserialize(transaction.serialize({ requireAllSignatures: false, verifySignatures: false })), result: { destination: sweepDestination }, feeCeilingLamports: 10000, maxSpendLamports: 20000 };
   };
   const input = { scopeId: 'journal-a', key: 'transfer/0', walletPublicKey: approval.walletPublicKey, plan, approval, build };
-  t.after(() => { store.close(); owner.release(); fs.rmSync(profile, { recursive: true, force: true }); });
   return { owner, store, ...ledger, signer, service, input, approval, build, builds: () => builds, setNow: (value) => { now = value; } };
 }
 
@@ -196,4 +196,42 @@ test('prepared recovery waits through a duplicate preflight reply and verifies t
   const result = await f.service.recover(f.input);
   assert.equal(result.txId, original.signature); assert.equal(f.state.balance, 9993000); assert.equal(f.state.receipts.size, 1);
   assert.equal(f.store.getOperation(operation.id).state, 'confirmed'); assert.equal(f.builds(), 1);
+});
+
+
+for (const accounts of [[sweepDestination, sweepDestination], [sweepDestination, 1], 'source', Array(65).fill(sweepDestination)]) {
+  test(`refund policies require distinct bounded account names: ${JSON.stringify(accounts).slice(0, 70)}`, (t) => {
+    assert.throws(() => fixture(t, { receiptCreditAccounts: accounts }), TypeError);
+  });
+}
+
+test('an explicit empty refund policy remains fixed after completion', async (t) => {
+  const f = fixture(t), result = await f.service.execute(f.input);
+  assert.deepEqual(f.store.getOperation(result.operationId).payload.receiptCreditAccounts, []);
+  const changed = createPreparedTransactionService({ owner: f.owner, store: f.store, connection: f.connection, signer: f.signer,
+    kind: 'fixture-transfer', network: 'devnet', expectedGenesisHash: SOLANA_GENESIS_HASHES.devnet, authorize: async () => true,
+    receiptCreditAccount: sweepDestination, checkResult: async () => { throw new Error('preserve saved policy'); } });
+  f.connection.getGenesisHash = () => { throw new Error('offline'); };
+  await assert.rejects(changed.execute(f.input), { code: 'OPERATION_CONFLICT' });
+});
+
+test('several refund accounts retain their complete policy and receipt bound', async (t) => {
+  const extra = new PublicKey(new Uint8Array(32).fill(71)), accounts = [sweepDestination, extra.toBase58()];
+  const f = fixture(t, { receiptCreditAccounts: accounts }), build = f.input.build;
+  f.input.build = async () => {
+    const prepared = await build(), transaction = Transaction.from(prepared.transaction.serialize());
+    transaction.add(SystemProgram.transfer({ fromPubkey: sweepWallet.publicKey, toPubkey: extra, lamports: 0 }));
+    return { ...prepared, transaction: VersionedTransaction.deserialize(transaction.serialize({ requireAllSignatures: false, verifySignatures: false })) };
+  };
+  f.state.receiptTransform = (receipt) => ({ ...receipt, meta: { ...receipt.meta, postBalances: receipt.meta.postBalances.map((n, i) => i === 0 ? n + 5000 : n) } });
+  await assert.rejects(f.service.execute(f.input), { code: 'CHAIN_STATE_UNAVAILABLE' });
+  const operation = f.store.getActiveOperation(f.input.walletPublicKey);
+  assert.deepEqual(operation.payload.receiptCreditAccounts, [...accounts].sort());
+  f.state.receiptTransform = (receipt) => receipt;
+  const result = await f.service.recover(f.input); assert.equal(result.txId, f.state.sends[0].signature);
+  const changed = createPreparedTransactionService({ owner: f.owner, store: f.store, connection: f.connection, signer: f.signer,
+    kind: 'fixture-transfer', network: 'devnet', expectedGenesisHash: SOLANA_GENESIS_HASHES.devnet, authorize: async () => true,
+    receiptCreditAccount: sweepDestination, checkResult: async () => { throw new Error('preserve the complete policy'); } });
+  f.connection.getGenesisHash = () => { throw new Error('offline'); };
+  await assert.rejects(changed.execute(f.input), { code: 'OPERATION_CONFLICT' }); assert.equal(f.state.sends.length, 1);
 });
