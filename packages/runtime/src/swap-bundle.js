@@ -45,7 +45,7 @@ export async function reviewSwapBundle({ transactions, lookupTables = [], intent
     catch { throw rejected('Resolve every swap address lookup table before signing'); }
     const resolved = transaction.message.getAccountKeys({ addressLookupTableAccounts: lookupTables });
     const accountKeys = Array.from({ length: resolved.length }, (_, at) => address(resolved.get(at)));
-    const step = { index, accountKeys, trade: false, closesSource: false, explicitLamports: 0, creates: [] }, compute = new Set();
+    const step = { index, accountKeys, trade: false, closesSource: false, explicitLamports: 0, creates: [], actions: [] }, compute = new Set();
     let effects = 0;
     for (const instruction of decoded.instructions) {
       ordinal++;
@@ -63,7 +63,7 @@ export async function reviewSwapBundle({ transactions, lookupTables = [], intent
       effects++;
       if (Object.values(SWAP_PROGRAMS).includes(program)) {
         if (trade) throw rejected('Use one approved trade in each purchase bundle');
-        trade = assertSwapInstruction(instruction, intent); tradeOrdinal = ordinal; step.trade = true;
+        trade = assertSwapInstruction(instruction, intent); tradeOrdinal = ordinal; step.trade = true; step.actions.push({ kind: 'trade' });
       } else if (program === SystemProgram.programId.toBase58()) {
         let type;
         try { type = SystemInstruction.decodeInstructionType(instruction); } catch { throw rejected('Read the complete SOL setup instruction'); }
@@ -73,14 +73,14 @@ export async function reviewSwapBundle({ transactions, lookupTables = [], intent
               || !whole(lamports) || lamports > Number(intent.inputAmountRaw)) throw rejected('Fund only the saved wrapped-SOL input amount');
           transferLamports += lamports;
           if (!whole(transferLamports) || transferLamports > Number(intent.inputAmountRaw)) throw rejected('Keep total wrapped-SOL transfers within the approved input');
-          step.explicitLamports += lamports;
+          step.explicitLamports += lamports; step.actions.push({ kind: 'fund', lamports });
         } else if (type === 'CreateWithSeed') {
           const value = SystemInstruction.decodeCreateWithSeed(instruction), derived = await PublicKey.createWithSeed(wallet, value.seed, TOKEN_PROGRAM_ID);
           if (!same(value.fromPubkey, wallet) || !same(value.basePubkey, wallet) || !same(value.newAccountPubkey, source) || !same(derived, source)
               || !same(value.programId, TOKEN_PROGRAM_ID) || value.space !== 165 || !whole(value.lamports)
               || !SystemProgram.createAccountWithSeed(value).data.equals(data)) throw rejected('Create the saved wallet-owned wrapped-SOL account');
           const record = { address: source, mint: NATIVE_MINT.toBase58(), programId: TOKEN_PROGRAM_ID.toBase58(), kind: 'seed', seed: value.seed, lamports: value.lamports };
-          createdAccount(record); step.creates.push(record); step.explicitLamports += value.lamports;
+          createdAccount(record); step.creates.push(record); step.explicitLamports += value.lamports; step.actions.push({ kind: 'create', address: source });
         } else throw rejected('Use reviewed SOL funding instructions for this swap');
         setup();
       } else if (program === ASSOCIATED_TOKEN_PROGRAM_ID.toBase58()) {
@@ -91,7 +91,7 @@ export async function reviewSwapBundle({ transactions, lookupTables = [], intent
         const target = getAssociatedTokenAddressSync(new PublicKey(mint), wallet, false, new PublicKey(tokenProgram));
         if (!same(key(1), target) || mint === NATIVE_MINT.toBase58() && !same(target, source)) throw rejected('Use the derived token account for this swap');
         const record = { address: target.toBase58(), mint, programId: tokenProgram, kind: 'associated', idempotent: data[0] === 1 };
-        createdAccount(record); step.creates.push(record); setup();
+        createdAccount(record); step.creates.push(record); step.actions.push({ kind: 'create', address: record.address }); setup();
       } else if (program === TOKEN_PROGRAM_ID.toBase58()) {
         if ([1, 16, 18].includes(data[0])) {
           const code = data[0], expectedKeys = code === 1 ? 4 : code === 16 ? 3 : 2;
@@ -99,16 +99,17 @@ export async function reviewSwapBundle({ transactions, lookupTables = [], intent
               || !same(code === 1 ? key(2) : new PublicKey(data.subarray(1)), wallet)
               || code !== 18 && !same(key(expectedKeys - 1), SYSVAR_RENT_PUBKEY)
               || created.get(source)?.kind !== 'seed' || initialized.has(source)) throw rejected('Initialize the saved wrapped-SOL account for its wallet');
-          initialized.add(source); setup();
+          initialized.add(source); step.actions.push({ kind: 'initialize' }); setup();
         } else if (data[0] === 17) {
           if (data.length !== 1 || keys.length !== 1 || !same(key(0), source)) throw rejected('Sync only the saved wrapped-SOL account');
-          setup();
+          step.actions.push({ kind: 'sync' }); setup();
         } else if (data[0] === 9) {
           if (data.length !== 1 || keys.length !== 3 || !same(key(0), source) || !same(key(1), wallet) || !same(key(2), wallet) || closeOrdinal >= 0) throw rejected('Return wrapped-SOL rent only to its wallet');
-          closeOrdinal = ordinal; step.closesSource = true;
+          closeOrdinal = ordinal; step.closesSource = true; step.actions.push({ kind: 'close' });
         } else throw rejected('Use reviewed wrapped-SOL setup and cleanup instructions');
       } else throw rejected('Review the extra swap instruction before signing');
     }
+    if (step.creates.some((record) => record.kind === 'seed' && !initialized.has(record.address))) throw rejected('Initialize seeded accounts in their creation transaction');
     if (!effects) throw rejected('Keep each swap transaction tied to a saved action');
     explicitLamports += step.explicitLamports;
     if (!whole(explicitLamports) || explicitLamports > Number(intent.inputAmountRaw) + intent.rentCeilingLamports) throw rejected('Keep the complete bundle within its SOL funding and rent ceiling');

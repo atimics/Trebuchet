@@ -150,3 +150,10 @@ test('a failed receipt commit retains signed SDK bytes for recovery', async (t) 
   assert.equal((await f.service.recover(f.input)).txId, f.state.sends[0].signature);
   assert.equal(f.state.sends.length, 1);
 });
+
+test('a reviewed account list must match the resolved prepared message before commit', async (t) => {
+  const f = fixture(t), original = f.input.build;
+  f.input.build = async () => ({ ...await original(), accountKeys: [sweepWallet.publicKey.toBase58(), 'changed'] });
+  await assert.rejects(f.service.execute(f.input), { code: 'CHAIN_STATE_UNAVAILABLE' });
+  assert.equal(f.state.sends.length, 0); assert.equal(f.store.getActiveOperation(f.input.walletPublicKey), null);
+});

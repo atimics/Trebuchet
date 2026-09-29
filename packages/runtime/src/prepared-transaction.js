@@ -75,7 +75,7 @@ export function createPreparedTransactionService({
     if (!Array.isArray(preBalances) || !Array.isArray(postBalances) || preBalances.length !== keys.length || postBalances.length !== keys.length
         || [...preBalances, ...postBalances, fee].some((value) => !whole(value)) || fee > operation.payload.feeCeilingLamports) throw uncertain('Read complete finalized balances and fees');
     const spentLamports = preBalances[0] - postBalances[0];
-    if (spentLamports < fee || spentLamports > operation.payload.maxSpendLamports) throw uncertain('Verify the finalized payer debit against the saved ceiling');
+    if (spentLamports < fee - (operation.payload.maxCreditLamports || 0) || spentLamports > operation.payload.maxSpendLamports) throw uncertain('Verify the finalized payer debit against the saved ceiling');
     return { evidence: { signature: record.signature, slot: receipt.slot, feeLamports: fee, spentLamports }, receipt };
   };
   const handler = {
@@ -148,8 +148,12 @@ export function createPreparedTransactionService({
       const template = Buffer.from(unsigned.serialize()).toString('base64');
       if (Buffer.from(template, 'base64').length > 1232 || unsigned.message.staticAccountKeys[0]?.toBase58() !== walletPublicKey) throw fail('TRANSACTION_INVALID', 'Use a complete transaction for the approved wallet');
       if (!whole(prepared.feeCeilingLamports) || !whole(prepared.maxSpendLamports) || prepared.maxSpendLamports < prepared.feeCeilingLamports) throw new TypeError('Save complete fee and spending ceilings');
-      const payload = { key, template, accountKeys: await accountKeys(unsigned.message), result: prepared.result,
-        allowExisting: prepared.allowExisting === true, feeCeilingLamports: prepared.feeCeilingLamports, maxSpendLamports: prepared.maxSpendLamports };
+      const resolvedKeys = await accountKeys(unsigned.message);
+      if (prepared.accountKeys && publicJson(prepared.accountKeys) !== publicJson(resolvedKeys)) throw uncertain('Keep the account addresses from the reviewed transaction');
+      if (prepared.maxCreditLamports !== undefined && !whole(prepared.maxCreditLamports)) throw new TypeError('Save an exact bound for returned wallet funds');
+      const payload = { key, template, accountKeys: resolvedKeys, result: prepared.result,
+        allowExisting: prepared.allowExisting === true, feeCeilingLamports: prepared.feeCeilingLamports, maxSpendLamports: prepared.maxSpendLamports,
+        ...(prepared.maxCreditLamports === undefined ? {} : { maxCreditLamports: prepared.maxCreditLamports }) };
       const candidate = { kind, payload };
       await approvalFor(approval, candidate, launch);
       const operation = store.transaction(() => {

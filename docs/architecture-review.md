@@ -43,7 +43,7 @@ Quote-token acquisition still stores jobs in `server.js`'s `acquireJobs` Map. `s
 
 Save the complete purchase plan and stable step IDs before the first spend. Reserve the wallet for the workflow. Commit each signed transaction before submission. Recover its original signature and finalized result before replacing it. Keep setup and cleanup receipts available after restart. A low output balance should lead to an explicit decision under the remaining budget.
 
-The pending swap review checks provider messages before signing. It binds the input amount, minimum output, wallet, network, token accounts, setup funding, cleanup destination, and resolved lookup-table addresses. The execution adapter must add finalized account checks, fee and rent checks, durable job storage, and receipt recovery.
+The swap review checks provider messages before signing. It binds the input amount, minimum output, wallet, network, token accounts, setup funding, cleanup destination, and resolved lookup-table addresses. The durable adapter now adds finalized account checks, fee and rent checks, saved jobs, and receipt recovery. Production acquisition needs its service connection, failed purchase cleanup, and validator coverage; see the latest stage in [execution-runtime.md](execution-runtime.md).
 
 Acceptance: kill the process after setup, after trade submission, and before cleanup receipt storage. Each restart reaches the same final result with one purchase and a complete record of costs.
 
