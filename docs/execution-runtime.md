@@ -269,7 +269,7 @@ The tests cover Raydium and Jupiter, classic and Token-2022 output accounts, one
 
 All 363 architecture tests passed. The 109 focused swap and prepared-transaction tests also passed on Node 22.23.3. Package coverage passed for 102 required runtime files, and syntax checks passed for 401 files. The base merge at `8d9b0f7` includes the coin-image fallback from PR #60; rebuilding matched the merged renderer exactly, 129 selected renderer tests passed, and all six GitHub checks passed for that head.
 
-Production acquisition still needs its API/service connection and durable management of purchases across quote mints. The later balance reconciliation stage covers outside transfers and approved account creation. Router execution against a real validator remains required before that connection is ready. Failed purchase cleanup is covered by the later recovery stage below. Launch-wide budgeting, live CLI and runner execution, and the other open requirements remain in the full completion checklist.
+Production acquisition still needs its API/service connection and durable management of purchases across quote mints. The later balance reconciliation stage covers outside transfers and approved account creation. The later validator stage covers the real Raydium trade with host-built SPL setup and cleanup. Production provider-bundle compatibility remains part of the service connection. Failed purchase cleanup is covered by the later recovery stage below. Launch-wide budgeting, live CLI and runner execution, and the other open requirements remain in the full completion checklist.
 
 ### HTTP admission between workflow transactions
 
@@ -288,7 +288,7 @@ Cleanup closes the saved wrapped-SOL source to its owner. A memo binds the clean
 
 All 403 architecture tests passed. The final 86 swap adapter and process tests passed on Node 22.23.3; the wider 148-test swap and prepared-transaction run also passed before the final cached-network guard. Seven child-process cases cover successful steps, failed setup/trade/cleanup, and process death after recovery cleanup submission. Fresh workers recover the same accepted transactions, then replay completed results with zero RPC requests. Other cases cover failure fees, recovery approval fields, receipt corruption, failed commits, expiry replacement, repeated cleanup failure, and legacy failed operations. Syntax checks passed for 403 files, and package coverage passed.
 
-This stage uses real signed messages with local RPC fixtures. The later balance reconciliation stage covers outside transfers. Production quote acquisition, real router validator execution, the remaining host integrations, live CLI and runner execution, and the full completion checklist remain open.
+This stage uses real signed messages with local RPC fixtures. The later balance reconciliation stage covers outside transfers. The later validator stage covers the real Raydium router. Production quote acquisition, the remaining host integrations, live CLI and runner execution, and the full completion checklist remain open.
 
 
 ### Swap balances at execution and recovery
@@ -301,4 +301,15 @@ For a reviewed source-account close, the prepared-transaction service binds the 
 
 All 438 architecture tests passed. All 184 focused swap and prepared-transaction tests also passed on Node 22.23.3. Nine child-process crash cases recover original signed transactions, including transfers received before normal cleanup and failure cleanup. Tests cover atomic and split bundles, classic and Token-2022 outputs, outside transfers, prefunded accounts, existing approved associated accounts, damaged receipt balances, and changed refund policies. Syntax checks passed for 403 files, and package coverage passed for 102 required runtime files.
 
-Production quote acquisition and real router validator execution remain in the completion checklist. Account removal or authority changes still require explicit recovery review.
+The later validator stage covers the real Raydium router. Production quote acquisition and provider-bundle compatibility remain in the completion checklist. Account removal or authority changes still require explicit recovery review.
+
+
+### Real Raydium router recovery on a private validator
+
+`npm run test:e2e:runtime-swap:localnet` reads a public SOL-to-USDC quote and its unsigned Raydium trade instruction. It copies the required pool accounts, lookup tables, router program, and pool programs into a private Solana validator. It records the source slot and SHA-256 hashes of account data. Exact 64-bit rent fields survive fixture export. The public RPC interface allows only genesis and account reads; a fixed fixture wallet receives one local test SOL from the private validator.
+
+The host builds reviewed SPL setup and cleanup around the provider's trade instruction. The runtime saves the full three-transaction bundle and approval. The proxy kills the worker after each transaction is accepted. Fresh workers recover the original signatures. Each crash also delays one known status reply, forcing a resend of the saved bytes. The validator returns its real `AlreadyProcessed` error. The shared Solana adapter now treats that precise SDK response as a reason to continue signature recovery. Finality and the action-specific receipt checks still determine completion. Other send errors preserve their original failure.
+
+The final Node 22.23.3 run passed on Solana test validator 2.3.13. At copied slot `451549688`, it verified three unique finalized transactions, three duplicate preflight replies, 1,171,827 raw USDC units, 15,000 lamports in fees, and 2,039,280 lamports returned by cleanup. A completed replay made zero RPC requests. The prior Node 25.8.2 run also passed the three crashes with a two-hop route at slot `451548474`. The final fault-injection version also passed on Node 25.8.2 at slot `451550062`: three unique finalized transactions, three duplicate replies, 1,174,949 raw USDC units, and the same fee and rent totals. All 443 architecture tests passed, and all 40 focused Solana and prepared-transaction tests passed on both Node versions.
+
+This drill exposed a production API contract gap: Raydium's current unsigned bundle uses router opcodes 5 and 6 for SOL setup and cleanup. Production message review currently accepts the reviewed trade instruction and standard SPL setup and cleanup. The API wrappers require a strict reviewed contract, or a host-owned bundle builder, before the acquisition service can use them. The drill keeps this boundary explicit. Durable purchase management across quote mints, production acquisition routes, whole-launch budgeting, live CLI and runner execution, and the other open requirements remain in the completion checklist.

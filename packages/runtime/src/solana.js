@@ -1,5 +1,5 @@
 import { createPublicKey, verify } from 'node:crypto';
-import { PACKET_DATA_SIZE, VersionedTransaction } from '@solana/web3.js';
+import { PACKET_DATA_SIZE, SendTransactionError, VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 
 // Read from the public Solana cluster RPCs with getGenesisHash.
@@ -110,7 +110,15 @@ export function createSolanaChain({ connection, network, expectedGenesisHash, be
       validateSaved(transaction);
       await checkNetwork();
       if (beforeSend) await beforeSend(transaction, context);
-      return connection.sendRawTransaction(Buffer.from(transaction.wire, 'base64'), { skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 0 });
+      try {
+        return await connection.sendRawTransaction(Buffer.from(transaction.wire, 'base64'), { skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 0 });
+      } catch (error) {
+        // A duplicate preflight reply resumes status checks for these exact
+        // saved bytes. The engine still requires finality and result evidence.
+        if (error instanceof SendTransactionError
+            && error.transactionError.message === 'Transaction simulation failed: This transaction has already been processed') return transaction.signature;
+        throw error;
+      }
     },
   };
 }

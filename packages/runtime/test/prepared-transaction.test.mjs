@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import bs58 from 'bs58';
-import { ComputeBudgetProgram, PublicKey, SystemProgram, Transaction, VersionedTransaction, AddressLookupTableAccount, TransactionMessage } from '@solana/web3.js';
+import { ComputeBudgetProgram, SendTransactionError, PublicKey, SystemProgram, Transaction, VersionedTransaction, AddressLookupTableAccount, TransactionMessage } from '@solana/web3.js';
 import { acquireProfileOwner } from '../src/owner.js';
 import { openRuntimeStore, publicJson, RecoveryStorageError } from '../src/store.js';
 import { createSolanaSigner, SOLANA_GENESIS_HASHES } from '../src/solana.js';
@@ -177,4 +177,23 @@ test('saved refund account policy stays fixed across recovery hosts', async (t) 
   f.connection.getGenesisHash = () => { throw new Error('offline'); };
   await assert.rejects(changed.execute(f.input), { code: 'OPERATION_CONFLICT' });
   assert.equal(f.state.sends.length, 1);
+});
+
+
+test('prepared recovery waits through a duplicate preflight reply and verifies the original receipt', async (t) => {
+  const f = fixture(t); f.state.status = null;
+  f.state.afterSend = () => { throw new Error('lost accepted reply'); };
+  await assert.rejects(f.service.execute(f.input), /lost accepted reply/);
+  const original = f.state.sends[0], operation = f.store.getActiveOperation(f.input.walletPublicKey);
+  f.connection.sendRawTransaction = async (bytes) => {
+    assert.equal(Buffer.from(bytes).toString('base64'), original.wire);
+    throw new SendTransactionError({ action: 'simulate', signature: '', transactionMessage: 'Transaction simulation failed: This transaction has already been processed', logs: [] });
+  };
+  await assert.rejects(f.service.recover(f.input), { code: 'CHAIN_STATE_UNAVAILABLE' });
+  assert.equal(f.store.getOperation(operation.id).state, 'recovery_required');
+  assert.equal(f.store.getTransactions(operation.id).length, 1); assert.equal(f.builds(), 1);
+  f.state.status = 'finalized';
+  const result = await f.service.recover(f.input);
+  assert.equal(result.txId, original.signature); assert.equal(f.state.balance, 9993000); assert.equal(f.state.receipts.size, 1);
+  assert.equal(f.store.getOperation(operation.id).state, 'confirmed'); assert.equal(f.builds(), 1);
 });

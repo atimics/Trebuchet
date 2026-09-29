@@ -8,8 +8,11 @@ The runtime package provides durable operation storage and exclusive ownership o
 
 `acquireProfileOwner(profile)` holds an exclusive SQLite transaction in `runtime-owner.sqlite`. The OS releases ownership when the process exits. The owner publishes a private `runtime.json` descriptor after its API is listening. A client must authenticate and verify the runtime identity before attaching.
 
-The process tests cover competing writers, owner death, and signed-byte recovery after a simulated broadcast followed by process death. The engine and chain adapters will use these contracts for live execution. See `docs/execution-runtime.md` for the full integration checklist.
+The process tests cover competing writers, owner death, and signed-byte recovery after a simulated broadcast followed by process death. The engine and chain adapters use these contracts for supported live actions. See `docs/execution-runtime.md` for the full integration checklist.
 
 `connectRuntime(profile)` authenticates the private runtime descriptor and checks the process identity. `ensureRuntime(profile, { args })` attaches to that owner or starts a detached local host. The host holds the profile lock before creating API routes. Requests from a native client also carry the owner token, which binds them to that runtime generation.
 
 The CLI provides `runtime start`, `runtime status`, and `runtime stop`, each with `--config-dir`. Closing a CLI client leaves its runtime available. Stop accepts an idle runtime and closes admission before releasing ownership. Active requests and background launch jobs hold it busy. A disconnected request that has yet to finish keeps the runtime busy for recovery.
+
+
+`npm run test:e2e:runtime-swap:localnet` qualifies the real Raydium router on a private Solana validator. It reads public quotes and account snapshots, then funds a fixed fixture wallet with local test SOL. Host-built SPL setup and cleanup surround the reviewed trade. The drill kills each worker after submission, delays one status reply, recovers the saved signature, and verifies exact receipts and cached replay. It requires public Raydium and Solana read access plus `solana-test-validator` on PATH. The output includes the source slot and account-data hashes. Production Trade API wrapper instructions have a separate review requirement recorded in the completion checklist.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Keypair, SystemProgram, Transaction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
+import { Keypair, SendTransactionError, SystemProgram, Transaction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { createSolanaChain, createSolanaSigner, inspectSolanaTransaction } from '../src/solana.js';
 
 const payer = Keypair.fromSeed(new Uint8Array(32).fill(4));
@@ -125,3 +125,31 @@ test('RPC identity and saved transaction identity are checked before a send', as
   assert.equal(await chain.sendTransaction(tx), tx.signature);
   assert.equal(sends, 1);
 });
+
+
+test('duplicate preflight replies keep the saved signature pending until finalized status', async () => {
+  const tx = await signed();
+  let confirmation = null, sends = 0;
+  const chain = adapter({
+    getSignatureStatuses: async () => ({ context: { slot: 120 }, value: [confirmation] }),
+    sendRawTransaction: async (bytes) => {
+      sends++; assert.equal(Buffer.from(bytes).toString('base64'), tx.wire);
+      throw new SendTransactionError({ action: 'simulate', signature: '', transactionMessage: 'Transaction simulation failed: This transaction has already been processed', logs: [] });
+    },
+  });
+  assert.equal(await chain.sendTransaction(tx), tx.signature);
+  assert.equal((await chain.readTransaction(tx)).state, 'rebroadcast');
+  confirmation = status('confirmed'); assert.equal((await chain.readTransaction(tx)).state, 'pending');
+  confirmation = status('finalized'); assert.equal((await chain.readTransaction(tx)).state, 'confirmed');
+  confirmation = status('finalized', { InstructionError: [0, 'Custom'] }); assert.equal((await chain.readTransaction(tx)).state, 'failed');
+  assert.equal(sends, 1);
+});
+
+for (const error of [new Error('This transaction has already been processed'),
+  new SendTransactionError({ action: 'simulate', signature: '', transactionMessage: 'Transaction simulation failed: Blockhash not found', logs: [] }),
+  new SendTransactionError({ action: 'simulate', signature: '', transactionMessage: 'Transaction simulation failed: Error processing Instruction 0: custom program error: 0x1', logs: [] })]) {
+  test(`submission preserves other errors: ${error.transactionError?.message || error.message}`, async () => {
+    const tx = await signed(), chain = adapter({ sendRawTransaction: async () => { throw error; } });
+    await assert.rejects(chain.sendTransaction(tx), (actual) => actual === error);
+  });
+}
