@@ -408,3 +408,16 @@ test('legacy failed swap operations gain a full receipt while retaining their im
   assert.deepEqual(f.store.getOperation(original.failure.operationId), operation);
   assert.deepEqual(service.get(job.id).failure, original.failure); assert.equal(f.state.sends.length, 2);
 });
+
+test('cached cleanup plans and results retain their saved host network', async (t) => {
+  const f = await fixture(t), service = f.service(), job = await service.prepare(f.input); f.state.failAt = 0;
+  await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+  const attempt = await service.prepareCleanup({ id: job.id });
+  const wrongHost = createSwapService({ ...f.options, network: 'devnet', expectedGenesisHash: SOLANA_GENESIS_HASHES.devnet });
+  await assert.rejects(wrongHost.prepareCleanup({ id: job.id }), { code: 'NETWORK_MISMATCH' });
+  await assert.rejects(wrongHost.cleanup({ id: job.id }), { code: 'NETWORK_MISMATCH' });
+  await service.cleanup({ id: job.id, approval: cleanupApproval(attempt) });
+  f.connection.getGenesisHash = () => { throw new Error('offline'); };
+  await assert.rejects(wrongHost.prepareCleanup({ id: job.id }), { code: 'NETWORK_MISMATCH' });
+  await assert.rejects(wrongHost.cleanup({ id: job.id }), { code: 'NETWORK_MISMATCH' });
+});

@@ -90,9 +90,12 @@ function approvalMatches(approval, attempt) {
 }
 
 export function createSwapRecovery({ owner, store, connection, signer, network, expectedGenesisHash, authorize, now, timeoutMs, pollIntervalMs, records, update }) {
+  const checkSavedNetwork = (job) => {
+    if (job.plan.network !== network || job.plan.genesisHash !== expectedGenesisHash) throw fail('NETWORK_MISMATCH', 'Recover the swap on its saved chain');
+  };
   const checkNetwork = async (job) => {
-    owner.assertActive();
-    if (job.plan.network !== network || job.plan.genesisHash !== expectedGenesisHash || await connection.getGenesisHash() !== expectedGenesisHash) throw fail('NETWORK_MISMATCH', 'Recover the swap on its saved chain');
+    owner.assertActive(); checkSavedNetwork(job);
+    if (await connection.getGenesisHash() !== expectedGenesisHash) throw fail('NETWORK_MISMATCH', 'Recover the swap on its saved chain');
     owner.assertActive();
   };
   const saveAttempt = (job, index, fn) => update(job.id, (saved) => ({ ...saved, cleanupAttempts: saved.cleanupAttempts.map((item, i) => i === index ? fn(item) : item) }));
@@ -115,6 +118,7 @@ export function createSwapRecovery({ owner, store, connection, signer, network, 
       return update(job.id, (saved) => ({ ...saved, state: 'recovery_required', failure, cleanupAttempts: [] }));
     },
     async prepare(job) {
+      checkSavedNetwork(job);
       if (job.state === 'recovered') return job.cleanupAttempts.at(-1);
       if (!job.failure) throw fail('SWAP_FAILURE_REQUIRED', 'Recover the failed purchase receipt before preparing cleanup');
       const prior = job.cleanupAttempts?.at(-1);
@@ -129,6 +133,7 @@ export function createSwapRecovery({ owner, store, connection, signer, network, 
       return update(job.id, (saved) => ({ ...saved, cleanupAttempts: [...(saved.cleanupAttempts || []), attempt] })).cleanupAttempts.at(-1);
     },
     async execute(job, approval) {
+      checkSavedNetwork(job);
       if (job.state === 'recovered') return { jobId: job.id, ...job.result };
       let attempt = job.cleanupAttempts?.at(-1);
       if (!attempt) throw fail('CLEANUP_PLAN_REQUIRED', 'Prepare and review the wrapped-SOL cleanup');

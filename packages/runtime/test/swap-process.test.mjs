@@ -45,6 +45,10 @@ for (const { step, failedStep } of cases) {
                 const job = store.collection('runtime-swaps/v1').load()[0], operation = store.getActiveOperation(wallet.toBase58());
                 assert.equal(store.getWalletWorkflow(wallet.toBase58()).id, job.id);
                 assert.equal(job.receipts.length, failedStep === null ? step : Math.min(step, failedStep)); assert.ok(job.approvals.length);
+                if (failedStep !== null && step > failedStep) {
+                  assert.ok(job.failure); assert.ok(job.cleanupAttempts.at(-1).approvals.length);
+                  assert.equal(operation.payload.result.cleanupDigest, job.cleanupAttempts.at(-1).digest);
+                }
                 assert.equal(store.getTransactions(operation.id)[0].wire, body.params[0]);
                 assert.equal(store.getTransactions(operation.id)[0].state, 'signed');
               } finally { store.close(); }
