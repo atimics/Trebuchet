@@ -270,3 +270,9 @@ The tests cover Raydium and Jupiter, classic and Token-2022 output accounts, one
 All 363 architecture tests passed. The 109 focused swap and prepared-transaction tests also passed on Node 22.23.3. Package coverage passed for 102 required runtime files, and syntax checks passed for 401 files. The base merge at `8d9b0f7` includes the coin-image fallback from PR #60; rebuilding matched the merged renderer exactly, 129 selected renderer tests passed, and all six GitHub checks passed for that head.
 
 Production acquisition still needs its API/service connection and durable management of purchases across quote mints. Failed purchase cleanup, explicit handling of externally changed account balances, and router execution against a real validator remain required before that connection is ready. Launch-wide budgeting, live CLI and runner execution, and the other open requirements remain in the full completion checklist.
+
+### HTTP admission between workflow transactions
+
+The live API now checks durable wallet reservations as well as active transactions. A saved swap or upload can be between transactions when a new process starts. Token creation, airdrops, asset sweeps, and saved-journal resume now return its recovery identity before another wallet action begins. The workflow stays available for its matching recovery adapter.
+
+Two real runtime startup tests verify this state for swaps and uploads. Both use saved reservations with no active transaction. All four API requests stop before any RPC request, and the reservation stays intact. All 22 selected runtime and wallet-host tests passed. The two new HTTP cases also passed on Node 22.23.3.

@@ -717,6 +717,11 @@ const sweepAllTokensToDestination = (input) => sweepTokensWithSigner({ ...input,
 
 // Live services and HTTP jobs share wallet admission and durable recovery state.
 function claimLaunchOp(walletPublicKey, op) {
+  const workflow = walletExecution?.activeWorkflow(walletPublicKey);
+  if (workflow) {
+    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: workflow.id,
+      workflowId: workflow.id, workflowKind: workflow.kind, error: 'Resume the saved wallet workflow before starting another wallet action.' });
+  }
   const pending = walletExecution?.active(walletPublicKey);
   const canResumeMetadata = pending?.kind === 'metadata-update' && pending.payload.makeImmutable
     && ['reveal-sealed-metadata', 'create-lp', 'resume-launch'].includes(op);

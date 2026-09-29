@@ -195,3 +195,47 @@ test('saved-journal and launch clients share wallet admission while a chain read
   await runtime.request('/api/runtime/stop', { method: 'POST' });
   await waitFor(() => !fs.existsSync(path.join(profile, 'runtime.json')));
 });
+
+for (const kind of ['quote-token-swap', 'storage-upload']) {
+  test(`a saved ${kind} reservation holds HTTP spending between transactions after startup`, { timeout: 30000 }, async (t) => {
+    const { openRuntimeStore } = await import('../packages/runtime/src/store.js');
+    const { sweepWallet, sweepDestination } = await import('../packages/runtime/test/fixtures/sol-sweep-chain.mjs');
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-workflow-admission-'));
+    const walletPublicKey = sweepWallet.publicKey.toBase58(), tempWalletSecretKey = Array.from(sweepWallet.secretKey);
+    let requests = 0, runtime;
+    const rpc = http.createServer((req, res) => { requests++; res.writeHead(500); res.end('Wallet reservation must be checked before chain access'); });
+    t.after(async () => {
+      if (runtime) { try { process.kill(runtime.identity.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
+      rpc.closeAllConnections(); await new Promise((resolve) => rpc.close(resolve)); fs.rmSync(profile, { recursive: true, force: true });
+    });
+    rpc.listen(0, '127.0.0.1'); await once(rpc, 'listening');
+    const url = `http://127.0.0.1:${rpc.address().port}`;
+    fs.writeFileSync(path.join(profile, 'rpcConfig.json'), JSON.stringify({ active: url, activeNetwork: 'devnet', saved: [{ name: 'Local fixture', url, network: 'devnet' }] }));
+    fs.writeFileSync(path.join(profile, 'userPrefs.json'), JSON.stringify({ demoMode: false }));
+    const { Keypair } = await import('@solana/web3.js'), { default: nacl } = await import('tweetnacl');
+    const proofMessage = 'Stored destination proof for the local admission fixture';
+    const signature = Buffer.from(nacl.sign.detached(new TextEncoder().encode(proofMessage), Keypair.fromSeed(new Uint8Array(32).fill(32)).secretKey)).toString('base64');
+    fs.writeFileSync(path.join(profile, 'verifiedDestinations.json'), JSON.stringify({ schema: 'trebuchet-verified-destinations/v1',
+      destinations: { [sweepDestination]: { verifiedAt: new Date().toISOString(), message: proofMessage, signature } } }));
+    const workflow = { id: `saved-${kind}`, walletPublicKey, kind, context: { scopeId: 'journal-workflow', phase: 'between-transactions' } };
+    const store = openRuntimeStore(profile);
+    store.reserveWalletWorkflow(workflow);
+    store.collection('journals').save([{ id: 'journal-workflow', walletPublicKey, status: 'active', stage: 'waiting-for-recovery' }]);
+    assert.equal(store.getActiveOperation(walletPublicKey), null); store.close();
+    runtime = await ensureRuntime(profile, { args: [server] });
+    for (const [endpoint, body] of [
+      ['/api/create-token', { tempWalletSecretKey, name: 'Reserved', symbol: 'RSV', totalSupply: '1000', description: 'Local test' }],
+      ['/api/run-airdrop', { tempWalletSecretKey, tokenMint: sweepDestination, tokenDecimals: 9, recipients: [{ wallet: sweepDestination, tokens: '1' }] }],
+      ['/api/transfer-assets', { tempWalletSecretKey, destinationWallet: sweepDestination, tokenMint: sweepDestination }],
+      ['/api/launch-journals/resume', { id: 'journal-workflow' }],
+    ]) await assert.rejects(runtime.request(endpoint, { method: 'POST', body }), (error) => {
+      assert.equal(error.statusCode, 409, `${endpoint}: ${error.message}`); assert.equal(error.code, 'EXECUTION_RECOVERY_REQUIRED'); assert.equal(error.operationId, workflow.id); return true;
+    });
+    assert.equal(requests, 0);
+    const saved = openRuntimeStore(profile);
+    try { assert.deepEqual(saved.getWalletWorkflow(walletPublicKey), { ...workflow, state: 'active' }); assert.equal(saved.getActiveOperation(walletPublicKey), null); }
+    finally { saved.close(); }
+    await runtime.request('/api/runtime/stop', { method: 'POST' });
+    await waitFor(() => !fs.existsSync(path.join(profile, 'runtime.json')));
+  });
+}

@@ -93,6 +93,7 @@ export function createWalletExecutionRuntime({
   };
   return {
     active,
+    activeWorkflow: (walletPublicKey) => withStore((store) => store.getWalletWorkflow(walletPublicKey)),
     getTransferReceipts: (walletPublicKey) => {
       owner.assertActive();
       // The journal may use its own SQLite connection. Resolve host data before
