@@ -259,10 +259,12 @@ test('the packed CLI runs isolated planning and starts its installed host for sa
     {
       cwd: root,
       encoding: 'utf8',
+      // npm lists each packed file; bundled runtime dependencies exceed 1 MiB of JSON.
+      maxBuffer: 8 * 1024 * 1024,
       env: { ...process.env, npm_config_cache: npmCache },
     },
   );
-  assert.equal(packed.status, 0, packed.stderr);
+  assert.equal(packed.status, 0, packed.error?.message || packed.stderr);
   const [{ filename, bundled = [] }] = JSON.parse(packed.stdout);
   assert.ok(bundled.includes('@trebuchet/core'), 'packed package must bundle @trebuchet/core');
   assert.ok(bundled.includes('@trebuchet/runtime'), 'packed package must bundle @trebuchet/runtime');
