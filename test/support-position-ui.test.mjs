@@ -14,7 +14,7 @@ const draft = { jobId: 'support-one', walletPublicKey: 'saved-wallet', nftMint: 
     feeBufferLamports: '100000', totalLamports: '165000000', walletLamports: null, warnings: [], depthPct: 50, tickLower: 100, tickUpper: 1000,
   } };
 function harness({ confirm = true, saved = false, changeDuringReview = false, changeDuringSend = false, failSend = false, demo = false } = {}) {
-  const calls = [], dialogs = [], notices = [], target = { innerHTML: '' };
+  const calls = [], dialogs = [], notices = [], refreshes = [], target = { innerHTML: '' };
   let wallet = draft.walletPublicKey, job = structuredClone(draft);
   if (saved) job.status = 'paused';
   const state = { demoActive: demo, poolSupport: { status: 'ready', plan: job.plan, inputs: { target: job.tokenMint, solAmount: 0.01, depthPct: 50 } },
@@ -34,10 +34,11 @@ function harness({ confirm = true, saved = false, changeDuringReview = false, ch
     selectedLaunchWalletPublicKey: () => wallet, walletIsUnlocked: () => true,
     confirmOperatorAction: async (input) => { calls.push({ action: 'review' }); dialogs.push(input); if (changeDuringReview) wallet = 'other-wallet'; return confirm; },
     fullAddress: (s) => s, shortAddress: (s) => s, escapeHtml: (s) => String(s), solscanTxUrl: (s) => `https://example.invalid/${s}`,
-    notify: (s) => notices.push(s), loadCoinDetail: async () => {}, loadCoinPositions: async () => {}, refreshManualPrefundBalance: async () => {},
+    notify: (s) => notices.push(s), loadCoinDetail: async (mint) => { refreshes.push({ action: 'detail', mint }); },
+    loadCoinPositions: async (mint) => { refreshes.push({ action: 'positions', mint }); }, refreshManualPrefundBalance: async () => {},
   });
   vm.runInContext(amounts + support.slice(0, support.indexOf('function renderReturnWalletCard')), context);
-  return { context, state, calls, dialogs, notices, target, job };
+  return { context, state, calls, dialogs, notices, refreshes, target, job };
 }
 
 test('support review saves first and approves the exact wallet, position, range and costs', async () => {
@@ -93,8 +94,10 @@ test('the support recovery click reads the job ID from the clicked button', asyn
 });
 
 test('practice support retains its preview confirmation flow', async () => {
-  const h = harness({ demo: true }); await h.context.openPoolSupport();
+  const h = harness({ demo: true }); h.state.poolSupport.inputs.target = 'practice-created-mint'; await h.context.openPoolSupport();
   assert.deepEqual(h.calls.map((row) => row.action), ['review', 'execute']);
   assert.equal(h.calls[1].input.expected.tickLower, draft.plan.tickLower); assert.equal(h.calls[1].input.expected.totalLamports, draft.plan.totalLamports);
   assert.match(h.notices.at(-1), /Practice support added/);
+  assert.equal(h.calls[1].input.tokenMint, 'practice-created-mint');
+  assert.deepEqual(h.refreshes, [{ action: 'detail', mint: 'practice-created-mint' }, { action: 'positions', mint: 'practice-created-mint' }]);
 });

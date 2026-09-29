@@ -173,7 +173,8 @@ async function openPoolSupport() {
     const response = await state.apiClient.openSolSupport({ walletPublicKey, poolId: plan.poolId, tokenMint: inputs.target, solAmount: inputs.solAmount, depthPct: inputs.depthPct,
       expected: { tickLower: plan.tickLower, tickUpper: plan.tickUpper, totalLamports: plan.totalLamports } });
     state.poolSupport = { ...state.poolSupport, status: 'done', result: response.result, error: null };
-    loadCoinDetail(plan.token?.mint || inputs.target).catch(() => null); loadCoinPositions(plan.token?.mint || inputs.target).catch(() => null);
+    const tokenMint = inputs.target || plan.token?.mint;
+    loadCoinDetail(tokenMint).catch(() => null); loadCoinPositions(tokenMint).catch(() => null);
     refreshManualPrefundBalance({ quiet: true }).catch(() => null); notify('Practice support added');
   } catch (error) { state.poolSupport = { ...state.poolSupport, status: 'ready', error: error.message || 'Adding support failed' }; notify(state.poolSupport.error); }
   renderPoolSupport();
