@@ -18,6 +18,7 @@ import { AddressLookupTableAccount, Connection, Keypair, PublicKey, SystemProgra
 import { NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, getAccount,
   createAssociatedTokenAccountIdempotentInstruction, createSyncNativeInstruction, createCloseAccountInstruction } from '@solana/spl-token';
 import { openRuntimeStore } from '../../packages/runtime/src/store.js';
+import { createQuotePlanBuilder } from '../../packages/runtime/src/quote-plan.js';
 import { reviewSwapBundle } from '../../packages/runtime/src/swap-bundle.js';
 import { USDT_MINT } from '../../packages/core/src/lp-constants.js';
 import { SOLANA_GENESIS_HASHES } from '../../packages/runtime/src/solana.js';
@@ -28,12 +29,14 @@ const tradeApi = 'https://transaction-v1.raydium.io';
 const outputMint = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 const wallet = Keypair.fromSeed(new Uint8Array(32).fill(43)).publicKey;
 const source = getAssociatedTokenAddressSync(NATIVE_MINT, wallet), destination = getAssociatedTokenAddressSync(outputMint, wallet);
-const inputAmountRaw = '10000000', slippageBps = 500, feeCeilingLamports = 10000;
-const providerBundle = process.argv.includes('--provider-bundle'), fundedSource = process.argv.includes('--funded-source'), viaUsdt = process.argv.includes('--via-usdt');
+const inputAmountRaw = '10000000', slippageBps = 500;
+let feeCeilingLamports = 10000;
+const productionPlan = process.argv.includes('--production-plan');
+const providerBundle = productionPlan || process.argv.includes('--provider-bundle'), fundedSource = process.argv.includes('--funded-source'), viaUsdt = process.argv.includes('--via-usdt');
 const existingIntermediate = process.argv.includes('--existing-intermediate'), prefundedIntermediate = process.argv.includes('--prefunded-intermediate');
 assert.ok(!(existingIntermediate && prefundedIntermediate), 'Choose one intermediate-account starting state');
 assert.ok(!(fundedSource || viaUsdt || existingIntermediate || prefundedIntermediate) || providerBundle, 'Use the provider bundle for the account and route cases');
-const mode = providerBundle ? `api${viaUsdt ? '-via-usdt' : ''}${fundedSource ? '-funded' : ''}${existingIntermediate ? '-existing-route' : ''}${prefundedIntermediate ? '-prefunded-route' : ''}` : 'host';
+const mode = providerBundle ? `${productionPlan ? 'production-plan-' : ''}api${viaUsdt ? '-via-usdt' : ''}${fundedSource ? '-funded' : ''}${existingIntermediate ? '-existing-route' : ''}${prefundedIntermediate ? '-prefunded-route' : ''}` : 'host';
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-validator-swap-'));
 const accountDir = path.join(profile, 'accounts'); fs.mkdirSync(accountDir);
 const children = [], rpcErrors = [], accepted = new Map();
@@ -115,10 +118,10 @@ try {
     createAssociatedTokenAccountIdempotentInstruction(wallet, destination, wallet, outputMint),
     ...intermediateMints.map(({ mint, programId }, i) => createAssociatedTokenAccountIdempotentInstruction(wallet, intermediateAccounts[i], wallet, new PublicKey(mint), new PublicKey(programId))),
     SystemProgram.transfer({ fromPubkey: wallet, toPubkey: source, lamports: Number(inputAmountRaw) }), createSyncNativeInstruction(source)];
-  const transactions = providerBundle ? providerTxs : [makeTx(setup), makeTx([ComputeBudgetProgram.setComputeUnitLimit({ units: 1400000 }), trade]), makeTx([createCloseAccountInstruction(source, wallet, wallet)])];
-  const intent = { network: 'localnet', walletPublicKey: wallet.toBase58(), sourceTokenAccount: source.toBase58(), destinationTokenAccount: destination.toBase58(),
+  let transactions = providerBundle ? providerTxs : [makeTx(setup), makeTx([ComputeBudgetProgram.setComputeUnitLimit({ units: 1400000 }), trade]), makeTx([createCloseAccountInstruction(source, wallet, wallet)])];
+  let intent = { network: 'localnet', walletPublicKey: wallet.toBase58(), sourceTokenAccount: source.toBase58(), destinationTokenAccount: destination.toBase58(),
     outputMint: outputMint.toBase58(), outputProgramId: TOKEN_PROGRAM_ID.toBase58(), inputAmountRaw, minimumOutputRaw: decoded.minimumOutputRaw, maxSlippageBps: slippageBps, intermediateMints, rentCeilingLamports: 5000000 + intermediateMints.length * 3000000 };
-  const review = await reviewSwapBundle({ transactions, lookupTables: tables, intent });
+  let review = await reviewSwapBundle({ transactions, lookupTables: tables, intent });
   const builtins = new Set([SystemProgram.programId, ComputeBudgetProgram.programId, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID,
     new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr')].map((key) => key.toBase58()));
   const excluded = new Set([wallet, source, destination, ...intermediateAccounts].map((key) => key.toBase58()));
@@ -161,6 +164,16 @@ try {
     const signature = await connection.sendRawTransaction(seed.serialize(), { preflightCommitment: 'finalized' });
     await waitFor(async () => (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0]?.confirmationStatus === 'finalized', 'existing local wrapped SOL');
     if (fundedSource) assert.equal((await getAccount(connection, source, 'finalized')).amount, 1000000n);
+  }
+  if (productionPlan) {
+    const planned = await createQuotePlanBuilder({ connection, network: 'localnet', expectedGenesisHash: genesisHash, slippageBps,
+      provider: { quote: async () => quote, transactions: async () => built.data.map((row) => row.transaction) } }).build({
+        walletPublicKey: wallet.toBase58(), autoSwapPlan: [{ allocationIndex: 0, quoteMint: outputMint.toBase58(), quoteSymbol: 'USDC', quoteDecimals: 6,
+          targetRaw: quote.data.otherAmountThreshold, minRaw: quote.data.otherAmountThreshold, maxInputLamports: inputAmountRaw }] });
+    assert.equal(planned.purchases.length, 1); assert.equal(planned.rows[0].state, 'purchase');
+    ({ transactions, intent, feeCeilingLamports } = planned.purchases[0]);
+    review = await reviewSwapBundle({ transactions, lookupTables: tables, intent });
+    process.stdout.write(`Production quote plan: ${JSON.stringify(planned.rows[0])}\n`);
   }
   const startingBalance = await connection.getBalance(wallet, 'finalized');
   const approval = { id: 'validator-swap', scopeId: 'validator-launch', key: 'purchase/0', walletPublicKey: wallet.toBase58(), network: 'localnet', genesisHash,

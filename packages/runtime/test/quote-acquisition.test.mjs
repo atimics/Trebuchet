@@ -208,3 +208,19 @@ test('a stable acquisition identity preserves its original set of purchases', as
   assert.deepEqual(f.service().get(job.id), job);
   await assert.rejects(f.service().preview({ ...f.input, purchases: [f.input.purchases[0], f.input.purchases[0]] }), /each quote mint/);
 });
+
+test('held quote balances can complete a zero-spend acquisition with bound context', async (t) => {
+  const f = await fixture(t), input = { ...f.input, purchases: [], context: { balances: [{ mint: f.input.purchases[0].intent.outputMint, amountRaw: '1250', slot: 200 }] } };
+  const preview = await f.service().preview(input), approval = { ...f.approval, planDigest: preview.digest, maxSpendLamports: 0 };
+  const job = await f.service().prepare({ ...input, approval });
+  const result = await f.service().execute({ id: job.id, approval });
+  assert.equal(result.status, 'confirmed'); assert.equal(result.grossDebitLamports, 0); assert.deepEqual(result.purchases, []);
+  assert.deepEqual(f.service().get(job.id).plan.context, input.context);
+  assert.ok(f.ledgers.every((ledger) => ledger.state.sends.length === 0));
+});
+
+test('acquisition approval binds the review context', async (t) => {
+  const f = await fixture(t), input = { ...f.input, context: { expectedRaw: '1250' } };
+  await assert.rejects(f.service().prepare(input), { code: 'EXECUTION_APPROVAL_REQUIRED' });
+  assert.equal(f.store.getWalletWorkflow(f.input.walletPublicKey), null);
+});

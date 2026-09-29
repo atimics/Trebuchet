@@ -2653,7 +2653,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /refreshManualPrefundBalance/);
   assert.match(js, /startQuoteAcquire/);
   assert.match(js, /Funding estimate is stale for this launch model; rerun it before acquiring quote tokens/);
-  assert.match(js, /data-action="\$\{hasCurrentEstimate \? 'start-quote-acquire' : 'estimate-funding'\}"/);
+  assert.match(js, /data-action="\$\{hasCurrentEstimate \|\| savedAction \? 'start-quote-acquire' : 'estimate-funding'\}"/);
   assert.match(js, /notify\(fundingEstimateStatus\.stale \? 'Rerun funding estimate first' : 'Run funding estimate first'\)/);
   assert.match(js, /if \(!classicFundingEstimateStatus\(currentLaunchConfig\(\)\)\.matchesConfig \|\| !items\.length\) return ''/);
   assert.match(js, /pollQuoteAcquire/);

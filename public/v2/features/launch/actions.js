@@ -102,6 +102,7 @@ function applyQuoteAcquireJob(job) {
   state.quoteAcquire.lastUpdatedAt = new Date().toISOString();
   state.quoteAcquire.running = job?.status === 'running';
   state.quoteAcquire.polling = state.quoteAcquire.running;
+  if (job?.status !== 'running' && quoteAcquireTimer) { window.clearInterval(quoteAcquireTimer); quoteAcquireTimer = null; }
   if (job?.status === 'done') {
     if (quoteAcquireTimer) {
       window.clearInterval(quoteAcquireTimer);
@@ -141,104 +142,73 @@ function startQuoteAcquirePolling() {
   pollQuoteAcquire().catch(() => null);
 }
 
+async function reviewQuoteAcquireJob(job) {
+  if (job.walletPublicKey !== selectedLaunchWalletPublicKey()) throw new Error('Select the saved quote wallet to continue.');
+  if (!walletIsUnlocked()) {
+    const unlocked = await unlockSecretPin({ reason: 'unlock' });
+    if (!unlocked || !walletIsUnlocked()) return;
+  }
+  applyQuoteAcquireJob(job);
+  if (job.status === 'done') return;
+  if (job.status === 'running') { startQuoteAcquirePolling(); return; }
+  const cleanup = job.status === 'recovery_required';
+  if (cleanup) job = await state.apiClient.prepareAcquireQuoteCleanup({ jobId: job.jobId, walletPublicKey: job.walletPublicKey });
+  const limit = cleanup ? job.recoveryMaxSpendLamports : job.maxSpendLamports;
+  if (!Number.isSafeInteger(limit) || limit < 0) throw new Error('Refresh the quote with its complete spending ceiling.');
+  const sol = (lamports) => formatRawTokenAmount(String(lamports), 9);
+  const targets = (job.rows || []).filter((row) => row.state === 'purchase').map((row) =>
+    `${formatRawTokenAmount(row.minimumOutputRaw, row.quoteDecimals)} ${row.quoteSymbol || shortAddress(row.quoteMint)}`).join(', ');
+  const detail = `Wallet: ${job.walletPublicKey}. Network: ${job.network}. ` + (cleanup
+    ? `Recover the saved wrapped SOL. Cleanup fees are at most ${sol(job.cleanupFeeCeilingLamports || 0)} SOL. Total costs, including past purchases, stay within ${sol(limit)} SOL.`
+    : `Receive at least ${targets || 'the saved token amounts'}. Swap ${sol(job.inputLamports)} SOL, with fees up to ${sol(job.feeCeilingLamports)} SOL and account rent up to ${sol(job.rentCeilingLamports)} SOL. Maximum total: ${sol(limit)} SOL.`
+      + (job.grossDebitLamports ? ` Recorded payments: ${sol(job.grossDebitLamports)} SOL. Resume uses the saved receipts.` : ''));
+  if (limit > 0) {
+    const ok = await confirmOperatorAction({ title: cleanup ? 'Recover quote purchase' : job.status === 'paused' ? 'Resume quote purchase' : 'Buy pair tokens',
+      detail, confirmLabel: cleanup ? 'Recover funds' : job.status === 'paused' ? 'Resume purchase' : 'Buy tokens', danger: true, confirmationText: 'SPEND SOL' });
+    if (!ok) { applyQuoteAcquireJob(job); renderClassicBridge(); return; }
+  }
+  if (job.walletPublicKey !== selectedLaunchWalletPublicKey()) throw new Error('Select the saved quote wallet before continuing.');
+  const started = await state.apiClient.executeAcquireQuoteTokens({ jobId: job.jobId, walletPublicKey: job.walletPublicKey, planDigest: job.planDigest,
+    maxSpendLamports: limit, ...(cleanup ? { recoveryDigest: job.recoveryDigest } : {}) });
+  applyQuoteAcquireJob(started); startQuoteAcquirePolling(); renderClassicBridge();
+}
+
 async function startQuoteAcquire() {
-  const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig());
-  const routes = quoteAcquireRoutes();
   const walletPublicKey = selectedLaunchWalletPublicKey();
-  if (!fundingEstimateStatus.matchesConfig) {
-    notify(fundingEstimateStatus.stale ? 'Rerun funding estimate first' : 'Run funding estimate first');
-    return;
-  }
-  if (!routes.length) {
-    notify(quoteAcquireManualCount() ? 'This estimate needs manual quote-token prefund' : 'No quote acquire needed');
-    return;
-  }
-  if (!walletPublicKey) {
-    notify('Generate or select a launch wallet first');
-    return;
-  }
-  if (state.apiStatus !== 'connected' || !state.apiClient?.acquireQuoteTokens) {
-    notify('Quote acquire requires the Trebuchet desktop app');
-    return;
-  }
-  if (!state.demoActive) {
-    // Buying signs with the launch wallet: unlock first, then carry on.
-    if (!walletIsUnlocked()) {
-      const unlocked = await unlockSecretPin({ reason: 'unlock' });
-      if (!unlocked || !walletIsUnlocked()) return;
-    }
-    // Only confirm a spend when something is actually missing. The job
-    // still covers every route; the server re-checks each balance and
-    // spends nothing on tokens already in the wallet.
-    const balance = await refreshManualPrefundBalance({ quiet: true });
-    const heldRaw = (mint) => {
-      try { return BigInt(String(balance?.tokens?.[mint]?.amountRaw || '0')); } catch { return 0n; }
-    };
-    const missing = routes.filter((route) => {
-      let needRaw = 0n;
-      try { needRaw = BigInt(String(route.minRaw || route.targetRaw || '0')); } catch { needRaw = 0n; }
-      return heldRaw(route.quoteMint) < needRaw;
-    });
-    if (missing.length) {
-      const maxSol = missing.reduce((sum, route) => sum + Math.max(0, Number(route.estSolSpend || 0)), 0);
-      const ok = await confirmOperatorAction({
-        title: 'Buy pair tokens',
-        detail: `Buy ${missing.map((route) => route.quoteSymbol || shortAddress(route.quoteMint)).join(', ')} with up to ${maxSol.toFixed(4)} SOL from the launch wallet.`
-          + (missing.length < routes.length ? ` ${routes.length - missing.length} already in the wallet.` : ''),
-        confirmLabel: 'Buy tokens',
-        danger: true,
-        confirmationText: 'SPEND SOL',
-      });
-      if (!ok) return;
-    } else {
-      notify(`All ${routes.length} pair tokens are already in the launch wallet; confirming balances`);
-    }
-  }
-
-  const v2QuoteAcquireFingerprint = quoteAcquireFingerprint(currentLaunchConfig(), walletPublicKey);
-  state.quoteAcquire = {
-    ...defaultQuoteAcquireState(),
-    running: true,
-    polling: true,
-    fingerprint: v2QuoteAcquireFingerprint,
-    job: {
-      status: 'running',
-      total: routes.length,
-      completed: 0,
-      results: [],
-      pendingMints: routes.map((route) => route.quoteMint).filter(Boolean),
-      inProgressMints: [],
-      v2QuoteAcquireFingerprint,
-    },
-  };
-  renderClassicBridge();
-
+  if (state.apiStatus !== 'connected' || !state.apiClient?.acquireQuoteTokens) { notify('Quote acquire requires the Trebuchet desktop app'); return; }
+  if (!walletPublicKey) { notify('Generate or select a launch wallet first'); return; }
   try {
-    const started = await state.apiClient.acquireQuoteTokens({
-      walletPublicKey,
-      autoSwapPlan: routes,
-    });
-    state.quoteAcquire.jobId = started.jobId;
-    state.quoteAcquire.job = {
-      ...state.quoteAcquire.job,
-      jobId: started.jobId,
-      v2QuoteAcquireFingerprint,
-    };
-    startQuoteAcquirePolling();
-    notify('Quote acquire job started');
-  } catch (error) {
-    state.quoteAcquire.running = false;
-    state.quoteAcquire.polling = false;
-    state.quoteAcquire.error = error.message || 'Quote acquire failed to start';
+    if (state.quoteAcquire.jobId && ['review_required', 'paused', 'recovery_required'].includes(state.quoteAcquire.job?.status)) {
+      const job = await state.apiClient.getAcquireQuoteTokens(state.quoteAcquire.jobId);
+      if (job.status !== 'review_required' || job.expiresAtMs > Date.now()) return await reviewQuoteAcquireJob(job);
+      await state.apiClient.cancelAcquireQuoteTokens(job.jobId);
+      resetQuoteAcquireState({ keepRunning: false });
+    }
+    const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig()), routes = quoteAcquireRoutes();
+    if (!fundingEstimateStatus.matchesConfig) { notify(fundingEstimateStatus.stale ? 'Rerun funding estimate first' : 'Run funding estimate first'); return; }
+    if (!routes.length) { notify(quoteAcquireManualCount() ? 'This estimate needs manual quote-token prefund' : 'No quote acquire needed'); return; }
+    if (!state.demoActive && !walletIsUnlocked()) {
+      const unlocked = await unlockSecretPin({ reason: 'unlock' }); if (!unlocked || !walletIsUnlocked()) return;
+    }
+    const fingerprint = quoteAcquireFingerprint(currentLaunchConfig(), walletPublicKey);
+    state.quoteAcquire = { ...defaultQuoteAcquireState(), running: true, polling: false, fingerprint,
+      job: { status: 'running', total: routes.length, completed: 0, results: [], pendingMints: routes.map((route) => route.quoteMint), inProgressMints: [], v2QuoteAcquireFingerprint: fingerprint } };
     renderClassicBridge();
-    notify(state.quoteAcquire.error);
-  }
+    const prepared = await state.apiClient.acquireQuoteTokens({ walletPublicKey, autoSwapPlan: routes, requestId: window.crypto?.randomUUID?.() });
+    state.quoteAcquire.jobId = prepared.jobId;
+    applyQuoteAcquireJob({ ...prepared, v2QuoteAcquireFingerprint: fingerprint });
+    if (state.demoActive) { startQuoteAcquirePolling(); notify('Quote acquire job started'); }
+    else await reviewQuoteAcquireJob(prepared);
+  } catch (error) {
+    state.quoteAcquire.running = false; state.quoteAcquire.polling = false;
+    state.quoteAcquire.error = error.message || 'Quote acquire failed to start'; notify(state.quoteAcquire.error);
+  } finally { renderClassicBridge(); }
 }
 
 async function clearQuoteAcquire() {
   const { jobId, running } = state.quoteAcquire;
-  if (running) {
-    notify('Quote acquire is still running');
+  if (running || ['paused', 'recovery_required'].includes(state.quoteAcquire.job?.status)) {
+    notify('Resume the saved quote job before clearing its view');
     return;
   }
   if (jobId && state.apiStatus === 'connected' && state.apiClient?.cancelAcquireQuoteTokens) {

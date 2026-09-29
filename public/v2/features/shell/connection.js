@@ -383,6 +383,9 @@ async function pollLiveOps() {
       since: state.liveOps.lpCursor,
     }).then((lp) => ({ type: 'lp', value: lp })));
   }
+  if (walletPublicKey && state.apiClient.getActiveAcquireQuoteTokens && !state.demoActive) {
+    tasks.push(state.apiClient.getActiveAcquireQuoteTokens(walletPublicKey).then((job) => ({ type: 'quotes', value: { walletPublicKey, job } })));
+  }
   if (walletPublicKey && state.apiClient.getAirdropProgress) {
     tasks.push(state.apiClient.getAirdropProgress(walletPublicKey).then((airdrop) => ({ type: 'airdrop', value: airdrop })));
   }
@@ -428,6 +431,10 @@ async function pollLiveOps() {
       if (Array.isArray(value?.events) && value.events.length) {
         state.liveOps.lpEvents = [...state.liveOps.lpEvents, ...value.events].slice(-20);
       }
+    } else if (type === 'quotes' && value?.walletPublicKey === selectedLaunchWalletPublicKey() && value.job) {
+      state.quoteAcquire.jobId = value.job.jobId; applyQuoteAcquireJob(value.job);
+      if (value.job.status === 'running') startQuoteAcquirePolling();
+      classicBridgeDirty = true;
     } else if (type === 'airdrop') {
       state.liveOps.airdrop = value;
       rememberAirdropProgress(value);

@@ -25,7 +25,9 @@
     "./swap-instruction": "./src/swap-instruction.js",
     "./swap-bundle": "./src/swap-bundle.js",
     "./swap": "./src/swap.js",
-    "./quote-acquisition": "./src/quote-acquisition.js"
+    "./quote-acquisition": "./src/quote-acquisition.js",
+    "./quote-plan": "./src/quote-plan.js",
+    "./quote-provider": "./src/quote-provider.js"
   },
   "engines": {
     "node": ">=22.13.0"

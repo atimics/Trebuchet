@@ -40,7 +40,7 @@ export function createQuoteAcquisitionService(options) {
       for (const job of jobs) {
         const { plan } = job, purchases = plan.purchases;
         if (identity(plan) !== job.id || hash(plan) !== job.digest || new PublicKey(plan.walletPublicKey).toBase58() !== plan.walletPublicKey
-            || !Array.isArray(purchases) || !purchases.length || purchases.length > 16 || new Set(purchases.map((item) => item.id)).size !== purchases.length
+            || !Array.isArray(purchases) || purchases.length > 16 || new Set(purchases.map((item) => item.id)).size !== purchases.length
             || new Set(purchases.map((item) => item.plan.review.intent.outputMint)).size !== purchases.length
             || !whole(plan.maxSpendLamports) || plan.maxSpendLamports !== sum(purchases.map((item) => item.plan), 'maxSpendLamports')
             || !['prepared', 'confirmed', 'recovery_required', 'recovered'].includes(job.state) || !Array.isArray(job.approvals)
@@ -142,11 +142,12 @@ export function createQuoteAcquisitionService(options) {
     const saved = update(job.id, (value) => ({ ...value, state, result }));
     store.finishWalletWorkflow(job.id, result); return { jobId: saved.id, ...get(saved.id).result };
   });
-  const preview = async ({ scopeId, key, walletPublicKey, purchases }) => {
-    if (![scopeId, key].every((value) => typeof value === 'string' && value && value.length <= 220) || !Array.isArray(purchases) || !purchases.length || purchases.length > 16) {
+  const preview = async ({ scopeId, key, walletPublicKey, purchases, context }) => {
+    if (![scopeId, key].every((value) => typeof value === 'string' && value && value.length <= 220) || !Array.isArray(purchases) || purchases.length > 16) {
       throw new TypeError('Use a stable acquisition identity and up to 16 purchases');
     }
     walletPublicKey = new PublicKey(walletPublicKey).toBase58();
+    if (await connection.getGenesisHash() !== expectedGenesisHash) throw fail('NETWORK_MISMATCH', 'Prepare the acquisition on its saved chain');
     const id = identity({ scopeId, key, walletPublicKey, network }), reviewed = [];
     for (const [index, purchase] of purchases.entries()) {
       if (purchase.intent.walletPublicKey !== walletPublicKey) throw new TypeError('Use the same approved wallet for every purchase');
@@ -156,7 +157,7 @@ export function createQuoteAcquisitionService(options) {
     if (new Set(reviewed.map((item) => item.plan.review.intent.outputMint)).size !== reviewed.length) throw new TypeError('Combine each quote mint into one approved purchase');
     const maxSpendLamports = sum(reviewed.map((item) => item.plan), 'maxSpendLamports');
     if (!whole(maxSpendLamports)) throw new TypeError('Use an exact acquisition spending ceiling');
-    const plan = { scopeId, key, walletPublicKey, network, genesisHash: expectedGenesisHash, purchases: reviewed, maxSpendLamports };
+    const plan = { scopeId, key, walletPublicKey, network, genesisHash: expectedGenesisHash, purchases: reviewed, maxSpendLamports, ...(context === undefined ? {} : { context: copy(context) }) };
     return { id, plan, digest: hash(plan), state: 'prepared', approvals: [], recoveryPlans: [], result: null };
   };
   return {

@@ -299,6 +299,12 @@ function quoteAcquireBadge() {
   const { total, completed, failed } = quoteAcquireProgress();
   const status = quoteAcquireStatus();
   const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig());
+  const saved = state.quoteAcquire.job;
+  if (saved?.walletPublicKey === selectedLaunchWalletPublicKey()) {
+    if (saved.status === 'recovery_required') return { label: 'Recover funds', className: 'warn' };
+    if (saved.status === 'paused') return { label: 'Resume', className: 'warn' };
+    if (saved.status === 'review_required') return { label: 'Review quote', className: 'warn' };
+  }
   if (fundingEstimateStatus.stale) return { label: 'Re-estimate', className: 'warn' };
   if (!fundingEstimateStatus.hasEstimate) return { label: 'Estimate', className: 'warn' };
   if (state.quoteAcquire.error) return { label: 'Error', className: 'danger' };
@@ -572,7 +578,9 @@ function renderQuoteAcquirePanel() {
         </span>
       </article>
     `).join('');
-  const detail = fundingEstimateStatus.stale
+  const savedAction = ['review_required', 'paused', 'recovery_required'].includes(job?.status) && job.walletPublicKey === selectedLaunchWalletPublicKey();
+  const detail = savedAction ? (job.status === 'recovery_required' ? 'Review cleanup for the saved quote purchase.' : job.status === 'paused' ? 'Resume the saved purchase and verify its original receipts.' : 'Review the saved quote and its complete spending ceiling.')
+    : fundingEstimateStatus.stale
     ? 'Funding estimate is stale for this launch model; rerun it before acquiring quote tokens.'
     : acquireStatus.stale
       ? 'Previous quote acquire belongs to another wallet or launch model; run it again for the selected launch wallet.'
@@ -585,15 +593,15 @@ function renderQuoteAcquirePanel() {
       : 'Run the funding estimate to discover quote-token acquire routes.';
   const canStart = state.apiStatus === 'connected'
     && Boolean(selectedLaunchWalletPublicKey())
-    && routes.length > 0
+    && (routes.length > 0 || savedAction)
     && !state.quoteAcquire.running;
   const startLabel = state.quoteAcquire.running
     ? 'Acquiring'
-    : state.quoteAcquire.job?.status === 'done' ? 'Run again' : 'Acquire';
+    : savedAction ? (job.status === 'recovery_required' ? 'Recover funds' : job.status === 'paused' ? 'Resume purchase' : 'Review quote') : state.quoteAcquire.job?.status === 'done' ? 'Run again' : 'Acquire';
   const button = state.quoteAcquire.running
     ? `<button class="pill-button" type="button" data-action="poll-quote-acquire">Refresh</button>`
-    : `<button class="pill-button" type="button" data-action="${hasCurrentEstimate ? 'start-quote-acquire' : 'estimate-funding'}" ${canStart || !hasCurrentEstimate ? '' : 'disabled'}>${escapeHtml(fundingEstimateStatus.stale ? 'Re-estimate' : hasCurrentEstimate ? startLabel : 'Estimate')}</button>`;
-  const clear = state.quoteAcquire.jobId && !state.quoteAcquire.running
+    : `<button class="pill-button" type="button" data-action="${hasCurrentEstimate || savedAction ? 'start-quote-acquire' : 'estimate-funding'}" ${canStart || !hasCurrentEstimate ? '' : 'disabled'}>${escapeHtml(savedAction ? startLabel : fundingEstimateStatus.stale ? 'Re-estimate' : hasCurrentEstimate ? startLabel : 'Estimate')}</button>`;
+  const clear = state.quoteAcquire.jobId && !state.quoteAcquire.running && !['paused', 'recovery_required'].includes(job?.status)
     ? '<button class="pill-button" type="button" data-action="clear-quote-acquire">Clear</button>'
     : '';
 

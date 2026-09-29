@@ -1,6 +1,6 @@
 # Architecture review
 
-Review scope: the shared-runtime worktree through durable acquisition across quote mints, complete Raydium API bundles, and real-router validator recovery. The changes are delivered through draft PR #52. The completion checklist in [execution-runtime.md](execution-runtime.md) records the full build scope.
+Review scope: the shared-runtime worktree through production quote drafts, reviewed spending, HTTP recovery, and real-router validator recovery. The changes are delivered through draft PR #52. The completion checklist in [execution-runtime.md](execution-runtime.md) records the full build scope.
 
 ## Assessment
 
@@ -39,15 +39,11 @@ Each local profile has one runtime owner. Each runner uses its own durable profi
 
 ### 1. Move every spend into a durable workflow
 
-Quote-token acquisition still stores jobs in `server.js`'s `acquireJobs` Map. `swapService.js` signs provider transactions directly. Its retries use the current token balance to decide whether another purchase is needed. A timeout can leave a submitted transaction unresolved while a later attempt prepares another purchase. Setup, trade, and cleanup can also span several transactions.
+Buy Quotes now uses a durable acquisition workflow. The runtime combines allocations for each mint, checks existing balances, reviews the complete unsigned provider bundle, and saves its digest and spending ceiling before confirmation. Classic and v2 approve the saved wallet, network, input, fees, and rent. Each purchase and cleanup keeps its original receipts across restart.
 
-Save the complete purchase plan and stable step IDs before the first spend. Reserve the wallet for the workflow. Commit each signed transaction before submission. Recover its original signature and finalized result before replacing it. Keep setup and cleanup receipts available after restart. A low output balance should lead to an explicit decision under the remaining budget.
+The next spending paths are production token creation, uploads, and wallet position management. Each path needs the same ownership, approval, signed-transaction record, and recovery rules. Token creation and upload host changes have pending approval requests described below.
 
-The swap review checks provider messages before signing. It binds the input amount, minimum output, wallet, network, token accounts, setup funding, cleanup destination, and resolved lookup-table addresses. The durable adapter now adds finalized account checks, fee and rent checks, saved jobs, and receipt recovery. Failed purchases now retain fee evidence and a separately approved cleanup plan. Balance reconciliation preserves outside transfers. The private-validator drill covers the real Raydium trade and process recovery. The runtime now saves an ordered plan across quote mints and keeps one wallet reservation through every child purchase. It also accounts for failed fees and approved cleanup. Production acquisition still needs its quote builder, HTTP connection, and recovery controls; see the latest stage in [execution-runtime.md](execution-runtime.md).
-
-The validator drill now covers crashes after setup, trade, and cleanup acceptance, including delayed status replies and exact-byte resubmission. Four acquisition process tests now cover purchases across mints and failed-trade cleanup. Extend the validator test through the production acquisition HTTP service.
-
-The current Raydium Trade API bundle now has a reviewed contract for SOL setup, trade, account creation, and cleanup. Its full bundle stays in the approval digest. The validator tests cover both host-built SPL setup and the complete API bundle, including temporary intermediate-account refunds. These contracts are ready for the acquisition service to adopt.
+Acceptance: extend the private-validator tests through each production host. Include interrupted submission, changed approval, failed storage commits, and cleanup after a finalized failure. The quote HTTP test now covers session access, competing requests, runtime restart, original receipt recovery, and separately approved cleanup. The production quote builder also passed a real Raydium transaction and process-recovery drill on the private validator.
 
 ### 2. Enforce a budget for the whole launch
 
@@ -77,7 +73,7 @@ The desktop process split, mint signer custody, and production upload connection
 
 ### 5. Finish the service and renderer boundaries
 
-`server.js` still has about 8,700 lines. Ordinary launch methods have been extracted, but HTTP setup, background jobs, and feature services remain closely tied together. The renderer has 46 feature source files, which the build joins into one shared scope.
+`server.js` still has about 8,400 lines. Ordinary launch methods have been extracted, but HTTP setup, background jobs, and feature services remain closely tied together. The renderer has 46 feature source files, which the build joins into one shared scope.
 
 Give each server feature an ordinary service contract and a small HTTP adapter. Move job state into durable services. In the renderer, give features explicit imports and a small shared state interface. Keep cost and validation rules in browser-safe Core.
 
@@ -93,7 +89,7 @@ Acceptance: execute the same saved plan through desktop, CLI, and runner test ho
 
 ## Delivery order
 
-1. Durable swaps and remaining spending paths.
+1. Remaining spending paths and production-host recovery tests.
 2. Whole-launch spending reservations and recovery.
 3. Desktop process split and host custody, after the pending approvals.
 4. Live CLI and durable runner execution.

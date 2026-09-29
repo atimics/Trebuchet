@@ -828,15 +828,30 @@
       return safeArray(data.tiers);
     }
 
-    async function acquireQuoteTokens({ walletPublicKey, autoSwapPlan } = {}) {
+    async function acquireQuoteTokens({ walletPublicKey, autoSwapPlan, requestId } = {}) {
       const data = await request(ACQUIRE_QUOTE_TOKENS_PATH, {
         method: 'POST',
-        body: { walletPublicKey, autoSwapPlan: safeArray(autoSwapPlan) },
+        body: { walletPublicKey, autoSwapPlan: safeArray(autoSwapPlan), ...(requestId ? { requestId } : {}) },
       });
       if (!data?.jobId) {
         throw new V2ApiError('Acquire quote tokens response missing jobId.', { code: 'BAD_ACQUIRE_JOB' });
       }
       return data;
+    }
+
+    async function executeAcquireQuoteTokens({ jobId, walletPublicKey, planDigest, maxSpendLamports, recoveryDigest } = {}) {
+      return request(`${ACQUIRE_QUOTE_TOKENS_PATH}/${encodeURIComponent(jobId)}/${recoveryDigest ? 'cleanup' : 'execute'}`, {
+        method: 'POST', body: { walletPublicKey, planDigest, maxSpendLamports, ...(recoveryDigest ? { recoveryDigest } : {}) },
+      });
+    }
+
+    async function prepareAcquireQuoteCleanup({ jobId, walletPublicKey } = {}) {
+      return request(`${ACQUIRE_QUOTE_TOKENS_PATH}/${encodeURIComponent(jobId)}/cleanup/prepare`, { method: 'POST', body: { walletPublicKey } });
+    }
+
+    async function getActiveAcquireQuoteTokens(walletPublicKey) {
+      const data = await request(`${ACQUIRE_QUOTE_TOKENS_PATH}/active/${encodeURIComponent(walletPublicKey)}`);
+      return data.job || null;
     }
 
     async function getAcquireQuoteTokens(jobId) {
@@ -1108,6 +1123,9 @@
     return {
       bootstrap,
       acquireQuoteTokens,
+      executeAcquireQuoteTokens,
+      prepareAcquireQuoteCleanup,
+      getActiveAcquireQuoteTokens,
       cancelLaunchRefund,
       cancelVanityGrind,
       cancelAcquireQuoteTokens,

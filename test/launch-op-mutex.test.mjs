@@ -117,29 +117,7 @@ for (const [route, op] of [
   });
 }
 
-// The acquire endpoint is different: the job runs in the background after
-// the HTTP response returns, so the lock must outlive the handler and be
-// released when the job finishes (success or failure).
-test('/api/acquire-quote-tokens claims for the job lifetime and releases via onFinished', () => {
-  const src = handlerSource('/api/acquire-quote-tokens');
-  assert.ok(
-    src.includes("rejectOrClaimLaunchOp(res, acquireWalletPk, 'acquire-quote-tokens')"),
-    'acquire endpoint must guard before starting the job',
-  );
-  assert.ok(
-    /onFinished:\s*\(\)\s*=>\s*clearLaunchOpInFlight\(acquireWalletPk\)/.test(src),
-    'acquire endpoint must release the lock when the job finishes',
-  );
-  // startAcquireJob must actually invoke onFinished on completion paths.
-  assert.ok(
-    /function startAcquireJob\(\{ ownerKeypair, autoSwapPlan, onFinished = null \}\)/.test(serverSrc),
-    'startAcquireJob must accept onFinished',
-  );
-  assert.ok(
-    /\.finally\(\(\) => \{[\s\S]{0,400}?onFinished\(\)/.test(serverSrc),
-    'startAcquireJob must call onFinished in a .finally so both success and failure release the lock',
-  );
-});
+// Quote job admission is exercised through real HTTP in quote-acquisition-http.test.mjs.
 
 // The 409 rejection path must NOT claim/release: a rejected duplicate that
 // nulls walletPublicKey before returning (create-lp / resume) guarantees

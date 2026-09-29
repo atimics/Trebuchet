@@ -2,6 +2,8 @@ import { createAirdropExecutionRuntime } from './airdropExecution.js';
 import { createFeeKeyExecutionRuntime } from './feeKeyExecution.js';
 import { createLiquidityExecutionRuntime, LIQUIDITY_OPERATION_KIND } from './liquidityExecution.js';
 import { createWalletExecutionRuntime } from './walletExecution.js';
+import { createQuoteAcquisitionRuntime } from './quoteAcquisition.js';
+import { installQuoteAcquisitionRoutes } from './quoteAcquisitionRoutes.js';
 import { classifyChainError } from './chainRetry.js';
 import { createLaunchExecutionServices, claimLaunchOperation, LaunchRejection } from './launchExecution.js';
 import express from 'express';
@@ -51,7 +53,7 @@ import {
 } from './lpService.js';
 import { WSOL_MINT as WSOL_MINT_ADDRESS } from './lpConstants.js';
 
-import { swapSolForQuote, probeRaydiumPriceStrict, discoverJupiterRoute } from './swapService.js';
+import { probeRaydiumPriceStrict, discoverJupiterRoute } from './swapService.js';
 import { estimateAirdropExecutionCostSol } from './lpConstants.js';
 
 import {
@@ -645,19 +647,14 @@ const __dirname = path.dirname(__filename);
 // launch time — those aren't user-facing config, they're how the Electron
 // main process talks to this embedded server. They stay.
 
-/**
- * Number of parallel workers in the auto-swap pool. Each worker handles
- * one swap at a time; the queue of pending swaps drains as workers finish.
- * Higher = faster overall, but more parallel RPC load (which can trigger
- * rate limits on free-tier endpoints). 4 is a good balance for most users;
- * drop to 1 for sequential debugging or if your RPC has tight rate limits.
- */
-const AUTOSWAP_CONCURRENCY = 1;
-
-export function createLocalApiApp({ runtimeControl = null, runtimeOwner = null } = {}) {
+export function createLocalApiApp({ runtimeControl = null, runtimeOwner = null, quoteRuntimeFactory = createQuoteAcquisitionRuntime } = {}) {
 const walletExecution = runtimeOwner ? createWalletExecutionRuntime({
   owner: runtimeOwner,
   getScopeId: (walletPublicKey) => launchJournal.activeForWallet(walletPublicKey)?.id,
+}) : null;
+const quoteAcquisition = runtimeOwner ? quoteRuntimeFactory({
+  owner: runtimeOwner,
+  getScopeId: (wallet) => launchJournal.activeForWallet(wallet)?.id,
 }) : null;
 const liquidityExecution = runtimeOwner ? createLiquidityExecutionRuntime({
   owner: runtimeOwner,
@@ -716,9 +713,10 @@ const sweepNftsToDestination = (input) => sweepNftsWithSigner({ ...input, transf
 const sweepAllTokensToDestination = (input) => sweepTokensWithSigner({ ...input, transferToken: requireWalletExecution().transferTokenWithProgram });
 
 // Live services and HTTP jobs share wallet admission and durable recovery state.
-function claimLaunchOp(walletPublicKey, op) {
+function claimLaunchOp(walletPublicKey, op, workflowId = null) {
   const workflow = walletExecution?.activeWorkflow(walletPublicKey);
-  if (workflow) {
+  const canResumeQuotes = op === 'acquire-quote-tokens' && workflow?.kind === 'quote-token-acquisition' && workflow.id === workflowId;
+  if (workflow && !canResumeQuotes) {
     throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: workflow.id,
       workflowId: workflow.id, workflowKind: workflow.kind, error: 'Resume the saved wallet workflow before starting another wallet action.' });
   }
@@ -728,7 +726,7 @@ function claimLaunchOp(walletPublicKey, op) {
   const canResumeLiquidity = pending?.kind === LIQUIDITY_OPERATION_KIND && ['create-lp', 'resume-launch'].includes(op);
   const canResumeFeeKey = pending?.kind === 'token-transfer' && ['create-lp', 'resume-launch'].includes(op) && feeKeyExecution?.canRecover(walletPublicKey);
   const canResumeAirdrop = ['token-transfer', 'airdrop-observed-delivery'].includes(pending?.kind) && op === 'run-airdrop' && airdropExecution?.canRecover(walletPublicKey);
-  if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity && !canResumeFeeKey && !canResumeAirdrop) {
+  if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity && !canResumeFeeKey && !canResumeAirdrop && !canResumeQuotes) {
     throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: 'Resume the saved wallet operation before starting another wallet action.' });
   }
   claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
@@ -753,7 +751,6 @@ installServerLogCapture();
 // Boot-time log: confirms which config values the server is actually
 // using on this launch. Streams to the in-app activity log via the
 // console-capture wiring above.
-console.log(`[boot] AUTOSWAP_CONCURRENCY = ${AUTOSWAP_CONCURRENCY}`);
 console.log('[boot] RPC endpoint: configured via in-app RPC settings');
 
 // ---------------------------------------------------------------------------
@@ -7174,357 +7171,10 @@ app.post('/api/estimate-lp-funding', async (req, res) => {
   }
 });
 
-// ===========================================================================
-// Auto-swap quote tokens: job-and-poll architecture
-// ===========================================================================
-//
-// The acquire-quote-tokens flow runs SOL→token swaps to seed the ephemeral
-// wallet with bootstrap quote-side liquidity for non-SOL pools, before
-// token/pool creation.
-//
-// ARCHITECTURE: This used to use Server-Sent Events for live progress
-// updates. SSE turned out to be unreliable in our Electron+localhost setup:
-// streams would silently disconnect mid-run while the actual swaps continued
-// successfully on-chain. The UI would stay stuck on "Swapping…" even though
-// the work had landed. After many rounds of band-aids (keepalives, idle
-// watchdogs, auto-retries, Nagle tuning, padding bytes), the conclusion was
-// that SSE itself was the problem — possibly Chromium fetch+ReadableStream
-// buffering, possibly a Node http server quirk, hard to pin down exactly.
-//
-// So now: a classic job-and-poll design. Three endpoints:
-//
-//   POST /api/acquire-quote-tokens
-//       Body: { tempWalletSecretKey, autoSwapPlan }
-//       Returns immediately with { jobId } — the actual work runs in
-//       the background. No streaming.
-//
-//   GET /api/acquire-quote-tokens/:jobId
-//       Returns the current state of a job. Frontend polls every 2s.
-//
-//   DELETE /api/acquire-quote-tokens/:jobId
-//       Optional — removes a completed job promptly. Jobs also auto-
-//       expire after 10 minutes as a safety net.
-//
-// Polling is naturally robust against network blips: a failed poll just
-// retries on the next interval. No watchdogs, no keepalives, no buffering
-// concerns. The downside is per-row update latency goes from "instant" to
-// "up to 2 seconds" — a tiny tradeoff for actually-working reliability.
-//
-// CONCURRENCY: same worker-pool model as before, controlled by the
-// AUTOSWAP_CONCURRENCY constant defined at the top of this file (default
-// 4). Change the constant and rebuild to tune.
-//
-// IDEMPOTENT: swapSolForQuote reads the wallet's current quote-token
-// balance and only swaps the missing delta. Safe to call repeatedly —
-// re-issuing the POST after a previous run's failures will skip rows
-// that already have enough balance.
-
-// In-memory job store. Map<jobId, JobState>. Process-lifetime; a server
-// restart loses in-flight job state, but the frontend will re-issue the
-// POST and start fresh. For the Electron launcher's "one wallet at a
-// time" usage pattern, persistence-to-disk would be overkill.
-const acquireJobs = new Map();
-
-// Auto-expire completed jobs after 10 minutes so we don't leak memory
-// if the frontend forgets to DELETE them. Plenty of time for the user
-// to finish the funding step.
-const JOB_EXPIRY_MS = 10 * 60 * 1000;
-
-function startAcquireJob({ ownerKeypair, autoSwapPlan, onFinished = null }) {
-  const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-  const job = {
-    jobId,
-    status: 'running',
-    total: autoSwapPlan.length,
-    completed: 0,
-    results: [],
-    pendingMints: autoSwapPlan.map((p) => p.quoteMint),
-    inProgressMints: new Set(),
-    startedAt: Date.now(),
-    finishedAt: null,
-    error: null,
-  };
-  acquireJobs.set(jobId, job);
-
-  // Kick off the work in the background. Don't await — POST returns
-  // immediately, work continues in the Node event loop.
-  runAcquireJob(job, { ownerKeypair, autoSwapPlan }).catch((err) => {
-    // Defensive — runAcquireJob wraps everything internally, but if
-    // anything escapes, mark the job done so the frontend stops polling.
-    console.error(`[acquire][${jobId}] FATAL unhandled error:`, err);
-    job.status = 'done';
-    job.finishedAt = Date.now();
-    job.error = err.message;
-  }).finally(() => {
-    // Notify the caller the job is over (success OR failure) so it can
-    // release the per-wallet operation lock. Guarded so a callback
-    // throw can't surface as an unhandled rejection.
-    if (onFinished) {
-      try { onFinished(); } catch (_) { /* release is best-effort */ }
-    }
-  });
-
-  // Schedule cleanup. setTimeout's return value isn't used — we just
-  // want the entry gone after the expiry window.
-  setTimeout(() => {
-    if (acquireJobs.has(jobId)) {
-      acquireJobs.delete(jobId);
-      console.log(`[acquire][${jobId}] expired and removed from store`);
-    }
-  }, JOB_EXPIRY_MS);
-
-  return jobId;
-}
-
-async function runAcquireJob(job, { ownerKeypair, autoSwapPlan }) {
-  const { jobId } = job;
-  console.log(
-    `[acquire][${jobId}] starting: ${autoSwapPlan.length} item(s), ` +
-      `wallet=${ownerKeypair.publicKey.toBase58()}`,
-  );
-
-  // Worker-pool size comes from the AUTOSWAP_CONCURRENCY constant defined
-  // at the top of this file. Logged here so the user can confirm the
-  // value the running build was compiled with.
-  console.log(`[acquire][${jobId}] concurrency=${AUTOSWAP_CONCURRENCY}`);
-  let nextIndex = 0;
-
-  /**
-   * One worker pulls items from the shared queue index until empty.
-   * Multiple workers run concurrently, each handling one swap at a time.
-   * Failures on one don't affect the others; everyone reports their own
-   * result by mutating the shared job object.
-   *
-   * Node's event loop serializes the mutations (single-threaded JS), so
-   * the counter increments and array pushes are safe even with multiple
-   * workers running concurrently.
-   *
-   * Heavily instrumented — these log lines made it possible to diagnose
-   * the SSE-era stream-disconnection bugs by reading server output, and
-   * they're equally useful for any future issues.
-   */
-  async function worker(workerId) {
-    while (nextIndex < autoSwapPlan.length) {
-      const idx = nextIndex++;
-      const item = autoSwapPlan[idx];
-      const {
-        allocationIndex,
-        quoteMint,
-        quoteSymbol,
-        quoteDecimals,
-        targetRaw,
-        minRaw, // actual bootstrap need; targetRaw is the oversize ambition
-        quoteUsd,
-        solUsd,
-        // sizingMultiplier and estSolSpend let the swap honor the
-        // estimator's mode-aware budget. Without these the swap function
-        // uses its default 2× sizing and 0.05 SOL hard cap, both of which
-        // were sized for dust targets — custom-mode bootstraps get
-        // silently floored to ~$10 of acquired quote token.
-        sizingMultiplier,
-        estSolSpend,
-      } = item;
-
-      console.log(
-        `[acquire][${jobId}][w${workerId}] picked up ${quoteSymbol} (${quoteMint})`,
-      );
-      job.inProgressMints.add(quoteMint);
-      const t0 = Date.now();
-
-      try {
-        // Derive the per-swap SOL cap from the estimator's budget. We
-        // give the swap function ~20% headroom over what the estimator
-        // budgeted, so the actual swap can complete even if there's
-        // minor on-chain drift between estimate and execution time.
-        // Default to the legacy 0.05 SOL cap when estSolSpend isn't
-        // present (very old plan items from before the estimator added
-        // this field).
-        const maxSpendLamports = estSolSpend != null
-          ? new BN(Math.ceil(Number(estSolSpend) * 1.2 * 1e9))
-          : undefined;
-
-        const r = await swapSolForQuote({
-          ownerKeypair,
-          quoteMint,
-          targetRaw: new BN(String(targetRaw)),
-          // minRaw is the actual on-chain bootstrap requirement (e.g. $1).
-          // Pass it so swapSolForQuote can stop retrying as soon as the
-          // minimum is met, rather than chasing the oversize targetRaw
-          // (e.g. $2). Falls back to targetRaw if the plan item didn't
-          // include minRaw (older callers).
-          minRaw: minRaw ? new BN(String(minRaw)) : new BN(String(targetRaw)),
-          quoteUsd: new Decimal(quoteUsd),
-          solUsd: new Decimal(solUsd),
-          quoteDecimals: Number(quoteDecimals),
-          // Custom-mode plans send a smaller sizingMultiplier (1.10) to
-          // keep the swap-side oversize proportional to the size of the
-          // ask. Falls back to undefined (= swapSolForQuote's default 2)
-          // when older plans don't include it.
-          sizingMultiplier: sizingMultiplier != null
-            ? Number(sizingMultiplier)
-            : undefined,
-          maxSpendLamports,
-        });
-        const result = {
-          allocationIndex,
-          quoteMint,
-          quoteSymbol,
-          success: true,
-          txId: r.txId,
-          swappedRaw: r.swappedRaw.toString(),
-          alreadyHadRaw: r.alreadyHadRaw.toString(),
-          finalBalanceRaw: r.finalBalanceRaw.toString(),
-        };
-        job.results.push(result);
-        console.log(
-          `[acquire][${jobId}][w${workerId}] ${quoteSymbol} SUCCESS in ` +
-            `${Date.now() - t0}ms (tx=${r.txId || 'none'})`,
-        );
-      } catch (e) {
-        console.error(
-          `[acquire][${jobId}][w${workerId}] ${quoteSymbol} FAILED in ` +
-            `${Date.now() - t0}ms:`,
-          e.message,
-        );
-        const result = {
-          allocationIndex,
-          quoteMint,
-          quoteSymbol,
-          success: false,
-          error: e.message,
-        };
-        job.results.push(result);
-      }
-
-      // Atomic progress update (Node single-threadedness saves us here).
-      job.completed++;
-      job.inProgressMints.delete(quoteMint);
-      job.pendingMints = job.pendingMints.filter((m) => m !== quoteMint);
-    }
-    console.log(
-      `[acquire][${jobId}][w${workerId}] worker done ` +
-        `(nextIndex=${nextIndex}/${autoSwapPlan.length})`,
-    );
-  }
-
-  const poolSize = Math.min(AUTOSWAP_CONCURRENCY, autoSwapPlan.length);
-  console.log(`[acquire][${jobId}] spawning ${poolSize} workers`);
-  await Promise.all(
-    Array.from({ length: poolSize }, (_, i) => worker(i + 1)),
-  );
-
-  job.status = 'done';
-  job.finishedAt = Date.now();
-  console.log(
-    `[acquire][${jobId}] all workers done: ${job.results.length}/${job.total} results ` +
-      `in ${((job.finishedAt - job.startedAt) / 1000).toFixed(1)}s`,
-  );
-}
-
-/**
- * POST endpoint: kick off a new acquire job.
- * Returns immediately with { jobId } — the frontend polls GET for status.
- */
-app.post('/api/acquire-quote-tokens', async (req, res) => {
-  if (isDemoMode()) {
-    // Hand the demo handler the shared job store + expiry so its fake jobs
-    // live in the same Map the unchanged GET/DELETE poll endpoints read.
-    return demoChainService.handleAcquireQuoteTokens(req, res, {
-      acquireJobs,
-      jobExpiryMs: JOB_EXPIRY_MS,
-    });
-  }
-  try {
-    const { tempWalletSecretKey, autoSwapPlan } = req.body;
-    if (!Array.isArray(autoSwapPlan) || autoSwapPlan.length === 0) {
-      // No-op case — return a synthetic "already done" job so the
-      // frontend doesn't have to special-case empty plans.
-      const jobId = `job_${Date.now()}_empty`;
-      acquireJobs.set(jobId, {
-        jobId,
-        status: 'done',
-        total: 0,
-        completed: 0,
-        results: [],
-        pendingMints: [],
-        inProgressMints: new Set(),
-        startedAt: Date.now(),
-        finishedAt: Date.now(),
-        error: null,
-      });
-      return res.json({ jobId });
-    }
-    if (req.body.walletPublicKey
-        && rejectIfSecretPinLocked(res, 'acquiring quote tokens with a saved launch wallet')) {
-      return;
-    }
-    const { secretKeyArr, keypair: ownerKeypair } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
-
-    // Per-wallet mutex. The acquire job spends the wallet's SOL on swaps
-    // in the background — a duplicate job doubles the SOL spent, and an
-    // acquire racing a create-lp can drain the SOL the launch budgeted.
-    // Unlike the other guarded endpoints, the lock here must outlive the
-    // HTTP response (the job runs after we return), so startAcquireJob
-    // releases it via onFinished when the job completes.
-    const acquireWalletPk = ownerKeypair.publicKey.toBase58();
-    if (rejectOrClaimLaunchOp(res, acquireWalletPk, 'acquire-quote-tokens')) {
-      return;
-    }
-
-    const jobId = startAcquireJob({
-      ownerKeypair,
-      autoSwapPlan,
-      onFinished: () => clearLaunchOpInFlight(acquireWalletPk),
-    });
-    res.json({ jobId });
-  } catch (error) {
-    console.error('[acquire] error starting job:', error);
-    sendErrorResponse(res, error);
-  }
-});
-
-/**
- * GET endpoint: poll for status of an in-flight acquire job.
- *
- * Response shape:
- *   {
- *     jobId, status: 'running' | 'done',
- *     total, completed,
- *     results: [{ quoteMint, quoteSymbol, success, txId?, error?, ... }],
- *     pendingMints: [<mint>, ...],     // not yet picked up by a worker
- *     inProgressMints: [<mint>, ...],  // currently being swapped
- *     error: <string> | null,          // only set on fatal job-level errors
- *   }
- *
- * Returns 404 if the jobId isn't in the store (expired or invalid).
- */
-app.get('/api/acquire-quote-tokens/:jobId', (req, res) => {
-  const job = acquireJobs.get(req.params.jobId);
-  if (!job) {
-    return res.status(404).json({ error: 'Job not found or expired' });
-  }
-  // Set isn't JSON-friendly — convert to array for the wire.
-  res.json({
-    jobId: job.jobId,
-    status: job.status,
-    total: job.total,
-    completed: job.completed,
-    results: job.results,
-    pendingMints: job.pendingMints,
-    inProgressMints: Array.from(job.inProgressMints),
-    error: job.error,
-  });
-});
-
-/**
- * DELETE endpoint: explicitly remove a completed job. Optional —
- * jobs auto-expire after JOB_EXPIRY_MS. Frontend calls this after
- * consuming the final state to free memory promptly.
- */
-app.delete('/api/acquire-quote-tokens/:jobId', (req, res) => {
-  const existed = acquireJobs.delete(req.params.jobId);
-  res.json({ deleted: existed });
+// Quote review, execution, and recovery share the owned runtime.
+const quoteRoutes = installQuoteAcquisitionRoutes(app, {
+  runtime: quoteAcquisition, isDemoMode, demoChainService, resolveSigner, rejectIfSecretPinLocked,
+  claim: claimLaunchOp, release: clearLaunchOpInFlight, sendErrorResponse,
 });
 // Pre-commit dry run of pool creation. Resolves prices, runs the
 // just-in-time Raydium probe, applies the drift guard — but does NO
@@ -8593,7 +8243,7 @@ app.post('/api/find-funder', async (req, res) => {
 
 app.locals.runtimeBusy = () => launchOpsInFlight.size > 0
   || airdropsInFlight.size > 0
-  || [...acquireJobs.values()].some((job) => job.status === 'running');
+  || quoteRoutes.busy();
 return app;
 }
 
