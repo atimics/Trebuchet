@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { publicJson, RecoveryStorageError } from './store.js';
 import { reviewSwapBundle } from './swap-bundle.js';
-import { readSwapState, projectSwapStep, verifySwapEffects } from './swap-state.js';
+import { readSwapState, projectSwapStep, verifySwapEffects, assertSwapAccountIdentity } from './swap-state.js';
 import { createPreparedTransactionService } from './prepared-transaction.js';
 import { createSwapRecovery, validateSwapRecovery } from './swap-recovery.js';
 
@@ -98,7 +98,7 @@ export function createSwapService({ owner, store, connection, signer, network, e
     for (let index = job.receipts.length; index < plan.review.steps.length; index++) {
       const step = plan.review.steps[index], stepPlan = { jobId: job.id, bundleDigest: plan.review.digest, index };
       const service = createPreparedTransactionService({ owner, store, connection, signer, kind: SWAP_OPERATION_KIND, network, expectedGenesisHash,
-        now, timeoutMs, pollIntervalMs,
+        now, timeoutMs, pollIntervalMs, receiptCreditAccount: step.closesSource ? plan.review.intent.sourceTokenAccount : null,
         authorize: async () => {
           await approvalFor(approval, job);
           saveApproval(job, approval);
@@ -110,7 +110,8 @@ export function createSwapService({ owner, store, connection, signer, network, e
           const state = await readSwapState(connection, plan.review, minContextSlot), projection = projectSwapStep(plan.review, step, state);
           if (state.walletLamports < projection.grossDebitLamports + plan.feeCeilingLamports) throw failure('INSUFFICIENT_FUNDS', 'Fund the complete saved swap step and fee');
           const savedBefore = operation.payload.result.before;
-          if (publicJson(state.accounts) !== publicJson(savedBefore.accounts) || publicJson(state.mints) !== publicJson(savedBefore.mints)) throw failure('CHAIN_STATE_UNAVAILABLE', 'Recover changed swap account state before a new submission');
+          assertSwapAccountIdentity(savedBefore, state, step);
+          if (projection.grossDebitLamports + plan.feeCeilingLamports > operation.payload.maxSpendLamports) throw failure('SPEND_LIMIT_EXCEEDED', 'Keep the current swap debit within the saved step ceiling');
           return { state: 'absent', slot: state.slot };
         } });
       let receipt;

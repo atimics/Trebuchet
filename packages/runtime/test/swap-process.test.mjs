@@ -10,11 +10,16 @@ import { PublicKey } from '@solana/web3.js';
 import { openRuntimeStore } from '../src/store.js';
 import { swapChain, wallet } from './fixtures/swap-chain.mjs';
 
-const cases = [0, 1, 2].map((step) => ({ step, failedStep: null })).concat([0, 1, 2].map((step) => ({ step, failedStep: step })), [{ step: 2, failedStep: 1 }]);
-for (const { step, failedStep } of cases) {
-  test(`a new process recovers swap step ${step}, failure ${failedStep}, after acceptance and before receipt storage`, { timeout: 30000 }, async (t) => {
+const cases = [0, 1, 2].map((step) => ({ step, failedStep: null })).concat([0, 1, 2].map((step) => ({ step, failedStep: step })), [{ step: 2, failedStep: 1 }, { step: 2, failedStep: null, balanceGift: 50000 }, { step: 2, failedStep: 1, balanceGift: 50000 }]);
+for (const { step, failedStep, balanceGift = 0 } of cases) {
+  test(`a new process recovers swap step ${step}, failure ${failedStep}, gift ${balanceGift}, after acceptance and before receipt storage`, { timeout: 30000 }, async (t) => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-swap-process-')), ledger = swapChain(), errors = [], children = [];
     ledger.state.failAt = failedStep;
+    ledger.state.beforeSend = () => {
+      if (balanceGift && ledger.state.sends.length === step) {
+        ledger.state.source.lamports += balanceGift; ledger.state.source.amount += BigInt(balanceGift);
+      }
+    };
     let running, crash = true, requests = 0;
     const server = http.createServer(async (req, res) => {
       try {
@@ -80,6 +85,7 @@ for (const { step, failedStep } of cases) {
     assert.equal(result.receivedRaw, failedStep === null || failedStep === 2 ? '1250' : '0');
     assert.equal(result.receipts.length, failedStep === null ? 3 : failedStep); assert.equal(ledger.state.receipts.size, sendCount);
     if (failedStep !== null) { assert.equal(result.status, 'recovered'); assert.equal(result.failedReceipts.length, 1); }
+    if (balanceGift) assert.equal(result.returnedLamports, ledger.rent(165) + balanceGift + (failedStep === 1 ? 50000 : 0));
     const third = run(), [cachedCode] = await once(third.child, 'close');
     assert.equal(cachedCode, 0, third.output().err); assert.deepEqual(JSON.parse(third.output().out), result); assert.equal(requests, count);
     assert.equal(ledger.state.sends.length, sendCount); assert.equal(ledger.state.source, null); assert.deepEqual(errors, []);

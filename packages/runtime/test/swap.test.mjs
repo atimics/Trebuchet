@@ -421,3 +421,125 @@ test('cached cleanup plans and results retain their saved host network', async (
   await assert.rejects(wrongHost.prepareCleanup({ id: job.id }), { code: 'NETWORK_MISMATCH' });
   await assert.rejects(wrongHost.cleanup({ id: job.id }), { code: 'NETWORK_MISMATCH' });
 });
+
+for (const combined of [true, false]) for (const token2022 of [true, false]) for (const change of [7000, -4000]) {
+  test(`${combined ? 'atomic' : 'split'} ${token2022 ? 'Token-2022' : 'classic'} swap measures its own effects after external balance change ${change}`, async (t) => {
+    const f = await fixture(t, { combined, token2022 });
+    f.state.source = { amount: 20000n, lamports: f.rent(165) + 20000 };
+    f.state.destination = { amount: 10000n, lamports: f.rent(token2022 ? 170 : 165) };
+    const service = f.service(), job = await service.prepare(f.input), at = combined ? 0 : 1;
+    f.state.beforeSend = () => {
+      if (f.state.sends.length !== at) return;
+      f.state.source.lamports += change; f.state.source.amount += BigInt(change);
+      f.state.destination.lamports += 31; f.state.destination.amount += BigInt(change);
+      f.state.walletLamports += 123;
+    };
+    const result = await service.execute({ id: job.id, approval: f.approval });
+    assert.equal(result.receivedRaw, '1250'); assert.equal(result.returnedLamports, f.rent(165) + 20000 + change);
+    assert.equal(f.state.destination.amount, 10000n + BigInt(change) + 1250n); assert.equal(f.state.source, null);
+    assert.equal(result.receipts[at].receiptBefore.accounts[f.intent.destinationTokenAccount].amountRaw, String(10000 + change));
+    assert.notDeepEqual(result.receipts[at].receiptBefore.accounts, result.receipts[at].before.accounts);
+    assert.equal(f.state.sends.length, combined ? 1 : 3);
+  });
+}
+
+for (const combined of [true, false]) for (const sourceGift of [5000, 3000000]) {
+  test(`SOL prefunding ${sourceGift} before ${combined ? 'atomic swap' : 'setup'} receipt reduces rent paid by the saved wallet`, async (t) => {
+    const f = await fixture(t, { combined }), service = f.service(), job = await service.prepare(f.input);
+    f.state.beforeSend = () => {
+      if (f.state.sends.length) return;
+      f.state.source = { system: true, lamports: sourceGift, amount: 0n };
+      f.state.destination = { system: true, lamports: 7000, amount: 0n };
+    };
+    const result = await service.execute({ id: job.id, approval: f.approval });
+    assert.equal(result.receivedRaw, '1250'); assert.equal(result.receipts[0].rentLamports, Math.max(0, f.rent(165) - sourceGift) + f.rent(165) - 7000);
+    assert.equal(result.returnedLamports, Math.max(sourceGift, f.rent(165))); assert.equal(f.state.sends.length, combined ? 1 : 3);
+  });
+}
+
+test('a prepared swap keeps its operation and approvals while account balances change before signing', async (t) => {
+  const f = await fixture(t), signer = f.options.signer;
+  f.state.source = { amount: 20000n, lamports: f.rent(165) + 20000 };
+  f.state.destination = { amount: 10000n, lamports: f.rent(165) };
+  const job = await f.service().prepare(f.input);
+  f.options.signer = { signTransaction: async () => { throw new Error('pause before signing'); } };
+  await assert.rejects(f.service().execute({ id: job.id, approval: f.approval }), /pause before signing/);
+  const operation = f.store.getActiveOperation(job.walletPublicKey); assert.equal(f.state.sends.length, 0);
+  f.state.source.lamports += 9000; f.state.source.amount += 9000n; f.state.destination.amount += 450n;
+  f.options.signer = signer;
+  const result = await f.service().execute({ id: job.id, approval: f.approval });
+  assert.equal(result.receipts[0].operationId, operation.id); assert.equal(result.receivedRaw, '1250');
+  assert.equal(result.returnedLamports, f.rent(165) + 29000); assert.equal(f.state.sends.length, 3);
+});
+
+for (const timing of ['after plan', 'at submission']) {
+  test(`failed swap cleanup returns incoming wrapped SOL ${timing} with the same approved source`, async (t) => {
+    const f = await fixture(t), service = f.service(), job = await service.prepare(f.input); f.state.failAt = 1;
+    await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+    const attempt = await service.prepareCleanup({ id: job.id });
+    const deposit = () => { f.state.source.lamports += 12345; f.state.source.amount += 12345n; };
+    if (timing === 'after plan') deposit(); else f.state.beforeSend = deposit;
+    const result = await service.cleanup({ id: job.id, approval: cleanupApproval(attempt) });
+    assert.equal(result.returnedLamports, f.rent(165) + 50000 + 12345); assert.equal(result.feeLamports, 15000);
+    assert.equal(result.purchaseStatus, 'failed'); assert.equal(f.state.source, null); assert.equal(f.state.sends.length, 3);
+    assert.equal(service.get(job.id).cleanupAttempts[0].digest, attempt.digest);
+  });
+}
+
+for (const change of ['owner', 'frozen', 'existence']) {
+  test(`a prepared cleanup pauses after the source ${change} changes`, async (t) => {
+    const f = await fixture(t), service = f.service(), job = await service.prepare(f.input); f.state.failAt = 1;
+    await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+    const attempt = await service.prepareCleanup({ id: job.id }), source = { ...f.state.source };
+    if (change === 'owner') f.state.source.owner = destination;
+    if (change === 'frozen') f.state.source.frozen = true;
+    if (change === 'existence') f.state.source = null;
+    await assert.rejects(service.cleanup({ id: job.id, approval: cleanupApproval(attempt) }), { code: 'CHAIN_STATE_UNAVAILABLE' });
+    assert.equal(f.state.sends.length, 2); assert.ok(f.store.getWalletWorkflow(job.walletPublicKey));
+    f.state.source = source;
+    await service.cleanup({ id: job.id, approval: cleanupApproval(attempt) }); assert.equal(f.state.sends.length, 3);
+  });
+}
+
+for (const change of ['source SOL', 'source tokens', 'output tokens']) {
+  test(`changed receipt ${change} still requires the exact approved effects after balance reconciliation`, async (t) => {
+    const f = await fixture(t), service = f.service(), job = await service.prepare(f.input);
+    f.state.receiptTransform = (receipt) => {
+      if (!receipt || f.state.receipts.size !== 2) return receipt;
+      const altered = { ...receipt, meta: structuredClone(receipt.meta) };
+      if (change === 'source SOL') {
+        const index = receipt.transaction.message.staticAccountKeys.findIndex((key) => key.toBase58() === intent.sourceTokenAccount);
+        altered.meta.preBalances[index]++;
+      } else {
+        const mint = change === 'source tokens' ? 'So11111111111111111111111111111111111111112' : intent.outputMint;
+        const row = altered.meta.preTokenBalances.find((value) => value.mint === mint);
+        row.uiTokenAmount.amount = String(BigInt(row.uiTokenAmount.amount) + 100n);
+      }
+      return altered;
+    };
+    await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'CHAIN_STATE_UNAVAILABLE' });
+    assert.equal(f.state.sends.length, 2); f.state.receiptTransform = (receipt) => receipt;
+    const result = await service.execute({ id: job.id, approval: f.approval }); assert.equal(result.receivedRaw, '1250'); assert.equal(f.state.sends.length, 3);
+  });
+}
+
+for (const combined of [true, false]) for (const token2022 of [true, false]) for (const timing of ['before signing', 'at submission']) {
+  test(`${combined ? 'atomic' : 'split'} ${token2022 ? 'Token-2022' : 'classic'} swap adopts its idempotent accounts created externally ${timing}`, async (t) => {
+    const f = await fixture(t, { combined, token2022 }), signer = f.options.signer, job = await f.service().prepare(f.input);
+    const createAccounts = () => {
+      f.state.source = { amount: 5000n, lamports: f.rent(165) + 5000 };
+      f.state.destination = { amount: 2000n, lamports: f.rent(token2022 ? 170 : 165) };
+    };
+    if (timing === 'before signing') {
+      f.options.signer = { signTransaction: async () => { throw new Error('pause before signing'); } };
+      await assert.rejects(f.service().execute({ id: job.id, approval: f.approval }), /pause before signing/);
+      createAccounts(); f.options.signer = signer;
+    } else f.state.beforeSend = () => { if (!f.state.sends.length) createAccounts(); };
+    const result = await f.service().execute({ id: job.id, approval: f.approval });
+    assert.equal(result.receivedRaw, '1250'); assert.equal(result.receipts[0].rentLamports, 0);
+    assert.equal(result.returnedLamports, f.rent(165) + 5000); assert.equal(f.state.destination.amount, 3250n);
+    assert.equal(result.receipts[0].receiptBefore.accounts[intent.sourceTokenAccount].exists, true);
+    assert.equal(result.receipts[0].before.accounts[intent.sourceTokenAccount].exists, false);
+    assert.equal(f.state.sends.length, combined ? 1 : 3);
+  });
+}

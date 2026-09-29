@@ -17,9 +17,10 @@ const whole = (value) => Number.isSafeInteger(value) && value >= 0;
 // Expiry changes only the recent blockhash; account identities stay fixed.
 export function createPreparedTransactionService({
   owner, store, connection, signer, kind, network, expectedGenesisHash,
-  authorize, checkResult, now = Date.now, timeoutMs = 60_000, pollIntervalMs = 500,
+  authorize, checkResult, receiptCreditAccount = null, now = Date.now, timeoutMs = 60_000, pollIntervalMs = 500,
 }) {
   if (!kind || typeof authorize !== 'function' || typeof checkResult !== 'function') throw new TypeError('Supply the operation kind, approval, and result checks');
+  if (receiptCreditAccount !== null && typeof receiptCreditAccount !== 'string') throw new TypeError('Name the reviewed refund account');
   const launchFor = ({ scopeId, walletPublicKey, key, plan, workflowId }) => {
     if (![scopeId, walletPublicKey, key].every((value) => typeof value === 'string' && value)) throw new TypeError('A prepared transaction requires launch, wallet, and action identities');
     return { id: hash({ scopeId, walletPublicKey, network, kind, key }), walletPublicKey, network,
@@ -46,11 +47,18 @@ export function createPreparedTransactionService({
     const keys = message.getAccountKeys({ addressLookupTableAccounts: tables });
     return Array.from({ length: keys.length }, (_, index) => keys.get(index).toBase58());
   };
+  const creditAccountIndex = (message, keys) => {
+    if (receiptCreditAccount === null) return null;
+    const index = keys.indexOf(receiptCreditAccount);
+    if (index <= 0 || !message.isAccountWritable(index)) throw uncertain('Use the reviewed writable refund account');
+    return index;
+  };
   const checkFee = async (message, payload) => {
     const quote = await connection.getFeeForMessage(message, 'finalized');
     if (!whole(quote?.context?.slot) || !whole(quote.value)) throw uncertain('Read the complete transaction fee');
     if (quote.value > payload.feeCeilingLamports) throw fail('SPEND_LIMIT_EXCEEDED', 'The transaction fee exceeds the saved ceiling');
     if (publicJson(await accountKeys(message)) !== publicJson(payload.accountKeys)) throw uncertain('Verify the saved lookup table addresses');
+    creditAccountIndex(message, payload.accountKeys);
   };
   const approvalFor = async (approval, operation, launch) => {
     owner.assertActive();
@@ -74,8 +82,10 @@ export function createPreparedTransactionService({
     const { preBalances, postBalances, fee } = receipt.meta;
     if (!Array.isArray(preBalances) || !Array.isArray(postBalances) || preBalances.length !== keys.length || postBalances.length !== keys.length
         || [...preBalances, ...postBalances, fee].some((value) => !whole(value)) || fee > operation.payload.feeCeilingLamports) throw uncertain('Read complete finalized balances and fees');
+    const creditIndex = creditAccountIndex(message, keys);
+    const creditLimit = creditIndex === null ? operation.payload.maxCreditLamports || 0 : preBalances[creditIndex];
     const spentLamports = preBalances[0] - postBalances[0];
-    if (spentLamports < fee - (operation.payload.maxCreditLamports || 0) || spentLamports > operation.payload.maxSpendLamports) throw uncertain('Verify the finalized payer debit against the saved ceiling');
+    if (spentLamports < fee - creditLimit || spentLamports > operation.payload.maxSpendLamports) throw uncertain('Verify the finalized payer debit against the saved ceiling');
     return { evidence: { signature: record.signature, slot: receipt.slot, feeLamports: fee, spentLamports }, receipt };
   };
   const handler = {
@@ -101,6 +111,9 @@ export function createPreparedTransactionService({
     },
   };
   const run = async (operation, approval) => {
+    if (Object.hasOwn(operation.payload, 'receiptCreditAccount') && operation.payload.receiptCreditAccount !== receiptCreditAccount) {
+      throw fail('OPERATION_CONFLICT', 'Recover the action with its saved refund account');
+    }
     const launch = store.getLaunch(operation.launchId);
     if (launch.network !== network || launch.config.genesisHash !== expectedGenesisHash) {
       throw fail('NETWORK_MISMATCH', 'Recover this operation on its saved network and genesis hash', { operationId: operation.id });
@@ -149,9 +162,11 @@ export function createPreparedTransactionService({
       if (Buffer.from(template, 'base64').length > 1232 || unsigned.message.staticAccountKeys[0]?.toBase58() !== walletPublicKey) throw fail('TRANSACTION_INVALID', 'Use a complete transaction for the approved wallet');
       if (!whole(prepared.feeCeilingLamports) || !whole(prepared.maxSpendLamports) || prepared.maxSpendLamports < prepared.feeCeilingLamports) throw new TypeError('Save complete fee and spending ceilings');
       const resolvedKeys = await accountKeys(unsigned.message);
+      creditAccountIndex(unsigned.message, resolvedKeys);
       if (prepared.accountKeys && publicJson(prepared.accountKeys) !== publicJson(resolvedKeys)) throw uncertain('Keep the account addresses from the reviewed transaction');
       if (prepared.maxCreditLamports !== undefined && !whole(prepared.maxCreditLamports)) throw new TypeError('Save an exact bound for returned wallet funds');
       const payload = { key, template, accountKeys: resolvedKeys, result: prepared.result,
+        ...(receiptCreditAccount === null ? {} : { receiptCreditAccount }),
         allowExisting: prepared.allowExisting === true, feeCeilingLamports: prepared.feeCeilingLamports, maxSpendLamports: prepared.maxSpendLamports,
         ...(prepared.maxCreditLamports === undefined ? {} : { maxCreditLamports: prepared.maxCreditLamports }) };
       const candidate = { kind, payload };

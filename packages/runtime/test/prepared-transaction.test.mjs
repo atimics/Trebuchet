@@ -157,3 +157,24 @@ test('a reviewed account list must match the resolved prepared message before co
   await assert.rejects(f.service.execute(f.input), { code: 'CHAIN_STATE_UNAVAILABLE' });
   assert.equal(f.state.sends.length, 0); assert.equal(f.store.getActiveOperation(f.input.walletPublicKey), null);
 });
+
+for (const refund of ['payer', 'program', 'missing']) {
+  test(`the receipt credit account requires a distinct writable account before spending: ${refund}`, async (t) => {
+    const account = refund === 'payer' ? sweepWallet.publicKey.toBase58() : refund === 'program' ? SystemProgram.programId.toBase58() : PublicKey.default.toBase58().replace(/1$/, '2');
+    const f = fixture(t, { receiptCreditAccount: account });
+    await assert.rejects(f.service.execute(f.input), { code: 'CHAIN_STATE_UNAVAILABLE' });
+    assert.equal(f.state.sends.length, 0); assert.equal(f.store.getActiveOperation(f.input.walletPublicKey), null);
+  });
+}
+
+test('saved refund account policy stays fixed across recovery hosts', async (t) => {
+  const f = fixture(t, { receiptCreditAccount: sweepDestination });
+  const receipt = await f.service.execute(f.input);
+  assert.equal(f.store.getOperation(receipt.operationId).payload.receiptCreditAccount, sweepDestination);
+  const changed = createPreparedTransactionService({ owner: f.owner, store: f.store, connection: f.connection, signer: f.signer,
+    kind: 'fixture-transfer', network: 'devnet', expectedGenesisHash: SOLANA_GENESIS_HASHES.devnet, authorize: async () => true,
+    checkResult: async () => { throw new Error('use saved policy'); } });
+  f.connection.getGenesisHash = () => { throw new Error('offline'); };
+  await assert.rejects(changed.execute(f.input), { code: 'OPERATION_CONFLICT' });
+  assert.equal(f.state.sends.length, 1);
+});

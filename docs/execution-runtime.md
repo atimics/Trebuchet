@@ -269,7 +269,7 @@ The tests cover Raydium and Jupiter, classic and Token-2022 output accounts, one
 
 All 363 architecture tests passed. The 109 focused swap and prepared-transaction tests also passed on Node 22.23.3. Package coverage passed for 102 required runtime files, and syntax checks passed for 401 files. The base merge at `8d9b0f7` includes the coin-image fallback from PR #60; rebuilding matched the merged renderer exactly, 129 selected renderer tests passed, and all six GitHub checks passed for that head.
 
-Production acquisition still needs its API/service connection and durable management of purchases across quote mints. Explicit handling of externally changed account balances and router execution against a real validator remain required before that connection is ready. Failed purchase cleanup is covered by the later recovery stage below. Launch-wide budgeting, live CLI and runner execution, and the other open requirements remain in the full completion checklist.
+Production acquisition still needs its API/service connection and durable management of purchases across quote mints. The later balance reconciliation stage covers outside transfers and approved account creation. Router execution against a real validator remains required before that connection is ready. Failed purchase cleanup is covered by the later recovery stage below. Launch-wide budgeting, live CLI and runner execution, and the other open requirements remain in the full completion checklist.
 
 ### HTTP admission between workflow transactions
 
@@ -288,4 +288,17 @@ Cleanup closes the saved wrapped-SOL source to its owner. A memo binds the clean
 
 All 403 architecture tests passed. The final 86 swap adapter and process tests passed on Node 22.23.3; the wider 148-test swap and prepared-transaction run also passed before the final cached-network guard. Seven child-process cases cover successful steps, failed setup/trade/cleanup, and process death after recovery cleanup submission. Fresh workers recover the same accepted transactions, then replay completed results with zero RPC requests. Other cases cover failure fees, recovery approval fields, receipt corruption, failed commits, expiry replacement, repeated cleanup failure, and legacy failed operations. Syntax checks passed for 403 files, and package coverage passed.
 
-This stage uses real signed messages with local RPC fixtures. Production quote acquisition, changed external balances, real router validator execution, the remaining host integrations, live CLI and runner execution, and the full completion checklist remain open.
+This stage uses real signed messages with local RPC fixtures. The later balance reconciliation stage covers outside transfers. Production quote acquisition, real router validator execution, the remaining host integrations, live CLI and runner execution, and the full completion checklist remain open.
+
+
+### Swap balances at execution and recovery
+
+Swap receipts now measure the approved trade from their exact finalized starting balances. SOL and token transfers can arrive between preparation, signing, and execution. The saved bundle still fixes every instruction, account, exact input, minimum output, fee ceiling, and spending ceiling. Receipt evidence retains only the accounts covered by that transaction. Purchased output is the destination token delta, so outside transfers keep their own value.
+
+Preflight recovery compares account identity and mint rules while allowing balance changes. An approved idempotent associated-account creation can adopt the same account if another transaction created it first. System-account prefunding reduces the rent debit. Changed account ownership, frozen state, missing accounts, or changed mint rules pause execution for review.
+
+For a reviewed source-account close, the prepared-transaction service binds the refund account in its saved payload. The refund bound uses that writable account's actual starting SOL balance in the finalized receipt. The swap result check verifies the exact refund, destination, fee, and payer change. Recovery cleanup therefore returns funds received after its plan was saved. Cached recovery keeps the original refund policy and network.
+
+All 438 architecture tests passed. All 184 focused swap and prepared-transaction tests also passed on Node 22.23.3. Nine child-process crash cases recover original signed transactions, including transfers received before normal cleanup and failure cleanup. Tests cover atomic and split bundles, classic and Token-2022 outputs, outside transfers, prefunded accounts, existing approved associated accounts, damaged receipt balances, and changed refund policies. Syntax checks passed for 403 files, and package coverage passed for 102 required runtime files.
+
+Production quote acquisition and real router validator execution remain in the completion checklist. Account removal or authority changes still require explicit recovery review.

@@ -48,6 +48,7 @@ export function swapChain({ token2022 = false } = {}) {
     }
     const native = pk === source.toBase58(), record = native ? state.source : pk === destinationAddress.toBase58() ? state.destination : null;
     if (!record) return null;
+    if (record.system) return { ...base, owner: SystemProgram.programId, lamports: record.lamports, data: Buffer.alloc(0) };
     const data = Buffer.alloc(165);
     AccountLayout.encode({ mint: native ? NATIVE_MINT : mint, owner: record.owner || wallet, amount: record.amount, delegateOption: 0,
       delegate: PublicKey.default, state: record.frozen ? 2 : 1, isNativeOption: native ? 1 : 0, isNative: native ? BigInt(rent(165)) : 0n,
@@ -56,7 +57,7 @@ export function swapChain({ token2022 = false } = {}) {
   };
   const tokenBalances = (keys) => keys.flatMap((address, accountIndex) => {
     const native = address.equals(source), record = native ? state.source : address.equals(destinationAddress) ? state.destination : null;
-    return record ? [{ accountIndex, mint: (native ? NATIVE_MINT : mint).toBase58(), owner: (record.owner || wallet).toBase58(), programId: (native ? TOKEN_PROGRAM_ID : out.program).toBase58(),
+    return record && !record.system ? [{ accountIndex, mint: (native ? NATIVE_MINT : mint).toBase58(), owner: (record.owner || wallet).toBase58(), programId: (native ? TOKEN_PROGRAM_ID : out.program).toBase58(),
       uiTokenAmount: { amount: record.amount.toString(), decimals: native ? 9 : 6, uiAmount: null } }] : [];
   });
   const connection = {
@@ -79,7 +80,10 @@ export function swapChain({ token2022 = false } = {}) {
         for (const ix of failed ? [] : decoded.instructions) {
           if (ix.programId.equals(ASSOCIATED_TOKEN_PROGRAM_ID)) {
             const name = ix.keys[1].pubkey.equals(source) ? 'source' : 'destination';
-            if (!state[name]) { const cost = rent(name === 'source' ? 165 : out.size); state[name] = { amount: 0n, lamports: cost }; state.walletLamports -= cost; }
+            if (!state[name] || state[name].system) {
+              const reserve = rent(name === 'source' ? 165 : out.size), prior = state[name]?.lamports || 0, added = Math.max(0, reserve - prior);
+              state[name] = { amount: name === 'source' ? BigInt(prior + added - reserve) : 0n, lamports: prior + added }; state.walletLamports -= added;
+            }
           } else if (ix.programId.equals(SystemProgram.programId)) {
             const transfer = SystemInstruction.decodeTransfer(ix);
             assert.equal(transfer.toPubkey.toBase58(), source.toBase58());

@@ -1,4 +1,5 @@
 import { PublicKey, SystemProgram } from '@solana/web3.js';
+import { publicJson } from './store.js';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, NATIVE_MINT, unpackMint, unpackAccount,
   getExtensionTypes, getAccountTypeOfMintType, getAccountLen, ExtensionType } from '@solana/spl-token';
 
@@ -62,6 +63,24 @@ export async function readSwapState(connection, review, minContextSlot = 0) {
   return { slot: response.context.slot, walletLamports: payer.lamports, mints: mintState, accounts };
 }
 
+// Balance changes can arrive between reads. An idempotent ATA creation may
+// also find the approved account already initialized. Keep owner, mint, program,
+// and native reserve fixed while checking effects and the spending ceiling.
+const canAdoptCreatedAccount = (step, address) => step.creates.some((item) => item.address === address && item.kind === 'associated' && item.idempotent);
+const adoptCreatedAccount = (account, before) => ({ ...account, exists: true, nativeReserveLamports: account.mint === native ? before.mints[native].rentLamports : 0 });
+
+export function assertSwapAccountIdentity(before, current, step) {
+  const identities = (accounts) => Object.fromEntries(Object.entries(accounts).map(([address, account]) => {
+    const { lamports, amountRaw, ...identity } = account;
+    return [address, identity];
+  }));
+  const expected = Object.fromEntries(Object.entries(before.accounts).map(([address, account]) => [address,
+    !account.exists && current.accounts[address]?.exists && canAdoptCreatedAccount(step, address) ? adoptCreatedAccount(account, before) : account]));
+  if (publicJson(identities(expected)) !== publicJson(identities(current.accounts)) || publicJson(before.mints) !== publicJson(current.mints)) {
+    throw fail('Review changed swap account identities or mint rules before submission');
+  }
+}
+
 // Project wallet-owned accounts through the reviewed setup and cleanup. The
 // trade's output is a lower bound; its wrapped-SOL input is exact.
 export function projectSwapStep(review, step, before) {
@@ -113,24 +132,40 @@ export function projectSwapStep(review, step, before) {
 }
 
 export function verifySwapEffects({ review, step, before, receipt, feeCeilingLamports }) {
-  const projection = projectSwapStep(review, step, before), keys = step.accountKeys, meta = receipt.meta;
+  const keys = step.accountKeys, meta = receipt.meta;
   if (!whole(receipt.slot) || receipt.slot < before.slot || !whole(meta?.fee) || meta.fee > feeCeilingLamports
       || !Array.isArray(meta.preBalances) || !Array.isArray(meta.postBalances) || meta.preBalances.length !== keys.length || meta.postBalances.length !== keys.length
       || [...meta.preBalances, ...meta.postBalances].some((n) => !whole(n)) || !Array.isArray(meta.preTokenBalances) || !Array.isArray(meta.postTokenBalances)) throw fail('Read complete finalized swap balances and fees');
   const tokenAmount = (rows, index, expected) => {
     const found = rows.filter((row) => row.accountIndex === index);
     if (!expected.exists && !found.length) return 0n;
-    if (found.length !== 1 || found[0].mint !== expected.mint || found[0].owner !== review.intent.walletPublicKey
+    if (!expected.exists || found.length !== 1 || found[0].mint !== expected.mint || found[0].owner !== review.intent.walletPublicKey
         || found[0].programId !== expected.programId || found[0].uiTokenAmount?.decimals !== expected.decimals) throw fail('Verify the receipt token mint, owner, program, and decimals');
     return amount(found[0].uiTokenAmount.amount);
   };
+  const receiptBefore = structuredClone(before);
+  receiptBefore.slot = receipt.slot;
+  receiptBefore.walletLamports = meta.preBalances[0];
+  for (const [address, account] of Object.entries(receiptBefore.accounts)) {
+    const index = keys.indexOf(address);
+    if (index < 0) continue;
+    if (!account.exists && meta.preTokenBalances.some((row) => row.accountIndex === index) && canAdoptCreatedAccount(step, address)) {
+      Object.assign(account, adoptCreatedAccount(account, before));
+    }
+    account.lamports = meta.preBalances[index];
+    account.amountRaw = tokenAmount(meta.preTokenBalances, index, account).toString();
+    if (account.exists && account.mint === native && BigInt(account.lamports) < amount(account.amountRaw) + BigInt(account.nativeReserveLamports)) {
+      throw fail('Verify the native balance and saved reserve at transaction execution');
+    }
+  }
+  const projection = projectSwapStep(review, step, receiptBefore);
   let receivedRaw = '0';
   for (const [address, expected] of Object.entries(projection.accounts)) {
     const index = keys.indexOf(address);
     if (index < 0) continue;
-    const prior = before.accounts[address];
+    const prior = receiptBefore.accounts[address];
     if (meta.preBalances[index] !== prior.lamports || meta.postBalances[index] !== expected.lamports
-        || tokenAmount(meta.preTokenBalances, index, prior) !== amount(prior.amountRaw)) throw fail('Verify the saved account balances at swap submission');
+        || tokenAmount(meta.preTokenBalances, index, prior) !== amount(prior.amountRaw)) throw fail('Verify the transaction account balances against its reviewed effects');
     const after = tokenAmount(meta.postTokenBalances, index, expected);
     if (step.trade && address === review.intent.destinationTokenAccount) {
       if (after < amount(expected.amountRaw)) throw fail('Verify the approved minimum swap output');
@@ -139,6 +174,10 @@ export function verifySwapEffects({ review, step, before, receipt, feeCeilingLam
   }
   const spentLamports = meta.preBalances[0] - meta.postBalances[0];
   if (spentLamports !== projection.grossDebitLamports + meta.fee - projection.returnedLamports) throw fail('Verify the exact swap wallet debit, fee, and returned rent');
-  return { receivedRaw, spentLamports, grossDebitLamports: projection.grossDebitLamports + meta.fee, returnedLamports: projection.returnedLamports,
+  // Retain only balances present in this receipt; other prepared accounts
+  // remain context for projection rather than evidence at the receipt slot.
+  const observedBefore = { slot: receiptBefore.slot, walletLamports: receiptBefore.walletLamports,
+    accounts: Object.fromEntries(Object.entries(receiptBefore.accounts).filter(([address]) => keys.includes(address))) };
+  return { receiptBefore: observedBefore, receivedRaw, spentLamports, grossDebitLamports: projection.grossDebitLamports + meta.fee, returnedLamports: projection.returnedLamports,
     rentLamports: projection.createdRentLamports, feeLamports: meta.fee };
 }

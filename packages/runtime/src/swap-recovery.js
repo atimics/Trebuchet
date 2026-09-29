@@ -4,7 +4,7 @@ import { createCloseAccountInstruction } from '@solana/spl-token';
 import { publicJson } from './store.js';
 import { readPreparedFailure, verifyPreparedFailure } from './prepared-failure.js';
 import { createPreparedTransactionService } from './prepared-transaction.js';
-import { readSwapState, verifySwapEffects } from './swap-state.js';
+import { readSwapState, verifySwapEffects, assertSwapAccountIdentity } from './swap-state.js';
 
 const hash = (value) => createHash('sha256').update(publicJson(value)).digest('hex');
 const equal = (a, b) => publicJson(a) === publicJson(b);
@@ -143,11 +143,11 @@ export function createSwapRecovery({ owner, store, connection, signer, network, 
       const { plan } = attempt, sourceAddress = job.plan.review.intent.sourceTokenAccount, before = plan.before;
       if (before.accounts[sourceAddress].exists && !attempt.receipt) {
         const step = cleanupStep(job, attempt.digest), service = createPreparedTransactionService({ owner, store, connection, signer, network, expectedGenesisHash,
-          kind: SWAP_CLEANUP_KIND, now, timeoutMs, pollIntervalMs, authorize: async () => { await approve(job, attempt, approval); return true; },
+          kind: SWAP_CLEANUP_KIND, receiptCreditAccount: sourceAddress, now, timeoutMs, pollIntervalMs, authorize: async () => { await approve(job, attempt, approval); return true; },
           checkResult: async ({ minContextSlot, receipt }) => {
             if (receipt) return { state: 'present', slot: receipt.slot, evidence: verifySwapEffects({ review: job.plan.review, step, before, receipt, feeCeilingLamports: plan.feeCeilingLamports }) };
             const state = await readSwapState(connection, job.plan.review, Math.max(before.slot, minContextSlot));
-            if (!equal(state.accounts, before.accounts) || !equal(state.mints, before.mints)) throw fail('CHAIN_STATE_UNAVAILABLE', 'Review the changed swap accounts before cleanup');
+            assertSwapAccountIdentity(before, state, step);
             if (state.walletLamports < plan.feeCeilingLamports) throw fail('INSUFFICIENT_FUNDS', 'Fund the approved cleanup fee');
             return { state: 'absent', slot: state.slot };
           } });
