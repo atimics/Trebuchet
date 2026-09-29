@@ -1,3 +1,5 @@
+import { createPositionWithdrawalRuntime } from './positionWithdrawal.js';
+import { installPositionWithdrawalRoutes } from './positionWithdrawalRoutes.js';
 import { createAirdropExecutionRuntime } from './airdropExecution.js';
 import { createFeeKeyExecutionRuntime } from './feeKeyExecution.js';
 import { createLiquidityExecutionRuntime, LIQUIDITY_OPERATION_KIND } from './liquidityExecution.js';
@@ -49,7 +51,6 @@ import {
   findSolClmmPoolForToken,
   listTokenMarkets,
   listCoinPositions,
-  withdrawPosition,
 } from './lpService.js';
 import { WSOL_MINT as WSOL_MINT_ADDRESS } from './lpConstants.js';
 
@@ -647,7 +648,8 @@ const __dirname = path.dirname(__filename);
 // launch time — those aren't user-facing config, they're how the Electron
 // main process talks to this embedded server. They stay.
 
-export function createLocalApiApp({ runtimeControl = null, runtimeOwner = null, quoteRuntimeFactory = createQuoteAcquisitionRuntime } = {}) {
+export function createLocalApiApp({ runtimeControl = null, runtimeOwner = null, quoteRuntimeFactory = createQuoteAcquisitionRuntime, withdrawalRuntimeFactory = createPositionWithdrawalRuntime } = {}) {
+const positionWithdrawal = runtimeOwner ? withdrawalRuntimeFactory({ owner: runtimeOwner }) : null;
 const walletExecution = runtimeOwner ? createWalletExecutionRuntime({
   owner: runtimeOwner,
   getScopeId: (walletPublicKey) => launchJournal.activeForWallet(walletPublicKey)?.id,
@@ -715,8 +717,9 @@ const sweepAllTokensToDestination = (input) => sweepTokensWithSigner({ ...input,
 // Live services and HTTP jobs share wallet admission and durable recovery state.
 function claimLaunchOp(walletPublicKey, op, workflowId = null) {
   const workflow = walletExecution?.activeWorkflow(walletPublicKey);
+  const canResumeWithdrawal = op === 'withdraw-position' && workflow?.kind === 'position-withdrawal' && workflow.id === workflowId;
   const canResumeQuotes = op === 'acquire-quote-tokens' && workflow?.kind === 'quote-token-acquisition' && workflow.id === workflowId;
-  if (workflow && !canResumeQuotes) {
+  if (workflow && !canResumeQuotes && !canResumeWithdrawal) {
     throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: workflow.id,
       workflowId: workflow.id, workflowKind: workflow.kind, error: 'Resume the saved wallet workflow before starting another wallet action.' });
   }
@@ -726,7 +729,7 @@ function claimLaunchOp(walletPublicKey, op, workflowId = null) {
   const canResumeLiquidity = pending?.kind === LIQUIDITY_OPERATION_KIND && ['create-lp', 'resume-launch'].includes(op);
   const canResumeFeeKey = pending?.kind === 'token-transfer' && ['create-lp', 'resume-launch'].includes(op) && feeKeyExecution?.canRecover(walletPublicKey);
   const canResumeAirdrop = ['token-transfer', 'airdrop-observed-delivery'].includes(pending?.kind) && op === 'run-airdrop' && airdropExecution?.canRecover(walletPublicKey);
-  if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity && !canResumeFeeKey && !canResumeAirdrop && !canResumeQuotes) {
+  if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity && !canResumeFeeKey && !canResumeAirdrop && !canResumeQuotes && !canResumeWithdrawal) {
     throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: 'Resume the saved wallet operation before starting another wallet action.' });
   }
   claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
@@ -3416,55 +3419,9 @@ app.get('/api/v2/coins/:mint/positions', async (req, res) => {
   }
 });
 
-app.post('/api/v2/positions/withdraw', async (req, res) => {
-  const body = req.body || {};
-  const walletPublicKey = String(body.walletPublicKey || '').trim();
-  const tokenMint = String(body.tokenMint || '').trim();
-  if (!walletPublicKey || !body.poolId || !body.nftMint) {
-    return res.status(400).json({ success: false, error: 'walletPublicKey, poolId, and nftMint are required' });
-  }
-  if (isDemoMode()) {
-    try {
-      const result = demoChainService.withdrawDemoPosition(body);
-      if (tokenMint) {
-        coinStore.recordEvent(tokenMint, {
-          type: 'position_withdrawn', practice: true, poolId: body.poolId, nftMint: body.nftMint,
-          sol: result.solReturned, walletPublicKey,
-        });
-      }
-      return res.json({ success: true, result });
-    } catch (error) {
-      return res.status(409).json({ success: false, code: error.code || null, error: error.message });
-    }
-  }
-  if (rejectIfSecretPinLocked(res, 'withdrawing a position with a saved wallet')) return;
-  let claimed = false;
-  try {
-    const { secretKeyArr, walletPublicKey: signer } = resolveSigner({ walletPublicKey });
-    if (rejectOrClaimLaunchOp(res, signer, 'withdraw position')) return;
-    claimed = true;
-    const result = await withdrawPosition({
-      tempWalletSecretKey: secretKeyArr,
-      poolId: String(body.poolId),
-      nftMint: String(body.nftMint),
-      expected: body.expected,
-    });
-    console.log(`Position withdrawn from ${body.poolId}: nft=${body.nftMint} tx=${result.txId}`);
-    if (tokenMint) {
-      coinStore.recordEvent(tokenMint, {
-        type: 'position_withdrawn', poolId: body.poolId, nftMint: body.nftMint, txId: result.txId, walletPublicKey,
-        outcome: result.adopted ? 'landed (found withdrawn after a retry)' : 'landed',
-      });
-    }
-    res.json({ success: true, result });
-  } catch (error) {
-    if (['POSITION_CHANGED', 'POSITION_NOT_FOUND'].includes(error.code)) {
-      return res.status(409).json({ success: false, code: error.code, error: error.message });
-    }
-    sendErrorResponse(res, error, 400);
-  } finally {
-    if (claimed) clearLaunchOpInFlight(walletPublicKey);
-  }
+installPositionWithdrawalRoutes(app, {
+  runtime: positionWithdrawal, isDemoMode, demoChainService, coinStore, pendingWallets, resolveSigner, rejectIfSecretPinLocked,
+  claim: claimLaunchOp, release: clearLaunchOpInFlight, sendErrorResponse,
 });
 
 app.post('/api/v2/destinations/challenge', (req, res) => {

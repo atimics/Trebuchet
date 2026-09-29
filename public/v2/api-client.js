@@ -711,10 +711,18 @@
       return request(`/api/v2/coins/${encodeURIComponent(mint)}/positions`, { timeoutMs: 120_000 });
     }
 
-    async function withdrawPosition({ walletPublicKey, poolId, nftMint, tokenMint = null, expected } = {}) {
+    async function listPositionWithdrawals(tokenMint) {
+      return request(`/api/v2/positions/withdrawals?tokenMint=${encodeURIComponent(tokenMint)}`, { timeoutMs: 15_000 });
+    }
+
+    async function preparePositionWithdrawal({ walletPublicKey, poolId, nftMint, expected, requestId } = {}) {
+      return request('/api/v2/positions/withdraw/prepare', { method: 'POST', body: { walletPublicKey, poolId, nftMint, expected, requestId }, timeoutMs: 120_000 });
+    }
+
+    async function withdrawPosition({ walletPublicKey, poolId, nftMint, tokenMint = null, expected, jobId, planDigest, maxSpendLamports } = {}) {
       return request('/api/v2/positions/withdraw', {
         method: 'POST',
-        body: { walletPublicKey, poolId, nftMint, tokenMint, expected },
+        body: { walletPublicKey, poolId, nftMint, tokenMint, expected, jobId, planDigest, maxSpendLamports },
         timeoutMs: 180_000,
       });
     }
@@ -1150,6 +1158,8 @@
       getSellQuote,
       listCoinPositions,
       withdrawPosition,
+      preparePositionWithdrawal,
+      listPositionWithdrawals,
       getClmmFeeTiers,
       getQuoteTokenInfo,
       getAirdropProgress,

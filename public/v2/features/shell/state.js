@@ -448,7 +448,7 @@ const state = {
   // ("draft:<id>" or "mint:<address>"); null shows the list.
   coins: { list: [], loaded: false, loading: false, error: null, key: null, detail: null, detailLoading: false, detailError: null, checked: {} },
   // Positions this app's wallets hold in the open coin's pools.
-  coinPositions: { mint: null, list: [], loading: false, error: null, withdrawing: null },
+  coinPositions: { mint: null, list: [], withdrawals: [], loading: false, error: null, withdrawing: null },
   // How far above the SOL pool's price pair pools open. Restored launches
   // keep the value they were planned with (0 before this existed).
   pairStartPremiumPct: PAIR_START_PREMIUM_PCT,

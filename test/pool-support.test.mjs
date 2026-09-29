@@ -175,35 +175,3 @@ test('positions list reads each wallet and prices what a position holds', async 
   assert.ok(position.quoteAmount > 0);
   assert.ok(position.priceHigh <= 1.79e-6 && position.priceLow < position.priceHigh);
 });
-
-test('withdraw refuses a position that changed since it was shown, and closes a matching one', async () => {
-  const { withdrawPosition, setSdkFactoryForTests: setSdk, setConnectionFactoryForTests: setConn } = await import('../lpService.js');
-  const owner = Keypair.generate();
-  const { raydium } = mockSdk();
-  const position = {
-    poolId: new PublicKey(POOL), nftMint: new PublicKey('11111111111111111111111111111112'),
-    tickLower: -139969, tickUpper: -133037, liquidity: new BN('1000000000000'),
-  };
-  let held = [position];
-  raydium.clmm.getOwnerPositionInfo = async () => held;
-  const decreased = [];
-  raydium.clmm.decreaseLiquidity = async (args) => {
-    decreased.push(args);
-    return { execute: async () => { held = []; return { txId: 'sig-withdraw' }; } };
-  };
-  setConn(() => raydium.connection);
-  setSdk(() => raydium);
-  await assert.rejects(
-    withdrawPosition({ tempWalletSecretKey: Array.from(owner.secretKey), poolId: POOL, nftMint: position.nftMint.toBase58(), expected: { liquidity: '1' } }),
-    (error) => error.code === 'POSITION_CHANGED',
-  );
-  assert.equal(decreased.length, 0);
-  const result = await withdrawPosition({ tempWalletSecretKey: Array.from(owner.secretKey), poolId: POOL, nftMint: position.nftMint.toBase58(), expected: { liquidity: '1000000000000' } });
-  assert.equal(decreased.length, 1);
-  assert.equal(decreased[0].ownerInfo.closePosition, true);
-  assert.equal(decreased[0].liquidity.toString(), '1000000000000');
-  // Mins are 99% of what the position holds: SOL side positive, token side zero.
-  assert.ok(new BN(decreased[0].amountMinB).gt(new BN(0)));
-  assert.equal(decreased[0].amountMinA.toString(), '0');
-  assert.equal(result.txId, 'sig-withdraw');
-});

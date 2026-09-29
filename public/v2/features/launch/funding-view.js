@@ -132,7 +132,7 @@ function parseRawTokenAmount(value) {
 function formatRawTokenAmount(value, decimals = 0) {
   const raw = parseRawTokenAmount(value);
   if (raw == null) return null;
-  const places = Math.max(0, Math.min(18, Math.floor(Number(decimals) || 0)));
+  const places = Math.max(0, Math.min(19, Math.floor(Number(decimals) || 0)));
   if (!places) return raw.toString();
   const scale = 10n ** BigInt(places);
   const whole = raw / scale;

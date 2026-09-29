@@ -27,7 +27,9 @@
     "./swap": "./src/swap.js",
     "./quote-acquisition": "./src/quote-acquisition.js",
     "./quote-plan": "./src/quote-plan.js",
-    "./quote-provider": "./src/quote-provider.js"
+    "./quote-provider": "./src/quote-provider.js",
+    "./position-withdrawal-plan": "./src/position-withdrawal-plan.js",
+    "./position-withdrawal": "./src/position-withdrawal.js"
   },
   "engines": {
     "node": ">=22.13.0"
@@ -42,6 +44,8 @@
     "@solana/spl-token": "^0.4.14",
     "@solana/spl-token-metadata": "^0.1.6",
     "@metaplex-foundation/mpl-token-metadata": "^3.4.0",
-    "@metaplex-foundation/umi": "^1.5.1"
+    "@metaplex-foundation/umi": "^1.5.1",
+    "@raydium-io/raydium-sdk-v2": "0.1.144-alpha",
+    "bn.js": "^5.2.3"
   }
 }

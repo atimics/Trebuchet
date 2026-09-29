@@ -428,6 +428,10 @@ function handleClick(event) {
     if (coin?.mint) loadCoinDetail(coin.mint).catch(() => null);
     return;
   }
+  if (action === 'resume-coin-withdrawal') {
+    resumeCoinWithdrawal(actionTarget.dataset.job).catch((error) => notify(error.message || 'Read the saved withdrawal again.'));
+    return;
+  }
   if (action === 'withdraw-coin-position') {
     withdrawCoinPosition(actionTarget.dataset.nft).catch((error) => notify(error.message || 'Withdrawing failed'));
     return;

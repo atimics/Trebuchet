@@ -6854,7 +6854,6 @@ export async function openSolSupport({ tempWalletSecretKey, poolId, solAmount, d
 // receipts) and are not listed. Amounts are what the position would return
 // now, at the current price.
 
-const WITHDRAW_SLIPPAGE_BPS = 100; // 1%: mins are 99% of the current amounts
 
 async function readOnlySdkForOwner(ownerPublicKey) {
   if (__sdkFactoryOverride) return __sdkFactoryOverride({ publicKey: new PublicKey(ownerPublicKey) });
@@ -6939,61 +6938,6 @@ export async function listCoinPositions({ tokenMint, owners = [] }) {
     }
   }
   return rows;
-}
-
-/**
- * Withdraw all of a position and close it (its account rent comes back).
- * Refuses (code POSITION_CHANGED) if the position's liquidity differs from
- * what the user confirmed. Minimum amounts are 99% of what it holds now.
- */
-export async function withdrawPosition({ tempWalletSecretKey, poolId, nftMint, expected } = {}) {
-  const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
-  const raydium = await initSdk(ownerKeypair);
-  const held = await raydium.clmm.getOwnerPositionInfo({ programId: getClmmProgramId() });
-  const position = (held || []).find((item) => item?.nftMint?.toString?.() === nftMint);
-  if (!position) {
-    const error = new Error('This wallet no longer holds that position. It may already be withdrawn; nothing was sent.');
-    error.code = 'POSITION_NOT_FOUND';
-    throw error;
-  }
-  if (position.poolId.toString() !== poolId) throw new Error('That position is in a different pool');
-  if (!expected || String(expected.liquidity) !== position.liquidity.toString()) {
-    const error = new Error('The position changed since you reviewed it. Review it again, then confirm. Nothing was sent.');
-    error.code = 'POSITION_CHANGED';
-    throw error;
-  }
-  const { poolInfo, poolKeys } = await raydium.clmm.getPoolInfoFromRpc(poolId);
-  const state = await raydium.clmm.getRpcClmmPoolInfo({ poolId });
-  const { amountA, amountB } = positionAmounts(position, state);
-  const minOf = (amount) => amount.mul(new BN(10_000 - WITHDRAW_SLIPPAGE_BPS)).div(new BN(10_000));
-  const result = await executeSdkTx({
-    label: 'withdraw position',
-    build: async () => raydium.clmm.decreaseLiquidity({
-      poolInfo,
-      poolKeys,
-      ownerPosition: position,
-      ownerInfo: { useSOLBalance: true, closePosition: true },
-      liquidity: new BN(position.liquidity.toString()),
-      amountMinA: minOf(amountA),
-      amountMinB: minOf(amountB),
-      txVersion: TxVersion.V0,
-      computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
-    }),
-    // Done when the position is gone from the wallet.
-    alreadyDone: async () => {
-      const now = await fetchOwnerClmmPositionsForPool(raydium, poolId).catch(() => null);
-      return now && !now.some((item) => item.nftMint === nftMint) ? { gone: true } : null;
-    },
-    onAlreadyDone: () => ({ tx: { txId: null }, adopted: true }),
-  });
-  return {
-    poolId,
-    nftMint,
-    txId: result.skipped ? null : result.value.tx.txId,
-    adopted: Boolean(result.skipped),
-    amountARaw: amountA.toString(),
-    amountBRaw: amountB.toString(),
-  };
 }
 
 // ---------------------------------------------------------------------------

@@ -132,52 +132,81 @@ function openCoin(key) {
 
 async function loadCoinPositions(mint) {
   if (!state.apiClient?.listCoinPositions) return;
-  state.coinPositions = { mint, list: state.coinPositions.mint === mint ? state.coinPositions.list : [], loading: true, error: null, withdrawing: null };
+  const previous = state.coinPositions.mint === mint ? state.coinPositions : {};
+  state.coinPositions = { mint, list: previous.list || [], withdrawals: previous.withdrawals || [], loading: true, error: null, withdrawing: null };
   renderCoins();
-  try {
-    const response = await state.apiClient.listCoinPositions(mint);
-    if (state.coins.key !== `mint:${mint}`) return;
-    state.coinPositions = { mint, list: Array.isArray(response.positions) ? response.positions : [], loading: false, error: null, withdrawing: null };
-  } catch (error) {
-    state.coinPositions = { ...state.coinPositions, loading: false, error: error.message || 'Could not read positions' };
-  }
+  const [positions, withdrawals] = await Promise.allSettled([
+    state.apiClient.listCoinPositions(mint), state.apiClient.listPositionWithdrawals(mint),
+  ]);
+  if (state.coins.key !== `mint:${mint}`) return;
+  state.coinPositions = { ...state.coinPositions, loading: false,
+    list: positions.status === 'fulfilled' ? positions.value.positions || [] : previous.list || [],
+    withdrawals: withdrawals.status === 'fulfilled' ? withdrawals.value.withdrawals || [] : previous.withdrawals || [],
+    error: [positions, withdrawals].filter((row) => row.status === 'rejected').map((row) => row.reason.message || 'Read the saved positions again.').join(' ') || null };
   renderCoins();
+}
+
+function withdrawalReviewDetail(job) {
+  const sol = (value) => formatRawTokenAmount(String(value), 9);
+  const minima = job.tokens.map((row) => `${formatRawTokenAmount(row.minimumRaw, row.decimals)} ${row.native ? 'SOL' : fullAddress(row.mint)}`).join(', ');
+  return `Close position ${fullAddress(job.nftMint)} in pool ${fullAddress(job.poolId)} on ${job.network}. `
+    + `Return at least ${minima} to wallet ${fullAddress(job.walletPublicKey)}. `
+    + `Fee ceiling: ${sol(job.feeCeilingLamports)} SOL. Account rent ceiling: ${sol(job.rentCeilingLamports)} SOL. `
+    + `Total spending ceiling: ${sol(job.maxSpendLamports)} SOL. Position rent and collected fees also return to this wallet. `
+    + 'Closing this position removes its liquidity from the pool.';
+}
+
+async function approveCoinWithdrawal(job, practiceInput) {
+  const ok = await confirmOperatorAction({
+    title: job.practice ? 'Withdraw practice position' : job.status === 'paused' ? 'Resume saved withdrawal' : 'Withdraw position',
+    detail: job.practice ? 'Close this practice position and return its funds to the practice wallet.' : withdrawalReviewDetail(job),
+    confirmLabel: job.status === 'paused' ? 'Resume withdrawal' : 'Withdraw', danger: true, confirmationText: 'WITHDRAW',
+  });
+  if (!ok) return;
+  const response = await state.apiClient.withdrawPosition(job.practice ? practiceInput : {
+    walletPublicKey: job.walletPublicKey, jobId: job.jobId, planDigest: job.planDigest, maxSpendLamports: job.maxSpendLamports,
+  });
+  if (response.result?.status === 'failed') throw new Error(`The saved withdrawal failed. Paid fee: ${formatRawTokenAmount(String(response.result.feeLamports), 9)} SOL. Review the position for a new withdrawal.`);
+  notify('Position withdrawal verified');
 }
 
 async function withdrawCoinPosition(nftMint) {
   const mint = state.coinPositions.mint;
   const position = (state.coinPositions.list || []).find((item) => item.nftMint === nftMint);
-  if (!position || !mint) return;
-  const quote = position.quoteSymbol || 'SOL';
-  const coin = coinByKey(`mint:${mint}`);
-  const symbol = coin?.symbol || shortAddress(mint);
-  const ok = await confirmOperatorAction({
-    title: 'Withdraw position',
-    detail: `Withdraw everything from this ${symbol}/${quote} position and close it: about `
-      + `${Number(position.quoteAmount).toFixed(4)} ${quote} and ${compactAmount(position.tokenAmount)} ${symbol} `
-      + `go back to ${fullAddress(position.owner)}, with the position's account rent. The buy support it gave is removed.`,
-    confirmLabel: 'Withdraw',
-    danger: true,
-    confirmationText: 'WITHDRAW',
-  });
-  if (!ok) return;
-  state.coinPositions = { ...state.coinPositions, withdrawing: nftMint, error: null };
-  renderCoins();
+  if (!position || !mint || state.coinPositions.withdrawing) return;
+  state.coinPositions = { ...state.coinPositions, withdrawing: nftMint, error: null }; renderCoins();
   try {
-    await state.apiClient.withdrawPosition({
-      walletPublicKey: position.owner,
-      poolId: position.poolId,
-      nftMint,
-      tokenMint: mint,
-      expected: { liquidity: position.liquidity },
-    });
-    notify(`Withdrawn from the ${symbol}/${quote} pool`);
-  } catch (error) {
-    notify(error.message || 'Withdrawing failed');
-    state.coinPositions = { ...state.coinPositions, withdrawing: null, error: error.message || 'Withdrawing failed' };
-  }
-  loadCoinPositions(mint).catch(() => null);
+    const input = { walletPublicKey: position.owner, poolId: position.poolId, nftMint, tokenMint: mint, expected: { liquidity: position.liquidity } };
+    const saved = (state.coinPositions.withdrawals || []).find((job) => job.nftMint === nftMint && ['paused', 'running'].includes(job.status));
+    const job = saved || (await state.apiClient.preparePositionWithdrawal(input)).job;
+    if (!job) throw new Error('Read the saved withdrawal review again.');
+    if (!job.practice && !saved) state.coinPositions.withdrawals = [...(state.coinPositions.withdrawals || []), job];
+    await approveCoinWithdrawal(job, input);
+  } catch (error) { notify(error.message || 'Resume the saved withdrawal from this page.'); }
+  finally { state.coinPositions.withdrawing = null; }
+  await loadCoinPositions(mint);
   loadCoinDetail(mint).catch(() => null);
+}
+
+async function resumeCoinWithdrawal(jobId) {
+  const job = (state.coinPositions.withdrawals || []).find((row) => row.jobId === jobId), mint = state.coinPositions.mint;
+  if (!job || !mint || state.coinPositions.withdrawing) return;
+  state.coinPositions.withdrawing = job.nftMint; renderCoins();
+  try { await approveCoinWithdrawal(job); }
+  catch (error) { notify(error.message || 'Read the saved withdrawal status again.'); }
+  finally { state.coinPositions.withdrawing = null; }
+  await loadCoinPositions(mint); loadCoinDetail(mint).catch(() => null);
+}
+
+function coinWithdrawalHistoryHtml() {
+  const jobs = state.coinPositions.withdrawals || [], sol = (value) => formatRawTokenAmount(String(value), 9);
+  return jobs.length ? `<ul class="coin-positions">${jobs.slice().reverse().map((job) => {
+    const pending = ['paused', 'review_required'].includes(job.status);
+    const detail = job.result ? `${job.status === 'confirmed' ? 'Withdrawal verified' : 'Transaction failed'} · fee ${sol(job.result.feeLamports)} SOL`
+      : job.status === 'running' ? 'Withdrawal in progress' : job.status === 'paused' ? 'Saved withdrawal needs recovery' : 'Saved withdrawal ready for review';
+    return `<li><span><strong>${escapeHtml(detail)}</strong><small>Position ${escapeHtml(fullAddress(job.nftMint))} · wallet ${escapeHtml(fullAddress(job.walletPublicKey))}</small></span>
+      ${pending ? `<button class="pill-button" type="button" data-action="resume-coin-withdrawal" data-job="${escapeHtml(job.jobId)}" ${state.coinPositions.withdrawing ? 'disabled' : ''}>${job.status === 'paused' ? 'Resume' : 'Review'}</button>` : ''}</li>`;
+  }).join('')}</ul>` : '';
 }
 
 // A position's range is priced in its pool's quote token.
@@ -203,6 +232,7 @@ function coinPositionsHtml() {
     </li>`).join('');
   return `
     ${rows ? `<ul class="coin-positions">${rows}</ul>` : '<p class="coins-empty">No positions you can withdraw. Locked launch positions stay locked; their Fee Keys collect the trading fees.</p>'}
+    ${coinWithdrawalHistoryHtml()}
     ${error ? `<p class="pool-support-error">${escapeHtml(error)}</p>` : ''}`;
 }
 
