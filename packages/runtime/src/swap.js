@@ -4,6 +4,7 @@ import { publicJson, RecoveryStorageError } from './store.js';
 import { reviewSwapBundle } from './swap-bundle.js';
 import { readSwapState, projectSwapStep, verifySwapEffects } from './swap-state.js';
 import { createPreparedTransactionService } from './prepared-transaction.js';
+import { createSwapRecovery, validateSwapRecovery } from './swap-recovery.js';
 
 const hash = (value) => createHash('sha256').update(publicJson(value)).digest('hex');
 const copy = (value) => JSON.parse(publicJson(value));
@@ -31,7 +32,7 @@ export function createSwapService({ owner, store, connection, signer, network, e
         const { plan } = job, { digest, ...review } = plan.review;
         if (job.id !== hash({ scopeId: plan.scopeId, key: plan.key, walletPublicKey: job.walletPublicKey, network: plan.network })
             || new PublicKey(job.walletPublicKey).toBase58() !== job.walletPublicKey || review.intent.walletPublicKey !== job.walletPublicKey
-            || review.intent.network !== plan.network || hash(review) !== digest || !['prepared', 'confirmed'].includes(job.state)
+            || review.intent.network !== plan.network || hash(review) !== digest || !['prepared', 'confirmed', 'recovery_required', 'recovered'].includes(job.state)
             || !Array.isArray(job.receipts) || !Array.isArray(job.approvals) || !Array.isArray(review.steps) || !review.steps.length || review.steps.length > 8
             || !whole(plan.feeCeilingLamports) || !whole(plan.maxSpendLamports) || plan.maxSpendLamports !== Number(review.intent.inputAmountRaw) + review.intent.rentCeilingLamports + review.steps.length * plan.feeCeilingLamports
             || job.receipts.length > review.steps.length || job.state === 'confirmed' && (job.receipts.length !== review.steps.length || !job.result)) throw new Error('Verify the saved swap identity and plan');
@@ -39,6 +40,7 @@ export function createSwapService({ owner, store, connection, signer, network, e
             || item.walletPublicKey !== job.walletPublicKey || item.scopeId !== plan.scopeId || item.key !== plan.key || item.network !== plan.network
             || item.genesisHash !== plan.genesisHash || item.bundleDigest !== digest || !whole(item.expiresAtMs)
             || !whole(item.maxSpendLamports) || item.maxSpendLamports < plan.maxSpendLamports)) throw new Error('Verify the saved swap approvals');
+        validateSwapRecovery(job, store);
         if (job.state === 'confirmed' && publicJson(job.result) !== publicJson(summarize(job))) throw new Error('Verify the completed swap result against its receipts');
         for (const [index, receipt] of job.receipts.entries()) {
           const operation = store.getOperation(receipt.operationId), launch = operation && store.getLaunch(operation.launchId);
@@ -52,7 +54,7 @@ export function createSwapService({ owner, store, connection, signer, network, e
   };
   if (!busy.has(owner)) busy.set(owner, new Set());
   const get = (id) => loadJobs().find((job) => job.id === id) || null;
-  const active = (walletPublicKey) => loadJobs().find((job) => job.walletPublicKey === walletPublicKey && job.state !== 'confirmed') || null;
+  const active = (walletPublicKey) => loadJobs().find((job) => job.walletPublicKey === walletPublicKey && !['confirmed', 'recovered'].includes(job.state)) || null;
   const checkNetwork = async () => {
     owner.assertActive();
     if (await connection.getGenesisHash() !== expectedGenesisHash) throw failure('NETWORK_MISMATCH', 'Use the saved swap network and genesis hash');
@@ -84,11 +86,13 @@ export function createSwapService({ owner, store, connection, signer, network, e
     if (prior && publicJson(prior) !== publicJson(approval)) throw failure('OPERATION_CONFLICT', 'Preserve the original swap approval');
     return prior ? saved : { ...saved, approvals: [...saved.approvals, copy(approval)] };
   });
+  const recovery = createSwapRecovery({ owner, store, connection, signer, network, expectedGenesisHash, authorize, now, timeoutMs, pollIntervalMs, records, update });
   const result = (job) => ({ jobId: job.id, ...job.result });
   const run = async (initial, approval) => {
     let job = initial;
     if (job.plan.network !== network || job.plan.genesisHash !== expectedGenesisHash) throw failure('NETWORK_MISMATCH', 'Recover the swap on its saved chain');
-    if (job.state === 'confirmed') return result(job);
+    if (['confirmed', 'recovered'].includes(job.state)) return result(job);
+    if (job.failure) throw failure('TRANSACTION_FAILED', 'Review the failed swap and prepare wrapped-SOL cleanup', { operationId: job.failure.operationId, jobId: job.id });
     if (store.getWalletWorkflow(job.walletPublicKey)?.id !== job.id) throw failure('OPERATION_CONFLICT', 'Recover the saved swap wallet reservation');
     const { plan } = job;
     for (let index = job.receipts.length; index < plan.review.steps.length; index++) {
@@ -109,19 +113,25 @@ export function createSwapService({ owner, store, connection, signer, network, e
           if (publicJson(state.accounts) !== publicJson(savedBefore.accounts) || publicJson(state.mints) !== publicJson(savedBefore.mints)) throw failure('CHAIN_STATE_UNAVAILABLE', 'Recover changed swap account state before a new submission');
           return { state: 'absent', slot: state.slot };
         } });
-      const receipt = await service.execute({ scopeId: plan.scopeId, walletPublicKey: job.walletPublicKey, key: `${plan.key}/${index}`, plan: stepPlan,
-        workflowId: job.id, approval: { ...approval, planDigest: hash(stepPlan) }, build: async () => {
-          await approvalFor(approval, job); job = saveApproval(job, approval);
-          const before = await readSwapState(connection, plan.review), projection = projectSwapStep(plan.review, step, before);
-          const usedRent = job.receipts.reduce((sum, item) => sum + item.rentLamports, 0);
-          if (usedRent + projection.createdRentLamports > plan.review.intent.rentCeilingLamports) throw failure('SPEND_LIMIT_EXCEEDED', 'Keep total swap rent within its approved ceiling');
-          const maxSpendLamports = projection.grossDebitLamports + plan.feeCeilingLamports;
-          const spent = job.receipts.reduce((sum, item) => sum + item.grossDebitLamports, 0);
-          if (!whole(maxSpendLamports) || spent + maxSpendLamports > plan.maxSpendLamports) throw failure('SPEND_LIMIT_EXCEEDED', 'Keep all swap steps within the saved purchase budget');
-          return { transaction: VersionedTransaction.deserialize(Buffer.from(step.template, 'base64')), accountKeys: step.accountKeys,
-            result: { index, before }, allowExisting: false, feeCeilingLamports: plan.feeCeilingLamports, maxSpendLamports,
-            maxCreditLamports: projection.returnedLamports };
-        } });
+      let receipt;
+      try {
+        receipt = await service.execute({ scopeId: plan.scopeId, walletPublicKey: job.walletPublicKey, key: `${plan.key}/${index}`, plan: stepPlan,
+          workflowId: job.id, approval: { ...approval, planDigest: hash(stepPlan) }, build: async () => {
+            await approvalFor(approval, job); job = saveApproval(job, approval);
+            const before = await readSwapState(connection, plan.review), projection = projectSwapStep(plan.review, step, before);
+            const usedRent = job.receipts.reduce((sum, item) => sum + item.rentLamports, 0);
+            if (usedRent + projection.createdRentLamports > plan.review.intent.rentCeilingLamports) throw failure('SPEND_LIMIT_EXCEEDED', 'Keep total swap rent within its approved ceiling');
+            const maxSpendLamports = projection.grossDebitLamports + plan.feeCeilingLamports;
+            const spent = job.receipts.reduce((sum, item) => sum + item.grossDebitLamports, 0);
+            if (!whole(maxSpendLamports) || spent + maxSpendLamports > plan.maxSpendLamports) throw failure('SPEND_LIMIT_EXCEEDED', 'Keep all swap steps within the saved purchase budget');
+            return { transaction: VersionedTransaction.deserialize(Buffer.from(step.template, 'base64')), accountKeys: step.accountKeys,
+              result: { index, before }, allowExisting: false, feeCeilingLamports: plan.feeCeilingLamports, maxSpendLamports,
+              maxCreditLamports: projection.returnedLamports };
+          } });
+      } catch (error) {
+        if (error.code === 'TRANSACTION_FAILED') { await recovery.recordFailure(job, error); error.jobId = job.id; }
+        throw error;
+      }
       job = update(job.id, (saved) => {
         if (saved.receipts.length !== index) throw failure('OPERATION_CONFLICT', 'Save each swap receipt once and in order');
         return { ...saved, receipts: [...saved.receipts, receipt] };
@@ -185,6 +195,16 @@ export function createSwapService({ owner, store, connection, signer, network, e
       const job = get(id);
       if (!job) throw failure('OPERATION_UNKNOWN', 'Prepare the swap before execution');
       return owned(job.walletPublicKey, () => run(get(id), approval));
+    },
+    async prepareCleanup({ id }) {
+      const job = get(id);
+      if (!job) throw failure('OPERATION_UNKNOWN', 'Recover the saved swap identity');
+      return owned(job.walletPublicKey, () => recovery.prepare(get(id)));
+    },
+    async cleanup({ id, approval }) {
+      const job = get(id);
+      if (!job) throw failure('OPERATION_UNKNOWN', 'Recover the saved swap identity');
+      return owned(job.walletPublicKey, () => recovery.execute(get(id), approval));
     },
     async recover({ walletPublicKey, approval }) {
       return owned(walletPublicKey, () => { const job = active(walletPublicKey); return job ? run(job, approval) : null; });

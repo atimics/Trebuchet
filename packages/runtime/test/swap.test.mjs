@@ -230,3 +230,181 @@ for (const step of [0, 1, 2]) {
     assert.equal(f.state.sends.length, step + 1);
   });
 }
+
+const cleanupApproval = (attempt, id = 'cleanup-approval') => ({ id, scopeId: attempt.plan.scopeId, key: attempt.plan.key,
+  walletPublicKey: attempt.plan.walletPublicKey, network: attempt.plan.network, genesisHash: attempt.plan.genesisHash,
+  bundleDigest: attempt.plan.bundleDigest, recoveryDigest: attempt.digest, expiresAtMs: 3000, maxSpendLamports: attempt.plan.maxSpendLamports });
+
+for (const combined of [false, true]) for (const failedStep of combined ? [0] : [0, 1, 2]) {
+  test(`cleanup after ${combined ? 'atomic' : `step ${failedStep}`} failure returns native funds and preserves the purchase outcome`, async (t) => {
+    const f = await fixture(t, { combined }), service = f.service(), job = await service.prepare(f.input); f.state.failAt = failedStep;
+    await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+    const saved = service.get(job.id); assert.equal(saved.state, 'recovery_required'); assert.equal(saved.failure.feeLamports, 5000);
+    const sourceLamports = f.state.source?.lamports || 0, attempt = await service.prepareCleanup({ id: job.id }), before = f.state.walletLamports;
+    const result = await service.cleanup({ id: job.id, approval: cleanupApproval(attempt) });
+    assert.equal(result.status, 'recovered'); assert.equal(result.purchaseStatus, failedStep === 2 ? 'confirmed' : 'failed');
+    assert.equal(result.receivedRaw, failedStep === 2 ? '1250' : '0'); assert.equal(f.state.source, null);
+    assert.equal(result.feeLamports, (failedStep + 1 + (sourceLamports ? 1 : 0)) * 5000);
+    assert.equal(f.state.walletLamports - before, sourceLamports ? sourceLamports - 5000 : 0);
+    assert.equal(f.store.getWalletWorkflow(job.walletPublicKey), null); assert.equal(service.active(job.walletPublicKey), null);
+    assert.equal(new Set(f.state.sends.map((item) => item.signature)).size, f.state.sends.length);
+    f.connection.getGenesisHash = () => { throw new Error('offline'); };
+    assert.deepEqual(await service.execute({ id: job.id }), result);
+    assert.deepEqual(await service.cleanup({ id: job.id }), result);
+  });
+}
+
+for (const field of ['scopeId', 'key', 'walletPublicKey', 'network', 'genesisHash', 'bundleDigest', 'recoveryDigest', 'expiresAtMs', 'maxSpendLamports']) {
+  test(`cleanup approval binds ${field} to the saved recovery`, async (t) => {
+    const f = await fixture(t), job = await f.service().prepare(f.input); f.state.failAt = 1;
+    await assert.rejects(f.service().execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+    const attempt = await f.service().prepareCleanup({ id: job.id }), approval = cleanupApproval(attempt);
+    approval[field] = ['expiresAtMs', 'maxSpendLamports'].includes(field) ? 0 : 'changed';
+    await assert.rejects(f.service().cleanup({ id: job.id, approval }), { code: 'EXECUTION_APPROVAL_REQUIRED' });
+    assert.equal(f.state.sends.length, 2); assert.ok(f.store.getWalletWorkflow(job.walletPublicKey));
+  });
+}
+
+for (const changed of ['fee', 'payer', 'account', 'token', 'message', 'signature', 'slot', 'error']) {
+  test(`changed failed ${changed} evidence holds the wallet for receipt recovery`, async (t) => {
+    const f = await fixture(t), job = await f.service().prepare(f.input); f.state.failAt = 1;
+    f.state.receiptTransform = (receipt) => {
+      if (!receipt?.meta.err) return receipt;
+      const result = { ...receipt, transaction: { ...receipt.transaction }, meta: structuredClone(receipt.meta) };
+      if (changed === 'fee') result.meta.fee = 10001;
+      if (changed === 'payer') result.meta.postBalances[0]++;
+      if (changed === 'account') result.meta.postBalances[1]++;
+      if (changed === 'token') result.meta.postTokenBalances[0].uiTokenAmount.amount = '1';
+      if (changed === 'message') result.transaction.message = { serialize: () => Buffer.from('changed'), staticAccountKeys: [] };
+      if (changed === 'signature') result.transaction.signatures = ['changed'];
+      if (changed === 'slot') result.slot++;
+      if (changed === 'error') result.meta.err = null;
+      return result;
+    };
+    await assert.rejects(f.service().execute({ id: job.id, approval: f.approval }), { code: 'CHAIN_STATE_UNAVAILABLE' });
+    assert.equal(f.service().get(job.id).state, 'prepared'); assert.equal(f.state.sends.length, 2);
+    await assert.rejects(f.service().prepareCleanup({ id: job.id }), { code: 'SWAP_FAILURE_REQUIRED' });
+    f.state.receiptTransform = (receipt) => receipt;
+    await assert.rejects(f.service().execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+    assert.equal(f.service().get(job.id).failure.feeLamports, 5000); assert.equal(f.state.sends.length, 2);
+  });
+}
+
+test('a failed cleanup needs a fresh plan and approval, accounts for both failed fees, and keeps the purchase terminal', async (t) => {
+  const f = await fixture(t), service = f.service(), job = await service.prepare(f.input); f.state.failAt = 1;
+  await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+  const first = await service.prepareCleanup({ id: job.id }); f.state.failAt = 2;
+  await assert.rejects(service.cleanup({ id: job.id, approval: cleanupApproval(first) }), { code: 'TRANSACTION_FAILED' });
+  assert.equal(service.get(job.id).cleanupAttempts[0].failure.feeLamports, 5000);
+  await assert.rejects(service.cleanup({ id: job.id, approval: cleanupApproval(first) }), { code: 'TRANSACTION_FAILED' });
+  assert.equal(f.state.sends.length, 3);
+  const second = await service.prepareCleanup({ id: job.id });
+  assert.equal(second.plan.maxSpendLamports, first.plan.maxSpendLamports + 5000);
+  await assert.rejects(service.cleanup({ id: job.id, approval: cleanupApproval(first) }), { code: 'EXECUTION_APPROVAL_REQUIRED' });
+  const result = await service.cleanup({ id: job.id, approval: cleanupApproval(second, 'cleanup-2') });
+  assert.equal(result.failedReceipts.length, 2); assert.equal(result.feeLamports, 20000); assert.equal(result.purchaseStatus, 'failed');
+  assert.equal(f.state.destination.amount, 0n); assert.equal(f.state.source, null); assert.equal(f.state.sends.length, 4);
+});
+
+test('lost cleanup response recovers the same transaction with an expired approval', async (t) => {
+  const f = await fixture(t), service = f.service(), job = await service.prepare(f.input); f.state.failAt = 1;
+  await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+  const attempt = await service.prepareCleanup({ id: job.id }), approval = cleanupApproval(attempt);
+  f.state.afterSend = () => { throw new Error('lost cleanup response'); };
+  await assert.rejects(service.cleanup({ id: job.id, approval }), /lost cleanup response/);
+  f.state.afterSend = null; f.setNow(3000);
+  const result = await f.service().cleanup({ id: job.id, approval });
+  assert.equal(result.purchaseStatus, 'failed'); assert.equal(f.state.sends.length, 3); assert.equal(f.state.source, null);
+});
+
+test('cleanup completion and wallet release commit together after a storage failure', async (t) => {
+  const f = await fixture(t), service = f.service(), job = await service.prepare(f.input); f.state.failAt = 2;
+  await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+  const attempt = await service.prepareCleanup({ id: job.id }), finish = f.store.finishWalletWorkflow;
+  f.store.finishWalletWorkflow = () => { throw new RecoveryStorageError('cleanup finish commit failed'); };
+  await assert.rejects(service.cleanup({ id: job.id, approval: cleanupApproval(attempt) }), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+  assert.equal(service.get(job.id).state, 'recovery_required'); assert.ok(f.store.getWalletWorkflow(job.walletPublicKey));
+  assert.equal(f.state.source, null); f.store.finishWalletWorkflow = finish;
+  const result = await f.service().cleanup({ id: job.id });
+  assert.equal(result.purchaseStatus, 'confirmed'); assert.equal(f.state.sends.length, 4); assert.equal(result.feeLamports, 20000);
+});
+
+test('cleanup verifies finalized source closure before releasing the wallet', async (t) => {
+  const f = await fixture(t), service = f.service(), job = await service.prepare(f.input); f.state.failAt = 1;
+  await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+  const attempt = await service.prepareCleanup({ id: job.id });
+  f.state.afterSend = () => { f.state.source = { amount: 0n, lamports: f.rent(165) }; };
+  await assert.rejects(service.cleanup({ id: job.id, approval: cleanupApproval(attempt) }), { code: 'CHAIN_STATE_UNAVAILABLE' });
+  assert.ok(f.store.getWalletWorkflow(job.walletPublicKey)); assert.equal(f.state.sends.length, 3);
+  f.state.source = null;
+  await service.cleanup({ id: job.id }); assert.equal(f.state.sends.length, 3);
+});
+
+for (const change of ['fee', 'failure identity', 'cleanup plan', 'completion']) {
+  test(`damaged ${change} in saved swap recovery preserves the original records`, async (t) => {
+    const f = await fixture(t), service = f.service(), job = await service.prepare(f.input); f.state.failAt = 1;
+    await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+    const attempt = await service.prepareCleanup({ id: job.id });
+    if (change === 'completion') await service.cleanup({ id: job.id, approval: cleanupApproval(attempt) });
+    const records = f.store.collection('runtime-swaps/v1'), all = records.load();
+    if (change === 'fee') all[0].failure.feeLamports++;
+    if (change === 'failure identity') all[0].failure.operationId = 'missing';
+    if (change === 'cleanup plan') all[0].cleanupAttempts[0].plan.maxSpendLamports++;
+    if (change === 'completion') all[0].cleanupAttempts[0].completion.source.lamports = 1;
+    records.save(all);
+    await assert.rejects(service.cleanup({ id: job.id }), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+    assert.deepEqual(records.load(), all);
+  });
+}
+
+for (const target of ['failure', 'plan', 'approval', 'cleanup receipt']) {
+  test(`a failed ${target} commit preserves the same failed purchase and cleanup identity`, async (t) => {
+    const f = await fixture(t), job = await f.service().prepare(f.input); f.state.failAt = 1;
+    if (target !== 'failure') await assert.rejects(f.service().execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+    let attempt;
+    if (['approval', 'cleanup receipt'].includes(target)) attempt = await f.service().prepareCleanup({ id: job.id });
+    const original = f.store.collection;
+    f.store.collection = (name) => {
+      const collection = original(name), save = collection.save;
+      if (name === 'runtime-swaps/v1') collection.save = (jobs) => {
+        const saved = jobs[0], cleanup = saved.cleanupAttempts?.at(-1);
+        if (target === 'failure' && saved.failure || target === 'plan' && cleanup || target === 'approval' && cleanup?.approvals.length || target === 'cleanup receipt' && cleanup?.receipt) {
+          throw new RecoveryStorageError(`fixture ${target} commit failed`);
+        }
+        return save(jobs);
+      };
+      return collection;
+    };
+    if (target === 'failure') await assert.rejects(f.service().execute({ id: job.id, approval: f.approval }), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+    else if (target === 'plan') await assert.rejects(f.service().prepareCleanup({ id: job.id }), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+    else await assert.rejects(f.service().cleanup({ id: job.id, approval: cleanupApproval(attempt) }), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+    assert.equal(f.state.sends.length, target === 'cleanup receipt' ? 3 : 2);
+    assert.ok(f.store.getWalletWorkflow(job.walletPublicKey)); f.store.collection = original;
+    await assert.rejects(f.service().execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+    attempt = await f.service().prepareCleanup({ id: job.id });
+    const result = await f.service().cleanup({ id: job.id, approval: cleanupApproval(attempt) });
+    assert.equal(result.feeLamports, 15000); assert.equal(f.state.sends.length, 3); assert.equal(f.state.destination.amount, 0n);
+  });
+}
+
+test('expired cleanup bytes keep the saved recovery plan and replace their blockhash', async (t) => {
+  const f = await fixture(t), service = f.service(), job = await service.prepare(f.input); f.state.failAt = 1;
+  await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+  const attempt = await service.prepareCleanup({ id: job.id }), approval = cleanupApproval(attempt);
+  f.state.drop = true;
+  await assert.rejects(service.cleanup({ id: job.id, approval }), { code: 'CHAIN_STATE_UNAVAILABLE' });
+  const old = f.state.sends.at(-1); f.state.drop = false; f.state.valid = false; f.state.height = 500; f.state.blockhash = destination.toBase58();
+  const result = await f.service().cleanup({ id: job.id, approval });
+  assert.notEqual(result.cleanupReceipts[0].txId, old.signature); assert.equal(result.feeLamports, 15000);
+  assert.equal(f.state.sends.length, 4); assert.equal(f.state.receipts.size, 3); assert.equal(service.get(job.id).cleanupAttempts.length, 1);
+});
+
+test('legacy failed swap operations gain a full receipt while retaining their immutable terminal record', async (t) => {
+  const f = await fixture(t), service = f.service(), job = await service.prepare(f.input); f.state.failAt = 1;
+  await assert.rejects(service.execute({ id: job.id, approval: f.approval }), { code: 'TRANSACTION_FAILED' });
+  const original = service.get(job.id), operation = f.store.getOperation(original.failure.operationId), records = f.store.collection('runtime-swaps/v1');
+  const jobs = records.load(); delete jobs[0].failure; delete jobs[0].cleanupAttempts; jobs[0].state = 'prepared'; records.save(jobs);
+  await assert.rejects(f.service().execute({ id: job.id }), { code: 'TRANSACTION_FAILED' });
+  assert.deepEqual(f.store.getOperation(original.failure.operationId), operation);
+  assert.deepEqual(service.get(job.id).failure, original.failure); assert.equal(f.state.sends.length, 2);
+});

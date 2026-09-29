@@ -269,10 +269,23 @@ The tests cover Raydium and Jupiter, classic and Token-2022 output accounts, one
 
 All 363 architecture tests passed. The 109 focused swap and prepared-transaction tests also passed on Node 22.23.3. Package coverage passed for 102 required runtime files, and syntax checks passed for 401 files. The base merge at `8d9b0f7` includes the coin-image fallback from PR #60; rebuilding matched the merged renderer exactly, 129 selected renderer tests passed, and all six GitHub checks passed for that head.
 
-Production acquisition still needs its API/service connection and durable management of purchases across quote mints. Failed purchase cleanup, explicit handling of externally changed account balances, and router execution against a real validator remain required before that connection is ready. Launch-wide budgeting, live CLI and runner execution, and the other open requirements remain in the full completion checklist.
+Production acquisition still needs its API/service connection and durable management of purchases across quote mints. Explicit handling of externally changed account balances and router execution against a real validator remain required before that connection is ready. Failed purchase cleanup is covered by the later recovery stage below. Launch-wide budgeting, live CLI and runner execution, and the other open requirements remain in the full completion checklist.
 
 ### HTTP admission between workflow transactions
 
 The live API now checks durable wallet reservations as well as active transactions. A saved swap or upload can be between transactions when a new process starts. Token creation, airdrops, asset sweeps, and saved-journal resume now return its recovery identity before another wallet action begins. The workflow stays available for its matching recovery adapter.
 
 Two real runtime startup tests verify this state for swaps and uploads. Both use saved reservations with no active transaction. All four API requests stop before any RPC request, and the reservation stays intact. All 22 selected runtime and wallet-host tests passed. The two new HTTP cases also passed on Node 22.23.3.
+
+
+### Failed swap fees and approved cleanup
+
+The swap adapter now saves a full finalized failure witness alongside the original immutable engine operation. The witness verifies the signed message, every signature and account address, the exact failure and slot, the fee ceiling, unchanged token balances, and SOL changes limited to the payer fee. A missing or changed witness keeps the wallet reserved. Previously saved failed operations can gain this evidence during recovery.
+
+A host calls `prepareCleanup({ id })` after recovering the failure. The saved cleanup plan identifies the wallet, source account, account snapshot, failed transaction, network, chain genesis hash, and fee ceiling. Its cumulative spending ceiling includes successful steps and every failed fee. The host then calls `cleanup({ id, approval })` with a fresh approval containing `id`, `scopeId`, `key`, `walletPublicKey`, `network`, `genesisHash`, `bundleDigest`, `recoveryDigest`, `expiresAtMs`, and `maxSpendLamports`. The host approval callback receives the job and `recoveryPlan` for verification.
+
+Cleanup closes the saved wrapped-SOL source to its owner. A memo binds the cleanup transaction to the recovery digest, giving each approved attempt a distinct identity even when the chain returns the same blockhash. Signed bytes and approval commit before submission. Receipt recovery uses the original signature. A finalized cleanup failure has its own fee witness; another attempt needs a new plan and approval. An absent source completes through a finalized account read. The final source check, recovery result, and wallet release preserve the same transaction boundary. Results distinguish a failed purchase from a confirmed purchase followed by recovered cleanup.
+
+All 402 architecture tests passed, and all 148 selected swap and prepared-transaction tests passed on Node 22.23.3. Seven child-process cases cover successful steps, failed setup/trade/cleanup, and process death after recovery cleanup submission. Fresh workers recover the same accepted transactions, then replay completed results with zero RPC requests. Other cases cover failure fees, recovery approval fields, receipt corruption, failed commits, expiry replacement, repeated cleanup failure, and legacy failed operations. Syntax checks passed for 403 files, and package coverage passed.
+
+This stage uses real signed messages with local RPC fixtures. Production quote acquisition, changed external balances, real router validator execution, the remaining host integrations, live CLI and runner execution, and the full completion checklist remain open.

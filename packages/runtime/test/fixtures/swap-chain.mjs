@@ -92,6 +92,8 @@ export function swapChain({ token2022 = false } = {}) {
             const trade = readSwapInstruction(ix, intent);
             state.source.amount -= BigInt(trade.inputAmountRaw); state.source.lamports -= Number(trade.inputAmountRaw);
             assert.ok(state.source.amount >= 0n); state.destination.amount += state.outputRaw;
+          } else if (ix.programId.toBase58() === 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr') {
+            assert.equal(ix.keys.length, 0); assert.match(ix.data.toString(), /^trebuchet-swap-cleanup:[a-f0-9]{64}$/);
           } else assert.fail('reviewed fixture instruction');
         }
         state.walletLamports -= state.fee; state.slot++;
