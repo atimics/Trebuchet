@@ -387,3 +387,26 @@ The Token-2022 NFT and fresh transfer-fee output case passed on Node 22.23.3 at 
 The classic NFT and prefunded transfer-fee output case passed on Node 25.8.2 at slot 451587028. It verified the same 4,862,590 raw tokens and 124,682-unit withheld fee. The existing one million lamports reduced the paid account rent to 3,196,880 lamports. One original withdrawal finalized, one duplicate preflight reply was recovered, and cached replay made zero RPC calls. All four drills used Solana test validator 2.3.13.
 
 The previous implementation head `9717dbc` passed all six GitHub checks. Current-head checks are recorded in PR #52. Whole-launch budgets, support-position creation, the remaining production adapters, live CLI and runner execution, desktop process separation, and the other completion requirements remain open.
+
+
+### Durable support-position service
+
+`@trebuchet/runtime/support-position` prepares a fixed-liquidity SOL-only position, saves the complete unsigned message, and binds review to the NFT identity, pool, range, deposit, fee, and account-rent ceilings. The host supplies the recoverable wallet and NFT signers. One atomic transaction creates the temporary SOL account, funds the deposit, opens the position, and returns its unused SOL. The wallet's existing wrapped-SOL account stays separate.
+
+The planner checks finalized pool, mint, vault, token, and tick-array accounts. It supports both pool token orders, classic and Token-2022 position NFTs, and the current indexed pool address format. Existing arrays and account prefunding reduce actual rent. Before a fresh send, it checks that the saved range still takes only SOL and that account identities and rent fit the approved plan. The full deposit, fee, and rent ceiling must be funded.
+
+The service reserves the wallet with approval and saves signed bytes before submission. Completion verifies the exact original message and both signatures, the NFT mint, new position accounts, exact native-vault deposit, unchanged balances of the other token, every rent payment, and the full wallet balance equation. The receipt records the original creation, so a later position closure or wallet transfer preserves that result. A failed atomic transaction retains its paid fee before wallet admission is released.
+
+All 77 focused tests passed on Node 22.23.3. These include four child-process crash cases: classic NFT, Token-2022 NFT, reversed pool order, and finalized transaction failure. Each recovers one submitted signature and replays its saved result with zero RPC calls. Storage, approval, concurrency, expiry, malformed account, changed receipt, and complete funding checks pass. All 701 architecture tests passed on Node 25.8.2.
+
+`npm run test:e2e:runtime-support:localnet` uses the real CLMM program with local test SOL. Each run creates its own pool, kills the worker after submission, recovers the original receipt through a real duplicate-preflight reply, and replays the saved result with zero RPC calls. Three cases passed on Solana test validator 2.3.13:
+
+| Case | Node | Public source slot | Deposit | Paid account rent | Fee | Returned temporary rent |
+| --- | --- | --- | --- | --- | --- | --- |
+| Classic position NFT | 22.23.3 | 451591936 | 10,000,000 | 152,709,360 | 80,000 | 2,039,280 |
+| Token-2022 NFT and fresh transfer-fee token account | 22.23.3 | 451592406 | 10,000,000 | 155,736,960 | 80,000 | 2,039,280 |
+| Reversed pool order and prefunded transfer-fee token account | 25.8.2 | 451593251 | 10,000,000 | 154,736,960 | 80,000 | 2,039,280 |
+
+All amounts in the table are lamports. Paid account rent includes the temporary account; its rent is returned by the same transaction. The large tick-array rent is separately bounded in the saved plan. Every case created liquidity `228409972`, finalized one support transaction, and recovered one duplicate reply.
+
+The production buy-support HTTP route and its review and recovery controls still need to adopt this service. The existing direct SDK path remains until that integration is delivered. The wider completion checklist stays open.

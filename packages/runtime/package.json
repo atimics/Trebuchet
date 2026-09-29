@@ -29,7 +29,9 @@
     "./quote-plan": "./src/quote-plan.js",
     "./quote-provider": "./src/quote-provider.js",
     "./position-withdrawal-plan": "./src/position-withdrawal-plan.js",
-    "./position-withdrawal": "./src/position-withdrawal.js"
+    "./position-withdrawal": "./src/position-withdrawal.js",
+    "./support-position-plan": "./src/support-position-plan.js",
+    "./support-position": "./src/support-position.js"
   },
   "engines": {
     "node": ">=22.13.0"

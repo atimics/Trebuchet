@@ -43,7 +43,9 @@ Buy Quotes now uses a durable acquisition workflow. The runtime combines allocat
 
 Wallet position withdrawal now saves its unsigned plan and spending limits before review. The runtime verifies the original receipt, returned tokens, closed position accounts, NFT burn, and exact fee and rent changes. A saved withdrawal remains recoverable after the position closes.
 
-The next spending paths are production token creation, uploads, support-position creation, and other wallet actions. Each path needs the same ownership, approval, signed-transaction record, and recovery rules. Token creation and upload host changes have pending approval requests described below.
+A durable support-position service now saves the fixed deposit and position identity, verifies complete receipts, and passes real CLMM crash drills for both pool token orders. The production buy-support route and its review and recovery controls are the next integration step.
+
+The remaining spending paths include production token creation, uploads, and other wallet actions. Each path needs the same ownership, approval, signed-transaction record, and recovery rules. Token creation and upload host changes have pending approval requests described below.
 
 Acceptance: extend the private-validator tests through each production host. Include interrupted submission, changed approval, failed storage commits, and cleanup after a finalized failure. The quote HTTP test now covers session access, competing requests, runtime restart, original receipt recovery, and separately approved cleanup. The production quote builder and the position withdrawal service also passed real Raydium transactions and process-recovery drills on the private validator. Withdrawal checks cover classic and Token-2022 position NFTs, transfer fees, new output accounts, and output accounts with existing SOL.
 

@@ -23,8 +23,8 @@ const mintData = (supply, decimals, authority = null) => encode(MintLayout, { mi
 const tokenData = (mint, owner, amount, native = false, frozen = false) => encode(AccountLayout, { mint, owner, amount, state: frozen ? 2 : 1,
   isNativeOption: native ? 1 : 0, isNative: native ? 2039280n : 0n });
 
-export function withdrawalChain({ token2022 = false, nft2022 = false, frozenNft = false, rewards = false, existing = false } = {}) {
-  const wallet = withdrawalWallet.publicKey, mint = key(60), nft = key(63), config = key(62), tableKey = key(70);
+export function withdrawalChain({ token2022 = false, nft2022 = false, frozenNft = false, rewards = false, existing = false, mintSeed = 60 } = {}) {
+  const wallet = withdrawalWallet.publicKey, mint = key(mintSeed), nft = key(63), config = key(62), tableKey = key(70);
   const sorted = [mint, NATIVE_MINT].sort((a, b) => Buffer.compare(a.toBuffer(), b.toBuffer()));
   const poolId = getPdaPoolId(CLMM_PROGRAM_ID, config, sorted[0], sorted[1]).publicKey;
   const vaults = sorted.map((value) => getPdaPoolVaultId(CLMM_PROGRAM_ID, poolId, value).publicKey);
