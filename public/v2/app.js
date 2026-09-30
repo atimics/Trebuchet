@@ -6,13 +6,9 @@ const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selec
 // allocationStartPrice).
 const PAIR_START_PREMIUM_PCT = 25;
 
-// New pools use Raydium's 1% tier (config 3, tick spacing 120). Tick spacing
-// 1 (the 0.04%/0.05% tiers) needs a tick-array bitmap extension for a
-// launch's price range, which several routers omit, so swaps failed; its
-// 0.6%-wide tick arrays also make nearly every position pay fresh rent, and
-// the fee earned the Fee Keys almost nothing. 1% also means a pair has to
-// drift further before arbitrage between pools pays.
-const DEFAULT_POOL_CONFIG_INDEX = 3;
+// New pools use Raydium's 0.25% tier (config 1, tick spacing 60).
+// The smaller spacing-1 tiers caused routing and rent issues on launch ranges.
+const DEFAULT_POOL_CONFIG_INDEX = 1;
 
 const views = {
   coins: { eyebrow: '', title: 'Coins' },
@@ -4446,7 +4442,7 @@ function normalizeClmmFeeTiers(tiers) {
 
 function feeTierLabel(tier) {
   const feePercent = Number(tier.tradeFeeRate || 0) / 10000;
-  return `${feePercent}% / spacing ${tier.tickSpacing}${Number(tier.index) === 3 ? ' (default)' : ''}`;
+  return `${feePercent}% / spacing ${tier.tickSpacing}${Number(tier.index) === DEFAULT_POOL_CONFIG_INDEX ? ' (default)' : ''}`;
 }
 
 function feeTierOptionsHtml(selectedIndex) {
@@ -5028,7 +5024,7 @@ function currentClassicModel() {
   // wallet. Per-slice recipients were typed addresses, so they are not used.
   const feeKeyRecipient = '';
   const sweepDestination = $('#sweepDestination').value.trim();
-  const targetMarketCapUsd = Math.max(0, parseNumericInput($('#targetMarketCapUsd').value, 250000));
+  const targetMarketCapUsd = Math.max(0, parseNumericInput($('#targetMarketCapUsd').value, 25000));
   const manualBands = parseManualLadderBands(state.baseManualLadderText);
   const supportDepth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
   const airdrop = currentAirdropPlan();
@@ -21548,7 +21544,7 @@ function newCoin() {
       launchSol: 0,
       vanity: {},
       poolTopology: {
-        targetMarketCapUsd: 250000,
+        targetMarketCapUsd: 25000,
         pools: [{
           id: 'sol-main', quoteToken: 'SOL', quoteSymbol: 'SOL', supplyPercent: 100,
           ammConfigIndex: DEFAULT_POOL_CONFIG_INDEX, distribution: [{ sharePercent: 100 }],
@@ -21565,7 +21561,7 @@ function newCoin() {
   state.solPoolConfigIndex = DEFAULT_POOL_CONFIG_INDEX;
   state.pairPoolConfigIndex = DEFAULT_POOL_CONFIG_INDEX;
   applyLaunchBudgetRecommendation(1, { announce: false });
-  if ($('#targetMarketCapUsd')) $('#targetMarketCapUsd').value = '250,000';
+  if ($('#targetMarketCapUsd')) $('#targetMarketCapUsd').value = '25,000';
   state.coins = { ...state.coins, key: null };
   setView('launch');
   setLaunchWorkspace('configure');

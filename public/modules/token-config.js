@@ -10,7 +10,7 @@ function addPool(initial = {}) {
   pools.push({
     quoteToken: initial.quoteToken || 'SOL',
     supplyPercent: initial.supplyPercent ?? defaultPct,
-    ammConfigIndex: 3,
+    ammConfigIndex: 1,
     quoteUsdOverride: null,
     quoteDecimalsOverride: null,
     quoteSymbolOverride: null,

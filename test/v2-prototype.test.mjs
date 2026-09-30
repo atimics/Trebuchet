@@ -2924,8 +2924,13 @@ test('v2 liquidity budget puts real SOL in the pool as buy support', () => {
   assert.match(html, /<h3 id=\"launchBudgetTitle\">SOL in the pool<\/h3>/);
 });
 
-test('v2 new pools use the 1% tier and pairs open above the SOL price', () => {
-  assert.match(js, /const DEFAULT_POOL_CONFIG_INDEX = 3;/);
+test('v2 new pools use the 0.25% tier and pairs open above the SOL price', () => {
+  assert.match(js, /const DEFAULT_POOL_CONFIG_INDEX = 1;/);
+  assert.match(html, /id="targetMarketCapUsd"[^>]*value="25,000"/);
+  assert.match(js, /targetMarketCapUsd: 25000,/);
+  assert.match(js, /\$\('#targetMarketCapUsd'\)\) \$\('#targetMarketCapUsd'\)\.value = '25,000'/);
+  assert.match(read('public/index.html'), /id="targetMarketCap"[^>]*value="25,000"/);
+  assert.match(read('public/modules/token-config.js'), /ammConfigIndex: 1,/);
   assert.match(js, /const PAIR_START_PREMIUM_PCT = 25;/);
   assert.match(js, /ammConfigIndex: state\.solPoolConfigIndex,/);
   assert.match(js, /ammConfigIndex: state\.pairPoolConfigIndex,/);

@@ -4012,7 +4012,7 @@ function addPool(initial = {}) {
   pools.push({
     quoteToken: initial.quoteToken || 'SOL',
     supplyPercent: initial.supplyPercent ?? defaultPct,
-    ammConfigIndex: 3,
+    ammConfigIndex: 1,
     quoteUsdOverride: null,
     quoteDecimalsOverride: null,
     quoteSymbolOverride: null,
@@ -9500,7 +9500,7 @@ function buildPoolNode(pool, idx) {
         <select data-field="ammConfig">
           ${feeTiers.map((t) => {
             const pct = (t.tradeFeeRate / 10000).toString();
-            const isDefault = t.index === 3;
+            const isDefault = t.index === 1;
             const isSelected = pool.ammConfigIndex === t.index;
             return `<option value="${t.index}" ${isSelected ? 'selected' : ''}>${pct}% / spacing ${t.tickSpacing}${isDefault ? ' (default)' : ''}</option>`;
           }).join('')}
@@ -12199,7 +12199,7 @@ function poolsMatchSimpleDefaults() {
     // through the user's last input vs. the canonical math can diverge
     // by 1 ULP. 0.01% is well below any user-visible difference.
     if (Math.abs(Number(p.supplyPercent) - e.supplyPercent) > 0.01) return false;
-    if (p.ammConfigIndex !== 3) return false; // 1% is the simple default
+    if (p.ammConfigIndex !== 1) return false; // 0.25% is the simple default
     // Distribution shape match. Compare slice count and each slice's
     // sharePercent within a small tolerance to absorb floating-point
     // drift. recipient/useExternalRecipient must be at defaults too —
@@ -12566,14 +12566,14 @@ function resetForNewLaunch() {
   //    attribute — empty for inputs that don't declare one (tokenName,
   //    tokenSymbol, tokenDescription), and the displayed default for the
   //    two that do (tokenSupply = "1,000,000,000", targetMarketCap =
-  //    "100,000"). This keeps the reset behaviour in sync with the HTML
+  //    "25,000"). This keeps the reset behaviour in sync with the HTML
   //    automatically: if those defaults are ever changed in index.html,
   //    the reset still does the right thing without needing to update
   //    this list.
   //
   //    Prior version blindly cleared targetMarketCap to '' alongside the
   //    text fields, which produced an empty market-cap field after Start
-  //    Over even though a fresh app open shows "100,000" — the bug Moose
+  //    Over even though a fresh app open shows "25,000" — the bug Moose
   //    flagged. The supply fix is a related tidy-up: prior code set it
   //    to '1000000000' (no commas), which display-mismatches the HTML
   //    default of '1,000,000,000'; the numeric value is identical after

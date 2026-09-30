@@ -81,6 +81,23 @@ const VALID_JPEG_LOGO_DATA_URL = logoDataUrl('image/jpeg', VALID_JPEG_LOGO_BYTES
 const VALID_GIF_LOGO_BYTES = gifLogoBytes(64, 64);
 const VALID_GIF_LOGO_DATA_URL = logoDataUrl('image/gif', VALID_GIF_LOGO_BYTES);
 
+test('new launch defaults use $25,000 and Raydium 0.25% pools', () => {
+  const token = { name: 'New Token', symbol: 'NEW', supply: '1000000000' };
+  const fresh = buildV2LaunchPlan({ token }, { demoMode: true });
+  assert.equal(fresh.poolTopology.targetMarketCapUsd, 25000);
+  assert.deepEqual(fresh.poolTopology.pools.map((pool) => pool.ammConfigIndex), [1, 1]);
+
+  const existing = buildV2LaunchPlan({
+    token,
+    poolTopology: {
+      targetMarketCapUsd: 250000,
+      pools: [{ quoteToken: 'SOL', supplyPercent: 100, ammConfigIndex: 8 }],
+    },
+  }, { demoMode: true });
+  assert.equal(existing.poolTopology.targetMarketCapUsd, 250000);
+  assert.equal(existing.poolTopology.pools[0].ammConfigIndex, 8);
+});
+
 test('buildV2LaunchPlan returns a normalized local-wallet run contract', () => {
   const input = {
     walletPublicKey: VALID_ROUND_TRIP_DESTINATION,
