@@ -26,6 +26,12 @@ export const DEFAULT_FLYWHEEL_HUBS = Object.freeze([
   { name: 'FLOOFY DOG', symbol: 'FLOOF', mint: 'FLFLJp1XTPrY7iLoKXZ9ZVZHGfxZMQMdPZtZCxfjHtsm' },
   { name: 'XRAT', symbol: 'XRAT', mint: '2vGfseKJFt6iakqFrWoeDdSz8dweWYk5xPXV9uvVXRAT' },
   { name: 'Degen Unit', symbol: 'DGU', mint: '7AL5rfx4Jf1DLFzZpQEPHkmR9BJjpcmWwne1f9xqfmTu' },
+  { name: 'XLRT', symbol: 'XLRT', mint: 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj' },
+  { name: 'wBTC', symbol: 'wBTC', mint: '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh' },
+  { name: 'wETH', symbol: 'wETH', mint: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs' },
+  { name: 'USDC', symbol: 'USDC', mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' },
+  { name: 'USDT', symbol: 'USDT', mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' },
+  { name: 'USD1', symbol: 'USD1', mint: 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB' },
 ].map(Object.freeze));
 
 export const DEFAULT_MEME_FLYWHEEL_MINTS = Object.freeze(DEFAULT_FLYWHEEL_HUBS.map((hub) => hub.mint));

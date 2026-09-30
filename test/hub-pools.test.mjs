@@ -4,10 +4,11 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { HUB_SOL_MINT as SOL, listFlywheelHubs, parseDexSolPools, parseGeckoSolPools, resolveFlywheelHub } from '../hubPoolService.js';
 import { parseDiscoveryMarketPool } from '../discoveryService.js';
+import { TOKEN_REGISTRY } from '../tokenRegistry.js';
 
 const defaults = listFlywheelHubs().defaults;
 const MINT = defaults[0].mint;
-const EXTRA = 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj';
+const EXTRA = '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo';
 const POOL = '57RyRYVULC8fy8AeZhiVkpAxNdt4NBQdcfaS78EwvwWP';
 const POOL2 = 'FpmpAMAKiZKNxqe7Qw7kW2JHxRBpm5D4ThpEoFNcB4X4';
 function dex(base = MINT, quote = SOL, liquidity = 100, address = POOL) {
@@ -21,14 +22,23 @@ function gecko(base = MINT, quote = SOL) {
 const response = (body, status = 200) => ({ ok: status === 200, status, json: async () => body });
 
 test('defaults are ordered and Discovery adds only unique direct SOL pairs', () => {
-  assert.deepEqual(defaults.map((hub) => hub.name), ['SEIGE', 'RUGOWEEN', 'RATICOIN', 'FLOOFY DOG', 'XRAT', 'Degen Unit']);
+  assert.deepEqual(defaults.map((hub) => hub.name), ['SEIGE', 'RUGOWEEN', 'RATICOIN', 'FLOOFY DOG', 'XRAT', 'Degen Unit', 'XLRT', 'wBTC', 'wETH', 'USDC', 'USDT', 'USD1']);
   const record = (mint, quoteMint) => ({ mint, symbol: 'X', market: { pool: { address: POOL, quoteMint } } });
   const catalog = listFlywheelHubs({ knownTokens: [record(MINT, SOL), record(EXTRA, SOL)],
     candidates: [record(EXTRA, SOL), record(defaults[1].mint, EXTRA), record(SOL, SOL)] });
-  assert.equal(catalog.defaults.length, 6);
-  assert.equal(catalog.defaults.at(-1).mint, '7AL5rfx4Jf1DLFzZpQEPHkmR9BJjpcmWwne1f9xqfmTu');
+  assert.equal(catalog.defaults.length, 12);
+  assert.equal(catalog.defaults.find((hub) => hub.symbol === 'DGU').mint, '7AL5rfx4Jf1DLFzZpQEPHkmR9BJjpcmWwne1f9xqfmTu');
   assert.deepEqual(catalog.discovery.map((hub) => hub.mint), [EXTRA]);
   assert.equal(listFlywheelHubs(null).discovery.length, 0);
+  const defaultMints = new Set(defaults.map((hub) => hub.mint));
+  for (const key of ['XLRT', 'WBTC', 'WETH', 'USDC', 'USDT', 'USD1']) {
+    assert.equal(TOKEN_REGISTRY[key].network, 'mainnet');
+    assert.ok(defaultMints.has(TOKEN_REGISTRY[key].address), `${key} uses the curated CA`);
+  }
+  for (const key of ['KYRO', 'RATI', 'RUBY']) {
+    assert.equal(TOKEN_REGISTRY[key].network, 'devnet');
+    assert.equal(defaultMints.has(TOKEN_REGISTRY[key].address), false, `${key} stays on devnet`);
+  }
 });
 
 test('pool matching checks both mints and the chain, then ranks by liquidity', () => {

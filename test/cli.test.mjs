@@ -349,7 +349,7 @@ test('flywheel pool commands curate and draw from the memecoin pool', async () =
   const listed = await invoke(['flywheel', 'list', '--config-dir', configDir, '--json']);
   assert.equal(listed.exitCode, CliExitCode.SUCCESS, listed.stdout + listed.stderr);
   const seeded = JSON.parse(listed.stdout).data.mints;
-  assert.equal(seeded.length, 6, 'seeded with the default hub tokens');
+  assert.equal(seeded.length, 12, 'seeded with the default hub tokens');
   assert.ok(seeded.includes('RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG'));
 
   const extra = 'So11111111111111111111111111111111111111112';
