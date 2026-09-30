@@ -69,6 +69,7 @@ test('grind returns a valid keypair matching the requested prefix', async () => 
   const result = await generateVanityKeypair({ prefix: 'R', threads: 2 });
   assert.ok(result.publicKey.startsWith('R'), `publicKey ${result.publicKey} should start with R`);
   assert.equal(result.secretKey.length, 64, 'secretKey should be 64 bytes');
+  assert.equal(result.effortVerification, 'local-unverified');
 });
 
 test('grind returns a keypair matching both requested start and end', async () => {

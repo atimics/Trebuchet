@@ -2241,7 +2241,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
         lastSend = now;
         lastAttempts = attempts;
         const epoch = attempts / expected;
-        res.write(`data: ${JSON.stringify({ type: 'progress', attempts, epoch, key })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'progress', attempts, epoch, key, effortVerification: 'local-unverified' })}\n\n`);
       },
     });
 
@@ -2268,6 +2268,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
           attempts: result.attempts,
           rarity: result.rarity,
           epochs: result.epochs,
+          effortVerification: result.effortVerification,
           expectedAttempts: result.expectedAttempts,
           target,
           prefix: prefix || null,
@@ -2330,6 +2331,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
         attempts: result.attempts,
         rarity: result.rarity,
         epochs: result.epochs,
+        effortVerification: result.effortVerification,
         expectedAttempts: result.expectedAttempts,
         target,
         prefix: prefix || null,
@@ -2450,6 +2452,7 @@ app.post('/api/generate-vanity-wallet', async (req, res) => {
         attempts: result.attempts,
         rarity: result.rarity,
         epochs: result.epochs,
+        effortVerification: result.effortVerification,
         expectedAttempts: result.expectedAttempts,
         target,
         prefix: prefix || null,

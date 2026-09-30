@@ -6595,8 +6595,8 @@ function vanityCandidateDetail(candidate) {
   const rarity = String(candidate.rarity || '').trim();
   const attempts = Number(candidate.attempts);
   parts.push(vanityCandidateTarget(candidate));
-  if (rarity) parts.push(rarity);
-  if (Number.isFinite(attempts) && attempts > 0) parts.push(`${attempts.toLocaleString()} tries`);
+  if (rarity) parts.push(`local grind grade: ${rarity}`);
+  if (Number.isFinite(attempts) && attempts > 0) parts.push(`${attempts.toLocaleString()} local tries`);
   if (candidate.persisted) parts.push('saved');
   return parts.join(' / ');
 }
@@ -6934,18 +6934,18 @@ function renderVanityCandidates() {
     const grade = vanityRarityGrade(rarity);
     const attempts = Number(candidate.attempts);
     const epochs = Number(candidate.epochs);
-    // The rarity is luck: how many of the expected tries the grind needed.
-    const luck = Number.isFinite(epochs) && epochs > 0 ? ` · found in ${epochs.toFixed(2)}× the expected tries` : '';
+    // Search effort comes from this device's concurrent workers.
+    const luck = Number.isFinite(epochs) && epochs > 0 ? ` · local count: ${epochs.toFixed(2)}× the expected tries` : '';
     const details = [
       vanityCandidateTarget(candidate),
-      Number.isFinite(attempts) && attempts > 0 ? `${formatVanityAttempts(attempts)} tries` : null,
+      Number.isFinite(attempts) && attempts > 0 ? `${formatVanityAttempts(attempts)} local tries` : null,
     ].filter(Boolean);
     return `
-    <button class="vanity-candidate grinder-row grade-${escapeHtml(grade)} ${isActive ? 'is-active' : ''}" type="button" data-action="select-vanity" data-public-key="${escapeHtml(candidate.publicKey)}" title="${escapeHtml(`${rarity}${luck}`)}" aria-pressed="${isActive ? 'true' : 'false'}">
+    <button class="vanity-candidate grinder-row grade-${escapeHtml(grade)} ${isActive ? 'is-active' : ''}" type="button" data-action="select-vanity" data-public-key="${escapeHtml(candidate.publicKey)}" title="${escapeHtml(`Local grind grade: ${rarity}${luck}`)}" aria-pressed="${isActive ? 'true' : 'false'}">
       <span class="grinder-radio" aria-hidden="true"></span>
       <span class="grinder-row-main">
         <code aria-label="Contract address ${escapeHtml(candidate.publicKey)}">${escapeHtml(fullAddress(candidate.publicKey))}</code>
-        <small><b class="vanity-grade grade-${escapeHtml(grade)}">${escapeHtml(rarity)}</b> · ${details.map(escapeHtml).join(' · ')}</small>
+        <small><b class="vanity-grade grade-${escapeHtml(grade)}">Local ${escapeHtml(rarity)}</b> · ${details.map(escapeHtml).join(' · ')}</small>
       </span>
       ${isActive ? '<span class="grinder-row-state">In use</span>' : ''}
     </button>
@@ -6973,6 +6973,7 @@ function renderVanityCandidates() {
       </button>
       ${candidateButtons}
     </div>
+    <p class="grinder-note">Grind grades and try counts come from this device's search. The address confirms the letter pattern.</p>
     <div class="grinder-actions">
       <button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
         <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>

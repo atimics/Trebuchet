@@ -217,6 +217,17 @@ Interrupted work is resumable only when on-chain and journal evidence make the
 next action safe. Trebuchet does not pretend an unknown partial state is
 complete.
 
+### Vanity CA search grades
+
+The grinder reports `attempts` across its worker threads. It divides that
+count by the expected attempts for the chosen letter pattern to show `epochs`
+and a local grade: Common, Rare, Legendary, or Mythic. Thread timing affects
+the count, so these values describe this device's search. They are not an
+independent rarity proof. The public address lets anyone check the letter
+pattern. The private seed stays on the device because it can recreate the
+mint key. Native and API JSON mark these fields with
+`"effortVerification":"local-unverified"`.
+
 ## Pool and distribution controls
 
 - **SOL and quote pools** — use the built-in SOL, USDC, Meme, or Reserve venues,

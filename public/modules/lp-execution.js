@@ -2021,7 +2021,7 @@ function updateGrindBar(epoch, attempts) {
     bar.style.background = gradient;
   }
 
-  label.textContent = tier.name + ' · Epoch ' + epoch.toFixed(2) + ' · ' + attempts.toLocaleString() + ' attempts';
+  label.textContent = 'Local grade ' + tier.name + ' · ' + epoch.toFixed(2) + '× expected · ' + attempts.toLocaleString() + ' local tries';
 }
 
 // ---- Live key display below the grind bar ----
@@ -2470,13 +2470,13 @@ function renderVanityCAList() {
     // Replace the tag's color class so re-renders for different tiers
     // don't accumulate stale classes.
     rarityEl.className = `tag is-size-7 ${tagClass}`;
-    rarityEl.textContent = ca.rarity;
+    rarityEl.textContent = 'Local ' + ca.rarity;
   }
   if (metaEl) {
     metaEl.textContent = [
       vanityCandidateTargetLabel(ca),
-      `${ca.attempts.toLocaleString()} attempts`,
-      typeof ca.epochs === 'number' ? `${ca.epochs.toFixed(1)}× epoch` : '',
+      `${ca.attempts.toLocaleString()} local tries`,
+      typeof ca.epochs === 'number' ? `${ca.epochs.toFixed(1)}× expected tries` : '',
     ].filter(Boolean).join(' · ');
   }
 

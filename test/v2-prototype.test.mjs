@@ -6679,8 +6679,10 @@ test('v2 contract address grinder lists saved addresses as rows with Signal grad
   assert.doesNotMatch(renderSource, /<span aria-hidden="true">\$<\/span>/);
   assert.doesNotMatch(renderSource, /padStart\(2, '0'\)/);
   assert.doesNotMatch(renderSource, /\} epochs`/);
-  // Luck is explained in words on hover, not shown as "epochs".
+  // Search effort is labeled as local on the candidate and in its note.
   assert.match(renderSource, /the expected tries/);
+  assert.match(renderSource, /Local grind grade:/);
+  assert.match(renderSource, /The address confirms the letter pattern/);
   assert.match(css, /--rarity-common: #c8dce6/);
   assert.match(css, /--rarity-fine: #8cdcff/);
   assert.match(css, /--rarity-rare: #be82ff/);

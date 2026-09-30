@@ -1,7 +1,7 @@
 /*
  * vanity_keygen.c -- High-performance Solana vanity keypair generator.
  *
- * Multi-threaded Ed25519 keypair grind with epoch tracking.
+ * Multi-threaded Ed25519 keypair grind with local effort tracking.
  * The master seed comes from the system CSPRNG and never leaves the process.
  * Each candidate's seed is secret: the master seed with the thread id and a
  * per-candidate counter mixed in. Ed25519 hashes every seed with SHA-512,
@@ -111,18 +111,10 @@ static inline int keypair_from_seed(uint8_t pk[32], uint8_t sk[64], const uint8_
 #endif
 }
 
-/* ------------------------------------------------------------------ */
-/* Deterministic seed chain for provable grind history                 */
-/* ------------------------------------------------------------------ */
-
-/* Each thread gets a unique seed derived from a master seed + thread id.
- * The seed chain advances by using the generated public key as the next
- * seed: seed_{i+1} = pk_i[0..31]. This is a deterministic one-way chain
- * (reversing it requires breaking Ed25519 preimage resistance).
- * The master seed is NEVER included in public output because it equals
- * the secret key of the first keypair in the chain. */
-
-#define SEED_CHAIN_BYTES 32
+/* Search effort is a local measurement. Threads race and total_attempts
+ * includes work completed after another thread found the winner. The public
+ * address proves the pattern match, not the attempt count or epoch grade.
+ * Keep the master seed private: publishing it exposes the mint secret key. */
 
 /* ------------------------------------------------------------------ */
 /* Fast suffix pre-check helpers                                       */
@@ -643,7 +635,8 @@ static void print_usage(const char *prog) {
         "  --quiet               Suppress progress output\n"
         "\n"
         "Output JSON:\n"
-        "  { secretKey, publicKey, attempts, rarity, expectedAttempts, ... }\n"
+        "  { secretKey, publicKey, attempts, rarity, epochs, ... }\n"
+        "  Attempts, rarity and epochs are local search measurements, not public proof.\n"
         "\n"
         "Examples:\n"
         "  %s --suffix RATi --threads 16 --out rati-ca.json\n"
@@ -949,7 +942,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "\r  Done! %llu attempts in %.1fs (%.1f K/s avg)\n",
                 (unsigned long long)total_attempts, elapsed,
                 (double)total_attempts / elapsed / 1000.0);
-        fprintf(stderr, "  Rarity: %s (%.2f epochs)\n\n",
+        fprintf(stderr, "  Local grind grade: %s (%.2f epochs, unverified)\n\n",
                 rarity_name(rarity), (double)total_attempts / expected);
     }
 
@@ -979,6 +972,8 @@ int main(int argc, char **argv) {
         ",\"rarity\":\"%s\"", rarity_name(rarity));
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
         ",\"epochs\":%.4f", (double)total_attempts / expected);
+    off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
+        ",\"effortVerification\":\"local-unverified\"");
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
         ",\"expectedAttempts\":%.0f", expected);
     off += snprintf(json_buf + off, sizeof(json_buf) - (size_t)off,
