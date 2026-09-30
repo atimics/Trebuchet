@@ -17132,3 +17132,21 @@ body[data-launch-identity="active"] #view-launch .primary-button:not(.custody-ac
   color: color-mix(in srgb, var(--coin-accent-2) 55%, var(--ink));
   font-size: 11px;
 }
+
+/* Hub choices share the supply editor's compact layout. */
+.hub-picker { margin: 12px 0; padding: 16px; border: 1px solid var(--line, #303942); border-radius: 14px; background: var(--panel, #14191e); }
+.hub-picker[hidden] { display: none; }
+.hub-picker-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.hub-picker p, .hub-picker small { color: var(--muted, #a3aeb8); font-size: 12px; }
+.hub-picker-scroll { max-height: 260px; overflow-y: auto; overscroll-behavior: contain; margin: 12px 0; }
+.hub-picker-group { font-weight: 700; margin: 10px 0 6px; }
+.hub-picker-token { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 10px; text-align: left; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
+.hub-picker-token:hover, .hub-picker-token:focus-visible { background: #ffffff09; border-color: var(--green); }
+.hub-picker-token code { grid-column: 1 / -1; font-size: 11px; color: var(--muted, #a3aeb8); }
+.hub-picker-token span { font-size: 11px; }
+.hub-picker-ca { display: grid; gap: 6px; margin: 12px 0; font-size: 12px; }
+.hub-picker-ca input { width: 100%; min-width: 0; box-sizing: border-box; }
+.hub-picker-result { display: grid; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line, #303942); }
+.hub-picker-result code { overflow-wrap: anywhere; font-size: 11px; }
+.hub-picker-result button { justify-self: start; }
+.hub-picker-status:empty { display: none; }

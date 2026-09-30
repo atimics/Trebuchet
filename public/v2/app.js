@@ -18687,12 +18687,133 @@ function refreshClassicPreview({ includePoolEditor = false } = {}) {
   drawLaunchCanvas();
 }
 
-function addCustomPool() {
+let hubPicker = { open: false, requestId: 0, catalog: null, result: null, loading: false, error: '', mint: '' };
+
+function hubPickerRows(catalog = {}, records = []) {
+  const rows = [];
+  const seen = new Set();
+  for (const hub of [...(catalog.defaults || []), ...(catalog.discovery || []), ...records.map((token) => ({
+    ...token, source: 'discovery', solPool: token.market?.solPool
+      || (token.market?.pool?.quoteMint === DEFAULT_SOL_MINT ? { ...token.market.pool, baseMint: token.mint } : null),
+  }))]) {
+    const pool = hub.solPool;
+    const directSol = pool?.address && ((pool.baseMint === hub.mint && pool.quoteMint === DEFAULT_SOL_MINT)
+      || (pool.quoteMint === hub.mint && pool.baseMint === DEFAULT_SOL_MINT));
+    if (!hub.mint || hub.mint === DEFAULT_SOL_MINT || seen.has(hub.mint)) continue;
+    if (hub.source !== 'default' && !directSol) continue;
+    seen.add(hub.mint);
+    rows.push(hub);
+  }
+  return rows;
+}
+
+function renderHubPicker() {
+  const host = $('#hubPicker');
+  if (!host) return;
+  host.hidden = !hubPicker.open;
+  if (!hubPicker.open) return;
+  const rows = hubPickerRows(hubPicker.catalog || {}, state.discovery.records);
+  const result = hubPicker.result;
+  const pool = result?.solPool;
+  host.innerHTML = `
+    <div class="hub-picker-heading"><strong>Choose HUB / SOL</strong><button type="button" class="pill-button" data-action="close-hub-picker" aria-label="Close hub picker">Close</button></div>
+    <p>Add a pair with a hub token. Its existing SOL pool completes the route.</p>
+    <div class="hub-picker-scroll" aria-label="Hub tokens">
+      ${['default', 'discovery'].map((source) => `<p class="hub-picker-group">${source === 'default' ? 'Defaults' : 'From Discovery · SOL pools'}</p>
+        ${rows.filter((hub) => hub.source === source).map((hub) => `<button class="hub-picker-token" type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}">
+          <strong>${escapeHtml(hub.name || hub.symbol || shortAddress(hub.mint))}</strong><span>${escapeHtml(hub.symbol || 'HUB')} / SOL</span><code>${escapeHtml(shortAddress(hub.mint))}</code>
+        </button>`).join('')}
+        ${source === 'discovery' && !rows.some((hub) => hub.source === source) ? '<small>Tokens with a SOL pool appear here after Discovery finds them.</small>' : ''}`).join('')}
+    </div>
+    <label class="hub-picker-ca" for="hubTokenCa">Token CA<input id="hubTokenCa" value="${escapeHtml(hubPicker.mint)}" placeholder="Paste any Solana token CA" autocomplete="off" spellcheck="false"></label>
+    <button class="pill-button" type="button" data-action="find-hub-pool">Find SOL pool</button>
+    <p class="hub-picker-status" role="status">${escapeHtml(hubPicker.loading ? 'Finding a SOL pool…' : hubPicker.error)}</p>
+    ${result ? `<div class="hub-picker-result"><strong>${escapeHtml(result.name)} · ${escapeHtml(result.symbol)} / SOL</strong>
+      <small>Token CA</small><code>${escapeHtml(result.mint)}</code>
+      <small>${escapeHtml(pool.dex)} · existing SOL pool</small><code>${escapeHtml(pool.address)}</code>
+      <small>Found through ${escapeHtml(pool.source)}. Pair checks run after selection.</small>
+      <button class="pill-button primary" type="button" data-action="use-hub-token">Use ${escapeHtml(result.symbol)}</button></div>` : ''}`;
+}
+
+async function openHubPicker() {
+  const requestId = hubPicker.requestId + 1;
+  hubPicker = { open: true, requestId, catalog: null, result: null, loading: false, error: '', mint: '' };
+  const picker = hubPicker;
+  renderHubPicker();
+  $('#hubPicker')?.scrollIntoView({ block: 'nearest' });
+  $('#hubTokenCa')?.focus({ preventScroll: true });
+  try {
+    if (!state.apiClient?.listFlywheelHubs) throw new Error('Connect to the Trebuchet app to load hub tokens.');
+    const catalog = await state.apiClient.listFlywheelHubs();
+    // A token lookup may already be running while the short list loads.
+    if (!hubPicker.open || hubPicker !== picker) return;
+    hubPicker.catalog = catalog;
+    renderHubPicker();
+  } catch (error) {
+    if (!hubPicker.open || hubPicker.requestId !== requestId) return;
+    hubPicker.error = error.message || 'Try loading hub tokens again.';
+    renderHubPicker();
+  }
+}
+
+function closeHubPicker() {
+  hubPicker.open = false;
+  hubPicker.requestId += 1;
+  renderHubPicker();
+  document.querySelector('[data-action="add-custom-pool"]')?.focus();
+}
+
+async function findHubPool(mint) {
+  const query = String(mint || $('#hubTokenCa')?.value || '').trim();
+  hubPicker.mint = query;
+  hubPicker.result = null;
+  hubPicker.error = '';
+  const requestId = ++hubPicker.requestId;
+  hubPicker.loading = true;
+  renderHubPicker();
+  try {
+    if (!isProbablySolanaAddress(query)) throw new Error('Enter a valid Solana token CA.');
+    if (!state.apiClient?.resolveFlywheelHub) throw new Error('Connect to the Trebuchet app to find a SOL pool.');
+    const hub = await state.apiClient.resolveFlywheelHub(query);
+    if (!hubPicker.open || requestId !== hubPicker.requestId) return;
+    if (hub.mint !== query || !hub.solPool?.address) throw new Error('Refresh the SOL pool lookup.');
+    hubPicker.result = hub;
+  } catch (error) {
+    if (!hubPicker.open || requestId !== hubPicker.requestId) return;
+    hubPicker.error = error.message || 'Try the SOL pool lookup again.';
+  } finally {
+    if (hubPicker.open && requestId === hubPicker.requestId) {
+      hubPicker.loading = false;
+      renderHubPicker();
+    }
+  }
+}
+
+function useHubToken() {
+  const hub = hubPicker.result;
+  if (!hub?.solPool?.address || hubPicker.loading || hub.mint !== hubPicker.mint) return;
+  if (hub.mint === ownTokenMint() || hub.mint === DEFAULT_SOL_MINT) {
+    hubPicker.error = 'Choose another hub token for this pair.';
+    renderHubPicker();
+    return;
+  }
+  if (state.customPools.some((pool) => pool.quoteMint === hub.mint)
+    || (Number($('#quotePoolPercent')?.value) > 0 && selectedClassicQuoteVenue().quoteMint === hub.mint)) {
+    hubPicker.error = 'This token is already in the supply split. Edit its pair settings there.';
+    renderHubPicker();
+    return;
+  }
+  closeHubPicker();
+  const poolId = addCustomPool(hub);
+  resolveCustomQuoteToken(poolId, { quiet: true }).catch(() => {});
+}
+
+function addCustomPool(hub = null) {
   state.customPoolCounter += 1;
   state.customPools.push({
     id: `custom-pool-${state.customPoolCounter}`,
-    quoteSymbol: 'QUOTE',
-    quoteMint: '',
+    quoteSymbol: hub?.symbol || 'QUOTE',
+    quoteMint: hub?.mint || '',
     supplyPercent: 5,
     ammConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
     sliceShares: '100',
@@ -18705,7 +18826,9 @@ function addCustomPool() {
   invalidateClassicOutputs();
   renderAll();
   scheduleMainPoolRebalance();
-  notify('Pair added');
+  scheduleLaunchAutoSave();
+  notify(hub ? `${hub.symbol} pair added` : 'Pair added');
+  return state.customPools.at(-1).id;
 }
 
 function removeCustomPool(poolId) {
@@ -21280,6 +21403,8 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
 
   try {
     const info = await state.apiClient.getQuoteTokenInfo(query);
+    if (!state.customPools.includes(pool) || customQuoteLookupValue(pool) !== query) return null;
+    if (info?.demo && pool.quoteSymbol && pool.quoteSymbol !== 'QUOTE') info.symbol = pool.quoteSymbol;
     if (info?.address) pool.quoteMint = info.address;
     if (info?.symbol) pool.quoteSymbol = String(info.symbol).toUpperCase();
     if (optionalDecimals(info?.decimals) !== undefined) pool.quoteDecimals = optionalDecimals(info.decimals);
@@ -21296,6 +21421,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
     say(badge.className === 'danger' ? 'Quote token blocked by safety check' : 'Quote token verified');
     return info;
   } catch (error) {
+    if (!state.customPools.includes(pool) || customQuoteLookupValue(pool) !== query) return null;
     state.quoteTokenInfo[poolId] = {
       query,
       loading: false,
@@ -23914,6 +24040,17 @@ const VORTEX_INPUT_IDS = new Set([
 ]);
 
 function handleDynamicInput(event) {
+  if (event.target.id === 'hubTokenCa') {
+    hubPicker.mint = event.target.value;
+    hubPicker.requestId += 1;
+    hubPicker.result = null;
+    hubPicker.loading = false;
+    hubPicker.error = '';
+    $('#hubPicker .hub-picker-result')?.remove();
+    const status = $('#hubPicker .hub-picker-status');
+    if (status) status.textContent = '';
+    return;
+  }
   const quoteMint = event.target?.dataset?.sellQuoteMint;
   if (quoteMint) {
     coinEvidence.set(quoteMint, { ...coinEvidence.get(quoteMint), amount: event.target.value });
@@ -24408,7 +24545,20 @@ function handleClick(event) {
   }
 
   if (action === 'add-custom-pool') {
-    addCustomPool();
+    openHubPicker();
+    return;
+  }
+
+  if (action === 'close-hub-picker') {
+    closeHubPicker();
+    return;
+  }
+  if (action === 'find-hub-pool') {
+    findHubPool(actionTarget.dataset.hubMint);
+    return;
+  }
+  if (action === 'use-hub-token') {
+    useHubToken();
     return;
   }
 
@@ -25009,6 +25159,10 @@ function bindEvents() {
     }
   });
   document.addEventListener('keydown', (event) => {
+    if (hubPicker.open && event.target.closest?.('#hubPicker')) {
+      if (event.key === 'Escape') { event.preventDefault(); closeHubPicker(); return; }
+      if (event.key === 'Enter' && event.target.id === 'hubTokenCa') { event.preventDefault(); findHubPool(); return; }
+    }
     const operatorPromptGate = $('#operatorPromptGate');
     if (operatorPromptGate && !operatorPromptGate.hidden) {
       if (trapDialogFocus(event, operatorPromptGate)) return;

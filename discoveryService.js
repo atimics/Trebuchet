@@ -1,3 +1,5 @@
+import { parseGeckoSolPools } from './hubPoolService.js';
+
 const DEFAULT_COLOR = '#6be2a2';
 const PUBLIC_MAINNET_RPC = Object.freeze({
   name: 'Public mainnet',
@@ -99,6 +101,7 @@ export function parseDiscoveryMarketPool(mint, payload) {
 
     return {
       source: 'GeckoTerminal',
+      solPool: parseGeckoSolPools(mint, payload)[0] || null,
       available: true,
       priceUsd,
       priceChange: {

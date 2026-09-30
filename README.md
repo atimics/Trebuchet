@@ -79,6 +79,22 @@ npm run web            # local Express app; open /v2/ for the Trebuchet shell
 The Electron process starts an authenticated loopback Express server on a free
 port and opens the selected UI in a sandboxed browser window.
 
+### Choose a hub token
+
+In a launch draft, open **More options → Supply and pools → Add pair**.
+The scroll list starts with **SEIGE, RUGOWEEN, RATICOIN, FLOOFY DOG, XRAT**.
+Discovery tokens with a recorded direct SOL pool follow the defaults.
+You can also paste a Solana token CA and choose **Find SOL pool**.
+
+The preview shows the full token CA, pool address, and venue. Choose **Use**
+to add the token pair at 5% of supply; SOL takes the remaining share.
+The selected CA stays in the saved launch plan. Token checks and funding
+estimates run through the usual launch flow.
+
+Pool lookup uses mainnet DexScreener data, with GeckoTerminal as a fallback.
+Every selection refreshes the lookup. The preview identifies an existing
+HUB/SOL market; swap routes are checked separately when funding the launch.
+
 ### Experimental read-only CLI
 
 Trebuchet now includes a headless command surface for deterministic planning

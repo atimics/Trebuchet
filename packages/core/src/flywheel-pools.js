@@ -19,12 +19,15 @@ export const FLYWHEEL_KINDS = Object.freeze(['meme', 'reserve']);
 
 // Seeded samples. The first entry is the long-standing default so existing
 // configs and plans keep working.
-export const DEFAULT_MEME_FLYWHEEL_MINTS = Object.freeze([
-  'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r', // $seige — original default
-  'FLFLJp1XTPrY7iLoKXZ9ZVZHGfxZMQMdPZtZCxfjHtsm',
-  '2vGfseKJFt6iakqFrWoeDdSz8dweWYk5xPXV9uvVXRAT',
-  'FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY', // $FLYBRAIN
-]);
+export const DEFAULT_FLYWHEEL_HUBS = Object.freeze([
+  { name: 'SEIGE', symbol: 'SEIGE', mint: 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r' },
+  { name: 'RUGOWEEN', symbol: 'RUG', mint: 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG' },
+  { name: 'RATICOIN', symbol: '$RATi', mint: 'Ci6Y1UX8bY4jxn6YiogJmdCxFEu2jmZhCcG65PStpump' },
+  { name: 'FLOOFY DOG', symbol: 'FLOOF', mint: 'FLFLJp1XTPrY7iLoKXZ9ZVZHGfxZMQMdPZtZCxfjHtsm' },
+  { name: 'XRAT', symbol: 'XRAT', mint: '2vGfseKJFt6iakqFrWoeDdSz8dweWYk5xPXV9uvVXRAT' },
+].map(Object.freeze));
+
+export const DEFAULT_MEME_FLYWHEEL_MINTS = Object.freeze(DEFAULT_FLYWHEEL_HUBS.map((hub) => hub.mint));
 
 export const DEFAULT_RESERVE_FLYWHEEL_MINTS = Object.freeze([
   'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj',

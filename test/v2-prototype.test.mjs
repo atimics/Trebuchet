@@ -1886,7 +1886,7 @@ test('v2 navigation and views stay wired together', () => {
 });
 
 test('v2 JavaScript render targets exist in the HTML shell', () => {
-  const ids = new Set(attrValues(html, 'id'));
+  const ids = new Set([...attrValues(html, 'id'), ...attrValues(js, 'id')]);
   const selectors = new Set([...js.matchAll(/\$\(['"]#([A-Za-z0-9_-]+)['"]\)/g)].map((match) => match[1]));
   const missing = [...selectors].filter((id) => !ids.has(id));
 
@@ -2909,7 +2909,7 @@ test('v2 SOL pool takes the remainder so the supply split totals 100%', () => {
   // Presets and pair changes keep held-back and airdrop shares.
   assert.doesNotMatch(js, /\$\('#mainPoolPercent'\)\.value = '100';/);
   assert.match(js, /\$\('#mainPoolPercent'\)\.value = String\(mainPoolRemainderPercent\(\)\)/);
-  assert.match(js, /notify\('Pair added'\)/);
+  assert.match(js, /notify\(hub \? `\$\{hub.symbol\} pair added` : 'Pair added'\)/);
 });
 
 test('v2 liquidity budget puts real SOL in the pool as buy support', () => {
@@ -6751,12 +6751,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=100/);
+  assert.match(html, /styles\.css\?v=101/);
   assert.match(html, /runtime-state\.js\?v=2/);
-  assert.match(html, /api-client\.js\?v=41/);
+  assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=193/);
-  assert.doesNotMatch(html, /app\.js\?v=193" type="module"/);
+  assert.match(html, /app\.js\?v=194/);
+  assert.doesNotMatch(html, /app\.js\?v=194" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');

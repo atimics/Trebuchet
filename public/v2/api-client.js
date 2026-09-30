@@ -810,6 +810,18 @@
       return data.estimate;
     }
 
+    async function listFlywheelHubs() {
+      return request('/api/v2/flywheel-hubs');
+    }
+
+    async function resolveFlywheelHub(mint) {
+      const data = await request('/api/v2/flywheel-hubs/resolve', {
+        method: 'POST', body: { mint: String(mint || '').trim() }, timeoutMs: 16000,
+      });
+      if (!data?.hub?.solPool?.address) throw new V2ApiError('Refresh the SOL pool lookup.', { code: 'BAD_HUB_POOL' });
+      return data.hub;
+    }
+
     async function getQuoteTokenInfo(quoteToken) {
       const token = String(quoteToken || '').trim();
       if (!token) throw new V2ApiError('Quote token is required.', { code: 'BAD_QUOTE_TOKEN' });
@@ -1134,6 +1146,8 @@
       withdrawPosition,
       getClmmFeeTiers,
       getQuoteTokenInfo,
+      listFlywheelHubs,
+      resolveFlywheelHub,
       getAirdropProgress,
       getAcquireQuoteTokens,
       getLpProgress,
