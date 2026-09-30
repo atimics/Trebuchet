@@ -3,8 +3,8 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-09-30T06:39:54.239Z",
-  "durationMs": 2965,
+  "generatedAt": "2026-09-30T16:57:17.511Z",
+  "durationMs": 2664,
   "target": "file:///Users/ratimics/.codex/worktrees/flywheel-hub-picker/trebuchet/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
@@ -19,10 +19,10 @@
     "keyboardWalkthrough"
   ],
   "assetHashes": {
-    "index.html": "67c17111c83d9e24179e21df2f47add0601275364789c6915a84cd8099295dfd",
+    "index.html": "1b21eb9b0b517009276d1bc67657e08f2ed8f908815f0c53132efa0818a6af8b",
     "styles.css": "c6b2896f71850c0acb29a24b53b310f94f0c0514a16cba001cf72a08a22e2d0b",
     "api-client.js": "bfd568e9f750638d02a638823817e317dfb65c3ed81e2d9e6f39a4f0a4f249ab",
-    "app.js": "bfd7ff453381d31372890ea92bcb13e93492cb7e3083bac553e6295f3cdb863a"
+    "app.js": "6650a5da618aa4748e0bf6ae7251d57a5aefe1a9fe3f283b86c4effba0d04795"
   },
   "viewports": [
     {

@@ -526,7 +526,7 @@ function normalizePoolTopology(input = {}) {
         quoteToken: 'SOL',
         quoteSymbol: 'SOL',
         supplyPercent: 70,
-        ammConfigIndex: 8,
+        ammConfigIndex: 1,
         distribution: fallbackDistribution,
         bootstrap: { mode: 'minimal' },
         ladder: {
@@ -543,7 +543,7 @@ function normalizePoolTopology(input = {}) {
         quoteMint: DEFAULT_MEME_FLYWHEEL_MINT,
         quoteSymbol: 'MEME',
         supplyPercent: 10,
-        ammConfigIndex: 5,
+        ammConfigIndex: 1,
         distribution: [{ sharePercent: 100 }],
         bootstrap: { mode: 'minimal' },
         ladder: { mode: 'off' },
@@ -620,7 +620,7 @@ function normalizePoolTopology(input = {}) {
     : { enabled: false, supplyPercent: 0, source: 'off' };
   const heldReservePercent = preallocation.supplyPercent + airdrop.supplyPercent;
   return {
-    targetMarketCapUsd: Math.max(0, numeric(input.targetMarketCapUsd, 250000)),
+    targetMarketCapUsd: Math.max(0, numeric(input.targetMarketCapUsd ?? 25000, 25000)),
     pools,
     allocations: classicAllocations({ pools }),
     totalPoolPercent,

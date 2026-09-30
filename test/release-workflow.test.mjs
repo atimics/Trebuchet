@@ -175,16 +175,16 @@ test('windows release builds installer and portable executable', () => {
 
 test('release build planner enforces complete signing credentials', () => {
   assert.equal(resolveReleaseBuild('macos-arm64', {}).trust, 'unsigned test artifact');
-  assert.equal(
-    resolveReleaseBuild('macos-arm64', {
-      CSC_LINK: 'base64-p12',
-      CSC_KEY_PASSWORD: 'secret',
-      APPLE_API_KEY: 'key',
-      APPLE_API_KEY_ID: 'kid',
-      APPLE_API_ISSUER: 'issuer',
-    }).trust,
-    'signed and notarized',
-  );
+  const signedMacPlan = resolveReleaseBuild('macos-arm64', {
+    CSC_LINK: 'base64-p12',
+    CSC_KEY_PASSWORD: 'secret',
+    APPLE_API_KEY: 'key',
+    APPLE_API_KEY_ID: 'kid',
+    APPLE_API_ISSUER: 'issuer',
+  });
+  assert.equal(signedMacPlan.trust, 'signed and notarized');
+  assert.ok(signedMacPlan.builderArgs.includes('-c.mac.hardenedRuntime=true'));
+  assert.ok(signedMacPlan.builderArgs.includes('-c.mac.notarize=true'));
   assert.throws(
     () => resolveReleaseBuild('macos-arm64', { CSC_LINK: 'base64-p12' }),
     /Incomplete macOS signing\/notarization configuration/,

@@ -2924,8 +2924,13 @@ test('v2 liquidity budget puts real SOL in the pool as buy support', () => {
   assert.match(html, /<h3 id=\"launchBudgetTitle\">SOL in the pool<\/h3>/);
 });
 
-test('v2 new pools use the 1% tier and pairs open above the SOL price', () => {
-  assert.match(js, /const DEFAULT_POOL_CONFIG_INDEX = 3;/);
+test('v2 new pools use the 0.25% tier and pairs open above the SOL price', () => {
+  assert.match(js, /const DEFAULT_POOL_CONFIG_INDEX = 1;/);
+  assert.match(html, /id="targetMarketCapUsd"[^>]*value="25,000"/);
+  assert.match(js, /targetMarketCapUsd: 25000,/);
+  assert.match(js, /\$\('#targetMarketCapUsd'\)\) \$\('#targetMarketCapUsd'\)\.value = '25,000'/);
+  assert.match(read('public/index.html'), /id="targetMarketCap"[^>]*value="25,000"/);
+  assert.match(read('public/modules/token-config.js'), /ammConfigIndex: 1,/);
   assert.match(js, /const PAIR_START_PREMIUM_PCT = 25;/);
   assert.match(js, /ammConfigIndex: state\.solPoolConfigIndex,/);
   assert.match(js, /ammConfigIndex: state\.pairPoolConfigIndex,/);
@@ -6755,8 +6760,8 @@ test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=194/);
-  assert.doesNotMatch(html, /app\.js\?v=194" type="module"/);
+  assert.match(html, /app\.js\?v=195/);
+  assert.doesNotMatch(html, /app\.js\?v=195" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
