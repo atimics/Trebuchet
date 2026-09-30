@@ -82,7 +82,7 @@ port and opens the selected UI in a sandboxed browser window.
 ### Choose a hub token
 
 In a launch draft, open **More options → Supply and pools → Add pair**.
-The scroll list starts with **SEIGE, RUGOWEEN, RATICOIN, FLOOFY DOG, XRAT**.
+The scroll list starts with **SEIGE, RUGOWEEN, RATICOIN, FLOOFY DOG, XRAT, Degen Unit (DGU)**.
 Discovery tokens with a recorded direct SOL pool follow the defaults.
 You can also paste a Solana token CA and choose **Find SOL pool**.
 

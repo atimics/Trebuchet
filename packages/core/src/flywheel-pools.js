@@ -25,6 +25,7 @@ export const DEFAULT_FLYWHEEL_HUBS = Object.freeze([
   { name: 'RATICOIN', symbol: '$RATi', mint: 'Ci6Y1UX8bY4jxn6YiogJmdCxFEu2jmZhCcG65PStpump' },
   { name: 'FLOOFY DOG', symbol: 'FLOOF', mint: 'FLFLJp1XTPrY7iLoKXZ9ZVZHGfxZMQMdPZtZCxfjHtsm' },
   { name: 'XRAT', symbol: 'XRAT', mint: '2vGfseKJFt6iakqFrWoeDdSz8dweWYk5xPXV9uvVXRAT' },
+  { name: 'Degen Unit', symbol: 'DGU', mint: '7AL5rfx4Jf1DLFzZpQEPHkmR9BJjpcmWwne1f9xqfmTu' },
 ].map(Object.freeze));
 
 export const DEFAULT_MEME_FLYWHEEL_MINTS = Object.freeze(DEFAULT_FLYWHEEL_HUBS.map((hub) => hub.mint));

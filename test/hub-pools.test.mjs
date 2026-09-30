@@ -21,11 +21,12 @@ function gecko(base = MINT, quote = SOL) {
 const response = (body, status = 200) => ({ ok: status === 200, status, json: async () => body });
 
 test('defaults are ordered and Discovery adds only unique direct SOL pairs', () => {
-  assert.deepEqual(defaults.map((hub) => hub.name), ['SEIGE', 'RUGOWEEN', 'RATICOIN', 'FLOOFY DOG', 'XRAT']);
+  assert.deepEqual(defaults.map((hub) => hub.name), ['SEIGE', 'RUGOWEEN', 'RATICOIN', 'FLOOFY DOG', 'XRAT', 'Degen Unit']);
   const record = (mint, quoteMint) => ({ mint, symbol: 'X', market: { pool: { address: POOL, quoteMint } } });
   const catalog = listFlywheelHubs({ knownTokens: [record(MINT, SOL), record(EXTRA, SOL)],
     candidates: [record(EXTRA, SOL), record(defaults[1].mint, EXTRA), record(SOL, SOL)] });
-  assert.equal(catalog.defaults.length, 5);
+  assert.equal(catalog.defaults.length, 6);
+  assert.equal(catalog.defaults.at(-1).mint, '7AL5rfx4Jf1DLFzZpQEPHkmR9BJjpcmWwne1f9xqfmTu');
   assert.deepEqual(catalog.discovery.map((hub) => hub.mint), [EXTRA]);
   assert.equal(listFlywheelHubs(null).discovery.length, 0);
 });

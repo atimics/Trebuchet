@@ -22,7 +22,7 @@ test('the seeded meme pool contains the sample memecoins', () => {
   assert.ok(DEFAULT_MEME_FLYWHEEL_MINTS.includes('2vGfseKJFt6iakqFrWoeDdSz8dweWYk5xPXV9uvVXRAT'));
   assert.ok(DEFAULT_MEME_FLYWHEEL_MINTS.includes('RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG'));
   assert.ok(DEFAULT_MEME_FLYWHEEL_MINTS.includes('Ci6Y1UX8bY4jxn6YiogJmdCxFEu2jmZhCcG65PStpump'));
-  assert.equal(DEFAULT_MEME_FLYWHEEL_MINTS.length, 5);
+  assert.equal(DEFAULT_MEME_FLYWHEEL_MINTS.length, 6);
 });
 
 test('picking is random, bounded, and avoids the last pick when it can', () => {
@@ -36,7 +36,7 @@ test('picking is random, bounded, and avoids the last pick when it can', () => {
 
 test('the store starts from defaults and persists edits', (t) => {
   const store = makeStore(t);
-  assert.equal(store.get('meme').length, 5);
+  assert.equal(store.get('meme').length, 6);
 
   store.add('meme', 'D'.repeat(32));
   assert.ok(store.get('meme').includes('D'.repeat(32)));
