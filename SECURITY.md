@@ -22,20 +22,19 @@ The audit policy is enforced by `scripts/audit-gate.mjs` (run in CI): **any** cr
 any high-severity finding that is not on the script's reviewed allowlist. Allowlisted residuals print with the reason
 they cannot be fixed. Keep `ALLOWED_HIGH` in that script and this section in sync.
 
-`npm audit` currently reports 7 high-severity dependency nodes, all in one unpatched transitive chain:
+`npm audit` reports 7 high-severity package entries as of 2026-09-30, all from the reviewed
+`GHSA-3GC7-FJRX-P6MG` advisory in the `bigint-buffer` dependency chain:
 
 - `bigint-buffer` through `@solana/spl-token` -> `@solana/buffer-layout-utils` (and `@raydium-io/raydium-sdk-v2`).
-- `elliptic` through `@metaplex-foundation/umi-uploader-irys` and its Irys upload stack.
 - `@irys/upload-solana`, `@irys/web-upload-solana`, and `@metaplex-foundation/umi-uploader-irys` report high only
   because they carry `@solana/spl-token` (the bigint-buffer chain above).
 
-Three findings that DID have safe fix paths were resolved by override/version bumps rather than left as residuals
-(release audit, August 2026). Each stays within its current major, so no API surface changed:
+Reviewed dependency fixes use updates within their current major version:
 
 | Package | Was | Now | Advisory |
 | --- | --- | --- | --- |
 | `multer` (direct) | `^2.1.1` | `^2.3.0` | DoS via deeply nested field names; DoS via incomplete cleanup of aborted uploads. Directly reachable — this is the logo-upload endpoint. |
-| `axios` (override) | `^1.16.1` | `^1.20.0` | Prototype pollution, request and proxy handling, and denial of service advisories. Reached via Raydium SDK and the Irys stack. |
+| `axios` (override) | `^1.19.0` | `^1.20.0` | September 2026 audit: prototype pollution, data-URI and proxy redirect ReDoS, HTTP/2 DNS/proxy handling, and HTTP/2 error handling. Reached via Raydium SDK and the Irys stack. |
 | `tmp` (override) | `^0.2.6` | `^0.2.7` | Type-confusion path traversal via non-string prefix/postfix. Reached via `arbundles -> tmp-promise`. |
 | `form-data` (override) | `^4.0.5` | `^4.0.6` | CRLF injection via unescaped multipart field names. |
 | `tar` (override) | `^7.5.15` | `^7.5.21` | **Critical** — six advisories incl. file smuggling via PAX header confusion and parser DoS. Build-time only (electron-builder), but it is the packaging toolchain. Was the finding that failed CI. |
@@ -47,6 +46,24 @@ fixed in place at any version — it is an ecosystem-wide residual affecting eve
 `@solana/spl-token` line. Mitigating detail: the vulnerability is in the *native* binding's `toBigIntLE()`, and
 this app logs `bigint: Failed to load bindings, pure JS will be used` at startup, so the affected native path is
 not the one in use. Revisit when `@solana/buffer-layout-utils` drops the dependency.
+
+### Axios update: 2026-09-30
+
+The Axios override and lockfile now use 1.20.0. This resolves the five high and two moderate
+Axios advisories affecting 1.19.0. See the [Axios 1.20.0 release notes](https://github.com/axios/axios/releases/tag/v1.20.0).
+The Raydium and Irys paths resolve to this same version.
+
+| Audit package entries | Before | After |
+| --- | ---: | ---: |
+| Critical | 0 | 0 |
+| High | 8 | 7 |
+| Moderate | 9 | 9 |
+| Low | 15 | 15 |
+| Total | 32 | 31 |
+
+Both `npm run check:audit` and `node scripts/audit-gate.mjs` pass after the update.
+The seven remaining high entries share the existing reviewed Solana parser advisory above.
+The counts describe package entries; a package can carry several advisories.
 
 ## Local API boundary
 

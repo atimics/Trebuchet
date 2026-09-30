@@ -349,19 +349,19 @@ test('flywheel pool commands curate and draw from the memecoin pool', async () =
   const listed = await invoke(['flywheel', 'list', '--config-dir', configDir, '--json']);
   assert.equal(listed.exitCode, CliExitCode.SUCCESS, listed.stdout + listed.stderr);
   const seeded = JSON.parse(listed.stdout).data.mints;
-  assert.equal(seeded.length, 4, 'seeded with the sample memecoins');
-  assert.ok(seeded.includes('FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY'));
+  assert.equal(seeded.length, 12, 'seeded with the default hub tokens');
+  assert.ok(seeded.includes('RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG'));
 
   const extra = 'So11111111111111111111111111111111111111112';
   const added = await invoke(['flywheel', 'add', '--mint', extra, '--config-dir', configDir, '--json']);
   assert.equal(added.exitCode, CliExitCode.SUCCESS);
   assert.ok(JSON.parse(added.stdout).data.mints.includes(extra));
 
-  const picks = await invoke(['flywheel', 'pick', '--last', 'FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY', '--config-dir', configDir, '--json']);
+  const picks = await invoke(['flywheel', 'pick', '--last', 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG', '--config-dir', configDir, '--json']);
   assert.equal(picks.exitCode, CliExitCode.SUCCESS);
   const picked = JSON.parse(picks.stdout).data.mint;
   assert.ok(seeded.concat(extra).includes(picked));
-  assert.notEqual(picked, 'FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY', 'avoids repeating the last pick');
+  assert.notEqual(picked, 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG', 'avoids repeating the last pick');
 
   const removed = await invoke(['flywheel', 'remove', '--mint', extra, '--config-dir', configDir, '--json']);
   assert.equal(removed.exitCode, CliExitCode.SUCCESS);

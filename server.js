@@ -1,3 +1,4 @@
+import { listFlywheelHubs, resolveFlywheelHub } from './hubPoolService.js';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
@@ -3464,6 +3465,23 @@ app.post('/api/v2/launch-configs/remove', (req, res) => {
 
 // Flywheel pools: the meme flywheel draws a random pairing from a curated
 // pool of memecoins instead of one hardcoded mint. Operators can curate it.
+app.get('/api/v2/flywheel-hubs', (_req, res) => {
+  try {
+    res.json({ success: true, ...listFlywheelHubs(discoveryStore.getSnapshot()) });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.post('/api/v2/flywheel-hubs/resolve', async (req, res) => {
+  try {
+    const hub = await resolveFlywheelHub(req.body?.mint);
+    res.json({ success: true, hub });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
 app.get('/api/v2/flywheel-pools', (_req, res) => {
   try {
     res.json({ success: true, pools: launchFlywheels.all() });
