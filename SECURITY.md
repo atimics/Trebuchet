@@ -22,7 +22,7 @@ The audit policy is enforced by `scripts/audit-gate.mjs` (run in CI): **any** cr
 any high-severity finding that is not on the script's reviewed allowlist. Allowlisted residuals print with the reason
 they cannot be fixed. Keep `ALLOWED_HIGH` in that script and this section in sync.
 
-`npm audit` currently reports 4 high-severity findings, all in one unfixable transitive chain:
+`npm audit` currently reports 7 high-severity dependency nodes, all in one unpatched transitive chain:
 
 - `bigint-buffer` through `@solana/spl-token` -> `@solana/buffer-layout-utils` (and `@raydium-io/raydium-sdk-v2`).
 - `elliptic` through `@metaplex-foundation/umi-uploader-irys` and its Irys upload stack.
@@ -35,7 +35,7 @@ Three findings that DID have safe fix paths were resolved by override/version bu
 | Package | Was | Now | Advisory |
 | --- | --- | --- | --- |
 | `multer` (direct) | `^2.1.1` | `^2.3.0` | DoS via deeply nested field names; DoS via incomplete cleanup of aborted uploads. Directly reachable — this is the logo-upload endpoint. |
-| `axios` (override) | `^1.16.1` | `^1.19.0` | Ten advisories incl. prototype pollution, `maxBodyLength` bypass, `NO_PROXY` bypass. Reached via Raydium SDK and the Irys stack. |
+| `axios` (override) | `^1.16.1` | `^1.20.0` | Prototype pollution, request and proxy handling, and denial of service advisories. Reached via Raydium SDK and the Irys stack. |
 | `tmp` (override) | `^0.2.6` | `^0.2.7` | Type-confusion path traversal via non-string prefix/postfix. Reached via `arbundles -> tmp-promise`. |
 | `form-data` (override) | `^4.0.5` | `^4.0.6` | CRLF injection via unescaped multipart field names. |
 | `tar` (override) | `^7.5.15` | `^7.5.21` | **Critical** — six advisories incl. file smuggling via PAX header confusion and parser DoS. Build-time only (electron-builder), but it is the packaging toolchain. Was the finding that failed CI. |
