@@ -104,7 +104,11 @@ export function resolveReleaseBuild(target, env = process.env) {
 
     if (macReady) {
       plan.trust = 'signed and notarized';
-      plan.builderArgs.push('-c.forceCodeSigning=true', '-c.mac.notarize=true');
+      plan.builderArgs.push(
+        '-c.forceCodeSigning=true',
+        '-c.mac.hardenedRuntime=true',
+        '-c.mac.notarize=true',
+      );
     } else {
       plan.trust = 'unsigned test artifact';
       plan.builderArgs.push(
