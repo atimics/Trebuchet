@@ -11,13 +11,17 @@
 //            apps cannot import it; Trebuchet signs the create-mint
 //            transaction with it directly (packages/core/src/split-key.js).
 
-import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as secretStore from './secretStore.js';
+import { atomicWriteJson, readJsonArrayStrict } from './secureJsonFile.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Maps each decoded entry to the raw on-disk record it came from. Writes start
+// from that raw record, so ciphertext we could not decrypt is never dropped.
+const sourceRecords = new WeakMap();
 
 function configDir() {
   return process.env.TREBUCHET_CONFIG_DIR || __dirname;
@@ -65,11 +69,14 @@ function decodeEntry(raw) {
     else out.secretKey = secret;
   }
 
+  sourceRecords.set(out, raw);
   return out;
 }
 
 function encodeEntry(entry) {
+  const prior = sourceRecords.get(entry) || {};
   const out = {
+    ...prior,
     publicKey: entry.publicKey,
     createdAt: entry.createdAt,
     rarity: entry.rarity || 'Common',
@@ -84,46 +91,45 @@ function encodeEntry(entry) {
     addressLength: Number.isInteger(entry.addressLength) ? entry.addressLength : null,
     keyType: entry.keyType === 'scalar' ? 'scalar' : 'seed',
   };
+  // Write a secret only when we hold one. Otherwise keep whatever the prior
+  // record had (secretKeyEnc or a legacy plaintext secretKey) byte for byte.
   const secret = entry.keyType === 'scalar' ? entry.scalar : entry.secretKey;
   if (Array.isArray(secret)) {
     out.secretKeyEnc = secretStore.encryptString(JSON.stringify(secret));
+    delete out.secretKey;
   }
   return out;
 }
 
 function readRaw() {
-  try {
-    if (!fs.existsSync(storeFile())) return [];
-    const parsed = JSON.parse(fs.readFileSync(storeFile(), 'utf8'));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (e) {
-    console.warn('vanityCaStore: failed to read, treating as empty:', e.message);
-    return [];
-  }
+  return readJsonArrayStrict(storeFile(), 'Vanity CA store');
 }
 
+function isValidRecord(raw) {
+  return raw && typeof raw === 'object' && typeof raw.publicKey === 'string' && raw.publicKey.length > 0;
+}
+
+// Throws on a damaged file or a failed write. The old file stays in place.
 function persist(list) {
-  try {
-    fs.mkdirSync(configDir(), { recursive: true });
-    fs.writeFileSync(storeFile(), JSON.stringify(list.map(encodeEntry), null, 2) + '\n');
-  } catch (e) {
-    console.error('vanityCaStore: failed to save:', e.message);
-  }
+  // Keep records we do not understand (no public key) instead of dropping them.
+  const unknown = readRaw().filter((raw) => !isValidRecord(raw));
+  atomicWriteJson(storeFile(), [...list.map(encodeEntry), ...unknown], 'Vanity CA store');
 }
 
 function load() {
   const raw = readRaw();
-  const decodedAll = raw.map(decodeEntry);
+  const decodedAll = raw.map((record) => decodeEntry(isValidRecord(record) ? record : {}));
   const decoded = decodedAll
     .filter((entry) => typeof entry.publicKey === 'string' && entry.publicKey.length > 0);
 
-  const hasLegacyPlaintext = raw.some((entry) => Array.isArray(entry.secretKey));
+  const hasLegacyPlaintext = raw.some((entry) => Array.isArray(entry?.secretKey));
   const hasReencryptableTokens = raw.some((entry) =>
-    secretStore.shouldReencryptToken(entry.secretKeyEnc));
+    secretStore.shouldReencryptToken(entry?.secretKeyEnc));
   const hasReencryptFailure = raw.some((entry, idx) =>
-    secretStore.shouldReencryptToken(entry.secretKeyEnc) && !hasSecret(decodedAll[idx]));
+    secretStore.shouldReencryptToken(entry?.secretKeyEnc) && !hasSecret(decodedAll[idx]));
   if (hasLegacyPlaintext || (hasReencryptableTokens && !hasReencryptFailure)) {
-    persist(decoded);
+    try { persist(decoded); }
+    catch (e) { console.warn('vanityCaStore: migration not saved:', e.message); }
   } else if (hasReencryptableTokens && hasReencryptFailure) {
     console.warn('vanityCaStore: skipped secret migration because at least one entry could not be decrypted');
   }
@@ -181,7 +187,11 @@ export function add(entry) {
     caseInsensitive: entry.caseInsensitive === true,
     addressLength: Number.isInteger(entry.addressLength) ? entry.addressLength : null,
   };
-  if (idx >= 0) list[idx] = { ...list[idx], ...next, createdAt: list[idx].createdAt || next.createdAt };
+  if (idx >= 0) {
+    const merged = { ...list[idx], ...next, createdAt: list[idx].createdAt || next.createdAt };
+    sourceRecords.set(merged, sourceRecords.get(list[idx]));
+    list[idx] = merged;
+  }
   else list.push(next);
   persist(list);
 }
@@ -196,8 +206,7 @@ export function removePinEncrypted() {
   const raw = readRaw();
   const filteredRaw = raw.filter((entry) => !secretStore.isSecretPinToken(entry?.secretKeyEnc));
   if (filteredRaw.length !== raw.length) {
-    fs.mkdirSync(configDir(), { recursive: true });
-    fs.writeFileSync(storeFile(), JSON.stringify(filteredRaw, null, 2) + '\n');
+    atomicWriteJson(storeFile(), filteredRaw, 'Vanity CA store');
   }
   return raw.length - filteredRaw.length;
 }

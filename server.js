@@ -856,7 +856,8 @@ function migrateSecretsToUnlockedPin() {
   // These loads opportunistically rewrite legacy/plain/safeStorage tokens
   // into pin: tokens when the PIN key is currently unlocked.
   pendingWallets.list();
-  vanityCaStore.list();
+  // A damaged vanity file must not break unlock. It is left untouched on disk.
+  try { vanityCaStore.list(); } catch (error) { console.warn('Vanity CA migration skipped:', error.message); }
 }
 
 
@@ -2141,7 +2142,11 @@ app.post('/api/vanity-split/jobs', (req, res) => {
 });
 
 app.get('/api/vanity-split/jobs', (_req, res) => {
-  res.json({ success: true, jobs: splitJobStore.list() });
+  try {
+    res.json({ success: true, jobs: splitJobStore.list() });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 app.post('/api/vanity-split/jobs/complete', (req, res) => {
@@ -2158,8 +2163,12 @@ app.post('/api/vanity-split/jobs/complete', (req, res) => {
 });
 
 app.post('/api/vanity-split/jobs/remove', (req, res) => {
-  splitJobStore.remove(String(req.body?.id || ''));
-  res.json({ success: true });
+  try {
+    splitJobStore.remove(String(req.body?.id || ''));
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 app.post('/api/vanity-ca-candidates/import', (req, res) => {
@@ -2416,7 +2425,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
     res.end();
   } catch (error) {
     // An unfinished split job's secret is useless without its offset.
-    if (splitJob) splitJobStore.remove(splitJob.id);
+    if (splitJob) { try { splitJobStore.remove(splitJob.id); } catch (storeError) { console.warn('Split job cleanup skipped:', storeError.message); } }
     // CANCELLED is a structured error code surfaced by vanityKeygen.js
     // when cancelVanityGrind() was called. It's an expected event — the
     // user clicked Cancel — so emit a dedicated {type:'cancelled'}

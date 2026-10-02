@@ -7,10 +7,10 @@
 // so a long grind (e.g. on rented machines) survives an app restart.
 
 import crypto from 'crypto';
-import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as secretStore from './secretStore.js';
+import { atomicWriteJson, readJsonArrayStrict } from './secureJsonFile.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,20 +19,13 @@ function storeFile() {
   return path.join(process.env.TREBUCHET_CONFIG_DIR || __dirname, 'splitJobs.json');
 }
 
+// Throws on a damaged file and leaves it untouched.
 function readRaw() {
-  try {
-    if (!fs.existsSync(storeFile())) return [];
-    const parsed = JSON.parse(fs.readFileSync(storeFile(), 'utf8'));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (e) {
-    console.warn('splitJobStore: failed to read, treating as empty:', e.message);
-    return [];
-  }
+  return readJsonArrayStrict(storeFile(), 'Split job store');
 }
 
 function writeRaw(list) {
-  fs.mkdirSync(path.dirname(storeFile()), { recursive: true });
-  fs.writeFileSync(storeFile(), `${JSON.stringify(list, null, 2)}\n`);
+  atomicWriteJson(storeFile(), list, 'Split job store');
 }
 
 function publicFields(raw) {
