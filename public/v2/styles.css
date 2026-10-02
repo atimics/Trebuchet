@@ -15165,6 +15165,54 @@ body[data-launch-running="true"] .workspace {
   margin: 8px 16px 16px;
 }
 
+/* Launches list in the sidebar: switch between saved launches or start a new one. */
+.saved-launches[hidden] { display: none; }
+.saved-launches {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  min-width: 0;
+}
+.saved-launches-title {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.saved-launch-rows { display: grid; gap: 4px; }
+.saved-launch-row,
+.saved-launch-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--line, rgb(255 255 255 / .12));
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.saved-launch-row span {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-launch-row.is-open { border-left: 2px solid var(--green); }
+.saved-launch-row:hover:not(:disabled),
+.saved-launch-new:hover:not(:disabled),
+.saved-launch-row:focus-visible,
+.saved-launch-new:focus-visible { border-color: var(--green); outline: none; }
+.saved-launch-row:disabled,
+.saved-launch-new:disabled { opacity: .45; cursor: not-allowed; }
+.saved-launches-note { color: var(--muted); font-size: 10px; line-height: 1.4; }
+
 /* The practice result explains itself in a sentence; let it wrap. */
 .practice-result .finalize-head p {
   white-space: normal;
@@ -17159,3 +17207,368 @@ body[data-launch-identity="active"] #view-launch .primary-button:not(.custody-ac
 .hub-picker-result code { overflow-wrap: anywhere; font-size: 11px; }
 .hub-picker-result button { justify-self: start; }
 .hub-picker-status:empty { display: none; }
+
+/* Lean launch view. It borrows the NFT view's panels, tables and tags. */
+.lean-lead { margin: 0; line-height: 1.5; max-width: 82ch; }
+.lean-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.lean-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.lean-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lean-field.lean-wide, .lean-form > .lean-wide { grid-column: 1 / -1; }
+.lean-field input:not([type="file"]):not([type="checkbox"]), .lean-field textarea, .lean-field select {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--panel-strong); color: var(--ink); font: inherit; min-width: 0; box-sizing: border-box;
+}
+.lean-field select { height: 30px; padding: 0 6px; }
+.lean-depth { display: flex; flex-direction: column; gap: 10px; }
+.lean-facts { margin: 0; padding-left: 18px; display: grid; gap: 6px; line-height: 1.45; }
+@media (max-width: 960px) { .lean-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* Per-pool advanced controls: readable helper text, live feedback, and a
+   fee-tier readout that names the chosen value. */
+.supply-field > span {
+  color: var(--ink);
+}
+
+.supply-field > small {
+  color: var(--muted);
+}
+
+.supply-feedback {
+  color: var(--muted);
+}
+
+.supply-feedback:empty {
+  display: none;
+}
+
+.supply-feedback.is-warn {
+  padding-left: 8px;
+  border-left: 2px solid var(--amber);
+  color: var(--ink);
+}
+
+.supply-field input[aria-invalid="true"],
+.supply-field textarea[aria-invalid="true"] {
+  border-color: var(--red);
+}
+
+.supply-field input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.choice-readout {
+  display: block;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.choice-ticks[aria-hidden="true"] button {
+  cursor: pointer;
+}
+
+/* Many labels: equal columns that wrap onto rows, so none sit at ragged
+   gaps. They are a shortcut; the readout and the thumb give the value. */
+.choice-control.has-many .choice-ticks {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  justify-content: stretch;
+  gap: 2px;
+}
+
+.choice-control.has-many .choice-ticks button {
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .choice-control.has-many .choice-ticks {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+/* Launch screen: one next action. A third column holds the Next card, cost,
+   supply and liquidity, so the first view answers "what is next, and what does
+   it cost" without opening a drawer. Rows keep the names of their panes. */
+.coin-state-layout { grid-template-columns: 236px minmax(0, 1fr) 300px; }
+.coin-state-layout > .coin-state { grid-column: 1; grid-row: 1; }
+.coin-state-layout > .launch-workspace-viewport { grid-column: 2; grid-row: 1; min-width: 0; }
+.coin-state-layout > .launch-next-rail { grid-column: 3; grid-row: 1; }
+.launch-next-rail {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-left: 0;
+  background: var(--panel);
+}
+.launch-next-rail .rail-next,
+.launch-next-rail .rail-block {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.launch-next-rail .rail-block:last-child { border-bottom: 0; }
+.launch-next-rail .rail-next { background: var(--panel-strong); border-bottom-color: var(--line-strong); }
+.launch-next-rail .rail-next h2 { margin: 0; font-size: 14px; line-height: 1.4; }
+.launch-next-rail .rail-next p { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.launch-next-rail .rail-next .rail-warn { color: var(--amber); font-weight: 700; }
+.launch-next-rail .rail-label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.launch-next-rail .rail-next .rail-label { color: var(--green); }
+.launch-next-rail .rail-act { width: 100%; min-height: 44px; font-size: 12px; font-weight: 700; }
+.launch-next-rail .rail-head,
+.launch-next-rail .rail-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 12px; }
+.launch-next-rail .rail-head small { font-size: 11px; color: var(--muted); text-align: right; }
+.launch-next-rail .rail-row span { color: var(--muted); }
+.launch-next-rail .rail-row b { font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+.launch-next-rail .rail-total { padding-top: 6px; border-top: 1px solid var(--line); }
+.launch-next-rail .rail-total b { font-size: 20px; font-weight: 700; }
+
+/* The corner buttons are replaced by the Next card. The charts stay in their drawer as optional detail. */
+[data-next-fact] { display: none !important; }
+
+/* Type: nothing below 11px on the launch screen. */
+body #view-launch .config-grid label > span,
+body #view-launch .logo-input-label,
+body #view-launch .launch-budget-recommender .eyebrow,
+body .logo-upload-meta,
+body .field-hint,
+body .coin-fact small,
+body .launch-mode > small,
+body .sidebar-footer small,
+body .brand small { font-size: 11px; }
+body .coin-fact strong,
+body .nav-item,
+body .nav-item span,
+body #view-launch .primary-button,
+body #view-launch .secondary-button,
+body #view-launch .pill-button,
+body #view-launch .environment-button,
+body #view-launch .launch-budget-presets button { font-size: 12px; }
+
+/* The active nav icon stays an icon: the identity accent colours it, it does not fill it. */
+body[data-launch-identity="active"] .nav-item.is-active i { background: none; }
+
+/* The pool-size block fits its pane at every width. */
+.launch-budget-recommender { min-width: 0; max-width: 100%; }
+.launch-budget-presets { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* Coin card text stays readable on the light theme. */
+body.light-mode .coin-card-ui__copy,
+body.light-mode .coin-card-ui__copy * { color: var(--ink); }
+body.light-mode .coin-card-ui__status { color: var(--muted); }
+
+@media (max-width: 1199px) {
+  .coin-state-layout { grid-template-columns: 236px minmax(0, 1fr); }
+  .coin-state-layout > .launch-next-rail { grid-column: 1 / -1; grid-row: 1; border-left: 1px solid var(--line-strong); border-bottom: 0; }
+  .coin-state-layout > .coin-state { grid-column: 1; grid-row: 2; }
+  .coin-state-layout > .launch-workspace-viewport { grid-column: 2; grid-row: 2; }
+  .launch-next-rail .rail-block { display: none; }
+}
+@media (max-width: 900px) {
+  .coin-state-layout { grid-template-columns: minmax(0, 1fr); }
+  .coin-state-layout > .coin-state,
+  .coin-state-layout > .launch-workspace-viewport { grid-column: 1; }
+  .coin-state-layout > .coin-state { grid-row: 1; }
+  .coin-state-layout > .launch-workspace-viewport { grid-row: 2; }
+  .coin-state-layout > .launch-next-rail { grid-row: 3; }
+  .launch-next-rail {
+    position: fixed; left: 0; right: 0; bottom: 52px; z-index: 30;
+    border: 0; border-top: 1px solid var(--green);
+  }
+  .launch-next-rail .rail-next p { display: none; }
+  .launch-next-rail .rail-next { grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding: 8px 12px; }
+  .launch-next-rail .rail-next .rail-label { display: none; }
+  .launch-next-rail .rail-act { width: auto; padding: 0 14px; }
+}
+#savedLaunches{display:none!important}
+
+/* The work area is narrower with the rail, so the form and the pool block stack and fit. */
+@media (min-width: 901px) {
+  body #view-launch .compact-workbench { grid-template-columns: minmax(0, 1fr); }
+  body #view-launch .compact-workbench .config-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+body #view-launch .launch-budget-input { min-width: 0; }
+body #view-launch .launch-budget-head { flex-wrap: wrap; gap: 12px; }
+body .logo-upload-control { flex-wrap: wrap; }
+body .logo-upload-meta { flex-basis: 100%; }
+body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; white-space: normal; text-align: left; }
+
+/* Pool price map (see poolMapSvg): one picture of what the pool controls set. */
+.pool-map { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); background: var(--panel-strong); }
+.pool-map svg { width: 100%; height: auto; display: block; font-family: var(--mono); }
+.pool-map .pm-axis { stroke: var(--line-strong); stroke-width: 1; }
+.pool-map .pm-start { stroke: var(--green); stroke-width: 1.5; }
+.pool-map .pm-sol { stroke: var(--blue); stroke-width: 1; stroke-dasharray: 3 3; }
+.pool-map .pm-gap { stroke: var(--blue); stroke-width: 1; }
+.pool-map .pm-main { fill: color-mix(in srgb, var(--green) 22%, transparent); stroke: var(--green); stroke-width: 1; }
+.pool-map .pm-band { fill: color-mix(in srgb, var(--violet) 55%, transparent); stroke: var(--violet); stroke-width: 1; }
+.pool-map .pm-support { fill: color-mix(in srgb, var(--amber) 40%, transparent); stroke: var(--amber); stroke-width: 1; }
+.pool-map .pm-off { fill: none; stroke: var(--subtle); stroke-width: 1; stroke-dasharray: 3 3; }
+.pool-map .pm-slice { stroke: var(--green); stroke-width: 1; }
+.pool-map .pm-slice-0 { fill: color-mix(in srgb, var(--green) 45%, transparent); }
+.pool-map .pm-slice-1 { fill: color-mix(in srgb, var(--green) 22%, transparent); }
+.pool-map text { font-size: 11px; fill: var(--muted); }
+.pool-map .pm-tag { fill: var(--ink); }
+.pool-map .pm-strong { fill: var(--green); font-weight: 700; }
+.pool-map-caption { margin: 0; font-size: 12px; color: var(--muted); }
+
+/* A long fee-tier list: a few labels, the chosen one and both ends, so none overlap. */
+.supply-settings .choice-control.has-many .choice-ticks { display: flex; justify-content: space-between; }
+.supply-settings .choice-control.has-many .choice-ticks button:not(.is-selected):not(:first-child):not(:last-child):not(:nth-child(5n+1)) { display: none; }
+
+/* Less written explanation: values and pictures say it; hints live in tooltips,
+   and a note only shows when something needs fixing. */
+.supply-feedback:not(.is-warn),
+.launch-budget-strategy { display: none; }
+.launch-step-guide p:empty, .classic-task p:empty { display: none; }
+.grinder-note:empty, .grinder-row-main small:empty { display: none; }
+.nft-panel-body:empty, .lean-lead:empty, .pool-support-intro:empty { display: none; }
+
+/* Plan slides: one slide at a time in a fixed frame. No collapsing, no scrolling:
+   the strip names every slide with its value, and the frame slides sideways. */
+.plan-strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid var(--line-strong); background: var(--panel); }
+.plan-strip [data-plan-tab] {
+  display: grid; gap: 2px; align-content: center; min-width: 0; min-height: 48px; padding: 6px 10px;
+  border: 0; border-right: 1px solid var(--line); border-bottom: 2px solid transparent; border-radius: 0;
+  background: transparent; color: var(--muted); text-align: left; cursor: pointer;
+}
+.plan-strip [data-plan-tab]:last-child { border-right: 0; }
+.plan-strip [data-plan-tab] strong { color: var(--ink); font-size: 12px; }
+.plan-strip [data-plan-tab] small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.plan-strip [data-plan-tab]:hover { background: color-mix(in srgb, var(--panel-strong) 70%, transparent); }
+.plan-strip [data-plan-tab]:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--green); }
+.plan-strip [data-plan-tab].is-selected { border-bottom-color: var(--green); background: var(--panel-strong); }
+.plan-strip [data-plan-tab].is-selected small { color: var(--ink); }
+.plan-slides { overflow: hidden; transition: height 180ms ease; }
+.plan-track { display: flex; align-items: flex-start; transition: transform 200ms ease; }
+.plan-slide { flex: 0 0 100%; min-width: 0; display: grid; gap: 12px; padding: 14px 2px 4px; }
+.plan-slide[inert] { visibility: hidden; transition: visibility 0s 200ms; }
+.plan-slide > .config-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (prefers-reduced-motion: reduce) { .plan-track, .plan-slides { transition: none; } }
+
+/* A pool's settings take the whole Pairs slide, so settings never nest under a row. */
+.supply-editor:has(.supply-settings) :is(.supply-bar, .supply-group-head, .supply-add, .supply-total, .pair-arbitrage-warning) { display: none; }
+.supply-editor:has(.supply-settings) .supply-list:not(:has(.supply-settings)) { display: none; }
+.supply-list:has(> .supply-settings) > .supply-row:not(.is-open) { display: none; }
+
+/* One strip per phase: its settings tabs, then its action. */
+.plan-strip { grid-template-columns: repeat(var(--tabs, 3), minmax(0, 1fr)); }
+.setup-dock-head { display: none; }
+.advanced-launch-controls.is-running-tab .launch-phase-actions { display: none; }
+.price-grid { grid-template-columns: minmax(0, 1fr); }
+
+/* On a phase's action tab the dock is only the strip; its panel follows directly. */
+.setup-dock:has(.is-running-tab) { min-height: 0 !important; height: auto !important; display: block; }
+.setup-dock:has(.is-running-tab) .advanced-launch-controls { min-height: 0; height: auto; }
+
+/* Rail v2: one button, then wallet, funding and positions as plain rows. */
+.launch-next-rail { grid-template-rows: auto; }
+.launch-next-rail .rail-next { gap: 6px; padding: 14px; }
+.launch-next-rail .rail-act { min-height: 48px; font-size: 13px; }
+.launch-next-rail .rail-balance { display: flex; align-items: baseline; gap: 8px; }
+.launch-next-rail .rail-balance b { font-size: 24px; font-weight: 700; line-height: 1.1; }
+.launch-next-rail .rail-balance span { font-size: 12px; color: var(--muted); }
+.launch-next-rail code { font-family: inherit; font-size: 12px; color: var(--muted); }
+.launch-next-rail i { font-style: normal; font-size: 11px; color: var(--muted); }
+.launch-next-rail .rail-row.is-warn b { color: var(--amber); }
+.launch-next-rail .rail-row.is-ok b { color: var(--green); }
+.launch-next-rail .rail-meter { height: 6px; background: var(--line); }
+.launch-next-rail .rail-meter i { display: block; height: 100%; background: var(--green); }
+.launch-next-rail .rail-busy, .launch-next-rail .rail-done { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 12px; border: 1px solid var(--line-strong); font-size: 12px; }
+.launch-next-rail .rail-busy { color: var(--blue); border-color: var(--blue); }
+.launch-next-rail .rail-done { color: var(--green); }
+.launch-next-rail .rail-spin { width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rail-spin 800ms linear infinite; }
+@keyframes rail-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .launch-next-rail .rail-spin { animation: none; } }
+@media (max-width: 1199px) { .launch-next-rail .rail-block { display: none; } }
+
+/* --- Layout audit: fill the window, stop repeating the rail --------------------------- */
+@media (min-width: 901px) {
+  /* Frames run the full height of the window, so the screen reads as one console. */
+  #view-launch .coin-state-layout { min-height: calc(100vh - 150px); align-items: stretch; }
+  #view-launch .coin-state, #view-launch .launch-next-rail, #view-launch .launch-workspace-viewport { align-self: stretch; }
+  #view-wallet .two-column > .surface,
+  #view-discovery .discovery-grid > .surface-main, #view-discovery .discovery-grid > .rail,
+  #view-history .surface-main, #view-settings .two-column > .surface { min-height: calc(100vh - 96px) !important; }
+  #view-launch { padding-bottom: 0; }
+}
+
+/* The Next button is the rail's; the phase panels keep facts, not a second button. */
+[data-classic-workspace="mint"] .launch-step-guide,
+[data-classic-workspace="liquidity"] .launch-step-guide { display: none; }
+[data-classic-workspace="mint"] .execution-readiness .launch-phase-actions,
+[data-classic-workspace="liquidity"] .execution-readiness .launch-phase-actions,
+[data-classic-workspace="finish"] .execution-readiness .launch-phase-actions { display: none; }
+.execution-readiness:not(:has(.risk-badge)):has(.launch-phase-actions) { display: none; }
+.launch-phase-actions:has(> [data-next-fact]:only-child) { display: none; }
+.finalize-panel .launch-phase-actions, .classic-workspace-verify .operator-toolbar { flex-wrap: wrap; }
+
+.launch-next-rail .rail-balance b { font-size: 14px; font-weight: 700; }
+.launch-next-rail .rail-balance b:first-child:not(:only-child) { font-size: 14px; }
+.launch-next-rail .rail-balance.is-amount b { font-size: 24px; }
+
+/* The token name and mark are in the header already; empty readout panels leaked borders below the frame. */
+#launchConsole { display: none !important; }
+#signaturePanel:empty { display: none; }
+
+/* Create tabs show what will exist: a mark or the price map, then plain rows. */
+.plan-preview { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 16px; padding: 4px 0; }
+.plan-preview.is-liquidity { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
+.plan-preview .preview-mark { display: grid; justify-items: start; align-content: start; gap: 6px; padding: 12px; border: 1px solid var(--line); background: var(--panel-strong); }
+.plan-preview .preview-mark img, .plan-preview .preview-mark > span { width: 96px; height: 96px; object-fit: cover; border: 1px solid var(--line-strong); }
+.plan-preview .preview-mark > span { display: grid; place-items: center; font-size: 20px; font-weight: 700; color: var(--green); background: var(--panel); }
+.plan-preview .preview-mark strong { font-size: 14px; }
+.plan-preview .preview-mark small { font-size: 12px; color: var(--muted); }
+.plan-preview .preview-map { padding: 8px 10px; border: 1px solid var(--line); background: var(--panel-strong); }
+.plan-preview .preview-map svg { width: 100%; height: auto; display: block; font-family: var(--mono); }
+.plan-preview .preview-rows { display: grid; align-content: start; margin: 0; border-top: 1px solid var(--line); }
+.plan-preview .preview-rows > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.plan-preview .preview-rows dt { color: var(--muted); }
+.plan-preview .preview-rows dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.plan-preview .preview-rows dd.is-ok { color: var(--green); }
+.plan-preview i { font-style: normal; font-size: 11px; color: var(--muted); }
+@media (max-width: 900px) { .plan-preview, .plan-preview.is-liquidity { grid-template-columns: minmax(0, 1fr); } }
+
+/* Wallet screen: balances, then what it holds and has launched, then where to deposit. */
+.wallet-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.wallet-head-name { display: grid; gap: 2px; min-width: 0; }
+.wallet-head-name strong { font-size: 14px; }
+.wallet-head-name span { font-size: 12px; color: var(--muted); }
+.wallet-head-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.wallet-stats { display: grid; grid-template-columns: 1.4fr repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); margin: 12px 0; }
+.wallet-stat { display: grid; gap: 4px; padding: 12px; border-right: 1px solid var(--line); min-width: 0; }
+.wallet-stat:last-child { border-right: 0; }
+.wallet-stat span { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.wallet-stat b { font-size: 16px; font-weight: 700; }
+.wallet-stat.is-main b { font-size: 24px; line-height: 1.1; }
+.wallet-stat.is-ok b { color: var(--green); }
+.wallet-stat.is-warn b { color: var(--amber); }
+.wallet-stat i { font-style: normal; font-size: 11px; color: var(--muted); }
+.wallet-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.wallet-block { border: 1px solid var(--line); background: var(--panel-strong); min-width: 0; }
+.wallet-block-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.wallet-block-head small { font-size: 11px; }
+.wallet-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; width: 100%; padding: 8px 12px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); font-size: 12px; text-align: left; }
+.wallet-line:last-child { border-bottom: 0; }
+.wallet-line span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wallet-line b { font-weight: 500; text-align: right; }
+.wallet-line.is-action { cursor: pointer; }
+.wallet-line.is-action:hover { background: color-mix(in srgb, var(--panel) 70%, transparent); }
+.wallet-line.is-action span { color: var(--ink); }
+.wallet-line.is-muted span { color: var(--subtle); }
+.wallet-deposit { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; margin-top: 12px; padding: 12px; border: 1px solid var(--line); }
+.wallet-deposit .wallet-qr-box { display: grid; place-items: center; width: 112px; height: 112px; background: var(--panel-strong); border: 1px solid var(--line); }
+.wallet-deposit .wallet-qr-box img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
+.wallet-deposit-main { display: grid; align-content: start; gap: 8px; min-width: 0; }
+.wallet-deposit-main code { font-family: inherit; font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 900px) { .wallet-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wallet-cols { grid-template-columns: minmax(0, 1fr); } .wallet-deposit { grid-template-columns: minmax(0, 1fr); } }
+#view-wallet .section-heading { align-items: center; }
+#view-wallet .section-heading .button-pair { display: flex; flex-direction: row; gap: 6px; }
+#view-wallet .wallet-module-heading { display: none; }
+.plan-preview.is-liquidity { grid-template-columns: minmax(0, 1fr); }
+.plan-preview.is-liquidity .preview-rows { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
+.plan-preview .preview-rows dd { white-space: nowrap; }
+.phase-tree-drawer { display: none; }
+#assetTable:not(:empty) { margin-top: 12px; }

@@ -140,7 +140,7 @@ function assetDestinationsHtml() {
       <strong>${escapeHtml(title)}</strong>
       ${address}
       ${warning}
-      <p class="return-wallet-note">Gets the Fee Keys (they collect the pools' trading fees), leftover SOL and any held-back tokens.</p>
+
       <div class="operator-toolbar compact">
         <button class="pill-button" type="button" data-action="sign-return-wallet" ${state.destinations.waiting ? 'disabled' : ''}>
           ${state.destinations.waiting ? 'Waiting for signature…' : 'Sign with another wallet'}

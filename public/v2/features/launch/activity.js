@@ -255,7 +255,7 @@ function renderSignaturePanel() {
     <div class="signature-focus">
       <span>
         <small>${escapeHtml(context.focusLabel)}</small>
-        <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet will list the local-wallet run before you arm it.')}</p>
+        <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet will list the local-wallet run before you arm it.')}${pinUnlockButton(activeTx?.effects?.[0])}</p>
       </span>
     </div>
     ${renderExecutionLedger()}
@@ -527,7 +527,7 @@ function renderQueue() {
       <div class="queue-row compact ${escapeHtml(activeTx?.state || '')}">
         <span class="queue-copy">
           <h3>${escapeHtml(activeTx?.state === 'blocked' ? 'Live checkpoint blocked' : context.focusLabel)}</h3>
-          <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet is watching launch record and readiness evidence.')}</p>
+          <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet is watching launch record and readiness evidence.')}${pinUnlockButton(activeTx?.effects?.[0])}</p>
         </span>
       </div>
       <div class="kv-row"><span>Source</span><strong>${escapeHtml(context.source)}</strong></div>

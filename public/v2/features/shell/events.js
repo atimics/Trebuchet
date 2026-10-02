@@ -188,6 +188,12 @@ function handleClick(event) {
     return;
   }
 
+  const planTab = event.target.closest('[data-plan-tab]');
+  if (planTab) {
+    setPlanSlide(planTab.dataset.planTab);
+    return;
+  }
+
   const workspaceControl = event.target.closest('button[data-launch-workspace]');
   if (workspaceControl) {
     setLaunchWorkspace(workspaceControl.dataset.launchWorkspace, {
@@ -220,6 +226,14 @@ function handleClick(event) {
     renderLaunchWorkspace();
     return;
   }
+  if (action === 'open-saved-launch') {
+    switchActiveLaunch(actionTarget.dataset.launchId);
+    return;
+  }
+  if (action === 'new-launch') {
+    switchActiveLaunch(null);
+    return;
+  }
   if (action === 'open-launch-identity') {
     setView('launch');
     renderLaunchIdentity();
@@ -237,6 +251,10 @@ function handleClick(event) {
   if (action === 'show-more-discovery-wallets') {
     state.discovery.walletRenderLimit = Math.max(100, Number(state.discovery.walletRenderLimit) || 100) + 100;
     renderPersonalDiscovery();
+    return;
+  }
+  if (action === 'launch-rail-act') {
+    runLaunchRailAction();
     return;
   }
   if (action === 'select-environment') {
@@ -289,7 +307,7 @@ function handleClick(event) {
   }
   if (state.activeView === 'launch') {
     const actionWorkspace = {
-      'start-vanity': 'configure',
+      'start-vanity': 'mint',
       'estimate-funding': 'fund',
       'start-quote-acquire': 'fund',
       'publish-launch-report': 'finish',
@@ -299,7 +317,11 @@ function handleClick(event) {
       'cancel-refund-launch': 'finish',
       'resume-journal': 'finish',
     }[action];
-    if (actionWorkspace) setLaunchWorkspace(actionWorkspace);
+    if (actionWorkspace) {
+      // Each of these acts on the phase's own panel, or on the address settings.
+      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : 'run' };
+      setLaunchWorkspace(actionWorkspace);
+    }
   }
   if (action === 'review') {
     if (!walletIsUnlocked()) {
@@ -802,7 +824,9 @@ function handleClick(event) {
       notify('Set a Recovery PIN to add explicit wallet lock controls');
       return;
     }
-    if (state.secretPin.locked) {
+    if (state.secretPin.locked || !walletIsUnlocked()) {
+      // The button reads "Unlock" whenever the wallet is not usable, so it must
+      // never lock the PIN in that state (an unreadable wallet is not a locked PIN).
       unlockSecretPin().catch((error) => notify(error.message || 'Wallet unlock failed'));
     } else {
       lockSecretPin().catch((error) => notify(error.message || 'Wallet lock failed'));

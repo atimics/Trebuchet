@@ -128,7 +128,7 @@ function vanityEstimateSummary(prefix, suffix) {
   if (!estimate.targetLength) {
     return {
       label: 'Nothing to grind',
-      detail: 'Type a start or an end, or launch with a random address.',
+      detail: '',
       className: '',
     };
   }
@@ -163,12 +163,15 @@ function vanityAvailabilityMeta() {
     };
   }
   if (state.apiStatus === 'connected') {
-    return { label: 'Ready to grind', detail: 'Saved addresses stay here for later launches.', className: '', icon: 'fa-wand-magic-sparkles' };
+    return { label: 'Ready to grind', detail: '', className: '', icon: 'fa-wand-magic-sparkles' };
   }
   return { label: 'Desktop app only', detail: 'Open the Trebuchet desktop app to grind.', className: 'warn', icon: 'fa-eye' };
 }
 
 const ACTIVE_LAUNCH_KEY = 'trebuchet-v2-active-launch';
+// Stored in place of a launch id when the operator closes the open launch, so
+// the next load starts blank instead of re-opening the first saved launch.
+const NO_ACTIVE_LAUNCH = '__none__';
 
 function rememberActiveLaunchId(id) {
   try {
@@ -218,12 +221,61 @@ function canAutoSaveLaunch(config) {
   return true;
 }
 
+// The launches list: every saved launch, the open one marked, plus a way to
+// start a blank one. Without it a saved launch re-opened on every start with
+// no way to leave it or reach the others.
+function launchIsInProgress() {
+  return Number(state.recovery?.activeJournalCount || 0) > 0;
+}
+
+function renderSavedLaunchList() {
+  const host = $('#savedLaunches');
+  if (!host) return;
+  const launches = Array.isArray(state.savedLaunches) ? state.savedLaunches : [];
+  const locked = launchIsInProgress();
+  const rows = launches.map((entry) => {
+    const token = entry.config?.token || {};
+    const isOpen = entry.id === state.loadedSavedLaunchId;
+    const symbol = String(token.symbol || '').toUpperCase() || '?';
+    const name = String(token.name || entry.name || 'Untitled');
+    return `<button class="saved-launch-row${isOpen ? ' is-open' : ''}" type="button" data-action="open-saved-launch" data-launch-id="${escapeHtml(entry.id)}"${isOpen ? ' aria-current="true"' : ''}${locked && !isOpen ? ' disabled' : ''}>
+      <strong>$${escapeHtml(symbol)}</strong><span>${escapeHtml(name)}</span>
+    </button>`;
+  }).join('');
+  const list = `
+    <span class="saved-launches-title">Launches</span>
+    <div class="saved-launch-rows">${rows}</div>
+    <button class="saved-launch-new" type="button" data-action="new-launch"${locked ? ' disabled' : ''}><i class="fa-solid fa-plus" aria-hidden="true"></i> New launch</button>
+    ${locked ? '<small class="saved-launches-note">A launch is in progress. Finish or recover it in History before switching.</small>' : ''}
+  `;
+  if (host) {
+    const empty = !launches.length && !state.loadedSavedLaunchId;
+    host.hidden = empty;
+    host.innerHTML = empty ? '' : list;
+  }
+}
+
+// Switching reloads the page: the editor holds a lot of per-launch state, and a
+// clean start is the only way to be sure none of the old launch leaks into the
+// next one. The saved launch itself is already persisted, so nothing is lost.
+function switchActiveLaunch(id) {
+  if (launchIsInProgress()) return;
+  rememberActiveLaunchId(id || NO_ACTIVE_LAUNCH);
+  try {
+    v2LocalStorage()?.removeItem(GUIDED_DRAFT_STORAGE_KEY);
+  } catch {
+    // A stale draft only matters when storage works, and then removeItem works too.
+  }
+  window.location.reload();
+}
+
 // The saved (server-side) launch is explicit user intent: it opens once, and
 // is never reapplied over edits made after it loaded.
 function restoreDetectedLaunch() {
   if (!state.savedLaunches?.length) return false;
   if (state.loadedSavedLaunchId) return false;
   const rememberedId = rememberedActiveLaunchId();
+  if (rememberedId === NO_ACTIVE_LAUNCH) return false;
   const entry = state.savedLaunches.find((item) => item.id === rememberedId) || state.savedLaunches[0];
   if (!entry) return false;
   const loaded = restoreLaunchConfigFromJournal({
@@ -270,6 +322,7 @@ function scheduleLaunchAutoSave() {
         const index = list.findIndex((item) => item.id === entry.id);
         if (index >= 0) list[index] = entry; else list.unshift(entry);
         state.savedLaunches = list;
+        renderSavedLaunchList();
       })
       .catch(() => { /* auto-save is best-effort; the explicit errors surface elsewhere */ });
   }, 900);
@@ -336,16 +389,15 @@ function renderVanityCandidates() {
     </ul>
     ${state.vanityInputError
       ? `<p class="grinder-note is-error" id="vanityFeedback" role="alert">${escapeHtml(state.vanityInputError)}</p>`
-      : '<p class="grinder-note" id="vanityFeedback">Letters and numbers only, without 0, O, I or l.</p>'}
+      : '<p class="grinder-note" id="vanityFeedback"></p>'}
     <div class="grinder-list" role="group" aria-label="Saved contract addresses">
       <button class="grinder-row ${selected ? '' : 'is-active'}" type="button" data-action="select-vanity" data-public-key="" aria-pressed="${selected ? 'false' : 'true'}">
         <span class="grinder-radio" aria-hidden="true"></span>
-        <span class="grinder-row-main"><code>Random address</code><small>Made at launch. Nothing to grind.</small></span>
+        <span class="grinder-row-main"><code>Random address</code><small></small></span>
         ${selected ? '' : '<span class="grinder-row-state">In use</span>'}
       </button>
       ${candidateButtons}
     </div>
-    <p class="grinder-note">Grind grades and try counts come from this device's search. The address confirms the letter pattern.</p>
     <div class="grinder-actions">
       <button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
         <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>

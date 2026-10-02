@@ -22,10 +22,11 @@ The audit policy is enforced by `scripts/audit-gate.mjs` (run in CI): **any** cr
 any high-severity finding that is not on the script's reviewed allowlist. Allowlisted residuals print with the reason
 they cannot be fixed. Keep `ALLOWED_HIGH` in that script and this section in sync.
 
-`npm audit` reports 7 high-severity package entries as of 2026-09-30, all from the reviewed
+`npm audit` reports 8 high-severity package entries as of 2026-10-02, all from the reviewed
 `GHSA-3GC7-FJRX-P6MG` advisory in the `bigint-buffer` dependency chain:
 
-- `bigint-buffer` through `@solana/spl-token` -> `@solana/buffer-layout-utils` (and `@raydium-io/raydium-sdk-v2`).
+- `bigint-buffer` through `@solana/spl-token` -> `@solana/buffer-layout-utils` (and `@raydium-io/raydium-sdk-v2`,
+  and `@meteora-ag/cp-amm-sdk`, the Meteora DAMM v2 SDK used by lean launches).
 - `@irys/upload-solana`, `@irys/web-upload-solana`, and `@metaplex-foundation/umi-uploader-irys` report high only
   because they carry `@solana/spl-token` (the bigint-buffer chain above).
 
@@ -37,6 +38,7 @@ Reviewed dependency fixes use updates within their current major version:
 | `axios` (override) | `^1.19.0` | `^1.20.0` | September 2026 audit: prototype pollution, data-URI and proxy redirect ReDoS, HTTP/2 DNS/proxy handling, and HTTP/2 error handling. Reached via Raydium SDK and the Irys stack. |
 | `tmp` (override) | `^0.2.6` | `^0.2.7` | Type-confusion path traversal via non-string prefix/postfix. Reached via `arbundles -> tmp-promise`. |
 | `form-data` (override) | `^4.0.5` | `^4.0.6` | CRLF injection via unescaped multipart field names. |
+| `toml` (override) | `^3.0.0` (via `@coral-xyz/anchor`) | `^4.2.0` | Uncontrolled recursion and prototype pollution when parsing TOML. Reached only through the Meteora SDK's `@coral-xyz/anchor`, whose workspace loader parses `Anchor.toml`; this app never calls it. 4.2.0+ is patched and still loads with `require`. |
 | `tar` (override) | `^7.5.15` | `^7.5.21` | **Critical** — six advisories incl. file smuggling via PAX header confusion and parser DoS. Build-time only (electron-builder), but it is the packaging toolchain. Was the finding that failed CI. |
 | `electron` (dev) | 42.2.0 | 42.9.2 | `ProtocolResponse.url` session-cache confusion. In-major bump; lockfile only, spec unchanged at `^42.2.0`. |
 | `electron-builder` + toolchain (dev) | 26.8.1 | 26.15.3 | AppImage search-path, credential leak on cross-origin redirect, `extract-zip` symlink traversal, `js-yaml` / `brace-expansion` / `undici` DoS. In-major; lockfile only. |

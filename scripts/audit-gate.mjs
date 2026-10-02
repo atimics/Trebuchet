@@ -33,6 +33,9 @@ const ALLOWED_HIGH = new Map([
   ['@solana/buffer-layout-utils', 'Transitive carrier of bigint-buffer (see above).'],
   ['@solana/spl-token', 'Transitive carrier of bigint-buffer (see above).'],
   ['@raydium-io/raydium-sdk-v2', 'Transitive carrier of bigint-buffer (see above).'],
+  // Meteora's DAMM v2 SDK (lean launches). After the toml override it reports high only because it
+  // carries @solana/spl-token; @coral-xyz/anchor and toml are no longer flagged.
+  ['@meteora-ag/cp-amm-sdk', 'Transitive carrier of bigint-buffer via @solana/spl-token (see above).'],
   // The Irys upload stack reaches @solana/spl-token too; its only high path
   // is the same bigint-buffer chain.
   ['@irys/upload-solana', 'Transitive carrier of bigint-buffer via @solana/spl-token.'],

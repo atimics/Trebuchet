@@ -136,7 +136,7 @@ function renderPersonalDiscovery() {
     || (snapshot
       ? scanSummary
       : enabledWatchOnlyCount + enabledManagedCount > 0
-        ? 'Refresh to find tokens.'
+        ? ''
         : 'Add a wallet first.');
   const progress = state.discovery.job?.progress || {};
   const progressTotal = Math.max(0, Number(progress.total) || 0);
@@ -162,7 +162,7 @@ function renderPersonalDiscovery() {
 
   if (!snapshot) {
     if ($('#personalDiscoveryTokenCount')) $('#personalDiscoveryTokenCount').textContent = '0';
-    $('#personalTokenNetwork').innerHTML = '<div class="discovery-feed-empty">Refresh to find tokens.</div>';
+    $('#personalTokenNetwork').innerHTML = '<div class="discovery-feed-empty">No tokens yet.</div>';
     return;
   }
   const feed = [
@@ -403,7 +403,7 @@ function renderDiscovery() {
       <span><small>Trades</small><strong>${tradeCount || '—'}</strong></span>
     </div>
     ${window.TrebuchetMarketEvidence?.reserves(market?.reserves) || ''}
-    <p class="pool-support-intro">Pool value includes the token inventory. Quote reserves span price ranges. Check a sell quote for the amount you plan to sell.</p>
+    
     <p class="pool-support-intro">Volume: ${formatDiscoveryUsd(market?.volume6hUsd)} over 6 hours · ${formatDiscoveryUsd(market?.volume24hUsd)} over 24 hours.</p>
     <button class="secondary-button compact" type="button" data-action="open-market-evidence" data-mint="${escapeHtml(selected.mint)}">Pool locks, fee owners and sell quotes</button>
     <div class="detail-section-label">

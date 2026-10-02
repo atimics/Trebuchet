@@ -162,7 +162,18 @@ export function normalizeSavedLaunchConfig(config = {}) {
     ...clone(config),
     token: normalizedToken,
     poolTopology,
-    vanity: { prefix, suffix, selectedPublicKey },
+    // Keep the grind options with the pattern: dropping them made a saved
+    // any-case address (e.g. ...trEbUcHET for "trebuchet") fail its own suffix
+    // check when the launch was loaded again.
+    vanity: {
+      prefix,
+      suffix,
+      selectedPublicKey,
+      ...(config.vanity?.caseInsensitive === true ? { caseInsensitive: true } : {}),
+      ...(Number.isInteger(config.vanity?.length) && config.vanity.length >= 32 && config.vanity.length <= 44
+        ? { length: config.vanity.length }
+        : {}),
+    },
   };
 }
 

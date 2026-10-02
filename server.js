@@ -79,6 +79,8 @@ import {
 import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
 import * as secretStore from './secretStore.js';
+import { secretInventory, walletSecretState } from './secretInventory.js';
+import { resetWithArchive } from './secretReset.js';
 import { createLaunchReportUmi, publishLaunchReport } from './launchReportService.js';
 import * as launchJournal from './launchJournal.js';
 import * as launchStore from './launchStore.js';
@@ -123,7 +125,8 @@ import * as destinationProofStore from './destinationProofStore.js';
 import * as splitJobStore from './splitJobStore.js';
 import * as nftCollectionStore from './nftCollectionStore.js';
 import { registerNftRoutes } from './nftRoutes.js';
-import { combineSplitKey, createSplitSecret, matchesVanityPattern } from '@trebuchet/core/split-key';
+import { registerDammV2Routes } from './dammV2Routes.js';
+import { combineSplitKey, createSplitSecret, matchesVanityPattern, scalarPublicKey } from '@trebuchet/core/split-key';
 import { normalizeDistribution } from './lpDistribution.js';
 import { isWalletEffectivelyEmpty } from './walletRecovery.js';
 import {
@@ -856,7 +859,8 @@ function migrateSecretsToUnlockedPin() {
   // These loads opportunistically rewrite legacy/plain/safeStorage tokens
   // into pin: tokens when the PIN key is currently unlocked.
   pendingWallets.list();
-  vanityCaStore.list();
+  // A damaged vanity file must not break unlock. It is left untouched on disk.
+  try { vanityCaStore.list(); } catch (error) { console.warn('Vanity CA migration skipped:', error.message); }
 }
 
 
@@ -1755,6 +1759,35 @@ app.post('/api/v2/discovery/inspect', async (req, res) => {
 // Recovery PIN endpoints
 // ---------------------------------------------------------------------------
 
+function sendSecretPinUnlockFailure(res, reason) {
+  if (reason === 'DEVICE_SECRET_UNAVAILABLE') {
+    return res.status(409).json({
+      success: false,
+      code: 'SECRET_PIN_DEVICE_SECRET_UNAVAILABLE',
+      error: "This computer's keychain can no longer unlock the Recovery PIN key. Trying the PIN again will not help.",
+    });
+  }
+  if (reason === 'STATE_DAMAGED') {
+    return res.status(409).json({
+      success: false,
+      code: 'SECRET_PIN_STATE_DAMAGED',
+      error: 'The Recovery PIN file is damaged. Do not set a new PIN. A backup may be at .secretPin.json.bak.',
+    });
+  }
+  if (reason === 'NOT_SET') {
+    return res.status(409).json({
+      success: false,
+      code: 'SECRET_PIN_NOT_SET',
+      error: 'No Recovery PIN is set up yet.',
+    });
+  }
+  return res.status(401).json({
+    success: false,
+    code: 'BAD_SECRET_PIN',
+    error: 'Recovery PIN is incorrect',
+  });
+}
+
 app.get('/api/secret-pin/status', (_req, res) => {
   res.json({ success: true, status: secretStore.secretPinStatus() });
 });
@@ -1771,14 +1804,8 @@ app.post('/api/secret-pin/setup', (req, res) => {
 
 app.post('/api/secret-pin/unlock', (req, res) => {
   try {
-    const ok = secretStore.unlockSecretPin(req.body?.pin);
-    if (!ok) {
-      return res.status(401).json({
-        success: false,
-        code: 'BAD_SECRET_PIN',
-        error: 'Recovery PIN is incorrect',
-      });
-    }
+    const result = secretStore.unlockSecretPinDetailed(req.body?.pin);
+    if (!result.ok) return sendSecretPinUnlockFailure(res, result.code);
     migrateSecretsToUnlockedPin();
     res.json({ success: true, status: secretStore.secretPinStatus() });
   } catch (error) {
@@ -1788,14 +1815,8 @@ app.post('/api/secret-pin/unlock', (req, res) => {
 
 app.post('/api/secret-pin/change', (req, res) => {
   try {
-    const ok = secretStore.unlockSecretPin(req.body?.currentPin);
-    if (!ok) {
-      return res.status(401).json({
-        success: false,
-        code: 'BAD_SECRET_PIN',
-        error: 'Recovery PIN is incorrect',
-      });
-    }
+    const result = secretStore.unlockSecretPinDetailed(req.body?.currentPin);
+    if (!result.ok) return sendSecretPinUnlockFailure(res, result.code);
     migrateSecretsToUnlockedPin();
     const status = secretStore.changeSecretPin(req.body?.newPin);
     res.json({ success: true, status });
@@ -1817,24 +1838,19 @@ app.post('/api/secret-pin/reset', (req, res) => {
         error: 'A launch operation is running. Wait for it to finish before resetting the Recovery PIN.',
       });
     }
-    if (req.body?.confirmReset !== 'RESET RECOVERY PIN') {
-      return res.status(400).json({
-        success: false,
-        code: 'BAD_SECRET_PIN_RESET_CONFIRMATION',
-        error: 'Type RESET RECOVERY PIN to confirm the destructive reset.',
-      });
-    }
-
-    const removed = {
-      pendingWallets: pendingWallets.removePinEncrypted(),
-      vanityCAs: vanityCaStore.removePinEncrypted(),
-      splitJobs: splitJobStore.removePinEncrypted(),
-      nftKeys: nftCollectionStore.removePinEncrypted(),
-    };
-    const status = secretStore.resetSecretPin();
-    res.json({ success: true, status, removed });
+    // Archives the encrypted files first. A refused or failed archive deletes nothing.
+    const result = resetWithArchive({ confirmReset: req.body?.confirmReset });
+    res.json({ success: true, ...result });
   } catch (error) {
     sendErrorResponse(res, error, 400);
+  }
+});
+
+app.get('/api/secret-pin/inventory', (_req, res) => {
+  try {
+    res.json({ success: true, inventory: secretInventory() });
+  } catch (error) {
+    sendErrorResponse(res, error, 500);
   }
 });
 
@@ -1910,6 +1926,7 @@ function managedWalletMetadata(wallet, extra = {}) {
     hasSecretKey: Array.isArray(wallet.secretKey),
     hasMnemonic: typeof wallet.mnemonic === 'string' && wallet.mnemonic.length > 0,
     decryptionFailed: !Array.isArray(wallet.secretKey),
+    secretState: Array.isArray(wallet.secretKey) ? 'readable' : null,
     source: extra.source || 'trebuchet-managed',
     label: extra.label || 'Trebuchet launch wallet',
     ...extra,
@@ -2028,6 +2045,27 @@ registerNftRoutes(app, {
   getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
 });
 
+// Lean Meteora DAMM v2 launches. See dammV2Routes.js.
+registerDammV2Routes(app, {
+  isDemoMode,
+  rejectIfSecretPinLocked,
+  sendErrorResponse,
+  getRpcUrl,
+  getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
+  createToken: createTokenWithMetaplex,
+  getVanityCandidate: (publicKey) => vanityCaStore.get(publicKey),
+  removeVanityCandidate: (publicKey) => vanityCaStore.remove(publicKey),
+  getSolUsd: () => getUsdPrice(KNOWN_QUOTES.SOL.address),
+  addCoin: (coin) => coinStore.add({ ...coin, source: 'added' }),
+  // Same rule as the classic Fee Key send: no placeholder addresses, and an
+  // address the operator has proven, unless it is the wallet that funded the launch.
+  destinationRejection: async (destination, walletPublicKey) => {
+    const funder = (await findFundingWallet(walletPublicKey).catch(() => null))?.funder || null;
+    return unsafeSweepDestinationReason(destination, { launchWallet: walletPublicKey })
+      || await unverifiedDestinationReason(destination, walletPublicKey, { funder });
+  },
+});
+
 app.get('/api/vanity-ca-candidates', (req, res) => {
   try {
     const secretPinLocked = secretStore.isSecretPinLocked();
@@ -2141,7 +2179,11 @@ app.post('/api/vanity-split/jobs', (req, res) => {
 });
 
 app.get('/api/vanity-split/jobs', (_req, res) => {
-  res.json({ success: true, jobs: splitJobStore.list() });
+  try {
+    res.json({ success: true, jobs: splitJobStore.list() });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 app.post('/api/vanity-split/jobs/complete', (req, res) => {
@@ -2158,19 +2200,34 @@ app.post('/api/vanity-split/jobs/complete', (req, res) => {
 });
 
 app.post('/api/vanity-split/jobs/remove', (req, res) => {
-  splitJobStore.remove(String(req.body?.id || ''));
-  res.json({ success: true });
+  try {
+    splitJobStore.remove(String(req.body?.id || ''));
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 app.post('/api/vanity-ca-candidates/import', (req, res) => {
   try {
     if (!isDemoMode() && rejectIfSecretPinLocked(res, 'importing a Vanity CA')) return;
+    // Two key shapes: a 64-byte secretKey, or the 32-byte scalar a split-key
+    // grind produces (a + k). Either way the public key is derived here, never
+    // taken from the request.
+    const scalar = req.body?.scalar;
+    const scalarBytes = Array.isArray(scalar) ? Uint8Array.from(scalar) : null;
     const secret = req.body?.secretKey;
     const bytes = Array.isArray(secret) ? Uint8Array.from(secret) : null;
-    if (!bytes || bytes.length !== 64) {
+    if (scalarBytes) {
+      if (scalarBytes.length !== 32) {
+        return res.status(400).json({ success: false, error: 'scalar must be a 32-byte array' });
+      }
+    } else if (!bytes || bytes.length !== 64) {
       return res.status(400).json({ success: false, error: 'secretKey must be a 64-byte array' });
     }
-    const publicKey = Keypair.fromSecretKey(bytes).publicKey.toBase58();
+    const publicKey = scalarBytes
+      ? new PublicKey(scalarPublicKey(scalarBytes)).toBase58()
+      : Keypair.fromSecretKey(bytes).publicKey.toBase58();
     const { prefix, suffix } = normalizeVanityTargetBase58(req.body?.prefix || '', req.body?.suffix || '');
     const caseInsensitive = req.body?.caseInsensitive === true;
     const fold = (value) => (caseInsensitive ? value.toLowerCase() : value);
@@ -2180,7 +2237,9 @@ app.post('/api/vanity-ca-candidates/import', (req, res) => {
     const mode = prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : null;
     vanityCaStore.add({
       publicKey,
-      secretKey: Array.from(bytes),
+      ...(scalarBytes
+        ? { keyType: 'scalar', scalar: Array.from(scalarBytes) }
+        : { secretKey: Array.from(bytes) }),
       attempts: Number.isFinite(Number(req.body?.attempts)) ? Number(req.body.attempts) : null,
       expectedAttempts: expectedVanityAttempts(prefix, suffix, { caseInsensitive }),
       target: prefix && suffix ? `${prefix}...${suffix}` : (prefix || suffix || null),
@@ -2416,7 +2475,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
     res.end();
   } catch (error) {
     // An unfinished split job's secret is useless without its offset.
-    if (splitJob) splitJobStore.remove(splitJob.id);
+    if (splitJob) { try { splitJobStore.remove(splitJob.id); } catch (storeError) { console.warn('Split job cleanup skipped:', storeError.message); } }
     // CANCELLED is a structured error code surfaced by vanityKeygen.js
     // when cancelVanityGrind() was called. It's an expected event — the
     // user clicked Cancel — so emit a dedicated {type:'cancelled'}
@@ -3407,7 +3466,7 @@ app.get('/api/v2/flywheel-hubs', (_req, res) => {
 
 app.post('/api/v2/flywheel-hubs/resolve', async (req, res) => {
   try {
-    const hub = await resolveFlywheelHub(req.body?.mint);
+    const hub = await resolveFlywheelHub(req.body?.mint, { rpcUrl: getRpcUrl() });
     res.json({ success: true, hub });
   } catch (error) {
     sendErrorResponse(res, error, 400);
@@ -5370,9 +5429,13 @@ app.get('/api/v2/wallets', async (_req, res) => {
     const sourceWallets = isDemoMode()
       ? Array.from(demoManagedWallets.values())
       : pendingWallets.list();
+    const inventory = isDemoMode() ? null : secretInventory();
     const wallets = sourceWallets.map((wallet, index) => managedWalletMetadata(wallet, {
       label: index === 0 ? 'Launch wallet' : `Local wallet ${index + 1}`,
       secretPinLocked: wallet.secretKey ? undefined : secretPinLocked,
+      secretState: Array.isArray(wallet.secretKey)
+        ? 'readable'
+        : (inventory ? walletSecretState(wallet.publicKey, inventory) : null),
     }));
     res.json({ success: true, wallets, secretPinLocked });
   } catch (error) {
@@ -7900,6 +7963,7 @@ app.get('/api/pending-wallets', (req, res) => {
     // Tolerate entries whose decryption failed (e.g. the file was copied from
     // another machine, or the OS keychain rotated): one bad entry must not break
     // the whole panel, so we surface a `decryptionFailed` flag.
+    const inventory = secretInventory();
     const wallets = pendingWallets.list().map((w) => {
       const hasSecretKey = Array.isArray(w.secretKey);
       const hasMnemonic = typeof w.mnemonic === 'string';
@@ -7908,6 +7972,7 @@ app.get('/api/pending-wallets', (req, res) => {
         createdAt: w.createdAt,
         hasSecretKey,
         hasMnemonic,
+        secretState: walletSecretState(w.publicKey, inventory),
       };
       if (!hasSecretKey && !hasMnemonic) {
         out.decryptionFailed = true;

@@ -69,6 +69,8 @@
 /* ref10 field/group arithmetic (vendor/ed25519-ref10) for the split-key walk. */
 #include "ge.h"
 #include "precomp_data.h" /* Bi[0] is the base point G in precomputed form */
+#include "fe51.h"         /* 51-bit limbs for the split-key walk hot loop */
+#include "suffix_match.h"
 
 #if defined(TREBUCHET_SODIUM)
 #include <sodium.h>
@@ -240,6 +242,9 @@ typedef struct {
     uint64_t     fast_mod;
     int          fast_num_variants;
     uint64_t     fast_target_vals[MAX_CASE_VARIANTS];
+    /* Split walk suffix filter: any length 1..10, any case, no variant table. */
+    int              use_suffix_matcher;
+    suffix_matcher_t suffix_matcher;
 } grind_state_t;
 
 typedef struct {
@@ -403,64 +408,75 @@ static void *split_walk_thread(void *arg) {
     }
     k0[31] &= 0x3F;
 
-    ge_p3 K, P;
+    ge_p3 K, P10;
     ge_cached kc;
     ge_p1p1 t;
     ge_scalarmult_base(&K, k0);
     ge_p3_to_cached(&kc, &K);
     ge_add(&t, &gs->split_A, &kc);
-    ge_p1p1_to_p3(&P, &t);
+    ge_p1p1_to_p3(&P10, &t);
 
-    ge_p3 pts[SPLIT_BATCH];
-    fe acc[SPLIT_BATCH];
-    fe zinv, zj, x, y;
-    uint8_t pk[32];
+    /* The walk itself runs on 51-bit limbs. Setup stays on ref10 and crosses
+     * over as bytes; so does the one inversion per batch. */
+    ge51_p3 P;
+    ge51_precomp G51;
+    {
+        uint8_t b[32];
+        fe_tobytes(b, P10.X); fe51_frombytes(P.X, b);
+        fe_tobytes(b, P10.Y); fe51_frombytes(P.Y, b);
+        fe_tobytes(b, P10.Z); fe51_frombytes(P.Z, b);
+        fe_tobytes(b, P10.T); fe51_frombytes(P.T, b);
+        fe_tobytes(b, Bi[0].yplusx);  fe51_frombytes(G51.yplusx, b);
+        fe_tobytes(b, Bi[0].yminusx); fe51_frombytes(G51.yminusx, b);
+        fe_tobytes(b, Bi[0].xy2d);    fe51_frombytes(G51.xy2d, b);
+    }
+
+    ge51_p3 pts[SPLIT_BATCH];
+    fe51 acc[SPLIT_BATCH];
+    fe51 zinv, zj, x, y;
+    uint8_t pk[32], xb[32];
     char b58[48];
     uint64_t index = 0;
     uint64_t local_attempts = 0;
-    int use_fast = gs->use_fast_match;
+    int use_sm = gs->use_suffix_matcher;
 
     while (!atomic_load_explicit(&gs->found, memory_order_relaxed)) {
         for (int j = 0; j < SPLIT_BATCH; j++) {
             pts[j] = P;
-            ge_madd(&t, &P, &Bi[0]);
-            ge_p1p1_to_p3(&P, &t);
+            ge51_madd(&P, &G51);
         }
-        fe_copy(acc[0], pts[0].Z);
-        for (int j = 1; j < SPLIT_BATCH; j++) fe_mul(acc[j], acc[j - 1], pts[j].Z);
-        fe_invert(zinv, acc[SPLIT_BATCH - 1]);
+        fe51_copy(acc[0], pts[0].Z);
+        for (int j = 1; j < SPLIT_BATCH; j++) fe51_mul(acc[j], acc[j - 1], pts[j].Z);
+        {
+            uint8_t ab[32];
+            fe inv10, a10;
+            fe51_tobytes(ab, acc[SPLIT_BATCH - 1]);
+            fe_frombytes(a10, ab);
+            fe_invert(inv10, a10);
+            fe_tobytes(ab, inv10);
+            fe51_frombytes(zinv, ab);
+        }
 
         for (int j = SPLIT_BATCH - 1; j >= 0; j--) {
             if (j > 0) {
-                fe_mul(zj, zinv, acc[j - 1]);   /* 1 / Z_j */
-                fe_mul(zinv, zinv, pts[j].Z);   /* 1 / (Z_0 ... Z_{j-1}) */
+                fe51_mul(zj, zinv, acc[j - 1]);   /* 1 / Z_j */
+                fe51_mul(zinv, zinv, pts[j].Z);   /* 1 / (Z_0 ... Z_{j-1}) */
             } else {
-                fe_copy(zj, zinv);
+                fe51_copy(zj, zinv);
             }
-            fe_mul(x, pts[j].X, zj);
-            fe_mul(y, pts[j].Y, zj);
-            fe_tobytes(pk, y);
-            pk[31] ^= (uint8_t)(fe_isnegative(x) << 7);
+            fe51_mul(x, pts[j].X, zj);
+            fe51_mul(y, pts[j].Y, zj);
+            fe51_tobytes(pk, y);
+            fe51_tobytes(xb, x);
+            pk[31] ^= (uint8_t)((xb[0] & 1) << 7);
 
-            int matched = 0;
-            if (use_fast) {
-                uint64_t rem = pk_mod64(pk, gs->fast_mod);
-                int hit = 0;
-                for (int v = 0; v < gs->fast_num_variants; v++) {
-                    if (rem == gs->fast_target_vals[v]) { hit = 1; break; }
-                }
-                if (hit) {
-                    size_t b58_len = base58_encode(pk, 32, b58, sizeof(b58));
-                    matched = b58_len > 0 && check_match(b58, b58_len, gs->prefix, gs->prefix_len,
-                                                         gs->suffix, gs->suffix_len,
-                                                         gs->case_sensitive, gs->address_length);
-                }
-            } else {
-                size_t b58_len = base58_encode(pk, 32, b58, sizeof(b58));
-                matched = b58_len > 0 && check_match(b58, b58_len, gs->prefix, gs->prefix_len,
+            /* The filter is a necessary condition; confirm hits with the full
+             * encode so the address-length rule and prefix still apply. */
+            if (use_sm && !suffix_matcher_check(&gs->suffix_matcher, pk)) continue;
+            size_t b58_len = base58_encode(pk, 32, b58, sizeof(b58));
+            int matched = b58_len > 0 && check_match(b58, b58_len, gs->prefix, gs->prefix_len,
                                                      gs->suffix, gs->suffix_len,
                                                      gs->case_sensitive, gs->address_length);
-            }
             if (matched) {
                 bool expected = false;
                 if (atomic_compare_exchange_strong(&gs->found, &expected, true)) {
@@ -875,6 +891,8 @@ int main(int argc, char **argv) {
     gs.suffix_len        = suffix_len;
     gs.case_sensitive    = case_sensitive;
     gs.attempts_per_thread = (uint64_t)(expected * 4.0 / (double)thread_count) + 1000000;
+    gs.use_suffix_matcher = prefix_len == 0
+        && suffix_matcher_init(&gs.suffix_matcher, BASE58_ALPHABET, suffix_str, suffix_len, case_sensitive) == 0;
     gs.use_fast_match    = use_fast_match;
     gs.fast_mod          = fast_mod;
     gs.fast_num_variants = fast_num_variants;

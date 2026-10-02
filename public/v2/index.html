@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=102">
+  <link rel="stylesheet" href="./styles.css?v=116">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -44,6 +44,8 @@
           <span>Settings</span>
         </button>
       </nav>
+
+      <section class="saved-launches" id="savedLaunches" aria-label="Launches" hidden></section>
 
       <button class="launch-identity-sidebar" id="launchIdentitySidebar" type="button" data-action="open-launch-identity" aria-label="Open active launch identity" hidden></button>
 
@@ -88,6 +90,7 @@
         <div class="coins-list-view" id="coinsListView">
           <div class="coins-toolbar">
             <button class="primary-button" type="button" data-action="new-coin"><i class="fa-solid fa-plus"></i><span>New coin</span></button>
+            <button class="secondary-button" type="button" data-view="lean" title="One pool, locked for good, a fraction of the venue cost"><i class="fa-solid fa-bolt"></i><span>Lean launch</span></button>
             <div class="coins-add" id="coinsAddForm">
               <input id="addCoinMint" type="text" autocomplete="off" spellcheck="false" placeholder="Add an existing coin: paste its mint address" aria-label="Mint address of an existing coin">
               <button class="secondary-button" type="button" data-action="add-coin"><i class="fa-solid fa-link"></i><span>Add</span></button>
@@ -105,7 +108,6 @@
               <h2 id="poolSupportTitle">Add buy support</h2>
             </div>
           </div>
-          <p class="pool-support-intro">Put SOL below this coin's price in its Raydium SOL pool, so sellers have something to sell into. It is signed by the selected wallet and is not locked: you can withdraw it later.</p>
           <div class="pool-support-form">
             <input id="poolSupportTarget" data-support-field="target" type="hidden">
             <label><span>SOL to add</span><input id="poolSupportSol" data-support-field="solAmount" type="text" inputmode="decimal" autocomplete="off" value="0.1"></label>
@@ -160,7 +162,7 @@
             <div class="launch-toolbar" aria-label="Launch tools">
             <details class="cockpit-board launch-summary-drawer" aria-label="Launch plan">
               <summary>
-                <span><i class="fa-solid fa-chart-pie" aria-hidden="true"></i><strong>Plan</strong></span>
+                <span><i class="fa-solid fa-chart-pie" aria-hidden="true"></i><strong>Charts</strong></span>
                 <small>Supply, liquidity and cost</small>
               </summary>
 
@@ -239,15 +241,7 @@
             <nav class="coin-state" id="coinState" aria-label="What is true about this coin">
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="wallet" data-coin-fact="wallet">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Signer</strong><small data-coin-fact-value="wallet"></small></span>
-              </button>
-              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="configure" data-coin-fact="configure">
-                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Plan</strong><small data-coin-fact-value="configure"></small></span>
-              </button>
-              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="fund" data-coin-fact="fund">
-                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Funding</strong><small data-coin-fact-value="fund"></small></span>
+                <span><strong>Launch wallet</strong><small data-coin-fact-value="wallet"></small></span>
               </button>
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="mint" data-coin-fact="mint">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
@@ -257,16 +251,21 @@
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
                 <span><strong>Liquidity</strong><small data-coin-fact-value="liquidity"></small></span>
               </button>
+              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="fund" data-coin-fact="fund">
+                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
+                <span><strong>Funding</strong><small data-coin-fact-value="fund"></small></span>
+              </button>
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="finish" data-coin-fact="finish">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Launch wallet</strong><small data-coin-fact-value="finish"></small></span>
+                <span><strong>Leftovers</strong><small data-coin-fact-value="finish"></small></span>
               </button>
             </nav>
 
+            <aside class="launch-next-rail" id="launchNextRail" aria-label="Next action, cost and supply"></aside>
 
             <div class="launch-workspace-viewport" id="launchWorkspaceViewport" role="region" tabindex="0" aria-live="polite">
             <section class="launch-identity-dock" id="launchIdentityDock" aria-label="Active token launch identity" hidden></section>
-            <section class="setup-dock" data-launch-pane="configure" aria-label="Launch setup dock">
+            <section class="setup-dock" data-launch-pane="mint liquidity finish" aria-label="Phase settings">
               <div class="setup-dock-head">
                 <span>
                   <span class="eyebrow">Launch</span>
@@ -276,10 +275,13 @@
                   <span class="setup-help" id="setupHelp">Test · nothing is sent</span>
                 </span>
               </div>
-              <div class="advanced-launch-controls" id="advancedLaunchControls">
+              <div class="advanced-launch-controls plan-slides-shell" id="advancedLaunchControls">
               <h2 class="visually-hidden" id="configureStepTitle">Token &amp; pools</h2>
-              <div class="launch-workbench compact-workbench">
-                <form class="config-grid" id="launchConfig" aria-label="Launch configuration">
+              <div class="plan-strip" id="planStrip" role="tablist" aria-label="Phase"></div>
+              <div class="plan-slides" id="planSlides">
+                <div class="plan-track" id="planTrack">
+<section class="plan-slide" data-plan-slide="details" data-phase="mint" role="tabpanel">
+<form class="config-grid" id="launchConfig" aria-label="Launch configuration">
                   <label>
                     <span>Token name</span>
                     <input id="tokenName" type="text" value="" placeholder="Your token name" autocomplete="off">
@@ -292,49 +294,17 @@
                     <span>Description</span>
                     <input id="tokenDescription" type="text" value="" placeholder="What is this token for?" autocomplete="off">
                   </label>
-                  <label>
-                    <span>Target market cap (USD)</span>
-                    <input id="targetMarketCapUsd" type="text" value="25,000" autocomplete="off" aria-describedby="targetMarketCapHint">
-                    <small class="field-hint" id="targetMarketCapHint">With the supply, this sets the launch price.</small>
-                  </label>
                   <div class="logo-input-row">
                     <span class="logo-input-label">Logo</span>
                     <label class="logo-upload-control" for="tokenLogoFile">
                       <input id="tokenLogoFile" type="file" accept="image/png,image/jpeg,image/gif">
                       <span class="logo-upload-command"><i class="fa-solid fa-arrow-up-from-bracket"></i> Choose image</span>
-                      <span class="logo-upload-meta">PNG, JPG or GIF, up to 10 MB</span>
+                      <span class="logo-upload-meta">PNG · JPG · GIF · 10 MB</span>
                     </label>
                   </div>
                   <div class="token-logo-preview" id="tokenLogoPreview"></div>
                 </form>
-                <section class="launch-budget-recommender" aria-labelledby="launchBudgetTitle">
-                  <input id="launchSol" type="hidden" value="1">
-                  <div class="launch-budget-head">
-                    <span>
-                      <h3 id="launchBudgetTitle">SOL in the pool</h3>
-                    </span>
-                    <label class="launch-budget-input" for="liquidityBudgetSol">
-                      <span class="visually-hidden">SOL in the pool</span>
-                      <span><input id="liquidityBudgetSol" type="number" value="1" min="0" step="0.1"><strong>SOL</strong></span>
-                    </label>
-                  </div>
-                  <div class="launch-budget-presets" role="group" aria-label="Liquidity budget presets">
-                    <button type="button" data-action="select-launch-budget" data-budget="0"><strong>None</strong></button>
-                    <button class="is-selected" type="button" data-action="select-launch-budget" data-budget="1"><strong>1 SOL</strong></button>
-                    <button type="button" data-action="select-launch-budget" data-budget="10"><strong>10 SOL</strong></button>
-                    <button type="button" data-action="select-launch-budget" data-budget="100"><strong>100 SOL</strong></button>
-                  </div>
-                  <div class="launch-budget-strategy" id="launchBudgetStrategy" aria-live="polite"></div>
-                </section>
-              </div>
-
-              <section class="return-wallet asset-destinations" id="returnWalletCard" aria-label="Where assets go"></section>
-              <details class="drawer launch-more-options" id="launchMoreOptions">
-                <summary>
-                  <span>More options</span>
-                  <strong id="launchMoreSummary">1B supply · sealed · Token-2022 · random address · 1 pool</strong>
-                </summary>
-                <div class="config-grid launch-more-grid">
+<div class="config-grid launch-more-grid">
                     <label>
                       <span>Total supply</span>
                       <input id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000" autocomplete="off">
@@ -343,7 +313,6 @@
                       <input id="sealedLaunch" type="checkbox" checked>
                       <span>
                         <strong>Sealed launch</strong>
-                        <small>Commit identity now; reveal it only after liquidity is locked.</small>
                       </span>
                     </label>
                     <label>
@@ -354,13 +323,9 @@
                       </select>
                     </label>
                 </div>
-                <details class="vanity-panel vanity-details">
-                  <summary>
-                    <span>Contract address</span>
-                    <strong id="vanitySummary">Random address · recommended</strong>
-                  </summary>
-                  <div class="vanity-details-body grinder" aria-label="Optional custom contract address">
-                  <p class="grinder-intro">Optional. Grind an address that starts or ends with letters you choose, or launch with a random one.</p>
+</section>
+<section class="plan-slide" data-plan-slide="address" data-phase="mint" role="tabpanel">
+<div class="vanity-details-body grinder" aria-label="Optional custom contract address">
                   <div class="vanity-inputs grinder-fields">
                     <label class="grinder-field">
                       <span>Starts with</span>
@@ -384,7 +349,7 @@
                     </label>
                     <label class="grinder-check vanity-case-toggle" for="vanityCaseInsensitive">
                       <input id="vanityCaseInsensitive" type="checkbox">
-                      <span><strong>Any case</strong><small>rUg…RuG counts as RUG…RUG. Much faster.</small></span>
+                      <span><strong>Any case</strong></span>
                     </label>
                   </div>
                   <div class="candidate-strip grinder-results" id="vanityCandidates">
@@ -392,15 +357,38 @@
                     <button class="pill-button" type="button" data-action="start-vanity">Grind</button>
                   </div>
                   </div>
-                </details>
-                <details class="drawer classic-controls launch-design-details">
-                  <summary>
-                    <span>Supply and pools</span>
-                    <strong id="classicSummary">Simple SOL pool · no allocation</strong>
-                  </summary>
-                  <section class="supply-editor" id="supplyEditor" aria-label="Supply split"></section>
-                  <section class="hub-picker" id="hubPicker" aria-label="Choose a hub token" hidden></section>
-                  <form class="classic-grid" id="classicConfig" aria-label="Pool options">
+</section>
+<section class="plan-slide" data-plan-slide="price" data-phase="liquidity" role="tabpanel">
+<div class="config-grid price-grid">
+<label>
+                    <span>Target market cap (USD)</span>
+                    <input id="targetMarketCapUsd" type="text" value="25,000" autocomplete="off" >
+                  </label>
+</div>
+<section class="launch-budget-recommender" aria-labelledby="launchBudgetTitle">
+                  <input id="launchSol" type="hidden" value="1">
+                  <div class="launch-budget-head">
+                    <span>
+                      <h3 id="launchBudgetTitle">SOL in the pool</h3>
+                    </span>
+                    <label class="launch-budget-input" for="liquidityBudgetSol">
+                      <span class="visually-hidden">SOL in the pool</span>
+                      <span><input id="liquidityBudgetSol" type="number" value="1" min="0" step="0.1"><strong>SOL</strong></span>
+                    </label>
+                  </div>
+                  <div class="launch-budget-presets" role="group" aria-label="Liquidity budget presets">
+                    <button type="button" data-action="select-launch-budget" data-budget="0"><strong>None</strong></button>
+                    <button class="is-selected" type="button" data-action="select-launch-budget" data-budget="1"><strong>1 SOL</strong></button>
+                    <button type="button" data-action="select-launch-budget" data-budget="10"><strong>10 SOL</strong></button>
+                    <button type="button" data-action="select-launch-budget" data-budget="100"><strong>100 SOL</strong></button>
+                  </div>
+                  <div class="launch-budget-strategy" id="launchBudgetStrategy" aria-live="polite"></div>
+                </section>
+</section>
+<section class="plan-slide" data-plan-slide="pairs" data-phase="liquidity" role="tabpanel">
+<section class="supply-editor" id="supplyEditor" aria-label="Supply split"></section>
+                    <section class="hub-picker" id="hubPicker" aria-label="Choose a hub token" hidden></section>
+                    <form class="classic-grid" id="classicConfig" aria-label="Pool options">
                     <div class="classic-hidden-fields" hidden>
                       <input id="mainPoolPercent" type="number" value="100" min="0" max="100" step="0.1">
                       <input id="quotePoolPercent" type="number" value="0" min="0" max="100" step="0.1">
@@ -421,10 +409,17 @@
                       <input id="feeKeyRecipient" type="hidden" value="">
                     </div>
                   </form>
-
-                  <details class="drawer-section" id="airdropSection" aria-label="Airdrop CSV import">
-                    <summary><span>Airdrop</span><span class="risk-badge is-neutral" id="airdropSummary">Off</span></summary>
-                    <label class="supply-field" for="airdropCsvText"><span>CSV recipients</span></label>
+</section>
+<section class="plan-slide" data-plan-slide="return" data-phase="finish" role="tabpanel">
+<section class="return-wallet asset-destinations" id="returnWalletCard" aria-label="Where assets go"></section>
+<div class="mini-table" id="reportPreview"></div>
+                    <div class="operator-toolbar compact">
+                      <button class="pill-button" type="button" data-action="toggle-report-publish">Toggle publish</button>
+                      <button class="pill-button" type="button" data-action="download-report-preview">Download preview</button>
+                    </div>
+</section>
+<section class="plan-slide" data-plan-slide="airdrop" data-phase="finish" role="tabpanel">
+<label class="supply-field" for="airdropCsvText"><span>CSV recipients</span></label>
                     <textarea id="airdropCsvText" rows="4" spellcheck="false" placeholder="wallet,tokens&#10;Recipient111...,1000"></textarea>
                     <div class="airdrop-budget-controls">
                       <label>
@@ -447,22 +442,12 @@
                     </div>
                     <div class="airdrop-budget-panel" id="airdropBudgetPanel"></div>
                     <div class="mini-table" id="airdropRecipientPreview"></div>
-                  </details>
-
-                  <details class="drawer-section" id="reportSection" aria-label="Launch report export">
-                    <summary><span>Launch report</span><span class="risk-badge" id="reportSummary">Draft</span></summary>
-                    <div class="mini-table" id="reportPreview"></div>
-                    <div class="operator-toolbar compact">
-                      <button class="pill-button" type="button" data-action="toggle-report-publish">Toggle publish</button>
-                      <button class="pill-button" type="button" data-action="download-report-preview">Download preview</button>
-                    </div>
-                  </details>
-                </details>
-              </details>
-              <div class="launch-phase-actions launch-phase-actions-split configure-phase-actions">
-                <button class="secondary-button" type="button" data-action="review-plan"><i class="fa-solid fa-list-check"></i><span>Review plan</span></button>
-                <button class="primary-button" type="button" data-next-fact hidden></button>
+</section>
+</div>
               </div>
+              <div class="plan-summaries" hidden>
+<strong id="launchMoreSummary"></strong><strong id="vanitySummary"></strong><strong id="classicSummary"></strong><span id="airdropSummary" class="risk-badge is-neutral">Off</span><span id="reportSummary" class="risk-badge">Draft</span>
+</div>
               </div>
             </section>
 
@@ -517,6 +502,10 @@
 
       <section class="view" id="view-nfts" aria-labelledby="viewTitle">
         <div class="nft-root" id="nftRoot" aria-live="polite"></div>
+      </section>
+
+      <section class="view" id="view-lean" aria-labelledby="viewTitle">
+        <div class="nft-root" id="leanRoot" aria-live="polite"></div>
       </section>
 
       <section class="view" id="view-wallet" aria-labelledby="viewTitle">
@@ -756,7 +745,8 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=1"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=196"></script>
-  <script src="./nfts.js?v=1"></script>
+  <script src="./app.js?v=207"></script>
+  <script src="./nfts.js?v=2"></script>
+  <script src="./lean.js?v=2"></script>
 </body>
 </html>

@@ -22,18 +22,80 @@ function normalizedSliceText(value) {
   return parseSliceShares(value).map(formatPercent).join(',');
 }
 
+// What the "Position slices" text means, in plain words, so a bare "100" (one
+// position) or "30,30" (scaled up to 50,50) is never a surprise. Mirrors
+// parseSliceShares: the same separators, the same scaling.
+function describeSliceInput(value) {
+  const tokens = String(value || '').split(/[,\s/|]+|[-–—]+/).filter(Boolean);
+  const numbers = tokens.map((token) => parseNumericInput(token, NaN));
+  const rejected = tokens.filter((token, index) => !(Number.isFinite(numbers[index]) && numbers[index] > 0));
+  const valid = numbers.filter((number) => Number.isFinite(number) && number > 0);
+  const rawTotal = valid.reduce((sum, number) => sum + number, 0);
+  const slices = parseSliceShares(value);
+  const list = slices.map((share) => `${formatPercent(share)}%`).join(' + ');
+  const parts = [];
+  let tone = 'ok';
+  if (rejected.length) {
+    tone = 'warn';
+    parts.push(`Ignored: ${rejected.slice(0, 3).join(', ')}${rejected.length > 3 ? ', ...' : ''}.`);
+  }
+  if (!valid.length) {
+    parts.push(tokens.length ? 'No usable numbers, so one position (100%).' : 'Empty, so one position (100%).');
+  } else if (slices.length === 1) {
+    parts.push('1 position, all of this pool.');
+  } else {
+    parts.push(`${slices.length} positions: ${list}.`);
+  }
+  if (valid.length && Math.abs(rawTotal - 100) > 0.005) {
+    tone = 'warn';
+    parts.push(`Your numbers total ${formatPercent(rawTotal)}, so they are scaled to 100%.`);
+  }
+  return { slices, rawTotal, rejected, tone, invalid: rejected.length > 0, text: parts.join(' ') };
+}
+
+// Limits for the numeric fields of a pool's advanced panel. The launch plan
+// clamps to these; the panel says so instead of changing the number silently.
+function checkPoolNumberField(kind, raw) {
+  const text = String(raw ?? '').trim();
+  const spec = {
+    premium: { min: 0, max: 500, fallback: 25, blank: 'fallback', unit: '%' },
+    ladderBands: { min: 0, max: CLASSIC_LADDER_MAX_BANDS, fallback: 0, blank: 'zero', whole: true, unit: ' bands' },
+    supportSol: { min: 0, max: Infinity, fallback: 0, blank: 'zero', unit: ' SOL' },
+  }[kind];
+  if (!spec) return { value: Number(raw), issue: null };
+  const range = Number.isFinite(spec.max) ? `0 to ${spec.max}` : '0 or more';
+  if (!text) {
+    return spec.blank === 'zero'
+      ? { value: 0, issue: null }
+      : { value: spec.fallback, issue: `Enter a number from ${range}. Using ${spec.fallback}${spec.unit}.` };
+  }
+  const number = parseNumericInput(text, NaN);
+  if (!Number.isFinite(number)) return { value: spec.fallback, issue: `"${text.slice(0, 12)}" is not a number. Using ${spec.fallback}${spec.unit}.` };
+  if (number < spec.min) return { value: spec.min, issue: `Cannot be below ${spec.min}. Using ${spec.min}${spec.unit}.` };
+  if (number > spec.max) return { value: spec.max, issue: `The most allowed is ${spec.max}${spec.unit}. Using ${spec.max}${spec.unit}.` };
+  if (spec.whole && !Number.isInteger(number)) return { value: Math.floor(number), issue: `Whole numbers only. Using ${Math.floor(number)}.` };
+  return { value: number, issue: null };
+}
+
 function isProbablySolanaAddress(value) {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(value || '').trim());
 }
 
 function parseManualLadderBands(value) {
+  return analyzeManualLadder(value).bands;
+}
+
+// Reads the custom ladder text. Lines it cannot use are listed in `rejected`
+// (1-based line numbers) so the panel can say which ones were skipped.
+// Blank lines, # comments and a header line are skipped on purpose.
+function analyzeManualLadder(value) {
   const bands = [];
+  const rejected = [];
   String(value || '')
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .forEach((line) => {
-      if (line.startsWith('#')) return;
+    .forEach((rawLine, lineIndex) => {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) return;
       const parts = line.split(/[,\t ]+/).map((part) => part.trim()).filter(Boolean);
       if (!parts.length || /supply/i.test(parts[0])) return;
       const supplyPercent = parseNumericInput(parts[0], NaN);
@@ -52,9 +114,11 @@ function parseManualLadderBands(value) {
           lowerMultiplier: Number(lowerMultiplier.toFixed(4)),
           upperMultiplier: Number(upperMultiplier.toFixed(4)),
         });
+      } else {
+        rejected.push({ line: lineIndex + 1, text: line });
       }
     });
-  return bands;
+  return { bands, rejected };
 }
 
 function classicSimpleLadderConfig(bandCount) {

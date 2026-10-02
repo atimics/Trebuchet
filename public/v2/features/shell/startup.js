@@ -5,6 +5,7 @@ function bindEvents() {
   // A pasted pair mint resolves its symbol as soon as the field is left.
   document.addEventListener('change', (event) => {
     if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary(); if (['tokenName', 'tokenSymbol'].includes(event.target?.id)) { renderCoinContext(); renderWorkingCoinCards(); }
+    commitPoolControl(event.target);
     const mint = event.target.closest?.('.supply-mint');
     if (mint?.value.trim()) {
       resolveCustomQuoteToken(mint.dataset.poolId).catch((error) => notify(error.message || 'Token lookup failed'));
@@ -85,6 +86,12 @@ function bindEvents() {
 
     const tagName = String(event.target.tagName || '').toLowerCase();
     const editing = ['input', 'textarea', 'select'].includes(tagName) || event.target.isContentEditable;
+    if (!editing && !event.altKey && !event.metaKey && !event.ctrlKey && ['ArrowLeft', 'ArrowRight'].includes(event.key)
+      && event.target.closest?.('#planSlides')) {
+      event.preventDefault();
+      stepPlanSlide(event.key === 'ArrowRight' ? 1 : -1);
+      return;
+    }
     if (!editing && event.altKey && !event.metaKey && !event.ctrlKey && /^Digit[1-5]$/.test(event.code)) {
       const index = Number(event.code.slice(-1)) - 1;
       const workspace = launchWorkspaces[index];
@@ -316,7 +323,10 @@ function syncChoiceControl(select) {
   if (range) {
     range.value = String(Math.max(0, select.selectedIndex));
     range.disabled = select.disabled;
-    range.setAttribute('aria-valuetext', select.options[select.selectedIndex]?.textContent?.trim() || '');
+    const valueText = select.options[select.selectedIndex]?.textContent?.trim() || '';
+    range.setAttribute('aria-valuetext', valueText);
+    const readout = control.querySelector('.choice-readout');
+    if (readout && readout.textContent !== valueText) readout.textContent = valueText;
   }
   control.querySelectorAll('button[data-choice-index]').forEach((button) => {
     const on = Number(button.dataset.choiceIndex) === select.selectedIndex;
@@ -337,13 +347,21 @@ function enhanceChoiceControls(root = document) {
     const name = select.getAttribute('aria-label')
       || select.closest('label')?.querySelector('span')?.textContent?.trim()
       || 'Choice';
+    // On a slider the range input is the keyboard control, so its labels are
+    // a mouse shortcut only: not tab stops, and hidden from screen readers
+    // (the range announces the chosen value).
     const labels = [...select.options].map((option, index) => (
-      `<button type="button" role="radio" data-choice-index="${index}">${escapeHtml(option.dataset.short || option.textContent.trim())}</button>`
+      `<button type="button" role="radio" data-choice-index="${index}"${kind === 'slider' ? ' tabindex="-1"' : ''}>${escapeHtml(option.dataset.short || option.textContent.trim())}</button>`
     )).join('');
     const control = document.createElement('div');
-    control.className = `choice-control is-${kind}`;
+    control.className = `choice-control is-${kind}${kind === 'slider' && select.options.length > 9 ? ' has-many' : ''}`;
+    // A long list wraps onto two rows, so the labels cannot line up with the
+    // thumb. A readout above the track states the chosen value instead.
+    const readout = kind === 'slider' && select.hasAttribute('data-choice-readout')
+      ? '<output class="choice-readout" aria-hidden="true"></output>'
+      : '';
     control.innerHTML = kind === 'slider'
-      ? `<input type="range" min="0" max="${select.options.length - 1}" step="1" aria-label="${escapeHtml(name)}"><div class="choice-ticks" role="radiogroup" aria-label="${escapeHtml(name)}">${labels}</div>`
+      ? `${readout}<input type="range" min="0" max="${select.options.length - 1}" step="1" aria-label="${escapeHtml(name)}"><div class="choice-ticks" role="radiogroup" aria-hidden="true" aria-label="${escapeHtml(name)}">${labels}</div>`
       : `<div class="choice-buttons" role="radiogroup" aria-label="${escapeHtml(name)}">${labels}</div>`;
     control.addEventListener('input', (event) => {
       if (event.target.matches('input[type="range"]')) chooseOption(select, Number(event.target.value));
