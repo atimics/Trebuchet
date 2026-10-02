@@ -12926,6 +12926,21 @@ function quoteAcquireResultMatchesRoute(result, route) {
   return Boolean(Number.isFinite(routeIndex) && Number.isFinite(resultIndex) && routeIndex === resultIndex);
 }
 
+function quoteAcquireBlockedPools() {
+  return (state.customPools || [])
+    .filter((pool) => Number(pool.supplyPercent || 0) > 0)
+    .map((pool) => ({ pool, badge: customQuoteInfoBadge(pool) }))
+    .filter((item) => item.badge.className === 'danger');
+}
+
+function quoteAcquireSafetyCheck() {
+  const blocked = quoteAcquireBlockedPools();
+  if (!blocked.length) return true;
+  const symbols = blocked.map(({ pool }) => pool.quoteSymbol || shortAddress(pool.quoteMint));
+  notify(`Resolve ${symbols.join(', ')} on Token & pools before buying pair tokens.`);
+  return false;
+}
+
 function quoteAcquireSuccessEvidence(routes, job) {
   if (!routes.length) return true;
   const results = Array.isArray(job?.results) ? job.results : [];
@@ -12945,13 +12960,13 @@ function quoteAcquireStatus(config = currentLaunchConfig()) {
   ).trim();
   const stale = Boolean(routes.length && hasJob && (!actualFingerprint || actualFingerprint !== expectedFingerprint));
   const successEvidence = quoteAcquireSuccessEvidence(routes, job);
-  const ready = !routes.length || Boolean(
+  const ready = quoteAcquireBlockedPools().length === 0 && (!routes.length || Boolean(
     job?.status === 'done'
     && !stale
     && successEvidence
     && Number(progress.completed || 0) >= Number(progress.total || routes.length)
     && Number(progress.failed || 0) === 0
-  );
+  ));
   return {
     routes,
     progress,
@@ -13165,6 +13180,8 @@ function quoteAcquireBadge() {
   const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig());
   if (fundingEstimateStatus.stale) return { label: 'Re-estimate', className: 'warn' };
   if (!fundingEstimateStatus.hasEstimate) return { label: 'Estimate', className: 'warn' };
+  const blocked = quoteAcquireBlockedPools();
+  if (blocked.length) return { label: `${blocked.length} blocked`, className: 'danger' };
   if (state.quoteAcquire.error) return { label: 'Error', className: 'danger' };
   if (status.stale) return { label: 'Stale', className: 'warn' };
   if (state.quoteAcquire.running || state.quoteAcquire.job?.status === 'running') return { label: `${completed}/${total}`, className: 'warn' };
@@ -13236,6 +13253,20 @@ function quotePoolGuidanceItems() {
           detail: 'Add the quote mint before estimating or launching this pool.',
         };
       }
+      const safetyBadge = customQuoteInfoBadge(pool);
+      if (safetyBadge.className === 'danger') {
+        return {
+          label,
+          quoteSymbol,
+          quoteMint,
+          supplyPercent: pool.supplyPercent,
+          status: 'blocked',
+          badge: safetyBadge.label,
+          className: 'danger',
+          icon: 'fa-triangle-exclamation',
+          detail: safetyBadge.detail,
+        };
+      }
       if (!hasEstimate) {
         return {
           label,
@@ -13297,7 +13328,7 @@ function renderQuotePoolGuidance() {
   const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig());
   const autoCount = items.filter((item) => item.status === 'auto').length;
   const manualCount = items.filter((item) => item.status === 'manual').length;
-  const blockedCount = items.filter((item) => item.status === 'missing').length;
+  const blockedCount = items.filter((item) => ['missing', 'blocked'].includes(item.status)).length;
   const estimateCount = items.filter((item) => item.status === 'estimate').length;
   const badge = blockedCount
     ? { label: `${blockedCount} blocked`, className: 'danger' }
@@ -13410,6 +13441,7 @@ function renderManualPrefundPanel() {
 
 function renderQuoteAcquirePanel() {
   const routes = quoteAcquireRoutes();
+  const blocked = quoteAcquireBlockedPools();
   const manualCount = quoteAcquireManualCount();
   const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig());
   const hasCurrentEstimate = fundingEstimateStatus.matchesConfig;
@@ -13438,6 +13470,8 @@ function renderQuoteAcquirePanel() {
     `).join('');
   const detail = fundingEstimateStatus.stale
     ? 'Funding estimate is stale for this launch model; rerun it before acquiring quote tokens.'
+    : blocked.length
+      ? `Resolve ${blocked.map(({ pool }) => pool.quoteSymbol || shortAddress(pool.quoteMint)).join(', ')} on Token & pools before buying pair tokens.`
     : acquireStatus.stale
       ? 'Previous quote acquire belongs to another wallet or launch model; run it again for the selected launch wallet.'
       : hasCurrentEstimate
@@ -13450,9 +13484,11 @@ function renderQuoteAcquirePanel() {
   const canStart = state.apiStatus === 'connected'
     && Boolean(selectedLaunchWalletPublicKey())
     && routes.length > 0
+    && blocked.length === 0
     && !state.quoteAcquire.running;
   const startLabel = state.quoteAcquire.running
     ? 'Acquiring'
+    : blocked.length ? 'Resolve pair block'
     : state.quoteAcquire.job?.status === 'done' ? 'Run again' : 'Acquire';
   const button = state.quoteAcquire.running
     ? `<button class="pill-button" type="button" data-action="poll-quote-acquire">Refresh</button>`
@@ -18390,8 +18426,9 @@ const FUNDING_RECEIPT_GROUPS = [
   { key: 'rent', label: 'Price-range rent', test: /: price-range rent/ },
   { key: 'positions', label: 'Locked positions (Fee Keys)', test: /NFT mint \+ lock/ },
   { key: 'buy', label: 'Buy pair tokens', test: /auto-swap/ },
+  { key: 'sol', label: 'SOL pool funding', test: /bootstrap.*as SOL|bootstrap quote-side \(SOL, dust\)/ },
   { key: 'support', label: 'Support liquidity', test: /support position/ },
-  { key: 'fees', label: 'Network fees and report', test: /network\/priority fees|Launch report|SOL, dust|[Aa]irdrop/ },
+  { key: 'fees', label: 'Network fees and report', test: /network\/priority fees|Launch report|[Aa]irdrop/ },
   { key: 'buffer', label: 'Safety buffer (returned if unused)', test: /^Safety buffer/ },
 ];
 
@@ -18429,20 +18466,23 @@ function renderFundingReceipt(estimate) {
       <ul>${manual.map((item) => `<li><span>${escapeHtml(item.symbol || shortAddress(item.mint))}</span><strong>${escapeHtml(Number(item.amount || 0).toLocaleString('en-US', { maximumFractionDigits: 2 }))}</strong></li>`).join('')}</ul>
     </div>` : '';
   const perPool = lines.filter((line) => /^Pool \d+/.test(String(line.label || '')));
-  // The split that matters: SOL that becomes liquidity, SOL that is spent on
-  // accounts and fees for good, and SOL that comes back.
   const groupSol = (key) => groups.find((group) => group.key === key)?.sol || 0;
-  const intoPools = groupSol('support') + groupSol('buy');
+  const solPoolFunding = groupSol('support') + groupSol('sol');
+  const pairTokenBuys = groupSol('buy');
   const returned = groupSol('buffer');
-  const spent = Math.max(0, Number(estimate.totalSol || 0) - intoPools - returned);
+  const spent = Math.max(0, Number(estimate.totalSol || 0) - solPoolFunding - pairTokenBuys - returned);
+  const directSolSupport = lines
+    .filter((line) => /(?:bootstrap support|support position).*as SOL/.test(String(line.label || '')))
+    .reduce((sum, line) => sum + Number(line.sol || 0), 0);
   const split = `
       <div class="funding-split" role="group" aria-label="Where the SOL ends up">
-        <span class="is-pool"><small>Into the pool</small><strong>${intoPools.toFixed(4)}</strong><em>buy support</em></span>
-        <span class="is-spent"><small>Rent and fees</small><strong>${spent.toFixed(4)}</strong><em>not returned</em></span>
+        <span class="is-pool"><small>SOL pool funding</small><strong>${solPoolFunding.toFixed(4)}</strong><em>deposit budget</em></span>
+        <span class="is-pool"><small>Pair-token buys</small><strong>${pairTokenBuys.toFixed(4)}</strong><em>swap budget</em></span>
+        <span class="is-spent"><small>Accounts and fees</small><strong>${spent.toFixed(4)}</strong><em>pool setup</em></span>
         <span class="is-back"><small>Buffer</small><strong>${returned.toFixed(4)}</strong><em>returned if unused</em></span>
       </div>
-      ${groupSol('support') <= 0
-        ? '<p class="funding-split-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> No SOL goes into the pool. Until someone buys, sellers have nothing to sell into. Set a liquidity budget on Token &amp; pools to add buy support.</p>'
+      ${directSolSupport <= 0
+        ? '<p class="funding-split-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> Set SOL in the pool on Token &amp; pools to add direct SOL buy support. The opening deposit and pair-token purchases are budgeted separately above.</p>'
         : ''}`;
   return `
     <div class="funding-receipt">
@@ -20042,6 +20082,7 @@ function startQuoteAcquirePolling() {
 }
 
 async function startQuoteAcquire() {
+  if (!quoteAcquireSafetyCheck()) return;
   const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig());
   const routes = quoteAcquireRoutes();
   const walletPublicKey = selectedLaunchWalletPublicKey();
@@ -20095,6 +20136,7 @@ async function startQuoteAcquire() {
     }
   }
 
+  if (!quoteAcquireSafetyCheck()) return;
   const v2QuoteAcquireFingerprint = quoteAcquireFingerprint(currentLaunchConfig(), walletPublicKey);
   state.quoteAcquire = {
     ...defaultQuoteAcquireState(),

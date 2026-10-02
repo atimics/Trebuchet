@@ -14707,6 +14707,7 @@ body[data-active-view="launch"] #view-launch .signature-panel {
 
 .supply-field {
   display: grid;
+  min-width: 0;
   align-content: start;
   gap: 5px;
 }
@@ -15455,10 +15456,10 @@ body[data-launch-running="true"] .workspace {
   margin-top: 2px;
 }
 
-/* Funding split: liquidity vs. rent and fees vs. returned. */
+/* Funding budgets for SOL deposits, pair purchases, setup, and buffer. */
 .funding-split {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -15495,6 +15496,12 @@ body[data-launch-running="true"] .workspace {
   margin: 0;
   color: var(--amber);
   font-size: 11px;
+}
+
+@media (max-width: 1100px) {
+  .funding-split {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 620px) {
@@ -16533,8 +16540,8 @@ select[data-choice-ready][hidden] {
 .choice-control.is-slider {
   display: grid;
   gap: 2px;
-  min-width: 180px;
-  max-width: 360px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .choice-control.is-slider input[type="range"] {
@@ -16546,7 +16553,9 @@ select[data-choice-ready][hidden] {
 
 .choice-ticks {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
+  gap: 0 4px;
 }
 
 .choice-ticks button {

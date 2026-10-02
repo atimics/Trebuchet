@@ -1760,6 +1760,7 @@ function loadQuoteAcquireHarness() {
   assert.ok(quoteStart >= 0 && quoteEnd > quoteStart, 'quote acquire helpers should be extractable');
   const harnessState = {
     classicFundingEstimate: null,
+    customPools: [],
     quoteAcquire: {
       jobId: null,
       job: null,
@@ -1782,6 +1783,7 @@ function loadQuoteAcquireHarness() {
     BigInt,
     state: harnessState,
     currentLaunchConfig: () => harnessState.currentConfig,
+    customQuoteInfoBadge: () => ({ label: 'Verified', className: '' }),
     selectedLaunchWalletPublicKey: () => harnessState.selectedWalletPublicKey,
     clampPercent: (value) => Math.max(0, Math.min(100, Number(value) || 0)),
     shortAddress: (value) => String(value || '').slice(0, 8),
@@ -2941,11 +2943,12 @@ test('v2 new pools use the 0.25% tier and pairs open above the SOL price', () =>
   assert.match(js, /function pairArbitrageWarningHtml\(/);
 });
 
-test('v2 funding shows SOL into the pool apart from rent and fees', () => {
-  assert.match(js, /<small>Into the pool<\/small>/);
-  assert.match(js, /<small>Rent and fees<\/small>/);
+test('v2 funding labels separate pool deposits, pair buys, setup, and buffer', () => {
+  assert.match(js, /<small>SOL pool funding<\/small>/);
+  assert.match(js, /<small>Pair-token buys<\/small>/);
+  assert.match(js, /<small>Accounts and fees<\/small>/);
   assert.match(js, /<small>Buffer<\/small>/);
-  assert.match(js, /No SOL goes into the pool\. Until someone buys, sellers have nothing to sell into\./);
+  assert.match(js, /Set SOL in the pool on Token &amp; pools to add direct SOL buy support/);
 });
 
 test('coin page shows the launch as facts checked against the chain', () => {
@@ -6756,12 +6759,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=101/);
+  assert.match(html, /styles\.css\?v=102/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=195/);
-  assert.doesNotMatch(html, /app\.js\?v=195" type="module"/);
+  assert.match(html, /app\.js\?v=196/);
+  assert.doesNotMatch(html, /app\.js\?v=196" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
