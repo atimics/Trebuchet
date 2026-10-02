@@ -356,6 +356,7 @@ const state = {
   },
   secretPin: {
     configured: false,
+    damaged: false,
     unlocked: false,
     locked: false,
     version: null,
@@ -3432,6 +3433,7 @@ window.__showUpdateResult = applyUpdateResult;
 function applySecretPinStatus(status = {}) {
   state.secretPin = {
     configured: status.configured === true,
+    damaged: status.damaged === true,
     unlocked: status.unlocked === true,
     locked: status.locked === true,
     version: status.version || null,
@@ -3440,6 +3442,16 @@ function applySecretPinStatus(status = {}) {
     deviceSecretAvailable: status.deviceSecretAvailable !== false,
     busy: null,
   };
+}
+
+const RECOVERY_PIN_DAMAGED_MESSAGE = 'The Recovery PIN file is damaged. Do not set a new PIN: it would replace the old one. A backup is at .secretPin.json.bak if present.';
+const RECOVERY_PIN_DEVICE_SECRET_MESSAGE = "This computer's keychain no longer holds the key for your Recovery PIN. Unlocking again will not help.";
+
+function recoveryPinFailureMessage(error) {
+  if (error?.code === 'BAD_SECRET_PIN') return 'Incorrect PIN';
+  if (error?.code === 'SECRET_PIN_DEVICE_SECRET_UNAVAILABLE') return RECOVERY_PIN_DEVICE_SECRET_MESSAGE;
+  if (error?.code === 'SECRET_PIN_STATE_DAMAGED') return RECOVERY_PIN_DAMAGED_MESSAGE;
+  return error?.message || 'PIN check failed';
 }
 
 function secretPinMeta() {
@@ -3451,6 +3463,16 @@ function secretPinMeta() {
       primaryAction: 'retry-local-api',
       primaryLabel: 'Local app',
       disabled: true,
+    };
+  }
+  if (state.secretPin.damaged) {
+    return {
+      label: 'Damaged',
+      className: 'danger',
+      detail: RECOVERY_PIN_DAMAGED_MESSAGE,
+      primaryAction: 'retry-local-api',
+      primaryLabel: 'Recheck',
+      disabled: false,
     };
   }
   if (!state.secretPin.configured) {
@@ -3823,13 +3845,13 @@ async function submitRecoveryPinGate() {
   } catch (error) {
     state.secretPin.busy = null;
     state.recoveryPinGate.status = 'error';
-    state.recoveryPinGate.message = error?.code === 'BAD_SECRET_PIN'
-      ? 'Incorrect PIN'
-      : error?.message || 'PIN check failed';
+    state.recoveryPinGate.message = recoveryPinFailureMessage(error);
+    const retryable = !error?.code || error.code === 'BAD_SECRET_PIN';
     renderRecoveryPinGate();
     recoveryPinGateTimer = window.setTimeout(() => {
       recoveryPinGateTimer = null;
       if (!state.recoveryPinGate.open || state.recoveryPinGate.status !== 'error') return;
+      if (!retryable) return;
       state.recoveryPinGate.value = '';
       state.recoveryPinGate.status = 'idle';
       state.recoveryPinGate.message = 'Try again. All four digits were cleared.';
@@ -20310,6 +20332,10 @@ async function setupSecretPin() {
     notify('Recovery PIN requires the Trebuchet desktop app');
     return false;
   }
+  if (state.secretPin.damaged) {
+    notify(RECOVERY_PIN_DAMAGED_MESSAGE);
+    return false;
+  }
   if (state.secretPin.configured) {
     notify('Recovery PIN is already configured');
     return false;
@@ -20339,6 +20365,10 @@ async function setupSecretPin() {
     return true;
   } catch (error) {
     state.secretPin.busy = null;
+    if (error?.code === 'SECRET_PIN_ALREADY_SET') {
+      // The server says a PIN already exists. Our view was stale: refresh it.
+      try { await refreshSecretPinStatus(); } catch { /* keep the notice below */ }
+    }
     notify(error.message || 'Recovery PIN setup failed');
     return false;
   } finally {
@@ -20350,6 +20380,10 @@ async function setupSecretPin() {
 async function unlockSecretPin({ reason = 'unlock' } = {}) {
   if (state.apiStatus !== 'connected' || !state.apiClient?.unlockSecretPin) {
     notify('Recovery PIN requires the Trebuchet desktop app');
+    return false;
+  }
+  if (state.secretPin.damaged) {
+    notify(RECOVERY_PIN_DAMAGED_MESSAGE);
     return false;
   }
   if (!state.secretPin.configured) {
@@ -20389,6 +20423,10 @@ async function unlockLaunchWalletAndContinue() {
 async function changeSecretPin() {
   if (state.apiStatus !== 'connected' || !state.apiClient?.changeSecretPin) {
     notify('Recovery PIN change requires the Trebuchet desktop app');
+    return;
+  }
+  if (state.secretPin.damaged) {
+    notify(RECOVERY_PIN_DAMAGED_MESSAGE);
     return;
   }
   if (!state.secretPin.configured) {

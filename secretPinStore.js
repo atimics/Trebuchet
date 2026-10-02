@@ -17,6 +17,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const STATE_FILE = '.secretPin.json';
+const BACKUP_FILE = '.secretPin.json.bak';
 const TOKEN_PREFIX = 'pin:';
 const VERIFY_MARKER = 'TrebuchetSecretPIN:v2';
 const LEGACY_VERIFY_MARKER = 'TrebuchetSecretPIN:v1';
@@ -45,6 +46,10 @@ function configDir() {
 
 function stateFile() {
   return path.join(configDir(), STATE_FILE);
+}
+
+function backupFile() {
+  return path.join(configDir(), BACKUP_FILE);
 }
 
 function ensurePrivateDir(dir) {
@@ -123,24 +128,31 @@ function encryptDeviceSecret(deviceSecret) {
   };
 }
 
+// Returns { secret } on success, or { reason } where reason is
+// 'DEVICE_SECRET_UNAVAILABLE' (the OS keychain cannot unwrap it) or
+// 'STATE_DAMAGED' (the stored value is malformed).
 function decryptDeviceSecret(token) {
-  if (typeof token !== 'string' || token.length === 0) return null;
+  if (typeof token !== 'string' || token.length === 0) return { reason: 'STATE_DAMAGED' };
   try {
     if (token.startsWith('plain:')) {
       const secret = Buffer.from(token.slice(6), 'base64');
-      return secret.length === KEY_BYTES ? secret : null;
+      return secret.length === KEY_BYTES ? { secret } : { reason: 'STATE_DAMAGED' };
     }
     if (token.startsWith('enc:')) {
-      if (!safeStorageProtectsSecrets()) return null;
+      if (!safeStorageProtectsSecrets()) {
+        console.warn('secretPinStore: device secret is keychain-protected but safeStorage is unavailable');
+        return { reason: 'DEVICE_SECRET_UNAVAILABLE' };
+      }
       const wrapped = Buffer.from(token.slice(4), 'base64');
       const decoded = _safeStorage.decryptString(wrapped);
       const secret = Buffer.from(decoded, 'base64');
-      return secret.length === KEY_BYTES ? secret : null;
+      return secret.length === KEY_BYTES ? { secret } : { reason: 'DEVICE_SECRET_UNAVAILABLE' };
     }
   } catch (e) {
     console.warn('secretPinStore: device-secret unwrap failed:', e.message);
+    return { reason: 'DEVICE_SECRET_UNAVAILABLE' };
   }
-  return null;
+  return { reason: 'STATE_DAMAGED' };
 }
 
 function deriveLegacyKey(pin, salt, iterations = PBKDF2_ITERATIONS) {
@@ -204,6 +216,20 @@ function pinTokenVersion(token) {
   }
 }
 
+// True when a state file is on disk, whether or not it can be read.
+export function stateFileExists() {
+  try {
+    fs.lstatSync(stateFile());
+    return true;
+  } catch (error) {
+    // Only a missing file counts as absent. Any other error means we cannot
+    // prove the file is gone, so treat it as present.
+    return error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR';
+  }
+}
+
+let _lastDamagedWarning = null;
+
 function readState() {
   try {
     const raw = JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
@@ -250,12 +276,74 @@ function readState() {
   return null;
 }
 
+// { exists, state, damaged }. damaged means a file exists but is unreadable.
+function inspectState() {
+  const state = readState();
+  if (state) {
+    _lastDamagedWarning = null;
+    return { exists: true, state, damaged: false };
+  }
+  if (!stateFileExists()) {
+    _lastDamagedWarning = null;
+    return { exists: false, state: null, damaged: false };
+  }
+  let stamp = 'unknown';
+  try {
+    const st = fs.statSync(stateFile());
+    stamp = `${st.size}:${st.mtimeMs}`;
+  } catch { /* keep unknown */ }
+  if (_lastDamagedWarning !== stamp) {
+    _lastDamagedWarning = stamp;
+    console.warn(
+      'secretPinStore: .secretPin.json exists but cannot be read. ' +
+      'It was left untouched. A backup may be at .secretPin.json.bak.',
+    );
+  }
+  return { exists: true, state: null, damaged: true };
+}
+
+// Copy the current state file to .secretPin.json.bak (0600, atomic, one deep).
+function backupStateFile() {
+  const src = stateFile();
+  let bytes;
+  try {
+    bytes = fs.readFileSync(src);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+  const dest = backupFile();
+  const dir = path.dirname(dest);
+  ensurePrivateDir(dir);
+  const tmp = path.join(dir, `.tmp-bak-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.json`);
+  let descriptor;
+  let renamed = false;
+  try {
+    descriptor = fs.openSync(tmp, 'wx', 0o600);
+    fs.writeFileSync(descriptor, bytes);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor); descriptor = undefined;
+    fs.renameSync(tmp, dest); renamed = true;
+    if (process.platform !== 'win32') {
+      descriptor = fs.openSync(dir, 'r');
+      fs.fsyncSync(descriptor);
+      fs.closeSync(descriptor); descriptor = undefined;
+    }
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    if (!renamed) { try { fs.unlinkSync(tmp); } catch { /* keep the original error */ } }
+  }
+  return true;
+}
+
 function writeV2State({ pin, dataKey }) {
   const salt = crypto.randomBytes(SALT_BYTES);
   const deviceSecret = crypto.randomBytes(KEY_BYTES);
   const device = encryptDeviceSecret(deviceSecret);
   const wrapKey = deriveWrapKey(pin, salt, deviceSecret);
   try {
+    // Never replace an existing state file without keeping its old bytes.
+    backupStateFile();
     writePrivateJson(stateFile(), {
       version: STATE_VERSION,
       kdf: 'scrypt',
@@ -304,25 +392,30 @@ function deviceSecretStatus(state) {
   };
 }
 
+// Returns { ok: true } or { ok: false, code }.
 function unlockV2State(pin, state) {
-  const deviceSecret = decryptDeviceSecret(state.deviceSecret);
-  if (!deviceSecret) return false;
+  const device = decryptDeviceSecret(state.deviceSecret);
+  if (!device.secret) return { ok: false, code: device.reason };
+  const deviceSecret = device.secret;
   const wrapKey = deriveWrapKey(pin, state.salt, deviceSecret, state.scrypt);
   let dataKey;
   try {
     dataKey = decryptPayload(state.wrappedDataKey, wrapKey, { raw: true });
-    if (dataKey.length !== KEY_BYTES) return false;
-    if (decryptPayload(state.verifier, dataKey) !== VERIFY_MARKER) return false;
+    if (dataKey.length !== KEY_BYTES) { wipeBuffer(dataKey); return { ok: false, code: 'STATE_DAMAGED' }; }
+    if (decryptPayload(state.verifier, dataKey) !== VERIFY_MARKER) {
+      wipeBuffer(dataKey);
+      return { ok: false, code: 'STATE_DAMAGED' };
+    }
   } catch {
     wipeBuffer(dataKey);
-    return false;
+    return { ok: false, code: 'BAD_PIN' };
   } finally {
     wrapKey.fill(0);
     deviceSecret.fill(0);
   }
   wipeKeys();
   _dataKey = dataKey;
-  return true;
+  return { ok: true };
 }
 
 function unlockLegacyState(pin, state) {
@@ -330,11 +423,11 @@ function unlockLegacyState(pin, state) {
   try {
     if (decryptPayload(state.verifier, legacyKey) !== LEGACY_VERIFY_MARKER) {
       legacyKey.fill(0);
-      return false;
+      return { ok: false, code: 'BAD_PIN' };
     }
   } catch {
     legacyKey.fill(0);
-    return false;
+    return { ok: false, code: 'BAD_PIN' };
   }
 
   const dataKey = crypto.randomBytes(KEY_BYTES);
@@ -345,13 +438,13 @@ function unlockLegacyState(pin, state) {
     dataKey.fill(0);
     wipeKeys();
     _dataKey = legacyKey;
-    return true;
+    return { ok: true };
   }
 
   wipeKeys();
   _dataKey = dataKey;
   _legacyKeys = [legacyKey];
-  return true;
+  return { ok: true };
 }
 
 export function setSafeStorage(safeStorage) {
@@ -360,6 +453,10 @@ export function setSafeStorage(safeStorage) {
 
 export function hasPin() {
   return !!readState();
+}
+
+export function isDamaged() {
+  return inspectState().damaged;
 }
 
 export function isUnlocked() {
@@ -371,11 +468,14 @@ export function isLocked() {
 }
 
 export function status() {
-  const state = readState();
-  const configured = !!state;
-  const unlocked = configured && isUnlocked();
+  const { exists, state, damaged } = inspectState();
+  // A damaged file still counts as configured: the PIN exists, we just
+  // cannot read it. Reporting false would invite a destructive Set PIN.
+  const configured = exists;
+  const unlocked = !damaged && configured && isUnlocked();
   return {
     configured,
+    damaged,
     unlocked,
     locked: configured && !unlocked,
     version: state?.version || null,
@@ -407,13 +507,20 @@ export function rotateUnlockedPin(pin) {
   return status();
 }
 
-export function unlock(pin) {
+// Returns { ok: true } or { ok: false, code } where code is one of
+// BAD_PIN, DEVICE_SECRET_UNAVAILABLE, STATE_DAMAGED, NOT_SET.
+export function unlockDetailed(pin) {
   validatePin(pin);
-  const state = readState();
-  if (!state) return false;
+  const { exists, state, damaged } = inspectState();
+  if (damaged) return { ok: false, code: 'STATE_DAMAGED' };
+  if (!exists || !state) return { ok: false, code: 'NOT_SET' };
   if (state.version === STATE_VERSION) return unlockV2State(pin, state);
   if (state.version === 1) return unlockLegacyState(pin, state);
-  return false;
+  return { ok: false, code: 'STATE_DAMAGED' };
+}
+
+export function unlock(pin) {
+  return unlockDetailed(pin).ok;
 }
 
 export function lock() {

@@ -83,6 +83,10 @@ async function setupSecretPin() {
     notify('Recovery PIN requires the Trebuchet desktop app');
     return false;
   }
+  if (state.secretPin.damaged) {
+    notify(RECOVERY_PIN_DAMAGED_MESSAGE);
+    return false;
+  }
   if (state.secretPin.configured) {
     notify('Recovery PIN is already configured');
     return false;
@@ -112,6 +116,10 @@ async function setupSecretPin() {
     return true;
   } catch (error) {
     state.secretPin.busy = null;
+    if (error?.code === 'SECRET_PIN_ALREADY_SET') {
+      // The server says a PIN already exists. Our view was stale: refresh it.
+      try { await refreshSecretPinStatus(); } catch { /* keep the notice below */ }
+    }
     notify(error.message || 'Recovery PIN setup failed');
     return false;
   } finally {
@@ -123,6 +131,10 @@ async function setupSecretPin() {
 async function unlockSecretPin({ reason = 'unlock' } = {}) {
   if (state.apiStatus !== 'connected' || !state.apiClient?.unlockSecretPin) {
     notify('Recovery PIN requires the Trebuchet desktop app');
+    return false;
+  }
+  if (state.secretPin.damaged) {
+    notify(RECOVERY_PIN_DAMAGED_MESSAGE);
     return false;
   }
   if (!state.secretPin.configured) {
@@ -162,6 +174,10 @@ async function unlockLaunchWalletAndContinue() {
 async function changeSecretPin() {
   if (state.apiStatus !== 'connected' || !state.apiClient?.changeSecretPin) {
     notify('Recovery PIN change requires the Trebuchet desktop app');
+    return;
+  }
+  if (state.secretPin.damaged) {
+    notify(RECOVERY_PIN_DAMAGED_MESSAGE);
     return;
   }
   if (!state.secretPin.configured) {

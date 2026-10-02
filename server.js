@@ -1755,6 +1755,35 @@ app.post('/api/v2/discovery/inspect', async (req, res) => {
 // Recovery PIN endpoints
 // ---------------------------------------------------------------------------
 
+function sendSecretPinUnlockFailure(res, reason) {
+  if (reason === 'DEVICE_SECRET_UNAVAILABLE') {
+    return res.status(409).json({
+      success: false,
+      code: 'SECRET_PIN_DEVICE_SECRET_UNAVAILABLE',
+      error: "This computer's keychain can no longer unlock the Recovery PIN key. Trying the PIN again will not help.",
+    });
+  }
+  if (reason === 'STATE_DAMAGED') {
+    return res.status(409).json({
+      success: false,
+      code: 'SECRET_PIN_STATE_DAMAGED',
+      error: 'The Recovery PIN file is damaged. Do not set a new PIN. A backup may be at .secretPin.json.bak.',
+    });
+  }
+  if (reason === 'NOT_SET') {
+    return res.status(409).json({
+      success: false,
+      code: 'SECRET_PIN_NOT_SET',
+      error: 'No Recovery PIN is set up yet.',
+    });
+  }
+  return res.status(401).json({
+    success: false,
+    code: 'BAD_SECRET_PIN',
+    error: 'Recovery PIN is incorrect',
+  });
+}
+
 app.get('/api/secret-pin/status', (_req, res) => {
   res.json({ success: true, status: secretStore.secretPinStatus() });
 });
@@ -1771,14 +1800,8 @@ app.post('/api/secret-pin/setup', (req, res) => {
 
 app.post('/api/secret-pin/unlock', (req, res) => {
   try {
-    const ok = secretStore.unlockSecretPin(req.body?.pin);
-    if (!ok) {
-      return res.status(401).json({
-        success: false,
-        code: 'BAD_SECRET_PIN',
-        error: 'Recovery PIN is incorrect',
-      });
-    }
+    const result = secretStore.unlockSecretPinDetailed(req.body?.pin);
+    if (!result.ok) return sendSecretPinUnlockFailure(res, result.code);
     migrateSecretsToUnlockedPin();
     res.json({ success: true, status: secretStore.secretPinStatus() });
   } catch (error) {
@@ -1788,14 +1811,8 @@ app.post('/api/secret-pin/unlock', (req, res) => {
 
 app.post('/api/secret-pin/change', (req, res) => {
   try {
-    const ok = secretStore.unlockSecretPin(req.body?.currentPin);
-    if (!ok) {
-      return res.status(401).json({
-        success: false,
-        code: 'BAD_SECRET_PIN',
-        error: 'Recovery PIN is incorrect',
-      });
-    }
+    const result = secretStore.unlockSecretPinDetailed(req.body?.currentPin);
+    if (!result.ok) return sendSecretPinUnlockFailure(res, result.code);
     migrateSecretsToUnlockedPin();
     const status = secretStore.changeSecretPin(req.body?.newPin);
     res.json({ success: true, status });
