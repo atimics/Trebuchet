@@ -18,7 +18,7 @@
 #include <string.h>
 
 typedef uint64_t fe51[5];
-typedef unsigned __int128 u128_t;
+__extension__ typedef unsigned __int128 u128_t;
 
 #define FE51_MASK ((1ULL << 51) - 1)
 

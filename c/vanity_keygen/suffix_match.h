@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include "fe51.h"   /* u128_t */
 
 #define SUFFIX_MATCH_MAX_LEN 10   /* 58^10 < 2^59, so the 8 x 32-bit sums fit in 128 bits */
 
@@ -52,7 +53,7 @@ static inline int suffix_matcher_init(suffix_matcher_t *m, const char *alphabet,
         if (!found) return -1;
     }
 
-    unsigned __int128 p = 1;
+    u128_t p = 1;
     for (int j = 0; j < 8; j++) {
         m->pow32[j] = (uint64_t)p;
         p = (p << 32) % m->mod;
@@ -62,12 +63,12 @@ static inline int suffix_matcher_init(suffix_matcher_t *m, const char *alphabet,
 
 /* True when the last `len` base58 digits of pk could match the target. */
 static inline int suffix_matcher_check(const suffix_matcher_t *m, const uint8_t pk[32]) {
-    unsigned __int128 sum = 0;
+    u128_t sum = 0;
     for (int j = 0; j < 8; j++) {
         const uint8_t *b = pk + 28 - 4 * j;
         uint64_t limb = ((uint64_t)b[0] << 24) | ((uint64_t)b[1] << 16)
                       | ((uint64_t)b[2] << 8) | (uint64_t)b[3];
-        sum += (unsigned __int128)limb * m->pow32[j];
+        sum += (u128_t)limb * m->pow32[j];
     }
     uint64_t x = (uint64_t)(sum % m->mod);
     for (int pos = m->len - 1; pos >= 0; pos--) {
