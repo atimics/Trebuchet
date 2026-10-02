@@ -354,9 +354,11 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
   });
   // support SOL, just below the start price
   const xs = xDown(depthPct);
+  const supportW = START - xs;
+  const supportText = `${fmt(supportSol)} SOL · −${fmt(depthPct)}%`;
   parts.push(supportSol > 0
-    ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${(START - xs).toFixed(1)}" height="60"/><text class="pm-tag" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 66}" text-anchor="middle">${fmt(supportSol)} SOL</text>`
-    : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${(START - xs).toFixed(1)}" height="60"/><text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>`);
+    ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/><text class="pm-tag" x="${(START - 6).toFixed(1)}" y="${BASE - 66}" text-anchor="end">${supportText}</text>`
+    : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/>${supportW > 70 ? `<text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>` : ''}`);
   // the SOL pool's price, for a pair
   if (premiumDrop > 0) {
     const xp = xDown(premiumDrop);
@@ -371,7 +373,6 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
   for (let m = 1; m <= maxMult; m *= 10) {
     parts.push(`<line class="pm-axis" x1="${xOf(m).toFixed(1)}" x2="${xOf(m).toFixed(1)}" y1="${BASE}" y2="${BASE + 4}"/><text class="pm-note" x="${xOf(m).toFixed(1)}" y="${BASE + 17}" text-anchor="middle">${m === 1 ? 'start' : `${m}×`}</text>`);
   }
-  parts.push(`<text class="pm-note" x="${xs.toFixed(1)}" y="${BASE + 17}" text-anchor="middle">−${fmt(depthPct)}%</text>`);
   // the positions this pool is split into
   const total = slices.reduce((sum, share) => sum + share, 0) || 100;
   let at = LEFT;
