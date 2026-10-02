@@ -71,28 +71,92 @@ export function listFlywheelHubs(snapshot = {}) {
 
 // Each selection refreshes the index. Pool presence is a discovery hint;
 // quote-token checks and the launch estimate establish execution readiness.
-export async function resolveFlywheelHub(value, { fetchImpl = globalThis.fetch } = {}) {
+//
+// Each source ends in one of three ways: it found a direct SOL pool, it
+// definitively has none, or it failed (rate limit, timeout, server error, bad
+// reply). Failures are named, because "try again" means something different for
+// a rate limit (wait a minute) than for a timeout (try again now).
+const SOURCES = [
+  { name: 'DexScreener', url: (mint) => `https://api.dexscreener.com/token-pairs/v1/solana/${mint}`, parse: parseDexSolPools },
+  { name: 'GeckoTerminal', url: (mint) => `${GECKO_BASE}/tokens/${mint}/pools?include=base_token,quote_token,dex&page=1`, parse: parseGeckoSolPools },
+];
+const RETRY_DELAY_MS = 800;
+const MAX_RETRY_AFTER_MS = 2500;
+
+const FAILURE_TEXT = {
+  'rate-limited': 'is rate-limiting requests',
+  timeout: 'did not answer in time',
+  unavailable: 'is having a problem',
+  network: 'could not be reached',
+  'bad-reply': 'sent a reply that could not be read',
+};
+
+function failureKind(error) {
+  if (error?.kind) return error.kind;
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError') return 'timeout';
+  if (error instanceof SyntaxError) return 'bad-reply';
+  return 'network';
+}
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function askSource(source, mint, fetchImpl) {
+  let response;
+  try {
+    response = await fetchImpl(source.url(mint), { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(6500) });
+  } catch (error) {
+    throw Object.assign(new Error(error?.message || 'request failed'), { kind: failureKind(error) });
+  }
+  if (response.status === 404) return null;
+  if (response.status === 429) {
+    const wait = Number(response.headers?.get?.('retry-after')) * 1000;
+    throw Object.assign(new Error('HTTP 429'), { kind: 'rate-limited', retryAfterMs: Number.isFinite(wait) ? wait : null });
+  }
+  if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { kind: response.status >= 500 ? 'unavailable' : 'bad-reply' });
+  let payload;
+  try { payload = await response.json(); } catch (error) { throw Object.assign(new Error('reply was not JSON'), { kind: 'bad-reply' }); }
+  return source.parse(mint, payload)[0] || null;
+}
+
+// One quick retry for the failures that often clear on their own. A rate limit
+// waits for Retry-After when it is short; anything longer is reported, not waited out.
+async function askSourceWithRetry(source, mint, fetchImpl, retryDelayMs) {
+  try {
+    return await askSource(source, mint, fetchImpl);
+  } catch (error) {
+    const transient = ['rate-limited', 'timeout', 'unavailable'].includes(error.kind);
+    const wait = error.retryAfterMs ?? retryDelayMs;
+    if (!transient || wait > MAX_RETRY_AFTER_MS) throw error;
+    await pause(wait);
+    return askSource(source, mint, fetchImpl);
+  }
+}
+
+export async function resolveFlywheelHub(value, { fetchImpl = globalThis.fetch, log = console.warn, retryDelayMs = RETRY_DELAY_MS } = {}) {
   const mint = String(value || '').trim();
   if (!validAddress(mint)) throw new Error('Enter a valid Solana token CA.');
   if (mint === HUB_SOL_MINT) throw new Error('Choose a hub token to pair with SOL.');
-  const sources = [
-    [`https://api.dexscreener.com/token-pairs/v1/solana/${mint}`, parseDexSolPools],
-    [`${GECKO_BASE}/tokens/${mint}/pools?include=base_token,quote_token,dex&page=1`, parseGeckoSolPools],
-  ];
-  let lookupFailed = false;
-  for (const [url, parse] of sources) {
+  const failures = [];
+  const empty = [];
+  for (const source of SOURCES) {
     try {
-      const response = await fetchImpl(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(6500) });
-      if (response.status === 404) continue;
-      if (!response.ok) throw new Error(`Pool index returned HTTP ${response.status}`);
-      const solPool = parse(mint, await response.json())[0];
-      if (!solPool) continue;
+      const solPool = await askSourceWithRetry(source, mint, fetchImpl, retryDelayMs);
+      if (!solPool) { empty.push(source.name); continue; }
       const known = DEFAULT_FLYWHEEL_HUBS.find((hub) => hub.mint === mint);
       return { mint, name: known?.name || solPool.name || mint, symbol: known?.symbol || solPool.symbol || 'HUB',
         solPool, checkedAt: new Date().toISOString(), network: 'mainnet-beta' };
-    } catch { lookupFailed = true; }
+    } catch (error) {
+      failures.push({ source: source.name, kind: error.kind || failureKind(error), detail: error.message });
+      log(`hub pool lookup: ${source.name} failed (${error.kind || failureKind(error)}: ${error.message})`);
+    }
   }
-  throw new Error(lookupFailed
-    ? 'Pool lookup is incomplete. Try again shortly.'
-    : 'A direct SOL pool is required. Try another token CA or refresh after its pool is indexed.');
+  if (!failures.length) {
+    throw Object.assign(new Error('A direct SOL pool is required. Try another token CA or refresh after its pool is indexed.'), { code: 'HUB_NO_SOL_POOL' });
+  }
+  const causes = failures.map((f) => `${f.source} ${FAILURE_TEXT[f.kind] || 'failed'}`).join('; ');
+  const said = empty.length ? ` ${empty.join(' and ')} found no direct SOL pool.` : '';
+  const wait = failures.some((f) => f.kind === 'rate-limited') ? 'Wait a minute and try again.' : 'Try again shortly.';
+  throw Object.assign(new Error(`Pool lookup is incomplete: ${causes}.${said} ${wait}`), {
+    code: 'HUB_LOOKUP_INCOMPLETE', retryable: true, failures,
+  });
 }
