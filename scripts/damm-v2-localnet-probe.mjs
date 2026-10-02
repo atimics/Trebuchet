@@ -26,7 +26,7 @@ import {
 import { createInitializeInstruction, pack } from '@solana/spl-token-metadata';
 import {
   ActivationType, BaseFeeMode, CP_AMM_PROGRAM_ID, CollectFeeMode, CpAmm, MAX_SQRT_PRICE, MIN_SQRT_PRICE,
-  derivePositionNftAccount, getBaseFeeParams,
+  derivePositionNftAccount, getBaseFeeParams, getSqrtPriceFromPrice,
 } from '@meteora-ag/cp-amm-sdk';
 
 const RPC_PORT = 8899;
@@ -37,6 +37,9 @@ const SUPPLY = 1_000_000_000n; // whole tokens
 const DECIMALS = Number(flag('decimals', 6));
 const LOCK_AT_CREATE = flag('lock-at-create', 'false') === 'true';
 const SOL_FIRST = flag('sol-first', 'false') === 'true'; // force a mint whose key sorts below wSOL
+const SINGLE_SIDED = flag('single-sided', 'false') === 'true'; // tokens only, no SOL, price range above the start
+const MCAP_SOL = Number(flag('mcap-sol', 2100)); // starting market cap, in SOL
+const RANGE_X = Number(flag('range', 1000)); // top of the range = start price x this
 const FEE_MODE = { both: CollectFeeMode.BothToken, quote: CollectFeeMode.OnlyB, compounding: CollectFeeMode.Compounding }[flag('fee-mode', 'both')];
 const FEE_BPS = 25; // 0.25%, the app's default fee tier
 
@@ -100,14 +103,25 @@ async function main() {
   const tokenAMint = tokenIsA ? mint.publicKey : NATIVE_MINT;
   const tokenBMint = tokenIsA ? NATIVE_MINT : mint.publicKey;
   const tokenAAmount = tokenIsA ? new BN(supplyRaw.toString()) : new BN(Math.round(SOL_DEPOSIT * LAMPORTS_PER_SOL));
-  const tokenBAmount = tokenIsA ? new BN(Math.round(SOL_DEPOSIT * LAMPORTS_PER_SOL)) : new BN(supplyRaw.toString());
-  const { initSqrtPrice, liquidityDelta } = cpAmm.preparePoolCreationParams({
-    tokenAAmount, tokenBAmount, minSqrtPrice: MIN_SQRT_PRICE, maxSqrtPrice: MAX_SQRT_PRICE, collectFeeMode: FEE_MODE,
-  });
+  const tokenBAmount = SINGLE_SIDED ? new BN(0) : tokenIsA ? new BN(Math.round(SOL_DEPOSIT * LAMPORTS_PER_SOL)) : new BN(supplyRaw.toString());
+  let initSqrtPrice; let liquidityDelta; let sqrtMin = MIN_SQRT_PRICE; let sqrtMax = MAX_SQRT_PRICE;
+  if (SINGLE_SIDED) {
+    // Price is "B per A" in whole tokens: SOL per token = market cap / supply.
+    const priceSolPerToken = MCAP_SOL / Number(SUPPLY);
+    initSqrtPrice = getSqrtPriceFromPrice(String(priceSolPerToken), DECIMALS, 9);
+    sqrtMin = initSqrtPrice; // nothing below the start, so no SOL is needed
+    sqrtMax = initSqrtPrice.muln(Math.round(Math.sqrt(RANGE_X) * 1000)).divn(1000);
+    liquidityDelta = cpAmm.preparePoolCreationSingleSide({ tokenAAmount, minSqrtPrice: sqrtMin, maxSqrtPrice: sqrtMax, initSqrtPrice, collectFeeMode: FEE_MODE });
+    console.log(`  single-sided: start ${MCAP_SOL} SOL market cap (${priceSolPerToken.toExponential(3)} SOL/token), range x${RANGE_X}`);
+  } else {
+    ({ initSqrtPrice, liquidityDelta } = cpAmm.preparePoolCreationParams({
+      tokenAAmount, tokenBAmount, minSqrtPrice: MIN_SQRT_PRICE, maxSqrtPrice: MAX_SQRT_PRICE, collectFeeMode: FEE_MODE,
+    }));
+  }
   const positionNft = Keypair.generate();
   const created = await cpAmm.createCustomPool({
     payer: payer.publicKey, creator: payer.publicKey, positionNft: positionNft.publicKey,
-    tokenAMint, tokenBMint, tokenAAmount, tokenBAmount, sqrtMinPrice: MIN_SQRT_PRICE, sqrtMaxPrice: MAX_SQRT_PRICE,
+    tokenAMint, tokenBMint, tokenAAmount, tokenBAmount, sqrtMinPrice: sqrtMin, sqrtMaxPrice: sqrtMax,
     liquidityDelta, initSqrtPrice,
     poolFees: {
       baseFee: getBaseFeeParams({ baseFeeMode: BaseFeeMode.FeeTimeSchedulerLinear, feeTimeSchedulerParam: { startingFeeBps: FEE_BPS, endingFeeBps: FEE_BPS, numberOfPeriod: 0, totalDuration: 0 } }),
@@ -137,19 +151,20 @@ async function main() {
   }
   const afterLock = await connection.getBalance(payer.publicKey);
 
-  const deposit = Math.round(SOL_DEPOSIT * LAMPORTS_PER_SOL);
+  const deposit = SINGLE_SIDED ? 0 : Math.round(SOL_DEPOSIT * LAMPORTS_PER_SOL);
   const poolCost = last - afterPool - deposit;
   const lockCost = afterPool - afterLock;
   console.log(`  ${'pool + position + vaults + tx fee'.padEnd(44)} ${sol(poolCost).padStart(10)} SOL   (the ${SOL_DEPOSIT} SOL deposit excluded)`);
   console.log(`  ${'permanent lock (tx fee only)'.padEnd(44)} ${sol(lockCost).padStart(10)} SOL`);
-  console.log(`\nDAMM v2 venue cost: ${sol(poolCost + lockCost)} SOL   (Raydium path in the app: pool 0.063 + Fee Keys 0.082 = 0.145 SOL)`);
+  console.log(`\nexact lamports -> pool+position+vaults+fee: ${poolCost}, lock: ${lockCost}, mint+metadata+supply: ${start - last}`);
+  console.log(`DAMM v2 venue cost: ${sol(poolCost + lockCost)} SOL   (Raydium path in the app: pool 0.063 + Fee Keys 0.082 = 0.145 SOL)`);
   console.log(`Whole launch, excluding the deposit: ${sol(start - afterLock - deposit)} SOL`);
 
   // 4. Prove it trades and the locked position still earns: swap, then claim fees.
   const trader = Keypair.generate();
-  await connection.confirmTransaction(await connection.requestAirdrop(trader.publicKey, 5 * LAMPORTS_PER_SOL), 'confirmed');
+  await connection.confirmTransaction(await connection.requestAirdrop(trader.publicKey, (Number(flag('buy', 0.5)) + 5) * LAMPORTS_PER_SOL), 'confirmed');
   const traderTokenAta = getAssociatedTokenAddressSync(mint.publicKey, trader.publicKey, false, TOKEN_2022_PROGRAM_ID);
-  const buyIn = new BN(Math.round(0.5 * LAMPORTS_PER_SOL));
+  const buyIn = new BN(Math.round(Number(flag('buy', 0.5)) * LAMPORTS_PER_SOL));
   const state = await cpAmm.fetchPoolState(created.pool);
   const quote = cpAmm.getQuote({ inAmount: buyIn, inputTokenMint: NATIVE_MINT, slippage: 1, poolState: state, currentTime: Math.floor(Date.now() / 1000), currentSlot: await connection.getSlot(), inputTokenInfo: undefined, outputTokenInfo: undefined });
   const swapTx = await cpAmm.swap({
@@ -159,7 +174,7 @@ async function main() {
   });
   await send(connection, swapTx, [trader]);
   const bought = (await getAccount(connection, traderTokenAta, 'confirmed', TOKEN_2022_PROGRAM_ID)).amount;
-  console.log(`\nSwap: 0.5 SOL bought ${(Number(bought) / 10 ** DECIMALS).toLocaleString()} TREB through the locked pool`);
+  console.log(`\nSwap: ${flag('buy', 0.5)} SOL bought ${(Number(bought) / 10 ** DECIMALS).toLocaleString()} TREB through the locked pool`);
 
   const before = await connection.getBalance(payer.publicKey);
   const tokenBefore = (await getAccount(connection, payerAta, 'confirmed', TOKEN_2022_PROGRAM_ID)).amount;
