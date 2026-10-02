@@ -477,6 +477,19 @@ const PHASE_TABS = {
   liquidity: [{ id: 'price', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }, { id: 'run', label: 'Create' }],
   finish: [{ id: 'return', label: 'Return & report' }, { id: 'airdrop', label: 'Airdrop' }, { id: 'run', label: 'Finish' }],
 };
+// Funding's two parts are tabs only when there are pair tokens to acquire; its panel is
+// built by the bridge, so these tabs just choose which part shows.
+function fundTabs() {
+  const config = currentLaunchConfig();
+  const estimate = classicFundingEstimateStatus(config).matchesConfig ? state.classicFundingEstimate : null;
+  const pairTokens = (estimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount();
+  return estimate && pairTokens
+    ? [{ id: 'cost', label: 'Cost' }, { id: 'tokens', label: 'Pair tokens' }]
+    : null;
+}
+function phaseTabsFor(workspace) {
+  return workspace === 'fund' ? fundTabs() : PHASE_TABS[workspace] || null;
+}
 const PLAN_SLIDE_ORDER = ['details', 'address', 'price', 'pairs', 'return', 'airdrop'];
 
 function phaseTabValue(id, runValue) {
@@ -491,12 +504,14 @@ function phaseTabValue(id, runValue) {
     case 'pairs': return text('#classicSummary') || '—';
     case 'return': return [text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge'), text('#reportSummary')].filter(Boolean).join(' · ') || '—';
     case 'airdrop': return text('#airdropSummary') || 'Off';
+    case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
+    case 'tokens': return `${(state.classicFundingEstimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount()} to acquire`;
     default: return runValue || supply;
   }
 }
 
 function currentPhaseSlide(workspace, runDone) {
-  const tabs = PHASE_TABS[workspace];
+  const tabs = phaseTabsFor(workspace);
   if (!tabs) return null;
   state.phaseSlide = state.phaseSlide || {};
   const chosen = state.phaseSlide[workspace];
@@ -506,18 +521,22 @@ function currentPhaseSlide(workspace, runDone) {
 }
 
 function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
-  const tabs = PHASE_TABS[workspace];
+  const tabs = phaseTabsFor(workspace);
   const strip = $('#planStrip');
   const track = $('#planTrack');
   if (!strip || !track) return;
   const bridge = $('#classicBridge');
   const hideRunOnly = ['#launchConsole', '#signaturePanel'];
+  const dock = $('.setup-dock');
+  if (dock) dock.hidden = !tabs;
   if (!tabs) {
-    if (bridge) bridge.hidden = false;
+    if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; }
     return;
   }
   const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
-  const running = current === 'run';
+  // Funding shows its own panel always; its tabs only choose the part.
+  const running = current === 'run' || workspace === 'fund';
+  if (bridge) bridge.dataset.fundTab = workspace === 'fund' ? current : '';
   strip.style.setProperty('--tabs', String(tabs.length));
   // Built once per phase and then updated in place, so the focused tab stays focused.
   const structure = `${workspace}|${tabs.map((tab) => tab.id).join(',')}`;
@@ -573,14 +592,14 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
 }
 
 function setPlanSlide(id) {
-  const tabs = PHASE_TABS[state.launchWorkspace];
+  const tabs = phaseTabsFor(state.launchWorkspace);
   if (!tabs || !tabs.some((tab) => tab.id === id)) return;
   state.phaseSlide = { ...(state.phaseSlide || {}), [state.launchWorkspace]: id };
   renderLaunchWorkspace();
 }
 
 function stepPlanSlide(step) {
-  const tabs = PHASE_TABS[state.launchWorkspace];
+  const tabs = phaseTabsFor(state.launchWorkspace);
   if (!tabs) return;
   const index = tabs.findIndex((tab) => tab.id === currentPhaseSlide(state.launchWorkspace, false));
   const next = Math.min(tabs.length - 1, Math.max(0, index + step));
