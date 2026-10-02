@@ -41,6 +41,8 @@
         </button>
       </nav>
 
+      <section class="saved-launches" id="savedLaunches" aria-label="Launches" hidden></section>
+
       <button class="launch-identity-sidebar" id="launchIdentitySidebar" type="button" data-action="open-launch-identity" aria-label="Open active launch identity" hidden></button>
 
       <div class="sidebar-footer">
@@ -280,6 +282,7 @@
                 </span>
                 <span class="setup-head-actions">
                   <span class="setup-help" id="setupHelp">Practice only · no SOL spent</span>
+                  <details class="guided-launch-menu" id="guidedLaunchMenu"><summary>Launches</summary><div class="guided-launch-menu-panel" id="guidedLaunchMenuPanel"></div></details>
                   <button class="text-button guided-advanced-shortcut" type="button" data-action="select-experience" data-experience="advanced">Advanced</button>
                 </span>
               </div>

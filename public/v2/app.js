@@ -7421,6 +7421,9 @@ function vanityAvailabilityMeta() {
 }
 
 const ACTIVE_LAUNCH_KEY = 'trebuchet-v2-active-launch';
+// Stored in place of a launch id when the operator closes the open launch, so
+// the next load starts blank instead of re-opening the first saved launch.
+const NO_ACTIVE_LAUNCH = '__none__';
 
 function rememberActiveLaunchId(id) {
   try {
@@ -7470,6 +7473,63 @@ function canAutoSaveLaunch(config) {
   return true;
 }
 
+// The launches list: every saved launch, the open one marked, plus a way to
+// start a blank one. Without it a saved launch re-opened on every start with
+// no way to leave it or reach the others.
+function launchIsInProgress() {
+  return Number(state.recovery?.activeJournalCount || 0) > 0;
+}
+
+function renderSavedLaunchList() {
+  const host = $('#savedLaunches');
+  const menuPanel = $('#guidedLaunchMenuPanel');
+  if (!host && !menuPanel) return;
+  const launches = Array.isArray(state.savedLaunches) ? state.savedLaunches : [];
+  const locked = launchIsInProgress();
+  const rows = launches.map((entry) => {
+    const token = entry.config?.token || {};
+    const isOpen = entry.id === state.loadedSavedLaunchId;
+    const symbol = String(token.symbol || '').toUpperCase() || '?';
+    const name = String(token.name || entry.name || 'Untitled');
+    return `<button class="saved-launch-row${isOpen ? ' is-open' : ''}" type="button" data-action="open-saved-launch" data-launch-id="${escapeHtml(entry.id)}"${isOpen ? ' aria-current="true"' : ''}${locked && !isOpen ? ' disabled' : ''}>
+      <strong>$${escapeHtml(symbol)}</strong><span>${escapeHtml(name)}</span>
+    </button>`;
+  }).join('');
+  const list = `
+    <span class="saved-launches-title">Launches</span>
+    <div class="saved-launch-rows">${rows}</div>
+    <button class="saved-launch-new" type="button" data-action="new-launch"${locked ? ' disabled' : ''}><i class="fa-solid fa-plus" aria-hidden="true"></i> New launch</button>
+    ${locked ? '<small class="saved-launches-note">A launch is in progress. Finish or recover it in History before switching.</small>' : ''}
+  `;
+  if (host) {
+    const empty = !launches.length && !state.loadedSavedLaunchId;
+    host.hidden = empty;
+    host.innerHTML = empty ? '' : list;
+  }
+  if (menuPanel) {
+    // Guided mode hides the sidebar, so this menu is the only way out of the
+    // wizard: the launches, plus the other views the sidebar would offer.
+    const views = [['wallet', 'Wallet'], ['discovery', 'Discovery'], ['history', 'History'], ['settings', 'Settings']]
+      .map(([view, label]) => `<button class="saved-launch-new" type="button" data-view="${view}">${label}</button>`)
+      .join('');
+    menuPanel.innerHTML = `${list}<span class="saved-launches-title">Go to</span><div class="saved-launch-rows">${views}</div>`;
+  }
+}
+
+// Switching reloads the page: the editor holds a lot of per-launch state, and a
+// clean start is the only way to be sure none of the old launch leaks into the
+// next one. The saved launch itself is already persisted, so nothing is lost.
+function switchActiveLaunch(id) {
+  if (launchIsInProgress()) return;
+  rememberActiveLaunchId(id || NO_ACTIVE_LAUNCH);
+  try {
+    v2LocalStorage()?.removeItem(GUIDED_DRAFT_STORAGE_KEY);
+  } catch {
+    // A stale draft only matters when storage works, and then removeItem works too.
+  }
+  window.location.reload();
+}
+
 // The saved (server-side) launch is explicit user intent, so it is applied
 // after the local guided draft: a stale browser draft must not overwrite the
 // launch the operator actually saved.
@@ -7479,6 +7539,7 @@ function restoreDetectedLaunch() {
   // shadow it (that is how the token art and the identity card went missing).
   if (state.loadedSavedLaunchId) return false;
   const rememberedId = rememberedActiveLaunchId();
+  if (rememberedId === NO_ACTIVE_LAUNCH) return false;
   const entry = state.savedLaunches.find((item) => item.id === rememberedId) || state.savedLaunches[0];
   if (!entry) return false;
   const loaded = restoreLaunchConfigFromJournal({
@@ -7529,6 +7590,7 @@ function scheduleLaunchAutoSave() {
         const index = list.findIndex((item) => item.id === entry.id);
         if (index >= 0) list[index] = entry; else list.unshift(entry);
         state.savedLaunches = list;
+        renderSavedLaunchList();
       })
       .catch(() => { /* auto-save is best-effort; the explicit errors surface elsewhere */ });
   }, 900);
@@ -23238,6 +23300,7 @@ function applyBootState(boot) {
     reserve: Array.isArray(boot.flywheelPools?.pools?.reserve) ? boot.flywheelPools.pools.reserve : [],
   };
   restoreDetectedLaunch();
+  renderSavedLaunchList();
   state.vanityAvailable = boot.vanity?.available === true;
   state.vanityReason = boot.vanity?.reason || null;
   state.clmmFeeTiers = normalizeClmmFeeTiers(boot.feeTiers?.tiers);
@@ -23745,6 +23808,14 @@ function handleClick(event) {
     quickLaunchDemoRun();
     renderLaunchPreview();
     renderLaunchWorkspace();
+    return;
+  }
+  if (action === 'open-saved-launch') {
+    switchActiveLaunch(actionTarget.dataset.launchId);
+    return;
+  }
+  if (action === 'new-launch') {
+    switchActiveLaunch(null);
     return;
   }
   if (action === 'open-launch-identity') {
