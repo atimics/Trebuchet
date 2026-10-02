@@ -25,7 +25,7 @@ for (const ui of ['classic', 'v2']) {
       }, state: { apiClient: { prepareAcquireQuoteCleanup: async (input) => { requests.push(input); return recovery; }, executeAcquireQuoteTokens: execute } },
       selectedLaunchWalletPublicKey: () => wallet, walletIsUnlocked: () => true, applyQuoteAcquireJob: () => {},
       formatRawTokenAmount: (amount, decimals) => String(Number(amount) / 10 ** decimals), shortAddress: (value) => value,
-      confirmOperatorAction: review, startQuoteAcquirePolling: () => {}, renderClassicBridge: () => {},
+      confirmOperatorAction: review, quoteAcquireSafetyCheck: () => true, startQuoteAcquirePolling: () => {}, renderClassicBridge: () => {},
     });
     const source = ui === 'classic' ? classic.slice(classic.indexOf('let isAcquireFlowRunning = false;'), classic.indexOf("bind('acquireQuoteTokensBtn'"))
       : v2.slice(v2.indexOf('async function reviewQuoteAcquireJob'), v2.indexOf('async function startQuoteAcquire'));
