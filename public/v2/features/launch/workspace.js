@@ -376,7 +376,70 @@ function renderLaunchWorkspace() {
   if (viewport && selectedWorkspace) {
     viewport.setAttribute('aria-label', `${selectedWorkspace.title}: ${selectedWorkspace.detail}`);
   }
+  renderLaunchNextRail(facts, next, workspace);
   refreshLaunchChainCheck(facts);
+}
+
+// The right-hand column: the one action the first unmet fact asks for, then
+// what this launch costs and holds. It reads the same facts as the rows.
+function renderLaunchNextRail(facts, next, workspace) {
+  const rail = $('#launchNextRail');
+  if (!rail) return;
+  const config = currentLaunchConfig();
+  const sol = (value) => `${Number(value || 0).toFixed(4)} SOL`;
+  const estimateStatus = classicFundingEstimateStatus(config);
+  const estimate = estimateStatus.matchesConfig ? state.classicFundingEstimate : null;
+  const funding = fundingMeterSnapshot(config);
+  const practice = Boolean(state.demoActive);
+  const poolCount = config.poolTopology.pools.length;
+  const irreversible = next && ['mint', 'liquidity', 'finish'].includes(next.id) && !practice;
+  const title = next ? (next.action || next.value) : 'Nothing left to do';
+  const detail = next
+    ? (next.state === 'running' ? 'Keep Trebuchet open.' : next.value)
+    : 'Every row holds. The proof file lists each address and transaction.';
+  const canAct = Boolean(next && next.action && next.state !== 'running');
+  const costState = practice
+    ? 'Test · nothing is sent'
+    : estimate ? 'Estimate · matches this plan' : estimateStatus.stale ? 'Estimate out of date' : 'Not estimated for this plan';
+  const total = estimate ? sol(estimate.totalSol) : '—';
+  const mint = proofTokenMint(currentLaunchProof());
+  rail.innerHTML = `
+    <section class="rail-next${next?.state === 'running' ? ' is-running' : ''}" aria-live="polite">
+      <span class="rail-label">Next</span>
+      <h2>${escapeHtml(title)}</h2>
+      <p>${escapeHtml(detail)}</p>
+      ${irreversible ? '<p class="rail-warn">Cannot be undone.</p>' : ''}
+      ${canAct ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>` : ''}
+    </section>
+    <section class="rail-block">
+      <div class="rail-head"><span class="rail-label">Cost</span><small>${escapeHtml(costState)}</small></div>
+      <div class="rail-row"><span>Launch wallet holds</span><b>${funding.hasWalletBalance ? sol(funding.availableSol) : 'Not checked'}</b></div>
+      <div class="rail-row rail-total"><span>Total</span><b>${practice && !estimate ? '—' : total}</b></div>
+    </section>
+    <section class="rail-block">
+      <span class="rail-label">Supply and liquidity</span>
+      <div class="rail-row"><span>Supply</span><b>${escapeHtml(String(config.token.supply || ''))}</b></div>
+      <div class="rail-row"><span>SOL in the pool</span><b>${Number(config.launchSol || 0)}</b></div>
+      <div class="rail-row"><span>Pools</span><b>${poolCount}</b></div>
+    </section>
+    ${mint ? `<section class="rail-block"><span class="rail-label">On-chain</span><div class="rail-row"><span>Mint</span><b>${escapeHtml(shortAddress(mint))}</b></div></section>` : ''}
+  `;
+}
+
+// One press does what the Next card says: open the row that needs doing, or,
+// when it is already open, press that row's own primary button.
+function runLaunchRailAction() {
+  const next = nextCoinFact();
+  if (!next || !next.action) return;
+  if (state.launchWorkspace !== next.id) {
+    setLaunchWorkspace(next.id, { focus: false });
+    return;
+  }
+  const pane = $(`[data-classic-workspace="${next.id}"]`);
+  const primary = pane && [...pane.querySelectorAll('.primary-button:not([data-next-fact]):not(:disabled)')].find((button) => button.getClientRects().length);
+  if (primary) { primary.click(); return; }
+  if (next.id === 'configure') $('#tokenName')?.focus();
+  else if (next.id === 'wallet') $('.launch-wallet-choice')?.click();
 }
 
 // Open a row. Which row is open is a view, never saved and never progress.

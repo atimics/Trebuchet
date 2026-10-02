@@ -3,7 +3,7 @@ function notify(message) {
   toast.className = 'toast';
   toast.textContent = message;
   $('#toastStack').appendChild(toast);
-  setTimeout(() => toast.remove(), 2600);
+  setTimeout(() => toast.remove(), Math.min(9000, Math.max(4500, message.length * 70)));
 }
 
 function updateResultLabel(result = state.updateCheck.lastResult) {

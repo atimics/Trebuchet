@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=102">
+  <link rel="stylesheet" href="./styles.css?v=103">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -163,7 +163,7 @@
             <div class="launch-toolbar" aria-label="Launch tools">
             <details class="cockpit-board launch-summary-drawer" aria-label="Launch plan">
               <summary>
-                <span><i class="fa-solid fa-chart-pie" aria-hidden="true"></i><strong>Plan</strong></span>
+                <span><i class="fa-solid fa-chart-pie" aria-hidden="true"></i><strong>Charts</strong></span>
                 <small>Supply, liquidity and cost</small>
               </summary>
 
@@ -242,7 +242,7 @@
             <nav class="coin-state" id="coinState" aria-label="What is true about this coin">
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="wallet" data-coin-fact="wallet">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Signer</strong><small data-coin-fact-value="wallet"></small></span>
+                <span><strong>Launch wallet</strong><small data-coin-fact-value="wallet"></small></span>
               </button>
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="configure" data-coin-fact="configure">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
@@ -262,10 +262,11 @@
               </button>
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="finish" data-coin-fact="finish">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Launch wallet</strong><small data-coin-fact-value="finish"></small></span>
+                <span><strong>Leftovers</strong><small data-coin-fact-value="finish"></small></span>
               </button>
             </nav>
 
+            <aside class="launch-next-rail" id="launchNextRail" aria-label="Next action, cost and supply"></aside>
 
             <div class="launch-workspace-viewport" id="launchWorkspaceViewport" role="region" tabindex="0" aria-live="polite">
             <section class="launch-identity-dock" id="launchIdentityDock" aria-label="Active token launch identity" hidden></section>
@@ -763,7 +764,7 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=1"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=196"></script>
+  <script src="./app.js?v=197"></script>
   <script src="./nfts.js?v=1"></script>
   <script src="./lean.js?v=1"></script>
 </body>

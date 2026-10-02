@@ -247,6 +247,10 @@ function handleClick(event) {
     renderPersonalDiscovery();
     return;
   }
+  if (action === 'launch-rail-act') {
+    runLaunchRailAction();
+    return;
+  }
   if (action === 'select-environment') {
     setExecutionEnvironment(actionTarget.dataset.environment).catch((error) => {
       notify(error.message || 'Could not change the execution environment');

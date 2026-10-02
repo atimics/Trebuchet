@@ -17286,3 +17286,111 @@ body[data-launch-identity="active"] #view-launch .primary-button:not(.custody-ac
     grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 }
+
+/* Launch screen: one next action. A third column holds the Next card, cost,
+   supply and liquidity, so the first view answers "what is next, and what does
+   it cost" without opening a drawer. Rows keep the names of their panes. */
+.coin-state-layout { grid-template-columns: 236px minmax(0, 1fr) 300px; }
+.coin-state-layout > .coin-state { grid-column: 1; grid-row: 1; }
+.coin-state-layout > .launch-workspace-viewport { grid-column: 2; grid-row: 1; min-width: 0; }
+.coin-state-layout > .launch-next-rail { grid-column: 3; grid-row: 1; }
+.launch-next-rail {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-left: 0;
+  background: var(--panel);
+}
+.launch-next-rail .rail-next,
+.launch-next-rail .rail-block {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.launch-next-rail .rail-block:last-child { border-bottom: 0; }
+.launch-next-rail .rail-next { background: var(--panel-strong); border-bottom-color: var(--line-strong); }
+.launch-next-rail .rail-next h2 { margin: 0; font-size: 14px; line-height: 1.4; }
+.launch-next-rail .rail-next p { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.launch-next-rail .rail-next .rail-warn { color: var(--amber); font-weight: 700; }
+.launch-next-rail .rail-label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.launch-next-rail .rail-next .rail-label { color: var(--green); }
+.launch-next-rail .rail-act { width: 100%; min-height: 44px; font-size: 12px; font-weight: 700; }
+.launch-next-rail .rail-head,
+.launch-next-rail .rail-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 12px; }
+.launch-next-rail .rail-head small { font-size: 11px; color: var(--muted); text-align: right; }
+.launch-next-rail .rail-row span { color: var(--muted); }
+.launch-next-rail .rail-row b { font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+.launch-next-rail .rail-total { padding-top: 6px; border-top: 1px solid var(--line); }
+.launch-next-rail .rail-total b { font-size: 20px; font-weight: 700; }
+
+/* The corner buttons are replaced by the Next card. The charts stay in their drawer as optional detail. */
+[data-next-fact] { display: none !important; }
+
+/* Type: nothing below 11px on the launch screen. */
+body #view-launch .config-grid label > span,
+body #view-launch .logo-input-label,
+body #view-launch .launch-budget-recommender .eyebrow,
+body .logo-upload-meta,
+body .field-hint,
+body .coin-fact small,
+body .launch-mode > small,
+body .sidebar-footer small,
+body .brand small { font-size: 11px; }
+body .coin-fact strong,
+body .nav-item,
+body .nav-item span,
+body #view-launch .primary-button,
+body #view-launch .secondary-button,
+body #view-launch .pill-button,
+body #view-launch .environment-button,
+body #view-launch .launch-budget-presets button { font-size: 12px; }
+
+/* The active nav icon stays an icon: the identity accent colours it, it does not fill it. */
+body[data-launch-identity="active"] .nav-item.is-active i { background: none; }
+
+/* The pool-size block fits its pane at every width. */
+.launch-budget-recommender { min-width: 0; max-width: 100%; }
+.launch-budget-presets { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* Coin card text stays readable on the light theme. */
+body.light-mode .coin-card-ui__copy,
+body.light-mode .coin-card-ui__copy * { color: var(--ink); }
+body.light-mode .coin-card-ui__status { color: var(--muted); }
+
+@media (max-width: 1199px) {
+  .coin-state-layout { grid-template-columns: 236px minmax(0, 1fr); }
+  .coin-state-layout > .launch-next-rail { grid-column: 1 / -1; grid-row: 1; border-left: 1px solid var(--line-strong); border-bottom: 0; }
+  .coin-state-layout > .coin-state { grid-column: 1; grid-row: 2; }
+  .coin-state-layout > .launch-workspace-viewport { grid-column: 2; grid-row: 2; }
+  .launch-next-rail .rail-block { display: none; }
+}
+@media (max-width: 900px) {
+  .coin-state-layout { grid-template-columns: minmax(0, 1fr); }
+  .coin-state-layout > .coin-state,
+  .coin-state-layout > .launch-workspace-viewport { grid-column: 1; }
+  .coin-state-layout > .coin-state { grid-row: 1; }
+  .coin-state-layout > .launch-workspace-viewport { grid-row: 2; }
+  .coin-state-layout > .launch-next-rail { grid-row: 3; }
+  .launch-next-rail {
+    position: fixed; left: 0; right: 0; bottom: 52px; z-index: 30;
+    border: 0; border-top: 1px solid var(--green);
+  }
+  .launch-next-rail .rail-next p { display: none; }
+  .launch-next-rail .rail-next { grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding: 8px 12px; }
+  .launch-next-rail .rail-next .rail-label { display: none; }
+  .launch-next-rail .rail-act { width: auto; padding: 0 14px; }
+}
+#savedLaunches{display:none!important}
+
+/* The work area is narrower with the rail, so the form and the pool block stack and fit. */
+@media (min-width: 901px) {
+  body #view-launch .compact-workbench { grid-template-columns: minmax(0, 1fr); }
+  body #view-launch .compact-workbench .config-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+body #view-launch .launch-budget-input { min-width: 0; }
+body #view-launch .launch-budget-head { flex-wrap: wrap; gap: 12px; }
+body .logo-upload-control { flex-wrap: wrap; }
+body .logo-upload-meta { flex-basis: 100%; }
+body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; white-space: normal; text-align: left; }
