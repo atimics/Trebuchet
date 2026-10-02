@@ -75,6 +75,7 @@ export function registerDammV2Routes(app, deps) {
     getVanityCandidate,
     removeVanityCandidate,
     getSolUsd,
+    addCoin = () => {},
     destinationRejection = async () => null,
   } = deps;
 
@@ -245,6 +246,7 @@ export function registerDammV2Routes(app, deps) {
         createToken,
         getVanityCandidate,
         removeVanityCandidate,
+        addCoin,
         solUsd: approvedPrice,
       },
     }).catch((error) => console.error('Meteora launch failed:', error?.message || error));

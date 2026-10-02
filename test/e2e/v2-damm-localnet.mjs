@@ -219,9 +219,11 @@ console.log('ok  verification fails for a pool that is not this token\'s');
 
 // ---- 6. the whole launch, through the runner the route uses -------------------------------------
 const TOKEN_RESULT = (mint) => ({ tokenMint: mint.toBase58(), isSafe: true, mintAuthorityRenounced: true, freezeAuthorityDisabled: true, metadataImmutable: true, metadataUri: 'https://example.invalid/t.json', imageUri: null });
+const addedCoins = [];
 const makeDeps = (wallet, overrides = {}) => ({
   connection,
   solUsd: 118,
+  addCoin: (coin) => addedCoins.push(coin),
   getVanityCandidate: () => null,
   removeVanityCandidate: () => {},
   createToken: async (args) => {
@@ -257,7 +259,11 @@ const leanConfig = (extra = {}) => normalizeDammV2Config({ token: { name: 'Trebu
   assert.equal(held[0].permanentlyLocked, true);
   // Starting price follows the frozen SOL price: $250,000 / $118.
   assert.ok(Math.abs(done.steps.pool.startMarketCapSol - 250_000 / 118) < 1e-9);
+  assert.equal(addedCoins.length, 1, 'the finished coin is added to the Coins list once');
+  assert.equal(addedCoins[0].mint, done.steps.token.mint);
+  assert.equal(addedCoins[0].symbol, 'TREB');
   await assert.rejects(() => runLaunch({ id: record.id, walletSecretKey: Array.from(wallet.secretKey), deps: makeDeps(wallet) }), /already complete/);
+  assert.equal(addedCoins.length, 1, 'a refused second start does not add it again');
   console.log('ok  full run: token, locked pool, Fee Key sent; a second start is refused');
 }
 

@@ -65,6 +65,7 @@ export function chainParams(record) {
  *   createToken          tokenService.createTokenWithMetaplex
  *   getVanityCandidate   (publicKey) => { keyType, scalar | secretKey } | null
  *   removeVanityCandidate (publicKey) => void
+ *   addCoin              ({ mint, name, symbol, image }) => void, puts the coin on the Coins list
  *   solUsd               the price the operator approved (frozen into the record)
  *   priorityMicroLamports
  */
@@ -175,6 +176,17 @@ export async function runLaunch({ id, walletSecretKey, deps }) {
       record = store.update(id, { steps: { keyTransfer: { complete: true, to: sent.to, signature: sent.signature } } });
       note({ stage: 'fee_key_sent', txId: sent.signature });
     }
+
+    // Put the coin on the Coins list. Best effort: the launch is already complete.
+    try {
+      deps.addCoin?.({
+        mint: record.steps.token.mint,
+        name: record.config.token.name,
+        symbol: record.config.token.symbol,
+        image: record.steps.token.imageUri || null,
+      });
+      note({ stage: 'coin_added' });
+    } catch { /* the coin can be added from the Coins page */ }
 
     record = store.update(id, { status: 'completed', error: null });
     note({ stage: 'launch_complete' });

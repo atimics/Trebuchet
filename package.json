@@ -47,6 +47,7 @@
     "test:e2e:v2": "node test/e2e/v2-flows.mjs",
     "test:e2e:nft:localnet": "node test/e2e/v2-nft-localnet.mjs",
     "test:e2e:damm:localnet": "node test/e2e/v2-damm-localnet.mjs",
+    "test:e2e:lean:ui": "node test/e2e/v2-lean-ui.mjs",
     "test:e2e:devnet": "node test/e2e/devnet-transactions.mjs",
     "test:e2e:devnet:recovery": "node test/e2e/devnet-recovery-drills.mjs",
     "test:electron:v2": "node test/e2e/electron-v2-smoke.mjs",

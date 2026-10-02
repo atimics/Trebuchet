@@ -2040,6 +2040,7 @@ registerDammV2Routes(app, {
   getVanityCandidate: (publicKey) => vanityCaStore.get(publicKey),
   removeVanityCandidate: (publicKey) => vanityCaStore.remove(publicKey),
   getSolUsd: () => getUsdPrice(KNOWN_QUOTES.SOL.address),
+  addCoin: (coin) => coinStore.add({ ...coin, source: 'added' }),
   // Same rule as the classic Fee Key send: no placeholder addresses, and an
   // address the operator has proven, unless it is the wallet that funded the launch.
   destinationRejection: async (destination, walletPublicKey) => {
