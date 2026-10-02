@@ -465,6 +465,25 @@ try {
   const evidenceDownload = await downloadEvent;
   assert.deepEqual(JSON.parse(readFileSync(await evidenceDownload.path(), 'utf8')), evidence);
   assert.deepEqual(nativeDialogs, [], 'Trebuchet opened a native prompt/confirm dialog');
+  // Pairs have their own ids even after a restore: one numbered past the count must not repeat.
+  const pairIds = await page.evaluate(() => {
+    const pair = (id, symbol, mint) => ({ id, quoteToken: mint, quoteMint: mint, quoteSymbol: symbol, supplyPercent: 5, ammConfigIndex: 5, distribution: [{ sharePercent: 100 }], ladder: { mode: 'off' }, support: { mode: 'off' }, startPricePremiumPct: 25 });
+    const config = JSON.parse(JSON.stringify(currentLaunchConfig()));
+    config.poolTopology.pools = [config.poolTopology.pools[0],
+      pair('custom-pool-2', 'RUG', 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG'),
+      pair('custom-pool-3', 'DGU', '7AL5rfx4Jf1DLFzZpQEPHkmR9BJjpcmWwne1f9xqfmTu')];
+    restoreLaunchConfigFromJournal({ launchConfig: config });
+    addCustomPool({ mint: 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj', name: 'XLRT', symbol: 'XLRT' });
+    const ids = state.customPools.map((pool) => pool.id);
+    // A saved launch that already repeats an id is repaired on restore.
+    config.poolTopology.pools.push(pair('custom-pool-3', 'DUP', 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj'));
+    restoreLaunchConfigFromJournal({ launchConfig: config });
+    return { ids, repaired: state.customPools.map((pool) => pool.id) };
+  });
+  assert.equal(new Set(pairIds.ids).size, pairIds.ids.length, `pairs share an id: ${pairIds.ids}`);
+  assert.equal(new Set(pairIds.repaired).size, pairIds.repaired.length, `restore kept a repeated id: ${pairIds.repaired}`);
+  await page.evaluate(() => { state.customPools = []; renderAll(); });
+
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');
 
