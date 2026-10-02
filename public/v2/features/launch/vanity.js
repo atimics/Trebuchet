@@ -389,16 +389,15 @@ function renderVanityCandidates() {
     </ul>
     ${state.vanityInputError
       ? `<p class="grinder-note is-error" id="vanityFeedback" role="alert">${escapeHtml(state.vanityInputError)}</p>`
-      : '<p class="grinder-note" id="vanityFeedback">Letters and numbers only, without 0, O, I or l.</p>'}
+      : '<p class="grinder-note" id="vanityFeedback"></p>'}
     <div class="grinder-list" role="group" aria-label="Saved contract addresses">
       <button class="grinder-row ${selected ? '' : 'is-active'}" type="button" data-action="select-vanity" data-public-key="" aria-pressed="${selected ? 'false' : 'true'}">
         <span class="grinder-radio" aria-hidden="true"></span>
-        <span class="grinder-row-main"><code>Random address</code><small>Made at launch. Nothing to grind.</small></span>
+        <span class="grinder-row-main"><code>Random address</code><small></small></span>
         ${selected ? '' : '<span class="grinder-row-state">In use</span>'}
       </button>
       ${candidateButtons}
     </div>
-    <p class="grinder-note">Grind grades and try counts come from this device's search. The address confirms the letter pattern.</p>
     <div class="grinder-actions">
       <button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
         <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>

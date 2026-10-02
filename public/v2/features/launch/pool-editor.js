@@ -248,11 +248,11 @@ function renderSupplyEditor() {
   let fieldSeq = 0;
   const field = (label, hint, control, feedback = '', wide = false) => {
     const base = `supply-field-${++fieldSeq}`;
-    const described = [hint ? `${base}-hint` : '', feedback ? `${base}-note` : ''].filter(Boolean).join(' ');
+    const described = [feedback ? `${base}-note` : ''].filter(Boolean).join(' ');
     const wired = control.replace(/^\s*<(input|textarea|select)/, (match) => (
       `${match} aria-labelledby="${base}-label"${described ? ` aria-describedby="${described}"` : ''}`
     ));
-    return `<label class="supply-field${wide ? ' supply-field-wide' : ''}"><span id="${base}-label">${escapeHtml(label)}</span>${wired}${hint ? `<small id="${base}-hint">${escapeHtml(hint)}</small>` : ''}${feedback ? `<small class="supply-feedback" id="${base}-note" data-feedback="${feedback}" role="status"></small>` : ''}</label>`;
+    return `<label class="supply-field${wide ? ' supply-field-wide' : ''}"><span id="${base}-label">${escapeHtml(label)}</span>${wired}${feedback ? `<small class="supply-feedback" id="${base}-note" data-feedback="${feedback}" role="status"></small>` : ''}</label>`;
   };
   const SLICE_HINT = 'Percent of the pool in each locked position, e.g. 50,50. A single 100 is one position.';
   const LADDER_HINT = `Extra liquidity bands at higher prices. 0 to ${CLASSIC_LADDER_MAX_BANDS}. 0 = off.`;
@@ -408,7 +408,7 @@ function renderPoolMap(panel) {
   parts.push(supportSol > 0 ? `${supportSol} SOL support to −${depthPct}%` : 'no support');
   parts.push(bands.length ? `${bands.length} ladder band${bands.length === 1 ? '' : 's'}` : 'no ladder');
   if (premiumPct > 0) parts.push(`opens ${premiumPct}% above the SOL price`);
-  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands })}<p class="pool-map-caption">${escapeHtml(parts.join(' · '))}</p>`;
+  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands })}`;
   if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
 }
 

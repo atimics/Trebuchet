@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=104">
+  <link rel="stylesheet" href="./styles.css?v=105">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -298,15 +298,14 @@
                   </label>
                   <label>
                     <span>Target market cap (USD)</span>
-                    <input id="targetMarketCapUsd" type="text" value="25,000" autocomplete="off" aria-describedby="targetMarketCapHint">
-                    <small class="field-hint" id="targetMarketCapHint">With the supply, this sets the launch price.</small>
+                    <input id="targetMarketCapUsd" type="text" value="25,000" autocomplete="off" >
                   </label>
                   <div class="logo-input-row">
                     <span class="logo-input-label">Logo</span>
                     <label class="logo-upload-control" for="tokenLogoFile">
                       <input id="tokenLogoFile" type="file" accept="image/png,image/jpeg,image/gif">
                       <span class="logo-upload-command"><i class="fa-solid fa-arrow-up-from-bracket"></i> Choose image</span>
-                      <span class="logo-upload-meta">PNG, JPG or GIF, up to 10 MB</span>
+                      <span class="logo-upload-meta">PNG · JPG · GIF · 10 MB</span>
                     </label>
                   </div>
                   <div class="token-logo-preview" id="tokenLogoPreview"></div>
@@ -347,7 +346,6 @@
                       <input id="sealedLaunch" type="checkbox" checked>
                       <span>
                         <strong>Sealed launch</strong>
-                        <small>Commit identity now; reveal it only after liquidity is locked.</small>
                       </span>
                     </label>
                     <label>
@@ -364,7 +362,6 @@
                     <strong id="vanitySummary">Random address · recommended</strong>
                   </summary>
                   <div class="vanity-details-body grinder" aria-label="Optional custom contract address">
-                  <p class="grinder-intro">Optional. Grind an address that starts or ends with letters you choose, or launch with a random one.</p>
                   <div class="vanity-inputs grinder-fields">
                     <label class="grinder-field">
                       <span>Starts with</span>
@@ -764,7 +761,7 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=1"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=198"></script>
+  <script src="./app.js?v=199"></script>
   <script src="./nfts.js?v=1"></script>
   <script src="./lean.js?v=1"></script>
 </body>

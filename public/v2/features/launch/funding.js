@@ -393,13 +393,12 @@ function renderHubPicker() {
   const pool = result?.solPool;
   host.innerHTML = `
     <div class="hub-picker-heading"><strong>Choose a hub token</strong><button type="button" class="pill-button" data-action="close-hub-picker" aria-label="Close hub picker">Close</button></div>
-    <p>Add a pair with a hub token. Its existing pool with SOL, USDC, USDT, USD1 or XLRT completes the route.</p>
     <div class="hub-picker-scroll" aria-label="Hub tokens">
       ${['default', 'discovery'].map((source) => `<p class="hub-picker-group">${source === 'default' ? 'Defaults' : 'From Discovery · SOL pools'}</p>
         ${rows.filter((hub) => hub.source === source).map((hub) => `<button class="hub-picker-token" type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}">
           <strong>${escapeHtml(hub.name || hub.symbol || shortAddress(hub.mint))}</strong><span>${escapeHtml(hub.symbol || 'HUB')} / SOL</span><code>${escapeHtml(shortAddress(hub.mint))}</code>
         </button>`).join('')}
-        ${source === 'discovery' && !rows.some((hub) => hub.source === source) ? '<small>Tokens with a SOL pool appear here after Discovery finds them.</small>' : ''}`).join('')}
+`).join('')}
     </div>
     <label class="hub-picker-ca" for="hubTokenCa">Token CA<input id="hubTokenCa" value="${escapeHtml(hubPicker.mint)}" placeholder="Paste any Solana token CA" autocomplete="off" spellcheck="false"></label>
     <button class="pill-button" type="button" data-action="find-hub-pool">Find pool</button>

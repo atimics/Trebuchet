@@ -2236,7 +2236,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /Fixed by this coin\\'s mint/);
   assert.doesNotMatch(js, /Check prerequisites/);
   assert.doesNotMatch(js, /Classic execution payloads ready/);
-  assert.match(combined, /The name and logo stay hidden until the pool is locked/);
   assert.match(combined, /Create &amp; lock liquidity/);
   assert.match(combined, /Finish launch/);
   assert.match(html, /id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000"/);
@@ -2581,7 +2580,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /<span class="logo-input-label">Logo<\/span>/);
   assert.match(html, /class="logo-upload-control" for="tokenLogoFile"/);
   assert.match(html, /class="logo-upload-command"/);
-  assert.match(html, /PNG, JPG or GIF, up to 10 MB/);
+  assert.match(html, /PNG · JPG · GIF · 10 MB/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
   assert.match(gifOptimizerJs, /optimizeAnimatedGif/);
   assert.match(gifOptimizerJs, /decompressFrames/);
@@ -6752,7 +6751,6 @@ test('v2 terminal recovery collapses into the completed proof panel', () => {
   assert.match(bridgeSource, /state\.restoredLaunchJournalId && !finalSweepComplete/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('has-recovery-notice'/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('is-terminal-launch', finalSweepComplete\)/);
-  assert.match(bridgeSource, /Everything is in the return wallet and the launch wallet is empty/);
   assert.match(bridgeSource, /!finalSweepComplete && !completedJournal \? `<details class="drawer launch-recovery-details"/);
   assert.match(css, /#classicBridge\.is-terminal-launch \.classic-workspace-verify\s*\{[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\)/);
   assert.match(css, /\.recovered-plan-notice\s*\{[\s\S]*?max-height: 44px/);
@@ -6808,7 +6806,6 @@ test('v2 contract address grinder lists saved addresses as rows with Signal grad
   // Search effort is labeled as local on the candidate and in its note.
   assert.match(renderSource, /the expected tries/);
   assert.match(renderSource, /Local grind grade:/);
-  assert.match(renderSource, /The address confirms the letter pattern/);
   assert.match(css, /--rarity-common: #c8dce6/);
   assert.match(css, /--rarity-fine: #8cdcff/);
   assert.match(css, /--rarity-rare: #be82ff/);
@@ -6877,12 +6874,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=104/);
+  assert.match(html, /styles\.css\?v=105/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=198/);
-  assert.doesNotMatch(html, /app\.js\?v=198" type="module"/);
+  assert.match(html, /app\.js\?v=199/);
+  assert.doesNotMatch(html, /app\.js\?v=199" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');

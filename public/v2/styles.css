@@ -17417,3 +17417,10 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 /* A long fee-tier list: a few labels, the chosen one and both ends, so none overlap. */
 .supply-settings .choice-control.has-many .choice-ticks { display: flex; justify-content: space-between; }
 .supply-settings .choice-control.has-many .choice-ticks button:not(.is-selected):not(:first-child):not(:last-child):not(:nth-child(5n+1)) { display: none; }
+
+/* Less written explanation: values and pictures say it; hints live in tooltips,
+   and a note only shows when something needs fixing. */
+.supply-feedback:not(.is-warn),
+.launch-budget-strategy { display: none; }
+.launch-step-guide p:empty, .classic-task p:empty { display: none; }
+.grinder-note:empty, .grinder-row-main small:empty { display: none; }

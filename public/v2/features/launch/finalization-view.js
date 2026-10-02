@@ -682,7 +682,7 @@ function renderClassicBridge() {
     ? {
       eyebrow: 'Not estimated',
       title: 'Estimate the launch cost',
-      detail: 'Work out how much SOL this launch needs.',
+      detail: '',
       action: 'estimate-funding',
       actionLabel: fundingEstimateStatus.stale ? 'Update estimate' : 'Estimate cost',
     }
@@ -698,7 +698,7 @@ function renderClassicBridge() {
       ? {
         eyebrow: 'Send to launch wallet',
         title: `${totalSol.toFixed(4)} SOL`,
-        detail: 'Send this much SOL to the address below, then check the balance.',
+        detail: '',
         action: 'refresh-manual-prefund',
         actionLabel: state.manualPrefund.polling ? 'Checking balance' : 'I funded it · check balance',
       }
@@ -809,7 +809,7 @@ function renderClassicBridge() {
             : recoveringToken ? 'Finish interrupted token safely' : 'Review this launch'
           : readiness?.nextAction || title;
     const panelDetail = state.demoActive && !complete
-      ? 'Creates the token, pool and locks in a simulator. Nothing is sent.'
+      ? 'Nothing is sent.'
       : complete
       ? detail
       : needsFunding
@@ -903,9 +903,6 @@ function renderClassicBridge() {
       <section class="launch-step-guide irreversible" aria-labelledby="mintStepTitle">
         <div>
           <h2 id="mintStepTitle">Create token</h2>
-          <p>${config.token.sealedLaunch
-            ? 'Mints the supply and removes mint and freeze control. The name and logo stay hidden until the pool is locked.'
-            : 'Mints the supply and removes mint and freeze control.'}</p>
         </div>
         ${state.demoActive || tokenComplete ? '' : `<aside><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span><strong>Can't be undone.</strong> Fix mistakes in Token &amp; pools first.</span></aside>`}
       </section>
@@ -958,7 +955,7 @@ function renderClassicBridge() {
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
           <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Leftovers'}</h2>
-          <p>${practiceComplete ? 'Every step ran. Nothing was sent.' : finalSweepComplete ? 'Everything is in the return wallet and the launch wallet is empty.' : 'Send the remaining assets to the return wallet and save the launch record.'}</p>
+          <p>${practiceComplete ? 'Nothing was sent.' : ''}</p>
         </div>
         ${practiceComplete ? '' : `<aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Launch record ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for the final sweep.' : 'Fix the item below.'}</span></aside>`}
       </section>`}

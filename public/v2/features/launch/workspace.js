@@ -799,7 +799,7 @@ function tokenLogoStampMarkup() {
   // Before the address exists the preview can only show a made-up one,
   // which reads as a broken logo; say what will happen instead.
   if (stamp.sample) {
-    return '<p class="token-logo-stamp-note">The contract address is printed along the bottom of the logo at launch.</p>';
+    return '';
   }
   const caption = `Printed on the logo: ${fullAddress(stamp.mint)}`;
   return `

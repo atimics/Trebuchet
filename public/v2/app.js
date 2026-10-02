@@ -6347,7 +6347,7 @@ function tokenLogoStampMarkup() {
   // Before the address exists the preview can only show a made-up one,
   // which reads as a broken logo; say what will happen instead.
   if (stamp.sample) {
-    return '<p class="token-logo-stamp-note">The contract address is printed along the bottom of the logo at launch.</p>';
+    return '';
   }
   const caption = `Printed on the logo: ${fullAddress(stamp.mint)}`;
   return `
@@ -7151,16 +7151,15 @@ function renderVanityCandidates() {
     </ul>
     ${state.vanityInputError
       ? `<p class="grinder-note is-error" id="vanityFeedback" role="alert">${escapeHtml(state.vanityInputError)}</p>`
-      : '<p class="grinder-note" id="vanityFeedback">Letters and numbers only, without 0, O, I or l.</p>'}
+      : '<p class="grinder-note" id="vanityFeedback"></p>'}
     <div class="grinder-list" role="group" aria-label="Saved contract addresses">
       <button class="grinder-row ${selected ? '' : 'is-active'}" type="button" data-action="select-vanity" data-public-key="" aria-pressed="${selected ? 'false' : 'true'}">
         <span class="grinder-radio" aria-hidden="true"></span>
-        <span class="grinder-row-main"><code>Random address</code><small>Made at launch. Nothing to grind.</small></span>
+        <span class="grinder-row-main"><code>Random address</code><small></small></span>
         ${selected ? '' : '<span class="grinder-row-state">In use</span>'}
       </button>
       ${candidateButtons}
     </div>
-    <p class="grinder-note">Grind grades and try counts come from this device's search. The address confirms the letter pattern.</p>
     <div class="grinder-actions">
       <button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
         <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>
@@ -7422,11 +7421,11 @@ function renderSupplyEditor() {
   let fieldSeq = 0;
   const field = (label, hint, control, feedback = '', wide = false) => {
     const base = `supply-field-${++fieldSeq}`;
-    const described = [hint ? `${base}-hint` : '', feedback ? `${base}-note` : ''].filter(Boolean).join(' ');
+    const described = [feedback ? `${base}-note` : ''].filter(Boolean).join(' ');
     const wired = control.replace(/^\s*<(input|textarea|select)/, (match) => (
       `${match} aria-labelledby="${base}-label"${described ? ` aria-describedby="${described}"` : ''}`
     ));
-    return `<label class="supply-field${wide ? ' supply-field-wide' : ''}"><span id="${base}-label">${escapeHtml(label)}</span>${wired}${hint ? `<small id="${base}-hint">${escapeHtml(hint)}</small>` : ''}${feedback ? `<small class="supply-feedback" id="${base}-note" data-feedback="${feedback}" role="status"></small>` : ''}</label>`;
+    return `<label class="supply-field${wide ? ' supply-field-wide' : ''}"><span id="${base}-label">${escapeHtml(label)}</span>${wired}${feedback ? `<small class="supply-feedback" id="${base}-note" data-feedback="${feedback}" role="status"></small>` : ''}</label>`;
   };
   const SLICE_HINT = 'Percent of the pool in each locked position, e.g. 50,50. A single 100 is one position.';
   const LADDER_HINT = `Extra liquidity bands at higher prices. 0 to ${CLASSIC_LADDER_MAX_BANDS}. 0 = off.`;
@@ -7582,7 +7581,7 @@ function renderPoolMap(panel) {
   parts.push(supportSol > 0 ? `${supportSol} SOL support to −${depthPct}%` : 'no support');
   parts.push(bands.length ? `${bands.length} ladder band${bands.length === 1 ? '' : 's'}` : 'no ladder');
   if (premiumPct > 0) parts.push(`opens ${premiumPct}% above the SOL price`);
-  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands })}<p class="pool-map-caption">${escapeHtml(parts.join(' · '))}</p>`;
+  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands })}`;
   if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
 }
 
@@ -14591,7 +14590,7 @@ function renderClassicBridge() {
     ? {
       eyebrow: 'Not estimated',
       title: 'Estimate the launch cost',
-      detail: 'Work out how much SOL this launch needs.',
+      detail: '',
       action: 'estimate-funding',
       actionLabel: fundingEstimateStatus.stale ? 'Update estimate' : 'Estimate cost',
     }
@@ -14607,7 +14606,7 @@ function renderClassicBridge() {
       ? {
         eyebrow: 'Send to launch wallet',
         title: `${totalSol.toFixed(4)} SOL`,
-        detail: 'Send this much SOL to the address below, then check the balance.',
+        detail: '',
         action: 'refresh-manual-prefund',
         actionLabel: state.manualPrefund.polling ? 'Checking balance' : 'I funded it · check balance',
       }
@@ -14718,7 +14717,7 @@ function renderClassicBridge() {
             : recoveringToken ? 'Finish interrupted token safely' : 'Review this launch'
           : readiness?.nextAction || title;
     const panelDetail = state.demoActive && !complete
-      ? 'Creates the token, pool and locks in a simulator. Nothing is sent.'
+      ? 'Nothing is sent.'
       : complete
       ? detail
       : needsFunding
@@ -14812,9 +14811,6 @@ function renderClassicBridge() {
       <section class="launch-step-guide irreversible" aria-labelledby="mintStepTitle">
         <div>
           <h2 id="mintStepTitle">Create token</h2>
-          <p>${config.token.sealedLaunch
-            ? 'Mints the supply and removes mint and freeze control. The name and logo stay hidden until the pool is locked.'
-            : 'Mints the supply and removes mint and freeze control.'}</p>
         </div>
         ${state.demoActive || tokenComplete ? '' : `<aside><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span><strong>Can't be undone.</strong> Fix mistakes in Token &amp; pools first.</span></aside>`}
       </section>
@@ -14867,7 +14863,7 @@ function renderClassicBridge() {
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
           <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Leftovers'}</h2>
-          <p>${practiceComplete ? 'Every step ran. Nothing was sent.' : finalSweepComplete ? 'Everything is in the return wallet and the launch wallet is empty.' : 'Send the remaining assets to the return wallet and save the launch record.'}</p>
+          <p>${practiceComplete ? 'Nothing was sent.' : ''}</p>
         </div>
         ${practiceComplete ? '' : `<aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Launch record ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for the final sweep.' : 'Fix the item below.'}</span></aside>`}
       </section>`}
@@ -19167,13 +19163,12 @@ function renderHubPicker() {
   const pool = result?.solPool;
   host.innerHTML = `
     <div class="hub-picker-heading"><strong>Choose a hub token</strong><button type="button" class="pill-button" data-action="close-hub-picker" aria-label="Close hub picker">Close</button></div>
-    <p>Add a pair with a hub token. Its existing pool with SOL, USDC, USDT, USD1 or XLRT completes the route.</p>
     <div class="hub-picker-scroll" aria-label="Hub tokens">
       ${['default', 'discovery'].map((source) => `<p class="hub-picker-group">${source === 'default' ? 'Defaults' : 'From Discovery · SOL pools'}</p>
         ${rows.filter((hub) => hub.source === source).map((hub) => `<button class="hub-picker-token" type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}">
           <strong>${escapeHtml(hub.name || hub.symbol || shortAddress(hub.mint))}</strong><span>${escapeHtml(hub.symbol || 'HUB')} / SOL</span><code>${escapeHtml(shortAddress(hub.mint))}</code>
         </button>`).join('')}
-        ${source === 'discovery' && !rows.some((hub) => hub.source === source) ? '<small>Tokens with a SOL pool appear here after Discovery finds them.</small>' : ''}`).join('')}
+`).join('')}
     </div>
     <label class="hub-picker-ca" for="hubTokenCa">Token CA<input id="hubTokenCa" value="${escapeHtml(hubPicker.mint)}" placeholder="Paste any Solana token CA" autocomplete="off" spellcheck="false"></label>
     <button class="pill-button" type="button" data-action="find-hub-pool">Find pool</button>
@@ -22097,7 +22092,7 @@ function assetDestinationsHtml() {
       <strong>${escapeHtml(title)}</strong>
       ${address}
       ${warning}
-      <p class="return-wallet-note">Gets the Fee Keys (they collect the pools' trading fees), leftover SOL and any held-back tokens.</p>
+
       <div class="operator-toolbar compact">
         <button class="pill-button" type="button" data-action="sign-return-wallet" ${state.destinations.waiting ? 'disabled' : ''}>
           ${state.destinations.waiting ? 'Waiting for signature…' : 'Sign with another wallet'}
