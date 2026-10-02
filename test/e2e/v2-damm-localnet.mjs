@@ -349,6 +349,62 @@ const leanConfig = (extra = {}) => normalizeDammV2Config({ token: { name: 'Trebu
   console.log('ok  the wrong wallet is refused and a launch cannot run twice at once');
 }
 
+// ---- 7. the app's REAL token stage, not a stand-in -----------------------------------------------
+// Only the Arweave upload and the connection are replaced. Everything the token stage does on chain
+// (Token-2022 mint, on-mint metadata, supply, authorities) is the production code.
+{
+  const tokenService = await import('../../tokenService.js');
+  const { createHash } = await import('node:crypto');
+  const { getMint, getTokenMetadata } = await import('@solana/spl-token');
+  tokenService.setConnectionFactoryForTests(() => connection);
+  tokenService.setUmiFactoryForTests(() => ({}));
+  tokenService.setUploaderForTests(async ({ name, symbol, mint, onProgress }) => {
+    const metadata = JSON.stringify({ name, symbol, mint });
+    const result = { metadataUri: 'https://example.invalid/metadata.json', imageUri: 'https://example.invalid/logo.png', metadata, metadataHash: createHash('sha256').update(metadata).digest('hex') };
+    onProgress?.({ stage: 'metadata_uploaded', ...result });
+    return result;
+  });
+  try {
+    const wallet = await fund(Keypair.generate(), 8);
+    // The production token stage works at finalized commitment, so the funding has to be finalized first.
+    for (let i = 0; (await connection.getBalance(wallet.publicKey, 'finalized')) === 0; i += 1) {
+      assert.ok(i < 120, 'the funding never finalized');
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    const record = store.create({ config: leanConfig(), walletPublicKey: wallet.publicKey.toBase58() });
+    const done = await runLaunch({
+      id: record.id,
+      walletSecretKey: Array.from(wallet.secretKey),
+      deps: makeDeps(wallet, { createToken: tokenService.createTokenWithMetaplex }),
+    });
+    assert.equal(done.status, 'completed');
+    assert.equal(done.steps.token.mintAuthorityRenounced, true);
+    assert.equal(done.steps.token.freezeAuthorityDisabled, true);
+    assert.equal(done.steps.token.metadataImmutable, true);
+    assert.equal(done.steps.pool.verification.passed, true);
+    const mint = new (await import('@solana/web3.js')).PublicKey(done.steps.token.mint);
+    const info = await getMint(connection, mint, 'confirmed', TOKEN_2022_PROGRAM_ID);
+    assert.equal(info.decimals, 9, 'the app\'s tokens have 9 decimals, which the pool math assumes');
+    assert.equal(info.supply, SUPPLY, 'the whole supply exists');
+    assert.equal(info.mintAuthority, null);
+    assert.equal(info.freezeAuthority, null);
+    const metadata = await getTokenMetadata(connection, mint, 'confirmed', TOKEN_2022_PROGRAM_ID);
+    assert.equal(metadata.name, 'Trebuchet');
+    assert.equal(metadata.symbol, 'TREB');
+    assert.equal(metadata.updateAuthority, undefined, 'the metadata is fixed');
+    // The whole supply left the wallet and sits in the pool's vault.
+    const poolState = await cpAmm.fetchPoolState(new (await import('@solana/web3.js')).PublicKey(done.steps.pool.pool));
+    const vault = await getAccount(connection, poolState.tokenAVault, 'confirmed', TOKEN_2022_PROGRAM_ID);
+    assert.equal(vault.amount, SUPPLY, 'the pool holds the entire supply');
+    const walletAta = getAssociatedTokenAddressSync(mint, wallet.publicKey, false, TOKEN_2022_PROGRAM_ID);
+    assert.equal((await getAccount(connection, walletAta, 'confirmed', TOKEN_2022_PROGRAM_ID)).amount, 0n, 'the launch wallet keeps none of it');
+    console.log('ok  the real token stage + the pool: 9 decimals, authorities gone, metadata fixed, the whole supply in the locked pool');
+  } finally {
+    tokenService.resetConnectionFactoryForTests();
+    tokenService.resetMetadataFactoriesForTests();
+  }
+}
+
 console.log('\nDAMM v2 lean launch: all checks passed');
 stop();
 process.exit(0);
