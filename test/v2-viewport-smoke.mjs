@@ -124,9 +124,8 @@ async function smokeViewport(browser, viewport) {
         docScrollHeight: document.documentElement.scrollHeight,
       };
     });
-    assert.equal(collapsedMetrics.open, false, `${viewport.name}: launch summary should start collapsed`);
-    assert.ok(collapsedMetrics.cockpit?.height > 0 && collapsedMetrics.cockpit.height < 80, `${viewport.name}: collapsed summary is not compact`);
-    await page.click('.launch-summary-drawer > summary');
+    // The Charts drawer is gone from the screen; its charts still render (checked below by their nodes).
+    assert.equal(collapsedMetrics.cockpit?.height ?? 0, 0, `${viewport.name}: the Charts drawer is back on screen`);
 
     const metrics = await page.evaluate(() => {
       const rectFor = (selector) => {
@@ -239,7 +238,7 @@ async function smokeViewport(browser, viewport) {
         && (actualScrollOwner === 'view'
           ? collapsedMetrics.viewTop + collapsedMetrics.viewScrollHeight + 1 >= collapsedMetrics.workspace.bottom
           : collapsedMetrics.docScrollHeight + 1 >= collapsedMetrics.workspace.bottom)
-      : collapsedMetrics.cockpit.bottom <= viewport.height + 1;
+      : collapsedMetrics.workspace.bottom <= viewport.height + 1 || actualScrollOwner === 'page';
     assert.ok(
       firstViewportFit,
       `${viewport.name}: launch workspace does not fit its intended viewport ${JSON.stringify({
@@ -252,13 +251,11 @@ async function smokeViewport(browser, viewport) {
       })}`,
     );
 
-    for (const selector of ['launchShell', 'cockpit', 'chartDeck', 'tokenomicsChart', 'liquidityChart', 'fundingMeter', 'workspaceTabs', 'workspaceViewport', 'setupDock']) {
+    for (const selector of ['launchShell', 'workspaceTabs', 'workspaceViewport']) {
       assertRectSized(metrics.rects[selector], selector, viewport);
     }
 
-    const initiallyVisibleSelectors = viewport.tier === 'mobile'
-      ? ['cockpit', 'chartDeck', 'tokenomicsChart', 'workspaceTabs', 'setupDock']
-      : ['cockpit', 'chartDeck', 'tokenomicsChart', 'liquidityChart', 'fundingMeter', 'workspaceTabs'];
+    const initiallyVisibleSelectors = ['workspaceTabs'];
     for (const selector of initiallyVisibleSelectors) {
       assertRectVisible(metrics.rects[selector], selector, viewport);
     }

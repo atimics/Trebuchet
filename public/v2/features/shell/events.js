@@ -269,6 +269,11 @@ function handleClick(event) {
     runLaunchRailAction();
     return;
   }
+  if (action === 'hub-picker-page') {
+    hubPicker.page = (Number(hubPicker.page) || 0) + Number(actionTarget.dataset.dir || 0);
+    renderHubPicker();
+    return;
+  }
   if (action === 'customize-quote-pool') {
     customizeQuotePool();
     return;

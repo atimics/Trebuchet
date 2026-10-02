@@ -17654,3 +17654,25 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
   body[data-nav="icons"] .network-button { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; align-items: center; }
   body[data-nav="icons"] .network-button .status-dot { margin: 0; }
 }
+
+/* Add pair: a page of the Pairs slide with a fixed grid of tokens: nothing scrolls, nothing folds. */
+.hub-picker { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); background: var(--panel-strong); }
+.hub-picker-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 14px; }
+.hub-picker-find { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.hub-picker-find input { min-width: 0; height: 36px; padding: 0 10px; background: var(--panel); border: 1px solid var(--line-strong); color: var(--ink); font-size: 12px; }
+.hub-picker-status { margin: 0; min-height: 0; font-size: 12px; color: var(--amber); }
+.hub-picker-status:empty { display: none; }
+.hub-picker-result { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--green); background: var(--panel); }
+.hub-picker-result span { display: grid; gap: 2px; min-width: 0; }
+.hub-picker-result small { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.hub-picker-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.hub-picker-token { display: grid; gap: 2px; align-content: center; min-width: 0; min-height: 48px; padding: 6px 10px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink); text-align: left; cursor: pointer; }
+.hub-picker-token:hover, .hub-picker-token:focus-visible { border-color: var(--green); outline: none; }
+.hub-picker-token strong, .hub-picker-token span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-picker-token strong { font-size: 12px; }
+.hub-picker-token span { font-size: 11px; color: var(--muted); }
+.hub-picker-pager { display: flex; justify-content: center; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
+@container phase (max-width: 560px) { .hub-picker-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* The Charts bar was the last drawer on a new coin; what it showed lives in the rail and the previews. */
+.launch-toolbar .launch-summary-drawer { display: none !important; }
