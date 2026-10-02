@@ -76,6 +76,17 @@ test('v2 runtime state derives wallet/network/funding truth from authoritative i
   assert.equal(runtime.walletUnlocked({ wallet: null }), false);
   assert.equal(runtime.walletUnlocked({ wallet: { hasSecretKey: true }, secretPin: { configured: true, locked: true } }), false);
   assert.equal(runtime.walletUnlocked({ wallet: { hasSecretKey: true }, secretPin: { configured: true, unlocked: true } }), true);
+  // The wallet label and the unlock button need to know WHY a wallet is unusable.
+  const key = { hasSecretKey: true };
+  assert.equal(runtime.walletLockReason({ wallet: null }), 'no-wallet');
+  assert.equal(runtime.walletLockReason({ wallet: {} }), 'no-wallet');
+  assert.equal(runtime.walletLockReason({ wallet: { ...key, decryptionFailed: true }, secretPin: { configured: true, locked: true } }), 'pin-locked', 'locked PIN wins: unlocking is the fix');
+  assert.equal(runtime.walletLockReason({ wallet: key, secretPin: { configured: true, unlocked: false } }), 'pin-locked');
+  assert.equal(runtime.walletLockReason({ wallet: { ...key, decryptionFailed: true }, secretPin: { configured: true, unlocked: true } }), 'unreadable', 'PIN open but key unreadable is not a locked PIN');
+  assert.equal(runtime.walletLockReason({ wallet: key, secretPin: { configured: true, unlocked: true } }), 'none');
+  assert.equal(runtime.walletLockReason({ wallet: key, secretPin: {} }), 'none', 'no PIN configured');
+  assert.equal(runtime.walletLockReason({ wallet: { ...key, decryptionFailed: true }, demoActive: true }), 'unreadable');
+  assert.equal(runtime.walletUnlocked({ wallet: { ...key, decryptionFailed: true }, secretPin: { configured: true, unlocked: true } }), false);
   assert.equal(runtime.networkLabel({ demoActive: true, rpcName: 'Mainnet' }), 'Demo');
   assert.deepEqual({ ...runtime.fundingEstimate({ estimateMatches: false, estimatedSol: 6.33 }) }, {
     available: false,

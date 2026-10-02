@@ -425,6 +425,7 @@ const state = {
   vanityCandidates: [],
   savedLaunches: [],
   loadedSavedLaunchId: null,
+  vanityDetailsOpenedFor: null,
   flywheelPools: { meme: [], reserve: [] },
   vortexControl: null,
   memeFlywheelMint: null,
@@ -560,6 +561,14 @@ function walletIsUnlocked() {
     secretPin: state.secretPin,
     demoActive: state.demoActive,
   }) === true;
+}
+
+function walletLockReason() {
+  return window.TrebuchetV2RuntimeState?.walletLockReason({
+    wallet: selectedManagedWallet(),
+    secretPin: state.secretPin,
+    demoActive: state.demoActive,
+  }) || 'no-wallet';
 }
 
 function authoritativeNetworkLabel() {
@@ -17108,6 +17117,13 @@ function renderParityPanel() {
     </details>`;
 }
 
+// "Locked" only when unlocking the PIN would help. A wallet whose key cannot be
+// read with the PIN already unlocked says so instead of pretending to be locked.
+function walletLabelState(secretBlocked, unlocked, publicKey) {
+  if (walletLockReason() === 'unreadable') return 'Key unreadable';
+  return secretBlocked || !unlocked ? 'Locked' : shortAddress(publicKey);
+}
+
 function renderWallet() {
   const current = account();
   const pinMeta = secretPinMeta();
@@ -17121,7 +17137,7 @@ function renderWallet() {
   ) || walletRows[0] || null;
   const secretBlocked = state.secretPin.locked || selectedRow?.secretPinLocked === true;
   $('#walletLabel').textContent = selectedPublicKey
-    ? `${selectedRow?.name || current.name} ${secretBlocked || !unlocked ? 'Locked' : shortAddress(selectedPublicKey)}`
+    ? `${selectedRow?.name || current.name} ${walletLabelState(secretBlocked, unlocked, selectedPublicKey)}`
     : 'Choose Trebuchet wallet';
   $('.wallet-led').classList.toggle('is-on', Boolean(selectedPublicKey && unlocked && !secretBlocked));
   const activeRarity = selectedRow?.rarity || 'Common';
@@ -18967,6 +18983,15 @@ function renderVanitySummary() {
   summary.textContent = state.selectedVanityPublicKey
     ? `${shortAddress(state.selectedVanityPublicKey)} · vanity`
     : 'Random address · recommended';
+  // A section that holds the chosen address should not start collapsed, or the
+  // address looks missing. Open it once per selected address; the operator can
+  // still collapse it and it stays that way.
+  const details = summary.closest('details');
+  if (details && state.selectedVanityPublicKey
+    && state.vanityDetailsOpenedFor !== state.selectedVanityPublicKey) {
+    state.vanityDetailsOpenedFor = state.selectedVanityPublicKey;
+    details.open = true;
+  }
 }
 
 function renderLaunchRunningBar() {
@@ -20946,6 +20971,20 @@ async function unlockSecretPin({ reason = 'unlock' } = {}) {
     return setupSecretPin();
   }
   if (state.secretPin.unlocked) {
+    // The PIN is open but the wallet may still look locked from data loaded
+    // before the unlock: reload once, and only then say what is really wrong.
+    if (selectedLaunchWalletPublicKey() && !walletIsUnlocked()) {
+      await refreshLocalApiState();
+      if (walletIsUnlocked()) {
+        notify('Launch wallet ready');
+        return true;
+      }
+      if (walletLockReason() === 'unreadable') {
+        setView('wallet');
+        notify('The Recovery PIN is unlocked, but this launch wallet\'s key cannot be read. Choose or create another launch wallet.');
+        return false;
+      }
+    }
     notify('Recovery PIN already unlocked');
     return true;
   }
@@ -24330,7 +24369,9 @@ function handleClick(event) {
       notify('Set a Recovery PIN to add explicit wallet lock controls');
       return;
     }
-    if (state.secretPin.locked) {
+    if (state.secretPin.locked || !walletIsUnlocked()) {
+      // The button reads "Unlock" whenever the wallet is not usable, so it must
+      // never lock the PIN in that state (an unreadable wallet is not a locked PIN).
       unlockSecretPin().catch((error) => notify(error.message || 'Wallet unlock failed'));
     } else {
       lockSecretPin().catch((error) => notify(error.message || 'Wallet lock failed'));

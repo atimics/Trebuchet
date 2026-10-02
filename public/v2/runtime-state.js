@@ -1,10 +1,23 @@
 (function installTrebuchetV2RuntimeState(global) {
-  function walletUnlocked({ wallet = null, secretPin = {}, demoActive = false } = {}) {
-    if (!wallet || wallet.hasSecretKey !== true || wallet.decryptionFailed === true) return false;
-    if (demoActive) return true;
-    if (secretPin.locked === true) return false;
-    if (secretPin.configured === true) return secretPin.unlocked === true;
-    return true;
+  // Why the launch wallet cannot sign, so the UI can say the right thing and
+  // offer the right action:
+  //   'none'        usable
+  //   'no-wallet'   nothing selected, or it has no key stored
+  //   'pin-locked'  the Recovery PIN is locked: unlock it
+  //   'unreadable'  the PIN is unlocked but this wallet's key still cannot be
+  //                 read (stale data or a key from another PIN/device): unlocking
+  //                 again will not help
+  function walletLockReason({ wallet = null, secretPin = {}, demoActive = false } = {}) {
+    if (!wallet || wallet.hasSecretKey !== true) return 'no-wallet';
+    if (demoActive) return wallet.decryptionFailed === true ? 'unreadable' : 'none';
+    if (secretPin.locked === true) return 'pin-locked';
+    if (secretPin.configured === true && secretPin.unlocked !== true) return 'pin-locked';
+    if (wallet.decryptionFailed === true) return 'unreadable';
+    return 'none';
+  }
+
+  function walletUnlocked(input = {}) {
+    return walletLockReason(input) === 'none';
   }
 
   function networkLabel({ demoActive = false, rpcName = '', rpcActiveUrl = '' } = {}) {
@@ -28,6 +41,7 @@
   global.TrebuchetV2RuntimeState = Object.freeze({
     fundingEstimate,
     networkLabel,
+    walletLockReason,
     walletUnlocked,
   });
 }(window));
