@@ -79,6 +79,21 @@ check('clicking Unlock PIN on Wallet shows the PIN screen', true);
 await page.click('#recoveryPinCancel');
 await page.waitForSelector('#recoveryPinGate', { state: 'hidden' });
 
+// Every screen that tells the user to unlock the PIN must have a working button on that same screen.
+const views = [...new Set([...(await page.$$eval('.nav-item[data-view]', (items) => items.map((item) => item.dataset.view))), 'launch', 'lean'])];
+for (const view of views) {
+  await page.evaluate((v) => (document.querySelector(`.nav-item[data-view="${v}"]`) || document.querySelector(`[data-view="${v}"]`))?.click(), view);
+  await page.waitForTimeout(300);
+  const result = await page.evaluate(() => {
+    const visible = [...document.querySelectorAll('main section, main .view')].filter((el) => el.offsetParent !== null);
+    const text = visible.map((el) => el.innerText).join('\n');
+    const says = /unlock (the |your )?(recovery |secrets? )?pin/i.test(text);
+    const button = visible.some((el) => el.querySelector('[data-action="unlock-secret-pin"]:not([disabled])'));
+    return { says, button };
+  });
+  check(`${view}: any "unlock the PIN" message has an Unlock PIN button`, !result.says || result.button);
+}
+
 check('no JavaScript errors', problems.length === 0, problems.slice(0, 2).join(' || '));
 await browser.close();
 stop();

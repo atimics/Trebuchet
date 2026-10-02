@@ -563,7 +563,7 @@ function renderLiveLaunchMonitor() {
       <span>
         <small>${blocked ? 'Stopped here' : 'Happening now'}</small>
         <strong>${escapeHtml(currentAction)}</strong>
-        <em>${escapeHtml(currentDetail)}</em>
+        <em>${escapeHtml(currentDetail)}${pinUnlockButton(currentDetail)}</em>
       </span>
     </div>
     <ul class="live-launch-facts" aria-label="What is true now">

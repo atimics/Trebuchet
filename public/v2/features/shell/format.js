@@ -36,6 +36,13 @@ function walletAccounts() {
   return [];
 }
 
+// Any screen that tells the user to unlock the Recovery PIN gets a real button, never just words.
+function pinUnlockButton(message) {
+  const pinLocked = state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged;
+  if (!pinLocked || !/Recovery PIN|secrets PIN/i.test(String(message || ''))) return '';
+  return ' <button class="pill-button" type="button" data-action="unlock-secret-pin">Unlock PIN</button>';
+}
+
 function walletLockInfo(wallet) {
   return window.TrebuchetV2RuntimeState?.walletSecretReason?.({ wallet, secretPin: state.secretPin })
     || { state: null, label: '', detail: '', canUnlock: true, canReset: false };

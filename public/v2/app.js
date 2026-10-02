@@ -1302,6 +1302,13 @@ function walletAccounts() {
   return [];
 }
 
+// Any screen that tells the user to unlock the Recovery PIN gets a real button, never just words.
+function pinUnlockButton(message) {
+  const pinLocked = state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged;
+  if (!pinLocked || !/Recovery PIN|secrets PIN/i.test(String(message || ''))) return '';
+  return ' <button class="pill-button" type="button" data-action="unlock-secret-pin">Unlock PIN</button>';
+}
+
 function walletLockInfo(wallet) {
   return window.TrebuchetV2RuntimeState?.walletSecretReason?.({ wallet, secretPin: state.secretPin })
     || { state: null, label: '', detail: '', canUnlock: true, canReset: false };
@@ -6104,7 +6111,7 @@ function renderLiveLaunchMonitor() {
       <span>
         <small>${blocked ? 'Stopped here' : 'Happening now'}</small>
         <strong>${escapeHtml(currentAction)}</strong>
-        <em>${escapeHtml(currentDetail)}</em>
+        <em>${escapeHtml(currentDetail)}${pinUnlockButton(currentDetail)}</em>
       </span>
     </div>
     <ul class="live-launch-facts" aria-label="What is true now">
@@ -14997,7 +15004,7 @@ function renderSignaturePanel() {
     <div class="signature-focus">
       <span>
         <small>${escapeHtml(context.focusLabel)}</small>
-        <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet will list the local-wallet run before you arm it.')}</p>
+        <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet will list the local-wallet run before you arm it.')}${pinUnlockButton(activeTx?.effects?.[0])}</p>
       </span>
     </div>
     ${renderExecutionLedger()}
@@ -15269,7 +15276,7 @@ function renderQueue() {
       <div class="queue-row compact ${escapeHtml(activeTx?.state || '')}">
         <span class="queue-copy">
           <h3>${escapeHtml(activeTx?.state === 'blocked' ? 'Live checkpoint blocked' : context.focusLabel)}</h3>
-          <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet is watching launch record and readiness evidence.')}</p>
+          <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet is watching launch record and readiness evidence.')}${pinUnlockButton(activeTx?.effects?.[0])}</p>
         </span>
       </div>
       <div class="kv-row"><span>Source</span><strong>${escapeHtml(context.source)}</strong></div>
