@@ -25,7 +25,7 @@
     "registry": "https://npm.pkg.github.com"
   },
   "engines": {
-    "node": ">=22.12.0",
+    "node": ">=22.13.0",
     "npm": ">=10"
   },
   "scripts": {
@@ -67,7 +67,13 @@
     "build:c": "node scripts/build-c.mjs",
     "check:package": "node scripts/check-package-files.mjs",
     "check:audit": "node scripts/audit-policy.mjs",
-    "release:gate": "node scripts/production-release-gate.mjs"
+    "release:gate": "node scripts/production-release-gate.mjs",
+    "test:architecture": "node --test packages/core/test/*.test.mjs packages/runner/test/*.mjs packages/runtime/test/*.test.mjs",
+    "test:e2e:runtime-token:localnet": "node test/e2e/runtime-token-localnet.mjs",
+    "test:e2e:runtime-upload:localnet": "node test/e2e/runtime-upload-localnet.mjs",
+    "test:e2e:runtime-swap:localnet": "node test/e2e/runtime-swap-localnet.mjs",
+    "test:e2e:runtime-withdrawal:localnet": "node test/e2e/runtime-withdrawal-localnet.mjs",
+    "test:e2e:runtime-support:localnet": "node test/e2e/runtime-support-localnet.mjs"
   },
   "files": [
     "build/**/*",
@@ -78,6 +84,17 @@
     "lpMintCompat.js",
     "main.js",
     "server.js",
+    "launchExecution.js",
+    "walletExecution.js",
+    "quoteAcquisitionRoutes.js",
+    "quoteAcquisition.js",
+    "positionWithdrawal.js",
+    "positionWithdrawalRoutes.js",
+    "supportPosition.js",
+    "supportPositionRoutes.js",
+    "liquidityExecution.js",
+    "feeKeyExecution.js",
+    "airdropExecution.js",
     "demoChainService.js",
     "serverMiddleware.js",
     "tokenService.js",
@@ -138,7 +155,8 @@
     "packages/cli/**/*",
     "README.md",
     "public/**/*",
-    "c/build/**/*"
+    "c/build/**/*",
+    "packages/runtime/**/*"
   ],
   "dependencies": {
     "@metaplex-foundation/mpl-core": "^1.10.0",
@@ -165,10 +183,12 @@
     "marked": "^14.1.4",
     "multer": "^2.3.0",
     "pngjs": "^7.0.0",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "@trebuchet/runtime": "file:packages/runtime"
   },
   "bundleDependencies": [
-    "@trebuchet/core"
+    "@trebuchet/core",
+    "@trebuchet/runtime"
   ],
   "devDependencies": {
     "@types/node": "^20.14.10",
@@ -214,6 +234,17 @@
       "lpMintCompat.js",
       "main.js",
       "server.js",
+      "launchExecution.js",
+      "walletExecution.js",
+      "quoteAcquisitionRoutes.js",
+      "quoteAcquisition.js",
+      "positionWithdrawal.js",
+      "positionWithdrawalRoutes.js",
+      "supportPosition.js",
+      "supportPositionRoutes.js",
+      "liquidityExecution.js",
+      "feeKeyExecution.js",
+      "airdropExecution.js",
       "demoChainService.js",
       "serverMiddleware.js",
       "tokenService.js",
@@ -274,7 +305,8 @@
       "README.md",
       "public/**/*",
       "c/build/**/*",
-      "package.json"
+      "package.json",
+      "packages/runtime/**/*"
     ],
     "asarUnpack": [
       "public/**/*",

@@ -711,10 +711,18 @@
       return request(`/api/v2/coins/${encodeURIComponent(mint)}/positions`, { timeoutMs: 120_000 });
     }
 
-    async function withdrawPosition({ walletPublicKey, poolId, nftMint, tokenMint = null, expected } = {}) {
+    async function listPositionWithdrawals(tokenMint) {
+      return request(`/api/v2/positions/withdrawals?tokenMint=${encodeURIComponent(tokenMint)}`, { timeoutMs: 15_000 });
+    }
+
+    async function preparePositionWithdrawal({ walletPublicKey, poolId, nftMint, expected, requestId } = {}) {
+      return request('/api/v2/positions/withdraw/prepare', { method: 'POST', body: { walletPublicKey, poolId, nftMint, expected, requestId }, timeoutMs: 120_000 });
+    }
+
+    async function withdrawPosition({ walletPublicKey, poolId, nftMint, tokenMint = null, expected, jobId, planDigest, maxSpendLamports } = {}) {
       return request('/api/v2/positions/withdraw', {
         method: 'POST',
-        body: { walletPublicKey, poolId, nftMint, tokenMint, expected },
+        body: { walletPublicKey, poolId, nftMint, tokenMint, expected, jobId, planDigest, maxSpendLamports },
         timeoutMs: 180_000,
       });
     }
@@ -742,10 +750,22 @@
       });
     }
 
-    async function openSolSupport({ walletPublicKey, poolId, tokenMint = null, solAmount, depthPct, expected } = {}) {
+    async function prepareSolSupport({ walletPublicKey, poolId, tokenMint = null, solAmount, depthPct, requestId } = {}) {
+      return request('/api/v2/support/prepare', { method: 'POST', body: { walletPublicKey, poolId, tokenMint, solAmount, depthPct, requestId }, timeoutMs: 90_000 });
+    }
+
+    async function getSupportJobs(walletPublicKey) {
+      return request(`/api/v2/support/jobs?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
+    }
+
+    async function getSupportJob(jobId) {
+      return request(`/api/v2/support/jobs/${encodeURIComponent(jobId)}`);
+    }
+
+    async function openSolSupport({ walletPublicKey, poolId, tokenMint = null, solAmount, depthPct, expected, jobId, planDigest, maxSpendLamports } = {}) {
       return request('/api/v2/support/open', {
         method: 'POST',
-        body: { walletPublicKey, poolId, tokenMint, solAmount, depthPct, expected },
+        body: { walletPublicKey, poolId, tokenMint, solAmount, depthPct, expected, jobId, planDigest, maxSpendLamports },
         timeoutMs: 180_000,
       });
     }
@@ -840,15 +860,30 @@
       return safeArray(data.tiers);
     }
 
-    async function acquireQuoteTokens({ walletPublicKey, autoSwapPlan } = {}) {
+    async function acquireQuoteTokens({ walletPublicKey, autoSwapPlan, requestId } = {}) {
       const data = await request(ACQUIRE_QUOTE_TOKENS_PATH, {
         method: 'POST',
-        body: { walletPublicKey, autoSwapPlan: safeArray(autoSwapPlan) },
+        body: { walletPublicKey, autoSwapPlan: safeArray(autoSwapPlan), ...(requestId ? { requestId } : {}) },
       });
       if (!data?.jobId) {
         throw new V2ApiError('Acquire quote tokens response missing jobId.', { code: 'BAD_ACQUIRE_JOB' });
       }
       return data;
+    }
+
+    async function executeAcquireQuoteTokens({ jobId, walletPublicKey, planDigest, maxSpendLamports, recoveryDigest } = {}) {
+      return request(`${ACQUIRE_QUOTE_TOKENS_PATH}/${encodeURIComponent(jobId)}/${recoveryDigest ? 'cleanup' : 'execute'}`, {
+        method: 'POST', body: { walletPublicKey, planDigest, maxSpendLamports, ...(recoveryDigest ? { recoveryDigest } : {}) },
+      });
+    }
+
+    async function prepareAcquireQuoteCleanup({ jobId, walletPublicKey } = {}) {
+      return request(`${ACQUIRE_QUOTE_TOKENS_PATH}/${encodeURIComponent(jobId)}/cleanup/prepare`, { method: 'POST', body: { walletPublicKey } });
+    }
+
+    async function getActiveAcquireQuoteTokens(walletPublicKey) {
+      const data = await request(`${ACQUIRE_QUOTE_TOKENS_PATH}/active/${encodeURIComponent(walletPublicKey)}`);
+      return data.job || null;
     }
 
     async function getAcquireQuoteTokens(jobId) {
@@ -1120,6 +1155,9 @@
     return {
       bootstrap,
       acquireQuoteTokens,
+      executeAcquireQuoteTokens,
+      prepareAcquireQuoteCleanup,
+      getActiveAcquireQuoteTokens,
       cancelLaunchRefund,
       cancelVanityGrind,
       cancelAcquireQuoteTokens,
@@ -1135,6 +1173,9 @@
       findFundingWallet,
       listDestinations,
       previewSolSupport,
+      prepareSolSupport,
+      getSupportJobs,
+      getSupportJob,
       openSolSupport,
       listCoins,
       addCoin,
@@ -1144,6 +1185,8 @@
       getSellQuote,
       listCoinPositions,
       withdrawPosition,
+      preparePositionWithdrawal,
+      listPositionWithdrawals,
       getClmmFeeTiers,
       getQuoteTokenInfo,
       listFlywheelHubs,

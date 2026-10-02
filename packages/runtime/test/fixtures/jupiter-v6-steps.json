@@ -1,0 +1,366 @@
+{
+  "source": "https://github.com/jup-ag/jupiter-amm-implementation/blob/cc068c9d1df0060c62f9a8a4fc37ea13ea7b9b39/idls/jupiter_aggregator_v6.json",
+  "sha256": "100b41d7caad93818cf440e8ae97bde43e6dad1ca732de45762adf43013cf9d6",
+  "steps": [
+    {
+      "name": "Saber",
+      "wire": "00640001"
+    },
+    {
+      "name": "SaberAddDecimalsDeposit",
+      "wire": "01640001"
+    },
+    {
+      "name": "SaberAddDecimalsWithdraw",
+      "wire": "02640001"
+    },
+    {
+      "name": "TokenSwap",
+      "wire": "03640001"
+    },
+    {
+      "name": "Sencha",
+      "wire": "04640001"
+    },
+    {
+      "name": "Step",
+      "wire": "05640001"
+    },
+    {
+      "name": "Cropper",
+      "wire": "06640001"
+    },
+    {
+      "name": "Raydium",
+      "wire": "07640001"
+    },
+    {
+      "name": "Crema",
+      "wire": "0801640001"
+    },
+    {
+      "name": "Lifinity",
+      "wire": "09640001"
+    },
+    {
+      "name": "Mercurial",
+      "wire": "0a640001"
+    },
+    {
+      "name": "Cykura",
+      "wire": "0b640001"
+    },
+    {
+      "name": "Serum",
+      "wire": "0c01640001"
+    },
+    {
+      "name": "MarinadeDeposit",
+      "wire": "0d640001"
+    },
+    {
+      "name": "MarinadeUnstake",
+      "wire": "0e640001"
+    },
+    {
+      "name": "Aldrin",
+      "wire": "0f01640001"
+    },
+    {
+      "name": "AldrinV2",
+      "wire": "1001640001"
+    },
+    {
+      "name": "Whirlpool",
+      "wire": "1101640001"
+    },
+    {
+      "name": "Invariant",
+      "wire": "1201640001"
+    },
+    {
+      "name": "Meteora",
+      "wire": "13640001"
+    },
+    {
+      "name": "GooseFX",
+      "wire": "14640001"
+    },
+    {
+      "name": "DeltaFi",
+      "wire": "1501640001"
+    },
+    {
+      "name": "Balansol",
+      "wire": "16640001"
+    },
+    {
+      "name": "MarcoPolo",
+      "wire": "1701640001"
+    },
+    {
+      "name": "Dradex",
+      "wire": "1801640001"
+    },
+    {
+      "name": "LifinityV2",
+      "wire": "19640001"
+    },
+    {
+      "name": "RaydiumClmm",
+      "wire": "1a640001"
+    },
+    {
+      "name": "Openbook",
+      "wire": "1b01640001"
+    },
+    {
+      "name": "Phoenix",
+      "wire": "1c01640001"
+    },
+    {
+      "name": "Symmetry",
+      "wire": "1d02000000000000000200000000000000640001"
+    },
+    {
+      "name": "TokenSwapV2",
+      "wire": "1e640001"
+    },
+    {
+      "name": "HeliumTreasuryManagementRedeemV0",
+      "wire": "1f640001"
+    },
+    {
+      "name": "StakeDexStakeWrappedSol",
+      "wire": "20640001"
+    },
+    {
+      "name": "StakeDexSwapViaStake",
+      "wire": "2102000000640001"
+    },
+    {
+      "name": "GooseFXV2",
+      "wire": "22640001"
+    },
+    {
+      "name": "Perps",
+      "wire": "23640001"
+    },
+    {
+      "name": "PerpsAddLiquidity",
+      "wire": "24640001"
+    },
+    {
+      "name": "PerpsRemoveLiquidity",
+      "wire": "25640001"
+    },
+    {
+      "name": "MeteoraDlmm",
+      "wire": "26640001"
+    },
+    {
+      "name": "OpenBookV2",
+      "wire": "2701640001"
+    },
+    {
+      "name": "RaydiumClmmV2",
+      "wire": "28640001"
+    },
+    {
+      "name": "StakeDexPrefundWithdrawStakeAndDepositStake",
+      "wire": "2902000000640001"
+    },
+    {
+      "name": "Clone",
+      "wire": "2a020101640001"
+    },
+    {
+      "name": "SanctumS",
+      "wire": "2b02020200000002000000640001"
+    },
+    {
+      "name": "SanctumSAddLiquidity",
+      "wire": "2c0202000000640001"
+    },
+    {
+      "name": "SanctumSRemoveLiquidity",
+      "wire": "2d0202000000640001"
+    },
+    {
+      "name": "RaydiumCP",
+      "wire": "2e640001"
+    },
+    {
+      "name": "WhirlpoolSwapV2",
+      "wire": "2f0101010000000802640001"
+    },
+    {
+      "name": "OneIntro",
+      "wire": "30640001"
+    },
+    {
+      "name": "PumpWrappedBuy",
+      "wire": "31640001"
+    },
+    {
+      "name": "PumpWrappedSell",
+      "wire": "32640001"
+    },
+    {
+      "name": "PerpsV2",
+      "wire": "33640001"
+    },
+    {
+      "name": "PerpsV2AddLiquidity",
+      "wire": "34640001"
+    },
+    {
+      "name": "PerpsV2RemoveLiquidity",
+      "wire": "35640001"
+    },
+    {
+      "name": "MoonshotWrappedBuy",
+      "wire": "36640001"
+    },
+    {
+      "name": "MoonshotWrappedSell",
+      "wire": "37640001"
+    },
+    {
+      "name": "StabbleStableSwap",
+      "wire": "38640001"
+    },
+    {
+      "name": "StabbleWeightedSwap",
+      "wire": "39640001"
+    },
+    {
+      "name": "Obric",
+      "wire": "3a01640001"
+    },
+    {
+      "name": "FoxBuyFromEstimatedCost",
+      "wire": "3b640001"
+    },
+    {
+      "name": "FoxClaimPartial",
+      "wire": "3c01640001"
+    },
+    {
+      "name": "SolFi",
+      "wire": "3d01640001"
+    },
+    {
+      "name": "SolayerDelegateNoInit",
+      "wire": "3e640001"
+    },
+    {
+      "name": "SolayerUndelegateNoInit",
+      "wire": "3f640001"
+    },
+    {
+      "name": "TokenMill",
+      "wire": "4001640001"
+    },
+    {
+      "name": "DaosFunBuy",
+      "wire": "41640001"
+    },
+    {
+      "name": "DaosFunSell",
+      "wire": "42640001"
+    },
+    {
+      "name": "ZeroFi",
+      "wire": "43640001"
+    },
+    {
+      "name": "StakeDexWithdrawWrappedSol",
+      "wire": "44640001"
+    },
+    {
+      "name": "VirtualsBuy",
+      "wire": "45640001"
+    },
+    {
+      "name": "VirtualsSell",
+      "wire": "46640001"
+    },
+    {
+      "name": "Perena",
+      "wire": "470202640001"
+    },
+    {
+      "name": "PumpSwapBuy",
+      "wire": "48640001"
+    },
+    {
+      "name": "PumpSwapSell",
+      "wire": "49640001"
+    },
+    {
+      "name": "Gamma",
+      "wire": "4a640001"
+    },
+    {
+      "name": "MeteoraDlmmSwapV2",
+      "wire": "4b010000000802640001"
+    },
+    {
+      "name": "Woofi",
+      "wire": "4c640001"
+    },
+    {
+      "name": "MeteoraDammV2",
+      "wire": "4d640001"
+    },
+    {
+      "name": "MeteoraDynamicBondingCurveSwap",
+      "wire": "4e640001"
+    },
+    {
+      "name": "StabbleStableSwapV2",
+      "wire": "4f640001"
+    },
+    {
+      "name": "StabbleWeightedSwapV2",
+      "wire": "50640001"
+    },
+    {
+      "name": "RaydiumLaunchlabBuy",
+      "wire": "510200000000000000640001"
+    },
+    {
+      "name": "RaydiumLaunchlabSell",
+      "wire": "520200000000000000640001"
+    },
+    {
+      "name": "BoopdotfunWrappedBuy",
+      "wire": "53640001"
+    },
+    {
+      "name": "BoopdotfunWrappedSell",
+      "wire": "54640001"
+    },
+    {
+      "name": "Plasma",
+      "wire": "5501640001"
+    },
+    {
+      "name": "GoonFi",
+      "wire": "560102640001"
+    },
+    {
+      "name": "HumidiFi",
+      "wire": "57020000000000000001640001"
+    },
+    {
+      "name": "MeteoraDynamicBondingCurveSwapWithRemainingAccounts",
+      "wire": "58640001"
+    },
+    {
+      "name": "TesseraV",
+      "wire": "5901640001"
+    }
+  ]
+}

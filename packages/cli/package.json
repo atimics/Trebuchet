@@ -11,9 +11,10 @@
     "trebuchet": "./bin/trebuchet.js"
   },
   "dependencies": {
-    "@trebuchet/core": "0.1.0"
+    "@trebuchet/core": "0.1.0",
+    "@trebuchet/runtime": "0.1.0"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
   }
 }

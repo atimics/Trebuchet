@@ -4858,10 +4858,7 @@ function buildLiveAirdropTransferPayload() {
   return {
     tokenMint: createdTokenInfo.mint,
     tokenDecimals: createdTokenInfo.decimals,
-    // Launched tokens are classic SPL (tokenService.js creates them with
-    // TOKEN_PROGRAM_ID). The server defaults to false anyway but we
-    // pass it explicitly so the wire format is self-describing.
-    isToken2022: false,
+    isToken2022: createdTokenInfo.mintFormat === 'token-2022' || createdTokenInfo.isToken2022 === true,
     recipients,
   };
 }
@@ -15946,7 +15943,7 @@ function renderFundingRequirements() {
   // Show the Acquire-quote-tokens button only if there's anything to swap.
   const acquireWrap = document.getElementById('acquireQuoteTokensWrap');
   if (acquireWrap) {
-    acquireWrap.style.display = autoPlan.length > 0 ? '' : 'none';
+    acquireWrap.style.display = autoPlan.length > 0 || savedAcquireJob() ? '' : 'none';
   }
 
   attachRowLogoFallbacks(document.getElementById('step3-card') || document);
@@ -16013,6 +16010,7 @@ async function pollBalances() {
     const data = await resp.json();
     if (!data.success) return;
 
+    await refreshActiveAcquireJob().catch((error) => console.warn('Quote recovery status:', error.message));
     const { sol, tokens } = data.balance;
     // -------------------------------------------------------------------
     // SOL requirement: two-threshold model.
@@ -16221,7 +16219,10 @@ async function pollBalances() {
     // SOL is short so the user sees the button is there waiting.
     const acquireBtn = document.getElementById('acquireQuoteTokensBtn');
     if (acquireBtn) {
-      acquireBtn.disabled = !solMet || !anyAutoSwapPending;
+      const job = savedAcquireJob();
+      acquireBtn.disabled = isAcquireFlowRunning || (!job && (!solMet || !anyAutoSwapPending));
+      if (!isAcquireFlowRunning) acquireBtn.textContent = acquireActionLabel(job);
+      if (job) document.getElementById('acquireQuoteTokensWrap')?.style.setProperty('display', '');
     }
 
     // Funder detection: re-attempt whenever SOL goes up (new deposit
@@ -16403,439 +16404,142 @@ function setAutoSwapRowStatus(mint, text, color, { sticky = false, title = '', c
 // Backend would classify the loser as INSUFFICIENT_SOL, which is
 // recoverable but noisy. Avoiding the race entirely is cleaner.
 let isAcquireFlowRunning = false;
+let activeAcquireJob = null;
 
-/**
- * Run the acquire-quote-tokens flow for a given subset of the plan.
- * Used by both the global Acquire button (passing all pending rows)
- * and the per-row retry button (passing just one row's plan item).
- *
- * Drives the UI state machine: Queued → Swapping → Acquired/Failed,
- * updates the top-line progress label, and emits log lines.
- *
- * Returns nothing — failures are surfaced via row states and the log,
- * not via thrown exceptions, so a single bad swap doesn't break the
- * batch. If another acquire flow is already in flight, this returns
- * immediately without doing anything (caller is expected to gate
- * its UI affordance before calling, but we double-check here).
- */
+function savedAcquireJob() {
+  return activeAcquireJob?.walletPublicKey === tempWallet?.publicKey && activeAcquireJob.status !== 'done' ? activeAcquireJob : null;
+}
+
+function acquireActionLabel(job = savedAcquireJob()) {
+  return job?.status === 'recovery_required' ? 'Recover quote funds'
+    : job?.status === 'paused' ? 'Resume quote purchase'
+    : job?.status === 'review_required' ? 'Review quote'
+    : job?.status === 'running' ? 'View quote purchase' : 'Acquire quote tokens';
+}
+
+async function quoteJobRequest(path, body, method = 'POST') {
+  const response = await fetch(`/api/acquire-quote-tokens${path}`, { method,
+    headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const result = await response.json();
+  if (!response.ok) throw Object.assign(new Error(result.error || `Quote request failed (${response.status})`), { code: result.code });
+  return result;
+}
+
+async function refreshActiveAcquireJob() {
+  if (demoModeActive || !tempWallet || isAcquireFlowRunning) return;
+  const walletPublicKey = tempWallet.publicKey;
+  const { job } = await quoteJobRequest(`/active/${encodeURIComponent(walletPublicKey)}`, null, 'GET');
+  if (tempWallet?.publicKey !== walletPublicKey) return;
+  if (job) activeAcquireJob = job;
+  else if (savedAcquireJob() && activeAcquireJob.status !== 'review_required') {
+    activeAcquireJob = await quoteJobRequest(`/${activeAcquireJob.jobId}`, null, 'GET');
+  }
+}
+
+async function approveAcquireJob(job) {
+  if (job.status === 'running' || job.status === 'done' || demoModeActive) return job;
+  const cleanup = job.status === 'recovery_required';
+  const walletPublicKey = job.walletPublicKey;
+  if (cleanup) job = await quoteJobRequest(`/${job.jobId}/cleanup/prepare`, { walletPublicKey });
+  activeAcquireJob = job;
+  const limit = cleanup ? job.recoveryMaxSpendLamports : job.maxSpendLamports;
+  if (!Number.isSafeInteger(limit) || limit < 0) throw new Error('Refresh the quote with its complete spending ceiling.');
+  const sol = (value) => (value / 1e9).toFixed(9).replace(/0+$/, '').replace(/\.$/, '');
+  const tokenAmount = (row) => {
+    const amount = BigInt(row.minimumOutputRaw || row.minRaw), scale = 10n ** BigInt(row.quoteDecimals);
+    const fraction = (amount % scale).toString().padStart(row.quoteDecimals, '0').replace(/0+$/, '');
+    return `${amount / scale}${fraction ? `.${fraction}` : ''}`;
+  };
+  const body = `<p>Wallet: ${escapeHtml(walletPublicKey)}<br>Network: ${escapeHtml(job.network)}</p>` + (cleanup
+    ? `<p>Recover the saved wrapped SOL. Cleanup fees: up to <strong>${sol(job.cleanupFeeCeilingLamports || 0)} SOL</strong>.</p><p>Total costs, including past purchases: up to <strong>${sol(limit)} SOL</strong>.</p>`
+    : `<p>Swap: ${sol(job.inputLamports)} SOL<br>Fees: up to ${sol(job.feeCeilingLamports)} SOL<br>Account rent: up to ${sol(job.rentCeilingLamports)} SOL</p><p>Maximum total: <strong>${sol(limit)} SOL</strong>.</p>`
+      + `<p>${(job.rows || []).filter((row) => row.state === 'purchase').map((row) => `Receive at least ${escapeHtml(tokenAmount(row))} ${escapeHtml(row.quoteSymbol || row.quoteMint)}`).join('<br>')}</p>`
+      + (job.grossDebitLamports ? `<p>Recorded payments: ${sol(job.grossDebitLamports)} SOL. Resume uses the saved receipts.</p>` : ''));
+  if (limit > 0 && !await confirmDialog({ title: cleanup ? 'Recover quote purchase' : job.status === 'paused' ? 'Resume quote purchase' : 'Buy quote tokens',
+    body, confirmLabel: cleanup ? 'Recover funds' : job.status === 'paused' ? 'Resume purchase' : 'Buy tokens', danger: true })) return null;
+  if (tempWallet?.publicKey !== walletPublicKey) throw new Error('Select the saved quote wallet before continuing.');
+  return quoteJobRequest(`/${job.jobId}/${cleanup ? 'cleanup' : 'execute'}`, { walletPublicKey, planDigest: job.planDigest,
+    maxSpendLamports: limit, ...(cleanup ? { recoveryDigest: job.recoveryDigest } : {}) });
+}
+
+// Each click reviews one saved purchase. Resume reconciles its original receipts.
 async function runAcquireFlow(planSubset, btn) {
-  if (!planSubset.length) return;
-  if (isAcquireFlowRunning) {
-    log('Another acquire is in progress; please wait for it to finish.', 'warning');
-    return;
-  }
-  // Set the global guard and button-loading state INSIDE try so the
-  // finally block can reliably clean them up even if something between
-  // here and the network call throws. Without this wrapper, an
-  // unexpected exception in setLoading() or row-status-setup code
-  // would leave isAcquireFlowRunning permanently true and lock out
-  // future acquire attempts.
+  if (isAcquireFlowRunning) { log('A quote request is active. Its progress will appear here.', 'warning'); return; }
+  if (!planSubset.length && !savedAcquireJob()) return;
   isAcquireFlowRunning = true;
-  if (btn) setLoading(btn, true);
-
-  const counts = { success: 0, solShort: 0, converted: 0, retryable: 0 };
-  let completed = 0;
-  const totalPlanned = planSubset.length;
-
-  const updateProgressLabel = () => {
-    const label = document.getElementById('autoSwapProgressLabel');
-    if (!label) return;
-    if (completed >= totalPlanned) {
-      label.textContent = `${completed} of ${totalPlanned} processed.`;
-    } else {
-      label.textContent = `Acquiring — ${completed} of ${totalPlanned} complete…`;
-    }
-  };
-
-  // Track which rows received a `result` event from the backend. Any
-  // rows still missing one after the stream closes are stragglers —
-  // either the swap was still running when the connection dropped, or
-  // it never got scheduled, or the response stream truncated. Either
-  // way we mark them as failed-retryable so the user can recover.
+  const walletPublicKey = tempWallet.publicKey;
   const resultsReceived = new Set();
-
-  // Mark every selected row as "Queued" so the user sees something
-  // happen immediately, even though only 4 workers are running at a
-  // time on the backend. Clears any previous retry button.
-  for (const item of planSubset) {
-    setAutoSwapRowStatus(item.quoteMint, 'Queued', 'grey', { sticky: true });
-  }
-  updateProgressLabel();
-
-  log(
-    `Acquiring ${totalPlanned} quote token${totalPlanned === 1 ? '' : 's'} via Raydium swap…`,
-  );
-
-  // Per-event handlers, defined here so they close over counts/progress.
-  // (We used to also have an onAttempt handler that flipped a row to
-  // "Swapping…" — now done inline in the polling loop based on the
-  // server's inProgressMints list, which is more accurate.)
-  const onResult = (r) => {
-    completed++;
-    resultsReceived.add(r.quoteMint);
-    if (r.success) {
-      counts.success++;
-      // Credit this swap's budgeted SOL against the requirement. The
-      // original solLamports estimate reserved ~$4 of SOL per auto-swap;
-      // now that the swap has completed (the SOL is gone), we subtract
-      // that reserve so the SOL row's "needed" reflects only what's
-      // still ahead (pool creation, positions, Arweave, headroom).
-      //
-      // We use estSolSpend from the plan item, not the swap's actual
-      // SOL consumption (which we don't have a precise measurement of).
-      // Slight over- or under-shoot from the actual cost is absorbed by
-      // the original estimate's safety buffer.
-      //
-      // Guard: only credit ONCE per row. The polling loop replays the
-      // full results array on every poll, so onResult might be called
-      // for the same mint multiple times across retries; resultsReceived
-      // catches that upstream (early-return at the top), but it's worth
-      // making the credit explicitly idempotent via the plan item's
-      // own flag.
-      const planItem = (fundingRequirement.autoSwapPlan || [])
-        .find((p) => p.quoteMint === r.quoteMint);
-      if (planItem && !planItem._solCredited && planItem.estSolSpend) {
-        fundingRequirement.solCreditedForCompletedSwaps =
-          (fundingRequirement.solCreditedForCompletedSwaps || 0) + planItem.estSolSpend;
-        planItem._solCredited = true;
-      }
-      setAutoSwapRowStatus(r.quoteMint, 'Acquired ✓', 'success', {
-        sticky: false,
-        title: r.txId ? `tx: ${r.txId}` : '',
-      });
-      log(
-        `Acquired ${r.quoteSymbol}` +
-          (r.txId ? ` (tx ${r.txId.slice(0, 8)}…)` : ' (already had enough)'),
-        'success',
-      );
-      updateProgressLabel();
-      return;
-    }
-    const err = String(r.error || '');
-    if (err.startsWith('INSUFFICIENT_SOL')) {
-      counts.solShort++;
-      setAutoSwapRowStatus(r.quoteMint, 'Needs more SOL — top up & retry', 'warning', {
-        sticky: true,
-        title: err,
-        canRetry: true,
-      });
-      log(`${r.quoteSymbol}: ${err}`, 'warning');
-    } else if (err.startsWith('NO_USABLE_POOL') || err.startsWith('ALL_ATTEMPTS_FAILED')) {
-      counts.converted++;
-      convertAutoSwapRowToManual(r.quoteMint, r.quoteSymbol);
-      log(
-        `${r.quoteSymbol}: auto-swap unavailable, switched to manual ` +
-          `(send ${r.quoteSymbol} to the wallet address above). Reason: ${err}`,
-        'warning',
-      );
-    } else {
-      counts.retryable++;
-      setAutoSwapRowStatus(r.quoteMint, 'Failed — click retry', 'danger', {
-        sticky: true,
-        title: err,
-        canRetry: true,
-      });
-      log(`${r.quoteSymbol}: ${err}`, 'danger');
-    }
-    updateProgressLabel();
-  };
-
-  // Now safe to enter the network phase — guard and loading state are
-  // both set, finally will clean them up.
   try {
-    // 1. POST to kick off the job. Returns immediately with { jobId }.
-    //    The actual swap work runs in the background on the server.
-    const resp = await fetch('/api/acquire-quote-tokens', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        walletPublicKey: tempWallet.publicKey,
-        // F5: the server resolves the secret from its encrypted store using
-        // the public key for real launches; only demo mode (in-memory
-        // ledger, no server-side secret) still sends the key inline.
-        ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
-        autoSwapPlan: planSubset,
-      }),
-    });
-    if (!resp.ok) {
-      // Pull the structured body if there is one — a 409 OP_IN_FLIGHT
-      // means another launch operation (a still-running acquire, or a
-      // launch in progress) holds the wallet; the server's message
-      // explains what to do. Anything else surfaces its error text.
-      const body = await resp.json().catch(() => ({}));
-      if (resp.status === 409 && body.code === 'OP_IN_FLIGHT') {
-        log(body.error, 'warning');
-      } else {
-        log(`Acquire failed: ${body.error || `HTTP ${resp.status}`}`, 'danger');
-      }
-      return;
+    if (btn) setLoading(btn, true);
+    let job = savedAcquireJob();
+    if (job) job = await quoteJobRequest(`/${job.jobId}`, null, 'GET');
+    if (job?.status === 'review_required' && job.expiresAtMs <= Date.now()) {
+      await quoteJobRequest(`/${job.jobId}`, null, 'DELETE'); job = null;
     }
-    const { jobId } = await resp.json();
-    if (!jobId) {
-      log('Acquire failed: no jobId returned', 'danger');
-      return;
-    }
-
-    // 2. Poll the job until it's done. Each poll is a fresh HTTP round-
-    //    trip, naturally robust against network blips: a failed poll
-    //    just retries on the next interval. Replaces our old SSE setup
-    //    which was unreliable in Electron's fetch+ReadableStream layer.
-    //
-    //    Update strategy: on each poll, we compute the diff between the
-    //    server's reported results and our local resultsReceived set,
-    //    and call onResult for each newly-finished swap. Rows shown as
-    //    "in progress" by the server get the "Swapping…" status, rows
-    //    listed as pending stay "Queued". On a 404 (job expired), we
-    //    fall back to polling on-chain balances and flagging stragglers.
-    const POLL_INTERVAL_MS = 2000;
-    const POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes, matches server-side JOB_EXPIRY_MS
-    const pollStartedAt = Date.now();
-    let consecutivePollFailures = 0;
-    const MAX_POLL_FAILURES = 5; // ~10 seconds of failures before giving up
-
-    while (true) {
-      // Bail out if we've been polling forever — defensive guard
-      // against a runaway loop if the server gets into an odd state.
-      if (Date.now() - pollStartedAt > POLL_TIMEOUT_MS) {
-        log('Acquire polling timed out after 10 minutes', 'warning');
-        break;
-      }
-
-      let pollResp;
-      try {
-        pollResp = await fetch(`/api/acquire-quote-tokens/${jobId}`);
-      } catch (netErr) {
-        // Network blip — retry on next interval. Only give up after
-        // MAX_POLL_FAILURES consecutive failures.
-        consecutivePollFailures++;
-        if (consecutivePollFailures >= MAX_POLL_FAILURES) {
-          log(
-            `Acquire polling failed ${consecutivePollFailures} times in a row — giving up`,
-            'warning',
-          );
-          break;
+    if (!job || job.status === 'done') job = await quoteJobRequest('', { walletPublicKey: tempWallet.publicKey,
+      ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}), autoSwapPlan: planSubset, requestId: window.crypto?.randomUUID?.() });
+    if (tempWallet?.publicKey !== walletPublicKey) throw new Error('Select the saved quote wallet to view its purchase.');
+    activeAcquireJob = { ...job, walletPublicKey: job.walletPublicKey || walletPublicKey };
+    job = await approveAcquireJob(activeAcquireJob);
+    if (!job) { log('Quote saved. Select Review quote when ready.', 'info'); return; }
+    const jobId = job.jobId, startedAt = Date.now();
+    let failures = 0;
+    while (Date.now() - startedAt < 10 * 60 * 1000) {
+      try { job = await quoteJobRequest(`/${jobId}`, null, 'GET'); failures = 0; }
+      catch (error) { if (++failures >= 5) throw error; await new Promise((resolve) => setTimeout(resolve, 2000)); continue; }
+      if (tempWallet?.publicKey !== walletPublicKey) throw new Error('Select the saved quote wallet to view its purchase.');
+      activeAcquireJob = { ...job, walletPublicKey: job.walletPublicKey || walletPublicKey };
+      for (const result of job.results || []) {
+        if (resultsReceived.has(result.quoteMint)) continue;
+        resultsReceived.add(result.quoteMint);
+        if (result.success) {
+          for (const item of fundingRequirement.autoSwapPlan || []) {
+            if (item.quoteMint === result.quoteMint && !item._solCredited && item.estSolSpend) {
+              fundingRequirement.solCreditedForCompletedSwaps = (fundingRequirement.solCreditedForCompletedSwaps || 0) + item.estSolSpend;
+              item._solCredited = true;
+            }
+          }
+          setAutoSwapRowStatus(result.quoteMint, 'Acquired ✓', 'success', { sticky: false, title: result.txId || '' });
+          log(`Acquired ${result.quoteSymbol || result.quoteMint}`, 'success');
+        } else {
+          setAutoSwapRowStatus(result.quoteMint, 'Review a new quote', 'warning', { sticky: true, canRetry: true, title: result.error || '' });
+          log(result.error || 'Review a new quote for this token.', 'warning');
         }
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-        continue;
       }
-
-      if (pollResp.status === 404) {
-        // Job is gone (expired or invalid). Could happen if the user
-        // hit Acquire again, getting a new jobId, while a previous
-        // poll loop is still running with the old one. Just exit
-        // cleanly — the finally block will sync row states from
-        // on-chain balances.
-        log('Acquire job no longer tracked by server', 'info');
-        break;
+      for (const mint of job.inProgressMints || []) {
+        if (!resultsReceived.has(mint)) setAutoSwapRowStatus(mint, 'Acquiring…', 'info', { sticky: true });
       }
-      if (!pollResp.ok) {
-        consecutivePollFailures++;
-        if (consecutivePollFailures >= MAX_POLL_FAILURES) {
-          log(`Acquire polling HTTP ${pollResp.status} — giving up`, 'warning');
-          break;
-        }
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-        continue;
-      }
-
-      consecutivePollFailures = 0;
-      const job = await pollResp.json();
-
-      // Apply new results that we haven't already processed. The job's
-      // results array is append-only on the server, so any entry we
-      // haven't seen yet is new since our last poll.
-      for (const r of job.results) {
-        if (resultsReceived.has(r.quoteMint)) continue;
-        // r might be the same shape as the old SSE result events —
-        // onResult handles success/failure/conversion routing.
-        onResult(r);
-      }
-
-      // Update in-progress rows to "Swapping…". Server reports
-      // inProgressMints as an array; loop through and set status on
-      // any row that isn't already met or already processed.
-      //
-      // The check for the `met` class is important: wallet-balance
-      // polling runs on a separate ~5s interval and may have already
-      // marked a row green because its on-chain balance reflects the
-      // new tokens. We don't want to flip such a row back to
-      // "Swapping…" — that's confusing and triggers a visible flicker.
-      // The race is real because swapSolForQuote waits POST_SWAP_SETTLE_MS
-      // after the tx confirms before returning, so for ~2 seconds the
-      // mint is still in inProgressMints even though the on-chain
-      // balance shows it's done.
-      const inProgress = new Set(job.inProgressMints || []);
-      for (const mint of inProgress) {
-        if (resultsReceived.has(mint)) continue;
-        const row = document.querySelector(
-          `#autoSwapRows .balance-row[data-kind="token-autoswap"][data-mint="${CSS.escape(mint)}"]`,
-        );
-        if (!row || row.classList.contains('met')) continue;
-        setAutoSwapRowStatus(mint, 'Swapping…', 'info', { sticky: true });
-      }
-
+      const label = document.getElementById('autoSwapProgressLabel');
+      if (label) label.textContent = `${job.completed || 0} of ${job.total || 0} complete. ${job.status === 'running' ? 'Acquiring…' : job.status === 'done' ? '' : acquireActionLabel(job)}`;
       if (job.status === 'done') {
-        if (job.error) {
-          log(`Acquire job error: ${job.error}`, 'danger');
-        }
-        // Optimistically clean up the job server-side. Fire-and-forget;
-        // if it fails, the server's auto-expiry will catch it in 10 min.
-        fetch(`/api/acquire-quote-tokens/${jobId}`, { method: 'DELETE' })
-          .catch(() => { /* ignore */ });
+        await quoteJobRequest(`/${jobId}`, null, 'DELETE').catch(() => null);
         break;
       }
-
-      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      if (job.status !== 'running') { log(job.error || acquireActionLabel(job), 'warning'); break; }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
-
-    // Polling finished. The finally block runs the post-flow cleanup
-    // pass (poll balances, flag any leftover stragglers, log summary).
-  } catch (e) {
-    log(`Acquire error: ${e.message}`, 'danger');
+  } catch (error) {
+    log(error.message, ['OP_IN_FLIGHT', 'OPERATION_IN_FLIGHT', 'EXECUTION_RECOVERY_REQUIRED'].includes(error.code) ? 'warning' : 'danger');
   } finally {
-    // Cleanup pass. Runs in finally so it executes regardless of how
-    // the try block exited (normal completion, polling timeout, network
-    // error, or thrown exception). The three things we need to do
-    // unconditionally on exit:
-    //
-    //   1. Re-poll on-chain balances first. The job's result list might
-    //      have missed a swap that landed at the last moment (between
-    //      the swap's confirmation and the job-state read). On-chain
-    //      balance is the source of truth — polling will mark such rows
-    //      Acquired ✓ via the met-class override.
-    //
-    //   2. Flag any leftover unresolved rows — anything in planSubset
-    //      that didn't produce a result AND isn't met on-chain. These
-    //      are rare with the polling architecture (only happens if the
-    //      polling loop bailed early via timeout or connection failure)
-    //      but we still need to give the user a recovery path.
-    //
-    //   3. Reset button state. setLoading(false) re-enables the button
-    //      and removes the spinner. isAcquireFlowRunning=false unlocks
-    //      the global guard so the user can click Acquire again.
-    try {
-      await pollBalances();
-      let unresolvedCount = 0;
-      for (const item of planSubset) {
-        if (resultsReceived.has(item.quoteMint)) continue;
-        const row = document.querySelector(
-          `#autoSwapRows .balance-row[data-kind="token-autoswap"][data-mint="${CSS.escape(item.quoteMint)}"]`,
-        );
-        if (!row || row.classList.contains('met')) continue;
-        unresolvedCount++;
-        setAutoSwapRowStatus(item.quoteMint, 'Unresolved — click retry', 'danger', {
-          sticky: true,
-          title: 'No final status was received for this swap. Click retry to try again, or click "Acquire quote tokens" to retry all unresolved swaps at once.',
-          canRetry: true,
-        });
-      }
-      if (unresolvedCount > 1) {
-        // Helpful hint: bulk retry is faster than clicking each row.
-        log(
-          `${unresolvedCount} swap${unresolvedCount === 1 ? '' : 's'} didn't complete cleanly — ` +
-            `click "Acquire quote tokens" to retry all at once, or use the per-row retry buttons.`,
-          'warning',
-        );
-      }
-
-      const parts = [];
-      if (counts.success) parts.push(`${counts.success} acquired`);
-      if (counts.solShort) parts.push(`${counts.solShort} need more SOL`);
-      if (counts.converted) parts.push(`${counts.converted} switched to manual`);
-      if (counts.retryable) parts.push(`${counts.retryable} retryable`);
-      if (unresolvedCount) parts.push(`${unresolvedCount} unresolved`);
-      if (parts.length > 0) {
-        log(
-          `Done — ${parts.join(', ')}.`,
-          counts.retryable || counts.solShort || unresolvedCount ? 'warning' : 'success',
-        );
-      }
-    } catch (cleanupErr) {
-      // Cleanup itself failed. Log but don't re-throw — we still want
-      // to reset button state below so the user isn't stuck.
-      console.error('Acquire flow cleanup failed:', cleanupErr);
-    }
-
-    if (btn) setLoading(btn, false);
     isAcquireFlowRunning = false;
+    if (btn) setLoading(btn, false);
+    await pollBalances();
+    const current = savedAcquireJob();
+    if (current) {
+      for (const mint of current.pendingMints || []) setAutoSwapRowStatus(mint, acquireActionLabel(current), 'warning', { sticky: true, canRetry: true });
+    }
   }
 }
 
 bind('acquireQuoteTokensBtn', 'click', async () => {
   const btn = document.getElementById('acquireQuoteTokensBtn');
-  const plan = fundingRequirement.autoSwapPlan || [];
-  if (plan.length === 0) return;
-
-  // Filter to rows that aren't already satisfied. The backend handles
-  // idempotency too, but skipping here saves work and avoids blinking
-  // through "Queued" for rows that don't need anything.
   const pendingMints = new Set();
-  document.querySelectorAll('#autoSwapRows .balance-row[data-kind="token-autoswap"]')
-    .forEach((row) => {
-      if (!row.classList.contains('met')) {
-        pendingMints.add(row.dataset.mint);
-      }
-    });
-  const pendingPlan = plan.filter((p) => pendingMints.has(p.quoteMint));
-  if (pendingPlan.length === 0) {
-    log('All auto-swap rows already satisfied — nothing to do.', 'info');
-    return;
-  }
-
-  await withRunState(async () => {
-    await runAcquireFlowWithAutoRetry(pendingPlan, btn);
+  document.querySelectorAll('#autoSwapRows .balance-row[data-kind="token-autoswap"]').forEach((row) => {
+    if (!row.classList.contains('met')) pendingMints.add(row.dataset.mint);
   });
+  const pendingPlan = (fundingRequirement.autoSwapPlan || []).filter((item) => pendingMints.has(item.quoteMint));
+  await withRunState(() => runAcquireFlow(pendingPlan, btn));
 });
-
-/**
- * Run the acquire flow, then if any stragglers remain (rows whose
- * result events never arrived even though the stream closed),
- * automatically re-run for just those rows ONCE before giving up.
- *
- * Rationale: the stream-disconnect bug we see in practice tends to be
- * transient — a second pass through the same rows usually completes
- * cleanly because the wallet's balance has stabilized (no more parallel
- * RPC contention) and the SSE stream is starting fresh. Auto-retrying
- * once handles 90%+ of these cases without making the user click anything.
- *
- * If auto-retry still leaves stragglers, the per-row retry buttons
- * and the bulk Acquire button are the remaining recovery paths.
- */
-async function runAcquireFlowWithAutoRetry(planSubset, btn) {
-  await runAcquireFlow(planSubset, btn);
-
-  // Find stragglers: rows in the original plan that didn't make it
-  // through. We have to look at the DOM here because runAcquireFlow
-  // returns void — the row state IS the source of truth.
-  const stragglers = [];
-  for (const item of planSubset) {
-    const row = document.querySelector(
-      `#autoSwapRows .balance-row[data-kind="token-autoswap"][data-mint="${CSS.escape(item.quoteMint)}"]`,
-    );
-    // Skip rows that:
-    //   - Don't exist anymore (converted to manual by a NO_USABLE_POOL error)
-    //   - Are already met (acquired successfully)
-    //   - Are in a non-retryable failure state (INSUFFICIENT_SOL, etc.)
-    //     We detect this via the "Needs more SOL" status text — retrying
-    //     won't help if the wallet is still short.
-    if (!row) continue;
-    if (row.classList.contains('met')) continue;
-    const statusText = row.querySelector('[data-field="status"]')?.textContent || '';
-    if (statusText.includes('Needs more SOL')) continue;
-    stragglers.push(item);
-  }
-
-  if (stragglers.length === 0) return; // Clean run, nothing to retry.
-
-  log(
-    `Auto-retrying ${stragglers.length} unresolved swap${stragglers.length === 1 ? '' : 's'}…`,
-    'info',
-  );
-  // Brief pause so the user notices the state change and so any
-  // in-flight RPC operations have a moment to settle.
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  await runAcquireFlow(stragglers, btn);
-}
 
 // Per-row retry: delegated click handler on the auto-swap section.
 // Lives at module scope so it survives row re-renders and works on
@@ -20358,7 +20062,7 @@ async function runAirdropRetry() {
           ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
           tokenMint: createdTokenInfo.mint,
           tokenDecimals: createdTokenInfo.decimals,
-          isToken2022: false,
+          isToken2022: createdTokenInfo.mintFormat === 'token-2022' || createdTokenInfo.isToken2022 === true,
           recipients,
         }),
       });

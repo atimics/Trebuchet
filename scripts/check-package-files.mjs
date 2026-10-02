@@ -52,22 +52,30 @@ const EXTRA_RUNTIME_FILES = [
 // shapes that actually appear: `import ... from './x'`, side-effect
 // `import './x'`, `export ... from './x'`, and dynamic `import('./x')`.
 // Comments are stripped first so a commented-out import doesn't count.
-function relativeSpecifiers(src) {
+function firstPartySpecifiers(src) {
   const code = src
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
   const out = [];
   const patterns = [
-    /\bimport\s+[^'"]*?\bfrom\s*['"](\.\.?\/[^'"]+)['"]/g,
-    /\bimport\s*['"](\.\.?\/[^'"]+)['"]/g,
-    /\bexport\s+[^'"]*?\bfrom\s*['"](\.\.?\/[^'"]+)['"]/g,
-    /\bimport\s*\(\s*['"](\.\.?\/[^'"]+)['"]\s*\)/g,
+    /\bimport\s+[^'"]*?\bfrom\s*['"]((?:\.\.?\/|@trebuchet\/)[^'"]+)['"]/g,
+    /\bimport\s*['"]((?:\.\.?\/|@trebuchet\/)[^'"]+)['"]/g,
+    /\bexport\s+[^'"]*?\bfrom\s*['"]((?:\.\.?\/|@trebuchet\/)[^'"]+)['"]/g,
+    /\bimport\s*\(\s*['"]((?:\.\.?\/|@trebuchet\/)[^'"]+)['"]\s*\)/g,
   ];
   for (const re of patterns) {
     let m;
     while ((m = re.exec(code))) out.push(m[1]);
   }
   return out;
+}
+
+const workspacePackages = new Map();
+for (const folder of readdirSync(path.join(ROOT, 'packages'))) {
+  const manifest = path.join('packages', folder, 'package.json');
+  if (!existsSync(path.join(ROOT, manifest))) continue;
+  const entry = JSON.parse(readFileSync(path.join(ROOT, manifest), 'utf8'));
+  workspacePackages.set(entry.name, { folder: path.dirname(manifest), manifest, exports: entry.exports });
 }
 
 function computeClosure() {
@@ -87,11 +95,20 @@ function computeClosure() {
       continue;
     }
     const dir = path.dirname(rel);
-    for (const spec of relativeSpecifiers(src)) {
-      const resolved = path
-        .normalize(path.join(dir, spec))
-        .replace(/\\/g, '/');
-      queue.push(resolved);
+    for (const spec of firstPartySpecifiers(src)) {
+      if (spec.startsWith('@trebuchet/')) {
+        const [scope, name, ...subpath] = spec.split('/');
+        const workspace = workspacePackages.get(`${scope}/${name}`);
+        const target = workspace?.exports?.[subpath.length ? `./${subpath.join('/')}` : '.'];
+        if (typeof target !== 'string') {
+          missingOnDisk.push(`Unresolved workspace import: ${spec}`);
+          continue;
+        }
+        seen.add(workspace.manifest);
+        queue.push(path.join(workspace.folder, target).replace(/\\/g, '/'));
+      } else {
+        queue.push(path.normalize(path.join(dir, spec)).replace(/\\/g, '/'));
+      }
     }
   }
   return { closure: [...seen].sort(), missingOnDisk };
@@ -149,7 +166,7 @@ const { closure, missingOnDisk } = computeClosure();
 const closureJs = closure.filter((f) => f.endsWith('.js'));
 
 // The full set of files the packaged app must contain.
-const required = [...new Set([...closureJs, ...EXTRA_RUNTIME_FILES])].sort();
+const required = [...new Set([...closure, ...EXTRA_RUNTIME_FILES])].sort();
 
 const errors = [];
 const warnings = [];

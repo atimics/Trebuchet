@@ -55,7 +55,7 @@ route execution, or token adoption.
 
 Requirements:
 
-- Node.js `22.12.0` (the version used in CI)
+- Node.js `22.23.3` (the version used in CI)
 - npm
 - A C compiler for the optional/native Vanity CA grinder
 - A dedicated RPC for a live launch

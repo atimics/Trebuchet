@@ -1,0 +1,54 @@
+{
+  "name": "@trebuchet/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Durable execution and profile ownership for Trebuchet hosts.",
+  "exports": {
+    "./store": "./src/store.js",
+    "./owner": "./src/owner.js",
+    "./profile-stores": "./src/profile-stores.js",
+    "./client": "./src/client.js",
+    "./control": "./src/control.js",
+    "./engine": "./src/engine.js",
+    "./solana": "./src/solana.js",
+    "./sol-sweep": "./src/sol-sweep.js",
+    "./token-transfer": "./src/token-transfer.js",
+    "./metadata-update": "./src/metadata-update.js",
+    "./prepared-transaction": "./src/prepared-transaction.js",
+    "./observed-airdrop": "./src/observed-airdrop.js",
+    "./token-creation": "./src/token-creation.js",
+    "./storage-payment": "./src/storage-payment.js",
+    "./upload": "./src/upload.js",
+    "./upload-store": "./src/upload-store.js",
+    "./irys-upload-transport": "./src/irys-upload-transport.js",
+    "./swap-instruction": "./src/swap-instruction.js",
+    "./swap-bundle": "./src/swap-bundle.js",
+    "./swap": "./src/swap.js",
+    "./quote-acquisition": "./src/quote-acquisition.js",
+    "./quote-plan": "./src/quote-plan.js",
+    "./quote-provider": "./src/quote-provider.js",
+    "./position-withdrawal-plan": "./src/position-withdrawal-plan.js",
+    "./position-withdrawal": "./src/position-withdrawal.js",
+    "./support-position-plan": "./src/support-position-plan.js",
+    "./support-position": "./src/support-position.js",
+    "./launch-budget": "./src/launch-budget.js"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@trebuchet/core": "0.1.0",
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
+    "@solana/spl-token": "^0.4.14",
+    "@solana/spl-token-metadata": "^0.1.6",
+    "@metaplex-foundation/mpl-token-metadata": "^3.4.0",
+    "@metaplex-foundation/umi": "^1.5.1",
+    "@raydium-io/raydium-sdk-v2": "0.1.144-alpha",
+    "bn.js": "^5.2.3"
+  }
+}

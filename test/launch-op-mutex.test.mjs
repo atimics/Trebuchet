@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..');
 const serverSrc = readFileSync(path.join(REPO, 'server.js'), 'utf8');
+const serviceSrc = readFileSync(path.join(REPO, 'launchExecution.js'), 'utf8');
+const SERVICE_METHODS = { createTokenHandler: 'createToken', finishTokenCreationHandler: 'finishToken', createLpHandler: 'createLiquidity', resumeLaunchHandler: 'resumeLiquidity', transferAssetsHandler: 'transferAssets' };
 
 // ---------------------------------------------------------------------------
 // Per-wallet launch-operation mutex regression tests.
@@ -45,11 +47,12 @@ function handlerSource(route) {
       serverSrc.includes(`app.post('${route}', ${route === '/api/create-token' ? 'uploadLogo, ' : ''}${handlerName});`),
       `route ${route} must be registered to ${handlerName}`,
     );
-    const start = serverSrc.indexOf(`async function ${handlerName}(`);
-    assert.ok(start >= 0, `handler ${handlerName} must exist in server.js`);
-    const rest = serverSrc.slice(start + 1);
-    const next = rest.search(/\n(async function|function|app\.(get|post|put|delete)\()/);
-    return serverSrc.slice(start, next >= 0 ? start + 1 + next : undefined);
+    const method = SERVICE_METHODS[handlerName];
+    assert.ok(serverSrc.includes(`launchServices.${method}(req.body`), 'HTTP route must call the live service');
+    const start = serviceSrc.indexOf(`async function ${method}(`);
+    assert.ok(start >= 0, `service ${method} must exist`);
+    const end = serviceSrc.indexOf('\n  }\n', start);
+    return serviceSrc.slice(start, end + 5);
   }
   const start = serverSrc.indexOf(`app.post('${route}'`);
   assert.ok(start >= 0, `route ${route} must exist in server.js`);
@@ -73,7 +76,7 @@ test('mutex infrastructure exists', () => {
   );
   // The 409 body must carry the machine-readable code the frontend keys on.
   assert.ok(
-    /code:\s*'OP_IN_FLIGHT'/.test(serverSrc),
+    /code:\s*'OP_IN_FLIGHT'/.test(serviceSrc),
     "409 response must include code: 'OP_IN_FLIGHT'",
   );
   assert.ok(
@@ -96,7 +99,7 @@ for (const [route, op] of [
   test(`${route} claims and releases the per-wallet mutex`, () => {
     const src = handlerSource(route);
     assert.ok(
-      src.includes(`rejectOrClaimLaunchOp(res, walletPublicKey, '${op}')`),
+      src.includes(`claimLaunchOp(walletPublicKey, '${op}')`),
       `${route} must guard with op name '${op}'`,
     );
     assert.ok(
@@ -114,42 +117,16 @@ for (const [route, op] of [
   });
 }
 
-// The acquire endpoint is different: the job runs in the background after
-// the HTTP response returns, so the lock must outlive the handler and be
-// released when the job finishes (success or failure).
-test('/api/acquire-quote-tokens claims for the job lifetime and releases via onFinished', () => {
-  const src = handlerSource('/api/acquire-quote-tokens');
-  assert.ok(
-    src.includes("rejectOrClaimLaunchOp(res, acquireWalletPk, 'acquire-quote-tokens')"),
-    'acquire endpoint must guard before starting the job',
-  );
-  assert.ok(
-    /onFinished:\s*\(\)\s*=>\s*clearLaunchOpInFlight\(acquireWalletPk\)/.test(src),
-    'acquire endpoint must release the lock when the job finishes',
-  );
-  // startAcquireJob must actually invoke onFinished on completion paths.
-  assert.ok(
-    /function startAcquireJob\(\{ ownerKeypair, autoSwapPlan, onFinished = null \}\)/.test(serverSrc),
-    'startAcquireJob must accept onFinished',
-  );
-  assert.ok(
-    /\.finally\(\(\) => \{[\s\S]{0,400}?onFinished\(\)/.test(serverSrc),
-    'startAcquireJob must call onFinished in a .finally so both success and failure release the lock',
-  );
-});
+// Quote job admission is exercised through real HTTP in quote-acquisition-http.test.mjs.
 
 // The 409 rejection path must NOT claim/release: a rejected duplicate that
 // nulls walletPublicKey before returning (create-lp / resume) guarantees
 // the finally can't tear down the running op's progress tracker either.
-test('create-lp and resume-launch null walletPublicKey on rejection to protect the running op', () => {
+test('liquidity cleanup requires the current request to own the wallet', () => {
   for (const route of ['/api/create-lp', '/api/resume-launch']) {
     const src = handlerSource(route);
-    const guardIdx = src.indexOf('rejectOrClaimLaunchOp(');
-    const slice = src.slice(guardIdx, guardIdx + 400);
-    assert.ok(
-      /walletPublicKey = null/.test(slice),
-      `${route} must null walletPublicKey before returning on 409`,
-    );
+    assert.match(src, /if \(claimedLaunchOp && walletPublicKey\) \{\s*try \{ lpProgressEnd\(walletPublicKey\);/);
+    assert.match(src, /if \(error instanceof LaunchRejection\) throw error;/);
   }
 });
 

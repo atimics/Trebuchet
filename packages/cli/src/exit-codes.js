@@ -12,6 +12,12 @@ export const CliExitCode = Object.freeze({
 });
 
 const CORE_EXIT_CODES = Object.freeze({
+  RUNTIME_BUSY: CliExitCode.NOT_READY,
+  RUNTIME_STOPPING: CliExitCode.NOT_READY,
+  RUNTIME_START_FAILED: CliExitCode.NOT_READY,
+  RUNTIME_START_TIMEOUT: CliExitCode.NOT_READY,
+  RUNTIME_IDENTITY_MISMATCH: CliExitCode.INTEGRITY_MISMATCH,
+  RECOVERY_STORAGE_UNAVAILABLE: CliExitCode.RECOVERY_REQUIRED,
   [TrebuchetCoreErrorCode.INVALID_INPUT]: CliExitCode.INVALID_INPUT,
   [TrebuchetCoreErrorCode.NOT_READY]: CliExitCode.NOT_READY,
   [TrebuchetCoreErrorCode.CUSTODY_LOCKED]: CliExitCode.CUSTODY_LOCKED,

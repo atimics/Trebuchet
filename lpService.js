@@ -143,7 +143,7 @@ import { getRpcUrl, getNetwork } from './rpcConfig.js';
 // re-export and would leave these undefined locally (which silently sent every
 // SOL price into the fallback path).
 import { getTokenMetadata, getUsdPrice, setOnChainPriceFallback } from './tokenInfoService.js';
-import { landTxWithRetry } from './chainRetry.js';
+import { landTxWithRetry, throwIfExecutionPaused } from './chainRetry.js';
 import { getOnChainPriceUsd, clmmPriceBPerA } from './onChainPriceService.js';
 import { fetchVenuePoolsByMints } from './venuePoolService.js';
 import { normalizeDistribution } from './lpDistribution.js';
@@ -419,9 +419,15 @@ async function assertRecoveredPositionNftsOwned({
 // ones whose poolId matches. The resume path uses this to compare what the
 // journal believes was opened against what actually landed on-chain.
 async function fetchOwnerClmmPositionsForPool(raydium, poolId) {
+  // The SDK caches wallet accounts. Refresh before looking for a position
+  // whose transaction may have landed since the last attempt.
+  if (raydium.account?.fetchWalletTokenAccounts) {
+    await raydium.account.fetchWalletTokenAccounts({ forceUpdate: true });
+  }
   const all = await raydium.clmm.getOwnerPositionInfo({ programId: CLMM_PROGRAM_ID });
   const target = poolId.toString();
-  return (all || [])
+  if (!Array.isArray(all)) throw new Error('Position lookup requires a complete chain response');
+  return all
     .filter((p) => p && p.poolId && p.poolId.toString() === target)
     .map((p) => ({
       nftMint: p.nftMint.toString(),
@@ -570,7 +576,11 @@ export function checkContinuousLiquidity({
 // true the work was found already done on-chain and `value` is whatever the
 // probe captured (via `onAlreadyDone`), so the caller can adopt it.
 // ---------------------------------------------------------------------------
-async function executeSdkTx({ label, build, alreadyDone, onAlreadyDone }) {
+const liquidityExecutors = new WeakMap();
+
+async function executeSdkTx({ raydium, key, action, label, build, alreadyDone, onAlreadyDone }) {
+  const executor = raydium && liquidityExecutors.get(raydium);
+  if (executor) return executor.execute({ key, action, build });
   let captured;
   const r = await landTxWithRetry({
     label,
@@ -595,41 +605,16 @@ async function executeSdkTx({ label, build, alreadyDone, onAlreadyDone }) {
 
 // Probe helper for position opens: is there a position at exactly this range
 // that no one has accounted for yet? Returns the position (truthy) or null.
-async function findUnrecordedPositionAt(raydium, poolId, tickLower, tickUpper, recordedMints) {
-  try {
-    const onChain = await fetchOwnerClmmPositionsForPool(raydium, poolId);
-    const hits = unrecordedPositionsAtRange(onChain, tickLower, tickUpper, recordedMints);
-    return hits.length > 0 ? hits[0] : null;
-  } catch (e) {
-    // A probe failure must never block the send — fall through to sending,
-    // which is the pre-existing behaviour. (A false negative here at worst
-    // re-creates the old duplicate risk; a false positive would skip real
-    // work, which is worse.)
-    console.warn(`  position probe failed (${e.message}); proceeding to send`);
-    return null;
-  }
+export async function findUnrecordedPositionAt(raydium, poolId, tickLower, tickUpper, recordedMints) {
+  const onChain = await fetchOwnerClmmPositionsForPool(raydium, poolId);
+  const hits = unrecordedPositionsAtRange(onChain, tickLower, tickUpper, recordedMints);
+  return hits.length > 0 ? hits[0] : null;
 }
 
-// Probe helper for locks. Returns the Fee Key mint (truthy) when a lock for
-// this position exists on-chain, else null.
-//
-// This deliberately requires POSITIVE evidence — a lock account that names
-// this position — rather than inferring a lock from the position's absence
-// in the wallet. Absence has a second cause: an RPC that hasn't indexed the
-// position yet. Treating that as "already locked" would SKIP the lock, leave
-// the liquidity unlocked, and report it locked — the one outcome a launch
-// tool must never produce, since the lock is the user's no-rug guarantee.
-// The failure direction here must be "lock again and hit a deterministic
-// already-locked error", never "silently don't lock". Probe failures fall
-// through to sending for the same reason.
-async function positionLockedOnChain(raydium, nftMint) {
-  try {
-    const feeKey = await findLockFeeKeyForPosition(raydium, nftMint);
-    return feeKey || null;
-  } catch (e) {
-    console.warn(`  lock probe failed (${e.message}); proceeding to send`);
-    return null;
-  }
+// A matching lock account supplies the Fee Key mint. Read failures propagate
+// so the caller can retry reconciliation before another transaction.
+export async function positionLockedOnChain(raydium, nftMint) {
+  return await findLockFeeKeyForPosition(raydium, nftMint) || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1513,6 +1498,7 @@ async function lpComputeBudgetConfig(raydium, poolId) {
 
 async function createSinglePool({
   raydium,
+  allocationIndex,
   ownerKeypair,
   ammConfig,
   launchedToken,
@@ -1623,13 +1609,13 @@ async function createSinglePool({
     // when building the extInfo). Don't call toBase58() on it.
     poolId = preliminary.extInfo.address.id;
     const createR = await executeSdkTx({
+      raydium, key: `pool/${allocationIndex}`,
+      action: { type: 'pool', event: { stage: 'pool_create_done', allocationIndex } },
       label: 'create pool',
       build: buildCreate,
       alreadyDone: async () => {
-        try {
-          const info = await connection.getAccountInfo(new PublicKey(poolId), 'finalized');
-          return !!(info && info.data && info.data.length > 0);
-        } catch (_) { return false; }
+        const info = await connection.getAccountInfo(new PublicKey(poolId), 'finalized');
+        return !!(info && info.data && info.data.length > 0);
       },
       onAlreadyDone: () => ({ tx: { txId: null }, adopted: true }),
     });
@@ -1777,7 +1763,7 @@ async function createSinglePool({
   // best-effort: if it fails we fall back to the journal-only view, which is no
   // worse than the behaviour before this check existed.
   let onChainPoolPositions = [];
-  if (recoveringPhase1) {
+  if (recoveringPhase1 && !liquidityExecutors.has(raydium)) {
     try {
       onChainPoolPositions = await fetchOwnerClmmPositionsForPool(raydium, poolId);
       console.log(
@@ -1785,6 +1771,7 @@ async function createSinglePool({
           `position(s) in pool ${poolId}`,
       );
     } catch (e) {
+      throwIfExecutionPaused(e);
       console.warn(`  on-chain reconciliation scan failed (non-fatal): ${e.message}`);
       onChainPoolPositions = [];
     }
@@ -1966,6 +1953,7 @@ async function createSinglePool({
         await raydium.account.fetchWalletTokenAccounts({ forceUpdate: true });
         console.log('    refreshed SDK token account cache');
       } catch (e) {
+        throwIfExecutionPaused(e);
         console.warn('    cache refresh failed (non-fatal):', e.message);
       }
       // Wait for the previous slice to be VISIBLE (not a fixed 1.5s): the
@@ -1981,8 +1969,11 @@ async function createSinglePool({
       // range, plus anything recovered) — the probe must not adopt those.
       const recordedMain = new Set(mainPositions.map((p) => p.nftMint).filter(Boolean));
       const openR = await executeSdkTx({
+        raydium, key: `position/${allocationIndex}/main/${i}`,
+        action: { type: 'position', poolId, ...mainTicks, event: { stage: 'main_open_done', allocationIndex, sliceIndex: i, baseAmountRaw: sliceRaw.toString() } },
         label: `main position slice ${i}`,
-        build: async () => raydium.clmm.openPositionFromBase({
+        build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
+          ...signerOptions,
           poolInfo,
           poolKeys,
           ownerInfo: { useSOLBalance: true },
@@ -2005,6 +1996,7 @@ async function createSinglePool({
         ),
         onAlreadyDone: (pos) => ({ tx: { txId: null }, nftMint: pos.nftMint, adopted: true }),
       });
+      if (openR.value.saved) Object.assign(mainTicks, { tickLower: openR.value.saved.tickLower, tickUpper: openR.value.saved.tickUpper });
       if (openR.skipped) {
         openTx = openR.value.tx;
         nftMint = openR.value.nftMint;
@@ -2014,6 +2006,7 @@ async function createSinglePool({
         nftMint = openR.value.res.extInfo?.nftMint?.toBase58();
       }
     } catch (err) {
+      throwIfExecutionPaused(err);
       progress({
         stage: 'main_open_failed',
         poolId,
@@ -2210,7 +2203,7 @@ async function createSinglePool({
     });
 
     for (let bi = 0; bi < ladderBands.length; bi++) {
-      const { tickLower, tickUpper } = bandTicks[bi];
+      let { tickLower, tickUpper } = bandTicks[bi];
       const bandBaseRaw = ladderBands[bi].baseRaw;
       const recovered = recoveredLadderByIndex.get(bi);
       if (recovered) {
@@ -2262,6 +2255,7 @@ async function createSinglePool({
           await raydium.account.fetchWalletTokenAccounts({ forceUpdate: true });
           console.log('    refreshed SDK token account cache for ladder band');
         } catch (e) {
+          throwIfExecutionPaused(e);
           console.warn('    ladder cache refresh failed (non-fatal):', e.message);
         }
         // Same as the main-slice loop: wait for the previous open (band or,
@@ -2279,8 +2273,11 @@ async function createSinglePool({
           [...mainPositions, ...ladderPositions].map((p) => p.nftMint).filter(Boolean),
         );
         const ladderR = await executeSdkTx({
+          raydium, key: `position/${allocationIndex}/ladder/${bi}`,
+          action: { type: 'position', poolId, tickLower, tickUpper, event: { stage: 'ladder_open_done', allocationIndex, bandIndex: bi, baseAmountRaw: bandBaseRaw.toString() } },
           label: `ladder band ${bi}`,
-          build: async () => raydium.clmm.openPositionFromBase({
+          build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
+          ...signerOptions,
             poolInfo,
             poolKeys,
             tickLower,
@@ -2301,12 +2298,14 @@ async function createSinglePool({
           ),
           onAlreadyDone: (pos) => ({ tx: { txId: null }, nftMint: pos.nftMint, adopted: true }),
         });
+        if (ladderR.value.saved) ({ tickLower, tickUpper } = ladderR.value.saved);
         ladderTx = ladderR.value.tx;
         ladderNftMint = ladderR.skipped
           ? ladderR.value.nftMint
           : ladderR.value.res.extInfo?.nftMint?.toBase58();
         if (ladderR.skipped) console.log(`      band ${bi} already landed (nft=${ladderNftMint}); adopting`);
       } catch (err) {
+        throwIfExecutionPaused(err);
         progress({
           stage: 'ladder_open_failed',
           poolId,
@@ -2519,8 +2518,11 @@ async function createSinglePool({
         [...mainPositions, ...ladderPositions, ...supportPositions].map((p) => p.nftMint).filter(Boolean),
       );
       const supportR = await executeSdkTx({
+        raydium, key: `position/${allocationIndex}/support/0`,
+        action: { type: 'position', poolId, ...supportTicks, event: { stage: 'support_open_done', allocationIndex, supportIndex: 0, quoteAmountRaw: supportQuoteRaw.toString() } },
         label: 'support position',
-        build: async () => raydium.clmm.openPositionFromBase({
+        build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
+          ...signerOptions,
           poolInfo,
           poolKeys,
           tickLower: supportTicks.tickLower,
@@ -2537,12 +2539,14 @@ async function createSinglePool({
         ),
         onAlreadyDone: (pos) => ({ tx: { txId: null }, nftMint: pos.nftMint, adopted: true }),
       });
+      if (supportR.value.saved) Object.assign(supportTicks, { tickLower: supportR.value.saved.tickLower, tickUpper: supportR.value.saved.tickUpper });
       supportTx = supportR.value.tx;
       supportNftMint = supportR.skipped
         ? supportR.value.nftMint
         : supportR.value.res.extInfo?.nftMint?.toBase58();
       if (supportR.skipped) console.log(`    support already landed (nft=${supportNftMint}); adopting`);
     } catch (err) {
+      throwIfExecutionPaused(err);
       progress({
         stage: 'support_open_failed',
         poolId,
@@ -2663,6 +2667,7 @@ async function createSinglePool({
  */
 async function openBootstrapPosition({
   raydium,
+  allocationIndex,
   ctx,
   // NOTE: lockPositions no longer accepted; locking happens in the
   // dedicated Phase 3 (lockAllPositions). See createSinglePool's note.
@@ -2729,7 +2734,7 @@ async function openBootstrapPosition({
   // hit here is unambiguously a previously-landed bootstrap. The scan runs on
   // every attempt (not just resumes) so a late-landing duplicate is caught too.
   // Best-effort: a scan failure falls back to opening, the pre-existing path.
-  try {
+  if (!liquidityExecutors.has(raydium)) try {
     const onChainBoot = await fetchOwnerClmmPositionsForPool(raydium, poolId);
     const adoptBoot = unrecordedPositionsAtRange(
       onChainBoot,
@@ -2758,6 +2763,7 @@ async function openBootstrapPosition({
       };
     }
   } catch (e) {
+    throwIfExecutionPaused(e);
     console.warn(`  bootstrap on-chain reconciliation scan failed (non-fatal): ${e.message}`);
   }
 
@@ -2846,8 +2852,11 @@ async function openBootstrapPosition({
   // adopted rather than opened twice.
   const recordedBs = new Set((priorNftMints || []).filter(Boolean));
   const bsR = await executeSdkTx({
+    raydium, key: `position/${allocationIndex}/bootstrap/0`,
+    action: { type: 'position', poolId, ...bsTicks, event: { stage: 'bootstrap_open_done', allocationIndex } },
     label: 'bootstrap position',
-    build: async () => raydium.clmm.openPositionFromBase({
+    build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
+          ...signerOptions,
       poolInfo,
       poolKeys,
       ownerInfo: { useSOLBalance: true },
@@ -2864,6 +2873,7 @@ async function openBootstrapPosition({
     ),
     onAlreadyDone: (pos) => ({ tx: { txId: null }, nftMint: pos.nftMint, adopted: true }),
   });
+  if (bsR.value.saved) Object.assign(bsTicks, { tickLower: bsR.value.saved.tickLower, tickUpper: bsR.value.saved.tickUpper });
   const bsTx = bsR.value.tx;
   const bsNftMint = bsR.skipped
     ? bsR.value.nftMint
@@ -3056,8 +3066,11 @@ async function lockAllPositions({ raydium, results, onProgress }) {
       console.log(`[${symbol}] locking main slice ${i + 1}/${r.mainPositions.length}: nft=${pos.nftMint}`);
       try {
         const lockR = await executeSdkTx({
+          raydium, key: `lock/${pos.nftMint}`,
+          action: { type: 'lock', poolId: r.poolId, positionNftMint: pos.nftMint, event: { stage: 'main_lock_done', allocationIndex: allocIdx, sliceIndex: i } },
           label: `lock ${pos.nftMint}`,
-          build: async () => raydium.clmm.lockPosition({
+          build: async (signerOptions = {}) => raydium.clmm.lockPosition({
+            ...signerOptions,
             ...clmmLockPrograms(raydium.cluster || getNetwork()),
             ownerPosition: { nftMint: new PublicKey(pos.nftMint) },
             // Locks were the one SDK call in this file sent WITHOUT a priority
@@ -3096,6 +3109,7 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           feeKeyNftMint: pos.feeKeyNftMint,
         });
       } catch (e) {
+        throwIfExecutionPaused(e);
         // The lock may have actually landed despite this throw (a confirmation
         // timeout under congestion), or this is a resume re-locking a position
         // whose prior lock was never journaled — in which case re-locking
@@ -3106,7 +3120,8 @@ async function lockAllPositions({ raydium, results, onProgress }) {
         let recoveredFeeKey = null;
         try {
           recoveredFeeKey = await findLockFeeKeyForPosition(raydium, pos.nftMint);
-        } catch (_) {
+        } catch (error) {
+          throwIfExecutionPaused(error);
           recoveredFeeKey = null;
         }
         if (recoveredFeeKey) {
@@ -3166,8 +3181,11 @@ async function lockAllPositions({ raydium, results, onProgress }) {
       console.log(`[${symbol}] locking ladder band ${bi + 1}/${r.ladderPositions.length}: nft=${lp.nftMint}`);
       try {
         const lockR = await executeSdkTx({
+          raydium, key: `lock/${lp.nftMint}`,
+          action: { type: 'lock', poolId: r.poolId, positionNftMint: lp.nftMint, event: { stage: 'ladder_lock_done', allocationIndex: allocIdx, bandIndex: bi } },
           label: `lock ${lp.nftMint}`,
-          build: async () => raydium.clmm.lockPosition({
+          build: async (signerOptions = {}) => raydium.clmm.lockPosition({
+            ...signerOptions,
             ...clmmLockPrograms(raydium.cluster || getNetwork()),
             ownerPosition: { nftMint: new PublicKey(lp.nftMint) },
             // Same priority-fee config as the main-position locks above.
@@ -3201,11 +3219,13 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           txId: lockTx.txId,
         });
       } catch (e) {
+        throwIfExecutionPaused(e);
         // See the main-slice lock catch above for the rationale.
         let recoveredFeeKey = null;
         try {
           recoveredFeeKey = await findLockFeeKeyForPosition(raydium, lp.nftMint);
-        } catch (_) {
+        } catch (error) {
+          throwIfExecutionPaused(error);
           recoveredFeeKey = null;
         }
         if (recoveredFeeKey) {
@@ -3266,8 +3286,11 @@ async function lockAllPositions({ raydium, results, onProgress }) {
       console.log(`[${symbol}] locking support position ${si + 1}/${r.supportPositions.length}: nft=${sp.nftMint}`);
       try {
         const lockR = await executeSdkTx({
+          raydium, key: `lock/${sp.nftMint}`,
+          action: { type: 'lock', poolId: r.poolId, positionNftMint: sp.nftMint, event: { stage: 'support_lock_done', allocationIndex: allocIdx, supportIndex: si } },
           label: `lock ${sp.nftMint}`,
-          build: async () => raydium.clmm.lockPosition({
+          build: async (signerOptions = {}) => raydium.clmm.lockPosition({
+            ...signerOptions,
             ...clmmLockPrograms(raydium.cluster || getNetwork()),
             ownerPosition: { nftMint: new PublicKey(sp.nftMint) },
             // Same priority-fee config as the main-position locks above.
@@ -3301,11 +3324,13 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           txId: lockTx.txId,
         });
       } catch (e) {
+        throwIfExecutionPaused(e);
         // See the main-slice lock catch above for the rationale.
         let recoveredFeeKey = null;
         try {
           recoveredFeeKey = await findLockFeeKeyForPosition(raydium, sp.nftMint);
-        } catch (_) {
+        } catch (error) {
+          throwIfExecutionPaused(error);
           recoveredFeeKey = null;
         }
         if (recoveredFeeKey) {
@@ -3347,8 +3372,11 @@ async function lockAllPositions({ raydium, results, onProgress }) {
       console.log(`[${symbol}] locking bootstrap: nft=${bs.nftMint}`);
       try {
         const lockR = await executeSdkTx({
+          raydium, key: `lock/${bs.nftMint}`,
+          action: { type: 'lock', poolId: r.poolId, positionNftMint: bs.nftMint, event: { stage: 'bootstrap_lock_done', allocationIndex: allocIdx } },
           label: `lock ${bs.nftMint}`,
-          build: async () => raydium.clmm.lockPosition({
+          build: async (signerOptions = {}) => raydium.clmm.lockPosition({
+            ...signerOptions,
             ...clmmLockPrograms(raydium.cluster || getNetwork()),
             ownerPosition: { nftMint: new PublicKey(bs.nftMint) },
             // Same priority-fee config as the main-position locks above.
@@ -3381,11 +3409,13 @@ async function lockAllPositions({ raydium, results, onProgress }) {
           txId: lockTx.txId,
         });
       } catch (e) {
+        throwIfExecutionPaused(e);
         // See the main-slice lock catch above for the rationale.
         let recoveredFeeKey = null;
         try {
           recoveredFeeKey = await findLockFeeKeyForPosition(raydium, bs.nftMint);
-        } catch (_) {
+        } catch (error) {
+          throwIfExecutionPaused(error);
           recoveredFeeKey = null;
         }
         if (recoveredFeeKey) {
@@ -3506,7 +3536,7 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
       // an error that reads as if the Fee Key were lost.
       let feeKeyMint = pos.feeKeyNftMint || null;
       if (!feeKeyMint) {
-        try { feeKeyMint = await findLockFeeKeyForPosition(raydium, pos.nftMint); } catch (_) { feeKeyMint = null; }
+        try { feeKeyMint = await findLockFeeKeyForPosition(raydium, pos.nftMint); } catch (error) { throwIfExecutionPaused(error); feeKeyMint = null; }
         if (feeKeyMint) pos.feeKeyNftMint = feeKeyMint;
       }
       if (!feeKeyMint) {
@@ -3524,7 +3554,9 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
       }
       console.log(`[${symbol}] transferring Fee Key (slice ${i + 1}) nft=${feeKeyMint} to ${pos.recipient}...`);
       try {
-        const txId = await transferNftToRecipient({
+        const durableTransfer = liquidityExecutors.get(raydium)?.transferFeeKey;
+        const txId = durableTransfer ? await durableTransfer({ allocationIndex: r.allocationIndex ?? allocIdx, sliceIndex: i,
+          poolId: r.poolId, positionNftMint: pos.nftMint, nftMint: feeKeyMint, recipient: pos.recipient }) : await transferNftToRecipient({
           connection,
           ownerKeypair,
           nftMint: feeKeyMint,
@@ -3541,6 +3573,7 @@ async function transferFeeKeys({ raydium, ownerKeypair, results, onProgress }) {
           txId,
         });
       } catch (e) {
+        throwIfExecutionPaused(e);
         // The transfer may have actually landed despite this throw, or this is
         // a resume re-transferring a Fee Key that already left this wallet — in
         // which case re-transferring throws. Before recording a failure, check
@@ -4209,6 +4242,7 @@ export async function createPoolsAndPositions({
   // This means a single failed launch can be retried any number of times,
   // each retry only attempting the work that didn't complete before.
   priorResults = [],
+  execution = null,
 }) {
   onProgress?.({ stage: 'lp_preflight', allocationCount: allocations.length });
   assertDevnetQuotesAllowed(allocations, priorResults || []);
@@ -4224,6 +4258,7 @@ export async function createPoolsAndPositions({
   // -----------------------------------------------------------------------
   const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
   const raydium = await initSdk(ownerKeypair);
+  if (execution) liquidityExecutors.set(raydium, execution);
   const connection = raydium.connection;
   const launchedMintCompatibility = await getMintCompatibilityWithRaydiumClmm(
     connection,
@@ -4646,6 +4681,7 @@ export async function createPoolsAndPositions({
 
       onProgress && onProgress({ stage: "lp_quote_resolved", allocationIndex: i, quoteSymbol: quoteToken.symbol, quoteAddress: quoteToken.address });      resolvedAllocs.push({ alloc, quoteToken });
     } catch (err) {
+      throwIfExecutionPaused(err);
       // Annotate with which allocation failed so the caller can highlight
       // the right row in the UI. partialResults preserves any priorResults
       // we were given (resume case) so the user doesn't lose the
@@ -4697,6 +4733,7 @@ export async function createPoolsAndPositions({
   try {
     solUsdForSupport = await getUsdPrice(WSOL_MINT);
   } catch (e) {
+    throwIfExecutionPaused(e);
     const err = new Error(
       `Couldn't resolve SOL/USD price (${e.message}). This is unusual - ` +
       `every price source we consult covers SOL. Check your network ` +
@@ -4799,6 +4836,7 @@ export async function createPoolsAndPositions({
         results.push(prior);
         continue;
       } catch (err) {
+        throwIfExecutionPaused(err);
         // Couldn't rebuild context — surface clearly so the user knows
         // which prior pool is the blocker. Most likely cause: RPC
         // unreachable when we tried to read the pool state.
@@ -4862,6 +4900,7 @@ export async function createPoolsAndPositions({
           quoteUsdByMint.set(quoteToken.address, { quoteUsd, source: resolved.source });
         }
       } catch (priceErr) {
+        throwIfExecutionPaused(priceErr);
         if (!priceErr.failedPhase) {
           priceErr.failedPhase = 'pre_flight';
           priceErr.failedAllocationIndex = allocIdx;
@@ -5114,6 +5153,7 @@ export async function createPoolsAndPositions({
       //     all bootstraps at the end.
       const poolResult = await createSinglePool({
         raydium,
+        allocationIndex: allocIdx,
         ownerKeypair,
         ammConfig,
         launchedToken,
@@ -5178,6 +5218,7 @@ export async function createPoolsAndPositions({
         result: resultEntry,
       });
     } catch (err) {
+      throwIfExecutionPaused(err);
       // Attach partial results to the error so the caller knows what
       // got created before the failure.
       //
@@ -5254,6 +5295,7 @@ export async function createPoolsAndPositions({
     await raydium.account.fetchWalletTokenAccounts({ forceUpdate: true });
     console.log('  refreshed SDK token account cache before phase 2');
   } catch (e) {
+    throwIfExecutionPaused(e);
     console.warn('  cache refresh failed (non-fatal):', e.message);
   }
   // Wait until every Phase 1 position is VISIBLE before Phase 2 queries
@@ -5317,6 +5359,7 @@ export async function createPoolsAndPositions({
         : [];
       const bootstrap = await openBootstrapPosition({
         raydium,
+        allocationIndex: allocIdx,
         ctx,
         priorNftMints,
         onProgress: (event) =>
@@ -5328,6 +5371,7 @@ export async function createPoolsAndPositions({
       const resultEntry = results.find((r) => r.allocationIndex === allocIdx);
       if (resultEntry) resultEntry.bootstrap = bootstrap;
     } catch (err) {
+      throwIfExecutionPaused(err);
       // Record the failure, surface it via the progress callback, but keep
       // going — the next pool's bootstrap is independent.
       //
@@ -6741,64 +6785,6 @@ export async function previewSolSupport({ walletPublicKey = null, poolId, solAmo
   return plan;
 }
 
-/**
- * Open the buy support position the user confirmed. Re-plans against the
- * chain first and refuses (code SUPPORT_PLAN_CHANGED) if the range or the
- * total cost moved from `expected`, so what is sent is what was shown.
- */
-export async function openSolSupport({ tempWalletSecretKey, poolId, solAmount, depthPct, expected, onProgress } = {}) {
-  const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
-  const raydium = await initSdk(ownerKeypair);
-  const { plan, poolInfo, poolKeys, launchedIsMintA } = await planSolSupport(raydium, {
-    walletPublicKey: ownerKeypair.publicKey.toBase58(),
-    poolId,
-    solAmount,
-    depthPct,
-  });
-  const moved = !expected
-    || Number(expected.tickLower) !== plan.tickLower
-    || Number(expected.tickUpper) !== plan.tickUpper
-    || BigInt(plan.totalLamports) > BigInt(String(expected.totalLamports || '0'));
-  if (moved) {
-    const error = new Error('The pool moved since the preview. Review the new range and cost, then confirm again. Nothing was sent.');
-    error.code = 'SUPPORT_PLAN_CHANGED';
-    error.plan = plan;
-    throw error;
-  }
-  if (plan.enoughSol === false) {
-    const error = new Error(`Not enough SOL: ${plan.warnings.at(-1) || 'the wallet is short'} Nothing was sent.`);
-    error.code = 'SUPPORT_INSUFFICIENT_SOL';
-    error.plan = plan;
-    throw error;
-  }
-
-  const recorded = new Set(
-    (await fetchOwnerClmmPositionsForPool(raydium, plan.poolId).catch(() => [])).map((position) => position.nftMint),
-  );
-  onProgress?.({ stage: 'support_open_start', poolId: plan.poolId, tickLower: plan.tickLower, tickUpper: plan.tickUpper });
-  const result = await executeSdkTx({
-    label: 'buy support position',
-    build: async () => raydium.clmm.openPositionFromBase({
-      poolInfo,
-      poolKeys,
-      tickLower: plan.tickLower,
-      tickUpper: plan.tickUpper,
-      base: launchedIsMintA ? 'MintB' : 'MintA',
-      baseAmount: new BN(plan.depositLamports),
-      otherAmountMax: new BN(0),
-      ownerInfo: { useSOLBalance: true },
-      txVersion: TxVersion.V0,
-      computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
-    }),
-    alreadyDone: () => findUnrecordedPositionAt(raydium, plan.poolId, plan.tickLower, plan.tickUpper, recorded),
-    onAlreadyDone: (position) => ({ tx: { txId: null }, nftMint: position.nftMint, adopted: true }),
-  });
-  const nftMint = result.skipped ? result.value.nftMint : result.value.res.extInfo?.nftMint?.toBase58();
-  const txId = result.skipped ? null : result.value.tx.txId;
-  onProgress?.({ stage: 'support_open_done', poolId: plan.poolId, nftMint, txId });
-  return { ...plan, nftMint, txId, adopted: Boolean(result.skipped) };
-}
-
 // ---------------------------------------------------------------------------
 // Positions a coin's owner can manage
 // ---------------------------------------------------------------------------
@@ -6809,7 +6795,6 @@ export async function openSolSupport({ tempWalletSecretKey, poolId, solAmount, d
 // receipts) and are not listed. Amounts are what the position would return
 // now, at the current price.
 
-const WITHDRAW_SLIPPAGE_BPS = 100; // 1%: mins are 99% of the current amounts
 
 async function readOnlySdkForOwner(ownerPublicKey) {
   if (__sdkFactoryOverride) return __sdkFactoryOverride({ publicKey: new PublicKey(ownerPublicKey) });
@@ -6896,61 +6881,6 @@ export async function listCoinPositions({ tokenMint, owners = [] }) {
   return rows;
 }
 
-/**
- * Withdraw all of a position and close it (its account rent comes back).
- * Refuses (code POSITION_CHANGED) if the position's liquidity differs from
- * what the user confirmed. Minimum amounts are 99% of what it holds now.
- */
-export async function withdrawPosition({ tempWalletSecretKey, poolId, nftMint, expected } = {}) {
-  const ownerKeypair = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
-  const raydium = await initSdk(ownerKeypair);
-  const held = await raydium.clmm.getOwnerPositionInfo({ programId: getClmmProgramId() });
-  const position = (held || []).find((item) => item?.nftMint?.toString?.() === nftMint);
-  if (!position) {
-    const error = new Error('This wallet no longer holds that position. It may already be withdrawn; nothing was sent.');
-    error.code = 'POSITION_NOT_FOUND';
-    throw error;
-  }
-  if (position.poolId.toString() !== poolId) throw new Error('That position is in a different pool');
-  if (!expected || String(expected.liquidity) !== position.liquidity.toString()) {
-    const error = new Error('The position changed since you reviewed it. Review it again, then confirm. Nothing was sent.');
-    error.code = 'POSITION_CHANGED';
-    throw error;
-  }
-  const { poolInfo, poolKeys } = await raydium.clmm.getPoolInfoFromRpc(poolId);
-  const state = await raydium.clmm.getRpcClmmPoolInfo({ poolId });
-  const { amountA, amountB } = positionAmounts(position, state);
-  const minOf = (amount) => amount.mul(new BN(10_000 - WITHDRAW_SLIPPAGE_BPS)).div(new BN(10_000));
-  const result = await executeSdkTx({
-    label: 'withdraw position',
-    build: async () => raydium.clmm.decreaseLiquidity({
-      poolInfo,
-      poolKeys,
-      ownerPosition: position,
-      ownerInfo: { useSOLBalance: true, closePosition: true },
-      liquidity: new BN(position.liquidity.toString()),
-      amountMinA: minOf(amountA),
-      amountMinB: minOf(amountB),
-      txVersion: TxVersion.V0,
-      computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
-    }),
-    // Done when the position is gone from the wallet.
-    alreadyDone: async () => {
-      const now = await fetchOwnerClmmPositionsForPool(raydium, poolId).catch(() => null);
-      return now && !now.some((item) => item.nftMint === nftMint) ? { gone: true } : null;
-    },
-    onAlreadyDone: () => ({ tx: { txId: null }, adopted: true }),
-  });
-  return {
-    poolId,
-    nftMint,
-    txId: result.skipped ? null : result.value.tx.txId,
-    adopted: Boolean(result.skipped),
-    amountARaw: amountA.toString(),
-    amountBRaw: amountB.toString(),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Test-only export of internal phase helpers
 // ---------------------------------------------------------------------------
@@ -6971,7 +6901,9 @@ export async function withdrawPosition({ tempWalletSecretKey, poolId, nftMint, e
 // for this object literal to reference functions that appear earlier
 // in the file.
 export const __testHooks = {
+  bindLiquidityExecutor: (raydium, execution) => liquidityExecutors.set(raydium, execution),
   createSinglePool,
+  openBootstrapPosition,
   lockAllPositions,
   transferFeeKeys,
 };

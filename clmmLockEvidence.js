@@ -41,6 +41,7 @@ export async function findClmmPositionLock(connection, nftMint, network = 'mainn
       { memcmp: { offset: LockClPositionLayoutV2.offsetOf('positionId'), bytes: positionId.toBase58() } },
     ],
   });
+  if (!Array.isArray(accounts)) throw new Error('Lock lookup requires a complete chain response');
   for (const entry of accounts) {
     const lock = decodeClmmLock(entry, network);
     if (lock?.positionId.equals(positionId) && lock.poolId.equals(position.poolId)) {

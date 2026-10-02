@@ -2655,7 +2655,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /refreshManualPrefundBalance/);
   assert.match(js, /startQuoteAcquire/);
   assert.match(js, /Funding estimate is stale for this launch model; rerun it before acquiring quote tokens/);
-  assert.match(js, /data-action="\$\{hasCurrentEstimate \? 'start-quote-acquire' : 'estimate-funding'\}"/);
+  assert.match(js, /data-action="\$\{hasCurrentEstimate \|\| savedAction \? 'start-quote-acquire' : 'estimate-funding'\}"/);
   assert.match(js, /notify\(fundingEstimateStatus\.stale \? 'Rerun funding estimate first' : 'Run funding estimate first'\)/);
   assert.match(js, /if \(!classicFundingEstimateStatus\(currentLaunchConfig\(\)\)\.matchesConfig \|\| !items\.length\) return ''/);
   assert.match(js, /pollQuoteAcquire/);
@@ -6654,7 +6654,9 @@ test('v2 interrupted mints finish safely before liquidity resumes', () => {
   assert.match(js, /'\/api\/finish-token-creation': 'Finishing interrupted token'/);
   assert.match(apiClientJs, /V2_RUN_EXECUTE_NEXT_PATH[\s\S]*?timeoutMs: 0/);
   assert.match(serverJs, /async function rejectIfTokenIncompleteForLiquidity/);
-  assert.equal((serverJs.match(/rejectIfTokenIncompleteForLiquidity\(res/g) || []).length, 4);
+  assert.equal((serverJs.match(/rejectIfTokenIncompleteForLiquidity\(res/g) || []).length, 2);
+  const services = readFileSync(new URL('../launchExecution.js', import.meta.url), 'utf8');
+  assert.equal((services.match(/await requireTokenCompleteForLiquidity\(/g) || []).length, 2);
   assert.match(serverJs, /code: 'TOKEN_CREATION_INCOMPLETE'/);
 });
 

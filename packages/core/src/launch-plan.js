@@ -1,4 +1,4 @@
-import crypto from 'node:crypto';
+import { sha256Hex } from './sha256.js';
 import {
   COST_BS_QUOTE_SOL,
   COST_LAUNCH_REPORT_SOL,
@@ -276,10 +276,7 @@ function planIntegrityPayload(plan = {}) {
 }
 
 export function launchPlanIntegrityDigest(plan = {}) {
-  return crypto
-    .createHash('sha256')
-    .update(JSON.stringify(planIntegrityPayload(plan)))
-    .digest('hex');
+  return sha256Hex(JSON.stringify(planIntegrityPayload(plan)));
 }
 
 function launchPlanLogoFingerprint(logo = null) {
@@ -673,7 +670,14 @@ function normalizeTokenLogo(input = null) {
   const dataUrl = String(input.dataUrl || '').trim();
   const match = dataUrl.match(LOGO_DATA_URL_RE);
   if (!match) throw new Error('Token logo must be a PNG, JPG, or GIF data URL');
-  const decoded = Buffer.from(match[2], 'base64');
+  if (match[2].length > Math.ceil(MAX_LOGO_BYTES / 3) * 4) {
+    throw new Error('Token logo must be 100KB or smaller');
+  }
+  let binary;
+  try { binary = atob(match[2]); } catch {
+    throw new Error('Token logo must contain valid base64 image data');
+  }
+  const decoded = Uint8Array.from(binary, (byte) => byte.charCodeAt(0));
   const sizeBytes = decoded.length;
   if (sizeBytes <= 0 || sizeBytes > MAX_LOGO_BYTES) {
     throw new Error('Token logo must be 100KB or smaller');
@@ -699,7 +703,7 @@ function normalizeTokenLogo(input = null) {
     name: String(input.name || 'token-logo').trim().slice(0, 120),
     mimeType: detectedMime,
     sizeBytes,
-    dataUrl: `data:${detectedMime};base64,${decoded.toString('base64')}`,
+    dataUrl: `data:${detectedMime};base64,${btoa(binary)}`,
   };
 }
 

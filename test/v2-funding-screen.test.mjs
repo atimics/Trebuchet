@@ -24,7 +24,7 @@ function harness() {
     allocationIndex: index + 1, quoteMint: pool.quoteMint, quoteSymbol: pool.quoteSymbol,
     minRaw: '100', targetRaw: '200', estSolSpend: 0.034,
   }));
-  const calls = { api: 0, unlock: 0, confirm: 0, notices: [] };
+  const calls = { api: 0, execute: 0, unlock: 0, confirm: 0, notices: [] };
   const state = {
     apiStatus: 'connected', demoActive: false, customPools: pools.slice(1),
     classicFundingEstimate: { autoSwapPlan: routes, byQuote: {} },
@@ -56,13 +56,24 @@ function harness() {
     unlockSecretPin: async () => { calls.unlock += 1; return true; },
     refreshManualPrefundBalance: async () => ({ tokens: {} }),
     confirmOperatorAction: async () => { calls.confirm += 1; return true; },
+    window: {},
+    renderClassicBridge: () => {},
+    applyQuoteAcquireJob: (job) => { state.quoteAcquire.job = job; state.quoteAcquire.running = job.status === 'running'; },
+    startQuoteAcquirePolling: () => {},
+    resetQuoteAcquireState: () => {},
+    defaultQuoteAcquireState: () => ({ running: false, job: null, jobId: null }),
+    formatRawTokenAmount: String,
   };
-  state.apiClient = { acquireQuoteTokens: async () => { calls.api += 1; return { jobId: 'job' }; } };
+  const prepared = { jobId: 'job', status: 'review_required', walletPublicKey: 'Wallet111', maxSpendLamports: 1000, rows: [] };
+  state.apiClient = {
+    acquireQuoteTokens: async () => { calls.api += 1; return prepared; },
+    executeAcquireQuoteTokens: async () => { calls.execute += 1; return { ...prepared, status: 'running' }; },
+  };
   const names = [
     'quoteAcquireBlockedPools', 'quoteAcquireSafetyCheck', 'quoteAcquireSuccessEvidence',
     'quoteAcquireResultMatchesRoute', 'quoteAcquireStatus', 'quoteAcquireBadge', 'quoteAcquireRouteLabel', 'quoteKey', 'sameQuoteIdentity',
     'findQuoteRouteForPool', 'findManualPrefundForPool', 'quotePoolGuidanceItems',
-    'renderQuotePoolGuidance', 'renderQuoteAcquirePanel', 'startQuoteAcquire',
+    'renderQuotePoolGuidance', 'renderQuoteAcquirePanel', 'reviewQuoteAcquireJob', 'startQuoteAcquire',
   ];
   const receiptStart = source.indexOf('const FUNDING_RECEIPT_GROUPS =');
   const receiptEnd = source.indexOf('\nfunction renderFundingWalletHint', receiptStart);
@@ -161,7 +172,7 @@ test('acquire checks quote blocks before unlock, confirmation, or API calls', as
   assert.match(app.calls.notices[0], /Resolve USD1/);
 });
 
-test('acquire checks a new quote block after the spend confirmation', async () => {
+test('acquire checks a new quote block after the spend confirmation, before any spend', async () => {
   const app = harness();
   app.confirmOperatorAction = async () => {
     app.calls.confirm += 1;
@@ -170,7 +181,7 @@ test('acquire checks a new quote block after the spend confirmation', async () =
   };
   await app.startQuoteAcquire();
   assert.equal(app.calls.confirm, 1);
-  assert.equal(app.calls.api, 0);
+  assert.equal(app.calls.execute, 0);
   assert.equal(app.state.quoteAcquire.running, false);
 });
 

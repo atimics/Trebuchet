@@ -1,5 +1,6 @@
 import { open, readFile, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 const MAX_INPUT_BYTES = 10 * 1024 * 1024;
 
@@ -9,9 +10,11 @@ export async function readJsonFile(filePath, label = 'JSON input') {
   const inputStat = await stat(inputPath);
   if (!inputStat.isFile()) throw new TypeError(`${label} must be a regular file.`);
   if (inputStat.size > MAX_INPUT_BYTES) throw new TypeError(`${label} exceeds the 10 MB input limit.`);
-  const text = await readFile(inputPath, 'utf8');
+  const bytes = await readFile(inputPath);
+  if (bytes.length > MAX_INPUT_BYTES) throw new TypeError(`${label} exceeds the 10 MB input limit.`);
+  const text = bytes.toString('utf8');
   try {
-    return { path: inputPath, value: JSON.parse(text) };
+    return { path: inputPath, value: JSON.parse(text), bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
   } catch (error) {
     throw new TypeError(`${label} is not valid JSON: ${error.message}`);
   }

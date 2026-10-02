@@ -14,6 +14,7 @@
 // guards the shipped app.js by content. Run `npm run build:js` after editing a
 // module, and commit the regenerated app.js.
 import { readFileSync, writeFileSync } from 'fs';
+import { buildV2Js } from './build-v2-js.mjs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -96,6 +97,7 @@ export function buildAppJs() {
 const invokedDirectly = process.argv[1] && process.argv[1].endsWith('build-app-js.mjs');
 if (invokedDirectly) {
   const bytes = buildAppJs();
+  buildV2Js();
   const kb = (bytes / 1024).toFixed(0);
   console.log(`Built public/app.js from ${moduleNames.length} modules (${kb} KB)`);
 }

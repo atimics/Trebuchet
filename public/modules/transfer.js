@@ -836,7 +836,7 @@ async function runAirdropRetry() {
           ...(demoModeActive ? { tempWalletSecretKey: tempWallet.secretKey } : {}),
           tokenMint: createdTokenInfo.mint,
           tokenDecimals: createdTokenInfo.decimals,
-          isToken2022: false,
+          isToken2022: createdTokenInfo.mintFormat === 'token-2022' || createdTokenInfo.isToken2022 === true,
           recipients,
         }),
       });

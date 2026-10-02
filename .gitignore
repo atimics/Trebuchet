@@ -1,4 +1,4 @@
-/node_modules
+node_modules/
 rpcConfig.json
 files.zip
 /dist
@@ -29,3 +29,16 @@ test/ui/diffs/*.png
 /.wrangler
 docs/LAUNCH-RISK-BACKLOG.md
 docs/RELEASE-AUDIT-BACKLOG.md
+
+# Local durable runtime state
+/execution.sqlite*
+/runtime-owner.sqlite*
+/runtime.json
+
+# Private local runtime output
+/runtime.log
+
+# Private recovery backups and interrupted PIN writes
+/pendingWallets.json.*
+/.secretPin.json*
+/.tmp-*.json

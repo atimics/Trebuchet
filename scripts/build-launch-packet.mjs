@@ -28,6 +28,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, copyFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { buildV2LaunchPlan, verifyLaunchPlan } from '@trebuchet/core/launch-plan';
 
 const args = process.argv.slice(2);
 const opt = (name) => {
@@ -50,6 +51,7 @@ const fail = (msg) => {
   process.exit(2);
 };
 
+if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(name)) fail('packet name must contain letters, digits, hyphens, or underscores');
 if (!configPath) fail('--config <launch.json> is required');
 if (!planPath) fail('--plan <plan.json> is required');
 for (const p of [configPath, planPath, ...(logoPath ? [logoPath] : []), ...extras]) {
@@ -74,6 +76,12 @@ if (!plan.integrity?.digest) {
   fail('plan is missing its integrity digest; rebuild it with trebuchet plan build');
 }
 
+if (!verifyLaunchPlan(plan).valid) fail('plan integrity verification failed');
+try {
+  const rebuilt = buildV2LaunchPlan(config, { now: plan.generatedAt, demoMode: plan.runtime === 'demo' });
+  if (rebuilt.integrity.digest !== plan.integrity.digest) fail('config differs from the verified plan');
+} catch (error) { fail(error.message); }
+
 // The token name and symbol go into the manifest for quick audit.
 const token = {
   name: config.token?.name ?? plan.token?.name ?? null,
@@ -82,11 +90,13 @@ const token = {
 };
 
 const packetDir = path.join(outDir, name);
-mkdirSync(packetDir, { recursive: true });
+if (existsSync(packetDir)) fail('output packet already exists; choose a new name');
+mkdirSync(packetDir, { recursive: true, mode: 0o700 });
 
 // Every packet file, copied into the packet dir and hashed.
 const entries = [];
 const addFile = (src, destInPacket) => {
+  if (destInPacket === 'manifest.json' || entries.some((entry) => entry.path.toLowerCase() === destInPacket.toLowerCase())) fail('packet file names must be unique');
   const buf = readFileSync(src);
   copyFileSync(src, path.join(packetDir, destInPacket));
   entries.push({ path: destInPacket, bytes: buf.length, sha256: sha256(buf) });
@@ -119,7 +129,7 @@ entries.unshift({
 
 // Archive the packet. tar is available everywhere this repo is developed.
 const archive = path.join(outDir, `${name}.tar.gz`);
-execFileSync('tar', ['-czf', archive, '-C', outDir, name], { stdio: 'inherit' });
+execFileSync('tar', ['-czf', archive, '-C', outDir, name], { stdio: 'inherit', env: { ...process.env, COPYFILE_DISABLE: '1' } });
 
 console.log(`Packet: ${name}`);
 console.log(`Plan digest: ${manifest.planDigest}`);

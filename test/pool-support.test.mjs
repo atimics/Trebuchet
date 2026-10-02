@@ -9,7 +9,6 @@ import {
 } from '../lpMath.js';
 import {
   previewSolSupport,
-  openSolSupport,
   setSdkFactoryForTests,
   setConnectionFactoryForTests,
   resetTestFactories,
@@ -109,49 +108,6 @@ test('preview caps the range, prices each new tick array, and checks the balance
   assert.equal(plan.locked, false);
 });
 
-test('open refuses when the pool moved since the preview, and sends nothing', async () => {
-  const { raydium, calls } = mockSdk();
-  setConnectionFactoryForTests(() => raydium.connection);
-  setSdkFactoryForTests(() => raydium);
-  const owner = Keypair.generate();
-  await assert.rejects(
-    openSolSupport({
-      tempWalletSecretKey: Array.from(owner.secretKey),
-      poolId: POOL,
-      solAmount: 0.1,
-      depthPct: 50,
-      expected: { tickLower: 0, tickUpper: 1, totalLamports: '1' },
-    }),
-    (error) => error.code === 'SUPPORT_PLAN_CHANGED' && Boolean(error.plan),
-  );
-  assert.equal(calls.opened.length, 0);
-});
-
-test('open sends one SOL-only position at the confirmed range', async () => {
-  const { raydium, calls } = mockSdk();
-  setConnectionFactoryForTests(() => raydium.connection);
-  setSdkFactoryForTests(() => raydium);
-  const owner = Keypair.generate();
-  const plan = await previewSolSupport({ walletPublicKey: owner.publicKey.toBase58(), poolId: POOL, solAmount: 0.1, depthPct: 50 });
-  const result = await openSolSupport({
-    tempWalletSecretKey: Array.from(owner.secretKey),
-    poolId: POOL,
-    solAmount: 0.1,
-    depthPct: 50,
-    expected: { tickLower: plan.tickLower, tickUpper: plan.tickUpper, totalLamports: plan.totalLamports },
-  });
-  assert.equal(calls.opened.length, 1);
-  const args = calls.opened[0];
-  assert.equal(args.base, 'MintB', 'SOL is mintB, so the deposit side is MintB');
-  assert.equal(args.baseAmount.toString(), '100000000');
-  assert.equal(args.otherAmountMax.toString(), '0');
-  assert.equal(args.tickLower, plan.tickLower);
-  assert.equal(args.tickUpper, plan.tickUpper);
-  assert.ok(args.tickUpper < -132326, 'SOL-only: the range sits below the current tick');
-  assert.equal(result.txId, 'sig-support');
-  assert.equal(result.adopted, false);
-});
-
 test('positions list reads each wallet and prices what a position holds', async () => {
   const { listCoinPositions, setSdkFactoryForTests: setSdk, setConnectionFactoryForTests: setConn } = await import('../lpService.js');
   const owner = Keypair.generate().publicKey.toBase58();
@@ -174,36 +130,4 @@ test('positions list reads each wallet and prices what a position holds', async 
   assert.equal(position.tokenAmount, 0, 'below the price it holds only SOL');
   assert.ok(position.quoteAmount > 0);
   assert.ok(position.priceHigh <= 1.79e-6 && position.priceLow < position.priceHigh);
-});
-
-test('withdraw refuses a position that changed since it was shown, and closes a matching one', async () => {
-  const { withdrawPosition, setSdkFactoryForTests: setSdk, setConnectionFactoryForTests: setConn } = await import('../lpService.js');
-  const owner = Keypair.generate();
-  const { raydium } = mockSdk();
-  const position = {
-    poolId: new PublicKey(POOL), nftMint: new PublicKey('11111111111111111111111111111112'),
-    tickLower: -139969, tickUpper: -133037, liquidity: new BN('1000000000000'),
-  };
-  let held = [position];
-  raydium.clmm.getOwnerPositionInfo = async () => held;
-  const decreased = [];
-  raydium.clmm.decreaseLiquidity = async (args) => {
-    decreased.push(args);
-    return { execute: async () => { held = []; return { txId: 'sig-withdraw' }; } };
-  };
-  setConn(() => raydium.connection);
-  setSdk(() => raydium);
-  await assert.rejects(
-    withdrawPosition({ tempWalletSecretKey: Array.from(owner.secretKey), poolId: POOL, nftMint: position.nftMint.toBase58(), expected: { liquidity: '1' } }),
-    (error) => error.code === 'POSITION_CHANGED',
-  );
-  assert.equal(decreased.length, 0);
-  const result = await withdrawPosition({ tempWalletSecretKey: Array.from(owner.secretKey), poolId: POOL, nftMint: position.nftMint.toBase58(), expected: { liquidity: '1000000000000' } });
-  assert.equal(decreased.length, 1);
-  assert.equal(decreased[0].ownerInfo.closePosition, true);
-  assert.equal(decreased[0].liquidity.toString(), '1000000000000');
-  // Mins are 99% of what the position holds: SOL side positive, token side zero.
-  assert.ok(new BN(decreased[0].amountMinB).gt(new BN(0)));
-  assert.equal(decreased[0].amountMinA.toString(), '0');
-  assert.equal(result.txId, 'sig-withdraw');
 });

@@ -175,3 +175,17 @@ test('uploads a generic sealed identity carrying only the final metadata commitm
     metadataCommitment: commitmentHash,
   }]);
 });
+
+test('a failed logo receipt stops before the metadata upload', async () => {
+  const failure = Object.assign(new Error('checkpoint write failed'), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+  let uploads = 0;
+  await assert.rejects(uploadTokenMetadata({
+    umi: { uploader: {
+      upload: async () => ['https://example.test/logo'],
+      uploadJson: async () => { uploads++; return 'https://example.test/metadata'; },
+    } },
+    uploadTimeoutMs: 0, name: 'Test', symbol: 'TST', logoBase64: 'data:image/png;base64,aGVsbG8=',
+    onProgress: (event) => { if (event.stage === 'logo_uploaded') throw failure; },
+  }), (error) => error === failure);
+  assert.equal(uploads, 0);
+});

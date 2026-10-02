@@ -58,9 +58,10 @@ test('typed addresses are never verified without a signature', () => {
 
 test('live sweep and Fee Key transfers require a proven destination', () => {
   const server = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
-  const sweep = server.slice(server.indexOf('async function transferAssetsHandler'), server.indexOf('const nftSweep = await sweepNftsToDestination'));
+  const services = fs.readFileSync(new URL('../launchExecution.js', import.meta.url), 'utf8');
+  const sweep = services.slice(services.indexOf('async function transferAssets('), services.indexOf('const nftSweep = await sweepNftsToDestination'));
   assert.match(sweep, /unverifiedDestinationReason\(destinationWallet, walletPublicKey\)/);
-  const createLp = server.slice(server.indexOf('async function createLpHandler'), server.indexOf("app.post('/api/create-lp'"));
+  const createLp = services.slice(services.indexOf('async function createLiquidity('), services.indexOf('async function resumeLiquidity('));
   const guard = createLp.indexOf('Refusing to send Fee Keys');
-  assert.ok(guard > 0 && guard < createLp.indexOf('rejectOrClaimLaunchOp(res, walletPublicKey'), 'Fee Key recipients are checked before liquidity work starts');
+  assert.ok(guard > 0 && guard < createLp.indexOf('claimLaunchOp(walletPublicKey'), 'Fee Key recipients are checked before liquidity work starts');
 });

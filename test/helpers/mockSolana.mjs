@@ -34,6 +34,7 @@ export function makeFakeConnection(overrides = {}) {
     getParsedAccountInfo: async () => ({ value: null }),
     getParsedTokenAccountsByOwner: async () => ({ value: [] }),
     getTokenAccountsByOwner: async () => ({ value: [] }),
+    getProgramAccounts: async () => [],
     confirmTransaction: async () => ({ value: { err: null } }),
     sendTransaction: async () => 'fake-sol-tx-sig',
     getSignaturesForAddress: async () => [],

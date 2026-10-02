@@ -18,6 +18,7 @@ import {
 // priority fee. See priorityFees.js.
 import { 
   getMint,
+  unpackMint,
   getAccount,
   AuthorityType,
   TOKEN_PROGRAM_ID,
@@ -66,7 +67,7 @@ import {
   uploadTokenMetadata,
 } from './metadataUploadService.js';
 import { saveSealedIdentity } from './sealedIdentityStore.js';
-import { landTxWithRetry } from './chainRetry.js';
+import { landTxWithRetry, throwIfExecutionPaused } from './chainRetry.js';
 import { redactUrl } from './logRedaction.js';
 import { parseMetaplexUri } from './tokenMetadataLayout.js';
 import {
@@ -728,14 +729,7 @@ export async function createTokenWithMetaplex({
   keepMetadataAuthority = false,
 }) {
   try {
-    const progress = (event) => {
-      if (!onProgress) return;
-      try {
-        onProgress(event);
-      } catch (e) {
-        console.warn('Token progress callback failed:', e.message);
-      }
-    };
+    const progress = (event) => onProgress?.(event);
 
     console.log('Starting token creation...');
     
@@ -860,11 +854,9 @@ export async function createTokenWithMetaplex({
       await landTxWithRetry({
         label: 'create mint',
         alreadyDone: async () => {
-          // getMint throws while the account doesn't exist / isn't initialized.
-          try {
-            await getMint(connection, mint, 'finalized', TOKEN_PROGRAM_ID);
-            return true;
-          } catch (_) { return false; }
+          const account = await connection.getAccountInfo(mint, 'finalized');
+          if (account === null) return false;
+          return unpackMint(mint, account, TOKEN_PROGRAM_ID).isInitialized;
         },
         send: () => sendIxsWithPriority({
           payer: tempWallet,
@@ -890,6 +882,7 @@ export async function createTokenWithMetaplex({
         }),
       });
     } catch (mintError) {
+      throwIfExecutionPaused(mintError);
       // The mint address is known before the transaction lands, so surface it
       // on failure: an account that already exists can then be adopted and
       // finished instead of re-created.
@@ -1021,6 +1014,7 @@ export async function createTokenWithMetaplex({
         txId: renounceMintAuthSig,
       });
     } catch (error) {
+      throwIfExecutionPaused(error);
       console.error('Error renouncing mint authority:', error);
       throw new Error('Failed to renounce mint authority. Token creation aborted for safety.');
     }
@@ -1097,6 +1091,7 @@ export async function createTokenWithMetaplex({
       });
       
     } catch (error) {
+      throwIfExecutionPaused(error);
       console.error('Error revoking update authority:', error);
       console.error('Full error details:', error.message);
       
@@ -1144,6 +1139,7 @@ export async function createTokenWithMetaplex({
         });
         
       } catch (altError) {
+        throwIfExecutionPaused(altError);
         console.error('Alternative approach also failed:', altError.message);
         
         // Wait a bit before final attempt
@@ -1171,6 +1167,7 @@ export async function createTokenWithMetaplex({
           progress({ stage: 'metadata_update_authority_revoked', tokenMint: mint.toString() });
           
         } catch (finalError) {
+          throwIfExecutionPaused(finalError);
           console.error('Final attempt failed:', finalError.message);
           // At this point, we've tried everything - the token is still functional
           console.warn('WARNING: Could not revoke metadata update authority.');
@@ -1230,6 +1227,7 @@ export async function createTokenWithMetaplex({
         console.log('Verified token balance:', accountInfo.amount.toString());
         break;
       } catch (error) {
+        throwIfExecutionPaused(error);
         console.error(`Error getting account info (attempt ${4 - retries}):`, error.message);
         retries--;
         if (retries === 0) {
@@ -1271,6 +1269,7 @@ export async function createTokenWithMetaplex({
           : 'Metadata update authority could not be revoked. Please verify token safety on Solscan.'
     };
   } catch (error) {
+    throwIfExecutionPaused(error);
     console.error('Error in createTokenWithMetaplex:', error);
     throw error;
   }
@@ -1382,10 +1381,7 @@ export async function finishTokenCreation({
   // revoke it. Read from the launch journal's token record by the caller.
   keepMetadataAuthority = false,
 }) {
-  const progress = (event) => {
-    if (!onProgress) return;
-    try { onProgress(event); } catch (e) { console.warn('finish-token progress callback failed:', e.message); }
-  };
+  const progress = (event) => onProgress?.(event);
 
   const tempWallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
   const umi = _umiFactory(tempWallet);
@@ -1414,6 +1410,7 @@ export async function finishTokenCreation({
   try {
     mintInfo = await getMint(connection, mint, 'finalized', programId);
   } catch (e) {
+    throwIfExecutionPaused(e);
     throw new Error(`finish-token: cannot read mint ${tokenMint} on-chain: ${e.message}`);
   }
   status.supplyMinted = mintInfo.supply >= totalTokens;
@@ -1426,11 +1423,11 @@ export async function finishTokenCreation({
   let metaAccount = null;
   let inlineMetadata = null;
   if (isToken2022) {
-    try { inlineMetadata = await getTokenMetadata(connection, mint, 'finalized', programId); } catch (_) { /* absent */ }
+    try { inlineMetadata = await getTokenMetadata(connection, mint, 'finalized', programId); } catch (error) { throwIfExecutionPaused(error); /* absent */ }
     status.metadataExists = Boolean(inlineMetadata);
     status.updateAuthorityRevoked = Boolean(inlineMetadata && !inlineMetadata.updateAuthority);
   } else {
-    try { metaAccount = await connection.getAccountInfo(metadataPda, 'finalized'); } catch (_) { /* treat as absent */ }
+    try { metaAccount = await connection.getAccountInfo(metadataPda, 'finalized'); } catch (error) { throwIfExecutionPaused(error); /* treat as absent */ }
     status.metadataExists = !!(metaAccount && metaAccount.data && metaAccount.data.length > 0);
   }
   if (!isToken2022 && status.metadataExists && metaAccount.data.length >= 33) {
@@ -1636,6 +1633,7 @@ export async function finishTokenCreation({
       status.steps.push('revoked metadata update authority');
       progress({ stage: 'metadata_update_authority_revoked', tokenMint });
     } catch (e) {
+      throwIfExecutionPaused(e);
       status.steps.push(`could not revoke metadata update authority: ${e.message}`);
     }
   }
@@ -1679,9 +1677,9 @@ export async function uploadSealedIdentity({ tempWalletSecretKey, identity, onPr
 }
 
 // A document uploaded moments ago can take a few seconds to reach the gateway.
-async function fetchFreshMetadataDocument(uri, { attempts = 8, delayMs = 1500 } = {}) {
+async function fetchFreshMetadataDocument(uri, { attempts = 8, delayMs = 1500, fetchDocument = fetchMetadataDocument } = {}) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const document = await fetchMetadataDocument(uri);
+    const document = await fetchDocument(uri);
     if (document) return document;
     if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
@@ -1697,17 +1695,21 @@ export async function revealSealedTokenMetadata({
   metadataHash,
   imageSha256 = null,
   onProgress,
+  metadataExecution = null,
+  fetchDocument = fetchMetadataDocument,
 }) {
-  const progress = (event) => {
-    if (!onProgress) return;
-    try { onProgress(event); } catch (_) { /* progress is best-effort */ }
-  };
+  const progress = (event) => onProgress?.(event);
   if (!tokenMint || !metadataUri) {
     throw new Error('Sealed metadata reveal requires a mint and final metadata URI.');
   }
   const expectedMetadataHash = String(metadataHash || '').trim().toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(expectedMetadataHash)) {
     throw new Error('Sealed metadata reveal requires the recorded SHA-256 identity commitment.');
+  }
+  let operationResult = null;
+  if (metadataExecution) {
+    if (typeof metadataExecution.recover !== 'function' || typeof metadataExecution.update !== 'function') throw new TypeError('Metadata execution requires update and recovery interfaces');
+    operationResult = await metadataExecution.recover({ tempWalletSecretKey, tokenMint, name, symbol, metadataUri });
   }
   const tempWallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
   const umi = _umiFactory(tempWallet);
@@ -1741,7 +1743,7 @@ export async function revealSealedTokenMetadata({
 
   const before = await inspect();
   if (before.uri === metadataUri && before.updateAuthority === SYSTEM_PROGRAM_ADDRESS) {
-    const finalDocument = await fetchFreshMetadataDocument(metadataUri);
+    const finalDocument = await fetchFreshMetadataDocument(metadataUri, { fetchDocument });
     const { finalHash: revealedHash } = verifySealedMetadataCommitment({
       finalDocument,
       metadataHash: expectedMetadataHash,
@@ -1752,6 +1754,7 @@ export async function revealSealedTokenMetadata({
       requirePlaceholder: false,
     });
     return {
+      ...(operationResult ? { operationId: operationResult.operationId, txId: operationResult.txId } : {}),
       finalMetadataHash: revealedHash,
       tokenMint,
       metadataUri,
@@ -1773,8 +1776,8 @@ export async function revealSealedTokenMetadata({
   }
 
   const [placeholderDocument, finalDocument] = await Promise.all([
-    fetchMetadataDocument(before.uri),
-    fetchFreshMetadataDocument(metadataUri),
+    fetchDocument(before.uri),
+    fetchFreshMetadataDocument(metadataUri, { fetchDocument }),
   ]);
   const { finalHash } = verifySealedMetadataCommitment({
     placeholderDocument,
@@ -1787,7 +1790,12 @@ export async function revealSealedTokenMetadata({
   });
 
   progress({ stage: 'metadata_reveal_started', tokenMint, metadataUri });
-  if (isToken2022) {
+  if (metadataExecution) {
+    operationResult = await metadataExecution.update({
+      tempWalletSecretKey, tokenMint, newAuthority: SYSTEM_PROGRAM_ADDRESS, makeImmutable: true,
+      fields: { name, symbol, uri: metadataUri, ...(isToken2022 && finalHash !== expectedMetadataHash ? { 'trebuchet:sha256': finalHash } : {}) },
+    });
+  } else if (isToken2022) {
     // URI is written last, so a retry after an interrupted reveal can still
     // load and validate the sealed placeholder commitment. Authority is
     // retired only after every final identity field has landed.
@@ -1861,6 +1869,7 @@ export async function revealSealedTokenMetadata({
     metadataImmutable: true,
     sealedMetadataPending: false,
     finalMetadataHash: finalHash,
+    ...(operationResult ? { operationId: operationResult.operationId, txId: operationResult.txId } : {}),
     skipped: false,
   };
   progress({ stage: 'metadata_revealed', ...result });

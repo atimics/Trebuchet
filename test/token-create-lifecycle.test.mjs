@@ -391,3 +391,20 @@ test('createTokenWithMetaplex: connection DI seam defaults to real factory after
   // refreshConnection now rebuilds via the real factory; it must not throw.
   assert.doesNotThrow(() => tokenService.refreshConnection());
 });
+
+test('token creation propagates a failed metadata checkpoint before the next step', async () => {
+  const failure = Object.assign(new Error('checkpoint write failed'), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+  let continued = 0;
+  tokenService.setConnectionFactoryForTests(() => makeFakeConnection());
+  tokenService.setUmiFactoryForTests(() => makeFakeUmi());
+  tokenService.setUploaderForTests(async ({ onProgress }) => {
+    onProgress({ stage: 'metadata_uploaded', metadataUri: 'https://example.test/metadata' });
+    continued++;
+    throw new Error('continued after failed checkpoint');
+  });
+  await assert.rejects(tokenService.createTokenWithMetaplex({
+    tempWalletSecretKey: SECRET_KEY, name: 'Test', symbol: 'TST', totalSupply: '1000',
+    onProgress: () => { throw failure; },
+  }), (error) => error === failure);
+  assert.equal(continued, 0);
+});

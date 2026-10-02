@@ -38,6 +38,7 @@
 // green and free.
 
 import assert from 'node:assert/strict';
+import { createProfileJournalStore } from '@trebuchet/runtime/profile-stores';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
@@ -390,8 +391,7 @@ export async function runDevnetRecoveryDrills(env = process.env) {
     }
 
     // 5. Reconcile the persisted journal against the invariant set.
-    const journalPath = path.join(configDir, 'launchJournals.json');
-    const journals = existsSync(journalPath) ? JSON.parse(readFileSync(journalPath, 'utf8')) : [];
+    const journals = createProfileJournalStore(configDir).list({ includeCompleted: true, includeArchived: true });
     const journal = Array.isArray(journals)
       ? journals.filter((entry) => entry.walletPublicKey === walletPublicKey)
         .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null
