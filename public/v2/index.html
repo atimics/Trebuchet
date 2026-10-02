@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=106">
+  <link rel="stylesheet" href="./styles.css?v=107">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -279,10 +279,21 @@
                   <span class="setup-help" id="setupHelp">Test · nothing is sent</span>
                 </span>
               </div>
-              <div class="advanced-launch-controls" id="advancedLaunchControls">
+              <div class="advanced-launch-controls plan-slides-shell" id="advancedLaunchControls">
               <h2 class="visually-hidden" id="configureStepTitle">Token &amp; pools</h2>
-              <div class="launch-workbench compact-workbench">
-                <form class="config-grid" id="launchConfig" aria-label="Launch configuration">
+              <div class="plan-strip" id="planStrip" role="tablist" aria-label="Plan">
+                <button type="button" role="tab" data-plan-tab="token"><strong>Token</strong><small data-plan-value="token"></small></button>
+                <button type="button" role="tab" data-plan-tab="pool"><strong>Pool</strong><small data-plan-value="pool"></small></button>
+                <button type="button" role="tab" data-plan-tab="pairs"><strong>Pairs</strong><small data-plan-value="pairs"></small></button>
+                <button type="button" role="tab" data-plan-tab="address"><strong>Address</strong><small data-plan-value="address"></small></button>
+                <button type="button" role="tab" data-plan-tab="airdrop"><strong>Airdrop</strong><small data-plan-value="airdrop"></small></button>
+                <button type="button" role="tab" data-plan-tab="return"><strong>Return</strong><small data-plan-value="return"></small></button>
+                <button type="button" role="tab" data-plan-tab="report"><strong>Report</strong><small data-plan-value="report"></small></button>
+              </div>
+              <div class="plan-slides" id="planSlides">
+                <div class="plan-track" id="planTrack">
+                  <section class="plan-slide" data-plan-slide="token" role="tabpanel">
+                    <form class="config-grid" id="launchConfig" aria-label="Launch configuration">
                   <label>
                     <span>Token name</span>
                     <input id="tokenName" type="text" value="" placeholder="Your token name" autocomplete="off">
@@ -309,7 +320,9 @@
                   </div>
                   <div class="token-logo-preview" id="tokenLogoPreview"></div>
                 </form>
-                <section class="launch-budget-recommender" aria-labelledby="launchBudgetTitle">
+                  </section>
+                  <section class="plan-slide" data-plan-slide="pool" role="tabpanel">
+                    <section class="launch-budget-recommender" aria-labelledby="launchBudgetTitle">
                   <input id="launchSol" type="hidden" value="1">
                   <div class="launch-budget-head">
                     <span>
@@ -328,15 +341,7 @@
                   </div>
                   <div class="launch-budget-strategy" id="launchBudgetStrategy" aria-live="polite"></div>
                 </section>
-              </div>
-
-              <section class="return-wallet asset-destinations" id="returnWalletCard" aria-label="Where assets go"></section>
-              <details class="drawer launch-more-options" id="launchMoreOptions">
-                <summary>
-                  <span>More options</span>
-                  <strong id="launchMoreSummary">1B supply · sealed · Token-2022 · random address · 1 pool</strong>
-                </summary>
-                <div class="config-grid launch-more-grid">
+                    <div class="config-grid launch-more-grid">
                     <label>
                       <span>Total supply</span>
                       <input id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000" autocomplete="off">
@@ -355,12 +360,34 @@
                       </select>
                     </label>
                 </div>
-                <details class="vanity-panel vanity-details">
-                  <summary>
-                    <span>Contract address</span>
-                    <strong id="vanitySummary">Random address · recommended</strong>
-                  </summary>
-                  <div class="vanity-details-body grinder" aria-label="Optional custom contract address">
+                  </section>
+                  <section class="plan-slide" data-plan-slide="pairs" role="tabpanel">
+                    <section class="supply-editor" id="supplyEditor" aria-label="Supply split"></section>
+                    <section class="hub-picker" id="hubPicker" aria-label="Choose a hub token" hidden></section>
+                    <form class="classic-grid" id="classicConfig" aria-label="Pool options">
+                    <div class="classic-hidden-fields" hidden>
+                      <input id="mainPoolPercent" type="number" value="100" min="0" max="100" step="0.1">
+                      <input id="quotePoolPercent" type="number" value="0" min="0" max="100" step="0.1">
+                      <select id="quotePoolVenue">
+                        <option value="meme" selected>Meme flywheel</option>
+                        <option value="reserve">Reserve flywheel</option>
+                        <option value="usdc">Stable USDC</option>
+                      </select>
+                      <div class="flywheel-pick" id="flywheelPick">
+                        <code class="flywheel-pick-mint" id="flywheelPickMint">—</code>
+                      </div>
+                      <input id="preallocationSupplyPercent" type="number" value="0" min="0" max="99" step="0.1">
+                      <input id="sliceShares" type="text" value="100" autocomplete="off">
+                      <input id="ladderBands" type="number" value="0" min="0" max="20" step="1">
+                      <input id="supportSol" type="number" value="0" min="0" step="0.05">
+                      <div class="pool-editor-panel" id="poolEditorPanel"></div>
+                      <input id="sweepDestination" type="hidden" value="">
+                      <input id="feeKeyRecipient" type="hidden" value="">
+                    </div>
+                  </form>
+                  </section>
+                  <section class="plan-slide" data-plan-slide="address" role="tabpanel">
+                    <div class="vanity-details-body grinder" aria-label="Optional custom contract address">
                   <div class="vanity-inputs grinder-fields">
                     <label class="grinder-field">
                       <span>Starts with</span>
@@ -384,7 +411,7 @@
                     </label>
                     <label class="grinder-check vanity-case-toggle" for="vanityCaseInsensitive">
                       <input id="vanityCaseInsensitive" type="checkbox">
-                      <span><strong>Any case</strong><small>rUg…RuG counts as RUG…RUG. Much faster.</small></span>
+                      <span><strong>Any case</strong></span>
                     </label>
                   </div>
                   <div class="candidate-strip grinder-results" id="vanityCandidates">
@@ -392,38 +419,10 @@
                     <button class="pill-button" type="button" data-action="start-vanity">Grind</button>
                   </div>
                   </div>
-                </details>
-                <details class="drawer classic-controls launch-design-details">
-                  <summary>
-                    <span>Supply and pools</span>
-                    <strong id="classicSummary">Simple SOL pool · no allocation</strong>
-                  </summary>
-                  <section class="supply-editor" id="supplyEditor" aria-label="Supply split"></section>
-                  <section class="hub-picker" id="hubPicker" aria-label="Choose a hub token" hidden></section>
-                  <form class="classic-grid" id="classicConfig" aria-label="Pool options">
-                    <div class="classic-hidden-fields" hidden>
-                      <input id="mainPoolPercent" type="number" value="100" min="0" max="100" step="0.1">
-                      <input id="quotePoolPercent" type="number" value="0" min="0" max="100" step="0.1">
-                      <select id="quotePoolVenue">
-                        <option value="meme" selected>Meme flywheel</option>
-                        <option value="reserve">Reserve flywheel</option>
-                        <option value="usdc">Stable USDC</option>
-                      </select>
-                      <div class="flywheel-pick" id="flywheelPick">
-                        <code class="flywheel-pick-mint" id="flywheelPickMint">—</code>
-                      </div>
-                      <input id="preallocationSupplyPercent" type="number" value="0" min="0" max="99" step="0.1">
-                      <input id="sliceShares" type="text" value="100" autocomplete="off">
-                      <input id="ladderBands" type="number" value="0" min="0" max="20" step="1">
-                      <input id="supportSol" type="number" value="0" min="0" step="0.05">
-                      <div class="pool-editor-panel" id="poolEditorPanel"></div>
-                      <input id="sweepDestination" type="hidden" value="">
-                      <input id="feeKeyRecipient" type="hidden" value="">
-                    </div>
-                  </form>
-
-                  <details class="drawer-section" id="airdropSection" aria-label="Airdrop CSV import">
-                    <summary><span>Airdrop</span><span class="risk-badge is-neutral" id="airdropSummary">Off</span></summary>
+                  </section>
+                  <section class="plan-slide" data-plan-slide="airdrop" role="tabpanel">
+                    
+                    
                     <label class="supply-field" for="airdropCsvText"><span>CSV recipients</span></label>
                     <textarea id="airdropCsvText" rows="4" spellcheck="false" placeholder="wallet,tokens&#10;Recipient111...,1000"></textarea>
                     <div class="airdrop-budget-controls">
@@ -447,22 +446,26 @@
                     </div>
                     <div class="airdrop-budget-panel" id="airdropBudgetPanel"></div>
                     <div class="mini-table" id="airdropRecipientPreview"></div>
-                  </details>
-
-                  <details class="drawer-section" id="reportSection" aria-label="Launch report export">
-                    <summary><span>Launch report</span><span class="risk-badge" id="reportSummary">Draft</span></summary>
+                  
+                  </section>
+                  <section class="plan-slide" data-plan-slide="return" role="tabpanel">
+                    <section class="return-wallet asset-destinations" id="returnWalletCard" aria-label="Where assets go"></section>
+                  </section>
+                  <section class="plan-slide" data-plan-slide="report" role="tabpanel">
+                    
+                    
                     <div class="mini-table" id="reportPreview"></div>
                     <div class="operator-toolbar compact">
                       <button class="pill-button" type="button" data-action="toggle-report-publish">Toggle publish</button>
                       <button class="pill-button" type="button" data-action="download-report-preview">Download preview</button>
                     </div>
-                  </details>
-                </details>
-              </details>
-              <div class="launch-phase-actions launch-phase-actions-split configure-phase-actions">
-                <button class="secondary-button" type="button" data-action="review-plan"><i class="fa-solid fa-list-check"></i><span>Review plan</span></button>
-                <button class="primary-button" type="button" data-next-fact hidden></button>
+                  
+                  </section>
+                </div>
               </div>
+              <div class="plan-summaries" hidden>
+<strong id="launchMoreSummary"></strong><strong id="vanitySummary"></strong><strong id="classicSummary"></strong><span id="airdropSummary" class="risk-badge is-neutral">Off</span><span id="reportSummary" class="risk-badge">Draft</span>
+</div>
               </div>
             </section>
 
@@ -760,7 +763,7 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=1"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=200"></script>
+  <script src="./app.js?v=201"></script>
   <script src="./nfts.js?v=2"></script>
   <script src="./lean.js?v=2"></script>
 </body>

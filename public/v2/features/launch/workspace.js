@@ -377,6 +377,7 @@ function renderLaunchWorkspace() {
     viewport.setAttribute('aria-label', `${selectedWorkspace.title}: ${selectedWorkspace.detail}`);
   }
   renderLaunchNextRail(facts, next, workspace);
+  renderPlanSlides();
   refreshLaunchChainCheck(facts);
 }
 
@@ -424,6 +425,79 @@ function renderLaunchNextRail(facts, next, workspace) {
     </section>
     ${mint ? `<section class="rail-block"><span class="rail-label">On-chain</span><div class="rail-row"><span>Mint</span><b>${escapeHtml(shortAddress(mint))}</b></div></section>` : ''}
   `;
+}
+
+// The Plan row is a strip of slides, one at a time: Token, Pool, Pairs, Address,
+// Airdrop, Return, Report. Which slide shows is a view; nothing is saved or counted.
+const PLAN_SLIDES = ['token', 'pool', 'pairs', 'address', 'airdrop', 'return', 'report'];
+
+function planSlideValues() {
+  const text = (selector) => ($(selector)?.textContent || '').trim();
+  const name = String($('#tokenName')?.value || '').trim();
+  const symbol = String($('#tokenSymbol')?.value || '').trim().toUpperCase();
+  return {
+    token: [name, symbol && `$${symbol}`].filter(Boolean).join(' ') || '—',
+    pool: [`${Number($('#liquidityBudgetSol')?.value || 0)} SOL`, text('#launchMoreSummary').split('·')[0].trim()].filter(Boolean).join(' · '),
+    pairs: text('#classicSummary') || '—',
+    address: text('#vanitySummary').replace(' · recommended', '') || '—',
+    airdrop: text('#airdropSummary') || 'Off',
+    return: text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge') || '—',
+    report: text('#reportSummary') || 'Draft',
+  };
+}
+
+function renderPlanSlides() {
+  const track = $('#planTrack');
+  if (!track) return;
+  const current = PLAN_SLIDES.includes(state.planSlide) ? state.planSlide : 'token';
+  const index = PLAN_SLIDES.indexOf(current);
+  const values = planSlideValues();
+  track.style.transform = `translateX(-${index * 100}%)`;
+  $$('#planStrip [data-plan-tab]').forEach((tab) => {
+    const selected = tab.dataset.planTab === current;
+    tab.classList.toggle('is-selected', selected);
+    tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+    tab.tabIndex = selected ? 0 : -1;
+    const value = tab.querySelector('[data-plan-value]');
+    if (value && value.textContent !== values[tab.dataset.planTab]) value.textContent = values[tab.dataset.planTab] || '';
+  });
+  let active = null;
+  $$('#planTrack > [data-plan-slide]').forEach((slide) => {
+    const on = slide.dataset.planSlide === current;
+    slide.toggleAttribute('inert', !on);
+    if (on) active = slide;
+  });
+  // The frame is as tall as the slide in view, so nothing scrolls and nothing leaves a gap.
+  const frame = $('#planSlides');
+  if (frame && active) {
+    frame.style.height = `${active.offsetHeight}px`;
+    frame.scrollTop = 0;
+    frame.scrollLeft = 0;
+    if (!frame.dataset.pinned) {
+      // Focus moving into a slide must slide the frame, never scroll it.
+      frame.dataset.pinned = '1';
+      frame.addEventListener('scroll', () => { frame.scrollTop = 0; frame.scrollLeft = 0; });
+    }
+    if (!frame.dataset.watching && window.ResizeObserver) {
+      frame.dataset.watching = '1';
+      new ResizeObserver(() => {
+        const live = $(`#planTrack > [data-plan-slide="${state.planSlide || 'token'}"]`);
+        if (live) frame.style.height = `${live.offsetHeight}px`;
+      }).observe(track);
+    }
+  }
+}
+
+function setPlanSlide(id) {
+  if (!PLAN_SLIDES.includes(id)) return;
+  state.planSlide = id;
+  renderPlanSlides();
+}
+
+function stepPlanSlide(step) {
+  const index = PLAN_SLIDES.indexOf(state.planSlide || 'token');
+  const next = Math.min(PLAN_SLIDES.length - 1, Math.max(0, index + step));
+  if (next !== index) setPlanSlide(PLAN_SLIDES[next]);
 }
 
 // One press does what the Next card says: open the row that needs doing, or,

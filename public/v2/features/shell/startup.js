@@ -86,6 +86,12 @@ function bindEvents() {
 
     const tagName = String(event.target.tagName || '').toLowerCase();
     const editing = ['input', 'textarea', 'select'].includes(tagName) || event.target.isContentEditable;
+    if (!editing && !event.altKey && !event.metaKey && !event.ctrlKey && ['ArrowLeft', 'ArrowRight'].includes(event.key)
+      && event.target.closest?.('#planSlides')) {
+      event.preventDefault();
+      stepPlanSlide(event.key === 'ArrowRight' ? 1 : -1);
+      return;
+    }
     if (!editing && event.altKey && !event.metaKey && !event.ctrlKey && /^Digit[1-5]$/.test(event.code)) {
       const index = Number(event.code.slice(-1)) - 1;
       const workspace = launchWorkspaces[index];

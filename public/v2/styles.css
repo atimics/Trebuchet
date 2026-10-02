@@ -17425,3 +17425,30 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 .launch-step-guide p:empty, .classic-task p:empty { display: none; }
 .grinder-note:empty, .grinder-row-main small:empty { display: none; }
 .nft-panel-body:empty, .lean-lead:empty, .pool-support-intro:empty { display: none; }
+
+/* Plan slides: one slide at a time in a fixed frame. No collapsing, no scrolling:
+   the strip names every slide with its value, and the frame slides sideways. */
+.plan-strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid var(--line-strong); background: var(--panel); }
+.plan-strip [data-plan-tab] {
+  display: grid; gap: 2px; align-content: center; min-width: 0; min-height: 48px; padding: 6px 10px;
+  border: 0; border-right: 1px solid var(--line); border-bottom: 2px solid transparent; border-radius: 0;
+  background: transparent; color: var(--muted); text-align: left; cursor: pointer;
+}
+.plan-strip [data-plan-tab]:last-child { border-right: 0; }
+.plan-strip [data-plan-tab] strong { color: var(--ink); font-size: 12px; }
+.plan-strip [data-plan-tab] small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.plan-strip [data-plan-tab]:hover { background: color-mix(in srgb, var(--panel-strong) 70%, transparent); }
+.plan-strip [data-plan-tab]:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--green); }
+.plan-strip [data-plan-tab].is-selected { border-bottom-color: var(--green); background: var(--panel-strong); }
+.plan-strip [data-plan-tab].is-selected small { color: var(--ink); }
+.plan-slides { overflow: hidden; transition: height 180ms ease; }
+.plan-track { display: flex; align-items: flex-start; transition: transform 200ms ease; }
+.plan-slide { flex: 0 0 100%; min-width: 0; display: grid; gap: 12px; padding: 14px 2px 4px; }
+.plan-slide[inert] { visibility: hidden; transition: visibility 0s 200ms; }
+.plan-slide > .config-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (prefers-reduced-motion: reduce) { .plan-track, .plan-slides { transition: none; } }
+
+/* A pool's settings take the whole Pairs slide, so settings never nest under a row. */
+.supply-editor:has(.supply-settings) :is(.supply-bar, .supply-group-head, .supply-add, .supply-total, .pair-arbitrage-warning) { display: none; }
+.supply-editor:has(.supply-settings) .supply-list:not(:has(.supply-settings)) { display: none; }
+.supply-list:has(> .supply-settings) > .supply-row:not(.is-open) { display: none; }

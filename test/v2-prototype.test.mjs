@@ -2216,7 +2216,8 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="airdropAutoFit"/);
   assert.match(html, /id="airdropBudgetPanel"/);
   assert.match(html, /id="reportPreview"/);
-  assert.match(html, /Supply and pools/);
+  assert.match(html, /data-plan-tab="pairs"/);
+  assert.doesNotMatch(html, /id="launchMoreOptions"/, 'Plan options are slides, not nested drawers');
   assert.match(html, /id="supplyEditor"/);
   assert.doesNotMatch(html, /Classic parity controls/);
   assert.match(html, /class="launch-toolbar"/);
@@ -2884,9 +2885,8 @@ test('v2 launch is one flow with no separate guided mode', () => {
 });
 
 test('v2 shows where assets go and lets funding wallets share held-back tokens', () => {
-  // Visible on Token & pools, outside More options.
-  const moreStart = html.indexOf('id="launchMoreOptions"');
-  assert.ok(html.indexOf('id="returnWalletCard"') < moreStart, 'Where assets go is folded away');
+  // Its own slide on Token & pools: never folded away.
+  assert.match(html, /data-plan-slide="return"[\s\S]*id="returnWalletCard"/);
   assert.match(js, /function assetDestinationsHtml\(\)/);
   assert.match(js, /Where assets go/);
   // Funders share by SOL sent, through the existing airdrop rows.
@@ -3243,7 +3243,7 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(combined, /Manual ladder bands/);
   assert.match(combined, /Pool topology map/);
   assert.match(combined, /Launch position tree/);
-  assert.match(combined, /Launch report export/);
+  assert.match(combined, /data-plan-slide="report"/);
   assert.match(combined, /Launch completion/);
   assert.match(combined, /Report, airdrop, and proof/);
   assert.match(combined, /Proof review/);
@@ -6874,12 +6874,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=106/);
+  assert.match(html, /styles\.css\?v=107/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=200/);
-  assert.doesNotMatch(html, /app\.js\?v=200" type="module"/);
+  assert.match(html, /app\.js\?v=201/);
+  assert.doesNotMatch(html, /app\.js\?v=201" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');

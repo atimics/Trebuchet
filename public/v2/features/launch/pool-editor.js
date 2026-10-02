@@ -298,7 +298,7 @@ function renderSupplyEditor() {
       ? `<input class="supply-mint" data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(row.poolId)}" data-supply-key="${escapeHtml(row.key)}:mint" value="${escapeHtml(row.mint || '')}" placeholder="Paste token mint" autocomplete="off" spellcheck="false">`
       : `<small>${escapeHtml(row.detail)}</small>`;
     return `
-      <li class="supply-row">
+      <li class="supply-row${row.kind === 'pool' && state.supplyOpenRow === row.key ? ' is-open' : ''}">
         <i class="supply-swatch" style="background:${row.color}"></i>
         <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
         <span class="supply-amount" data-supply-amount="${escapeHtml(row.key)}">${compactAmount(supply * row.percent / 100)}</span>

@@ -128,7 +128,7 @@ function vanityEstimateSummary(prefix, suffix) {
   if (!estimate.targetLength) {
     return {
       label: 'Nothing to grind',
-      detail: 'Type a start or an end, or launch with a random address.',
+      detail: '',
       className: '',
     };
   }
@@ -163,7 +163,7 @@ function vanityAvailabilityMeta() {
     };
   }
   if (state.apiStatus === 'connected') {
-    return { label: 'Ready to grind', detail: 'Saved addresses stay here for later launches.', className: '', icon: 'fa-wand-magic-sparkles' };
+    return { label: 'Ready to grind', detail: '', className: '', icon: 'fa-wand-magic-sparkles' };
   }
   return { label: 'Desktop app only', detail: 'Open the Trebuchet desktop app to grind.', className: 'warn', icon: 'fa-eye' };
 }

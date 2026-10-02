@@ -188,6 +188,12 @@ function handleClick(event) {
     return;
   }
 
+  const planTab = event.target.closest('[data-plan-tab]');
+  if (planTab) {
+    setPlanSlide(planTab.dataset.planTab);
+    return;
+  }
+
   const workspaceControl = event.target.closest('button[data-launch-workspace]');
   if (workspaceControl) {
     setLaunchWorkspace(workspaceControl.dataset.launchWorkspace, {
