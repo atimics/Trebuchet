@@ -13,20 +13,32 @@ function amount(value) {
   return value != null && value !== '' && Number.isFinite(number) && number >= 0 ? number : null;
 }
 
+// A hub token completes its route through SOL directly, or through one of these
+// tokens, which the swap layer then hops through (SOL -> USDC -> hub).
+const BRIDGE_SYMBOLS = ['USDC', 'USDT', 'USD1', 'XLRT'];
+export const BRIDGES = DEFAULT_FLYWHEEL_HUBS.filter((hub) => BRIDGE_SYMBOLS.includes(hub.symbol))
+  .sort((a, b) => BRIDGE_SYMBOLS.indexOf(a.symbol) - BRIDGE_SYMBOLS.indexOf(b.symbol));
+const QUOTES = [{ mint: HUB_SOL_MINT, symbol: 'SOL' }, ...BRIDGES];
+
+function pairedWith(mint, pool, quote) {
+  return mint !== quote && validAddress(mint) && validAddress(pool?.address)
+    && ((pool.baseMint === mint && pool.quoteMint === quote) || (pool.quoteMint === mint && pool.baseMint === quote));
+}
+
 function directSolPool(mint, pool) {
   return mint !== HUB_SOL_MINT && validAddress(mint) && validAddress(pool?.address)
     && ((pool.baseMint === mint && pool.quoteMint === HUB_SOL_MINT)
       || (pool.quoteMint === mint && pool.baseMint === HUB_SOL_MINT));
 }
 
-function rankPools(mint, pools) {
-  return pools.filter((pool) => directSolPool(mint, pool))
+function rankPools(mint, pools, quote = HUB_SOL_MINT) {
+  return pools.filter((pool) => (quote === HUB_SOL_MINT ? directSolPool(mint, pool) : pairedWith(mint, pool, quote)))
     .sort((a, b) => (b.liquidityUsd || 0) - (a.liquidityUsd || 0)
       || (b.volume24hUsd || 0) - (a.volume24hUsd || 0)
       || a.address.localeCompare(b.address));
 }
 
-export function parseDexSolPools(mint, payload) {
+export function parseDexSolPools(mint, payload, quote = HUB_SOL_MINT) {
   return rankPools(mint, (Array.isArray(payload) ? payload : []).filter((pair) => pair?.chainId === 'solana').map((pair) => {
     const token = pair.baseToken?.address === mint ? pair.baseToken : pair.quoteToken;
     return {
@@ -35,10 +47,10 @@ export function parseDexSolPools(mint, payload) {
       liquidityUsd: amount(pair.liquidity?.usd), volume24hUsd: amount(pair.volume?.h24),
       name: String(token?.name || '').slice(0, 120), symbol: String(token?.symbol || '').slice(0, 24),
     };
-  }));
+  }), quote);
 }
 
-export function parseGeckoSolPools(mint, payload) {
+export function parseGeckoSolPools(mint, payload, quote = HUB_SOL_MINT) {
   const token = payload?.included?.find((entry) => entry?.id === `solana_${mint}`)?.attributes;
   const address = (relationship) => {
     const id = relationship?.data?.id;
@@ -50,7 +62,7 @@ export function parseGeckoSolPools(mint, payload) {
     dex: pool?.relationships?.dex?.data?.id || 'DEX', source: 'GeckoTerminal',
     liquidityUsd: amount(pool?.attributes?.reserve_in_usd), volume24hUsd: amount(pool?.attributes?.volume_usd?.h24),
     name: String(token?.name || '').slice(0, 120), symbol: String(token?.symbol || '').slice(0, 24),
-  })));
+  })), quote);
 }
 
 // Pool account layouts: where each program stores its two mints and vaults.
@@ -73,7 +85,7 @@ export function heliusUrl(url) {
 
 // Asks the Helius RPC for the SOL pool straight from the chain, so a pool that
 // the public indexers have not listed yet (or never will) is still found.
-export async function findSolPoolsOnChain(mint, rpcUrl, { fetchImpl = globalThis.fetch } = {}) {
+export async function findSolPoolsOnChain(mint, rpcUrl, { fetchImpl = globalThis.fetch, quote = HUB_SOL_MINT } = {}) {
   const rpc = async (method, params) => {
     const response = await fetchImpl(rpcUrl, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -89,7 +101,7 @@ export async function findSolPoolsOnChain(mint, rpcUrl, { fetchImpl = globalThis
     const length = Math.abs(layout.vaultA - layout.vaultB) + 32;
     const pools = [];
     for (const solFirst of [false, true]) {
-      const [first, second] = solFirst ? [HUB_SOL_MINT, mint] : [mint, HUB_SOL_MINT];
+      const [first, second] = solFirst ? [quote, mint] : [mint, quote];
       const accounts = await rpc('getProgramAccounts', [layout.program, {
         encoding: 'base64', dataSlice: { offset: lo, length },
         filters: [{ dataSize: layout.size },
@@ -98,7 +110,7 @@ export async function findSolPoolsOnChain(mint, rpcUrl, { fetchImpl = globalThis
       for (const account of accounts || []) {
         const data = Buffer.from(account.account.data[0], 'base64');
         const at = (offset) => new PublicKey(data.subarray(offset - lo, offset - lo + 32)).toBase58();
-        pools.push({ address: account.pubkey, baseMint: mint, quoteMint: HUB_SOL_MINT, dex: layout.dex,
+        pools.push({ address: account.pubkey, baseMint: mint, quoteMint: quote, dex: layout.dex,
           source: 'Helius', solVault: at(solFirst ? layout.vaultA : layout.vaultB), solReserve: 0,
           liquidityUsd: null, volume24hUsd: null, name: '', symbol: '' });
       }
@@ -109,14 +121,18 @@ export async function findSolPoolsOnChain(mint, rpcUrl, { fetchImpl = globalThis
   const settled = await Promise.allSettled(POOL_LAYOUTS.map(search));
   const found = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
   if (!found.length && settled.every((result) => result.status === 'rejected')) throw settled[0].reason;
-  // SOL in each pool's vault, read 100 vaults per call (the token amount sits at byte 64).
+  let decimals = 9;
+  if (quote !== HUB_SOL_MINT && found.length) {
+    try { decimals = Number((await rpc('getTokenSupply', [quote]))?.value?.decimals ?? 6); } catch { decimals = 6; }
+  }
+  // Quote tokens in each pool's vault, read 100 vaults per call (the token amount sits at byte 64).
   for (let i = 0; i < found.length; i += 100) {
     const batch = found.slice(i, i + 100);
     try {
       const result = await rpc('getMultipleAccounts', [batch.map((pool) => pool.solVault), { encoding: 'base64', dataSlice: { offset: 64, length: 8 } }]);
       batch.forEach((pool, index) => {
         const raw = result?.value?.[index]?.data?.[0];
-        if (raw) pool.solReserve = Number(Buffer.from(raw, 'base64').readBigUInt64LE(0)) / 1e9;
+        if (raw) pool.solReserve = Number(Buffer.from(raw, 'base64').readBigUInt64LE(0)) / 10 ** decimals;
       });
     } catch { /* pools without a reading rank last */ }
   }
@@ -143,6 +159,8 @@ export function listFlywheelHubs(snapshot = {}) {
 
 // Each selection refreshes the index. Pool presence is a discovery hint;
 // quote-token checks and the launch estimate establish execution readiness.
+// A pool with SOL wins. Without one, a pool with USDC, USDT, USD1 or XLRT
+// completes the route through that token.
 export async function resolveFlywheelHub(value, { fetchImpl = globalThis.fetch, rpcUrl = null } = {}) {
   const mint = String(value || '').trim();
   if (!validAddress(mint)) throw new Error('Enter a valid Solana token CA.');
@@ -153,29 +171,38 @@ export async function resolveFlywheelHub(value, { fetchImpl = globalThis.fetch, 
   ];
   let lookupFailed = false;
   const helius = heliusUrl(rpcUrl);
-  const finish = (solPool) => {
+  const finish = (pool, quote) => {
     const known = DEFAULT_FLYWHEEL_HUBS.find((hub) => hub.mint === mint);
-    return { mint, name: known?.name || solPool.name || mint, symbol: known?.symbol || solPool.symbol || 'HUB',
-      solPool, checkedAt: new Date().toISOString(), network: 'mainnet-beta' };
+    const via = quote.mint === HUB_SOL_MINT ? null : { mint: quote.mint, symbol: quote.symbol };
+    return { mint, name: known?.name || pool.name || mint, symbol: known?.symbol || pool.symbol || 'HUB',
+      solPool: pool, via, checkedAt: new Date().toISOString(), network: 'mainnet-beta' };
   };
   // The chain is the best source: Helius first, the public indexers as backup.
+  const quotes = QUOTES.filter((quote) => quote.mint !== mint);
   if (helius) {
-    try {
-      const pool = (await findSolPoolsOnChain(mint, helius, { fetchImpl }))[0];
-      if (pool) return finish(pool);
-    } catch { lookupFailed = true; }
+    for (const quote of quotes) {
+      try {
+        const pool = (await findSolPoolsOnChain(mint, helius, { fetchImpl, quote: quote.mint }))[0];
+        if (pool) return finish(pool, quote);
+      } catch { lookupFailed = true; }
+    }
   }
+  const payloads = [];
   for (const [url, parse] of sources) {
     try {
       const response = await fetchImpl(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(6500) });
       if (response.status === 404) continue;
       if (!response.ok) throw new Error(`Pool index returned HTTP ${response.status}`);
-      const solPool = parse(mint, await response.json())[0];
-      if (!solPool) continue;
-      return finish(solPool);
+      payloads.push([parse, await response.json()]);
     } catch { lookupFailed = true; }
+  }
+  for (const quote of quotes) {
+    for (const [parse, payload] of payloads) {
+      const pool = parse(mint, payload, quote.mint)[0];
+      if (pool) return finish(pool, quote);
+    }
   }
   throw new Error(lookupFailed
     ? 'Pool lookup is incomplete. Try again shortly.'
-    : 'A direct SOL pool is required. Try another token CA or refresh after its pool is indexed.');
+    : 'No pool with SOL, USDC, USDT, USD1 or XLRT was found. Try another token CA or refresh after its pool is indexed.');
 }

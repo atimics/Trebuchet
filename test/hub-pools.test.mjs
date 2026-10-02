@@ -74,7 +74,7 @@ test('CA lookup uses GeckoTerminal when DexScreener has no direct SOL pair', asy
 test('bad CA, empty results, and index failures remain distinct and retryable', async () => {
   await assert.rejects(resolveFlywheelHub('wrong', { fetchImpl: () => assert.fail('invalid mint fetched') }), /valid Solana/);
   await assert.rejects(resolveFlywheelHub(SOL), /hub token/);
-  await assert.rejects(resolveFlywheelHub(MINT, { fetchImpl: async () => response([]) }), /direct SOL pool is required/);
+  await assert.rejects(resolveFlywheelHub(MINT, { fetchImpl: async () => response([]) }), /No pool with SOL, USDC/);
   await assert.rejects(resolveFlywheelHub(MINT, { fetchImpl: async () => response({}, 429) }), /incomplete/);
   const result = await resolveFlywheelHub(MINT, { fetchImpl: async (url) => url.includes('dexscreener')
     ? response({}, 429) : response({ data: [gecko()] }) });
@@ -152,5 +152,21 @@ test('a Helius RPC finds the SOL pool on chain before the public indexers are as
   assert.equal(hub.solPool.solReserve, 12.5);
   assert.ok(calls.every((url) => url.includes('helius-rpc.com')));
   // A non-Helius RPC is never asked to scan the program.
-  await assert.rejects(resolveFlywheelHub(MINT, { fetchImpl: async () => response([], 404), rpcUrl: 'https://api.mainnet-beta.solana.com' }), /direct SOL pool/);
+  await assert.rejects(resolveFlywheelHub(MINT, { fetchImpl: async () => response([], 404), rpcUrl: 'https://api.mainnet-beta.solana.com' }), /No pool with SOL/);
+});
+
+test('without a SOL pool the hub routes through USDC, then XLRT, and SOL still wins', async () => {
+  const USDC = defaults.find((hub) => hub.symbol === 'USDC').mint;
+  const XLRT = defaults.find((hub) => hub.symbol === 'XLRT').mint;
+  const feed = (...pairs) => async (url) => response(url.includes('dexscreener') ? pairs : { data: [] });
+  const viaUsdc = await resolveFlywheelHub(MINT, { fetchImpl: feed(dex(MINT, USDC, 10, POOL2)) });
+  assert.equal(viaUsdc.solPool.address, POOL2);
+  assert.deepEqual(viaUsdc.via, { mint: USDC, symbol: 'USDC' });
+  const viaXlrt = await resolveFlywheelHub(MINT, { fetchImpl: feed(dex(XLRT, MINT, 10, POOL2)) });
+  assert.equal(viaXlrt.via.symbol, 'XLRT');
+  const both = await resolveFlywheelHub(MINT, { fetchImpl: feed(dex(MINT, USDC, 999, POOL2), dex(MINT, SOL, 1, POOL)) });
+  assert.equal(both.via, null);
+  assert.equal(both.solPool.address, POOL);
+  // A token is never routed through itself.
+  await assert.rejects(resolveFlywheelHub(USDC, { fetchImpl: feed(dex(USDC, USDC)) }), /No pool/);
 });

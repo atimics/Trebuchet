@@ -392,8 +392,8 @@ function renderHubPicker() {
   const result = hubPicker.result;
   const pool = result?.solPool;
   host.innerHTML = `
-    <div class="hub-picker-heading"><strong>Choose HUB / SOL</strong><button type="button" class="pill-button" data-action="close-hub-picker" aria-label="Close hub picker">Close</button></div>
-    <p>Add a pair with a hub token. Its existing SOL pool completes the route.</p>
+    <div class="hub-picker-heading"><strong>Choose a hub token</strong><button type="button" class="pill-button" data-action="close-hub-picker" aria-label="Close hub picker">Close</button></div>
+    <p>Add a pair with a hub token. Its existing pool with SOL, USDC, USDT, USD1 or XLRT completes the route.</p>
     <div class="hub-picker-scroll" aria-label="Hub tokens">
       ${['default', 'discovery'].map((source) => `<p class="hub-picker-group">${source === 'default' ? 'Defaults' : 'From Discovery · SOL pools'}</p>
         ${rows.filter((hub) => hub.source === source).map((hub) => `<button class="hub-picker-token" type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}">
@@ -402,12 +402,12 @@ function renderHubPicker() {
         ${source === 'discovery' && !rows.some((hub) => hub.source === source) ? '<small>Tokens with a SOL pool appear here after Discovery finds them.</small>' : ''}`).join('')}
     </div>
     <label class="hub-picker-ca" for="hubTokenCa">Token CA<input id="hubTokenCa" value="${escapeHtml(hubPicker.mint)}" placeholder="Paste any Solana token CA" autocomplete="off" spellcheck="false"></label>
-    <button class="pill-button" type="button" data-action="find-hub-pool">Find SOL pool</button>
-    <p class="hub-picker-status" role="status">${escapeHtml(hubPicker.loading ? 'Finding a SOL pool…' : hubPicker.error)}</p>
-    ${result ? `<div class="hub-picker-result"><strong>${escapeHtml(result.name)} · ${escapeHtml(result.symbol)} / SOL</strong>
+    <button class="pill-button" type="button" data-action="find-hub-pool">Find pool</button>
+    <p class="hub-picker-status" role="status">${escapeHtml(hubPicker.loading ? 'Finding a pool…' : hubPicker.error)}</p>
+    ${result ? `<div class="hub-picker-result"><strong>${escapeHtml(result.name)} · ${escapeHtml(result.symbol)} / ${escapeHtml(result.via?.symbol || 'SOL')}</strong>
       <small>Token CA</small><code>${escapeHtml(result.mint)}</code>
-      <small>${escapeHtml(pool.dex)} · existing SOL pool</small><code>${escapeHtml(pool.address)}</code>
-      <small>Found through ${escapeHtml(pool.source)}. Pair checks run after selection.</small>
+      <small>${escapeHtml(pool.dex)} · existing ${escapeHtml(result.via?.symbol || 'SOL')} pool</small><code>${escapeHtml(pool.address)}</code>
+      <small>${result.via ? `No SOL pool: buys route SOL → ${escapeHtml(result.via.symbol)} → ${escapeHtml(result.symbol)}. ` : ''}Found through ${escapeHtml(pool.source)}. Pair checks run after selection.</small>
       <button class="pill-button primary" type="button" data-action="use-hub-token">Use ${escapeHtml(result.symbol)}</button></div>` : ''}`;
 }
 
@@ -449,14 +449,14 @@ async function findHubPool(mint) {
   renderHubPicker();
   try {
     if (!isProbablySolanaAddress(query)) throw new Error('Enter a valid Solana token CA.');
-    if (!state.apiClient?.resolveFlywheelHub) throw new Error('Connect to the Trebuchet app to find a SOL pool.');
+    if (!state.apiClient?.resolveFlywheelHub) throw new Error('Connect to the Trebuchet app to find a pool.');
     const hub = await state.apiClient.resolveFlywheelHub(query);
     if (!hubPicker.open || requestId !== hubPicker.requestId) return;
-    if (hub.mint !== query || !hub.solPool?.address) throw new Error('Refresh the SOL pool lookup.');
+    if (hub.mint !== query || !hub.solPool?.address) throw new Error('Refresh the pool lookup.');
     hubPicker.result = hub;
   } catch (error) {
     if (!hubPicker.open || requestId !== hubPicker.requestId) return;
-    hubPicker.error = error.message || 'Try the SOL pool lookup again.';
+    hubPicker.error = error.message || 'Try the pool lookup again.';
   } finally {
     if (hubPicker.open && requestId === hubPicker.requestId) {
       hubPicker.loading = false;
