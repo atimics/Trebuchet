@@ -126,3 +126,69 @@ test('late lookup results and closed pickers cannot select a stale token', async
   await third;
   assert.equal(sandbox.getPicker().result, null);
 });
+
+// ---- the failure messages say what actually failed ------------------------------------------------
+const quiet = { retryDelayMs: 0, log: () => {} };
+const limited = (retryAfter) => ({ ok: false, status: 429, headers: { get: (name) => (name === 'retry-after' ? retryAfter : null) }, json: async () => ({}) });
+const isDex = (url) => url.includes('dexscreener');
+
+test('a rate-limited source is named, the other source\'s answer is kept, and the user is told to wait', async () => {
+  const error = await resolveFlywheelHub(MINT, { ...quiet, fetchImpl: async (url) => (isDex(url) ? response([]) : limited(null)) })
+    .then(() => null, (e) => e);
+  assert.match(error.message, /^Pool lookup is incomplete: GeckoTerminal is rate-limiting requests\./);
+  assert.match(error.message, /DexScreener found no direct SOL pool\./);
+  assert.match(error.message, /Wait a minute and try again\./);
+  assert.equal(error.code, 'HUB_LOOKUP_INCOMPLETE');
+  assert.equal(error.retryable, true);
+  assert.deepEqual(error.failures.map((f) => [f.source, f.kind]), [['GeckoTerminal', 'rate-limited']]);
+});
+
+test('a timeout, a server error and an unreadable reply each get their own words', async () => {
+  const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  const a = await resolveFlywheelHub(MINT, { ...quiet, fetchImpl: async (url) => { if (isDex(url)) throw timeout; return response({}, 404); } }).then(() => null, (e) => e);
+  assert.match(a.message, /DexScreener did not answer in time/);
+  assert.match(a.message, /Try again shortly\./);
+  const b = await resolveFlywheelHub(MINT, { ...quiet, fetchImpl: async (url) => (isDex(url) ? { ok: false, status: 503, json: async () => ({}) } : response([])) }).then(() => null, (e) => e);
+  assert.match(b.message, /DexScreener is having a problem/);
+  const c = await resolveFlywheelHub(MINT, { ...quiet, fetchImpl: async (url) => (isDex(url) ? { ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <'); } } : response({}, 404)) }).then(() => null, (e) => e);
+  assert.match(c.message, /DexScreener sent a reply that could not be read/);
+  const d = await resolveFlywheelHub(MINT, { ...quiet, fetchImpl: async () => { throw new TypeError('fetch failed'); } }).then(() => null, (e) => e);
+  assert.match(d.message, /DexScreener could not be reached; GeckoTerminal could not be reached/);
+  assert.equal(d.failures.length, 2);
+});
+
+test('both sources having no direct SOL pool is still the plain "pool required" answer, not "incomplete"', async () => {
+  const error = await resolveFlywheelHub(MINT, { ...quiet, fetchImpl: async (url) => (isDex(url) ? response([]) : response({}, 404)) }).then(() => null, (e) => e);
+  assert.match(error.message, /^A direct SOL pool is required/);
+  assert.equal(error.code, 'HUB_NO_SOL_POOL');
+});
+
+test('a rate limit that clears on the first retry still resolves, and costs one extra request', async () => {
+  let dexCalls = 0;
+  const result = await resolveFlywheelHub(MINT, { ...quiet, fetchImpl: async (url) => {
+    if (!isDex(url)) return response({}, 404);
+    dexCalls += 1;
+    return dexCalls === 1 ? limited('0') : response([dex()]);
+  } });
+  assert.equal(dexCalls, 2);
+  assert.equal(result.solPool.address, POOL);
+});
+
+test('a long Retry-After is reported, not waited out, and each failure is logged without secrets', async () => {
+  const lines = [];
+  let dexCalls = 0;
+  const error = await resolveFlywheelHub(MINT, { retryDelayMs: 0, log: (line) => lines.push(line), fetchImpl: async (url) => {
+    if (isDex(url)) { dexCalls += 1; return limited('30'); }
+    return response({}, 404);
+  } }).then(() => null, (e) => e);
+  assert.equal(dexCalls, 1, '30 seconds is too long to wait inside a click, so it does not retry');
+  assert.match(error.message, /DexScreener is rate-limiting requests/);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^hub pool lookup: DexScreener failed \(rate-limited: HTTP 429\)$/);
+});
+
+test('a source that fails does not hide a pool the other source finds', async () => {
+  const result = await resolveFlywheelHub(MINT, { ...quiet, fetchImpl: async (url) => { if (isDex(url)) throw new TypeError('fetch failed'); return response({ data: [gecko()] }); } });
+  assert.equal(result.solPool.address, POOL);
+  assert.equal(result.solPool.source, 'GeckoTerminal');
+});
