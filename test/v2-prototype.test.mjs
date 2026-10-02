@@ -3511,6 +3511,120 @@ test('v2 slice parser accepts chat-style percentage ladders', () => {
   assert.equal(normalizedSliceText('48% - 1% - 1%'), '96,2,2');
 });
 
+function loadPoolControlHarness() {
+  const start = js.indexOf('function parseNumericInput');
+  const end = js.indexOf('\nfunction classicSimpleLadderConfig', start);
+  assert.ok(start >= 0 && end > start, 'pool control helpers should be extractable');
+  const sandbox = { console, CLASSIC_LADDER_MAX_BANDS: 20 };
+  vm.runInNewContext(
+    [
+      js.slice(start, end),
+      'globalThis.describeSliceInput = describeSliceInput;',
+      'globalThis.checkPoolNumberField = checkPoolNumberField;',
+      'globalThis.analyzeManualLadder = analyzeManualLadder;',
+      'globalThis.parseManualLadderBands = parseManualLadderBands;',
+    ].join('\n'),
+    sandbox,
+    { filename: 'public/v2/app.js pool control harness' },
+  );
+  return sandbox;
+}
+
+test('v2 position slices say what the text means in plain words', () => {
+  const { describeSliceInput } = loadPoolControlHarness();
+
+  assert.equal(describeSliceInput('100').text, '1 position, all of this pool.');
+  assert.equal(describeSliceInput('100').tone, 'ok');
+  assert.equal(describeSliceInput('').text, 'Empty, so one position (100%).');
+  assert.equal(describeSliceInput('50,50').text, '2 positions: 50% + 50%.');
+  const scaled = describeSliceInput('30,30');
+  assert.equal(scaled.tone, 'warn');
+  assert.match(scaled.text, /2 positions: 50% \+ 50%\. Your numbers total 60, so they are scaled to 100%\./);
+  assert.match(describeSliceInput('1').text, /total 1, so they are scaled to 100%/);
+  const junk = describeSliceInput('50,abc');
+  assert.equal(junk.invalid, true);
+  assert.deepEqual([...junk.rejected], ['abc']);
+  assert.match(junk.text, /^Ignored: abc\./);
+  assert.match(describeSliceInput('33.3,33.3,33.3').text, /3 positions: 33\.33% \+ 33\.33% \+ 33\.34%\./);
+  assert.equal(describeSliceInput('0').invalid, true);
+  // The summary and the plan agree on the split.
+  const { parseSliceShares } = loadSliceParserHarness();
+  for (const text of ['100', '30,30', '48 - 1 - 1', '50,abc', '33.3,33.3,33.3', '']) {
+    assert.deepEqual([...describeSliceInput(text).slices], [...parseSliceShares(text)]);
+  }
+});
+
+test('v2 pool number fields report what they will do with out-of-range input', () => {
+  const { checkPoolNumberField } = loadPoolControlHarness();
+
+  assert.deepEqual({ ...checkPoolNumberField('premium', '25') }, { value: 25, issue: null });
+  assert.deepEqual({ ...checkPoolNumberField('premium', '12.5') }, { value: 12.5, issue: null });
+  assert.equal(checkPoolNumberField('premium', '99999').value, 500);
+  assert.match(checkPoolNumberField('premium', '99999').issue, /most allowed is 500%/);
+  assert.equal(checkPoolNumberField('premium', '-5').value, 0);
+  assert.match(checkPoolNumberField('premium', 'abc').issue, /not a number/);
+  assert.equal(checkPoolNumberField('premium', 'abc').value, 25);
+  // Blank premium is not silently zero (zero lets bots drain SOL buyers).
+  assert.equal(checkPoolNumberField('premium', '').value, 25);
+  assert.match(checkPoolNumberField('premium', '').issue, /Enter a number from 0 to 500/);
+
+  assert.deepEqual({ ...checkPoolNumberField('ladderBands', '') }, { value: 0, issue: null });
+  assert.equal(checkPoolNumberField('ladderBands', '99').value, 20);
+  assert.equal(checkPoolNumberField('ladderBands', '2.7').value, 2);
+  assert.match(checkPoolNumberField('ladderBands', '2.7').issue, /Whole numbers only/);
+  assert.equal(checkPoolNumberField('ladderBands', '-3').value, 0);
+  assert.equal(checkPoolNumberField('ladderBands', '7').issue, null);
+
+  assert.deepEqual({ ...checkPoolNumberField('supportSol', '') }, { value: 0, issue: null });
+  assert.equal(checkPoolNumberField('supportSol', '-1').value, 0);
+  assert.match(checkPoolNumberField('supportSol', 'abc').issue, /not a number/);
+  assert.deepEqual({ ...checkPoolNumberField('supportSol', '0.5') }, { value: 0.5, issue: null });
+});
+
+test('v2 custom ladder names the lines it cannot use and keeps its parsed bands', () => {
+  const { analyzeManualLadder, parseManualLadderBands } = loadPoolControlHarness();
+  const result = analyzeManualLadder('supply%, low, high\n# note\n10, 1.5, 3\n\nbad line\n5, 0.5, 2\n5, 3, 2');
+
+  assert.equal(result.bands.length, 1);
+  assert.deepEqual([...result.rejected.map((item) => item.line)], [5, 6, 7]);
+  assert.equal(result.rejected[0].text, 'bad line');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(parseManualLadderBands('10, 1.5, 3\nbad'))),
+    [{ supplyPercent: 10, lowerMultiplier: 1.5, upperMultiplier: 3 }],
+  );
+  assert.equal(analyzeManualLadder('').bands.length, 0);
+  assert.equal(analyzeManualLadder('').rejected.length, 0);
+});
+
+test('v2 pool advanced panel wires feedback, names, and slider keyboard use', () => {
+  const editor = read('public/v2/features/launch/pool-editor.js');
+  const startup = read('public/v2/features/shell/startup.js');
+  const funding = read('public/v2/features/launch/funding.js');
+
+  // Both panel variants (SOL pool and pair pool) carry the live messages.
+  assert.equal([...editor.matchAll(/, 'slices'\)\}/g)].length, 2);
+  assert.equal([...editor.matchAll(/, 'manual', true\)\}/g)].length, 2);
+  assert.match(editor, /aria-labelledby="\$\{base\}-label"/);
+  assert.match(editor, /aria-describedby=/);
+  assert.match(editor, /bands\.disabled = replaced/);
+  assert.match(editor, /commitPoolControl\(control\)/);
+  assert.match(startup, /commitPoolControl\(event\.target\)/);
+  // The fee tier slider: keyboard goes through the range, labels are a mouse shortcut.
+  assert.match(startup, /tabindex="-1"/);
+  assert.match(startup, /class="choice-readout"/);
+  assert.equal([...editor.matchAll(/data-choice="slider" data-choice-readout/g)].length, 2);
+  assert.match(funding, /Slices already add up to 100%/);
+  assert.match(css, /\.supply-feedback\.is-warn/);
+  assert.match(css, /\.choice-control\.has-many \.choice-ticks/);
+});
+
+test('v2 pool controls browser check is wired into npm scripts', () => {
+  assert.equal(packageJson.scripts['test:e2e:pool-controls'], 'node test/e2e/v2-pool-controls.mjs');
+  const script = read('test/e2e/v2-pool-controls.mjs');
+  assert.match(script, /TREBUCHET_CONFIG_DIR: configDir/);
+  assert.match(script, /listen\(0, '127\.0\.0\.1'/);
+});
+
 test('v2 manual prefund evidence is bound to the selected wallet', () => {
   const harness = loadManualPrefundHarness();
   const item = { mint: 'Quote111', rawAmount: '1000', amount: 1000, symbol: 'QUOTE', rows: [] };

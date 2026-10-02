@@ -517,14 +517,17 @@ function removeCustomPool(poolId) {
 }
 
 function normalizeAllSlices() {
+  const before = [$('#sliceShares').value, ...state.customPools.map((pool) => pool.sliceShares ?? '100')];
   $('#sliceShares').value = normalizedSliceText($('#sliceShares').value);
   state.customPools = state.customPools.map((pool) => ({
     ...pool,
     sliceShares: normalizedSliceText(pool.sliceShares || '100'),
   }));
+  const after = [$('#sliceShares').value, ...state.customPools.map((pool) => pool.sliceShares)];
+  const changed = after.some((value, index) => value !== before[index]);
   invalidateClassicOutputs();
   renderAll();
-  notify('Slice percentages rounded to 100%');
+  notify(changed ? 'Slice percentages rounded to 100%' : 'Slices already add up to 100%');
 }
 
 function setAirdropText(value) {
