@@ -21761,8 +21761,26 @@ function newCoin() {
   $('#tokenName')?.focus();
 }
 
-function openDraftForCreation(draftId) {
-  const entry = (state.savedLaunches || []).find((item) => item.id === draftId);
+// The page's saved-launch list and the coin list come from separate requests, so
+// the page can be missing a draft the coin list shows (the list request failed or
+// the page is older than the draft). Ask the server before calling it gone.
+async function savedDraftEntry(draftId) {
+  const known = (state.savedLaunches || []).find((item) => item.id === draftId);
+  if (known) return known;
+  try {
+    const payload = await state.apiClient?.listSavedLaunches?.();
+    const launches = Array.isArray(payload?.launches)
+      ? payload.launches.filter((entry) => entry && entry.id && entry.config)
+      : [];
+    if (launches.length) state.savedLaunches = launches;
+    return launches.find((item) => item.id === draftId) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function openDraftForCreation(draftId) {
+  const entry = await savedDraftEntry(draftId);
   if (!entry) {
     notify('That draft is no longer saved');
     refreshCoins().catch(() => null);
@@ -21787,7 +21805,7 @@ function openCoin(key) {
   const target = coinByKey(key);
   // A draft is created on its own page: its steps.
   if (target?.kind === 'draft') {
-    openDraftForCreation(target.draftId);
+    openDraftForCreation(target.draftId).catch((error) => notify(error?.message || 'Could not open that draft'));
     return;
   }
   state.coins = { ...state.coins, key, detail: null, detailError: null };
@@ -23809,9 +23827,14 @@ function applyBootState(boot) {
   state.vanityCandidates = Array.isArray(boot.vanity?.candidates)
     ? boot.vanity.candidates.filter((candidate) => candidate && candidate.publicKey && !candidate.decryptionFailed)
     : [];
-  state.savedLaunches = Array.isArray(boot.savedLaunches?.launches)
-    ? boot.savedLaunches.launches.filter((entry) => entry && entry.id && entry.config)
-    : [];
+  // A failed saved-launch request comes back as an empty list. Keep what we
+  // already had then: the coin list is a separate request and would still show
+  // the drafts, and clicking one would say it was no longer saved.
+  if (boot.savedLaunches?.available !== false || !state.savedLaunches?.length) {
+    state.savedLaunches = Array.isArray(boot.savedLaunches?.launches)
+      ? boot.savedLaunches.launches.filter((entry) => entry && entry.id && entry.config)
+      : [];
+  }
   state.flywheelPools = {
     meme: Array.isArray(boot.flywheelPools?.pools?.meme) ? boot.flywheelPools.pools.meme : [],
     reserve: Array.isArray(boot.flywheelPools?.pools?.reserve) ? boot.flywheelPools.pools.reserve : [],

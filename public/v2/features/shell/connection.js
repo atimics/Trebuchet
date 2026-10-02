@@ -276,9 +276,14 @@ function applyBootState(boot) {
   state.vanityCandidates = Array.isArray(boot.vanity?.candidates)
     ? boot.vanity.candidates.filter((candidate) => candidate && candidate.publicKey && !candidate.decryptionFailed)
     : [];
-  state.savedLaunches = Array.isArray(boot.savedLaunches?.launches)
-    ? boot.savedLaunches.launches.filter((entry) => entry && entry.id && entry.config)
-    : [];
+  // A failed saved-launch request comes back as an empty list. Keep what we
+  // already had then: the coin list is a separate request and would still show
+  // the drafts, and clicking one would say it was no longer saved.
+  if (boot.savedLaunches?.available !== false || !state.savedLaunches?.length) {
+    state.savedLaunches = Array.isArray(boot.savedLaunches?.launches)
+      ? boot.savedLaunches.launches.filter((entry) => entry && entry.id && entry.config)
+      : [];
+  }
   state.flywheelPools = {
     meme: Array.isArray(boot.flywheelPools?.pools?.meme) ? boot.flywheelPools.pools.meme : [],
     reserve: Array.isArray(boot.flywheelPools?.pools?.reserve) ? boot.flywheelPools.pools.reserve : [],
