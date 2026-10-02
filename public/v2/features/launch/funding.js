@@ -483,10 +483,20 @@ function useHubToken() {
   resolveCustomQuoteToken(poolId, { quiet: true }).catch(() => {});
 }
 
+// Every pair has its own id: its settings are looked up by it, so two pairs sharing
+// one would edit the same pair and show the same values.
+function nextCustomPoolId() {
+  let id;
+  do {
+    state.customPoolCounter += 1;
+    id = `custom-pool-${state.customPoolCounter}`;
+  } while (state.customPools.some((pool) => pool.id === id));
+  return id;
+}
+
 function addCustomPool(hub = null) {
-  state.customPoolCounter += 1;
   state.customPools.push({
-    id: `custom-pool-${state.customPoolCounter}`,
+    id: nextCustomPoolId(),
     quoteSymbol: hub?.symbol || 'QUOTE',
     quoteMint: hub?.mint || '',
     supplyPercent: 5,

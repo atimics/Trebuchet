@@ -17569,7 +17569,7 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 #view-wallet .wallet-module-heading { display: none; }
 .plan-preview.is-liquidity { grid-template-columns: minmax(0, 1fr); }
 .plan-preview.is-liquidity .preview-rows { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
-.plan-preview .preview-rows dd { white-space: nowrap; }
+
 .phase-tree-drawer { display: none; }
 #assetTable:not(:empty) { margin-top: 12px; }
 
@@ -17617,3 +17617,13 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 .quote-acquire-feed article small { display: none; }
 .funding-wallet-hint { grid-template-columns: minmax(0, 1fr) !important; }
 .funding-wallet-hint .operator-toolbar { flex-wrap: wrap; justify-content: flex-start; }
+
+/* Preview rows wrap long values (a full vanity address) instead of running under the rail. */
+.plan-preview, .plan-preview > * { min-width: 0; }
+.plan-preview .preview-rows > div { min-width: 0; }
+.plan-preview .preview-rows dt { flex: none; }
+.plan-preview .preview-rows dd { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+@container phase (max-width: 640px) {
+  .plan-preview, .plan-preview.is-liquidity { grid-template-columns: minmax(0, 1fr); }
+  .plan-preview.is-liquidity .preview-rows { grid-template-columns: minmax(0, 1fr); }
+}
