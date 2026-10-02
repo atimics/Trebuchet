@@ -1284,13 +1284,14 @@ function walletAccounts() {
         balance: Number(wallet.balanceSol || 0),
         role: wallet.source === 'imported-local'
           ? 'Imported local wallet'
-          : wallet.hasSecretKey ? 'Launch wallet' : 'Locked local wallet',
+          : wallet.hasSecretKey ? 'Launch wallet' : lockedRoleLabel(wallet),
         rarity,
         rarityGrade: vanityRarityGrade(rarity),
         hasSecretKey: wallet.hasSecretKey === true,
         hasMnemonic: wallet.hasMnemonic === true || typeof wallet.mnemonic === 'string',
         decryptionFailed: wallet.decryptionFailed === true,
         secretPinLocked: wallet.secretPinLocked === true,
+        secretState: wallet.secretState || null,
         qrCode: wallet.qrCode || null,
         createdAt: wallet.createdAt || null,
         source: wallet.source || 'local',
@@ -1298,6 +1299,17 @@ function walletAccounts() {
     });
   }
   return [];
+}
+
+function walletLockInfo(wallet) {
+  return window.TrebuchetV2RuntimeState?.walletSecretReason?.({ wallet, secretPin: state.secretPin })
+    || { state: null, label: '', detail: '', canUnlock: true, canReset: false };
+}
+
+function lockedRoleLabel(wallet) {
+  if (wallet?.secretState === 'missing') return 'Local wallet, key missing';
+  if (wallet?.secretState === 'wrong-key') return 'Local wallet, different PIN';
+  return 'Locked local wallet';
 }
 
 function account() {
@@ -1326,11 +1338,18 @@ function pendingRecoveryWallet(publicKey) {
 }
 
 function recoveryWalletState(wallet) {
-  if (wallet?.decryptionFailed) {
+  const reason = walletLockInfo(wallet);
+  if (reason.state === 'missing') {
+    return { label: 'Key missing', className: 'danger', detail: reason.detail };
+  }
+  if (reason.state === 'wrong-key') {
+    return { label: 'Different PIN', className: 'danger', detail: reason.detail };
+  }
+  if (wallet?.decryptionFailed && !(state.secretPin.locked || wallet?.secretPinLocked)) {
     return {
       label: 'Secret missing',
       className: 'danger',
-      detail: 'Local metadata exists, but Trebuchet cannot decrypt the saved secret here.',
+      detail: 'Local metadata exists, but Trebuchet cannot read the saved secret here.',
     };
   }
   if (state.secretPin.locked || wallet?.secretPinLocked) {
@@ -16648,9 +16667,11 @@ function renderWallet() {
       ? walletRows.find((item) => item.publicKey === selectedPublicKey || item.id === selectedPublicKey)
       : null
   ) || walletRows[0] || null;
-  const secretBlocked = state.secretPin.locked || selectedRow?.secretPinLocked === true;
+  const lockReason = selectedRow ? walletLockInfo(selectedRow) : { state: null, canUnlock: true };
+  const keyGone = lockReason.state === 'missing' || lockReason.state === 'wrong-key';
+  const secretBlocked = !keyGone && (state.secretPin.locked || selectedRow?.secretPinLocked === true);
   $('#walletLabel').textContent = selectedPublicKey
-    ? `${selectedRow?.name || current.name} ${walletLabelState(secretBlocked, unlocked, selectedPublicKey)}`
+    ? `${selectedRow?.name || current.name} ${keyGone ? lockReason.label : walletLabelState(secretBlocked, unlocked, selectedPublicKey)}`
     : 'Choose launch wallet';
   $('.wallet-led').classList.toggle('is-on', Boolean(selectedPublicKey && unlocked && !secretBlocked));
   const activeRarity = selectedRow?.rarity || 'Common';
@@ -16666,6 +16687,8 @@ function renderWallet() {
   if (walletButton) {
     const walletButtonLabel = !selectedRow
       ? 'Choose a launch wallet'
+      : keyGone
+        ? lockReason.detail
       : secretBlocked || !unlocked
         ? `Unlock ${selectedRow.name || 'launch wallet'} with Recovery PIN`
         : `Open ${selectedRow.name || 'launch wallet'}`;
@@ -16761,13 +16784,14 @@ function renderWallet() {
           <button class="pill-button" type="button" data-action="load-wallet-qr" ${qrLoading ? 'disabled' : ''}>
             <i class="fa-solid fa-qrcode"></i><span>${qrCode ? 'Refresh QR' : 'Load QR'}</span>
           </button>
-          <button class="pill-button" type="button" data-action="${secretBlocked ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy ? 'disabled' : ''}>
+          <button class="pill-button" type="button" data-action="${secretBlocked ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy || keyGone ? 'disabled' : ''}>
             <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
           </button>
           <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
             <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
           </button>
         </div>
+        ${keyGone ? `<p class="wallet-detail-error">${escapeHtml(lockReason.detail)}</p>` : ''}
         ${qrError ? `<p class="wallet-detail-error">${escapeHtml(qrError)}</p>` : ''}
         ${renderFundingWalletHint()}
       </div>
@@ -17330,22 +17354,25 @@ function approvalTransaction() {
 function approvalHtml() {
   const current = account();
   const tx = approvalTransaction();
+  const selectedLock = selectedManagedWallet() ? walletLockInfo(selectedManagedWallet()) : { state: null };
+  const keyGone = selectedLock.state === 'missing' || selectedLock.state === 'wrong-key';
+  const lockedWord = keyGone ? selectedLock.label : 'Locked';
   if (!tx) {
     return `
       <div class="approval-head">
         <span>
           <span class="eyebrow">Launch wallet</span>
-          <h2>${walletIsUnlocked() ? 'Unlocked' : 'Locked'}</h2>
+          <h2>${walletIsUnlocked() ? 'Unlocked' : escapeHtml(lockedWord)}</h2>
         </span>
         <span class="badge">${escapeHtml(authoritativeNetworkLabel())}</span>
       </div>
       <div class="approval-body">
-        <div class="kv-row"><span>Wallet</span><strong>${walletIsUnlocked() ? escapeHtml(current.name) : 'Locked'}</strong></div>
-        <p>Nothing to approve yet. Set up the token, then fund the launch wallet.</p>
+        <div class="kv-row"><span>Wallet</span><strong>${walletIsUnlocked() ? escapeHtml(current.name) : escapeHtml(lockedWord)}</strong></div>
+        <p>${keyGone ? escapeHtml(selectedLock.detail) : 'Nothing to approve yet. Set up the token, then fund the launch wallet.'}</p>
       </div>
       <div class="approval-actions">
         <button class="secondary-button" type="button" data-action="close-approval">Close</button>
-        <button class="primary-button" type="button" data-action="toggle-wallet">${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>
+        <button class="primary-button" type="button" data-action="toggle-wallet" ${keyGone ? 'disabled' : ''}>${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>
       </div>
     `;
   }
@@ -17932,7 +17959,11 @@ function recoveryWizardModel({
       detail: recoverableCount
         ? `${recoverableCount} old launch wallet${recoverableCount === 1 ? '' : 's'} can be swept or revealed with the Recovery PIN.`
         : hasDecryptionFailures
-          ? 'Some local wallet metadata exists but cannot be decrypted on this machine.'
+          ? (wallets.some((wallet) => wallet.secretState === 'missing')
+            ? 'The saved key is gone from this computer for some wallets. Unlocking will not help. Restore it from a backup, or create a new wallet.'
+            : wallets.some((wallet) => wallet.secretState === 'wrong-key')
+              ? 'Some keys were saved under a different PIN and cannot be opened with this one.'
+              : 'Some local wallet metadata exists but the saved key cannot be read on this computer.')
           : 'No pending wallet secrets are waiting.',
       state: unlockState,
       stats: [
@@ -17942,7 +17973,7 @@ function recoveryWizardModel({
       ],
       items: [
         state.secretPin.configured ? 'Recovery PIN gates reveal, sweep, and manual recovery actions.' : 'Set a Recovery PIN before storing new launch secrets.',
-        hasDecryptionFailures ? 'Use an external backup for wallets this machine cannot decrypt.' : 'Reveal secrets only for manual recovery; prefer resume or sweep when available.',
+        hasDecryptionFailures ? 'Use an external backup for wallets whose saved key cannot be read here.' : 'Reveal secrets only for manual recovery; prefer resume or sweep when available.',
       ],
       actions: unlockActions,
     },
@@ -20587,6 +20618,37 @@ async function lockSecretPin() {
   }
 }
 
+function inventoryItemLabel(item) {
+  const id = item.publicKey || item.id || '';
+  const where = item.publicKey ? shortAddress(item.publicKey) : String(id).slice(0, 18);
+  const attempts = Number(item.attempts) > 0 ? `, ${Number(item.attempts).toLocaleString('en-US')} attempts of grinding` : '';
+  return `${item.kind} ${where}${attempts}`;
+}
+
+function describeSecretInventory(inventory) {
+  const t = inventory.totals || {};
+  const counts = `Saved keys: ${t.readable || 0} readable, ${t.locked || 0} locked, ${t['wrong-key'] || 0} saved under a different PIN, ${t.missing || 0} missing.`;
+  const all = Object.values(inventory.stores || {}).flat();
+  const readable = all.filter((item) => item.state === 'readable' && item.wouldBeLostByReset);
+  const lost = (inventory.wouldBeLostByReset || []);
+  const list = (items) => items.slice(0, 6).map(inventoryItemLabel).join('; ') + (items.length > 6 ? `; and ${items.length - 6} more` : '');
+  return { counts, readable, lost, list };
+}
+
+async function showSecretPinResetResult(result) {
+  const archivePath = result.archive?.path;
+  if (!archivePath) return;
+  await openOperatorPrompt({
+    eyebrow: 'Recovery PIN reset',
+    title: 'Encrypted copies were saved',
+    detail: 'Before deleting anything, Trebuchet copied the old encrypted key files into this folder inside the Trebuchet data folder. They are still encrypted by the old PIN.',
+    label: 'Archive folder',
+    value: archivePath,
+    readOnly: true,
+    confirmLabel: 'Done',
+  });
+}
+
 async function resetSecretPin() {
   if (state.apiStatus !== 'connected' || !state.apiClient?.resetSecretPin) {
     notify('Recovery PIN reset requires the Trebuchet desktop app');
@@ -20596,10 +20658,37 @@ async function resetSecretPin() {
     notify('No Recovery PIN is configured');
     return;
   }
+  let inventory = null;
+  try {
+    inventory = state.apiClient.getSecretPinInventory ? await state.apiClient.getSecretPinInventory() : null;
+  } catch (error) {
+    inventory = null;
+  }
+  if (!inventory) {
+    notify('Could not check which saved keys a reset would destroy. Nothing was reset.');
+    return;
+  }
+  const summary = describeSecretInventory(inventory);
+  if (inventory.resetAllowed === false) {
+    const choice = await openOperatorPrompt({
+      eyebrow: 'Reset not offered',
+      title: 'Some keys can still be read',
+      detail: `Some keys can still be read. Change the PIN instead, or save them first. ${summary.counts} Readable now: ${summary.list(summary.readable)}.`,
+      hideInput: true,
+      confirmLabel: 'Change PIN instead',
+      cancelLabel: 'Close',
+      message: 'Reset stays hidden while the PIN is unlocked and a key can still be read.',
+    });
+    if (choice !== null) await changeSecretPin();
+    return;
+  }
+  const lostText = summary.lost.length
+    ? `Reset will destroy ${summary.lost.length} saved item${summary.lost.length === 1 ? '' : 's'}: ${summary.list(summary.lost)}. Nothing can bring them back.`
+    : 'No saved key is stored under this PIN, so nothing is destroyed.';
   const phrase = await openOperatorPrompt({
     eyebrow: 'Destructive local reset',
     title: 'Reset Recovery PIN',
-    detail: 'This deletes the PIN wrapper and permanently discards locally saved launch wallets and Vanity CAs encrypted by that PIN. Use it only if the PIN is lost and no recoverable launch is in progress.',
+    detail: `${summary.counts} ${lostText} Encrypted copies are saved to an archive folder first, but they cannot be opened without the old PIN. Use reset only if the PIN is lost and no recoverable launch is in progress.`,
     label: 'Type RESET RECOVERY PIN',
     placeholder: 'RESET RECOVERY PIN',
     confirmLabel: 'Reset local secrets',
@@ -20622,12 +20711,14 @@ async function resetSecretPin() {
     const removedCAs = Number(result.removed?.vanityCAs || 0);
     state.lastSecretPinReset = {
       at: new Date().toISOString(),
+      archive: result.archive || null,
       removed: {
         pendingWallets: removedWallets,
         vanityCAs: removedCAs,
       },
       status: result.status || state.secretPin,
     };
+    await showSecretPinResetResult(result);
     notify(`Recovery PIN reset; discarded ${removedWallets} wallet${removedWallets === 1 ? '' : 's'} and ${removedCAs} Vanity CA${removedCAs === 1 ? '' : 's'}`);
   } catch (error) {
     state.secretPin.busy = null;

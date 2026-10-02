@@ -79,6 +79,8 @@ import {
 import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
 import * as secretStore from './secretStore.js';
+import { secretInventory, walletSecretState } from './secretInventory.js';
+import { resetWithArchive } from './secretReset.js';
 import { createLaunchReportUmi, publishLaunchReport } from './launchReportService.js';
 import * as launchJournal from './launchJournal.js';
 import * as launchStore from './launchStore.js';
@@ -1836,24 +1838,19 @@ app.post('/api/secret-pin/reset', (req, res) => {
         error: 'A launch operation is running. Wait for it to finish before resetting the Recovery PIN.',
       });
     }
-    if (req.body?.confirmReset !== 'RESET RECOVERY PIN') {
-      return res.status(400).json({
-        success: false,
-        code: 'BAD_SECRET_PIN_RESET_CONFIRMATION',
-        error: 'Type RESET RECOVERY PIN to confirm the destructive reset.',
-      });
-    }
-
-    const removed = {
-      pendingWallets: pendingWallets.removePinEncrypted(),
-      vanityCAs: vanityCaStore.removePinEncrypted(),
-      splitJobs: splitJobStore.removePinEncrypted(),
-      nftKeys: nftCollectionStore.removePinEncrypted(),
-    };
-    const status = secretStore.resetSecretPin();
-    res.json({ success: true, status, removed });
+    // Archives the encrypted files first. A refused or failed archive deletes nothing.
+    const result = resetWithArchive({ confirmReset: req.body?.confirmReset });
+    res.json({ success: true, ...result });
   } catch (error) {
     sendErrorResponse(res, error, 400);
+  }
+});
+
+app.get('/api/secret-pin/inventory', (_req, res) => {
+  try {
+    res.json({ success: true, inventory: secretInventory() });
+  } catch (error) {
+    sendErrorResponse(res, error, 500);
   }
 });
 
@@ -1929,6 +1926,7 @@ function managedWalletMetadata(wallet, extra = {}) {
     hasSecretKey: Array.isArray(wallet.secretKey),
     hasMnemonic: typeof wallet.mnemonic === 'string' && wallet.mnemonic.length > 0,
     decryptionFailed: !Array.isArray(wallet.secretKey),
+    secretState: Array.isArray(wallet.secretKey) ? 'readable' : null,
     source: extra.source || 'trebuchet-managed',
     label: extra.label || 'Trebuchet launch wallet',
     ...extra,
@@ -5431,9 +5429,13 @@ app.get('/api/v2/wallets', async (_req, res) => {
     const sourceWallets = isDemoMode()
       ? Array.from(demoManagedWallets.values())
       : pendingWallets.list();
+    const inventory = isDemoMode() ? null : secretInventory();
     const wallets = sourceWallets.map((wallet, index) => managedWalletMetadata(wallet, {
       label: index === 0 ? 'Launch wallet' : `Local wallet ${index + 1}`,
       secretPinLocked: wallet.secretKey ? undefined : secretPinLocked,
+      secretState: Array.isArray(wallet.secretKey)
+        ? 'readable'
+        : (inventory ? walletSecretState(wallet.publicKey, inventory) : null),
     }));
     res.json({ success: true, wallets, secretPinLocked });
   } catch (error) {
@@ -7961,6 +7963,7 @@ app.get('/api/pending-wallets', (req, res) => {
     // Tolerate entries whose decryption failed (e.g. the file was copied from
     // another machine, or the OS keychain rotated): one bad entry must not break
     // the whole panel, so we surface a `decryptionFailed` flag.
+    const inventory = secretInventory();
     const wallets = pendingWallets.list().map((w) => {
       const hasSecretKey = Array.isArray(w.secretKey);
       const hasMnemonic = typeof w.mnemonic === 'string';
@@ -7969,6 +7972,7 @@ app.get('/api/pending-wallets', (req, res) => {
         createdAt: w.createdAt,
         hasSecretKey,
         hasMnemonic,
+        secretState: walletSecretState(w.publicKey, inventory),
       };
       if (!hasSecretKey && !hasMnemonic) {
         out.decryptionFailed = true;

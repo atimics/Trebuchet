@@ -25,6 +25,30 @@
     return walletLockReason(input) === 'none';
   }
 
+  const MISSING_KEY_DETAIL = 'The saved key is gone from this computer. Unlocking will not help. Restore it from a backup, or create a new wallet.';
+  const WRONG_KEY_DETAIL = 'This key was saved under a different PIN and cannot be opened with this one.';
+
+  // Honest reason a wallet cannot sign, as words for the screen. `secretState` is computed by
+  // the server (readable, locked, wrong-key, missing). Only `locked` can be fixed by unlocking.
+  // (walletLockReason above answers the yes/no question of whether the wallet can sign.)
+  function walletSecretReason({ wallet = null, secretPin = {} } = {}) {
+    const secretState = wallet?.secretState || null;
+    if (secretState === 'missing') {
+      return { state: 'missing', label: 'Key missing', detail: MISSING_KEY_DETAIL, canUnlock: false, canReset: false };
+    }
+    if (secretState === 'wrong-key') {
+      return { state: 'wrong-key', label: 'Different PIN', detail: WRONG_KEY_DETAIL, canUnlock: false, canReset: false };
+    }
+    if (secretState === 'locked' || secretPin.locked === true || wallet?.secretPinLocked === true) {
+      return { state: 'locked', label: 'Locked', detail: 'Unlock with the Recovery PIN to use this wallet.', canUnlock: true, canReset: false };
+    }
+    if (!wallet) return { state: null, label: '', detail: '', canUnlock: false, canReset: false };
+    if (wallet.decryptionFailed === true && !secretState) {
+      return { state: 'missing', label: 'Key unavailable', detail: 'The saved key could not be read. Restore it from a backup, or create a new wallet.', canUnlock: false, canReset: false };
+    }
+    return { state: 'readable', label: '', detail: '', canUnlock: false, canReset: false };
+  }
+
   function networkLabel({ demoActive = false, rpcName = '', rpcActiveUrl = '' } = {}) {
     if (demoActive) return 'Nothing is sent';
     if (String(rpcName || '').trim()) return String(rpcName).trim();
@@ -47,6 +71,7 @@
     fundingEstimate,
     networkLabel,
     walletLockReason,
+    walletSecretReason,
     walletUnlocked,
   });
 }(window));

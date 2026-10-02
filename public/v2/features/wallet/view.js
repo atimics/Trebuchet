@@ -15,9 +15,11 @@ function renderWallet() {
       ? walletRows.find((item) => item.publicKey === selectedPublicKey || item.id === selectedPublicKey)
       : null
   ) || walletRows[0] || null;
-  const secretBlocked = state.secretPin.locked || selectedRow?.secretPinLocked === true;
+  const lockReason = selectedRow ? walletLockInfo(selectedRow) : { state: null, canUnlock: true };
+  const keyGone = lockReason.state === 'missing' || lockReason.state === 'wrong-key';
+  const secretBlocked = !keyGone && (state.secretPin.locked || selectedRow?.secretPinLocked === true);
   $('#walletLabel').textContent = selectedPublicKey
-    ? `${selectedRow?.name || current.name} ${walletLabelState(secretBlocked, unlocked, selectedPublicKey)}`
+    ? `${selectedRow?.name || current.name} ${keyGone ? lockReason.label : walletLabelState(secretBlocked, unlocked, selectedPublicKey)}`
     : 'Choose launch wallet';
   $('.wallet-led').classList.toggle('is-on', Boolean(selectedPublicKey && unlocked && !secretBlocked));
   const activeRarity = selectedRow?.rarity || 'Common';
@@ -33,6 +35,8 @@ function renderWallet() {
   if (walletButton) {
     const walletButtonLabel = !selectedRow
       ? 'Choose a launch wallet'
+      : keyGone
+        ? lockReason.detail
       : secretBlocked || !unlocked
         ? `Unlock ${selectedRow.name || 'launch wallet'} with Recovery PIN`
         : `Open ${selectedRow.name || 'launch wallet'}`;
@@ -128,13 +132,14 @@ function renderWallet() {
           <button class="pill-button" type="button" data-action="load-wallet-qr" ${qrLoading ? 'disabled' : ''}>
             <i class="fa-solid fa-qrcode"></i><span>${qrCode ? 'Refresh QR' : 'Load QR'}</span>
           </button>
-          <button class="pill-button" type="button" data-action="${secretBlocked ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy ? 'disabled' : ''}>
+          <button class="pill-button" type="button" data-action="${secretBlocked ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy || keyGone ? 'disabled' : ''}>
             <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
           </button>
           <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
             <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
           </button>
         </div>
+        ${keyGone ? `<p class="wallet-detail-error">${escapeHtml(lockReason.detail)}</p>` : ''}
         ${qrError ? `<p class="wallet-detail-error">${escapeHtml(qrError)}</p>` : ''}
         ${renderFundingWalletHint()}
       </div>

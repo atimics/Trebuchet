@@ -3170,9 +3170,11 @@ test('server exposes the v2 launch-plan contract as an authenticated API route',
   assert.match(serverSource, /rememberDemoManagedWallet/);
   assert.match(serverSource, /secretAvailable: Array\.isArray\(wallet\?\.secretKey\)/);
   assert.match(serverSource, /app\.post\('\/api\/secret-pin\/reset'/);
-  assert.match(serverSource, /pendingWallets\.removePinEncrypted\(\)/);
-  assert.match(serverSource, /vanityCaStore\.removePinEncrypted\(\)/);
-  assert.match(serverSource, /secretStore\.resetSecretPin\(\)/);
+  const secretResetSource = readFileSync(new URL('../secretReset.js', import.meta.url), 'utf8');
+  assert.match(serverSource, /resetWithArchive\(/);
+  assert.match(secretResetSource, /pendingWallets\.removePinEncrypted\(\)/);
+  assert.match(secretResetSource, /vanityCaStore\.removePinEncrypted\(\)/);
+  assert.match(secretResetSource, /secretStore\.resetSecretPin\(\)/);
   assert.match(serverSource, /demoMode: isDemoMode\(\)/);
   assert.match(serverSource, /assertClassicLogoDimensions\(req\.file\.buffer\)/);
   assert.match(serverSource, /assertClassicLogoDimensions\(decoded\)/);

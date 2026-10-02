@@ -19,13 +19,14 @@ function walletAccounts() {
         balance: Number(wallet.balanceSol || 0),
         role: wallet.source === 'imported-local'
           ? 'Imported local wallet'
-          : wallet.hasSecretKey ? 'Launch wallet' : 'Locked local wallet',
+          : wallet.hasSecretKey ? 'Launch wallet' : lockedRoleLabel(wallet),
         rarity,
         rarityGrade: vanityRarityGrade(rarity),
         hasSecretKey: wallet.hasSecretKey === true,
         hasMnemonic: wallet.hasMnemonic === true || typeof wallet.mnemonic === 'string',
         decryptionFailed: wallet.decryptionFailed === true,
         secretPinLocked: wallet.secretPinLocked === true,
+        secretState: wallet.secretState || null,
         qrCode: wallet.qrCode || null,
         createdAt: wallet.createdAt || null,
         source: wallet.source || 'local',
@@ -33,6 +34,17 @@ function walletAccounts() {
     });
   }
   return [];
+}
+
+function walletLockInfo(wallet) {
+  return window.TrebuchetV2RuntimeState?.walletSecretReason?.({ wallet, secretPin: state.secretPin })
+    || { state: null, label: '', detail: '', canUnlock: true, canReset: false };
+}
+
+function lockedRoleLabel(wallet) {
+  if (wallet?.secretState === 'missing') return 'Local wallet, key missing';
+  if (wallet?.secretState === 'wrong-key') return 'Local wallet, different PIN';
+  return 'Locked local wallet';
 }
 
 function account() {
@@ -61,11 +73,18 @@ function pendingRecoveryWallet(publicKey) {
 }
 
 function recoveryWalletState(wallet) {
-  if (wallet?.decryptionFailed) {
+  const reason = walletLockInfo(wallet);
+  if (reason.state === 'missing') {
+    return { label: 'Key missing', className: 'danger', detail: reason.detail };
+  }
+  if (reason.state === 'wrong-key') {
+    return { label: 'Different PIN', className: 'danger', detail: reason.detail };
+  }
+  if (wallet?.decryptionFailed && !(state.secretPin.locked || wallet?.secretPinLocked)) {
     return {
       label: 'Secret missing',
       className: 'danger',
-      detail: 'Local metadata exists, but Trebuchet cannot decrypt the saved secret here.',
+      detail: 'Local metadata exists, but Trebuchet cannot read the saved secret here.',
     };
   }
   if (state.secretPin.locked || wallet?.secretPinLocked) {
