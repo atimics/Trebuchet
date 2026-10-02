@@ -11889,3 +11889,12 @@ test('a coin is called Live only once the chain agrees', () => {
   assert.equal(sandbox.coinChainStatus(steps('done', 'todo', 'unrecorded', 'todo')), 'Unfinished');
   assert.doesNotMatch(js, /transferHasWalletEmptyFinalSweepEvidence\(proof\?\.transfer\) \? 'Live'/);
 });
+
+
+test('a locked Recovery PIN opens the PIN panel instead of a toast, and generate/import ask for it first', () => {
+  const dialogs = readFileSync(new URL('../public/v2/features/shell/dialogs.js', import.meta.url), 'utf8');
+  const actions = readFileSync(new URL('../public/v2/features/wallet/actions.js', import.meta.url), 'utf8');
+  assert.match(dialogs, /Unlock your Recovery PIN[\s\S]{0,200}openRecoveryPinGate\(\{ reason: 'unlock' \}\);\s*return;/);
+  assert.match(actions, /async function ensureRecoveryPinUnlocked\(\)/);
+  assert.equal((actions.match(/ensureRecoveryPinUnlocked\(\)\)\) return/g) || []).length, 2);
+});

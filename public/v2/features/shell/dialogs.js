@@ -1,4 +1,9 @@
 function notify(message) {
+  // A locked Recovery PIN is answered with the PIN panel, not a sentence about it.
+  if (/^Unlock your Recovery PIN\b/i.test(String(message)) && !state.recoveryPinGate?.open) {
+    openRecoveryPinGate({ reason: 'unlock' });
+    return;
+  }
   const toast = document.createElement('div');
   toast.className = 'toast';
   toast.textContent = message;

@@ -3464,6 +3464,11 @@ function runProgressContext() {
 }
 
 function notify(message) {
+  // A locked Recovery PIN is answered with the PIN panel, not a sentence about it.
+  if (/^Unlock your Recovery PIN\b/i.test(String(message)) && !state.recoveryPinGate?.open) {
+    openRecoveryPinGate({ reason: 'unlock' });
+    return;
+  }
   const toast = document.createElement('div');
   toast.className = 'toast';
   toast.textContent = message;
@@ -20783,8 +20788,15 @@ function selectRecoveryWallet(publicKey, { switchToWallet = true } = {}) {
   return wallet;
 }
 
+// A locked PIN asks for the PIN first, then carries on with what was asked.
+async function ensureRecoveryPinUnlocked() {
+  if (!(state.secretPin?.configured && state.secretPin?.locked)) return true;
+  return Boolean(await openRecoveryPinGate({ reason: 'unlock' }));
+}
+
 async function generateManagedWallet() {
   if (state.apiStatus === 'connected' && state.apiClient?.generateManagedWallet) {
+    if (!state.demoActive && !(await ensureRecoveryPinUnlocked())) return null;
     const wallet = await state.apiClient.generateManagedWallet();
     addManagedWallet(wallet);
     renderAll();
@@ -20801,6 +20813,7 @@ async function importManagedWallet() {
     notify('Import requires the Trebuchet desktop app');
     return;
   }
+  if (!state.demoActive && !(await ensureRecoveryPinUnlocked())) return;
   const secret = await openOperatorPrompt({
     eyebrow: 'Local wallet import',
     title: 'Import Solana wallet',
