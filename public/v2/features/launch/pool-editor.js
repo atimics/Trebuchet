@@ -257,8 +257,10 @@ function renderSupplyEditor() {
   const SLICE_HINT = 'Percent of the pool in each locked position, e.g. 50,50. A single 100 is one position.';
   const LADDER_HINT = `Extra liquidity bands at higher prices. 0 to ${CLASSIC_LADDER_MAX_BANDS}. 0 = off.`;
   const settingsHtml = (row) => {
+    const mapHost = '<div class="supply-field-wide pool-map" data-pool-map></div>';
     if (row.key === 'sol') {
       return `
+        ${mapHost}
         ${field('Position slices', SLICE_HINT, `<input data-supply-target="#sliceShares" data-supply-key="sol:slices" value="${escapeHtml($('#sliceShares').value)}" autocomplete="off">`, 'slices')}
         ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`, 'ladder')}
         ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`, 'support')}
@@ -271,6 +273,7 @@ function renderSupplyEditor() {
     const id = escapeHtml(pool.id);
     const key = escapeHtml(row.key);
     return `
+      ${mapHost}
       ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-choice="slider" data-choice-readout data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
       ${field('Start above SOL price %', 'Opens this pair above the SOL pool price, so the pair token can fall this far before bots can drain SOL buyers. 0 to 500.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="startPremiumPct" data-pool-id="${id}" data-supply-key="${key}:premium" value="${escapeHtml(pool.startPremiumPct ?? state.pairStartPremiumPct)}">`, 'premium')}
       ${field('Position slices', SLICE_HINT, `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`, 'slices')}
@@ -323,11 +326,98 @@ function renderSupplyEditor() {
   renderReturnWalletCard();
 }
 
+// A picture of the pool the controls describe, redrawn as they change.
+// Left of the start price: how far below it support SOL reaches and, for a
+// pair, where the SOL pool's price sits. Right of it, price in multiples of the
+// start (log scale): the main position covers all of it, ladder bands add
+// liquidity at their own ranges. Below: the positions the pool is split into.
+function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
+  const W = 640, START = 196, LEFT = 24, RIGHT = 620, BASE = 150;
+  const maxMult = Math.max(1000, ...bands.map((band) => band.hi));
+  const xOf = (mult) => START + (RIGHT - START) * (Math.log(mult) / Math.log(maxMult));
+  const premiumDrop = premiumPct > 0 ? (premiumPct / (100 + premiumPct)) * 100 : 0;
+  const reach = Math.max(depthPct, premiumDrop, 10) * 1.1;
+  const xDown = (pct) => START - (START - LEFT) * (pct / reach);
+  const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n.toFixed(2)).toString());
+  const parts = [];
+  // main position: the whole range above the start price
+  parts.push(`<rect class="pm-main" x="${START}" y="${BASE - 22}" width="${RIGHT - START}" height="22"/>`);
+  parts.push(`<text class="pm-note" x="${START + 8}" y="${BASE - 7}">Main position · all prices above the start</text>`);
+  // ladder bands
+  const top = Math.max(...bands.map((band) => band.weight), 1);
+  bands.forEach((band) => {
+    const h = 16 + 62 * (band.weight / top);
+    const x = xOf(Math.max(1, band.lo));
+    const w = Math.max(3, xOf(band.hi) - x);
+    parts.push(`<rect class="pm-band" x="${x.toFixed(1)}" y="${(BASE - 22 - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}"/>`);
+    if (band.label && w > 26) parts.push(`<text class="pm-tag" x="${(x + w / 2).toFixed(1)}" y="${(BASE - 22 - h - 5).toFixed(1)}" text-anchor="middle">${band.label}</text>`);
+  });
+  // support SOL, just below the start price
+  const xs = xDown(depthPct);
+  parts.push(supportSol > 0
+    ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${(START - xs).toFixed(1)}" height="60"/><text class="pm-tag" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 66}" text-anchor="middle">${fmt(supportSol)} SOL</text>`
+    : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${(START - xs).toFixed(1)}" height="60"/><text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>`);
+  // the SOL pool's price, for a pair
+  if (premiumDrop > 0) {
+    const xp = xDown(premiumDrop);
+    parts.push(`<line class="pm-sol" x1="${xp.toFixed(1)}" x2="${xp.toFixed(1)}" y1="26" y2="${BASE}"/>`
+      + `<text class="pm-tag" x="${Math.max(xp, LEFT + 44).toFixed(1)}" y="16" text-anchor="middle">SOL pool price</text>`
+      + `<text class="pm-note" x="${((xp + START) / 2).toFixed(1)}" y="40" text-anchor="middle">+${fmt(premiumPct)}%</text>`
+      + `<line class="pm-gap" x1="${xp.toFixed(1)}" x2="${START}" y1="46" y2="46"/>`);
+  }
+  // start price and axis
+  parts.push(`<line class="pm-start" x1="${START}" x2="${START}" y1="26" y2="${BASE + 6}"/><text class="pm-tag pm-strong" x="${START}" y="${premiumDrop > 0 ? 26 : 16}" dy="-4" text-anchor="middle">Start price</text>`);
+  parts.push(`<line class="pm-axis" x1="${LEFT}" x2="${RIGHT}" y1="${BASE}" y2="${BASE}"/>`);
+  for (let m = 1; m <= maxMult; m *= 10) {
+    parts.push(`<line class="pm-axis" x1="${xOf(m).toFixed(1)}" x2="${xOf(m).toFixed(1)}" y1="${BASE}" y2="${BASE + 4}"/><text class="pm-note" x="${xOf(m).toFixed(1)}" y="${BASE + 17}" text-anchor="middle">${m === 1 ? 'start' : `${m}×`}</text>`);
+  }
+  parts.push(`<text class="pm-note" x="${xs.toFixed(1)}" y="${BASE + 17}" text-anchor="middle">−${fmt(depthPct)}%</text>`);
+  // the positions this pool is split into
+  const total = slices.reduce((sum, share) => sum + share, 0) || 100;
+  let at = LEFT;
+  slices.forEach((share, index) => {
+    const w = (RIGHT - LEFT) * (share / total);
+    parts.push(`<rect class="pm-slice pm-slice-${index % 2}" x="${at.toFixed(1)}" y="${BASE + 30}" width="${Math.max(1, w - 2).toFixed(1)}" height="18"/>`);
+    if (w > 34) parts.push(`<text class="pm-tag" x="${(at + w / 2).toFixed(1)}" y="${BASE + 43}" text-anchor="middle">${fmt(share)}%</text>`);
+    at += w;
+  });
+  const title = 'Price map: where this pool\'s liquidity sits';
+  return `<svg viewBox="0 0 ${W} ${BASE + 56}" role="img" aria-label="${title}" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
+}
+
+function renderPoolMap(panel) {
+  const host = panel.querySelector('[data-pool-map]');
+  if (!host) return;
+  const value = (suffix) => panel.querySelector(`[data-supply-key$="${suffix}"]`)?.value ?? '';
+  const number = (text, fallback = 0) => { const n = parseNumericInput(String(text), NaN); return Number.isFinite(n) ? n : fallback; };
+  const premiumPct = Math.min(500, Math.max(0, number(value(':premium'), 0)));
+  const supportSol = Math.max(0, number(value(':support'), 0));
+  const depthPct = Math.min(50, Math.max(1, number(value(':depth'), 12)));
+  const slices = describeSliceInput(value(':slices')).slices;
+  const manual = analyzeManualLadder(value(':manual')).bands;
+  const count = Math.floor(Math.min(CLASSIC_LADDER_MAX_BANDS, Math.max(0, number(value(':ladder'), 0))));
+  let bands = [];
+  if (manual.length) {
+    bands = manual.map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: band.supplyPercent, label: `${Number(band.supplyPercent.toFixed(1))}%` }));
+  } else if (count > 0) {
+    // Evenly spaced bands with a gap between each, up to 1000x (see computeLadderTicks).
+    const unit = Math.log(1000) / (2 * count - 1);
+    bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: 1, label: '' }));
+  }
+  const parts = [`${slices.length} position${slices.length === 1 ? '' : 's'}`];
+  parts.push(supportSol > 0 ? `${supportSol} SOL support to −${depthPct}%` : 'no support');
+  parts.push(bands.length ? `${bands.length} ladder band${bands.length === 1 ? '' : 's'}` : 'no ladder');
+  if (premiumPct > 0) parts.push(`opens ${premiumPct}% above the SOL price`);
+  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands })}<p class="pool-map-caption">${escapeHtml(parts.join(' · '))}</p>`;
+  if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
+}
+
 // Says what each advanced pool control will do with what was typed, next to
 // the control: what the slices mean, which numbers were out of range, which
 // ladder lines were skipped, and that a custom ladder replaces ladder bands.
 function renderPoolControlFeedback(target) {
   target.querySelectorAll('.supply-settings').forEach((panel) => {
+    renderPoolMap(panel);
     const input = (suffix) => panel.querySelector(`[data-supply-key$="${suffix}"]`);
     const say = (name, text, tone = 'ok') => {
       const note = panel.querySelector(`[data-feedback="${name}"]`);

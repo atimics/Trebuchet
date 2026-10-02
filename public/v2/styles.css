@@ -17394,3 +17394,26 @@ body #view-launch .launch-budget-head { flex-wrap: wrap; gap: 12px; }
 body .logo-upload-control { flex-wrap: wrap; }
 body .logo-upload-meta { flex-basis: 100%; }
 body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; white-space: normal; text-align: left; }
+
+/* Pool price map (see poolMapSvg): one picture of what the pool controls set. */
+.pool-map { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); background: var(--panel-strong); }
+.pool-map svg { width: 100%; height: auto; display: block; font-family: var(--mono); }
+.pool-map .pm-axis { stroke: var(--line-strong); stroke-width: 1; }
+.pool-map .pm-start { stroke: var(--green); stroke-width: 1.5; }
+.pool-map .pm-sol { stroke: var(--blue); stroke-width: 1; stroke-dasharray: 3 3; }
+.pool-map .pm-gap { stroke: var(--blue); stroke-width: 1; }
+.pool-map .pm-main { fill: color-mix(in srgb, var(--green) 22%, transparent); stroke: var(--green); stroke-width: 1; }
+.pool-map .pm-band { fill: color-mix(in srgb, var(--violet) 55%, transparent); stroke: var(--violet); stroke-width: 1; }
+.pool-map .pm-support { fill: color-mix(in srgb, var(--amber) 40%, transparent); stroke: var(--amber); stroke-width: 1; }
+.pool-map .pm-off { fill: none; stroke: var(--subtle); stroke-width: 1; stroke-dasharray: 3 3; }
+.pool-map .pm-slice { stroke: var(--green); stroke-width: 1; }
+.pool-map .pm-slice-0 { fill: color-mix(in srgb, var(--green) 45%, transparent); }
+.pool-map .pm-slice-1 { fill: color-mix(in srgb, var(--green) 22%, transparent); }
+.pool-map text { font-size: 11px; fill: var(--muted); }
+.pool-map .pm-tag { fill: var(--ink); }
+.pool-map .pm-strong { fill: var(--green); font-weight: 700; }
+.pool-map-caption { margin: 0; font-size: 12px; color: var(--muted); }
+
+/* A long fee-tier list: a few labels, the chosen one and both ends, so none overlap. */
+.supply-settings .choice-control.has-many .choice-ticks { display: flex; justify-content: space-between; }
+.supply-settings .choice-control.has-many .choice-ticks button:not(.is-selected):not(:first-child):not(:last-child):not(:nth-child(5n+1)) { display: none; }
