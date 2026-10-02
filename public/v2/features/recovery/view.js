@@ -358,7 +358,11 @@ function recoveryWizardModel({
       detail: recoverableCount
         ? `${recoverableCount} old launch wallet${recoverableCount === 1 ? '' : 's'} can be swept or revealed with the Recovery PIN.`
         : hasDecryptionFailures
-          ? 'Some local wallet metadata exists but cannot be decrypted on this machine.'
+          ? (wallets.some((wallet) => wallet.secretState === 'missing')
+            ? 'The saved key is gone from this computer for some wallets. Unlocking will not help. Restore it from a backup, or create a new wallet.'
+            : wallets.some((wallet) => wallet.secretState === 'wrong-key')
+              ? 'Some keys were saved under a different PIN and cannot be opened with this one.'
+              : 'Some local wallet metadata exists but the saved key cannot be read on this computer.')
           : 'No pending wallet secrets are waiting.',
       state: unlockState,
       stats: [
@@ -368,7 +372,7 @@ function recoveryWizardModel({
       ],
       items: [
         state.secretPin.configured ? 'Recovery PIN gates reveal, sweep, and manual recovery actions.' : 'Set a Recovery PIN before storing new launch secrets.',
-        hasDecryptionFailures ? 'Use an external backup for wallets this machine cannot decrypt.' : 'Reveal secrets only for manual recovery; prefer resume or sweep when available.',
+        hasDecryptionFailures ? 'Use an external backup for wallets whose saved key cannot be read here.' : 'Reveal secrets only for manual recovery; prefer resume or sweep when available.',
       ],
       actions: unlockActions,
     },

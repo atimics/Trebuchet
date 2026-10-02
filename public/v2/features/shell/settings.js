@@ -9,22 +9,25 @@ function approvalTransaction() {
 function approvalHtml() {
   const current = account();
   const tx = approvalTransaction();
+  const selectedLock = selectedManagedWallet() ? walletLockInfo(selectedManagedWallet()) : { state: null };
+  const keyGone = selectedLock.state === 'missing' || selectedLock.state === 'wrong-key';
+  const lockedWord = keyGone ? selectedLock.label : 'Locked';
   if (!tx) {
     return `
       <div class="approval-head">
         <span>
           <span class="eyebrow">Launch wallet</span>
-          <h2>${walletIsUnlocked() ? 'Unlocked' : 'Locked'}</h2>
+          <h2>${walletIsUnlocked() ? 'Unlocked' : escapeHtml(lockedWord)}</h2>
         </span>
         <span class="badge">${escapeHtml(authoritativeNetworkLabel())}</span>
       </div>
       <div class="approval-body">
-        <div class="kv-row"><span>Wallet</span><strong>${walletIsUnlocked() ? escapeHtml(current.name) : 'Locked'}</strong></div>
-        <p>Nothing to approve yet. Set up the token, then fund the launch wallet.</p>
+        <div class="kv-row"><span>Wallet</span><strong>${walletIsUnlocked() ? escapeHtml(current.name) : escapeHtml(lockedWord)}</strong></div>
+        <p>${keyGone ? escapeHtml(selectedLock.detail) : 'Nothing to approve yet. Set up the token, then fund the launch wallet.'}</p>
       </div>
       <div class="approval-actions">
         <button class="secondary-button" type="button" data-action="close-approval">Close</button>
-        <button class="primary-button" type="button" data-action="toggle-wallet">${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>
+        <button class="primary-button" type="button" data-action="toggle-wallet" ${keyGone ? 'disabled' : ''}>${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>
       </div>
     `;
   }
