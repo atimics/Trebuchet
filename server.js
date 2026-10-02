@@ -3442,7 +3442,7 @@ app.get('/api/v2/flywheel-hubs', (_req, res) => {
 
 app.post('/api/v2/flywheel-hubs/resolve', async (req, res) => {
   try {
-    const hub = await resolveFlywheelHub(req.body?.mint);
+    const hub = await resolveFlywheelHub(req.body?.mint, { rpcUrl: getRpcUrl() });
     res.json({ success: true, hub });
   } catch (error) {
     sendErrorResponse(res, error, 400);

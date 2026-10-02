@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
+import { PublicKey } from '@solana/web3.js';
 import { HUB_SOL_MINT as SOL, listFlywheelHubs, parseDexSolPools, parseGeckoSolPools, resolveFlywheelHub } from '../hubPoolService.js';
 import { parseDiscoveryMarketPool } from '../discoveryService.js';
 import { TOKEN_REGISTRY } from '../tokenRegistry.js';
@@ -125,4 +126,28 @@ test('late lookup results and closed pickers cannot select a stale token', async
   pending[2]({ mint: MINT, solPool: { address: POOL } });
   await third;
   assert.equal(sandbox.getPicker().result, null);
+});
+
+test('a Helius RPC finds the SOL pool on chain before the public indexers are asked', async () => {
+  const vault = new PublicKey(Buffer.alloc(32, 7)).toBase58();
+  const data = Buffer.concat([Buffer.alloc(32, 1), new PublicKey(Buffer.alloc(32, 7)).toBytes()]).toString('base64');
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push(url);
+    if (!String(url).includes('helius-rpc.com')) throw new Error('indexer should not be asked');
+    const { method, params } = JSON.parse(init.body);
+    if (method === 'getProgramAccounts') {
+      // The SOL pair is stored with the mints in byte order: only one ordering holds a pool.
+      return response({ result: params[1].filters[1].memcmp.bytes === MINT ? [{ pubkey: POOL, account: { data: [data, 'base64'] } }] : [] });
+    }
+    assert.equal(params[0], vault);
+    return response({ result: { value: { uiAmount: 12.5 } } });
+  };
+  const hub = await resolveFlywheelHub(MINT, { fetchImpl, rpcUrl: 'https://mainnet.helius-rpc.com/?api-key=x' });
+  assert.equal(hub.solPool.address, POOL);
+  assert.equal(hub.solPool.source, 'Helius');
+  assert.equal(hub.solPool.solReserve, 12.5);
+  assert.ok(calls.every((url) => url.includes('helius-rpc.com')));
+  // A non-Helius RPC is never asked to scan the program.
+  await assert.rejects(resolveFlywheelHub(MINT, { fetchImpl: async () => response([], 404), rpcUrl: 'https://api.mainnet-beta.solana.com' }), /direct SOL pool/);
 });

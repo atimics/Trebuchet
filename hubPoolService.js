@@ -53,6 +53,49 @@ export function parseGeckoSolPools(mint, payload) {
   })));
 }
 
+// Raydium CLMM pool state: 8-byte discriminator, bump, amm_config, owner, then
+// the two mints (73, 105) and their vaults (137, 169). Pools are always stored
+// with the mints in byte order, so the SOL pair is found by asking for both.
+const CLMM_PROGRAM = 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
+const CLMM_POOL_SIZE = 1544;
+const HELIUS_HOST_RE = /(^|\.)helius-rpc\.com$/i;
+
+export function heliusUrl(url) {
+  try { return HELIUS_HOST_RE.test(new URL(url).hostname) ? url : null; } catch { return null; }
+}
+
+// Asks the Helius RPC for the SOL pool straight from the chain, so a pool that
+// the public indexers have not listed yet (or never will) is still found.
+export async function findClmmSolPoolsOnChain(mint, rpcUrl, { fetchImpl = globalThis.fetch } = {}) {
+  const rpc = async (method, params) => {
+    const response = await fetchImpl(rpcUrl, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(12000),
+    });
+    if (!response.ok) throw new Error(`RPC returned HTTP ${response.status}`);
+    const body = await response.json();
+    if (body.error) throw new Error(body.error.message || 'RPC error');
+    return body.result;
+  };
+  const found = [];
+  for (const [first, second] of [[mint, HUB_SOL_MINT], [HUB_SOL_MINT, mint]]) {
+    const accounts = await rpc('getProgramAccounts', [CLMM_PROGRAM, {
+      encoding: 'base64', dataSlice: { offset: 137, length: 64 },
+      filters: [{ dataSize: CLMM_POOL_SIZE },
+        { memcmp: { offset: 73, bytes: first } }, { memcmp: { offset: 105, bytes: second } }],
+    }]);
+    for (const account of accounts || []) {
+      const data = Buffer.from(account.account.data[0], 'base64');
+      const solVault = new PublicKey(data.subarray(first === HUB_SOL_MINT ? 0 : 32, first === HUB_SOL_MINT ? 32 : 64)).toBase58();
+      let reserve = 0;
+      try { reserve = Number((await rpc('getTokenAccountBalance', [solVault]))?.value?.uiAmount) || 0; } catch { /* ranked last */ }
+      found.push({ address: account.pubkey, baseMint: mint, quoteMint: HUB_SOL_MINT, dex: 'raydium-clmm',
+        source: 'Helius', solReserve: reserve, liquidityUsd: null, volume24hUsd: null, name: '', symbol: '' });
+    }
+  }
+  return found.sort((a, b) => b.solReserve - a.solReserve || a.address.localeCompare(b.address));
+}
+
 export function listFlywheelHubs(snapshot = {}) {
   const defaults = DEFAULT_FLYWHEEL_HUBS.map((hub) => ({ ...hub, source: 'default' }));
   const seen = new Set(defaults.map((hub) => hub.mint));
@@ -71,7 +114,7 @@ export function listFlywheelHubs(snapshot = {}) {
 
 // Each selection refreshes the index. Pool presence is a discovery hint;
 // quote-token checks and the launch estimate establish execution readiness.
-export async function resolveFlywheelHub(value, { fetchImpl = globalThis.fetch } = {}) {
+export async function resolveFlywheelHub(value, { fetchImpl = globalThis.fetch, rpcUrl = null } = {}) {
   const mint = String(value || '').trim();
   if (!validAddress(mint)) throw new Error('Enter a valid Solana token CA.');
   if (mint === HUB_SOL_MINT) throw new Error('Choose a hub token to pair with SOL.');
@@ -80,6 +123,19 @@ export async function resolveFlywheelHub(value, { fetchImpl = globalThis.fetch }
     [`${GECKO_BASE}/tokens/${mint}/pools?include=base_token,quote_token,dex&page=1`, parseGeckoSolPools],
   ];
   let lookupFailed = false;
+  const helius = heliusUrl(rpcUrl);
+  const finish = (solPool) => {
+    const known = DEFAULT_FLYWHEEL_HUBS.find((hub) => hub.mint === mint);
+    return { mint, name: known?.name || solPool.name || mint, symbol: known?.symbol || solPool.symbol || 'HUB',
+      solPool, checkedAt: new Date().toISOString(), network: 'mainnet-beta' };
+  };
+  // The chain is the best source: Helius first, the public indexers as backup.
+  if (helius) {
+    try {
+      const pool = (await findClmmSolPoolsOnChain(mint, helius, { fetchImpl }))[0];
+      if (pool) return finish(pool);
+    } catch { lookupFailed = true; }
+  }
   for (const [url, parse] of sources) {
     try {
       const response = await fetchImpl(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(6500) });
@@ -87,9 +143,7 @@ export async function resolveFlywheelHub(value, { fetchImpl = globalThis.fetch }
       if (!response.ok) throw new Error(`Pool index returned HTTP ${response.status}`);
       const solPool = parse(mint, await response.json())[0];
       if (!solPool) continue;
-      const known = DEFAULT_FLYWHEEL_HUBS.find((hub) => hub.mint === mint);
-      return { mint, name: known?.name || solPool.name || mint, symbol: known?.symbol || solPool.symbol || 'HUB',
-        solPool, checkedAt: new Date().toISOString(), network: 'mainnet-beta' };
+      return finish(solPool);
     } catch { lookupFailed = true; }
   }
   throw new Error(lookupFailed
