@@ -1999,7 +1999,7 @@ test('v2 is the Electron default with an explicit tested Classic fallback', () =
   assert.match(electronMainJs, /BrowserWindow\.getAllWindows\(\)/);
   assert.match(electronMainJs, /win\.loadURL\(`http:\/\/127\.0\.0\.1:\$\{serverPort\}\$\{desktopUiPath\}`\)/);
   assert.match(v2BrowserE2eJs, /page\.goto\(`\$\{baseUrl\}\/v2\/`/);
-  assert.match(v2BrowserE2eJs, /data-action=\"run-demo-launch\"/);
+  assert.match(v2BrowserE2eJs, /data-action=\"launch-rail-act\"/);
   assert.match(v2BrowserE2eJs, /dataset\.apiStatus === 'connected'/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\)/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\{ classic: true \}\)/);
@@ -6874,12 +6874,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=108/);
+  assert.match(html, /styles\.css\?v=112/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=202/);
-  assert.doesNotMatch(html, /app\.js\?v=202" type="module"/);
+  assert.match(html, /app\.js\?v=205/);
+  assert.doesNotMatch(html, /app\.js\?v=205" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');

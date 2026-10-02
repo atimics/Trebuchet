@@ -393,50 +393,79 @@ function renderLaunchWorkspace() {
   refreshLaunchChainCheck(facts);
 }
 
-// The right-hand column: the one action the first unmet fact asks for, then
-// what this launch costs and holds. It reads the same facts as the rows.
+// The right-hand column. One button, then the wallet it acts on: balances, what
+// the launch needs against what the wallet holds, and what has been opened.
+// Nothing here repeats a row or a tab; those say what the plan is.
 function renderLaunchNextRail(facts, next, workspace) {
   const rail = $('#launchNextRail');
   if (!rail) return;
   const config = currentLaunchConfig();
-  const sol = (value) => `${Number(value || 0).toFixed(4)} SOL`;
+  const sol = (value) => Number(value || 0).toFixed(4);
+  const practice = Boolean(state.demoActive);
   const estimateStatus = classicFundingEstimateStatus(config);
   const estimate = estimateStatus.matchesConfig ? state.classicFundingEstimate : null;
   const funding = fundingMeterSnapshot(config);
-  const practice = Boolean(state.demoActive);
-  const poolCount = config.poolTopology.pools.length;
-  const irreversible = next && ['mint', 'liquidity', 'finish'].includes(next.id) && !practice;
-  const title = next ? (next.action || next.value) : 'Nothing left to do';
-  const detail = next
-    ? (next.state === 'running' ? 'Keep Trebuchet open.' : next.value)
-    : 'Every row holds. The proof file lists each address and transaction.';
+  const detailed = selectedWalletDetailedBalance();
+  const walletKey = selectedLaunchWalletPublicKey() || state.selectedWalletPublicKey || '';
+  const proof = currentLaunchProof();
+  const mint = proofTokenMint(proof);
+  const results = Array.isArray(proof?.liquidity?.results) ? proof.liquidity.results : [];
+  const plannedPools = config.poolTopology.pools.length;
   const canAct = Boolean(next && next.action && next.state !== 'running');
-  const costState = practice
-    ? 'Test · nothing is sent'
-    : estimate ? 'Estimate · matches this plan' : estimateStatus.stale ? 'Estimate out of date' : 'Not estimated for this plan';
-  const total = estimate ? sol(estimate.totalSol) : '—';
-  const mint = proofTokenMint(currentLaunchProof());
+  const irreversible = canAct && ['mint', 'liquidity', 'finish'].includes(next.id) && !practice
+    && (state.phaseSlide || {})[next.id] === 'run';
+  const holds = funding.hasWalletBalance ? Number(funding.availableSol) : null;
+  const needs = estimate ? Number(estimate.totalSol) : null;
+  const short = needs != null && holds != null ? Math.max(0, needs - holds) : null;
+  const fill = needs && holds != null ? Math.min(100, (holds / needs) * 100) : 0;
+  const tokens = detailed?.balance?.tokens && typeof detailed.balance.tokens === 'object'
+    ? Object.entries(detailed.balance.tokens).filter(([, token]) => Number(token?.amountUi) > 0).slice(0, 3)
+    : [];
+  const spend = observedExecutionSpendSummary();
+  const row = (label, value, tone = '') => `<div class="rail-row${tone ? ` is-${tone}` : ''}"><span>${escapeHtml(label)}</span><b>${value}</b></div>`;
+
+  const action = next
+    ? (canAct
+      ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>`
+      : `<div class="rail-busy" role="status"><span class="rail-spin" aria-hidden="true"></span>${escapeHtml(next.value || 'Working')}</div>`)
+    : '<div class="rail-done"><i class="fa-solid fa-check" aria-hidden="true"></i>Nothing left to do</div>';
+
+  const walletBlock = `
+    <section class="rail-block">
+      <div class="rail-head"><span class="rail-label">Wallet</span><code title="${escapeHtml(walletKey)}">${walletKey ? escapeHtml(shortAddress(walletKey)) : 'none'}</code></div>
+      ${practice ? '<div class="rail-balance"><b>Test</b><span>no SOL used</span></div>'
+        : !walletKey ? '<div class="rail-balance"><b>No wallet</b></div>'
+          : holds != null ? `<div class="rail-balance is-amount"><b>${sol(holds)}</b><span>SOL</span></div>`
+            : '<div class="rail-balance"><b>Not checked</b></div>'}
+      ${tokens.map(([tokenMint, token]) => row(String(token.symbol || shortAddress(tokenMint)), escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 })))).join('')}
+    </section>`;
+
+  // The Funding row's own panel shows what is needed; the rail repeats it nowhere.
+  const fundingBlock = practice || workspace === 'fund' || (needs == null && !estimateStatus.stale)
+    ? ''
+    : `<section class="rail-block">
+        <div class="rail-head"><span class="rail-label">Funding</span><small>${estimate ? '' : estimateStatus.stale ? 'Out of date' : 'Not estimated'}</small></div>
+        ${needs != null ? `<div class="rail-meter" role="img" aria-label="Wallet holds ${sol(holds)} of ${sol(needs)} SOL"><i style="width:${fill.toFixed(1)}%"></i></div>
+        ${row('Needs', `${sol(needs)} <i>SOL</i>`)}${short != null ? row('Short', short ? `${sol(short)} <i>SOL</i>` : '0', short ? 'warn' : 'ok') : ''}` : ''}
+      </section>`;
+
+  const lockedCount = results.reduce((count, pool) => count + [
+    ...(pool?.mainPositions || []), ...(pool?.ladderPositions || []), ...(pool?.supportPositions || []), ...(pool?.bootstrap ? [pool.bootstrap] : []),
+  ].filter((position) => position?.locked === true).length, 0);
+  const positionsBlock = `
+    <section class="rail-block">
+      <div class="rail-head"><span class="rail-label">Positions</span>${mint ? `<code title="${escapeHtml(mint)}">${escapeHtml(shortAddress(mint))}</code>` : ''}</div>
+      ${row('Pools', `${launchProofPoolIds(proof).length} <i>of ${plannedPools}</i>`)}
+      ${row('Locked', `${lockedCount}`)}
+      ${spend.measuredCount ? row('Spent', `${sol(spend.outflowSol)} <i>SOL</i>`) : ''}
+    </section>`;
+
   rail.innerHTML = `
     <section class="rail-next${next?.state === 'running' ? ' is-running' : ''}" aria-live="polite">
-      <span class="rail-label">Next</span>
-      <h2>${escapeHtml(title)}</h2>
-      <p>${escapeHtml(detail)}</p>
+      ${action}
       ${irreversible ? '<p class="rail-warn">Cannot be undone.</p>' : ''}
-      ${canAct ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>` : ''}
     </section>
-    <section class="rail-block">
-      <div class="rail-head"><span class="rail-label">Cost</span><small>${escapeHtml(costState)}</small></div>
-      <div class="rail-row"><span>Launch wallet holds</span><b>${funding.hasWalletBalance ? sol(funding.availableSol) : 'Not checked'}</b></div>
-      <div class="rail-row rail-total"><span>Total</span><b>${practice && !estimate ? '—' : total}</b></div>
-    </section>
-    <section class="rail-block">
-      <span class="rail-label">Supply and liquidity</span>
-      <div class="rail-row"><span>Supply</span><b>${escapeHtml(String(config.token.supply || ''))}</b></div>
-      <div class="rail-row"><span>SOL in the pool</span><b>${Number(config.launchSol || 0)}</b></div>
-      <div class="rail-row"><span>Pools</span><b>${poolCount}</b></div>
-    </section>
-    ${mint ? `<section class="rail-block"><span class="rail-label">On-chain</span><div class="rail-row"><span>Mint</span><b>${escapeHtml(shortAddress(mint))}</b></div></section>` : ''}
-  `;
+    ${walletBlock}${fundingBlock}${positionsBlock}`;
 }
 
 // Each phase owns the settings that belong to it, as at most three tabs, the last
@@ -580,7 +609,8 @@ function runLaunchRailAction() {
     return;
   }
   const pane = $(`[data-classic-workspace="${next.id}"]`);
-  const primary = pane && [...pane.querySelectorAll('.primary-button:not([data-next-fact]):not(:disabled)')].find((button) => button.getClientRects().length);
+  // The pane's own button can be hidden (the rail is the one visible button), so it is not required to be visible.
+  const primary = pane && pane.querySelector('.primary-button:not([data-next-fact]):not(:disabled)');
   if (primary) { primary.click(); return; }
   if (next.id === 'configure') $('#tokenName')?.focus();
   else if (next.id === 'wallet') $('.launch-wallet-choice')?.click();

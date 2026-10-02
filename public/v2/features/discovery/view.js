@@ -136,7 +136,7 @@ function renderPersonalDiscovery() {
     || (snapshot
       ? scanSummary
       : enabledWatchOnlyCount + enabledManagedCount > 0
-        ? 'Refresh to find tokens.'
+        ? ''
         : 'Add a wallet first.');
   const progress = state.discovery.job?.progress || {};
   const progressTotal = Math.max(0, Number(progress.total) || 0);
@@ -162,7 +162,7 @@ function renderPersonalDiscovery() {
 
   if (!snapshot) {
     if ($('#personalDiscoveryTokenCount')) $('#personalDiscoveryTokenCount').textContent = '0';
-    $('#personalTokenNetwork').innerHTML = '<div class="discovery-feed-empty">Refresh to find tokens.</div>';
+    $('#personalTokenNetwork').innerHTML = '<div class="discovery-feed-empty">No tokens yet.</div>';
     return;
   }
   const feed = [

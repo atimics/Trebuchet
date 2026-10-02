@@ -149,7 +149,7 @@ function renderFundingWalletHint({ compact = false } = {}) {
     ? `${fullAddress(status.address)} was typed, not proven. Sign with it or use the funding wallet.`
     : status.address
       ? `${fullAddress(status.address)} receives Fee Keys, remaining tokens, and leftover SOL.`
-      : 'Fund the launch wallet from your own wallet. That wallet receives everything after launch.';
+      : '';
   const className = status.kind === 'unverified' ? 'danger' : status.address ? '' : 'warn';
   const detectLabel = hint.checking ? 'Checking history' : 'Find funding wallet';
   return `<div class="funding-wallet-hint ${className} ${compact ? 'compact' : ''}">
@@ -183,7 +183,7 @@ function renderSolflarePanel() {
     ? `Connected as ${fullAddress(state.solflare.publicKey)}.`
     : state.solflare.error
       ? state.solflare.error
-      : 'Optional. Connect it to fund the launch wallet, or to use it as the return wallet.';
+      : '';
 
   return `
     <div class="solflare-panel ${escapeHtml(className)}">

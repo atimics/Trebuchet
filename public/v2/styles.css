@@ -17462,3 +17462,53 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 /* On a phase's action tab the dock is only the strip; its panel follows directly. */
 .setup-dock:has(.is-running-tab) { min-height: 0 !important; height: auto !important; display: block; }
 .setup-dock:has(.is-running-tab) .advanced-launch-controls { min-height: 0; height: auto; }
+
+/* Rail v2: one button, then wallet, funding and positions as plain rows. */
+.launch-next-rail { grid-template-rows: auto; }
+.launch-next-rail .rail-next { gap: 6px; padding: 14px; }
+.launch-next-rail .rail-act { min-height: 48px; font-size: 13px; }
+.launch-next-rail .rail-balance { display: flex; align-items: baseline; gap: 8px; }
+.launch-next-rail .rail-balance b { font-size: 24px; font-weight: 700; line-height: 1.1; }
+.launch-next-rail .rail-balance span { font-size: 12px; color: var(--muted); }
+.launch-next-rail code { font-family: inherit; font-size: 12px; color: var(--muted); }
+.launch-next-rail i { font-style: normal; font-size: 11px; color: var(--muted); }
+.launch-next-rail .rail-row.is-warn b { color: var(--amber); }
+.launch-next-rail .rail-row.is-ok b { color: var(--green); }
+.launch-next-rail .rail-meter { height: 6px; background: var(--line); }
+.launch-next-rail .rail-meter i { display: block; height: 100%; background: var(--green); }
+.launch-next-rail .rail-busy, .launch-next-rail .rail-done { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 12px; border: 1px solid var(--line-strong); font-size: 12px; }
+.launch-next-rail .rail-busy { color: var(--blue); border-color: var(--blue); }
+.launch-next-rail .rail-done { color: var(--green); }
+.launch-next-rail .rail-spin { width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rail-spin 800ms linear infinite; }
+@keyframes rail-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .launch-next-rail .rail-spin { animation: none; } }
+@media (max-width: 1199px) { .launch-next-rail .rail-block { display: none; } }
+
+/* --- Layout audit: fill the window, stop repeating the rail --------------------------- */
+@media (min-width: 901px) {
+  /* Frames run the full height of the window, so the screen reads as one console. */
+  #view-launch .coin-state-layout { min-height: calc(100vh - 150px); align-items: stretch; }
+  #view-launch .coin-state, #view-launch .launch-next-rail, #view-launch .launch-workspace-viewport { align-self: stretch; }
+  #view-wallet .two-column > .surface,
+  #view-discovery .discovery-grid > .surface-main, #view-discovery .discovery-grid > .rail,
+  #view-history .surface-main, #view-settings .two-column > .surface { min-height: calc(100vh - 96px) !important; }
+  #view-launch { padding-bottom: 0; }
+}
+
+/* The Next button is the rail's; the phase panels keep facts, not a second button. */
+[data-classic-workspace="mint"] .launch-step-guide,
+[data-classic-workspace="liquidity"] .launch-step-guide { display: none; }
+[data-classic-workspace="mint"] .execution-readiness .launch-phase-actions,
+[data-classic-workspace="liquidity"] .execution-readiness .launch-phase-actions,
+[data-classic-workspace="finish"] .execution-readiness .launch-phase-actions { display: none; }
+.execution-readiness:not(:has(.risk-badge)):has(.launch-phase-actions) { display: none; }
+.launch-phase-actions:has(> [data-next-fact]:only-child) { display: none; }
+.finalize-panel .launch-phase-actions, .classic-workspace-verify .operator-toolbar { flex-wrap: wrap; }
+
+.launch-next-rail .rail-balance b { font-size: 14px; font-weight: 700; }
+.launch-next-rail .rail-balance b:first-child:not(:only-child) { font-size: 14px; }
+.launch-next-rail .rail-balance.is-amount b { font-size: 24px; }
+
+/* The token name and mark are in the header already; empty readout panels leaked borders below the frame. */
+#launchConsole { display: none !important; }
+#signaturePanel:empty { display: none; }

@@ -25,8 +25,8 @@ function updateResultDetail(result = state.updateCheck.lastResult) {
   if (state.updateCheck.checking) return 'Checking for a newer version…';
   if (!result) {
     return state.updateCheck.available
-      ? 'Not checked yet.'
-      : 'Update checks need the Trebuchet desktop app.';
+      ? ''
+      : 'Needs the desktop app.';
   }
   if (result.status === 'available') {
     return `Version v${result.latest || '?'} is available${result.downloadFilename ? ` / ${result.downloadFilename}` : ''}.`;
@@ -120,7 +120,7 @@ function secretPinMeta() {
     return {
       label: 'Not set',
       className: 'warn',
-      detail: 'Launch wallets are protected by this device only.',
+      detail: '',
       primaryAction: 'setup-secret-pin',
       primaryLabel: 'Set PIN',
       disabled: false,

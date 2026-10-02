@@ -278,10 +278,13 @@ try {
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'mint');
   const mintWorkspace = page.locator('[data-classic-workspace="mint"]');
   assert.match(await mintWorkspace.innerText(), /Review this launch/i);
-  assert.match(await mintWorkspace.innerText(), /Review launch/i);
+  assert.match(await mintWorkspace.textContent(), /Review launch/i);
   assert.doesNotMatch(await mintWorkspace.innerText(), /\/api\/create-token/i);
 
-  await mintWorkspace.locator('[data-action="review-and-arm-run"]').click();
+  // The unnamed token comes first: the rail asks for the name, and shows no second action button.
+  assert.match(await page.locator('#launchNextRail .rail-act').innerText(), /Name the token/i);
+  // The pane keeps its own (hidden) button as the handler; the rail is the visible one.
+  await page.evaluate(() => document.querySelector('[data-classic-workspace="mint"] [data-action="review-and-arm-run"]').click());
   await page.waitForSelector('#approvalFloating.is-open');
   assert.match(await page.locator('#approvalFloating').innerText(), /Review before creating/i);
   assert.match(await page.locator('#approvalFloating').innerText(), /Approving sends nothing/i);
@@ -291,9 +294,9 @@ try {
     state.lastRunEnvelope = { id: 'phase-4-e2e-envelope', status: 'armed' };
     renderAll();
   });
-  await page.waitForSelector('[data-classic-workspace="mint"] [data-action="execute-next-run"]');
+  await page.waitForSelector('[data-classic-workspace="mint"] [data-action="execute-next-run"]', { state: 'attached' });
   assert.match(
-    await page.locator('[data-classic-workspace="mint"] [data-action="execute-next-run"]').innerText(),
+    await page.locator('[data-classic-workspace="mint"] [data-action="execute-next-run"]').textContent(),
     /Create token/i,
   );
 
@@ -317,7 +320,7 @@ try {
     renderAll();
   });
   assert.match(await mintWorkspace.innerText(), /Finish interrupted token/i);
-  assert.match(await mintWorkspace.innerText(), /Finish interrupted token safely/i);
+  assert.match(await mintWorkspace.textContent(), /Finish interrupted token safely/i);
   assert.doesNotMatch(await mintWorkspace.innerText(), /Resume missing work/i);
 
   await page.evaluate(() => {
@@ -371,7 +374,9 @@ try {
 
   await page.click('.coin-fact[data-coin-fact="mint"]');
   await page.click('[data-plan-tab="run"]');
-  await page.click('[data-classic-workspace="mint"] [data-action="run-demo-launch"]');
+  // The rail's one button runs the whole test launch.
+  assert.match(await page.locator('#launchNextRail .rail-act').innerText(), /test launch/i);
+  await page.click('#launchNextRail [data-action="launch-rail-act"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'finish', null, { timeout: 60_000 });
   const finishText = await page.locator('[data-classic-workspace="finish"]').innerText();
   assert.match(finishText, /Test launch complete/i);
