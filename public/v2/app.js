@@ -1927,18 +1927,80 @@ function normalizedSliceText(value) {
   return parseSliceShares(value).map(formatPercent).join(',');
 }
 
+// What the "Position slices" text means, in plain words, so a bare "100" (one
+// position) or "30,30" (scaled up to 50,50) is never a surprise. Mirrors
+// parseSliceShares: the same separators, the same scaling.
+function describeSliceInput(value) {
+  const tokens = String(value || '').split(/[,\s/|]+|[-–—]+/).filter(Boolean);
+  const numbers = tokens.map((token) => parseNumericInput(token, NaN));
+  const rejected = tokens.filter((token, index) => !(Number.isFinite(numbers[index]) && numbers[index] > 0));
+  const valid = numbers.filter((number) => Number.isFinite(number) && number > 0);
+  const rawTotal = valid.reduce((sum, number) => sum + number, 0);
+  const slices = parseSliceShares(value);
+  const list = slices.map((share) => `${formatPercent(share)}%`).join(' + ');
+  const parts = [];
+  let tone = 'ok';
+  if (rejected.length) {
+    tone = 'warn';
+    parts.push(`Ignored: ${rejected.slice(0, 3).join(', ')}${rejected.length > 3 ? ', ...' : ''}.`);
+  }
+  if (!valid.length) {
+    parts.push(tokens.length ? 'No usable numbers, so one position (100%).' : 'Empty, so one position (100%).');
+  } else if (slices.length === 1) {
+    parts.push('1 position, all of this pool.');
+  } else {
+    parts.push(`${slices.length} positions: ${list}.`);
+  }
+  if (valid.length && Math.abs(rawTotal - 100) > 0.005) {
+    tone = 'warn';
+    parts.push(`Your numbers total ${formatPercent(rawTotal)}, so they are scaled to 100%.`);
+  }
+  return { slices, rawTotal, rejected, tone, invalid: rejected.length > 0, text: parts.join(' ') };
+}
+
+// Limits for the numeric fields of a pool's advanced panel. The launch plan
+// clamps to these; the panel says so instead of changing the number silently.
+function checkPoolNumberField(kind, raw) {
+  const text = String(raw ?? '').trim();
+  const spec = {
+    premium: { min: 0, max: 500, fallback: 25, blank: 'fallback', unit: '%' },
+    ladderBands: { min: 0, max: CLASSIC_LADDER_MAX_BANDS, fallback: 0, blank: 'zero', whole: true, unit: ' bands' },
+    supportSol: { min: 0, max: Infinity, fallback: 0, blank: 'zero', unit: ' SOL' },
+  }[kind];
+  if (!spec) return { value: Number(raw), issue: null };
+  const range = Number.isFinite(spec.max) ? `0 to ${spec.max}` : '0 or more';
+  if (!text) {
+    return spec.blank === 'zero'
+      ? { value: 0, issue: null }
+      : { value: spec.fallback, issue: `Enter a number from ${range}. Using ${spec.fallback}${spec.unit}.` };
+  }
+  const number = parseNumericInput(text, NaN);
+  if (!Number.isFinite(number)) return { value: spec.fallback, issue: `"${text.slice(0, 12)}" is not a number. Using ${spec.fallback}${spec.unit}.` };
+  if (number < spec.min) return { value: spec.min, issue: `Cannot be below ${spec.min}. Using ${spec.min}${spec.unit}.` };
+  if (number > spec.max) return { value: spec.max, issue: `The most allowed is ${spec.max}${spec.unit}. Using ${spec.max}${spec.unit}.` };
+  if (spec.whole && !Number.isInteger(number)) return { value: Math.floor(number), issue: `Whole numbers only. Using ${Math.floor(number)}.` };
+  return { value: number, issue: null };
+}
+
 function isProbablySolanaAddress(value) {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(value || '').trim());
 }
 
 function parseManualLadderBands(value) {
+  return analyzeManualLadder(value).bands;
+}
+
+// Reads the custom ladder text. Lines it cannot use are listed in `rejected`
+// (1-based line numbers) so the panel can say which ones were skipped.
+// Blank lines, # comments and a header line are skipped on purpose.
+function analyzeManualLadder(value) {
   const bands = [];
+  const rejected = [];
   String(value || '')
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .forEach((line) => {
-      if (line.startsWith('#')) return;
+    .forEach((rawLine, lineIndex) => {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) return;
       const parts = line.split(/[,\t ]+/).map((part) => part.trim()).filter(Boolean);
       if (!parts.length || /supply/i.test(parts[0])) return;
       const supplyPercent = parseNumericInput(parts[0], NaN);
@@ -1957,9 +2019,11 @@ function parseManualLadderBands(value) {
           lowerMultiplier: Number(lowerMultiplier.toFixed(4)),
           upperMultiplier: Number(upperMultiplier.toFixed(4)),
         });
+      } else {
+        rejected.push({ line: lineIndex + 1, text: line });
       }
     });
-  return bands;
+  return { bands, rejected };
 }
 
 function classicSimpleLadderConfig(bandCount) {
@@ -7163,6 +7227,7 @@ function renderSupplyEditor() {
     target.querySelector('.supply-total')?.replaceWith(
       document.createRange().createContextualFragment(totalHtml),
     );
+    renderPoolControlFeedback(target);
     renderReturnWalletCard();
     return;
   }
@@ -7175,17 +7240,28 @@ function renderSupplyEditor() {
     });
   }
 
-  const field = (label, hint, control) => (
-    `<label class="supply-field"><span>${escapeHtml(label)}</span>${control}${hint ? `<small>${escapeHtml(hint)}</small>` : ''}</label>`
-  );
+  // Each field names its control (aria-labelledby) and describes it with its
+  // hint and live feedback (aria-describedby), so the helper text is not
+  // read as part of the name. `feedback` names the live message under it.
+  let fieldSeq = 0;
+  const field = (label, hint, control, feedback = '', wide = false) => {
+    const base = `supply-field-${++fieldSeq}`;
+    const described = [hint ? `${base}-hint` : '', feedback ? `${base}-note` : ''].filter(Boolean).join(' ');
+    const wired = control.replace(/^\s*<(input|textarea|select)/, (match) => (
+      `${match} aria-labelledby="${base}-label"${described ? ` aria-describedby="${described}"` : ''}`
+    ));
+    return `<label class="supply-field${wide ? ' supply-field-wide' : ''}"><span id="${base}-label">${escapeHtml(label)}</span>${wired}${hint ? `<small id="${base}-hint">${escapeHtml(hint)}</small>` : ''}${feedback ? `<small class="supply-feedback" id="${base}-note" data-feedback="${feedback}" role="status"></small>` : ''}</label>`;
+  };
+  const SLICE_HINT = 'Percent of the pool in each locked position, e.g. 50,50. A single 100 is one position.';
+  const LADDER_HINT = `Extra liquidity bands at higher prices. 0 to ${CLASSIC_LADDER_MAX_BANDS}. 0 = off.`;
   const settingsHtml = (row) => {
     if (row.key === 'sol') {
       return `
-        ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-supply-target="#sliceShares" data-supply-key="sol:slices" value="${escapeHtml($('#sliceShares').value)}" autocomplete="off">`)}
-        ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="text" inputmode="numeric" autocomplete="off" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`)}
-        ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`)}
+        ${field('Position slices', SLICE_HINT, `<input data-supply-target="#sliceShares" data-supply-key="sol:slices" value="${escapeHtml($('#sliceShares').value)}" autocomplete="off">`, 'slices')}
+        ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`, 'ladder')}
+        ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`, 'support')}
         ${field('Support depth %', 'How far below the start price support reaches.', `<input type="text" inputmode="numeric" autocomplete="off" data-base-field="baseSupportDepth" data-supply-key="sol:depth" value="${escapeHtml(state.baseSupportDepth)}">`)}
-        <label class="supply-field supply-field-wide"><span>Custom ladder</span><textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea><small>Replaces ladder bands when set.</small></label>
+        ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea>`, 'manual', true)}
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>`;
     }
     const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
@@ -7193,12 +7269,12 @@ function renderSupplyEditor() {
     const id = escapeHtml(pool.id);
     const key = escapeHtml(row.key);
     return `
-      ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-choice="slider" data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
-      ${field('Start above SOL price %', 'Opens this pair above the SOL pool price, so the pair token can fall this far before bots can drain SOL buyers.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="startPremiumPct" data-pool-id="${id}" data-supply-key="${key}:premium" value="${escapeHtml(pool.startPremiumPct ?? state.pairStartPremiumPct)}">`)}
-      ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`)}
-      ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`)}
-      ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`)}
-      <label class="supply-field supply-field-wide"><span>Custom ladder</span><textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea><small>Replaces ladder bands when set.</small></label>
+      ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-choice="slider" data-choice-readout data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
+      ${field('Start above SOL price %', 'Opens this pair above the SOL pool price, so the pair token can fall this far before bots can drain SOL buyers. 0 to 500.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="startPremiumPct" data-pool-id="${id}" data-supply-key="${key}:premium" value="${escapeHtml(pool.startPremiumPct ?? state.pairStartPremiumPct)}">`, 'premium')}
+      ${field('Position slices', SLICE_HINT, `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`, 'slices')}
+      ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`, 'ladder')}
+      ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`, 'support')}
+      ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea>`, 'manual', true)}
       <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
 `;
   };
@@ -7241,7 +7317,85 @@ function renderSupplyEditor() {
     ${totalHtml}`;
 
   target.dataset.rendered = '1';
+  renderPoolControlFeedback(target);
   renderReturnWalletCard();
+}
+
+// Says what each advanced pool control will do with what was typed, next to
+// the control: what the slices mean, which numbers were out of range, which
+// ladder lines were skipped, and that a custom ladder replaces ladder bands.
+function renderPoolControlFeedback(target) {
+  target.querySelectorAll('.supply-settings').forEach((panel) => {
+    const input = (suffix) => panel.querySelector(`[data-supply-key$="${suffix}"]`);
+    const say = (name, text, tone = 'ok') => {
+      const note = panel.querySelector(`[data-feedback="${name}"]`);
+      if (!note) return;
+      if (note.textContent !== text) note.textContent = text;
+      note.classList.toggle('is-warn', tone === 'warn');
+    };
+    const flag = (control, bad) => {
+      if (!control) return;
+      if (bad) control.setAttribute('aria-invalid', 'true');
+      else control.removeAttribute('aria-invalid');
+    };
+
+    const slices = input(':slices');
+    if (slices) {
+      const info = describeSliceInput(slices.value);
+      say('slices', info.text, info.tone);
+      flag(slices, info.invalid);
+    }
+
+    const manual = input(':manual');
+    const ladder = analyzeManualLadder(manual?.value);
+    if (manual) {
+      const parts = [];
+      if (ladder.bands.length) {
+        const used = ladder.bands.reduce((sum, band) => sum + band.supplyPercent, 0);
+        parts.push(`${ladder.bands.length} band${ladder.bands.length === 1 ? '' : 's'} used, ${Number(used.toFixed(2))}% of supply.`);
+      }
+      if (ladder.rejected.length) {
+        const shown = ladder.rejected.slice(0, 3).map((item) => `line ${item.line} "${item.text.slice(0, 24)}"`).join(', ');
+        parts.push(`Skipped ${shown}${ladder.rejected.length > 3 ? ` and ${ladder.rejected.length - 3} more` : ''}. Each band needs supply%, low× (1 or more) and high× (above low).`);
+      }
+      say('manual', parts.join(' '), ladder.rejected.length ? 'warn' : 'ok');
+      flag(manual, ladder.rejected.length > 0);
+    }
+
+    const bands = input(':ladder');
+    if (bands) {
+      const replaced = ladder.bands.length > 0;
+      // The plan uses the custom ladder and ignores this number, so the
+      // field is switched off while it has no effect.
+      bands.disabled = replaced;
+      const check = checkPoolNumberField('ladderBands', bands.value);
+      say('ladder', replaced ? 'Not used: the Custom ladder below replaces it.' : check.issue || '', replaced || check.issue ? 'warn' : 'ok');
+      flag(bands, !replaced && Boolean(check.issue));
+    }
+    [['premium', ':premium', 'premium'], ['support', ':support', 'supportSol']].forEach(([name, suffix, kind]) => {
+      const control = input(suffix);
+      if (!control) return;
+      const check = checkPoolNumberField(kind, control.value);
+      say(name, check.issue || '', check.issue ? 'warn' : 'ok');
+      flag(control, Boolean(check.issue));
+    });
+  });
+}
+
+// When a number field is left, show the value the plan will use. Typing is
+// never interrupted; this runs on the change event only.
+function commitPoolControl(control) {
+  const key = control?.dataset?.supplyKey || '';
+  const kind = key.endsWith(':premium') ? 'premium'
+    : key.endsWith(':ladder') ? 'ladderBands'
+      : key.endsWith(':support') ? 'supportSol' : null;
+  if (!kind || !control.closest?.('.supply-settings')) return;
+  const check = checkPoolNumberField(kind, control.value);
+  if (check.issue === null && control.value.trim() !== '') return;
+  const label = { premium: 'Start premium', ladderBands: 'Ladder bands', supportSol: 'Support SOL' }[kind];
+  control.value = String(check.value);
+  control.dispatchEvent(new Event('input', { bubbles: true }));
+  if (check.issue) notify(`${label}: ${check.issue}`);
 }
 
 function renderPoolEditorPanel() {
@@ -7263,7 +7417,7 @@ function renderPoolEditorPanel() {
           <label><span>Quote symbol</span><input data-custom-pool-field="quoteSymbol" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.quoteSymbol || '')}" autocomplete="off"></label>
           <label><span>Quote mint</span><input data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.quoteMint || '')}" placeholder="Mint address" autocomplete="off"></label>
           <label><span>Supply %</span><input data-custom-pool-field="supplyPercent" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="100" step="0.1" value="${escapeHtml(pool.supplyPercent ?? 5)}"></label>
-          <label><span>Fee tier</span><select data-choice="slider" data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(pool.id)}">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select></label>
+          <label><span>Fee tier</span><select data-choice="slider" data-choice-readout data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(pool.id)}">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select></label>
           <label><span>Slices</span><input data-custom-pool-field="sliceShares" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.sliceShares || '100')}" autocomplete="off"></label>
           <label><span>Ladder bands</span><input data-custom-pool-field="ladderBands" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" value="${escapeHtml(pool.ladderBands ?? 0)}"></label>
           <label><span>Support SOL</span><input data-custom-pool-field="supportSol" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" step="0.05" value="${escapeHtml(pool.supportSol ?? 0)}"></label>
@@ -18837,14 +18991,17 @@ function removeCustomPool(poolId) {
 }
 
 function normalizeAllSlices() {
+  const before = [$('#sliceShares').value, ...state.customPools.map((pool) => pool.sliceShares ?? '100')];
   $('#sliceShares').value = normalizedSliceText($('#sliceShares').value);
   state.customPools = state.customPools.map((pool) => ({
     ...pool,
     sliceShares: normalizedSliceText(pool.sliceShares || '100'),
   }));
+  const after = [$('#sliceShares').value, ...state.customPools.map((pool) => pool.sliceShares)];
+  const changed = after.some((value, index) => value !== before[index]);
   invalidateClassicOutputs();
   renderAll();
-  notify('Slice percentages rounded to 100%');
+  notify(changed ? 'Slice percentages rounded to 100%' : 'Slices already add up to 100%');
 }
 
 function setAirdropText(value) {
@@ -25231,6 +25388,7 @@ function bindEvents() {
   // A pasted pair mint resolves its symbol as soon as the field is left.
   document.addEventListener('change', (event) => {
     if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary(); if (['tokenName', 'tokenSymbol'].includes(event.target?.id)) { renderCoinContext(); renderWorkingCoinCards(); }
+    commitPoolControl(event.target);
     const mint = event.target.closest?.('.supply-mint');
     if (mint?.value.trim()) {
       resolveCustomQuoteToken(mint.dataset.poolId).catch((error) => notify(error.message || 'Token lookup failed'));
@@ -25542,7 +25700,10 @@ function syncChoiceControl(select) {
   if (range) {
     range.value = String(Math.max(0, select.selectedIndex));
     range.disabled = select.disabled;
-    range.setAttribute('aria-valuetext', select.options[select.selectedIndex]?.textContent?.trim() || '');
+    const valueText = select.options[select.selectedIndex]?.textContent?.trim() || '';
+    range.setAttribute('aria-valuetext', valueText);
+    const readout = control.querySelector('.choice-readout');
+    if (readout && readout.textContent !== valueText) readout.textContent = valueText;
   }
   control.querySelectorAll('button[data-choice-index]').forEach((button) => {
     const on = Number(button.dataset.choiceIndex) === select.selectedIndex;
@@ -25563,13 +25724,21 @@ function enhanceChoiceControls(root = document) {
     const name = select.getAttribute('aria-label')
       || select.closest('label')?.querySelector('span')?.textContent?.trim()
       || 'Choice';
+    // On a slider the range input is the keyboard control, so its labels are
+    // a mouse shortcut only: not tab stops, and hidden from screen readers
+    // (the range announces the chosen value).
     const labels = [...select.options].map((option, index) => (
-      `<button type="button" role="radio" data-choice-index="${index}">${escapeHtml(option.dataset.short || option.textContent.trim())}</button>`
+      `<button type="button" role="radio" data-choice-index="${index}"${kind === 'slider' ? ' tabindex="-1"' : ''}>${escapeHtml(option.dataset.short || option.textContent.trim())}</button>`
     )).join('');
     const control = document.createElement('div');
-    control.className = `choice-control is-${kind}`;
+    control.className = `choice-control is-${kind}${kind === 'slider' && select.options.length > 9 ? ' has-many' : ''}`;
+    // A long list wraps onto two rows, so the labels cannot line up with the
+    // thumb. A readout above the track states the chosen value instead.
+    const readout = kind === 'slider' && select.hasAttribute('data-choice-readout')
+      ? '<output class="choice-readout" aria-hidden="true"></output>'
+      : '';
     control.innerHTML = kind === 'slider'
-      ? `<input type="range" min="0" max="${select.options.length - 1}" step="1" aria-label="${escapeHtml(name)}"><div class="choice-ticks" role="radiogroup" aria-label="${escapeHtml(name)}">${labels}</div>`
+      ? `${readout}<input type="range" min="0" max="${select.options.length - 1}" step="1" aria-label="${escapeHtml(name)}"><div class="choice-ticks" role="radiogroup" aria-hidden="true" aria-label="${escapeHtml(name)}">${labels}</div>`
       : `<div class="choice-buttons" role="radiogroup" aria-label="${escapeHtml(name)}">${labels}</div>`;
     control.addEventListener('input', (event) => {
       if (event.target.matches('input[type="range"]')) chooseOption(select, Number(event.target.value));

@@ -17159,3 +17159,67 @@ body[data-launch-identity="active"] #view-launch .primary-button:not(.custody-ac
 .hub-picker-result code { overflow-wrap: anywhere; font-size: 11px; }
 .hub-picker-result button { justify-self: start; }
 .hub-picker-status:empty { display: none; }
+
+/* Per-pool advanced controls: readable helper text, live feedback, and a
+   fee-tier readout that names the chosen value. */
+.supply-field > span {
+  color: var(--ink);
+}
+
+.supply-field > small {
+  color: var(--muted);
+}
+
+.supply-feedback {
+  color: var(--muted);
+}
+
+.supply-feedback:empty {
+  display: none;
+}
+
+.supply-feedback.is-warn {
+  padding-left: 8px;
+  border-left: 2px solid var(--amber);
+  color: var(--ink);
+}
+
+.supply-field input[aria-invalid="true"],
+.supply-field textarea[aria-invalid="true"] {
+  border-color: var(--red);
+}
+
+.supply-field input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.choice-readout {
+  display: block;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.choice-ticks[aria-hidden="true"] button {
+  cursor: pointer;
+}
+
+/* Many labels: equal columns that wrap onto rows, so none sit at ragged
+   gaps. They are a shortcut; the readout and the thumb give the value. */
+.choice-control.has-many .choice-ticks {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  justify-content: stretch;
+  gap: 2px;
+}
+
+.choice-control.has-many .choice-ticks button {
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .choice-control.has-many .choice-ticks {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
