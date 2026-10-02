@@ -20,6 +20,7 @@ import {
 } from '../v2LaunchPlan.js';
 
 const serverSource = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+const serviceSource = readFileSync(new URL('../launchExecution.js', import.meta.url), 'utf8');
 const coreExecutionContextSource = readFileSync(new URL('../packages/core/src/v2-execution-context.js', import.meta.url), 'utf8');
 const VALID_SWEEP_DESTINATION = 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j';
 const VALID_ROUND_TRIP_DESTINATION = 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j';
@@ -80,6 +81,23 @@ const VALID_JPEG_LOGO_BYTES = jpegLogoBytes(64, 64);
 const VALID_JPEG_LOGO_DATA_URL = logoDataUrl('image/jpeg', VALID_JPEG_LOGO_BYTES);
 const VALID_GIF_LOGO_BYTES = gifLogoBytes(64, 64);
 const VALID_GIF_LOGO_DATA_URL = logoDataUrl('image/gif', VALID_GIF_LOGO_BYTES);
+
+test('new launch defaults use $25,000 and Raydium 0.25% pools', () => {
+  const token = { name: 'New Token', symbol: 'NEW', supply: '1000000000' };
+  const fresh = buildV2LaunchPlan({ token }, { demoMode: true });
+  assert.equal(fresh.poolTopology.targetMarketCapUsd, 25000);
+  assert.deepEqual(fresh.poolTopology.pools.map((pool) => pool.ammConfigIndex), [1, 1]);
+
+  const existing = buildV2LaunchPlan({
+    token,
+    poolTopology: {
+      targetMarketCapUsd: 250000,
+      pools: [{ quoteToken: 'SOL', supplyPercent: 100, ammConfigIndex: 8 }],
+    },
+  }, { demoMode: true });
+  assert.equal(existing.poolTopology.targetMarketCapUsd, 250000);
+  assert.equal(existing.poolTopology.pools[0].ammConfigIndex, 8);
+});
 
 test('buildV2LaunchPlan returns a normalized local-wallet run contract', () => {
   const input = {
@@ -3135,16 +3153,16 @@ test('server exposes the v2 launch-plan contract as an authenticated API route',
   assert.match(serverSource, /preflightCreatePoolsAndPositions\(\{/);
   assert.match(serverSource, /code = 'V2_LP_PREFLIGHT_FAILED'/);
   assert.match(serverSource, /error\?\.errorDetails/);
-  assert.match(serverSource, /invokeJsonHandler\(createTokenHandler, readiness\.classicPayloads\.createToken\)/);
+  assert.match(serverSource, /launchServices\.createToken\(readiness\.classicPayloads\.createToken\)/);
   assert.ok(
     serverSource.indexOf('runV2ClassicLpPreflight(readiness.classicPayloads.preflightCreateLp)') <
-      serverSource.indexOf('invokeJsonHandler(createLpHandler, readiness.classicPayloads.createLp)'),
+      serverSource.indexOf('launchServices.createLiquidity(readiness.classicPayloads.createLp)'),
     'v2 execute-next must run Classic LP preflight before create-lp',
   );
   assert.match(serverSource, /v2Preflight: preflight/);
-  assert.match(serverSource, /invokeJsonHandler\(createLpHandler, readiness\.classicPayloads\.createLp\)/);
-  assert.match(serverSource, /invokeJsonHandler\(resumeLaunchHandler, readiness\.classicPayloads\.resumeLaunch\)/);
-  assert.match(serverSource, /invokeJsonHandler\(transferAssetsHandler, readiness\.classicPayloads\.transferAssets\)/);
+  assert.match(serverSource, /launchServices\.createLiquidity\(readiness\.classicPayloads\.createLp\)/);
+  assert.match(serverSource, /launchServices\.resumeLiquidity\(readiness\.classicPayloads\.resumeLaunch\)/);
+  assert.match(serverSource, /launchServices\.transferAssets\(readiness\.classicPayloads\.transferAssets\)/);
   assert.match(serverSource, /confirmNextEndpoint/);
   assert.match(serverSource, /parseImportedWalletSecret/);
   assert.match(serverSource, /pendingWallets\.add/);
@@ -3159,13 +3177,13 @@ test('server exposes the v2 launch-plan contract as an authenticated API route',
   assert.match(serverSource, /assertClassicLogoDimensions\(req\.file\.buffer\)/);
   assert.match(serverSource, /assertClassicLogoDimensions\(decoded\)/);
   assert.match(serverSource, /function validateTransferAirdropPayload/);
-  assert.match(serverSource, /validateTransferAirdropPayload\(req\.body\.airdrop\)/);
+  assert.match(serviceSource, /validateTransferAirdropPayload\(input\.airdrop\)/);
   assert.match(serverSource, /let reportTransferEvidenceHash = null/);
   assert.match(serverSource, /sweepEvidenceHash: reportTransferEvidenceHash/);
   assert.match(serverSource, /priorMatchesTransferEvidence/);
   assert.ok(
-    serverSource.indexOf('validateTransferAirdropPayload(req.body.airdrop)') <
-      serverSource.indexOf('const nftSweep = await sweepNftsToDestination'),
+    serviceSource.indexOf('validateTransferAirdropPayload(input.airdrop)') <
+      serviceSource.indexOf('const nftSweep = await sweepNftsToDestination'),
     'transfer-assets must validate airdrop payload before any sweep work starts',
   );
   assert.ok(

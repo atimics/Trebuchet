@@ -59,3 +59,22 @@ packet.
   must stay inside the packet directory).
 - The runner runs as an unprivileged user in a minimal image
   (node:22-slim + Core source + runner source, nothing else).
+## Packet input checks
+
+The runner parses the complete archive before extraction. Limits are 20 MiB compressed, 40 MiB expanded, 10 MiB per file, and 256 entries. Entries must use portable relative paths and regular files or directories. Every input is listed in the manifest, and rebuilding the plan from `launch.json` must reproduce the verified plan digest. The packet builder omits macOS metadata sidecars. Rebuild older archives that include those sidecars.
+
+## Signed packet approval
+
+Set `TREBUCHET_OPERATOR_KEY` to the operator's raw Ed25519 public key in lowercase hex. Set `TREBUCHET_RUNNER_NETWORK` to `devnet`, `mainnet`, or `demo`; its default is `devnet`. These values are trusted host settings.
+
+Build a plan with its launch wallet public key, then create the packet. Sign its exact manifest with the CLI:
+
+```bash
+trebuchet packet approve --manifest packet/manifest.json --plan packet/plan.json \
+  --keyfile operator.custody.json --network devnet --max-spend-sol 2 \
+  --out packet-approval.json --json
+```
+
+The command reads `TREBUCHET_CUSTODY_PASSPHRASE`. Store the approval beside the packet so the signed manifest stays fixed. The envelope binds the manifest hash, plan digest, operator public key, launch wallet, network, expiry, and an integer lamport ceiling.
+
+After upload, `POST /v1/packets/:packetId/approval` accepts `{ "approval": <envelope> }`. The runner rechecks the stored files and compares the signature with its configured operator and network. Launch requests to a configured runner pass this same check before reaching the execution gate. The shared engine will enforce the ceiling on transaction submission.

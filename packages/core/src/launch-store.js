@@ -177,7 +177,7 @@ export function normalizeSavedLaunchConfig(config = {}) {
   };
 }
 
-function normalizeEntry(raw) {
+export function normalizeEntry(raw) {
   if (!raw || typeof raw !== 'object' || !raw.id) return null;
   try {
     return {
@@ -202,13 +202,14 @@ function normalizeEntry(raw) {
  *   filePath  absolute path of the store file (required)
  *   onWarn/onError  reporting callbacks for non-fatal storage problems
  */
-export function createLaunchStore({ filePath, onWarn = () => {}, onError = () => {} } = {}) {
+export function createLaunchStore({ filePath, storage = null, onWarn = () => {}, onError = () => {} } = {}) {
   if (!filePath || typeof filePath !== 'string') {
     throw new Error('createLaunchStore requires a filePath');
   }
   const file = path.resolve(filePath);
 
   const load = () => {
+    if (storage) return storage.load().map(normalizeEntry);
     try {
       if (!fs.existsSync(file)) return [];
       const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -221,6 +222,7 @@ export function createLaunchStore({ filePath, onWarn = () => {}, onError = () =>
   };
 
   const persist = (list) => {
+    if (storage) return storage.save(list.slice(-MAX_SAVED_LAUNCHES));
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
@@ -231,7 +233,7 @@ export function createLaunchStore({ filePath, onWarn = () => {}, onError = () =>
     }
   };
 
-  return {
+  const api = {
     filePath: file,
 
     list() {
@@ -291,4 +293,11 @@ export function createLaunchStore({ filePath, onWarn = () => {}, onError = () =>
       return true;
     },
   };
+  if (storage) {
+    for (const key of ['save', 'remove']) {
+      const method = api[key];
+      api[key] = (...args) => storage.transaction(() => method.apply(api, args));
+    }
+  }
+  return api;
 }

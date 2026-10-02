@@ -61,6 +61,9 @@ async function smokeViewport(browser, viewport) {
 
   try {
     await page.goto(v2Url, { waitUntil: 'load' });
+    // The app opens on Coins; creating a token starts from "New coin".
+    await page.waitForSelector('#view-coins.is-active', { timeout: 10_000 });
+    await page.click('[data-action="new-coin"]');
     await page.waitForSelector('#view-launch.is-active', { timeout: 10_000 });
     await page.waitForFunction(
       () => document.querySelector('#tokenomicsChart svg')
@@ -70,109 +73,27 @@ async function smokeViewport(browser, viewport) {
       { timeout: 10_000 },
     );
 
-    const guidedMetrics = await page.evaluate(() => {
-      const rectFor = (selector) => {
-        const element = document.querySelector(selector);
-        if (!element) return null;
-        const rect = element.getBoundingClientRect();
-        return {
-          width: rect.width,
-          height: rect.height,
-          top: rect.top,
-          left: rect.left,
-          right: rect.right,
-          bottom: rect.bottom,
-        };
-      };
-      return {
-        experienceMode: document.body.dataset.experienceMode,
-        welcomeText: document.querySelector('#guidedLaunchFlow')?.textContent || '',
-        setupHelp: document.querySelector('#setupHelp')?.textContent || '',
-        scrollWidth: document.documentElement.scrollWidth,
-        clientWidth: document.documentElement.clientWidth,
-        sidebarVisible: Boolean(document.querySelector('.sidebar')?.getClientRects().length),
-        topbarVisible: Boolean(document.querySelector('.topbar')?.getClientRects().length),
-        visibleAdvancedChrome: [
-          '.cockpit-heading',
-          '.launch-summary-drawer',
-          '#launchWorkspaceTabs',
-          '.launch-choice-bar',
-        ].filter((selector) => document.querySelector(selector)?.getClientRects().length),
-        rects: {
-          flow: rectFor('#guidedLaunchFlow'),
-          welcome: rectFor('.guided-form-card'),
-        },
-      };
-    });
-    assert.equal(guidedMetrics.experienceMode, 'guided', `${viewport.name}: guided launch is not the default experience`);
-    assert.match(guidedMetrics.welcomeText, /What are you launching\?/);
-    assert.match(guidedMetrics.welcomeText, /Continue to liquidity pairs/);
-    assert.match(guidedMetrics.setupHelp, /no transaction · 0 SOL/i);
-    assert.equal(guidedMetrics.sidebarVisible, false, `${viewport.name}: Guided Mode still shows the app sidebar`);
-    assert.equal(guidedMetrics.topbarVisible, false, `${viewport.name}: Guided Mode still shows the terminal header`);
-    assert.deepEqual(
-      guidedMetrics.visibleAdvancedChrome,
-      [],
-      `${viewport.name}: Guided Mode exposes advanced launch chrome`,
-    );
+    // One launch flow: it opens on Token & pools with the app chrome visible.
+    const firstOpen = await page.evaluate(() => ({
+      experienceMode: document.body.dataset.experienceMode || null,
+      workspace: document.body.dataset.launchWorkspace,
+      setupHelp: document.querySelector('#setupHelp')?.textContent || '',
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+      tabsVisible: Boolean(document.querySelector('#coinState')?.getClientRects().length),
+      tokenNameVisible: Boolean(document.querySelector('#tokenName')?.getClientRects().length),
+    }));
+    assert.equal(firstOpen.experienceMode, null, `${viewport.name}: a separate experience mode is back`);
+    assert.equal(firstOpen.workspace, 'configure', `${viewport.name}: launch does not open on Token & pools`);
+    assert.match(firstOpen.setupHelp, /nothing is sent/i);
+    assert.equal(firstOpen.tabsVisible, true, `${viewport.name}: coin facts are hidden`);
+    assert.equal(firstOpen.tokenNameVisible, true, `${viewport.name}: token name field is hidden`);
     assert.ok(
-      guidedMetrics.scrollWidth <= guidedMetrics.clientWidth + 1,
-      `${viewport.name}: guided launch overflows horizontally`,
+      firstOpen.scrollWidth <= firstOpen.clientWidth + 1,
+      `${viewport.name}: launch overflows horizontally`,
     );
-    for (const selector of ['flow', 'welcome']) {
-      assertRectVisible(guidedMetrics.rects[selector], `guided ${selector}`, viewport);
-    }
 
-    await page.fill('[data-guided-field="name"]', 'First Launch');
-    await page.fill('[data-guided-field="symbol"]', 'FIRST');
-    await page.click('[data-action="guided-next"]');
-    const guidedConsoleSkin = await page.evaluate(() => {
-      const bodyStyle = getComputedStyle(document.body);
-      const formStyle = getComputedStyle(document.querySelector('.guided-form-card'));
-      const strategyStyle = getComputedStyle(document.querySelector('.guided-strategy-preview strong'));
-      return {
-        fontFamily: bodyStyle.fontFamily,
-        formRadius: formStyle.borderTopLeftRadius,
-        formShadow: formStyle.boxShadow,
-        strategyFontSize: Number.parseFloat(strategyStyle.fontSize),
-      };
-    });
-    assert.match(guidedConsoleSkin.fontFamily, /JetBrains Mono|SFMono-Regular|Consolas/);
-    assert.equal(guidedConsoleSkin.formRadius, '0px', `${viewport.name}: Guided Mode still uses rounded glass panels`);
-    assert.equal(guidedConsoleSkin.formShadow, 'none', `${viewport.name}: Guided Mode still uses floating card shadows`);
-    assert.ok(guidedConsoleSkin.strategyFontSize <= 12, `${viewport.name}: Step 3 strategy copy is oversized`);
-    await page.click('[data-action="guided-value-preset"][data-value="100000"]');
-    // Review, then Fund, then Launch.
-    for (let step = 0; step < 3; step += 1) await page.click('[data-action="guided-next"]');
-
-    const guidedReview = await page.evaluate(() => {
-      const visibleAdvancedPanes = Array.from(document.querySelectorAll('[data-launch-pane]'))
-        .filter((panel) => panel.id !== 'guidedRunShell'
-          && !panel.classList.contains('setup-dock')
-          && !panel.closest('#guidedLaunchFlow')
-          && !panel.hidden
-          && panel.getClientRects().length > 0)
-        .map((panel) => panel.id || panel.className || panel.tagName);
-      return {
-        text: document.querySelector('#guidedLaunchFlow')?.textContent || '',
-        runLabel: document.querySelector('[data-action="guided-practice"]')?.textContent?.trim() || '',
-        actionRect: (() => {
-          const element = document.querySelector('[data-action="guided-practice"]');
-          if (!element) return null;
-          const rect = element.getBoundingClientRect();
-          return { width: rect.width, height: rect.height, top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom };
-        })(),
-        visibleAdvancedPanes,
-      };
-    });
-    assert.match(guidedReview.text, /Ready to launch/);
-    assert.match(guidedReview.runLabel, /Start practice launch/);
-    assertRectVisible(guidedReview.actionRect, 'guided practice action', viewport);
-    assert.deepEqual(guidedReview.visibleAdvancedPanes, [], `${viewport.name}: guided review exposes advanced wallet operations`);
-
-    await page.click('.guided-advanced-shortcut');
-    await page.waitForFunction(() => document.body.dataset.experienceMode === 'advanced');
-    await page.click('.launch-workspace-tab[data-launch-workspace="configure"]');
+    await page.click('.coin-fact[data-coin-fact="configure"]');
 
     const collapsedMetrics = await page.evaluate(() => {
       const cockpit = document.querySelector('.launch-summary-drawer');
@@ -190,6 +111,16 @@ async function smokeViewport(browser, viewport) {
         workspace: rect(workspace),
         shell: rect(shell),
         workspaceOverflowY: workspace ? getComputedStyle(workspace).overflowY : null,
+        viewOverflowY: getComputedStyle(document.querySelector('#view-launch')).overflowY,
+        viewScrollHeight: document.querySelector('#view-launch').scrollHeight,
+        viewTop: document.querySelector('#view-launch').getBoundingClientRect().top,
+        // Anything inside the screen that scrolls on its own.
+        nestedScrollers: [...document.querySelectorAll('#view-launch *')].filter((element) => {
+          const style = getComputedStyle(element);
+          return element.offsetParent !== null
+            && /(auto|scroll)/.test(style.overflowY)
+            && element.scrollHeight > element.clientHeight + 2;
+        }).map((element) => element.id || element.className).slice(0, 5),
         docScrollHeight: document.documentElement.scrollHeight,
       };
     });
@@ -232,7 +163,7 @@ async function smokeViewport(browser, viewport) {
           tokenomicsChart: rectFor('#tokenomicsChart'),
           liquidityChart: rectFor('#liquidityChart'),
           fundingMeter: rectFor('#fundingMeter'),
-          workspaceTabs: rectFor('#launchWorkspaceTabs'),
+          workspaceTabs: rectFor('#coinState'),
           workspaceViewport: rectFor('#launchWorkspaceViewport'),
           actionPanel: rectFor('.cockpit-board .action-panel'),
           setupDock: rectFor('.setup-dock'),
@@ -242,15 +173,15 @@ async function smokeViewport(browser, viewport) {
 
     const workspaceStates = {};
     for (const workspace of ['wallet', 'configure', 'fund', 'mint', 'liquidity', 'finish']) {
-      await page.click(`.launch-workspace-tab[data-launch-workspace="${workspace}"]`);
+      await page.click(`.coin-fact[data-coin-fact="${workspace}"]`);
       workspaceStates[workspace] = await page.evaluate((selectedWorkspace) => {
-        const selectedTab = document.querySelector(`.launch-workspace-tab[data-launch-workspace="${selectedWorkspace}"]`);
+        const selectedTab = document.querySelector(`.coin-fact[data-coin-fact="${selectedWorkspace}"]`);
         const visiblePaneCount = Array.from(document.querySelectorAll('[data-launch-pane]'))
           .filter((panel) => !panel.hidden && panel.getClientRects().length > 0).length;
         const classicSection = document.querySelector(`[data-classic-workspace="${selectedWorkspace}"]`);
         return {
           bodyWorkspace: document.body.dataset.launchWorkspace,
-          selected: selectedTab?.getAttribute('aria-selected') === 'true',
+          selected: selectedTab?.getAttribute('aria-pressed') === 'true',
           visiblePaneCount,
           classicSectionVisible: classicSection
             ? !classicSection.hidden && classicSection.getClientRects().length > 0
@@ -258,11 +189,11 @@ async function smokeViewport(browser, viewport) {
         };
       }, workspace);
     }
-    await page.click('.launch-workspace-tab[data-launch-workspace="configure"]');
+    await page.click('.coin-fact[data-coin-fact="configure"]');
 
     assert.deepEqual(pageErrors, [], `${viewport.name}: page errors`);
     assert.deepEqual(consoleErrors, [], `${viewport.name}: console errors`);
-    assert.equal(metrics.title, 'TREBUCHET · makesometokens');
+    assert.equal(metrics.title, 'Trebuchet');
     assert.equal(metrics.launchVisible, true, `${viewport.name}: launch view is not active`);
     assert.ok(
       metrics.scrollWidth <= metrics.clientWidth + 1,
@@ -281,14 +212,16 @@ async function smokeViewport(browser, viewport) {
       assert.ok(workspaceState.visiblePaneCount > 0, `${viewport.name}: ${workspace} has no visible workspace pane`);
       assert.equal(workspaceState.classicSectionVisible, true, `${viewport.name}: ${workspace} content is hidden`);
     }
-    // Which element owns vertical scrolling is a deliberate, width-dependent
-    // decision: above the 900px breakpoint the workspace panel scrolls
-    // internally so the shell stays put; at or below it the page scrolls.
-    // Pin both, so neither can flip silently.
-    const expectedScrollOwner = viewport.tier === 'wide' || viewport.tier === 'normal'
-      ? 'panel'
-      : 'page';
-    const actualScrollOwner = collapsedMetrics.workspaceOverflowY === 'auto' ? 'panel' : 'page';
+    // One scroll per screen: above the 900px breakpoint the screen (the view)
+    // scrolls and the sidebar and header stay put; at or below it the page
+    // scrolls. Nothing inside the screen scrolls on its own, at any width.
+    assert.deepEqual(
+      collapsedMetrics.nestedScrollers,
+      [],
+      `${viewport.name}: something inside the screen scrolls on its own`,
+    );
+    const expectedScrollOwner = viewport.tier === 'wide' || viewport.tier === 'normal' ? 'view' : 'page';
+    const actualScrollOwner = collapsedMetrics.viewOverflowY === 'auto' ? 'view' : 'page';
     assert.equal(
       actualScrollOwner,
       expectedScrollOwner,
@@ -298,10 +231,10 @@ async function smokeViewport(browser, viewport) {
     const workspaceStartsInFirstViewport = collapsedMetrics.workspace.top < collapsedMetrics.clientHeight;
     const firstViewportFit = isDesktopClass(viewport)
       ? workspaceStartsInFirstViewport
-        // When the page owns scrolling the panel may exceed the window, but the
-        // document must actually be able to reveal all of it — not clip it.
-        && (actualScrollOwner === 'panel'
-          || collapsedMetrics.docScrollHeight + 1 >= collapsedMetrics.workspace.bottom)
+        // Whichever element scrolls must be able to reveal all of the panel.
+        && (actualScrollOwner === 'view'
+          ? collapsedMetrics.viewTop + collapsedMetrics.viewScrollHeight + 1 >= collapsedMetrics.workspace.bottom
+          : collapsedMetrics.docScrollHeight + 1 >= collapsedMetrics.workspace.bottom)
       : collapsedMetrics.cockpit.bottom <= viewport.height + 1;
     assert.ok(
       firstViewportFit,
@@ -309,6 +242,7 @@ async function smokeViewport(browser, viewport) {
         workspaceTop: collapsedMetrics.workspace.top,
         workspaceBottom: collapsedMetrics.workspace.bottom,
         clientHeight: collapsedMetrics.clientHeight,
+        viewScrollHeight: collapsedMetrics.viewScrollHeight,
         docScrollHeight: collapsedMetrics.docScrollHeight,
         actualScrollOwner,
       })}`,
@@ -336,7 +270,7 @@ async function smokeViewport(browser, viewport) {
     }
     let terminalPanelFit = true;
     if (viewport.name === 'desktop') {
-      await page.click('.launch-workspace-tab[data-launch-workspace="finish"]');
+      await page.click('.coin-fact[data-coin-fact="finish"]');
       const terminalMetrics = await page.evaluate(() => {
         // Measure the workspace itself, not a layout squeezed by the Plan drawer.
         document.querySelector('.launch-summary-drawer')?.removeAttribute('open');
@@ -414,7 +348,8 @@ async function smokeViewport(browser, viewport) {
     // Keyboard walkthrough. This is release evidence, not a smoke nicety: the
     // proof artifact below fails closed when any of these is false or absent,
     // so an inaccessible build cannot ship with a passing manifest.
-    await page.click('.nav-item[data-view="launch"]');
+    await page.click('.nav-item[data-view="coins"]');
+    await page.click('[data-action="new-coin"]');
     await page.waitForFunction(() => document.body.dataset.activeView === 'launch');
     await page.evaluate(() => document.body.focus());
 

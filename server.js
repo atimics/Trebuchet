@@ -1,4 +1,19 @@
+import { listFlywheelHubs, resolveFlywheelHub } from './hubPoolService.js';
+import { createSupportPositionRuntime } from './supportPosition.js';
+import { installSupportPositionRoutes } from './supportPositionRoutes.js';
+import { createPositionWithdrawalRuntime } from './positionWithdrawal.js';
+import { installPositionWithdrawalRoutes } from './positionWithdrawalRoutes.js';
+import { createAirdropExecutionRuntime } from './airdropExecution.js';
+import { createFeeKeyExecutionRuntime } from './feeKeyExecution.js';
+import { createLiquidityExecutionRuntime, LIQUIDITY_OPERATION_KIND } from './liquidityExecution.js';
+import { createWalletExecutionRuntime } from './walletExecution.js';
+import { createQuoteAcquisitionRuntime } from './quoteAcquisition.js';
+import { installQuoteAcquisitionRoutes } from './quoteAcquisitionRoutes.js';
+import { classifyChainError } from './chainRetry.js';
+import { createLaunchExecutionServices, claimLaunchOperation, LaunchRejection } from './launchExecution.js';
 import express from 'express';
+import { acquireProfileOwner } from '@trebuchet/runtime/owner';
+import { createRuntimeControl } from '@trebuchet/runtime/control';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -12,18 +27,19 @@ import {
   createTokenWithMetaplex,
   finishTokenCreation,
   revealSealedTokenMetadata,
+  uploadSealedIdentity,
   inspectTokenCreationStatus,
-  transferMetadataAuthority,
   generateTemporaryWallet,
   getWalletQRCode,
   checkWalletBalance,
   findFundingWallet,
+  findFundingWallets,
   normalizeMintFormat,
   refreshConnection as refreshTokenServiceConnection,
 } from './tokenService.js';
 
 import {
-  createPoolsAndPositions,
+  createPoolsAndPositions as createPoolsWithSdk,
   preflightCreatePoolsAndPositions,
   estimateRequiredFunding,
   getUsdPrice,
@@ -33,18 +49,20 @@ import {
   KNOWN_QUOTES,
   KNOWN_SAFE_QUOTES,
   getQuoteTokenOnChainPrice,
+  previewSolSupport,
+  findSolClmmPoolForToken,
+  listTokenMarkets,
+  listCoinPositions,
 } from './lpService.js';
 import { WSOL_MINT as WSOL_MINT_ADDRESS } from './lpConstants.js';
 
-import { swapSolForQuote, probeRaydiumPriceStrict, discoverJupiterRoute } from './swapService.js';
+import { probeRaydiumPriceStrict, discoverJupiterRoute } from './swapService.js';
 import { estimateAirdropExecutionCostSol } from './lpConstants.js';
 
 import {
   checkWalletBalanceMultiToken,
-  sweepNftsToDestination,
-  sweepAllTokensToDestination,
-  sweepSolToDestination,
-  executeAirdrop,
+  sweepNftsToDestination as sweepNftsWithSigner,
+  sweepAllTokensToDestination as sweepTokensWithSigner,
 } from './walletHelpers.js';
 
 import {
@@ -64,10 +82,22 @@ import * as secretStore from './secretStore.js';
 import { createLaunchReportUmi, publishLaunchReport } from './launchReportService.js';
 import * as launchJournal from './launchJournal.js';
 import * as launchStore from './launchStore.js';
+import * as coinStore from './coinStore.js';
+import { mergeCoins, validMint, readMintAccount } from './coinService.js';
+import { readTokenMarketEvidence, readHolderSample, readPoolEvidence, fetchSellQuote, marketEvidenceError } from './tokenMarketEvidence.js';
 import * as launchFlywheels from './launchFlywheels.js';
 import * as userPrefs from './userPrefs.js';
+import {
+  getCachedImage,
+  putCachedImage,
+  recentImageFailure,
+  rememberImageFailure,
+  isContentAddressed,
+} from './imageCache.js';
 import * as discoveryStore from './discoveryStore.js';
 import * as brandShieldStore from './brandShieldStore.js';
+import { getSealedIdentity, removeSealedIdentity } from './sealedIdentityStore.js';
+import { stampLogoDataUrl } from './logoStampService.js';
 import * as updateCheckBridge from './updateCheckBridge.js';
 import * as demoChainService from './demoChainService.js';
 import {
@@ -91,6 +121,8 @@ import {
 import { expectedVanityAttempts, unsafeSweepDestinationReason } from '@trebuchet/core/validators';
 import * as destinationProofStore from './destinationProofStore.js';
 import * as splitJobStore from './splitJobStore.js';
+import * as nftCollectionStore from './nftCollectionStore.js';
+import { registerNftRoutes } from './nftRoutes.js';
 import { combineSplitKey, createSplitSecret, matchesVanityPattern, scalarPublicKey } from '@trebuchet/core/split-key';
 import { normalizeDistribution } from './lpDistribution.js';
 import { isWalletEffectivelyEmpty } from './walletRecovery.js';
@@ -341,44 +373,11 @@ function requireV2RunEnvelope(envelopeId, walletPublicKey) {
 function launchOpInFlight(walletPublicKey) {
   return launchOpsInFlight.get(walletPublicKey) || null;
 }
-function markLaunchOpInFlight(walletPublicKey, op) {
-  launchOpsInFlight.set(walletPublicKey, { op, startedAt: Date.now() });
-}
 function clearLaunchOpInFlight(walletPublicKey) {
   launchOpsInFlight.delete(walletPublicKey);
 }
-// Shared 409 rejection. Returns true if the request was rejected (caller
-// should return immediately); false if the wallet is free and the caller
-// has been marked as the current operation.
-function rejectOrClaimLaunchOp(res, walletPublicKey, op) {
-  const current = launchOpInFlight(walletPublicKey);
-  if (current) {
-    const runningForSec = Math.round((Date.now() - current.startedAt) / 1000);
-    console.warn(
-      `Rejecting ${op} for wallet ${walletPublicKey} — '${current.op}' has been ` +
-        `running for ${runningForSec}s on the same wallet.`,
-    );
-    res.status(409).json({
-      success: false,
-      code: 'OP_IN_FLIGHT',
-      op: current.op,
-      runningForSec,
-      error:
-        `Another launch operation ('${current.op}') is already running for this ` +
-        `wallet (started ${runningForSec}s ago). Launches can take several ` +
-        `minutes — wait for it to finish rather than retrying. Running two ` +
-        `operations on the same wallet at once can create duplicate pools or ` +
-        `sweep funds mid-launch. If you're certain the operation is dead ` +
-        `(not just slow), restarting the app clears this lock.`,
-    });
-    return true;
-  }
-  markLaunchOpInFlight(walletPublicKey, op);
-  return false;
-}
-
-// Live progress tracker for airdrops. Both the real executeAirdrop (in
-// walletHelpers.js) and the demo simulateAirdrop (in demoChainService.js)
+// Live progress tracker for airdrops. The durable airdrop runtime and
+// the demo simulateAirdrop host (in demoChainService.js)
 // write into this Map as they process recipients, one entry per launch
 // wallet. The frontend polls /api/airdrop-progress every ~500ms during a
 // transfer that includes an airdrop, so the user sees the progress bar
@@ -651,16 +650,99 @@ const __dirname = path.dirname(__filename);
 // launch time — those aren't user-facing config, they're how the Electron
 // main process talks to this embedded server. They stay.
 
-/**
- * Number of parallel workers in the auto-swap pool. Each worker handles
- * one swap at a time; the queue of pending swaps drains as workers finish.
- * Higher = faster overall, but more parallel RPC load (which can trigger
- * rate limits on free-tier endpoints). 4 is a good balance for most users;
- * drop to 1 for sequential debugging or if your RPC has tight rate limits.
- */
-const AUTOSWAP_CONCURRENCY = 1;
+export function createLocalApiApp({ runtimeControl = null, runtimeOwner = null, quoteRuntimeFactory = createQuoteAcquisitionRuntime, withdrawalRuntimeFactory = createPositionWithdrawalRuntime, supportRuntimeFactory = createSupportPositionRuntime } = {}) {
+const supportPosition = runtimeOwner ? supportRuntimeFactory({ owner: runtimeOwner }) : null;
+const positionWithdrawal = runtimeOwner ? withdrawalRuntimeFactory({ owner: runtimeOwner }) : null;
+const walletExecution = runtimeOwner ? createWalletExecutionRuntime({
+  owner: runtimeOwner,
+  getScopeId: (walletPublicKey) => launchJournal.activeForWallet(walletPublicKey)?.id,
+}) : null;
+const quoteAcquisition = runtimeOwner ? quoteRuntimeFactory({
+  owner: runtimeOwner,
+  getScopeId: (wallet) => launchJournal.activeForWallet(wallet)?.id,
+}) : null;
+const liquidityExecution = runtimeOwner ? createLiquidityExecutionRuntime({
+  owner: runtimeOwner,
+  getScopeId: (wallet) => launchJournal.activeForWallet(wallet)?.id,
+  recordProgress: (wallet, event) => recordLpJournalProgress(wallet, event),
+}) : null;
+const requireLiquidityExecution = () => {
+  if (!liquidityExecution) throw Object.assign(new Error('Start the owned runtime before liquidity execution.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  return liquidityExecution;
+};
+const feeKeyExecution = runtimeOwner ? createFeeKeyExecutionRuntime({
+  owner: runtimeOwner, walletExecution,
+  getJournal: (wallet) => launchJournal.activeForWallet(wallet),
+  getPosition: (wallet, allocationIndex, sliceIndex) => {
+    const result = journalResultList(launchJournal.activeForWallet(wallet)).find((entry) => entry.allocationIndex === allocationIndex);
+    const position = result?.mainPositions?.find((entry) => entry.sliceIndex === sliceIndex) || result?.mainPositions?.[sliceIndex];
+    return position ? { ...position, poolId: result.poolId } : null;
+  },
+  recordProgress: (wallet, event) => recordLpJournalProgress(wallet, event),
+}) : null;
+const airdropExecution = runtimeOwner ? createAirdropExecutionRuntime({
+  owner: runtimeOwner, walletExecution,
+  getJournal: (wallet) => launchJournal.activeForWallet(wallet),
+  updateJournal: (wallet, patch, event) => launchJournal.upsertForWallet(wallet, patch, event),
+}) : null;
+const prepareAirdrop = (input) => {
+  if (!airdropExecution) throw Object.assign(new Error('Start the owned runtime before airdrop execution.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  return airdropExecution.prepare(input);
+};
+const executeAirdrop = (input) => airdropExecution.execute(input);
+const reconcileAirdrop = (input) => airdropExecution.recover(input);
+const createPoolsAndPositions = (input) => createPoolsWithSdk({ ...input, execution: {
+  ...requireLiquidityExecution().forLaunch(input), transferFeeKey: feeKeyExecution.forLaunch(input),
+} });
+const reconcileBeforeLiquidity = async (input) => {
+  await requireLiquidityExecution().recover(input);
+  await feeKeyExecution.recover(input);
+  return requireWalletExecution().recoverMetadataReveal(input);
+};
+const requireWalletExecution = () => {
+  if (!walletExecution) throw Object.assign(new Error('Start the owned runtime before live transfers.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  return walletExecution;
+};
+const sweepSolToDestination = (input) => requireWalletExecution().sweepSolToDestination(input);
+const transferMetadataAuthority = (input) => requireWalletExecution().transferMetadataAuthority(input);
+const reconcileWalletOperation = async (input) => {
+  const wallet = Keypair.fromSecretKey(Uint8Array.from(input.tempWalletSecretKey)).publicKey.toBase58();
+  if (walletExecution?.active(wallet)?.kind === LIQUIDITY_OPERATION_KIND) await requireLiquidityExecution().recover(input);
+  await feeKeyExecution.recover(input);
+  if (airdropExecution.canRecover(wallet)) return reconcileAirdrop(input);
+  const result = await requireWalletExecution().recover(input);
+  await reconcileAirdrop(input);
+  return result;
+};
+const sweepNftsToDestination = (input) => sweepNftsWithSigner({ ...input, transferToken: requireWalletExecution().transferTokenWithProgram });
+const sweepAllTokensToDestination = (input) => sweepTokensWithSigner({ ...input, transferToken: requireWalletExecution().transferTokenWithProgram });
 
-export function createLocalApiApp() {
+// Live services and HTTP jobs share wallet admission and durable recovery state.
+function claimLaunchOp(walletPublicKey, op, workflowId = null) {
+  const workflow = walletExecution?.activeWorkflow(walletPublicKey);
+  const canResumeSupport = op === 'support-position' && workflow?.kind === 'support-position' && workflow.id === workflowId;
+  const canResumeWithdrawal = op === 'withdraw-position' && workflow?.kind === 'position-withdrawal' && workflow.id === workflowId;
+  const canResumeQuotes = op === 'acquire-quote-tokens' && workflow?.kind === 'quote-token-acquisition' && workflow.id === workflowId;
+  if (workflow && !canResumeQuotes && !canResumeWithdrawal && !canResumeSupport) {
+    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: workflow.id,
+      workflowId: workflow.id, workflowKind: workflow.kind, error: 'Resume the saved wallet workflow before starting another wallet action.' });
+  }
+  const pending = walletExecution?.active(walletPublicKey);
+  const canResumeMetadata = pending?.kind === 'metadata-update' && pending.payload.makeImmutable
+    && ['reveal-sealed-metadata', 'create-lp', 'resume-launch'].includes(op);
+  const canResumeLiquidity = pending?.kind === LIQUIDITY_OPERATION_KIND && ['create-lp', 'resume-launch'].includes(op);
+  const canResumeFeeKey = pending?.kind === 'token-transfer' && ['create-lp', 'resume-launch'].includes(op) && feeKeyExecution?.canRecover(walletPublicKey);
+  const canResumeAirdrop = ['token-transfer', 'airdrop-observed-delivery'].includes(pending?.kind) && op === 'run-airdrop' && airdropExecution?.canRecover(walletPublicKey);
+  if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity && !canResumeFeeKey && !canResumeAirdrop && !canResumeQuotes && !canResumeWithdrawal && !canResumeSupport) {
+    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: 'Resume the saved wallet operation before starting another wallet action.' });
+  }
+  claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
+}
+function rejectOrClaimLaunchOp(res, walletPublicKey, op) {
+  try { claimLaunchOp(walletPublicKey, op); return false; }
+  catch (error) { if (!(error instanceof LaunchRejection)) throw error; sendErrorResponse(res, error); return true; }
+}
+
 // The Raydium SDK prints every simulated transaction ("simulate tx
 // string: [<base64>...]") with a bare console.log. It is noise in the app
 // log; drop just that message.
@@ -676,7 +758,6 @@ installServerLogCapture();
 // Boot-time log: confirms which config values the server is actually
 // using on this launch. Streams to the in-app activity log via the
 // console-capture wiring above.
-console.log(`[boot] AUTOSWAP_CONCURRENCY = ${AUTOSWAP_CONCURRENCY}`);
 console.log('[boot] RPC endpoint: configured via in-app RPC settings');
 
 // ---------------------------------------------------------------------------
@@ -707,12 +788,14 @@ function secretPinLockedError(action = 'use saved recovery secrets') {
 }
 
 function sendErrorResponse(res, error, fallbackStatus = 500) {
+  if (error instanceof LaunchRejection) return res.status(error.statusCode).json(error.payload);
   const status = error?.statusCode || error?.status || fallbackStatus;
   const body = {
     success: false,
     error: launchJournal.errorMessage(error),
   };
   if (error?.code) body.code = error.code;
+  if (error?.operationId) body.operationId = error.operationId;
   if (error?.errorDetails) body.errorDetails = error.errorDetails;
   if (error?.failedPhase) body.failedPhase = error.failedPhase;
   if (error?.failedAllocationIndex !== undefined) body.failedAllocationIndex = error.failedAllocationIndex;
@@ -722,43 +805,51 @@ function sendErrorResponse(res, error, fallbackStatus = 500) {
   res.status(status).json(body);
 }
 
-async function rejectIfTokenIncompleteForLiquidity(res, {
+async function requireTokenCompleteForLiquidity({
   tokenMint,
   tokenTotalSupply,
   tokenDecimals = 9,
 } = {}) {
   if (!tokenMint || tokenTotalSupply == null) {
-    res.status(400).json({
+    throw new LaunchRejection(400, {
       success: false,
       code: 'TOKEN_PLAN_INCOMPLETE',
       error: 'Token mint and total supply are required before liquidity can run.',
     });
-    return true;
   }
   const tokenStatus = await inspectTokenCreationStatus({
     tokenMint,
     totalSupply: tokenTotalSupply,
     decimals: tokenDecimals,
   });
-  if (tokenStatus.complete) return false;
-  res.status(409).json({
+  if (tokenStatus.complete) return;
+  throw new LaunchRejection(409, {
     success: false,
     code: 'TOKEN_CREATION_INCOMPLETE',
     nextEndpoint: '/api/finish-token-creation',
     tokenStatus,
     error: 'The existing token is not finished yet. Complete its supply and authority-safety steps before creating or resuming liquidity.',
   });
-  return true;
+}
+
+async function rejectIfTokenIncompleteForLiquidity(res, input) {
+  try { await requireTokenCompleteForLiquidity(input); return false; }
+  catch (error) { if (!(error instanceof LaunchRejection)) throw error; sendErrorResponse(res, error); return true; }
 }
 
 function launchFailureDetails(error, context = {}) {
   return launchJournal.errorDetails(error, context);
 }
 
+function requireSecretPinUnlocked(action) {
+  if (!secretStore.isSecretPinLocked()) return;
+  const error = secretPinLockedError(action);
+  throw new LaunchRejection(423, { success: false, error: error.message, code: error.code, secretPinLocked: true });
+}
+
 function rejectIfSecretPinLocked(res, action) {
-  if (!secretStore.isSecretPinLocked()) return false;
-  sendErrorResponse(res, secretPinLockedError(action), 423);
-  return true;
+  try { requireSecretPinUnlocked(action); return false; }
+  catch (error) { if (!(error instanceof LaunchRejection)) throw error; sendErrorResponse(res, error); return true; }
 }
 
 function migrateSecretsToUnlockedPin() {
@@ -789,6 +880,7 @@ function migrateSecretsToUnlockedPin() {
 //      session gate so we don't waste memory parsing rejected requests.
 app.use(hostCheckMiddleware);
 app.use(securityHeadersMiddleware);
+if (runtimeControl) app.use(runtimeControl);
 
 // CORS is intentionally not configured. The Trebuchet frontend loads from
 // http://127.0.0.1:<port> and the API serves from the same origin, so no
@@ -1375,6 +1467,33 @@ app.get('/api/v2/discovery/personal', (_req, res) => {
   }
 });
 
+// Shown until a vanity CA is picked; the real mint is only known at launch.
+const LOGO_STAMP_SAMPLE_MINT = 'Your1Mint1Address1Appears1Here1At1Launch';
+
+// Preview the CA stamp exactly as the launch will apply it.
+app.post('/api/v2/logo-stamp-preview', (req, res) => {
+  try {
+    const logo = String(req.body?.logo || '');
+    if (!logo.startsWith('data:')) throw new Error('Preview needs the logo as a data URL.');
+    let mint = null;
+    try {
+      mint = req.body?.mint ? new PublicKey(String(req.body.mint).trim()).toBase58() : null;
+    } catch {
+      mint = null;
+    }
+    const result = stampLogoDataUrl(logo, mint || LOGO_STAMP_SAMPLE_MINT);
+    res.json({
+      stamped: result.stamped,
+      reason: result.reason || null,
+      dataUrl: result.stamped ? result.dataUrl : null,
+      mint: mint || null,
+      sample: !mint,
+    });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
 app.post('/api/v2/discovery/wallets', (req, res) => {
   try {
     if (rejectIfPersonalDiscoveryScanRunning(res)) return;
@@ -1558,7 +1677,7 @@ app.post('/api/v2/discovery/inspect', async (req, res) => {
     const [metadataResult, compatibilityResult, largestResult, marketResult] = await Promise.allSettled([
       getTokenMetadata(mint, { rpcUrl: inspectionRpc.url }),
       getMintCompatibilityWithRaydiumClmm(connection, mintPublicKey),
-      connection.getTokenLargestAccounts(mintPublicKey, 'confirmed'),
+      connection.getTokenLargestAccounts(mintPublicKey, 'finalized'),
       fetchDiscoveryMarketData(mint),
     ]);
 
@@ -1580,6 +1699,20 @@ app.post('/api/v2/discovery/inspect', async (req, res) => {
     syncBrandShieldRegistryFromJournals();
     const metadataValue = metadataResult.status === 'fulfilled' ? metadataResult.value : null;
     const marketValue = marketResult.status === 'fulfilled' ? marketResult.value : null;
+    const inspectionNetwork = /devnet/i.test(`${inspectionRpc.name} ${inspectionRpc.url}`) ? 'devnet' : 'mainnet';
+    const [holders, reserveRead] = await Promise.allSettled([
+      largestResult.status === 'fulfilled'
+        ? readHolderSample(connection, mint, supply.amount, inspectionNetwork, largestResult.value)
+        : Promise.reject(largestResult.reason),
+      marketValue?.pool?.address
+        ? readPoolEvidence(connection, marketValue.pool.address, mint, inspectionNetwork, { includeLocks: false })
+        : Promise.resolve(null),
+    ]);
+    const marketWithReserves = marketValue ? {
+      ...marketValue,
+      reserves: reserveRead.status === 'fulfilled' ? reserveRead.value : null,
+      reserveError: reserveRead.status === 'rejected' ? marketEvidenceError(reserveRead.reason) : null,
+    } : null;
     const remoteFingerprint = metadataValue?.metadataUri
       ? await fetchMetadataFingerprint(metadataValue.metadataUri)
       : null;
@@ -1599,7 +1732,8 @@ app.post('/api/v2/discovery/inspect', async (req, res) => {
       compatibility: compatibilityResult.status === 'fulfilled' ? compatibilityResult.value : null,
       supply,
       largestAccounts: largestResult.status === 'fulfilled' ? largestResult.value?.value : null,
-      market: marketValue,
+      holderSample: holders.status === 'fulfilled' ? holders.value : null,
+      market: marketWithReserves,
       journal: matchingJournal,
       brandAssessment,
       rpcName: inspectionRpc.name,
@@ -1695,6 +1829,7 @@ app.post('/api/secret-pin/reset', (req, res) => {
       pendingWallets: pendingWallets.removePinEncrypted(),
       vanityCAs: vanityCaStore.removePinEncrypted(),
       splitJobs: splitJobStore.removePinEncrypted(),
+      nftKeys: nftCollectionStore.removePinEncrypted(),
     };
     const status = secretStore.resetSecretPin();
     res.json({ success: true, status, removed });
@@ -1883,6 +2018,15 @@ function demoAllocationsForV2(allocations = []) {
 
 // SOL-only balance (kept for backwards compatibility / Step 1 display)
 // ---------------------------------------------------------------------------
+
+// NFT collections (v2 NFTs view). See nftRoutes.js.
+registerNftRoutes(app, {
+  isDemoMode,
+  rejectIfSecretPinLocked,
+  sendErrorResponse,
+  getRpcUrl,
+  getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
+});
 
 app.get('/api/vanity-ca-candidates', (req, res) => {
   try {
@@ -2180,7 +2324,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
         lastSend = now;
         lastAttempts = attempts;
         const epoch = attempts / expected;
-        res.write(`data: ${JSON.stringify({ type: 'progress', attempts, epoch, key })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'progress', attempts, epoch, key, effortVerification: 'local-unverified' })}\n\n`);
       },
     });
 
@@ -2207,6 +2351,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
           attempts: result.attempts,
           rarity: result.rarity,
           epochs: result.epochs,
+          effortVerification: result.effortVerification,
           expectedAttempts: result.expectedAttempts,
           target,
           prefix: prefix || null,
@@ -2269,6 +2414,7 @@ app.get('/api/generate-vanity-wallet-stream', async (req, res) => {
         attempts: result.attempts,
         rarity: result.rarity,
         epochs: result.epochs,
+        effortVerification: result.effortVerification,
         expectedAttempts: result.expectedAttempts,
         target,
         prefix: prefix || null,
@@ -2389,6 +2535,7 @@ app.post('/api/generate-vanity-wallet', async (req, res) => {
         attempts: result.attempts,
         rarity: result.rarity,
         epochs: result.epochs,
+        effortVerification: result.effortVerification,
         expectedAttempts: result.expectedAttempts,
         target,
         prefix: prefix || null,
@@ -2925,13 +3072,285 @@ app.post('/api/v2/execution-readiness', async (req, res) => {
 app.get('/api/v2/destinations', async (req, res) => {
   try {
     const launchWallet = String(req.query?.launchWallet || '').trim();
-    const funder = launchWallet
-      ? (await findFundingWallet(launchWallet).catch(() => null))?.funder || null
-      : null;
-    res.json({ success: true, funder, signed: destinationProofStore.listSignedDestinations() });
+    let funder = null;
+    let funders = [];
+    if (launchWallet && isDemoMode()) {
+      funders = demoChainService.listDemoFunders(launchWallet);
+      funder = funders[0]?.address || null;
+    } else if (launchWallet) {
+      funder = (await findFundingWallet(launchWallet).catch(() => null))?.funder || null;
+      funders = await findFundingWallets(launchWallet).catch(() => []);
+    }
+    res.json({ success: true, funder, funders, signed: destinationProofStore.listSignedDestinations() });
   } catch (error) {
     sendErrorResponse(res, error, 400);
   }
+});
+
+installSupportPositionRoutes(app, {
+  runtime: supportPosition, isDemoMode, demoChainService, coinStore, pendingWallets, findSolClmmPoolForToken, previewSolSupport,
+  resolveSigner, rejectIfSecretPinLocked, claim: claimLaunchOp, release: clearLaunchOpInFlight, sendErrorResponse,
+});
+
+// Coins: drafts (saved plans), launched coins (journals), and coins added
+// by address. On-chain facts are read fresh; records are claims.
+// A coin's image, from its on-chain metadata document. Fetched through the
+// same SSRF checks as the image proxy; ipfs:// and ar:// map to gateways.
+function publicContentUrl(value) {
+  const text = String(value || '').trim();
+  // A stand-in URL from old launches never resolves; it is not an image.
+  if (!text || /placeholder/i.test(text)) return null;
+  if (text.startsWith('ipfs://')) return `https://ipfs.io/ipfs/${text.slice('ipfs://'.length).replace(/^ipfs\//, '')}`;
+  if (text.startsWith('ar://')) return `https://arweave.net/${text.slice('ar://'.length)}`;
+  return /^https?:\/\//i.test(text) ? text : null;
+}
+
+async function metadataImageUrl(metadataUri) {
+  const url = publicContentUrl(metadataUri);
+  if (!url) return null;
+  const parsed = new URL(url);
+  assertAllowedProxyUrl(parsed);
+  await assertHostResolvesPublic(parsed.hostname);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(parsed.toString(), { signal: controller.signal, headers: { Accept: 'application/json' } });
+    if (!response.ok) return null;
+    const text = await response.text();
+    if (text.length > 512 * 1024) return null;
+    const document = JSON.parse(text);
+    return publicContentUrl(document?.image);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+app.get('/api/v2/coins', (_req, res) => {
+  try {
+    const coins = mergeCoins({
+      launches: launchStore.list(),
+      journals: launchJournal.list({ includeCompleted: true, includeArchived: true }),
+      added: coinStore.list(),
+      practice: isDemoMode(),
+    });
+    res.json({ success: true, coins });
+  } catch (error) {
+    sendErrorResponse(res, error, 500);
+  }
+});
+
+app.post('/api/v2/coins', async (req, res) => {
+  try {
+    const mint = validMint(req.body?.mint);
+    if (!mint) return res.status(400).json({ success: false, error: 'Paste a valid token mint address.' });
+    let name = null;
+    let symbol = null;
+    let image = null;
+    if (!/^Demo/.test(mint)) {
+      const connection = new Connection(getRpcUrl(), 'confirmed');
+      const account = await readMintAccount(connection, mint).catch(() => null);
+      if (!account) {
+        return res.status(400).json({ success: false, error: 'That address is not a token mint on this network.' });
+      }
+      name = account.metadata?.name || null;
+      symbol = account.metadata?.symbol || null;
+      const info = await getTokenMetadata(mint).catch(() => null);
+      name = name || info?.name || null;
+      symbol = symbol || info?.symbol || null;
+      image = (await metadataImageUrl(account.metadata?.uri).catch(() => null)) || publicContentUrl(info?.imageUrl);
+    }
+    const coin = coinStore.add({ mint, name, symbol, image, source: 'added' });
+    res.json({ success: true, coin });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.delete('/api/v2/coins/:mint', (req, res) => {
+  try {
+    const mint = validMint(req.params.mint);
+    if (!mint) return res.status(400).json({ success: false, error: 'Invalid mint' });
+    res.json({ success: true, removed: coinStore.remove(mint) });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+// What is true about a coin launched here, fact by fact, checked against the chain
+// where the chain can answer. A step's record is a claim: "done" needs the
+// chain to agree; a record the chain contradicts is a mismatch, not a tick.
+function coinCreationSteps(journal, { account = null, markets = null, launchWalletLamports = null } = {}) {
+  const combine = (recorded, chain) => {
+    if (chain === 'done') return 'done';
+    if (chain === 'not-done') return recorded ? 'mismatch' : 'todo';
+    // Neither the record nor the chain can say it happened.
+    return recorded ? 'recorded' : 'unrecorded';
+  };
+  const token = journal?.token || {};
+  const counts = sealedMetadataRevealReadiness(journal);
+  const recordedPoolIds = v2JournalLiquidityResults(journal)
+    .map((pool) => v2TrimmedText(pool?.poolId || pool?.id))
+    .filter(Boolean);
+  const marketIds = new Set((markets?.pools || []).map((pool) => pool.poolId));
+  const steps = [];
+  const mintRecorded = Boolean(token.mint) && token.mintAuthorityRenounced === true;
+  steps.push({
+    id: 'token',
+    label: 'Token',
+    state: combine(mintRecorded, account && !account.error ? (account.mintAuthority ? 'not-done' : 'done') : 'unknown'),
+    detail: account && !account.error ? (account.mintAuthority ? 'The chain still shows a mint authority.' : 'Mint authority revoked on-chain.') : 'Not checked on-chain.',
+  });
+  const poolsRecorded = counts.recordedPoolCount >= counts.plannedPoolCount && recordedPoolIds.length > 0;
+  const poolsOnChain = markets && !markets.error
+    ? (recordedPoolIds.length && recordedPoolIds.every((id) => marketIds.has(id)) ? 'done' : 'not-done')
+    : 'unknown';
+  steps.push({
+    id: 'pools',
+    label: 'Pools',
+    state: combine(poolsRecorded, poolsOnChain),
+    detail: `${counts.recordedPoolCount}/${counts.plannedPoolCount} planned pools recorded${poolsOnChain === 'done' ? ', all found on-chain' : poolsOnChain === 'not-done' && recordedPoolIds.length ? '; not all found on-chain' : ''}.`,
+  });
+  steps.push({
+    id: 'locks',
+    label: 'Liquidity locks',
+    state: combine(counts.positionCount > 0 && counts.lockedPositionCount === counts.positionCount, 'unknown'),
+    detail: `${counts.lockedPositionCount}/${counts.positionCount} positions recorded as locked.`,
+  });
+  if (token.sealedLaunch === true) {
+    steps.push({
+      id: 'reveal',
+      label: 'Identity',
+      state: combine(token.sealedMetadataPending !== true, 'unknown'),
+      detail: token.sealedMetadataPending === true ? 'The identity is still sealed.' : 'Recorded as revealed.',
+    });
+  }
+  const walletEmptyOnChain = launchWalletLamports === null ? 'unknown' : launchWalletLamports === 0 ? 'done' : 'not-done';
+  steps.push({
+    id: 'return',
+    label: 'Launch wallet',
+    state: combine(journal?.transfer?.walletEmpty === true, walletEmptyOnChain),
+    detail: launchWalletLamports === null
+      ? 'Not checked on-chain.'
+      : launchWalletLamports === 0
+        ? 'The launch wallet is empty on-chain.'
+        : `The launch wallet still holds ${(launchWalletLamports / 1e9).toFixed(4)} SOL.`,
+  });
+  const walletEntry = journal?.walletPublicKey ? pendingWallets.get(journal.walletPublicKey) : null;
+  const { events: _events, ...journalWithoutEvents } = journal || {};
+  return {
+    journalId: journal?.id || null,
+    journalStatus: journal?.status || null,
+    stage: journal?.stage || null,
+    walletPublicKey: journal?.walletPublicKey || null,
+    // Whether the steps can be run from here: the record keeps the launch's
+    // plan (older records did not), and this app holds the wallet's key.
+    hasPlan: Boolean(journal?.launchConfig && typeof journal.launchConfig === 'object'),
+    walletManaged: Boolean(walletEntry),
+    journal: journalWithoutEvents,
+    steps,
+    nextStep: steps.find((step) => step.state !== 'done')?.id || null,
+  };
+}
+
+app.get('/api/v2/coins/:mint', async (req, res) => {
+  try {
+    const mint = String(req.params.mint || '').trim();
+    const record = coinStore.get(mint);
+    const journals = launchJournal.list({ includeCompleted: true, includeArchived: true })
+      .filter((journal) => String(journal?.token?.mint || '') === mint);
+    const events = [
+      ...journals.map((journal) => ({
+        at: journal.createdAt,
+        type: 'launched_here',
+        outcome: journal.status === 'completed' ? 'landed' : journal.status === 'archived' ? 'stopped' : 'in progress',
+        journalId: journal.id,
+        stage: journal.stage || null,
+      })),
+      ...(record?.events || []),
+    ].sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+    if (/^Demo/.test(mint)) {
+      return res.json({ success: true, coin: { mint, practice: true, account: null, info: null, markets: null, events } });
+    }
+    if (!validMint(mint)) return res.status(400).json({ success: false, error: 'Invalid mint' });
+    const connection = new Connection(getRpcUrl(), 'confirmed');
+    const latestJournal = journals
+      .slice()
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
+    const [account, info, markets, launchWalletLamports] = await Promise.all([
+      readMintAccount(connection, mint).catch((error) => ({ error: error.message })),
+      getTokenMetadata(mint).catch(() => null),
+      listTokenMarkets(mint).catch((error) => ({ error: error.message, pools: [] })),
+      latestJournal?.walletPublicKey
+        ? connection.getBalance(new PublicKey(latestJournal.walletPublicKey)).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+    const creation = latestJournal
+      ? coinCreationSteps(latestJournal, { account, markets, launchWalletLamports })
+      : null;
+    const image = (account && !account.error ? await metadataImageUrl(account.metadata?.uri).catch(() => null) : null)
+      || publicContentUrl(info?.imageUrl)
+      || publicContentUrl(latestJournal?.token?.imageUri)
+      || record?.image
+      || null;
+    if (image && record && record.image !== image) coinStore.add({ mint, image, source: record.source });
+    res.json({ success: true, coin: { mint, practice: false, account, info, markets, events, creation, image } });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+// Public market evidence and estimates use finalized account reads.
+app.get('/api/v2/coins/:mint/evidence', async (req, res) => {
+  try {
+    const mint = validMint(req.params.mint);
+    if (!mint) return res.status(400).json({ success: false, error: 'Enter a valid token mint.' });
+    const connection = new Connection(getRpcUrl(), 'finalized');
+    const account = await readMintAccount(connection, mint, 'finalized');
+    if (!account) return res.status(404).json({ success: false, error: 'Token mint needs verification.' });
+    const markets = await listTokenMarkets(mint).catch(() => ({ pools: [] }));
+    const evidence = await readTokenMarketEvidence(connection, mint, {
+      supply: account.supply, pools: markets.pools, network: getNetwork(),
+    });
+    res.json({ success: true, evidence });
+  } catch (error) { sendErrorResponse(res, error, 502); }
+});
+
+app.post('/api/v2/coins/:mint/sell-quote', async (req, res) => {
+  try {
+    const mint = validMint(req.params.mint);
+    if (!mint) return res.status(400).json({ success: false, error: 'Enter a valid token mint.' });
+    if (getNetwork() !== 'mainnet-beta' && getNetwork() !== 'mainnet') {
+      return res.status(400).json({ success: false, error: 'Sell route quotes use mainnet pools. Select a mainnet RPC.' });
+    }
+    const connection = new Connection(getRpcUrl(), 'finalized');
+    const account = await readMintAccount(connection, mint, 'finalized');
+    if (!account) return res.status(404).json({ success: false, error: 'Token mint needs verification.' });
+    const quote = await fetchSellQuote({ mint, decimals: account.decimals, amount: req.body?.amount });
+    res.json({ success: true, quote });
+  } catch (error) { sendErrorResponse(res, error, 400); }
+});
+
+// Positions held by this app's wallets. Withdrawal re-reads each position.
+app.get('/api/v2/coins/:mint/positions', async (req, res) => {
+  try {
+    const mint = String(req.params.mint || '').trim();
+    if (isDemoMode()) {
+      return res.json({ success: true, positions: demoChainService.listDemoPositions(mint) });
+    }
+    if (!validMint(mint)) return res.status(400).json({ success: false, error: 'Invalid mint' });
+    const owners = pendingWallets.list().map((wallet) => wallet.publicKey).filter(Boolean);
+    const positions = await listCoinPositions({ tokenMint: mint, owners });
+    res.json({ success: true, positions });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+installPositionWithdrawalRoutes(app, {
+  runtime: positionWithdrawal, isDemoMode, demoChainService, coinStore, pendingWallets, resolveSigner, rejectIfSecretPinLocked,
+  claim: claimLaunchOp, release: clearLaunchOpInFlight, sendErrorResponse,
 });
 
 app.post('/api/v2/destinations/challenge', (req, res) => {
@@ -2971,7 +3390,7 @@ app.post('/api/v2/launch-configs', (req, res) => {
       id: req.body?.id ? String(req.body.id) : null,
       name: req.body?.name ? String(req.body.name) : null,
       config: req.body?.config || {},
-      source: 'app',
+      source: req.body?.source === 'cli' ? 'cli' : 'app',
     });
     res.json({ success: true, launch: saved });
   } catch (error) {
@@ -2991,6 +3410,23 @@ app.post('/api/v2/launch-configs/remove', (req, res) => {
 
 // Flywheel pools: the meme flywheel draws a random pairing from a curated
 // pool of memecoins instead of one hardcoded mint. Operators can curate it.
+app.get('/api/v2/flywheel-hubs', (_req, res) => {
+  try {
+    res.json({ success: true, ...listFlywheelHubs(discoveryStore.getSnapshot()) });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+app.post('/api/v2/flywheel-hubs/resolve', async (req, res) => {
+  try {
+    const hub = await resolveFlywheelHub(req.body?.mint);
+    res.json({ success: true, hub });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
 app.get('/api/v2/flywheel-pools', (_req, res) => {
   try {
     res.json({ success: true, pools: launchFlywheels.all() });
@@ -4699,30 +5135,93 @@ async function runV2ClassicLpPreflight(payload = {}) {
   }
 }
 
+const launchServices = createLaunchExecutionServices({
+  PublicKey,
+  airdropInFlight,
+  airdropProgressBegin,
+  airdropProgressEnd,
+  airdropProgressStep,
+  checkWalletBalanceMultiToken,
+  claimLaunchOp,
+  clearAirdropInFlight,
+  clearLaunchOpInFlight,
+  createPoolsAndPositions,
+  createTokenWithMetaplex,
+  executeAirdrop,
+  prepareAirdrop,
+  reconcileAirdrop,
+  findFundingWallet,
+  finishSweepWithSolGate,
+  finishTokenCreation,
+  isWalletEffectivelyEmpty,
+  launchFailureDetails,
+  launchJournal,
+  logoBase64FromCreateTokenInput,
+  lpProgressBegin,
+  lpProgressEnd,
+  lpProgressEvent,
+  markAirdropInFlight,
+  materializePhase1RecoveryResults,
+  mergePriorResults,
+  normalizeMintFormat,
+  normalizeTokenDescription,
+  normalizeTokenName,
+  normalizeTokenSymbol,
+  normalizeVanityTargetBase58,
+  normalizeWholeTokenSupply,
+  pendingWallets,
+  recordLpJournalProgress,
+  recordTokenJournalProgress,
+  reconcileWalletOperation,
+  reconcileBeforeLiquidity,
+  getTransferReceipts: (wallet) => requireWalletExecution().getTransferReceipts(wallet),
+  registerOfficialBrandLaunch,
+  requireSecretPinUnlocked,
+  requireTokenCompleteForLiquidity,
+  resolveSigner,
+  revealSealedMetadataAfterLiquidity,
+  revealSealedMetadataForJournal,
+  sweepAllTokensToDestination,
+  sweepNftsToDestination,
+  sweepSolToDestination,
+  transferJournalSummary,
+  transferMetadataAuthority,
+  unsafeSweepDestinationReason,
+  unverifiedDestinationReason,
+  validateTransferAirdropPayload,
+  vanityAvailability,
+  vanityCaStore,
+});
+
+async function serveLaunchOperation(res, execute) {
+  try { return res.json(await execute()); }
+  catch (error) { sendErrorResponse(res, error); }
+}
+
 async function executeV2NextClassicOperation(readiness) {
   const endpoint = readiness?.nextEndpoint;
   if (endpoint === '/api/create-token') {
-    return invokeJsonHandler(createTokenHandler, readiness.classicPayloads.createToken);
+    return launchServices.createToken(readiness.classicPayloads.createToken);
   }
   if (endpoint === '/api/finish-token-creation') {
-    return invokeJsonHandler(finishTokenCreationHandler, readiness.classicPayloads.finishToken);
+    return launchServices.finishToken(readiness.classicPayloads.finishToken);
   }
   if (endpoint === '/api/create-lp') {
     const preflight = await runV2ClassicLpPreflight(readiness.classicPayloads.preflightCreateLp);
-    const result = await invokeJsonHandler(createLpHandler, readiness.classicPayloads.createLp);
+    const result = await launchServices.createLiquidity(readiness.classicPayloads.createLp);
     return {
       ...result,
       v2Preflight: preflight,
     };
   }
   if (endpoint === '/api/resume-launch') {
-    return invokeJsonHandler(resumeLaunchHandler, readiness.classicPayloads.resumeLaunch);
+    return launchServices.resumeLiquidity(readiness.classicPayloads.resumeLaunch);
   }
   if (endpoint === '/api/reveal-sealed-metadata') {
-    return invokeJsonHandler(revealSealedMetadataHandler, readiness.classicPayloads.revealMetadata);
+    return launchServices.revealMetadata(readiness.classicPayloads.revealMetadata);
   }
   if (endpoint === '/api/transfer-assets') {
-    return invokeJsonHandler(transferAssetsHandler, readiness.classicPayloads.transferAssets);
+    return launchServices.transferAssets(readiness.classicPayloads.transferAssets);
   }
   const error = new Error('No executable classic endpoint is ready');
   error.statusCode = 409;
@@ -4848,6 +5347,17 @@ app.post('/api/v2/demo-launch/run', async (req, res) => {
       .digest('hex')
       .slice(0, 16);
 
+    // The practiced coin is a coin (in Practice): it gets a page.
+    coinStore.add({
+      mint: tokenMint,
+      name: config?.token?.name || tokenResult?.name || null,
+      symbol: config?.token?.symbol || tokenResult?.symbol || null,
+      image: typeof config?.token?.logo?.dataUrl === 'string' && config.token.logo.dataUrl.length < 400_000
+        ? config.token.logo.dataUrl
+        : null,
+      source: 'practice',
+    });
+    coinStore.recordEvent(tokenMint, { type: 'practice_launch', practice: true, outcome: 'landed' });
     res.json({
       success: true,
       run: {
@@ -5411,15 +5921,15 @@ function assertClassicLogoDimensions(buffer) {
   }
 }
 
-function logoBase64FromCreateTokenRequest(req) {
-  if (req.file) {
-    const logoMime = req.file.detectedMime;
-    return `data:${logoMime};base64,${req.file.buffer.toString('base64')}`;
+function logoBase64FromCreateTokenInput(input, logoFile) {
+  if (logoFile) {
+    const logoMime = logoFile.detectedMime;
+    return `data:${logoMime};base64,${logoFile.buffer.toString('base64')}`;
   }
 
-  const logo = req.body?.logo;
-  const dataUrl = typeof req.body?.logoDataUrl === 'string'
-    ? req.body.logoDataUrl
+  const logo = input?.logo;
+  const dataUrl = typeof input?.logoDataUrl === 'string'
+    ? input.logoDataUrl
     : (logo && typeof logo === 'object' && typeof logo.dataUrl === 'string' ? logo.dataUrl : null);
   if (!dataUrl) return null;
 
@@ -5447,6 +5957,11 @@ function recordTokenJournalProgress(walletPublicKey, event) {
     token.metadataPointerAuthorityRevoked = event.metadataPointerAuthorityRevoked;
   }
   if (typeof event.sealedLaunch === 'boolean') token.sealedLaunch = event.sealedLaunch;
+  if (event.stage === 'logo_stamped') token.logoStamped = true;
+  if (event.stage === 'logo_stamp_skipped') {
+    token.logoStamped = false;
+    token.logoStampSkipReason = event.reason || null;
+  }
   if (typeof event.sealedMetadataPending === 'boolean') {
     token.sealedMetadataPending = event.sealedMetadataPending;
   }
@@ -5511,6 +6026,7 @@ function recordLpJournalProgress(walletPublicKey, event) {
   if (!walletPublicKey || !event) return;
 
   const journal = launchJournal.activeForWallet(walletPublicKey);
+  if (event.operationId && journal?.lp?.operationIds?.includes(event.operationId)) return;
   const partialResults = journalResultList(journal);
   const patch = { stage: event.stage || 'lp_progress' };
 
@@ -5518,15 +6034,18 @@ function recordLpJournalProgress(walletPublicKey, event) {
     patch.lp = { partialResults };
   }
 
+  if (event.operationId) patch.lp = { ...patch.lp, operationIds: [...(journal?.lp?.operationIds || []), event.operationId] };
   launchJournal.upsertForWallet(walletPublicKey, patch, event);
 }
 
 function mergePriorResults(priorResults, recoveredResults) {
   const merged = cloneJson(priorResults || []);
   for (const recovered of recoveredResults || []) {
-    upsertJournalResult(merged, recovered);
+    const index = merged.findIndex((result) => result.allocationIndex === recovered.allocationIndex);
+    if (index >= 0) merged[index] = { ...merged[index], ...recovered };
+    else merged.push(recovered);
   }
-  return merged;
+  return merged.sort((left, right) => (left.allocationIndex ?? 0) - (right.allocationIndex ?? 0));
 }
 
 function materializePhase1RecoveryResults(journal, priorResults, allocations) {
@@ -5657,122 +6176,7 @@ function materializePhase1RecoveryResults(journal, priorResults, allocations) {
 }
 
 async function finishTokenCreationHandler(req, res) {
-  let walletPublicKey = null;
-  let claimedLaunchOp = false;
-  try {
-    if (req.body.walletPublicKey
-        && rejectIfSecretPinLocked(res, 'finishing an interrupted token creation')) {
-      return;
-    }
-    const resolvedSigner = resolveSigner({
-      tempWalletSecretKey: req.body.tempWalletSecretKey,
-      walletPublicKey: req.body.walletPublicKey,
-    });
-    const { secretKeyArr } = resolvedSigner;
-    walletPublicKey = resolvedSigner.walletPublicKey;
-    if (!walletPublicKey) {
-      return res.status(400).json({ success: false, error: 'walletPublicKey or tempWalletSecretKey required' });
-    }
-    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'finish-token-creation')) return;
-    claimedLaunchOp = true;
-
-    const journal = launchJournal.activeForWallet(walletPublicKey);
-    if (!journal || !journal.token || !journal.token.mint) {
-      return res.status(409).json({
-        success: false,
-        error: 'No interrupted token creation found for this wallet (no recorded mint).',
-      });
-    }
-    const { mint, name, symbol, totalSupply } = journal.token;
-    const metadataUri = journal.token.onChainMetadataUri || journal.token.metadataUri;
-    if (totalSupply == null) {
-      return res.status(409).json({
-        success: false,
-        error: 'The recorded token entry is missing its supply; cannot safely finish it.',
-      });
-    }
-
-    const status = await finishTokenCreation({
-      tempWalletSecretKey: secretKeyArr,
-      tokenMint: mint,
-      name,
-      symbol,
-      totalSupply,
-      metadataUri,
-      metadataHash: journal.token.metadataHash,
-      journalEvents: journal.events || [],
-      sealedLaunch: journal.token.sealedLaunch === true,
-      keepMetadataAuthority: journal.token?.metadataAuthorityKept === true,
-      onProgress: (event) => recordTokenJournalProgress(walletPublicKey, event),
-    });
-
-    // Reflect the finished state back into the journal. Merge onto the existing
-    // token record so the name/symbol/uri already there are preserved. Once the
-    // mint authority is renounced the token is usable, so we move the stage back
-    // to 'token_created' and let the normal flow continue.
-    launchJournal.upsertForWallet(
-      walletPublicKey,
-      {
-        status: 'active',
-        stage: status.mintAuthorityRenounced ? 'token_created' : 'token_create_finished',
-        error: null,
-        token: {
-          ...journal.token,
-          mintAuthorityRenounced: status.mintAuthorityRenounced,
-          mintFormat: status.mintFormat || journal.token.mintFormat,
-          tokenProgram: status.tokenProgram || journal.token.tokenProgram,
-          metadataStandard: status.metadataStandard || journal.token.metadataStandard,
-          metadataPointerAuthorityRevoked: status.metadataPointerAuthorityRevoked
-            ?? journal.token.metadataPointerAuthorityRevoked,
-          metadataUpdateAuthorityRevoked: status.updateAuthorityRevoked,
-          metadataImmutable: status.updateAuthorityRevoked && journal.token.sealedLaunch !== true,
-          sealedMetadataPending: status.sealedMetadataPending === true,
-          isSafe: status.isSafe,
-        },
-      },
-      {
-        stage: 'token_create_finished',
-        isSafe: status.isSafe,
-        steps: status.steps,
-        sanity: status.sanity,
-      },
-    );
-
-    res.json({ success: true, ...status });
-  } catch (error) {
-    console.error('Error finishing token creation:', error);
-    const accountStillSettling = /InvalidAccountData|invalid account data for instruction/i.test(
-      [error?.message, ...(Array.isArray(error?.logs) ? error.logs : [])].filter(Boolean).join(' '),
-    );
-    const publicMessage = accountStillSettling
-      ? 'Solana RPC has not finished propagating the token account yet. The existing mint is preserved and no supply was duplicated. Wait a few seconds, then choose Finish token safely again.'
-      : error?.message || 'Trebuchet could not finish the interrupted token.';
-    if (walletPublicKey) {
-      launchJournal.upsertForWallet(
-        walletPublicKey,
-        {
-          status: 'failed',
-          stage: 'token_finish_failed',
-          error: publicMessage,
-          errorDetails: launchFailureDetails(error, { failedPhase: 'finish_token' }),
-        },
-        { stage: 'token_finish_failed', error: publicMessage },
-      );
-    }
-    if (accountStillSettling) {
-      const friendlyError = new Error(publicMessage);
-      friendlyError.code = 'TOKEN_ACCOUNT_SETTLING';
-      friendlyError.statusCode = 409;
-      friendlyError.errorDetails = launchFailureDetails(error, { failedPhase: 'finish_token' });
-      sendErrorResponse(res, friendlyError, 409);
-    } else {
-      sendErrorResponse(res, error);
-    }
-  } finally {
-    if (claimedLaunchOp && walletPublicKey) {
-      clearLaunchOpInFlight(walletPublicKey);
-    }
-  }
+  return serveLaunchOperation(res, () => launchServices.finishToken(req.body));
 }
 
 app.post('/api/finish-token-creation', finishTokenCreationHandler);
@@ -5823,15 +6227,39 @@ async function revealSealedMetadataForJournal({ walletPublicKey, secretKeyArr })
     error.revealReadiness = revealReadiness;
     throw error;
   }
+  // Deferred sealed launches upload their identity only now. The URIs go in
+  // the journal before any chain write, so a retried reveal reuses them.
+  const identity = getSealedIdentity(token.mint);
+  let metadataUri = token.metadataUri;
+  if (!metadataUri) {
+    if (!identity) {
+      throw new Error('This sealed launch has no uploaded identity and its sealed identity is not on this machine.');
+    }
+    const uploaded = await uploadSealedIdentity({
+      tempWalletSecretKey: secretKeyArr,
+      identity,
+      // The journal's metadataHash is the launch commitment; keep it.
+      onProgress: (event) => recordTokenJournalProgress(walletPublicKey, { ...event, metadataHash: undefined }),
+    });
+    metadataUri = uploaded.metadataUri;
+    launchJournal.update(
+      journal.id,
+      { token: { metadataUri, imageUri: uploaded.imageUri } },
+      { stage: 'sealed_identity_uploaded', tokenMint: token.mint, metadataUri },
+    );
+  }
   const result = await revealSealedTokenMetadata({
     tempWalletSecretKey: secretKeyArr,
     tokenMint: token.mint,
     name: token.name,
     symbol: token.symbol,
-    metadataUri: token.metadataUri,
+    metadataUri,
     metadataHash: token.metadataHash,
+    imageSha256: identity?.imageSha256 || null,
+    metadataExecution: { update: requireWalletExecution().updateMetadata, recover: requireWalletExecution().recoverMetadataReveal },
     onProgress: (event) => recordTokenJournalProgress(walletPublicKey, event),
   });
+  const finalMetadataHash = result.finalMetadataHash || token.metadataHash;
   launchJournal.update(
     journal.id,
     {
@@ -5841,7 +6269,12 @@ async function revealSealedMetadataForJournal({ walletPublicKey, secretKeyArr })
       errorDetails: null,
       token: {
         sealedMetadataPending: false,
-        onChainMetadataUri: token.metadataUri,
+        metadataUri,
+        metadataHash: finalMetadataHash,
+        sealedCommitment: token.metadataHash,
+        metadataOperationId: result.operationId || token.metadataOperationId,
+        metadataTransactionId: result.txId || token.metadataTransactionId,
+        onChainMetadataUri: metadataUri,
         mintFormat: result.mintFormat || token.mintFormat,
         tokenProgram: result.tokenProgram || token.tokenProgram,
         metadataStandard: result.metadataStandard || token.metadataStandard,
@@ -5852,8 +6285,9 @@ async function revealSealedMetadataForJournal({ walletPublicKey, secretKeyArr })
         isSafe: true,
       },
     },
-    { stage: 'metadata_revealed', tokenMint: token.mint, metadataUri: token.metadataUri },
+    { stage: 'metadata_revealed', tokenMint: token.mint, metadataUri, operationId: result.operationId, txId: result.txId },
   );
+  removeSealedIdentity(token.mint);
   const updated = launchJournal.get(journal.id);
   registerOfficialBrandLaunch({ journal: updated, token: updated.token, secretKey: secretKeyArr });
   const followupScan = setTimeout(() => void runBrandShieldScan(), 20_000);
@@ -5881,328 +6315,14 @@ async function revealSealedMetadataAfterLiquidity({ walletPublicKey, secretKeyAr
 }
 
 async function revealSealedMetadataHandler(req, res) {
-  let walletPublicKey = null;
-  let claimedLaunchOp = false;
-  try {
-    if (req.body.walletPublicKey
-        && rejectIfSecretPinLocked(res, 'revealing and locking sealed token metadata')) return;
-    const signer = resolveSigner({
-      tempWalletSecretKey: req.body.tempWalletSecretKey,
-      walletPublicKey: req.body.walletPublicKey,
-    });
-    walletPublicKey = signer.walletPublicKey;
-    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'reveal-sealed-metadata')) return;
-    claimedLaunchOp = true;
-    const result = await revealSealedMetadataForJournal({
-      walletPublicKey,
-      secretKeyArr: signer.secretKeyArr,
-    });
-    res.json({ success: true, ...result });
-  } catch (error) {
-    if (walletPublicKey && error?.code !== 'SEALED_METADATA_WAITING_FOR_LOCKS') {
-      launchJournal.upsertForWallet(
-        walletPublicKey,
-        {
-          status: 'active',
-          stage: 'metadata_reveal_failed',
-          error: launchJournal.errorMessage(error),
-          errorDetails: launchFailureDetails(error, { failedPhase: 'metadata_reveal' }),
-          token: { sealedMetadataPending: true },
-        },
-        { stage: 'metadata_reveal_failed', error: launchJournal.errorMessage(error) },
-      );
-    }
-    sendErrorResponse(res, error, error.statusCode || 500);
-  } finally {
-    if (claimedLaunchOp && walletPublicKey) clearLaunchOpInFlight(walletPublicKey);
-  }
+  return serveLaunchOperation(res, () => launchServices.revealMetadata(req.body));
 }
 
 app.post('/api/reveal-sealed-metadata', revealSealedMetadataHandler);
 
 async function createTokenHandler(req, res) {
-  // uploadLogo (multer) has already parsed req.body / req.file by the time
-  // we reach here, so the demo handler can read the same fields.
   if (isDemoMode()) return demoChainService.handleCreateToken(req, res);
-  let walletPublicKey = null;
-  let claimedLaunchOp = false;
-  try {
-    const {
-      tempWalletSecretKey,
-      name,
-      symbol,
-      description,
-      totalSupply,
-      vanityPrefix,
-      vanitySuffix,
-      vanityCAKeypair: vanityCAKeypairRaw,
-      vanityCAPublicKey,
-      sealedLaunch,
-      mintFormat,
-      allocations: allocationsRaw,
-      targetMarketCapUsd,
-    } = req.body;
-
-    const useSealedLaunch = sealedLaunch === true || sealedLaunch === 'true' || sealedLaunch === '1';
-    const normalizedMintFormat = normalizeMintFormat(mintFormat);
-
-    if ((req.body.walletPublicKey || vanityCAPublicKey)
-        && rejectIfSecretPinLocked(res, 'creating a token with saved recovery secrets')) {
-      return;
-    }
-
-    let normalizedVanityPrefix = String(vanityPrefix ?? '').trim();
-    let normalizedVanitySuffix = String(vanitySuffix ?? '').trim();
-    if (normalizedVanityPrefix || normalizedVanitySuffix) {
-      try {
-        ({ prefix: normalizedVanityPrefix, suffix: normalizedVanitySuffix } =
-          normalizeVanityTargetBase58(normalizedVanityPrefix, normalizedVanitySuffix));
-      } catch (error) {
-        return res.status(400).json({ success: false, error: error.message });
-      }
-    }
-
-    // If the caller asked for a fresh vanity grind (prefix/suffix) but the
-    // binary isn't built, reject up front with the same 503 the dedicated
-    // vanity endpoints use. Pre-ground vanity keypairs (vanityCAKeypair)
-    // are fine without the binary — they were ground elsewhere and we're
-    // just consuming the keypair, not running the grinder again here.
-    if (normalizedVanityPrefix || normalizedVanitySuffix) {
-      const vanity = await vanityAvailability();
-      if (!vanity.available) {
-        return res.status(503).json({
-          success: false,
-          error: 'Vanity address generation is not available in this build. '
-            + 'The vanity_keygen binary is not built — run `npm run build:c` '
-            + '(requires gcc or clang). End-user release builds include the binary.',
-        });
-      }
-    }
-
-    const normalizedName = normalizeTokenName(name);
-    const normalizedSymbol = normalizeTokenSymbol(symbol);
-    const normalizedDescription = normalizeTokenDescription(description);
-    const normalizedTotalSupply = normalizeWholeTokenSupply(totalSupply, 9);
-    console.log('Creating token:', {
-      name: normalizedName,
-      symbol: normalizedSymbol,
-      totalSupply: normalizedTotalSupply,
-    });
-
-    const logoBase64 = logoBase64FromCreateTokenRequest(req);
-
-    const { secretKeyArr: tempWalletSecretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
-    walletPublicKey = resolvedWalletPublicKey;
-    // Per-wallet mutex — token creation runs several transactions over
-    // 30-60s. A duplicate submit would mint a second, orphaned token and
-    // double-spend the wallet's rent SOL.
-    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'create-token')) {
-      return;
-    }
-    claimedLaunchOp = true;
-    launchJournal.upsertForWallet(
-      walletPublicKey,
-      {
-        status: 'active',
-        stage: 'token_create_started',
-        token: {
-          name: normalizedName,
-          symbol: normalizedSymbol,
-          totalSupply: normalizedTotalSupply,
-          // User's metadata-authority choice, recorded up front so the
-          // finish/resume path honors it even if creation crashes before
-          // reaching the revoke step. FormData fields arrive as strings.
-          metadataAuthorityKept: req.body.keepMetadataAuthority === 'true',
-          decimals: 9,
-          mintFormat: normalizedMintFormat,
-          sealedLaunch: useSealedLaunch,
-          sealedMetadataPending: useSealedLaunch,
-        },
-        vanityPrefix: vanityPrefix || null,
-        vanitySuffix: vanitySuffix || null,
-      },
-      {
-        stage: 'token_create_started',
-        name: normalizedName,
-        symbol: normalizedSymbol,
-        totalSupply: normalizedTotalSupply,
-      },
-    );
-
-    let vanityCAKeypair = vanityCAKeypairRaw ? JSON.parse(vanityCAKeypairRaw) : null;
-    let vanityCAScalar = null;
-    if (!vanityCAKeypair && vanityCAPublicKey) {
-      const candidate = vanityCaStore.get(vanityCAPublicKey);
-      if (!candidate) {
-        return res.status(404).json({ success: false, error: 'Saved Vanity CA not found' });
-      }
-      if (candidate.keyType === 'scalar') {
-        if (!Array.isArray(candidate.scalar)) {
-          return res.status(409).json({ success: false, error: 'Saved Vanity CA secret could not be decrypted' });
-        }
-        vanityCAScalar = candidate.scalar;
-      } else {
-        if (!Array.isArray(candidate.secretKey)) {
-          return res.status(409).json({
-            success: false,
-            error: 'Saved Vanity CA secret could not be decrypted',
-          });
-        }
-        vanityCAKeypair = candidate.secretKey;
-      }
-    }
-
-    const result = await createTokenWithMetaplex({
-      tempWalletSecretKey: tempWalletSecretKeyArr,
-      name: normalizedName,
-      symbol: normalizedSymbol,
-      description: normalizedDescription,
-      totalSupply: normalizedTotalSupply,
-      logoBase64,
-      vanityPrefix: normalizedVanityPrefix || null,
-      vanitySuffix: normalizedVanitySuffix || null,
-      vanityCAKeypair,
-      vanityCAScalar,
-      sealedLaunch: useSealedLaunch,
-      mintFormat: normalizedMintFormat,
-      keepMetadataAuthority: req.body.keepMetadataAuthority === 'true',
-      onProgress: (event) => recordTokenJournalProgress(walletPublicKey, event),
-    });
-    if (vanityCAPublicKey) {
-      vanityCaStore.remove(vanityCAPublicKey);
-    }
-
-    // Parse pool allocations if the frontend sent them, so the
-    // crash-resume path can pick up the pool plan from the journal.
-    let poolPlan = null;
-    let allocations = null;
-    if (allocationsRaw) {
-      try { allocations = JSON.parse(allocationsRaw); } catch (_) {}
-    }
-    if (allocations && Array.isArray(allocations) && allocations.length > 0) {
-      poolPlan = {
-        tokenMint: result.tokenMint,
-        tokenDecimals: 9,
-        tokenTotalSupply: normalizedTotalSupply,
-        targetMarketCapUsd: targetMarketCapUsd ? String(targetMarketCapUsd) : undefined,
-        allocations,
-        lockPositions: true,
-      };
-    }
-
-    const journalPatch = {
-      status: 'active',
-      stage: 'token_created',
-      error: null,
-      token: {
-        mint: result.tokenMint,
-        name: normalizedName,
-        symbol: normalizedSymbol,
-        totalSupply: normalizedTotalSupply,
-        decimals: 9,
-        metadataUri: result.metadataUri,
-        metadataHash: result.metadataHash || null,
-        imageUri: result.imageUri || null,
-        onChainMetadataUri: result.onChainMetadataUri || result.metadataUri,
-        mintFormat: result.mintFormat,
-        tokenProgram: result.tokenProgram,
-        metadataStandard: result.metadataStandard,
-        metadataPointerAuthorityRevoked: result.metadataPointerAuthorityRevoked,
-        isSafe: result.isSafe,
-        mintAuthorityRenounced: result.mintAuthorityRenounced,
-        freezeAuthorityDisabled: result.freezeAuthorityDisabled,
-        metadataUpdateAuthorityRevoked: result.metadataUpdateAuthorityRevoked,
-        metadataImmutable: result.metadataImmutable,
-        sealedLaunch: result.sealedLaunch === true,
-        sealedMetadataPending: result.sealedMetadataPending === true,
-      },
-    };
-    // Keep a pool plan saved before the mint; only fill one in when missing.
-    if (poolPlan && !launchJournal.activeForWallet(walletPublicKey)?.poolPlan) {
-      journalPatch.poolPlan = poolPlan;
-    }
-
-    launchJournal.upsertForWallet(
-      walletPublicKey,
-      journalPatch,
-      { stage: 'token_created', tokenMint: result.tokenMint, metadataUri: result.metadataUri },
-    );
-
-    const brandJournal = launchJournal.activeForWallet(walletPublicKey);
-    registerOfficialBrandLaunch({
-      journal: brandJournal,
-      secretKey: tempWalletSecretKeyArr,
-      token: brandJournal?.token || {
-        mint: result.tokenMint,
-        name: normalizedName,
-        symbol: normalizedSymbol,
-        totalSupply: normalizedTotalSupply,
-        decimals: 9,
-        metadataUri: result.metadataUri,
-        metadataHash: result.metadataHash,
-        imageUri: result.imageUri,
-        sealedLaunch: result.sealedLaunch === true,
-      },
-    });
-
-    res.json({
-      success: true,
-      name: normalizedName,
-      symbol: normalizedSymbol,
-      totalSupply: normalizedTotalSupply,
-      ...result,
-    });
-  } catch (error) {
-    console.error('Error creating token:', error);
-    if (walletPublicKey) {
-      // A mint account can already exist on-chain when an earlier attempt
-      // created it but the launch did not finish (lost confirmation, crash,
-      // or a failure after the account landed). Without this, the app keeps
-      // retrying create-token and dies on "already in use" forever, even
-      // though the app can finish an existing mint. Adopt the known address
-      // so readiness routes to finish-token-creation instead.
-      const existingMint = String(error?.tokenMint || vanityCAPublicKey || '').trim();
-      const accountAlreadyInUse = /already in use|custom program error: 0x0/i.test(error?.message || '');
-      if (existingMint && accountAlreadyInUse) {
-        launchJournal.upsertForWallet(
-          walletPublicKey,
-          {
-            status: 'active',
-            stage: 'token_account_exists',
-            token: { mint: existingMint },
-            error: null,
-            errorDetails: null,
-          },
-          {
-            stage: 'token_account_adopted',
-            tokenMint: existingMint,
-            detail: 'Mint account already exists on-chain; adopting it so the interrupted token can be finished instead of re-created.',
-          },
-        );
-        sendErrorResponse(res, Object.assign(
-          new Error(`${error.message}\n\nTrebuchet found an existing mint at this address and switched to finishing it. Reload the launch view and run "Finish interrupted token" instead of creating.`),
-          { statusCode: error.statusCode, code: 'TOKEN_ACCOUNT_ALREADY_EXISTS', tokenMint: existingMint },
-        ));
-        return;
-      }
-      launchJournal.upsertForWallet(
-        walletPublicKey,
-        {
-          status: 'failed',
-          stage: 'token_create_failed',
-          error: error.message,
-        },
-        { stage: 'token_create_failed', error: error.message },
-      );
-    }
-    sendErrorResponse(res, error);
-  } finally {
-    // Release the per-wallet operation lock if we claimed it.
-    if (claimedLaunchOp && walletPublicKey) {
-      clearLaunchOpInFlight(walletPublicKey);
-    }
-  }
+  return serveLaunchOperation(res, () => launchServices.createToken(req.body, { logoFile: req.file }));
 }
 
 app.post('/api/create-token', uploadLogo, createTokenHandler);
@@ -6302,51 +6422,37 @@ async function assertHostResolvesPublic(hostname) {
   }
 }
 
-app.get('/api/proxy-image', async (req, res) => {
+async function fetchProxyImage(parsed) {
+  // Time-box the whole fetch (including redirect chain) so a slow/hung host
+  // can't pin the request.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+
+  // Follow redirects manually so each hop is re-validated. fetch with
+  // redirect:'manual' returns the 3xx response instead of chasing it for us.
+  const MAX_HOPS = 4;
+  let currentUrl = parsed;
+  let upstream;
   try {
-    const raw = req.query.url;
-    if (!raw || typeof raw !== 'string') throw new Error('url required');
-
-    let parsed;
-    try {
-      parsed = new URL(raw);
-    } catch (e) {
-      throw new Error('invalid url');
-    }
-
-    // Time-box the whole fetch (including redirect chain) so a slow/hung host
-    // can't pin the request.
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-
-    // Follow redirects manually so each hop is re-validated. fetch with
-    // redirect:'manual' returns the 3xx response instead of chasing it for us.
-    const MAX_HOPS = 4;
-    let currentUrl = parsed;
-    let upstream;
-    try {
-      for (let hop = 0; ; hop++) {
-        assertAllowedProxyUrl(currentUrl);
-        await assertHostResolvesPublic(currentUrl.hostname);
-        const resp = await fetch(currentUrl.toString(), {
-          signal: controller.signal,
-          headers: { Accept: 'image/*' },
-          redirect: 'manual',
-        });
-        if (resp.status >= 300 && resp.status < 400) {
-          if (hop >= MAX_HOPS) throw new Error('too many redirects');
-          const loc = resp.headers.get('location');
-          if (!loc) throw new Error('redirect without location');
-          // Resolve relative redirects against the current URL; the next loop
-          // iteration re-runs the full protocol + host + IP validation on it.
-          currentUrl = new URL(loc, currentUrl);
-          continue;
-        }
-        upstream = resp;
-        break;
+    for (let hop = 0; ; hop++) {
+      assertAllowedProxyUrl(currentUrl);
+      await assertHostResolvesPublic(currentUrl.hostname);
+      const resp = await fetch(currentUrl.toString(), {
+        signal: controller.signal,
+        headers: { Accept: 'image/*' },
+        redirect: 'manual',
+      });
+      if (resp.status >= 300 && resp.status < 400) {
+        if (hop >= MAX_HOPS) throw new Error('too many redirects');
+        const loc = resp.headers.get('location');
+        if (!loc) throw new Error('redirect without location');
+        // Resolve relative redirects against the current URL; the next loop
+        // iteration re-runs the full protocol + host + IP validation on it.
+        currentUrl = new URL(loc, currentUrl);
+        continue;
       }
-    } finally {
-      clearTimeout(timer);
+      upstream = resp;
+      break;
     }
     if (!upstream.ok) throw new Error('upstream ' + upstream.status);
 
@@ -6357,13 +6463,66 @@ app.get('/api/proxy-image', async (req, res) => {
     const declared = Number(upstream.headers.get('content-length') || 0);
     if (declared && declared > MAX_BYTES) throw new Error('image too large');
 
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    if (buf.length > MAX_BYTES) throw new Error('image too large');
+    const body = Buffer.from(await upstream.arrayBuffer());
+    if (body.length > MAX_BYTES) throw new Error('image too large');
+    return { type, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-    res.set('Content-Type', type);
-    // Logos rarely change; let the renderer/browser cache for a day.
-    res.set('Cache-Control', 'public, max-age=86400');
-    res.send(buf);
+// One upstream fetch per URL at a time: a coin card and its color reading
+// ask for the same logo together.
+const proxyImageInflight = new Map();
+
+app.get('/api/proxy-image', async (req, res) => {
+  const raw = req.query.url;
+  try {
+    if (!raw || typeof raw !== 'string') throw new Error('url required');
+
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch (e) {
+      throw new Error('invalid url');
+    }
+    // Validate before touching the cache, so a disallowed URL is refused
+    // even if it was somehow cached.
+    assertAllowedProxyUrl(parsed);
+    const cacheControl = isContentAddressed(raw)
+      ? 'public, max-age=31536000, immutable'
+      : 'public, max-age=86400';
+
+    const cached = getCachedImage(raw);
+    if (cached) {
+      res.set('Content-Type', cached.type);
+      res.set('Cache-Control', cacheControl);
+      res.set('X-Trebuchet-Image-Cache', 'hit');
+      res.send(cached.body);
+      return;
+    }
+    const failed = recentImageFailure(raw);
+    if (failed) throw new Error(failed);
+
+    let pending = proxyImageInflight.get(raw);
+    if (!pending) {
+      pending = fetchProxyImage(parsed)
+        .then((image) => {
+          putCachedImage(raw, image);
+          return image;
+        })
+        .catch((error) => {
+          rememberImageFailure(raw, error.message);
+          throw error;
+        })
+        .finally(() => proxyImageInflight.delete(raw));
+      proxyImageInflight.set(raw, pending);
+    }
+    const image = await pending;
+    res.set('Content-Type', image.type);
+    res.set('Cache-Control', cacheControl);
+    res.set('X-Trebuchet-Image-Cache', 'miss');
+    res.send(image.body);
   } catch (error) {
     // 404 (not 500) so a failed proxy cleanly triggers the client's image
     // onerror path and the coin falls back to the embossed symbol quietly.
@@ -6915,357 +7074,10 @@ app.post('/api/estimate-lp-funding', async (req, res) => {
   }
 });
 
-// ===========================================================================
-// Auto-swap quote tokens: job-and-poll architecture
-// ===========================================================================
-//
-// The acquire-quote-tokens flow runs SOL→token swaps to seed the ephemeral
-// wallet with bootstrap quote-side liquidity for non-SOL pools, before
-// token/pool creation.
-//
-// ARCHITECTURE: This used to use Server-Sent Events for live progress
-// updates. SSE turned out to be unreliable in our Electron+localhost setup:
-// streams would silently disconnect mid-run while the actual swaps continued
-// successfully on-chain. The UI would stay stuck on "Swapping…" even though
-// the work had landed. After many rounds of band-aids (keepalives, idle
-// watchdogs, auto-retries, Nagle tuning, padding bytes), the conclusion was
-// that SSE itself was the problem — possibly Chromium fetch+ReadableStream
-// buffering, possibly a Node http server quirk, hard to pin down exactly.
-//
-// So now: a classic job-and-poll design. Three endpoints:
-//
-//   POST /api/acquire-quote-tokens
-//       Body: { tempWalletSecretKey, autoSwapPlan }
-//       Returns immediately with { jobId } — the actual work runs in
-//       the background. No streaming.
-//
-//   GET /api/acquire-quote-tokens/:jobId
-//       Returns the current state of a job. Frontend polls every 2s.
-//
-//   DELETE /api/acquire-quote-tokens/:jobId
-//       Optional — removes a completed job promptly. Jobs also auto-
-//       expire after 10 minutes as a safety net.
-//
-// Polling is naturally robust against network blips: a failed poll just
-// retries on the next interval. No watchdogs, no keepalives, no buffering
-// concerns. The downside is per-row update latency goes from "instant" to
-// "up to 2 seconds" — a tiny tradeoff for actually-working reliability.
-//
-// CONCURRENCY: same worker-pool model as before, controlled by the
-// AUTOSWAP_CONCURRENCY constant defined at the top of this file (default
-// 4). Change the constant and rebuild to tune.
-//
-// IDEMPOTENT: swapSolForQuote reads the wallet's current quote-token
-// balance and only swaps the missing delta. Safe to call repeatedly —
-// re-issuing the POST after a previous run's failures will skip rows
-// that already have enough balance.
-
-// In-memory job store. Map<jobId, JobState>. Process-lifetime; a server
-// restart loses in-flight job state, but the frontend will re-issue the
-// POST and start fresh. For the Electron launcher's "one wallet at a
-// time" usage pattern, persistence-to-disk would be overkill.
-const acquireJobs = new Map();
-
-// Auto-expire completed jobs after 10 minutes so we don't leak memory
-// if the frontend forgets to DELETE them. Plenty of time for the user
-// to finish the funding step.
-const JOB_EXPIRY_MS = 10 * 60 * 1000;
-
-function startAcquireJob({ ownerKeypair, autoSwapPlan, onFinished = null }) {
-  const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-  const job = {
-    jobId,
-    status: 'running',
-    total: autoSwapPlan.length,
-    completed: 0,
-    results: [],
-    pendingMints: autoSwapPlan.map((p) => p.quoteMint),
-    inProgressMints: new Set(),
-    startedAt: Date.now(),
-    finishedAt: null,
-    error: null,
-  };
-  acquireJobs.set(jobId, job);
-
-  // Kick off the work in the background. Don't await — POST returns
-  // immediately, work continues in the Node event loop.
-  runAcquireJob(job, { ownerKeypair, autoSwapPlan }).catch((err) => {
-    // Defensive — runAcquireJob wraps everything internally, but if
-    // anything escapes, mark the job done so the frontend stops polling.
-    console.error(`[acquire][${jobId}] FATAL unhandled error:`, err);
-    job.status = 'done';
-    job.finishedAt = Date.now();
-    job.error = err.message;
-  }).finally(() => {
-    // Notify the caller the job is over (success OR failure) so it can
-    // release the per-wallet operation lock. Guarded so a callback
-    // throw can't surface as an unhandled rejection.
-    if (onFinished) {
-      try { onFinished(); } catch (_) { /* release is best-effort */ }
-    }
-  });
-
-  // Schedule cleanup. setTimeout's return value isn't used — we just
-  // want the entry gone after the expiry window.
-  setTimeout(() => {
-    if (acquireJobs.has(jobId)) {
-      acquireJobs.delete(jobId);
-      console.log(`[acquire][${jobId}] expired and removed from store`);
-    }
-  }, JOB_EXPIRY_MS);
-
-  return jobId;
-}
-
-async function runAcquireJob(job, { ownerKeypair, autoSwapPlan }) {
-  const { jobId } = job;
-  console.log(
-    `[acquire][${jobId}] starting: ${autoSwapPlan.length} item(s), ` +
-      `wallet=${ownerKeypair.publicKey.toBase58()}`,
-  );
-
-  // Worker-pool size comes from the AUTOSWAP_CONCURRENCY constant defined
-  // at the top of this file. Logged here so the user can confirm the
-  // value the running build was compiled with.
-  console.log(`[acquire][${jobId}] concurrency=${AUTOSWAP_CONCURRENCY}`);
-  let nextIndex = 0;
-
-  /**
-   * One worker pulls items from the shared queue index until empty.
-   * Multiple workers run concurrently, each handling one swap at a time.
-   * Failures on one don't affect the others; everyone reports their own
-   * result by mutating the shared job object.
-   *
-   * Node's event loop serializes the mutations (single-threaded JS), so
-   * the counter increments and array pushes are safe even with multiple
-   * workers running concurrently.
-   *
-   * Heavily instrumented — these log lines made it possible to diagnose
-   * the SSE-era stream-disconnection bugs by reading server output, and
-   * they're equally useful for any future issues.
-   */
-  async function worker(workerId) {
-    while (nextIndex < autoSwapPlan.length) {
-      const idx = nextIndex++;
-      const item = autoSwapPlan[idx];
-      const {
-        allocationIndex,
-        quoteMint,
-        quoteSymbol,
-        quoteDecimals,
-        targetRaw,
-        minRaw, // actual bootstrap need; targetRaw is the oversize ambition
-        quoteUsd,
-        solUsd,
-        // sizingMultiplier and estSolSpend let the swap honor the
-        // estimator's mode-aware budget. Without these the swap function
-        // uses its default 2× sizing and 0.05 SOL hard cap, both of which
-        // were sized for dust targets — custom-mode bootstraps get
-        // silently floored to ~$10 of acquired quote token.
-        sizingMultiplier,
-        estSolSpend,
-      } = item;
-
-      console.log(
-        `[acquire][${jobId}][w${workerId}] picked up ${quoteSymbol} (${quoteMint})`,
-      );
-      job.inProgressMints.add(quoteMint);
-      const t0 = Date.now();
-
-      try {
-        // Derive the per-swap SOL cap from the estimator's budget. We
-        // give the swap function ~20% headroom over what the estimator
-        // budgeted, so the actual swap can complete even if there's
-        // minor on-chain drift between estimate and execution time.
-        // Default to the legacy 0.05 SOL cap when estSolSpend isn't
-        // present (very old plan items from before the estimator added
-        // this field).
-        const maxSpendLamports = estSolSpend != null
-          ? new BN(Math.ceil(Number(estSolSpend) * 1.2 * 1e9))
-          : undefined;
-
-        const r = await swapSolForQuote({
-          ownerKeypair,
-          quoteMint,
-          targetRaw: new BN(String(targetRaw)),
-          // minRaw is the actual on-chain bootstrap requirement (e.g. $1).
-          // Pass it so swapSolForQuote can stop retrying as soon as the
-          // minimum is met, rather than chasing the oversize targetRaw
-          // (e.g. $2). Falls back to targetRaw if the plan item didn't
-          // include minRaw (older callers).
-          minRaw: minRaw ? new BN(String(minRaw)) : new BN(String(targetRaw)),
-          quoteUsd: new Decimal(quoteUsd),
-          solUsd: new Decimal(solUsd),
-          quoteDecimals: Number(quoteDecimals),
-          // Custom-mode plans send a smaller sizingMultiplier (1.10) to
-          // keep the swap-side oversize proportional to the size of the
-          // ask. Falls back to undefined (= swapSolForQuote's default 2)
-          // when older plans don't include it.
-          sizingMultiplier: sizingMultiplier != null
-            ? Number(sizingMultiplier)
-            : undefined,
-          maxSpendLamports,
-        });
-        const result = {
-          allocationIndex,
-          quoteMint,
-          quoteSymbol,
-          success: true,
-          txId: r.txId,
-          swappedRaw: r.swappedRaw.toString(),
-          alreadyHadRaw: r.alreadyHadRaw.toString(),
-          finalBalanceRaw: r.finalBalanceRaw.toString(),
-        };
-        job.results.push(result);
-        console.log(
-          `[acquire][${jobId}][w${workerId}] ${quoteSymbol} SUCCESS in ` +
-            `${Date.now() - t0}ms (tx=${r.txId || 'none'})`,
-        );
-      } catch (e) {
-        console.error(
-          `[acquire][${jobId}][w${workerId}] ${quoteSymbol} FAILED in ` +
-            `${Date.now() - t0}ms:`,
-          e.message,
-        );
-        const result = {
-          allocationIndex,
-          quoteMint,
-          quoteSymbol,
-          success: false,
-          error: e.message,
-        };
-        job.results.push(result);
-      }
-
-      // Atomic progress update (Node single-threadedness saves us here).
-      job.completed++;
-      job.inProgressMints.delete(quoteMint);
-      job.pendingMints = job.pendingMints.filter((m) => m !== quoteMint);
-    }
-    console.log(
-      `[acquire][${jobId}][w${workerId}] worker done ` +
-        `(nextIndex=${nextIndex}/${autoSwapPlan.length})`,
-    );
-  }
-
-  const poolSize = Math.min(AUTOSWAP_CONCURRENCY, autoSwapPlan.length);
-  console.log(`[acquire][${jobId}] spawning ${poolSize} workers`);
-  await Promise.all(
-    Array.from({ length: poolSize }, (_, i) => worker(i + 1)),
-  );
-
-  job.status = 'done';
-  job.finishedAt = Date.now();
-  console.log(
-    `[acquire][${jobId}] all workers done: ${job.results.length}/${job.total} results ` +
-      `in ${((job.finishedAt - job.startedAt) / 1000).toFixed(1)}s`,
-  );
-}
-
-/**
- * POST endpoint: kick off a new acquire job.
- * Returns immediately with { jobId } — the frontend polls GET for status.
- */
-app.post('/api/acquire-quote-tokens', async (req, res) => {
-  if (isDemoMode()) {
-    // Hand the demo handler the shared job store + expiry so its fake jobs
-    // live in the same Map the unchanged GET/DELETE poll endpoints read.
-    return demoChainService.handleAcquireQuoteTokens(req, res, {
-      acquireJobs,
-      jobExpiryMs: JOB_EXPIRY_MS,
-    });
-  }
-  try {
-    const { tempWalletSecretKey, autoSwapPlan } = req.body;
-    if (!Array.isArray(autoSwapPlan) || autoSwapPlan.length === 0) {
-      // No-op case — return a synthetic "already done" job so the
-      // frontend doesn't have to special-case empty plans.
-      const jobId = `job_${Date.now()}_empty`;
-      acquireJobs.set(jobId, {
-        jobId,
-        status: 'done',
-        total: 0,
-        completed: 0,
-        results: [],
-        pendingMints: [],
-        inProgressMints: new Set(),
-        startedAt: Date.now(),
-        finishedAt: Date.now(),
-        error: null,
-      });
-      return res.json({ jobId });
-    }
-    if (req.body.walletPublicKey
-        && rejectIfSecretPinLocked(res, 'acquiring quote tokens with a saved launch wallet')) {
-      return;
-    }
-    const { secretKeyArr, keypair: ownerKeypair } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
-
-    // Per-wallet mutex. The acquire job spends the wallet's SOL on swaps
-    // in the background — a duplicate job doubles the SOL spent, and an
-    // acquire racing a create-lp can drain the SOL the launch budgeted.
-    // Unlike the other guarded endpoints, the lock here must outlive the
-    // HTTP response (the job runs after we return), so startAcquireJob
-    // releases it via onFinished when the job completes.
-    const acquireWalletPk = ownerKeypair.publicKey.toBase58();
-    if (rejectOrClaimLaunchOp(res, acquireWalletPk, 'acquire-quote-tokens')) {
-      return;
-    }
-
-    const jobId = startAcquireJob({
-      ownerKeypair,
-      autoSwapPlan,
-      onFinished: () => clearLaunchOpInFlight(acquireWalletPk),
-    });
-    res.json({ jobId });
-  } catch (error) {
-    console.error('[acquire] error starting job:', error);
-    sendErrorResponse(res, error);
-  }
-});
-
-/**
- * GET endpoint: poll for status of an in-flight acquire job.
- *
- * Response shape:
- *   {
- *     jobId, status: 'running' | 'done',
- *     total, completed,
- *     results: [{ quoteMint, quoteSymbol, success, txId?, error?, ... }],
- *     pendingMints: [<mint>, ...],     // not yet picked up by a worker
- *     inProgressMints: [<mint>, ...],  // currently being swapped
- *     error: <string> | null,          // only set on fatal job-level errors
- *   }
- *
- * Returns 404 if the jobId isn't in the store (expired or invalid).
- */
-app.get('/api/acquire-quote-tokens/:jobId', (req, res) => {
-  const job = acquireJobs.get(req.params.jobId);
-  if (!job) {
-    return res.status(404).json({ error: 'Job not found or expired' });
-  }
-  // Set isn't JSON-friendly — convert to array for the wire.
-  res.json({
-    jobId: job.jobId,
-    status: job.status,
-    total: job.total,
-    completed: job.completed,
-    results: job.results,
-    pendingMints: job.pendingMints,
-    inProgressMints: Array.from(job.inProgressMints),
-    error: job.error,
-  });
-});
-
-/**
- * DELETE endpoint: explicitly remove a completed job. Optional —
- * jobs auto-expire after JOB_EXPIRY_MS. Frontend calls this after
- * consuming the final state to free memory promptly.
- */
-app.delete('/api/acquire-quote-tokens/:jobId', (req, res) => {
-  const existed = acquireJobs.delete(req.params.jobId);
-  res.json({ deleted: existed });
+// Quote review, execution, and recovery share the owned runtime.
+const quoteRoutes = installQuoteAcquisitionRoutes(app, {
+  runtime: quoteAcquisition, isDemoMode, demoChainService, resolveSigner, rejectIfSecretPinLocked,
+  claim: claimLaunchOp, release: clearLaunchOpInFlight, sendErrorResponse,
 });
 // Pre-commit dry run of pool creation. Resolves prices, runs the
 // just-in-time Raydium probe, applies the drift guard — but does NO
@@ -7375,247 +7187,7 @@ async function createLpHandler(req, res) {
       if (demoWpk) lpProgressEnd(demoWpk);
     }
   }
-  let walletPublicKey = null;
-  let claimedLaunchOp = false;
-  try {
-    const {
-      tempWalletSecretKey,
-      tokenMint,
-      tokenDecimals,
-      tokenTotalSupply,
-      targetMarketCapUsd,
-      allocations,
-      lockPositions,
-    } = req.body;
-
-    console.log('Creating LP for token:', tokenMint);
-    console.log(`Allocations: ${(allocations || []).map((allocation) => `${allocation.quoteSymbolOverride || allocation.quoteToken || '?'} ${allocation.supplyPercent}%`).join(', ')}`);
-
-    if (await rejectIfTokenIncompleteForLiquidity(res, {
-      tokenMint,
-      tokenTotalSupply,
-      tokenDecimals: tokenDecimals || 9,
-    })) return;
-
-    if (req.body.walletPublicKey
-        && rejectIfSecretPinLocked(res, 'creating liquidity pools with a saved launch wallet')) {
-      return;
-    }
-    const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
-    walletPublicKey = resolvedWalletPublicKey;
-    // Fee Keys sent to a slice recipient leave the launch wallet for good, so
-    // each recipient must be a proven wallet, like the final sweep.
-    const feeKeyRecipients = [...new Set((Array.isArray(allocations) ? allocations : [])
-      .flatMap((allocation) => (Array.isArray(allocation?.distribution) ? allocation.distribution : []))
-      .map((slice) => String(slice?.recipient || '').trim())
-      .filter(Boolean))];
-    if (feeKeyRecipients.length) {
-      const funder = (await findFundingWallet(walletPublicKey).catch(() => null))?.funder || null;
-      for (const recipient of feeKeyRecipients) {
-        const reason = unsafeSweepDestinationReason(recipient, { launchWallet: walletPublicKey })
-          || await unverifiedDestinationReason(recipient, walletPublicKey, { funder });
-        if (reason) {
-          walletPublicKey = null;
-          return res.status(400).json({ success: false, error: `Refusing to send Fee Keys: ${reason}` });
-        }
-      }
-    }
-    // Per-wallet mutex: reject if any other launch operation is running
-    // for this wallet (a prior create-lp that's still going after a
-    // renderer reload, a transfer, an acquire job). See the long comment
-    // on launchOpsInFlight for why this matters. On rejection the
-    // response has already been sent — bail out without touching the
-    // journal (the running operation owns it). claimedLaunchOp tells the
-    // finally block whether WE hold the lock (and must release it) or
-    // someone else does (leave it alone).
-    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'create-lp')) {
-      walletPublicKey = null; // don't end the other op's progress tracker in finally
-      return;
-    }
-    claimedLaunchOp = true;
-    const poolPlan = {
-      tokenMint,
-      tokenDecimals: tokenDecimals || 9,
-      tokenTotalSupply,
-      targetMarketCapUsd,
-      allocations,
-      lockPositions: lockPositions !== false,
-      // The configured airdrop (recipients + token identity), journaled so
-      // a resume after an app restart can restore the plan — the transfer
-      // step otherwise builds it from frontend state that didn't survive.
-      // Plan data only; the airdrop executes in /api/transfer-assets.
-      airdropPlan: (req.body.airdrop
-        && Array.isArray(req.body.airdrop.recipients)
-        && req.body.airdrop.recipients.length > 0)
-        ? req.body.airdrop
-        : null,
-    };
-    launchJournal.upsertForWallet(
-      walletPublicKey,
-      {
-        status: 'active',
-        stage: 'lp_create_started',
-        poolPlan,
-        error: null,
-        errorDetails: null,
-      },
-      { stage: 'lp_create_started', tokenMint, allocationCount: allocations?.length || 0 },
-    );
-
-    // Begin live LP progress tracking. Same in-memory Map the demo uses;
-    // the frontend polls /api/lp-progress during the create-lp call and
-    // ticks rows from pending → done as events arrive. Real-mode events
-    // already have the stage names the frontend translator expects
-    // (pool_create_done, main_open_done, etc.) so no shape conversion
-    // is needed. End in finally below.
-    lpProgressBegin(walletPublicKey);
-
-    const result = await createPoolsAndPositions({
-      tempWalletSecretKey: secretKeyArr,
-      tokenMint,
-      tokenDecimals: tokenDecimals || 9,
-      tokenTotalSupply,
-      targetMarketCapUsd,
-      allocations,
-      lockPositions: lockPositions !== false,
-      onProgress: (event) => {
-        // Journal: durable record for recovery if the launch dies.
-        try { recordLpJournalProgress(walletPublicKey, event); }
-        catch (_) { /* never let a progress write break the launch */ }
-        // Live progress tracker: drives the frontend's per-row updates.
-        try { lpProgressEvent(walletPublicKey, event); }
-        catch (_) { /* same — progress is best-effort */ }
-      },
-    });
-
-    launchJournal.upsertForWallet(
-      walletPublicKey,
-      {
-        status: 'active',
-        stage: 'lp_created',
-        error: null,
-        errorDetails: null,
-        lp: {
-          results: result.results || [],
-          partialResults: null,
-          failedPhase: null,
-          failedAllocationIndex: null,
-          bootstrapFailures: null,
-          lockFailures: null,
-          transferFailures: null,
-        },
-      },
-      { stage: 'lp_created', poolCount: result.results?.length || 0 },
-    );
-
-    let metadataReveal = null;
-    try {
-      metadataReveal = await revealSealedMetadataAfterLiquidity({
-        walletPublicKey,
-        secretKeyArr,
-      });
-    } catch (revealError) {
-      metadataReveal = { success: false, error: launchJournal.errorMessage(revealError) };
-      launchJournal.upsertForWallet(
-        walletPublicKey,
-        {
-          status: 'active',
-          stage: 'metadata_reveal_failed',
-          error: metadataReveal.error,
-          token: { sealedMetadataPending: true },
-        },
-        { stage: 'metadata_reveal_failed', error: metadataReveal.error },
-      );
-    }
-
-    res.json({ success: true, ...result, metadataReveal });
-  } catch (error) {
-    const message = launchJournal.errorMessage(error);
-    const errorDetails = launchFailureDetails(error, {
-      route: 'create-lp',
-      failedPhase: error.failedPhase || 'unknown',
-      failedAllocationIndex: error.failedAllocationIndex ?? null,
-      partialResultCount: error.partialResults?.length || 0,
-    });
-    console.error('Error creating LP:', error);
-    if (walletPublicKey) {
-      launchJournal.upsertForWallet(
-        walletPublicKey,
-        {
-          status: 'failed',
-          stage: `lp_${error.failedPhase || 'unknown'}_failed`,
-          error: message,
-          errorDetails,
-          lp: {
-            partialResults: error.partialResults || [],
-            failedAllocationIndex: error.failedAllocationIndex,
-            failedAllocation: error.failedAllocation,
-            failedPhase: error.failedPhase,
-            bootstrapFailures: error.bootstrapFailures || null,
-            lockFailures: error.lockFailures || null,
-            transferFailures: error.transferFailures || null,
-          },
-        },
-        {
-          stage: `lp_${error.failedPhase || 'unknown'}_failed`,
-          error: message,
-          errorDetails,
-          failedPhase: error.failedPhase,
-          partialResultCount: error.partialResults?.length || 0,
-        },
-      );
-    }
-    res.status(error.statusCode || 500).json({
-      success: false,
-      ...(error.code ? { code: error.code } : {}),
-      ...(error.code === 'SECRET_PIN_LOCKED' ? { secretPinLocked: true } : {}),
-      error: message,
-      errorDetails,
-      partialResults: error.partialResults || [],
-      failedAllocationIndex: error.failedAllocationIndex,
-      failedAllocation: error.failedAllocation,
-      // 'pre_flight', 'main_positions', 'bootstrap', 'locks', or 'transfers' —
-      // tells the frontend which phase failed so it can render the progress
-      // tree correctly and decide retry semantics:
-      //   - pre_flight: nothing on-chain happened, fix config and retry
-      //   - main_positions: pool may have been created, current behaviour
-      //     is to require a sweep; mid-Phase-1 partial recovery is a
-      //     larger refactor for later
-      //   - bootstrap: main positions intact, retry bootstraps only
-      //   - locks: positions all open, retry the lock phase only
-      //   - transfers: positions locked, un-transferred Fee Keys will
-      //     sweep to user's destination (transfer failure is non-blocking)
-      failedPhase: error.failedPhase,
-      // When phase 2 reports multiple failed bootstraps, the orchestrator
-      // attaches the full list here. Phase 1 only ever has one failure
-      // (it aborts on first failure) so failedAllocationIndex is enough
-      // there; phase 2 keeps going past individual failures and may have
-      // several. Frontend uses this to mark every failed pool's bootstrap
-      // row, not just one.
-      bootstrapFailures: error.bootstrapFailures || null,
-      // Phase 3 and Phase 4 failure arrays. Same shape as
-      // bootstrapFailures: each entry pinpoints which allocation/slice
-      // failed and why. The frontend uses these to render per-position
-      // failure markers and offer targeted retry.
-      lockFailures: error.lockFailures || null,
-      transferFailures: error.transferFailures || null,
-    });
-  } finally {
-    // Always end the live LP progress tracker so the frontend's poll
-    // sees status='done' and stops. The tracker auto-cleans 30 seconds
-    // later, leaving time for any in-flight poll to see the final state.
-    if (walletPublicKey) {
-      try { lpProgressEnd(walletPublicKey); }
-      catch (_) { /* end is a best-effort cleanup */ }
-    }
-    // Release the per-wallet operation lock — but only if WE claimed it.
-    // A 409 rejection path never sets claimedLaunchOp, so we don't
-    // release a lock owned by the still-running operation.
-    if (claimedLaunchOp && walletPublicKey) {
-      clearLaunchOpInFlight(walletPublicKey);
-    }
-  }
+  return serveLaunchOperation(res, () => launchServices.createLiquidity(req.body));
 }
 
 app.post('/api/create-lp', createLpHandler);
@@ -7634,279 +7206,7 @@ app.post('/api/create-lp', createLpHandler);
 // affecting recovery, because everything we need lives on chain.
 async function resumeLaunchHandler(req, res) {
   if (isDemoMode()) return demoChainService.handleResumeLaunch(req, res);
-  let walletPublicKey = null;
-  let claimedLaunchOp = false;
-  try {
-    const {
-      tempWalletSecretKey,
-      tokenMint,
-      tokenDecimals,
-      tokenTotalSupply,
-      targetMarketCapUsd,
-      allocations,
-      lockPositions,
-      priorResults,
-    } = req.body;
-
-    if (!Array.isArray(allocations) || allocations.length === 0) {
-      throw new Error('allocations array is required');
-    }
-    if (!Array.isArray(priorResults)) {
-      throw new Error('priorResults must be an array (use [] for a fresh launch)');
-    }
-    if (await rejectIfTokenIncompleteForLiquidity(res, {
-      tokenMint,
-      tokenTotalSupply,
-      tokenDecimals: tokenDecimals || 9,
-    })) return;
-
-    console.log(
-      `Resuming launch for ${tokenMint}: ${priorResults.length}/${allocations.length} ` +
-        `allocation(s) carried over from prior attempt`,
-    );
-
-    if (req.body.walletPublicKey
-        && rejectIfSecretPinLocked(res, 'resuming a launch with a saved launch wallet')) {
-      return;
-    }
-    const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
-    walletPublicKey = resolvedWalletPublicKey;
-    // Per-wallet mutex — same protection as /api/create-lp. The classic
-    // hazard here: the original create-lp is still running after a UI
-    // reload, the user recovers the wallet and clicks Resume. Without
-    // this guard, two orchestrators would race over the same positions.
-    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'resume-launch')) {
-      walletPublicKey = null; // don't end the other op's progress tracker in finally
-      return;
-    }
-    claimedLaunchOp = true;
-
-    const activeJournal = launchJournal.activeForWallet(walletPublicKey);
-    const phase1Recovery = materializePhase1RecoveryResults(
-      activeJournal || {},
-      priorResults,
-      allocations,
-    );
-    let effectivePriorResults = mergePriorResults(priorResults, phase1Recovery.recoveredResults);
-    if (phase1Recovery.blockedEvents.length > 0) {
-      const pools = phase1Recovery.blockedEvents.map((event) => event.poolId).filter(Boolean).join(', ');
-      const message =
-        'This launch recorded ambiguous partial pool state that Trebuchet cannot safely ' +
-        'resume automatically without risking duplicate or skipped LP work. ' +
-        `Sweep the launch wallet or recover the existing LP positions manually${pools ? `; recorded pool(s): ${pools}` : ''}.`;
-      const errorDetails = {
-        code: 'UNSAFE_PARTIAL_POOL_STATE',
-        route: 'resume-launch',
-        failedPhase: 'main_positions',
-        priorResultCount: effectivePriorResults.length,
-        unsafePoolEvents: phase1Recovery.blockedEvents,
-      };
-      launchJournal.upsertForWallet(
-        walletPublicKey,
-        {
-          status: 'failed',
-          stage: 'lp_main_positions_failed',
-          error: message,
-          errorDetails,
-          lp: {
-            priorResults: effectivePriorResults,
-            failedPhase: 'main_positions',
-          },
-        },
-        {
-          stage: 'lp_resume_blocked_unsafe_partial',
-          error: message,
-          errorDetails,
-          failedPhase: 'main_positions',
-          priorResultCount: effectivePriorResults.length,
-          unsafePoolEventCount: phase1Recovery.blockedEvents.length,
-        },
-      );
-      return res.status(409).json({
-        success: false,
-        code: 'UNSAFE_PARTIAL_POOL_STATE',
-        manualRecoveryRequired: true,
-        failedPhase: 'main_positions',
-        partialResults: effectivePriorResults,
-        unsafePoolEvents: phase1Recovery.blockedEvents,
-        error: message,
-        errorDetails,
-      });
-    }
-    if (phase1Recovery.recoveredResults.length > 0) {
-      launchJournal.upsertForWallet(
-        walletPublicKey,
-        {
-          lp: {
-            partialResults: effectivePriorResults,
-            priorResults: effectivePriorResults,
-          },
-        },
-        {
-          stage: 'lp_phase1_recovery_prepared',
-          recoveredAllocationCount: phase1Recovery.recoveredResults.length,
-          priorResultCount: effectivePriorResults.length,
-        },
-      );
-    }
-
-    launchJournal.upsertForWallet(
-      walletPublicKey,
-      {
-        status: 'active',
-        stage: 'lp_resume_started',
-        error: null,
-        errorDetails: null,
-        poolPlan: {
-          tokenMint,
-          tokenDecimals: tokenDecimals || 9,
-          tokenTotalSupply,
-          targetMarketCapUsd,
-          allocations,
-          lockPositions: lockPositions !== false,
-        },
-        lp: phase1Recovery.recoveredResults.length > 0
-          ? { priorResults: effectivePriorResults, partialResults: effectivePriorResults }
-          : { priorResults: effectivePriorResults },
-      },
-      {
-        stage: 'lp_resume_started',
-        tokenMint,
-        priorResultCount: effectivePriorResults.length,
-        allocationCount: allocations.length,
-        phase1RecoveryCount: phase1Recovery.recoveredResults.length,
-      },
-    );
-
-    // Begin live LP progress tracking for the resume too. The frontend
-    // polls /api/lp-progress identically whether this is a fresh launch
-    // or a resume, so the events surface as live row updates.
-    lpProgressBegin(walletPublicKey);
-
-    const result = await createPoolsAndPositions({
-      tempWalletSecretKey: secretKeyArr,
-      tokenMint,
-      tokenDecimals: tokenDecimals || 9,
-      tokenTotalSupply,
-      targetMarketCapUsd,
-      allocations,
-      lockPositions: lockPositions !== false,
-      priorResults: effectivePriorResults,
-      onProgress: (event) => {
-        try { recordLpJournalProgress(walletPublicKey, event); }
-        catch (_) { /* never let a progress write break the launch */ }
-        try { lpProgressEvent(walletPublicKey, event); }
-        catch (_) { /* same — progress is best-effort */ }
-      },
-    });
-
-    launchJournal.upsertForWallet(
-      walletPublicKey,
-      {
-        status: 'active',
-        stage: 'lp_created',
-        error: null,
-        errorDetails: null,
-        lp: {
-          results: result.results || [],
-          partialResults: null,
-          failedPhase: null,
-          failedAllocationIndex: null,
-          bootstrapFailures: null,
-          lockFailures: null,
-          transferFailures: null,
-        },
-      },
-      { stage: 'lp_created', poolCount: result.results?.length || 0 },
-    );
-
-    let metadataReveal = null;
-    try {
-      metadataReveal = await revealSealedMetadataAfterLiquidity({
-        walletPublicKey,
-        secretKeyArr,
-      });
-    } catch (revealError) {
-      metadataReveal = { success: false, error: launchJournal.errorMessage(revealError) };
-      launchJournal.upsertForWallet(
-        walletPublicKey,
-        {
-          status: 'active',
-          stage: 'metadata_reveal_failed',
-          error: metadataReveal.error,
-          token: { sealedMetadataPending: true },
-        },
-        { stage: 'metadata_reveal_failed', error: metadataReveal.error },
-      );
-    }
-
-    res.json({ success: true, ...result, metadataReveal });
-  } catch (error) {
-    const message = launchJournal.errorMessage(error);
-    const errorDetails = launchFailureDetails(error, {
-      route: 'resume-launch',
-      failedPhase: error.failedPhase || 'resume',
-      failedAllocationIndex: error.failedAllocationIndex ?? null,
-      partialResultCount: error.partialResults?.length || 0,
-    });
-    console.error('Error resuming launch:', error);
-    if (walletPublicKey) {
-      launchJournal.upsertForWallet(
-        walletPublicKey,
-        {
-          status: 'failed',
-          stage: `lp_${error.failedPhase || 'resume'}_failed`,
-          error: message,
-          errorDetails,
-          lp: {
-            partialResults: error.partialResults || [],
-            failedAllocationIndex: error.failedAllocationIndex,
-            failedAllocation: error.failedAllocation,
-            failedPhase: error.failedPhase,
-            bootstrapFailures: error.bootstrapFailures || null,
-            lockFailures: error.lockFailures || null,
-            transferFailures: error.transferFailures || null,
-          },
-        },
-        {
-          stage: `lp_${error.failedPhase || 'resume'}_failed`,
-          error: message,
-          errorDetails,
-          failedPhase: error.failedPhase,
-          partialResultCount: error.partialResults?.length || 0,
-        },
-      );
-    }
-    res.status(error.statusCode || 500).json({
-      success: false,
-      ...(error.code ? { code: error.code } : {}),
-      ...(error.code === 'SECRET_PIN_LOCKED' ? { secretPinLocked: true } : {}),
-      error: message,
-      errorDetails,
-      partialResults: error.partialResults || [],
-      failedAllocationIndex: error.failedAllocationIndex,
-      failedAllocation: error.failedAllocation,
-      failedPhase: error.failedPhase,
-      bootstrapFailures: error.bootstrapFailures || null,
-      lockFailures: error.lockFailures || null,
-      transferFailures: error.transferFailures || null,
-    });
-  } finally {
-    // Same end-the-tracker pattern as /api/create-lp above. Resumes use
-    // the same lpProgress Map keyed by wallet pubkey, so a resume that
-    // succeeds (or fails) cleanly tears down the tracker without
-    // requiring the frontend to know which endpoint fired the work.
-    if (walletPublicKey) {
-      try { lpProgressEnd(walletPublicKey); }
-      catch (_) { /* end is a best-effort cleanup */ }
-    }
-    // Release the per-wallet operation lock if we claimed it (409
-    // rejections never claim, so they never release someone else's).
-    if (claimedLaunchOp && walletPublicKey) {
-      clearLaunchOpInFlight(walletPublicKey);
-    }
-  }
+  return serveLaunchOperation(res, () => launchServices.resumeLiquidity(req.body));
 }
 
 app.post('/api/resume-launch', resumeLaunchHandler);
@@ -8213,407 +7513,7 @@ async function transferAssetsHandler(req, res) {
       },
     });
   }
-  let walletPublicKey = null;
-  let claimedLaunchOp = false;
-  try {
-    const {
-      tempWalletSecretKey,
-      destinationWallet: rawDestinationWallet,
-      // tokenMint kept in payload for backward compat with the frontend,
-      // but no longer used to decide what to transfer — the new
-      // sweepAllTokensToDestination picks up every fungible token, not
-      // just the launched mint. The frontend still passes it.
-    } = req.body;
-    let destinationWallet = String(rawDestinationWallet || '').trim();
-    // A malformed explicit destination is rejected before the signer loads.
-    if (destinationWallet) {
-      try {
-        new PublicKey(destinationWallet);
-      } catch {
-        return res.status(400).json({ success: false, error: 'destinationWallet must be a valid Solana address' });
-      }
-    }
-    try {
-      validateTransferAirdropPayload(req.body.airdrop);
-    } catch (error) {
-      return res.status(400).json({ success: false, error: error.message });
-    }
-
-    if (req.body.walletPublicKey
-        && rejectIfSecretPinLocked(res, 'transferring assets with a saved launch wallet')) {
-      return;
-    }
-    const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
-    walletPublicKey = resolvedWalletPublicKey;
-
-    // No return wallet set: everything goes back to the wallet that funded
-    // the launch wallet. Never sweep to a guess.
-    let resolvedFromFunder = false;
-    if (!destinationWallet) {
-      const funding = await findFundingWallet(walletPublicKey).catch(() => null);
-      destinationWallet = String(funding?.funder || '').trim();
-      if (!destinationWallet) {
-        return res.status(400).json({
-          success: false,
-          error: 'destinationWallet required: no return wallet is set and the wallet that funded this launch wallet could not be found. Sign with your wallet in Trebuchet, then retry.',
-        });
-      }
-      resolvedFromFunder = true;
-      console.log('No return wallet set; returning assets to the funding wallet:', destinationWallet);
-    }
-    // Last line of defense: this is where assets actually leave the wallet.
-    const unsafeDestination = unsafeSweepDestinationReason(destinationWallet, { launchWallet: walletPublicKey });
-    if (unsafeDestination) {
-      return res.status(400).json({ success: false, error: `Refusing to sweep: ${unsafeDestination}` });
-    }
-    const unverifiedDestination = resolvedFromFunder
-      ? null
-      : await unverifiedDestinationReason(destinationWallet, walletPublicKey);
-    if (unverifiedDestination) {
-      return res.status(400).json({ success: false, error: `Refusing to sweep: ${unverifiedDestination}` });
-    }
-
-    console.log('Transferring assets to:', destinationWallet);
-    // Per-wallet mutex — a sweep running concurrently with a still-running
-    // create-lp/resume would pull tokens and SOL out from under the launch
-    // mid-flight, guaranteeing a half-finished launch. Reject with 409 and
-    // let the running operation finish first.
-    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'transfer-assets')) {
-      return;
-    }
-    claimedLaunchOp = true;
-    launchJournal.upsertForWallet(
-      walletPublicKey,
-      {
-        status: 'active',
-        stage: 'transfer_started',
-        transfer: { destinationWallet },
-      },
-      { stage: 'transfer_started', destinationWallet },
-    );
-
-    // 0. Metadata authority handoff (keep-authority launches only). The
-    //    update authority currently sits on the launch wallet, which this
-    //    transfer is about to empty and destroy. Hand it to the destination
-    //    FIRST; on failure abort the whole transfer — nothing has been
-    //    swept yet, so the user just retries, instead of losing the only
-    //    key that can ever change the token's name/logo.
-    if (typeof req.body.keepMetadataAuthorityMint === 'string'
-        && req.body.keepMetadataAuthorityMint) {
-      console.log('Transferring metadata update authority to destination...');
-      await transferMetadataAuthority({
-        tempWalletSecretKey: secretKeyArr,
-        tokenMint: req.body.keepMetadataAuthorityMint,
-        newAuthority: destinationWallet,
-      });
-      launchJournal.upsertForWallet(
-        walletPublicKey,
-        { stage: 'metadata_authority_transferred' },
-        { stage: 'metadata_authority_transferred', destinationWallet },
-      );
-    }
-
-    // 1. NFTs first. Fee Keys especially — these are the most valuable
-    //    sweep items and we want them locked in before risking SOL.
-    const nftSweep = await sweepNftsToDestination({
-      tempWalletSecretKey: secretKeyArr,
-      destinationWallet,
-    });
-
-    // 1.5. Airdrop, if configured. Inserted BEFORE the token sweep
-    //      because the airdrop sends the launched token to the recipient
-    //      wallets from the ephemeral wallet's balance — those tokens
-    //      must still be present. The optional `airdrop` payload carries
-    //      the token mint, decimals, program info, and recipient list;
-    //      when absent (no airdrop configured / simple mode without
-    //      airdrop / customize mode) this step is a clean no-op.
-    //
-    //      Partial failures don't abort the transfer. Failed recipients
-    //      are returned in `airdropResult.failed` so the frontend can
-    //      offer a retry. Un-airdropped tokens stay in the launch wallet
-    //      and get picked up by the token sweep below, so even if the
-    //      user gives up on retrying, the funds aren't stranded — they
-    //      reach the destination wallet via the standard sweep path.
-    let airdropResult = null;
-    if (req.body.airdrop
-        && Array.isArray(req.body.airdrop.recipients)
-        && req.body.airdrop.recipients.length > 0
-        && req.body.airdrop.tokenMint
-        && Number.isFinite(req.body.airdrop.tokenDecimals)) {
-      // Concurrency guard: reject if another airdrop is currently
-      // running for this same launch wallet. Without this, a user
-      // clicking Transfer Assets twice (or a slow network triggering
-      // a double-submit) could send overlapping airdrops and
-      // double-pay recipients whose first-pass tx already landed.
-      if (airdropInFlight(walletPublicKey)) {
-        console.warn(
-          `Rejecting concurrent airdrop request for wallet ${walletPublicKey} `
-          + `— another airdrop is already in flight.`,
-        );
-        airdropResult = {
-          transferred: [],
-          failed: req.body.airdrop.recipients.map((r) => ({
-            wallet: r.wallet,
-            tokens: r.tokens,
-            amountRaw: null,
-            error: 'Another airdrop is already running for this launch wallet. '
-              + 'Wait for it to complete before retrying.',
-          })),
-        };
-      } else {
-        // Per-recipient idempotency: the transfer endpoint is re-runnable
-        // after a partial failure, and the frontend re-sends the FULL
-        // airdrop payload each attempt. Filter out recipients the journal
-        // already records as delivered so a transfer retry can never
-        // double-pay. (parseAirdropCsv dedupes wallets client-side, so
-        // wallet address is a safe unique key.)
-        const priorAirdrop = launchJournal.activeForWallet(walletPublicKey)?.airdrop || null;
-        const priorDelivered = Array.isArray(priorAirdrop?.transferred)
-          ? priorAirdrop.transferred
-          : [];
-        const deliveredWallets = new Set(priorDelivered.map((t) => t.wallet));
-        const pendingRecipients = req.body.airdrop.recipients.filter(
-          (r) => !deliveredWallets.has(r.wallet),
-        );
-        if (priorDelivered.length > 0) {
-          console.log(
-            `Airdrop retry-safety: ${priorDelivered.length} recipient(s) already `
-            + `delivered per journal — sending to ${pendingRecipients.length} remaining.`,
-          );
-        }
-
-        if (pendingRecipients.length === 0) {
-          // Everything already delivered in a prior attempt — skip the
-          // execution entirely and report the journal's record so the
-          // frontend/report still see the full result.
-          airdropResult = { transferred: priorDelivered, failed: [] };
-          launchJournal.recordEvent(walletPublicKey, {
-            stage: 'airdrop_skipped_already_delivered',
-            delivered: priorDelivered.length,
-          });
-        } else {
-        // Record airdrop start in the journal so a crashed-mid-airdrop
-        // case is debuggable from the journal alone. recordEvent appends
-        // to the wallet's event stream without mutating the top-level
-        // status (the transfer is still active overall).
-        launchJournal.recordEvent(walletPublicKey, {
-          stage: 'airdrop_started',
-          recipients: pendingRecipients.length,
-          tokenMint: req.body.airdrop.tokenMint,
-        });
-        markAirdropInFlight(walletPublicKey);
-        airdropProgressBegin(walletPublicKey, pendingRecipients.length);
-        try {
-          airdropResult = await executeAirdrop({
-            tempWalletSecretKey: secretKeyArr,
-            tokenMint: req.body.airdrop.tokenMint,
-            tokenDecimals: req.body.airdrop.tokenDecimals,
-            isToken2022: !!req.body.airdrop.isToken2022,
-            recipients: pendingRecipients,
-            onProgress: (s) => airdropProgressStep(walletPublicKey, s),
-          });
-          // Merge previously-delivered recipients back in so the response
-          // and the journal carry the COMPLETE picture, not just this
-          // attempt's slice.
-          airdropResult = {
-            transferred: [...priorDelivered, ...airdropResult.transferred],
-            failed: airdropResult.failed,
-          };
-          console.log(
-            `Airdrop summary: ${airdropResult.transferred.length} delivered, `
-            + `${airdropResult.failed.length} failed`,
-          );
-          // Record completion. Includes a partial flag so the journal
-          // viewer can distinguish a fully-clean airdrop from one that
-          // had per-recipient failures. The full per-recipient record is
-          // persisted on journal.airdrop (the patch below) so transfer
-          // retries can skip delivered wallets and an app restart can
-          // restore the report's airdrop section and the retry button.
-          launchJournal.upsertForWallet(
-            walletPublicKey,
-            { airdrop: airdropResult },
-            {
-              stage: 'airdrop_completed',
-              delivered: airdropResult.transferred.length,
-              failed: airdropResult.failed.length,
-              partial: airdropResult.failed.length > 0,
-            },
-          );
-        } catch (e) {
-          // An UNEXPECTED airdrop failure (one that bypassed per-recipient
-          // try/catch — likely a bad mint or connection init failure)
-          // shouldn't abort the rest of the sweep. We log it and mark
-          // every remaining recipient as failed so the user sees what
-          // happened; previously-delivered recipients stay delivered.
-          console.error('Airdrop step failed unexpectedly:', e.message);
-          launchJournal.recordEvent(walletPublicKey, {
-            stage: 'airdrop_crashed',
-            error: e.message,
-          });
-          airdropResult = {
-            transferred: priorDelivered,
-            failed: pendingRecipients.map((r) => ({
-              wallet: r.wallet,
-              tokens: r.tokens,
-              amountRaw: null,
-              error: `Airdrop step crashed: ${e.message}`,
-            })),
-          };
-        } finally {
-          // ALWAYS clear the in-flight flag so a future retry isn't
-          // blocked. The flag's purpose is to serialize concurrent
-          // attempts, not to prevent legitimate re-runs.
-          clearAirdropInFlight(walletPublicKey);
-          // Flip the progress tracker to 'done' so the frontend's
-          // poller sees the terminal state on its next call. The
-          // tracker auto-clears itself after ~10s of being done.
-          airdropProgressEnd(walletPublicKey);
-        }
-        }
-      }
-    }
-
-    // 2. All fungible tokens — launched token + any auto-swapped quote
-    //    tokens that weren't fully consumed by the bootstrap positions.
-    const tokenSweep = await sweepAllTokensToDestination({
-      tempWalletSecretKey: secretKeyArr,
-      destinationWallet,
-    });
-
-    // 2.5 + 3. Straggler pass, SOL gate, and (gated) SOL sweep. The logic
-    //    lives in sweepOrchestrator.js as a pure dependency-injected unit —
-    //    see that module for the invariant and its rationale. Production
-    //    deps are the real walletHelpers functions; the journal recorder is
-    //    a closure over this wallet.
-    const {
-      solSweep, solSweepError, solSweepSkipped,
-    } = await finishSweepWithSolGate({
-      walletPublicKey,
-      tempWalletSecretKey: secretKeyArr,
-      destinationWallet,
-      nftSweep,
-      tokenSweep,
-      deps: {
-        sweepNfts: sweepNftsToDestination,
-        sweepTokens: sweepAllTokensToDestination,
-        sweepSol: sweepSolToDestination,
-        enumerate: (pk, opts) => checkWalletBalanceMultiToken(pk, opts),
-        recordEvent: (event) => launchJournal.recordEvent(walletPublicKey, event),
-      },
-    });
-
-    // 4. Verify the wallet is on-chain empty before clearing the
-    //    recovery cache entry. Anything still there → leave the cached
-    //    key in place so the user has another shot at recovery.
-    //    A balance-check failure also keeps the entry (conservative).
-    let walletEmpty = false;
-    try {
-      const remaining = await checkWalletBalanceMultiToken(
-        walletPublicKey, { commitment: 'finalized' },
-      );
-      if (isWalletEffectivelyEmpty(remaining)) {
-        pendingWallets.remove(walletPublicKey);
-        walletEmpty = true;
-      } else {
-        console.warn(
-          `Wallet ${walletPublicKey} not empty after sweep; keeping recovery entry. ` +
-          `SOL=${remaining.sol}, tokens=${Object.keys(remaining.tokens).length}`,
-        );
-      }
-    } catch (e) {
-      console.warn('Post-sweep verification failed; keeping recovery entry:', e.message);
-    }
-
-    // Response shape: preserve the historic top-level fields the
-    // frontend already displays ({tokensTransferred, solTransferred,
-    // nftSweep}), plus the new per-token detail under tokenSweep so
-    // future UI iterations can show per-token results.
-    const tokensTransferred = tokenSweep.transferred.length;
-    const solTransferred = solSweep.solTransferred;
-    const airdropFailedCount = airdropResult
-      ? airdropResult.failed.length
-      // No airdrop in this request (the new flow runs it as a separate
-      // /api/run-airdrop call before the sweep) — read the persistent
-      // record instead so failed recipients still mark the transfer
-      // partial, same as when the airdrop ran in-process.
-      : (launchJournal.activeForWallet(walletPublicKey)?.airdrop?.failed?.length || 0);
-    const hasPartialFailure =
-      !!solSweepError ||
-      !!solSweepSkipped ||
-      (tokenSweep.errors || []).length > 0 ||
-      (nftSweep.errors || []).length > 0 ||
-      airdropFailedCount > 0 ||
-      !walletEmpty;
-    launchJournal.upsertForWallet(
-      walletPublicKey,
-      {
-        status: hasPartialFailure ? 'failed' : 'completed',
-        stage: hasPartialFailure ? 'transfer_partial' : 'transfer_completed',
-        error: hasPartialFailure
-          ? (solSweepError || solSweepSkipped || 'wallet still has recoverable assets')
-          : null,
-        transfer: transferJournalSummary({
-          destinationWallet,
-          tokensTransferred,
-          solTransferred,
-          nftSweep,
-          tokenSweep,
-          solSweep,
-          solSweepError,
-          solSweepSkipped,
-          walletEmpty,
-        }),
-      },
-      {
-        stage: hasPartialFailure ? 'transfer_partial' : 'transfer_completed',
-        destinationWallet,
-        tokensTransferred,
-        solTransferred,
-        nftsTransferred: nftSweep?.transferred?.length || 0,
-        walletEmpty,
-      },
-    );
-    res.json({
-      success: true,
-      tokensTransferred,
-      solTransferred,
-      // When set, the SOL sweep was DELIBERATELY skipped because assets
-      // remain (or their absence couldn't be verified): the SOL stays in the
-      // launch wallet so a retry can pay its own fees. The frontend shows
-      // this string; it explicitly says nothing has been lost.
-      solSweepSkipped,
-      destinationWallet,
-      nftSweep,
-      tokenSweep,
-      solSweep,
-      solSweepError,
-      walletEmpty,
-      hasPartialFailure,
-      airdrop: airdropResult,
-    });
-  } catch (error) {
-    console.error('Error transferring assets:', error);
-    if (walletPublicKey) {
-      launchJournal.upsertForWallet(
-        walletPublicKey,
-        {
-          status: 'failed',
-          stage: 'transfer_failed',
-          error: error.message,
-        },
-        { stage: 'transfer_failed', error: error.message },
-      );
-    }
-    sendErrorResponse(res, error);
-  } finally {
-    // Release the per-wallet operation lock if we claimed it. 409
-    // rejections never claim, so a rejected duplicate doesn't release
-    // the lock held by the operation that's actually running.
-    if (claimedLaunchOp && walletPublicKey) {
-      clearLaunchOpInFlight(walletPublicKey);
-    }
-  }
+  return serveLaunchOperation(res, () => launchServices.transferAssets(req.body));
 }
 
 app.post('/api/transfer-assets', transferAssetsHandler);
@@ -8646,165 +7546,7 @@ async function runAirdropHandler(req, res) {
       },
     });
   }
-  let walletPublicKey = null;
-  let claimedLaunchOp = false;
-  try {
-    const {
-      tempWalletSecretKey,
-      tokenMint,
-      tokenDecimals,
-      isToken2022 = false,
-      recipients,
-    } = req.body;
-
-    if (!tempWalletSecretKey && !req.body.walletPublicKey) {
-      return res.status(400).json({
-        success: false,
-        error: 'walletPublicKey or tempWalletSecretKey required',
-      });
-    }
-    if (!tokenMint || !Number.isFinite(tokenDecimals)) {
-      return res.status(400).json({
-        success: false,
-        error: 'tokenMint and tokenDecimals required',
-      });
-    }
-    if (!Array.isArray(recipients) || recipients.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'recipients must be a non-empty array',
-      });
-    }
-
-    if (req.body.walletPublicKey
-        && rejectIfSecretPinLocked(res, 'running an airdrop with a saved launch wallet')) {
-      return;
-    }
-    const { secretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
-      resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey });
-    walletPublicKey = resolvedWalletPublicKey;
-
-    // Per-wallet launch-op mutex: the airdrop moves real tokens and can run
-    // for minutes (no recipient cap). Claiming the same mutex the other
-    // launch ops use means a journal resume or a transfer click can't start
-    // sweeping or locking out from under a running airdrop — and vice
-    // versa: this rejects if a create/resume/transfer is mid-flight.
-    if (rejectOrClaimLaunchOp(res, walletPublicKey, 'run-airdrop')) {
-      return;
-    }
-    claimedLaunchOp = true;
-
-    // Concurrency guard. Same reasoning as in /api/transfer-assets: a
-    // second concurrent airdrop run could double-pay recipients whose
-    // first-pass tx already landed. The retry path is especially
-    // vulnerable because the user is more likely to click the retry
-    // button impatiently than the main Transfer button.
-    if (airdropInFlight(walletPublicKey)) {
-      console.warn(
-        `Rejecting concurrent airdrop retry for wallet ${walletPublicKey} `
-        + `— another airdrop is already in flight.`,
-      );
-      return res.status(409).json({
-        success: false,
-        error: 'Another airdrop is already running for this launch wallet. '
-          + 'Wait for it to complete before retrying.',
-      });
-    }
-    markAirdropInFlight(walletPublicKey);
-    airdropProgressBegin(walletPublicKey, recipients.length);
-
-    // Same per-recipient idempotency as the transfer-assets airdrop step:
-    // drop any wallets the journal already records as delivered, so a
-    // retry can never double-pay (e.g. a stale retry click after a
-    // successful re-transfer already covered the failed rows).
-    const priorAirdrop = launchJournal.activeForWallet(walletPublicKey)?.airdrop || null;
-    const priorDelivered = Array.isArray(priorAirdrop?.transferred)
-      ? priorAirdrop.transferred
-      : [];
-    const deliveredWallets = new Set(priorDelivered.map((t) => t.wallet));
-    const pendingRecipients = recipients.filter((r) => !deliveredWallets.has(r.wallet));
-    if (pendingRecipients.length < recipients.length) {
-      console.log(
-        `Airdrop retry-safety: ${recipients.length - pendingRecipients.length} `
-        + `recipient(s) already delivered per journal — skipping them.`,
-      );
-    }
-
-    console.log(`Retrying airdrop to ${pendingRecipients.length} recipient(s)`);
-    let airdropResult;
-    if (pendingRecipients.length === 0) {
-      clearAirdropInFlight(walletPublicKey);
-      airdropProgressEnd(walletPublicKey);
-      airdropResult = { transferred: [], failed: [] };
-    } else {
-      try {
-        airdropResult = await executeAirdrop({
-          tempWalletSecretKey: secretKeyArr,
-          tokenMint,
-          tokenDecimals,
-          isToken2022,
-          recipients: pendingRecipients,
-          onProgress: (s) => airdropProgressStep(walletPublicKey, s),
-        });
-      } finally {
-        clearAirdropInFlight(walletPublicKey);
-        airdropProgressEnd(walletPublicKey);
-      }
-    }
-    console.log(
-      `Retry summary: ${airdropResult.transferred.length} delivered, `
-      + `${airdropResult.failed.length} still failed`,
-    );
-
-    // Merge the retry outcome into the journal's persistent airdrop record:
-    // newly-delivered wallets join transferred; the failed list is rebuilt
-    // from this attempt's failures plus any prior failures NOT retried in
-    // this call (the frontend usually retries the full failed set, but a
-    // partial retry shouldn't erase the record of the rows it skipped).
-    const retriedWallets = new Set(pendingRecipients.map((r) => r.wallet));
-    const newlyDeliveredWallets = new Set(airdropResult.transferred.map((t) => t.wallet));
-    const priorFailed = Array.isArray(priorAirdrop?.failed) ? priorAirdrop.failed : [];
-    const mergedAirdrop = {
-      transferred: [...priorDelivered, ...airdropResult.transferred],
-      failed: [
-        ...priorFailed.filter(
-          (f) => !retriedWallets.has(f.wallet) && !newlyDeliveredWallets.has(f.wallet),
-        ),
-        ...airdropResult.failed,
-      ],
-    };
-
-    // Record a retry event in the journal so the launch history shows
-    // the recovery attempt, and persist the merged per-recipient record.
-    // We don't change the launch's overall status here.
-    launchJournal.upsertForWallet(
-      walletPublicKey,
-      { airdrop: mergedAirdrop },
-      {
-        stage: 'airdrop_retry',
-        retried: pendingRecipients.length,
-        delivered: airdropResult.transferred.length,
-        stillFailed: airdropResult.failed.length,
-      },
-    );
-
-    res.json({
-      success: true,
-      // The merged record, not just this attempt's slice — the frontend
-      // replaces lastAirdropResult wholesale with this.
-      airdrop: mergedAirdrop,
-    });
-  } catch (error) {
-    console.error('Airdrop retry failed:', error);
-    sendErrorResponse(res, error);
-  } finally {
-    // Release the launch-op mutex no matter how the handler exited. Only
-    // when WE claimed it — a 409 from rejectOrClaimLaunchOp means another
-    // op holds it and clearing here would release someone else's claim.
-    if (claimedLaunchOp && walletPublicKey) {
-      clearLaunchOpInFlight(walletPublicKey);
-    }
-  }
+  return serveLaunchOperation(res, () => launchServices.runAirdrop(req.body));
 }
 
 // First-pass airdrop (step 6a of the transfer flow) and the retry button
@@ -8857,7 +7599,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
     });
   }
   let walletPublicKey = null;
-  let priorResultsForFailure = [];
+  let claimedLaunchOp = false;
   try {
     const { id } = req.body;
     if (!id) {
@@ -8880,6 +7622,8 @@ app.post('/api/launch-journals/resume', async (req, res) => {
         && rejectIfSecretPinLocked(res, 'resuming a launch journal with a saved wallet')) {
       return;
     }
+    claimLaunchOp(walletPublicKey, 'resume-launch');
+    claimedLaunchOp = true;
     const wallet = pendingWallets.get(walletPublicKey);
     if (!wallet || !Array.isArray(wallet.secretKey)) {
       return res.status(409).json({
@@ -8907,15 +7651,17 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       });
     }
 
+    await reconcileBeforeLiquidity({ tempWalletSecretKey: wallet.secretKey, tokenMint });
+
     if (await rejectIfTokenIncompleteForLiquidity(res, {
       tokenMint,
       tokenTotalSupply,
       tokenDecimals,
     })) return;
 
-    const priorResults = priorResultsFromJournal(journal);
-    priorResultsForFailure = priorResults;
-    if (hasCompletedLpResults(journal)) {
+    const recoveredJournal = launchJournal.activeForWallet(walletPublicKey);
+    const priorResults = priorResultsFromJournal(recoveredJournal);
+    if (hasCompletedLpResults(recoveredJournal)) {
       launchJournal.upsertForWallet(
         walletPublicKey,
         {
@@ -8935,12 +7681,11 @@ app.post('/api/launch-journals/resume', async (req, res) => {
     }
 
     const phase1Recovery = materializePhase1RecoveryResults(
-      journal,
+      recoveredJournal,
       priorResults,
       allocations,
     );
     let effectivePriorResults = mergePriorResults(priorResults, phase1Recovery.recoveredResults);
-    priorResultsForFailure = effectivePriorResults;
     if (phase1Recovery.blockedEvents.length > 0) {
       const pools = phase1Recovery.blockedEvents.map((event) => event.poolId).filter(Boolean).join(', ');
       const message =
@@ -9051,8 +7796,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       lockPositions,
       priorResults: effectivePriorResults,
       onProgress: (event) => {
-        try { recordLpJournalProgress(walletPublicKey, event); }
-        catch (_) { /* never let a progress write break the launch */ }
+        recordLpJournalProgress(walletPublicKey, event);
         try { lpProgressEvent(walletPublicKey, event); }
         catch (_) { /* same — progress is best-effort */ }
       },
@@ -9080,9 +7824,10 @@ app.post('/api/launch-journals/resume', async (req, res) => {
 
     res.json({ success: true, ...result });
   } catch (error) {
+    if (error instanceof LaunchRejection || classifyChainError(error) === 'recovery_required') return sendErrorResponse(res, error);
     const partialResults = Array.isArray(error.partialResults)
       ? error.partialResults
-      : priorResultsForFailure;
+      : journalResultList(launchJournal.activeForWallet(walletPublicKey));
     const message = launchJournal.errorMessage(error);
     const errorDetails = launchFailureDetails(error, {
       route: 'launch-journals/resume',
@@ -9136,7 +7881,8 @@ app.post('/api/launch-journals/resume', async (req, res) => {
     });
   } finally {
     // Mirror the create-lp / resume-launch cleanup pattern.
-    if (walletPublicKey) {
+    if (claimedLaunchOp && walletPublicKey) {
+      clearLaunchOpInFlight(walletPublicKey);
       try { lpProgressEnd(walletPublicKey); }
       catch (_) { /* end is a best-effort cleanup */ }
     }
@@ -9398,6 +8144,9 @@ app.post('/api/find-funder', async (req, res) => {
   }
 });
 
+app.locals.runtimeBusy = () => launchOpsInFlight.size > 0
+  || airdropsInFlight.size > 0
+  || quoteRoutes.busy();
 return app;
 }
 
@@ -9446,6 +8195,7 @@ export function createLocalApiServer({
   host = '127.0.0.1',
   port = Number(process.env.PORT || 3000),
   onStarted = logLocalApiStartup,
+  onStopped = () => {},
 } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new TypeError('Local API port must be an integer from 0 to 65535');
@@ -9453,62 +8203,100 @@ export function createLocalApiServer({
   if (host !== '127.0.0.1') {
     throw new TypeError('Trebuchet Local API must bind to 127.0.0.1');
   }
-  const localApplication = application || createLocalApiApp();
-  if (typeof localApplication.listen !== 'function') {
+  if (application && typeof application.listen !== 'function') {
     throw new TypeError('Local API application must provide listen(port, host, callback)');
   }
-  if (typeof onStarted !== 'function') {
-    throw new TypeError('Local API onStarted hook must be a function');
+  if (typeof onStarted !== 'function' || typeof onStopped !== 'function') {
+    throw new TypeError('Local API lifecycle hooks must be functions');
   }
 
+  let localApplication = application;
   let httpServer = null;
   let startPromise = null;
+  let stopPromise = null;
+  let owner = null;
+  let control = null;
 
-  return Object.freeze({
-    application: localApplication,
-    get server() {
-      return httpServer;
-    },
+  const runtime = Object.freeze({
+    get application() { return localApplication; },
+    get server() { return httpServer; },
     get address() {
       const bound = httpServer?.address();
       if (!bound || typeof bound === 'string') return null;
       return { host, port: bound.port, url: `http://${host}:${bound.port}` };
     },
-    async start() {
-      if (httpServer?.listening) return this.address;
+    start() {
+      if (stopPromise) return stopPromise.then(() => runtime.start());
+      if (httpServer?.listening) return Promise.resolve(runtime.address);
       if (startPromise) return startPromise;
-      startPromise = new Promise((resolve, reject) => {
-        const candidate = localApplication.listen(port, host, () => {
-          httpServer = candidate;
-          const address = this.address;
+      startPromise = Promise.resolve().then(async () => {
+        // Production hosts acquire ownership before constructing any routes.
+        // An injected listener supports lifecycle tests without profile I/O.
+        if (!application) {
+          owner = acquireProfileOwner(process.env.TREBUCHET_CONFIG_DIR || __dirname);
+          control = createRuntimeControl({ owner, stop: () => runtime.stop(), isBusy: () => localApplication?.locals?.runtimeBusy?.() === true });
+          localApplication = createLocalApiApp({ runtimeControl: control, runtimeOwner: owner });
+        }
+        try {
+          const address = await new Promise((resolve, reject) => {
+            const candidate = localApplication.listen(port, host, () => {
+              httpServer = candidate;
+              resolve(runtime.address);
+            });
+            candidate.once('error', reject);
+            httpServer = candidate;
+          });
+          owner?.publish(address.port);
           onStarted(address.port);
-          resolve(address);
-        });
-        candidate.once('error', (error) => {
-          if (httpServer === candidate) httpServer = null;
-          startPromise = null;
-          reject(error);
-        });
-        httpServer = candidate;
+          return address;
+        } catch (error) {
+          if (httpServer?.listening) await new Promise((resolve) => httpServer.close(resolve));
+          httpServer = null;
+          owner?.release();
+          owner = null;
+          throw error;
+        }
+      }).catch((error) => {
+        // Route construction can fail before the listener starts.
+        owner?.release();
+        owner = null;
+        startPromise = null;
+        throw error;
       });
       return startPromise;
     },
     async stop() {
+      if (stopPromise) return stopPromise;
+      if (startPromise) await startPromise;
+      if (stopPromise) return stopPromise;
+      if (control?.busy()) throw Object.assign(new Error('The runtime has active work. Retry after it finishes.'), { code: 'RUNTIME_BUSY' });
       const current = httpServer;
       if (!current) return;
-      startPromise = null;
-      httpServer = null;
-      await new Promise((resolve, reject) => {
-        current.close((error) => error ? reject(error) : resolve());
-      });
+      stopPromise = (async () => {
+        await new Promise((resolve, reject) => {
+          current.close((error) => error ? reject(error) : resolve());
+          current.closeAllConnections?.();
+        });
+        httpServer = null;
+        startPromise = null;
+        owner?.release();
+        owner = null;
+        control = null;
+        onStopped();
+      })();
+      try { await stopPromise; } finally { stopPromise = null; }
     },
   });
+  return runtime;
 }
 
 const isDirectRun = process.argv[1]
   && path.resolve(process.argv[1]) === path.resolve(__filename);
 
 if (isDirectRun) {
-  const localApi = createLocalApiServer();
-  await localApi.start();
+  const localApi = createLocalApiServer({ onStopped: () => process.exit(0) });
+  try { await localApi.start(); } catch (error) {
+    console.error(error.code || 'RUNTIME_START_FAILED', error.message);
+    process.exitCode = 1;
+  }
 }

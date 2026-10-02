@@ -91,7 +91,7 @@ test('v2 runtime state derives wallet/network/funding truth from authoritative i
   assert.equal(runtime.walletLockReason({ wallet: bad, demoActive: true }), 'unreadable');
   assert.equal(runtime.walletUnlocked({ wallet: bad, secretPin: { configured: true, unlocked: true } }), false);
   assert.equal(runtime.walletUnlocked({ wallet: ok, secretPin: { configured: true, unlocked: true } }), true);
-  assert.equal(runtime.networkLabel({ demoActive: true, rpcName: 'Mainnet' }), 'Demo');
+  assert.equal(runtime.networkLabel({ demoActive: true, rpcName: 'Mainnet' }), 'Nothing is sent');
   assert.deepEqual({ ...runtime.fundingEstimate({ estimateMatches: false, estimatedSol: 6.33 }) }, {
     available: false,
     value: null,
@@ -106,7 +106,7 @@ test('v2 removes cosmetic controls, native confirms, and false completion', () =
   assert.doesNotMatch(app, /window\.confirm|data-action="noop"|state\.network\s*=|state\.connected\s*=/);
   assert.match(app, /RPC changes are made in authoritative settings/);
   assert.match(app, /new URLSearchParams\(\{ token, client: 'v2' \}\)/);
-  assert.match(app, /Local run armed; execute only after readiness passes/);
+  assert.match(app, /Approved\. Next: /);
   assert.match(app, /recoverySpec[\s\S]*?approval-pin-row/);
   assert.match(app, /: `<div class="kv-row"><span>Estimate<\/span><strong>\$\{currentEstimate\.available \? fmtSol\(currentEstimate\.value\) : 'Required'\}/);
   assert.doesNotMatch(app, /Estimated envelope/);

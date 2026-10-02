@@ -154,9 +154,9 @@ try {
   await page.click('[data-view="launch"]');
   await page.waitForSelector('#view-launch.is-active');
   await hold(1500);
-  await page.click('.launch-workspace-tab[data-launch-workspace="fund"]');
+  await page.click('.coin-fact[data-coin-fact="fund"]');
   await hold(1400);
-  await page.click('.launch-workspace-tab[data-launch-workspace="execute"]');
+  await page.click('.coin-fact[data-coin-fact="execute"]');
   await hold(1400);
 
   const runDemo = page.locator('[data-action="run-demo-launch"]');
@@ -164,11 +164,11 @@ try {
   await runDemo.click();
   await page.waitForFunction(() => (
     !document.querySelector('[data-action="run-demo-launch"]')?.hasAttribute('disabled')
-    && /Run demo/i.test(document.querySelector('[data-action="run-demo-launch"]')?.textContent || '')
+    && /Run practice/i.test(document.querySelector('[data-action="run-demo-launch"]')?.textContent || '')
   ), null, { timeout: 60_000 });
   await hold(1800);
 
-  await page.click('.launch-workspace-tab[data-launch-workspace="verify"]');
+  await page.click('.coin-fact[data-coin-fact="verify"]');
   await hold(1800);
   await page.click('[data-view="discovery"]');
   await page.waitForSelector('#view-discovery.is-active');

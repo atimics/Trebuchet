@@ -69,6 +69,11 @@ const browser = await chromium.launch({ headless: true });
 async function withPage(fn, label) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const p = await ctx.newPage();
+  // Run as a slow CI runner would. Load-order races (startup code firing
+  // before the document finishes parsing) only show up on slow CPUs, so a
+  // fast dev machine would otherwise pass what CI then fails.
+  const cdp = await ctx.newCDPSession(p);
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.CPU_THROTTLE || 6) });
   const consoleLog = [];
   p.on('console', (msg) => { consoleLog.push(msg.text()); });
   p.on('pageerror', (err) => { consoleLog.push('JS ERROR: ' + err.message); });

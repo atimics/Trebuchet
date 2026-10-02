@@ -142,7 +142,7 @@
 
   function healthLabel(value, latencyMs) {
     const normalized = normalizeHealth(value);
-    if (normalized === 'good') return latencyMs === 0 ? 'healthy demo RPC' : `healthy ${latencyMs}ms`;
+    if (normalized === 'good') return latencyMs === 0 ? 'Connected' : `Connected · ${latencyMs} ms`;
     if (normalized === 'slow') return latencyMs == null ? 'slow' : `slow ${latencyMs}ms`;
     if (normalized === 'error') return 'unhealthy';
     return 'unknown';
@@ -517,6 +517,13 @@
       return request(V2_PERSONAL_DISCOVERY_PATH);
     }
 
+    async function previewLogoStamp({ logo, mint } = {}) {
+      return request('/api/v2/logo-stamp-preview', {
+        method: 'POST',
+        body: { logo, mint: mint || null },
+      });
+    }
+
     async function addDiscoveryWallet({ publicKey, label } = {}) {
       return request(V2_DISCOVERY_WALLETS_PATH, {
         method: 'POST',
@@ -687,6 +694,82 @@
       return request(SAVED_LAUNCHES_PATH, { method: 'GET' });
     }
 
+    // Coins: drafts, launched coins, and coins added by address.
+    async function listCoins() {
+      return request('/api/v2/coins', { timeoutMs: 15_000 });
+    }
+
+    async function addCoin(mint) {
+      return request('/api/v2/coins', { method: 'POST', body: { mint }, timeoutMs: 30_000 });
+    }
+
+    async function removeCoin(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}`, { method: 'DELETE' });
+    }
+
+    async function listCoinPositions(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}/positions`, { timeoutMs: 120_000 });
+    }
+
+    async function listPositionWithdrawals(tokenMint) {
+      return request(`/api/v2/positions/withdrawals?tokenMint=${encodeURIComponent(tokenMint)}`, { timeoutMs: 15_000 });
+    }
+
+    async function preparePositionWithdrawal({ walletPublicKey, poolId, nftMint, expected, requestId } = {}) {
+      return request('/api/v2/positions/withdraw/prepare', { method: 'POST', body: { walletPublicKey, poolId, nftMint, expected, requestId }, timeoutMs: 120_000 });
+    }
+
+    async function withdrawPosition({ walletPublicKey, poolId, nftMint, tokenMint = null, expected, jobId, planDigest, maxSpendLamports } = {}) {
+      return request('/api/v2/positions/withdraw', {
+        method: 'POST',
+        body: { walletPublicKey, poolId, nftMint, tokenMint, expected, jobId, planDigest, maxSpendLamports },
+        timeoutMs: 180_000,
+      });
+    }
+
+    async function getCoin(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}`, { timeoutMs: 90_000 });
+    }
+
+    async function getCoinEvidence(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}/evidence`, { timeoutMs: 180_000 });
+    }
+
+    async function getSellQuote(mint, amount) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}/sell-quote`, {
+        method: 'POST', body: { amount }, timeoutMs: 30_000,
+      });
+    }
+
+    // Buy support for an existing token/SOL pool. Preview never signs.
+    async function previewSolSupport({ walletPublicKey = null, poolId = null, tokenMint = null, solAmount, depthPct } = {}) {
+      return request('/api/v2/support/preview', {
+        method: 'POST',
+        body: { walletPublicKey, poolId, tokenMint, solAmount, depthPct },
+        timeoutMs: 90_000,
+      });
+    }
+
+    async function prepareSolSupport({ walletPublicKey, poolId, tokenMint = null, solAmount, depthPct, requestId } = {}) {
+      return request('/api/v2/support/prepare', { method: 'POST', body: { walletPublicKey, poolId, tokenMint, solAmount, depthPct, requestId }, timeoutMs: 90_000 });
+    }
+
+    async function getSupportJobs(walletPublicKey) {
+      return request(`/api/v2/support/jobs?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
+    }
+
+    async function getSupportJob(jobId) {
+      return request(`/api/v2/support/jobs/${encodeURIComponent(jobId)}`);
+    }
+
+    async function openSolSupport({ walletPublicKey, poolId, tokenMint = null, solAmount, depthPct, expected, jobId, planDigest, maxSpendLamports } = {}) {
+      return request('/api/v2/support/open', {
+        method: 'POST',
+        body: { walletPublicKey, poolId, tokenMint, solAmount, depthPct, expected, jobId, planDigest, maxSpendLamports },
+        timeoutMs: 180_000,
+      });
+    }
+
     async function listDestinations(launchWallet = '') {
       const query = launchWallet ? `?launchWallet=${encodeURIComponent(launchWallet)}` : '';
       return request(`/api/v2/destinations${query}`);
@@ -747,6 +830,18 @@
       return data.estimate;
     }
 
+    async function listFlywheelHubs() {
+      return request('/api/v2/flywheel-hubs');
+    }
+
+    async function resolveFlywheelHub(mint) {
+      const data = await request('/api/v2/flywheel-hubs/resolve', {
+        method: 'POST', body: { mint: String(mint || '').trim() }, timeoutMs: 16000,
+      });
+      if (!data?.hub?.solPool?.address) throw new V2ApiError('Refresh the SOL pool lookup.', { code: 'BAD_HUB_POOL' });
+      return data.hub;
+    }
+
     async function getQuoteTokenInfo(quoteToken) {
       const token = String(quoteToken || '').trim();
       if (!token) throw new V2ApiError('Quote token is required.', { code: 'BAD_QUOTE_TOKEN' });
@@ -765,15 +860,30 @@
       return safeArray(data.tiers);
     }
 
-    async function acquireQuoteTokens({ walletPublicKey, autoSwapPlan } = {}) {
+    async function acquireQuoteTokens({ walletPublicKey, autoSwapPlan, requestId } = {}) {
       const data = await request(ACQUIRE_QUOTE_TOKENS_PATH, {
         method: 'POST',
-        body: { walletPublicKey, autoSwapPlan: safeArray(autoSwapPlan) },
+        body: { walletPublicKey, autoSwapPlan: safeArray(autoSwapPlan), ...(requestId ? { requestId } : {}) },
       });
       if (!data?.jobId) {
         throw new V2ApiError('Acquire quote tokens response missing jobId.', { code: 'BAD_ACQUIRE_JOB' });
       }
       return data;
+    }
+
+    async function executeAcquireQuoteTokens({ jobId, walletPublicKey, planDigest, maxSpendLamports, recoveryDigest } = {}) {
+      return request(`${ACQUIRE_QUOTE_TOKENS_PATH}/${encodeURIComponent(jobId)}/${recoveryDigest ? 'cleanup' : 'execute'}`, {
+        method: 'POST', body: { walletPublicKey, planDigest, maxSpendLamports, ...(recoveryDigest ? { recoveryDigest } : {}) },
+      });
+    }
+
+    async function prepareAcquireQuoteCleanup({ jobId, walletPublicKey } = {}) {
+      return request(`${ACQUIRE_QUOTE_TOKENS_PATH}/${encodeURIComponent(jobId)}/cleanup/prepare`, { method: 'POST', body: { walletPublicKey } });
+    }
+
+    async function getActiveAcquireQuoteTokens(walletPublicKey) {
+      const data = await request(`${ACQUIRE_QUOTE_TOKENS_PATH}/active/${encodeURIComponent(walletPublicKey)}`);
+      return data.job || null;
     }
 
     async function getAcquireQuoteTokens(jobId) {
@@ -1045,6 +1155,9 @@
     return {
       bootstrap,
       acquireQuoteTokens,
+      executeAcquireQuoteTokens,
+      prepareAcquireQuoteCleanup,
+      getActiveAcquireQuoteTokens,
       cancelLaunchRefund,
       cancelVanityGrind,
       cancelAcquireQuoteTokens,
@@ -1059,8 +1172,25 @@
       executeNextRunOperation,
       findFundingWallet,
       listDestinations,
+      previewSolSupport,
+      prepareSolSupport,
+      getSupportJobs,
+      getSupportJob,
+      openSolSupport,
+      listCoins,
+      addCoin,
+      removeCoin,
+      getCoin,
+      getCoinEvidence,
+      getSellQuote,
+      listCoinPositions,
+      withdrawPosition,
+      preparePositionWithdrawal,
+      listPositionWithdrawals,
       getClmmFeeTiers,
       getQuoteTokenInfo,
+      listFlywheelHubs,
+      resolveFlywheelHub,
       getAirdropProgress,
       getAcquireQuoteTokens,
       getLpProgress,
@@ -1076,6 +1206,7 @@
       importManagedWallet,
       addDiscoveryWallet,
       inspectDiscoveryToken,
+      previewLogoStamp,
       listLaunchJournals,
       listVanityCandidates,
       listManagedWallets,

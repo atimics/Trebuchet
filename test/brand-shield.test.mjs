@@ -94,6 +94,25 @@ test('Brand Shield separates official mint, exact counterfeit, and identity look
   assert.equal(lookalike.scoreCap, 35);
 });
 
+test('Brand Shield flags a copy whose metadata names another mint, with no registry entry', () => {
+  const assessment = assessBrandRisk({
+    mint: COPY_MINT,
+    metadata: { name: 'RUGOWEEN', symbol: 'RUG', declaredMint: MINT },
+    launches: [],
+  });
+  assert.equal(assessment.classification, 'Counterfeit');
+  assert.equal(assessment.risk, 'critical');
+  assert.equal(assessment.matchedMint, MINT);
+  assert.ok(assessment.evidence.some((item) => item.id === 'metadata-mint-mismatch'));
+
+  const genuine = assessBrandRisk({
+    mint: MINT,
+    metadata: { name: 'RUGOWEEN', symbol: 'RUG', declaredMint: MINT },
+    launches: [],
+  });
+  assert.equal(genuine.evidence.some((item) => item.id === 'metadata-mint-mismatch'), false);
+});
+
 test('Brand Shield flags heavy capital motion during an official launch hour', () => {
   const { wallet, fingerprint } = officialLaunch();
   const assessment = assessBrandRisk({

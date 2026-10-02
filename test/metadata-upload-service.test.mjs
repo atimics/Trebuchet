@@ -43,6 +43,24 @@ test('builds token metadata json from resolved image URI', () => {
   });
 });
 
+test('metadata json names its official mint and warns about copies', () => {
+  const mint = 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG';
+  const document = tokenMetadataJson({
+    name: 'RUGOWEEN',
+    symbol: 'RUG',
+    description: 'The Halloween flywheel.',
+    imageUri: 'https://arweave.net/logo',
+    mint,
+  });
+  assert.equal(document.mint, mint);
+  assert.equal(
+    document.description,
+    `The Halloween flywheel.\n\nOfficial CA: ${mint}. Any other mint using this metadata is a copy.`,
+  );
+  // The committed hash covers the mint, so it can't be replayed on a copy.
+  assert.notEqual(metadataDocumentHash(document), metadataDocumentHash({ ...document, mint: 'other' }));
+});
+
 test('uploads logo and metadata through an injected uploader', async () => {
   const calls = [];
   const progress = [];
@@ -156,4 +174,18 @@ test('uploads a generic sealed identity carrying only the final metadata commitm
     onChainMetadataUri: 'https://arweave.net/sealed',
     metadataCommitment: commitmentHash,
   }]);
+});
+
+test('a failed logo receipt stops before the metadata upload', async () => {
+  const failure = Object.assign(new Error('checkpoint write failed'), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+  let uploads = 0;
+  await assert.rejects(uploadTokenMetadata({
+    umi: { uploader: {
+      upload: async () => ['https://example.test/logo'],
+      uploadJson: async () => { uploads++; return 'https://example.test/metadata'; },
+    } },
+    uploadTimeoutMs: 0, name: 'Test', symbol: 'TST', logoBase64: 'data:image/png;base64,aGVsbG8=',
+    onProgress: (event) => { if (event.stage === 'logo_uploaded') throw failure; },
+  }), (error) => error === failure);
+  assert.equal(uploads, 0);
 });

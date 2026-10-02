@@ -8,6 +8,9 @@
 // DPAPI on Windows, libsecret/kwallet on Linux — to derive a per-user,
 // machine-bound encryption key.
 //
+// Fresh launch wallets call encryptRecoveryString, which requires protected
+// encryption and verifies the ciphertext before returning it.
+//
 // Tokens look like:
 //   'pin:<base64>'    — encrypted via the in-memory PIN key
 //   'enc:<base64>'    — encrypted via safeStorage
@@ -95,6 +98,31 @@ export function encryptString(plaintext) {
     console.warn('secretStore: encryptString failed, using plaintext:', e.message);
     warnOnce();
     return 'plain:' + plaintext;
+  }
+}
+
+// Fresh launch wallets require a protected host backend. Legacy recovery
+// reads keep their existing format while the user restores encryption.
+export function encryptRecoveryString(plaintext) {
+  if (typeof plaintext !== 'string') throw new TypeError('secretStore.encryptRecoveryString expects a string');
+  const unavailable = (cause) => Object.assign(new Error('Enable encrypted recovery storage in the desktop app before creating or importing a launch wallet.', { cause }), {
+    code: 'RECOVERY_ENCRYPTION_REQUIRED', statusCode: 409,
+  });
+  try {
+    const pin = secretPinStore.status();
+    let token;
+    if (pin.configured) {
+      if (!pin.unlocked || !pin.deviceSecretProtected || !pin.deviceSecretAvailable) throw unavailable();
+      token = secretPinStore.encryptString(plaintext);
+    } else {
+      if (!isAvailable() || _safeStorage.getSelectedStorageBackend?.() === 'basic_text') throw unavailable();
+      token = 'enc:' + _safeStorage.encryptString(plaintext).toString('base64');
+    }
+    if (decryptString(token) !== plaintext) throw unavailable();
+    return token;
+  } catch (cause) {
+    if (cause?.code === 'RECOVERY_ENCRYPTION_REQUIRED') throw cause;
+    throw unavailable(cause);
   }
 }
 

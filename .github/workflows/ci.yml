@@ -30,7 +30,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v6
         with:
-          node-version: 22.12.0
+          node-version: 22.23.3
           cache: npm
 
       - name: Install dependencies
@@ -44,11 +44,11 @@ jobs:
       # fail if the committed copy differs from a fresh build. Catches editing
       # app.js directly (lost on next build) and editing a module without
       # rebuilding (a stale bundle would ship).
-      - name: Verify app.js is in sync with modules
+      - name: Verify browser bundles are in sync with their sources
         run: |
           npm run build:js
-          git diff --exit-code -- public/app.js \
-            || (echo '::error::public/app.js is out of sync with public/modules/*. Run "npm run build:js" and commit the result.' && exit 1)
+          git diff --exit-code -- public/app.js public/v2/app.js public/v2/core.js \
+            || (echo '::error::Browser bundles are out of sync with their sources. Run "npm run build:js" and commit the result.' && exit 1)
 
       # Guards against the recurring bug where a new module is imported but
       # not added to package.json's "files"/"build.files". It works in dev
@@ -62,12 +62,20 @@ jobs:
         # The grinder tests build c/build/vanity_keygen, which links libsodium.
         run: sudo apt-get update && sudo apt-get install -y libsodium-dev
 
+      - name: Build the vanity grinder
+        # Build once, before the suite. Several test files run the binary in
+        # parallel; building it mid-run let them see it missing or half-written.
+        run: npm run build:c
+
       - name: Install Playwright browser
         # test/startup-freeze.test.mjs drives a headless Chromium.
         run: npx playwright install --with-deps chromium
 
       - name: Unit tests
         run: npm test
+
+      - name: Core and runner contracts
+        run: npm run test:architecture
 
       - name: CLI contract and binary smoke
         run: |
@@ -134,7 +142,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v6
         with:
-          node-version: 22.12.0
+          node-version: 22.23.3
           cache: npm
 
       # electron-builder downloads CommonJS helper tools (the icons bundle's
@@ -201,7 +209,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v6
         with:
-          node-version: 22.12.0
+          node-version: 22.23.3
           cache: npm
 
       - name: Install dependencies

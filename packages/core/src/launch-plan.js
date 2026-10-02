@@ -1,4 +1,4 @@
-import crypto from 'node:crypto';
+import { sha256Hex } from './sha256.js';
 import {
   COST_BS_QUOTE_SOL,
   COST_LAUNCH_REPORT_SOL,
@@ -276,10 +276,7 @@ function planIntegrityPayload(plan = {}) {
 }
 
 export function launchPlanIntegrityDigest(plan = {}) {
-  return crypto
-    .createHash('sha256')
-    .update(JSON.stringify(planIntegrityPayload(plan)))
-    .digest('hex');
+  return sha256Hex(JSON.stringify(planIntegrityPayload(plan)));
 }
 
 function launchPlanLogoFingerprint(logo = null) {
@@ -526,7 +523,7 @@ function normalizePoolTopology(input = {}) {
         quoteToken: 'SOL',
         quoteSymbol: 'SOL',
         supplyPercent: 70,
-        ammConfigIndex: 8,
+        ammConfigIndex: 1,
         distribution: fallbackDistribution,
         bootstrap: { mode: 'minimal' },
         ladder: {
@@ -543,7 +540,7 @@ function normalizePoolTopology(input = {}) {
         quoteMint: DEFAULT_MEME_FLYWHEEL_MINT,
         quoteSymbol: 'MEME',
         supplyPercent: 10,
-        ammConfigIndex: 5,
+        ammConfigIndex: 1,
         distribution: [{ sharePercent: 100 }],
         bootstrap: { mode: 'minimal' },
         ladder: { mode: 'off' },
@@ -562,6 +559,9 @@ function normalizePoolTopology(input = {}) {
     const quoteCompatibility = pool.quoteCompatibility && typeof pool.quoteCompatibility === 'object'
       ? { ...pool.quoteCompatibility }
       : undefined;
+    // Only carried when set, so plans saved before it existed keep their
+    // fingerprints and resume at the prices they were created with.
+    const startPricePremiumPct = optionalStartPremium(pool.startPricePremiumPct);
     return {
       id: String(pool.id || `pool-${index + 1}`),
       quoteToken,
@@ -571,6 +571,7 @@ function normalizePoolTopology(input = {}) {
       ...(quoteUsdOverride !== undefined ? { quoteUsdOverride } : {}),
       ...(pool.quotePriceSource ? { quotePriceSource: String(pool.quotePriceSource) } : {}),
       ...(quoteCompatibility ? { quoteCompatibility } : {}),
+      ...(startPricePremiumPct !== undefined ? { startPricePremiumPct } : {}),
       supplyPercent: normalizePercent(pool.supplyPercent, index === 0 ? 70 : 0),
       ammConfigIndex: Math.floor(numeric(pool.ammConfigIndex, quoteSymbol === 'USDC' ? 5 : 8)),
       distribution,
@@ -616,7 +617,7 @@ function normalizePoolTopology(input = {}) {
     : { enabled: false, supplyPercent: 0, source: 'off' };
   const heldReservePercent = preallocation.supplyPercent + airdrop.supplyPercent;
   return {
-    targetMarketCapUsd: Math.max(0, numeric(input.targetMarketCapUsd, 250000)),
+    targetMarketCapUsd: Math.max(0, numeric(input.targetMarketCapUsd ?? 25000, 25000)),
     pools,
     allocations: classicAllocations({ pools }),
     totalPoolPercent,
@@ -669,7 +670,14 @@ function normalizeTokenLogo(input = null) {
   const dataUrl = String(input.dataUrl || '').trim();
   const match = dataUrl.match(LOGO_DATA_URL_RE);
   if (!match) throw new Error('Token logo must be a PNG, JPG, or GIF data URL');
-  const decoded = Buffer.from(match[2], 'base64');
+  if (match[2].length > Math.ceil(MAX_LOGO_BYTES / 3) * 4) {
+    throw new Error('Token logo must be 100KB or smaller');
+  }
+  let binary;
+  try { binary = atob(match[2]); } catch {
+    throw new Error('Token logo must contain valid base64 image data');
+  }
+  const decoded = Uint8Array.from(binary, (byte) => byte.charCodeAt(0));
   const sizeBytes = decoded.length;
   if (sizeBytes <= 0 || sizeBytes > MAX_LOGO_BYTES) {
     throw new Error('Token logo must be 100KB or smaller');
@@ -695,7 +703,7 @@ function normalizeTokenLogo(input = null) {
     name: String(input.name || 'token-logo').trim().slice(0, 120),
     mimeType: detectedMime,
     sizeBytes,
-    dataUrl: `data:${detectedMime};base64,${decoded.toString('base64')}`,
+    dataUrl: `data:${detectedMime};base64,${btoa(binary)}`,
   };
 }
 
@@ -704,6 +712,14 @@ function normalizeAirdropRecipients(input = {}, context = {}) {
   if (Array.isArray(context.airdrop?.recipients)) return normalizeAirdropRows(context.airdrop.recipients);
   if (Array.isArray(input.poolTopology?.airdrop?.recipients)) return normalizeAirdropRows(input.poolTopology.airdrop.recipients);
   return [];
+}
+
+// How far above the SOL pool's price a pair pool opens, 0–500%.
+function optionalStartPremium(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return undefined;
+  return Math.min(500, Math.round(number * 100) / 100);
 }
 
 function classicAllocations(poolTopology) {
@@ -715,6 +731,7 @@ function classicAllocations(poolTopology) {
     quoteUsdOverride: pool.quoteUsdOverride,
     quoteDecimalsOverride: pool.quoteDecimalsOverride,
     quoteSymbolOverride: pool.quoteSymbol,
+    ...(pool.startPricePremiumPct !== undefined ? { startPricePremiumPct: pool.startPricePremiumPct } : {}),
     distribution: pool.distribution,
     bootstrap: pool.bootstrap,
     ladder: pool.ladder,

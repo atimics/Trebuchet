@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildV2LaunchPlan } from '@trebuchet/core/launch-plan';
 import { createRunnerServer } from '../src/server.mjs';
 import { verifyPacketDir } from '../src/packet.js';
+import { signPacketApproval } from '@trebuchet/core/packet-approval';
+import { secretKeyToEd25519Material } from '@trebuchet/core/confirmation';
 
 const ROOT = path.resolve(path.dirname(import.meta.url), '..', '..', '..');
 const TOKEN = 'test-runner-token';
@@ -16,9 +18,9 @@ function makeDir(name) {
   return mkdtempSync(path.join(tmpdir(), `trebuchet-runner-${name}-`));
 }
 
-async function startRunner(t) {
+async function startRunner(t, options = {}) {
   const stateDir = makeDir('state');
-  const { server, runnerId } = createRunnerServer({ token: TOKEN, stateDir });
+  const { server, runnerId } = createRunnerServer({ token: TOKEN, stateDir, ...options });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   t.after(() => rmSync(stateDir, { recursive: true, force: true }));
@@ -94,7 +96,7 @@ function buildPacketArchive(dir, { tamper = null } = {}) {
   }
 
   const archive = path.join(dir, 'packet.tar.gz');
-  execFileSync('tar', ['-czf', archive, '-C', dir, 'packet']);
+  execFileSync('tar', ['-czf', archive, '-C', dir, 'packet'], { env: { ...process.env, COPYFILE_DISABLE: '1' } });
   return archive;
 }
 
@@ -131,7 +133,7 @@ test('a valid packet uploads, verifies, and becomes launchable input', async (t)
     headers: { 'content-type': 'application/octet-stream' },
     body: readFileSync(archive),
   }));
-  assert.equal(upload.status, 201);
+  assert.equal(upload.status, 201, await upload.clone().text());
   const payload = await upload.json();
   assert.ok(payload.packetId);
   assert.equal(payload.token.symbol, 'RUNT');
@@ -158,7 +160,7 @@ test('launch requests hit the custody gate with NOT_READY, unknown packets 404',
   const { base, authed } = await startRunner(t);
   const unknown = await fetch(`${base}/v1/launches`, authed('/v1/launches', {
     method: 'POST',
-    body: JSON.stringify({ packetId: 'does-not-exist' }),
+    body: JSON.stringify({ packetId: 'f'.repeat(24) }),
   }));
   assert.equal(unknown.status, 404);
 
@@ -205,3 +207,44 @@ test('verifyPacketDir rejects manifests that claim to carry private keys', async
 function mktemp(prefix) {
   return mkdtempSync(prefix);
 }
+
+test('runner checks the configured operator and the complete uploaded manifest before execution', async (t) => {
+  const seed = randomBytes(32);
+  const operatorKey = Buffer.from(secretKeyToEd25519Material(seed).rawPublicKey).toString('hex');
+  const work = makeDir('approval');
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const archive = buildPacketArchive(work);
+  const { base, authed, stateDir } = await startRunner(t, { operatorKey, network: 'devnet' });
+  const upload = await fetch(`${base}/v1/packets`, authed('/v1/packets', { method: 'POST', body: readFileSync(archive) }));
+  const packet = await upload.json();
+  assert.equal(upload.status, 201);
+  const input = {
+    manifestDigest: packet.manifestDigest, planDigest: packet.planDigest,
+    walletPublicKey: launchIntent.walletPublicKey, network: 'devnet',
+    maxSpendLamports: '1000000001', expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+  const approve = (approval) => fetch(`${base}/v1/packets/${packet.packetId}/approval`, authed('', { method: 'POST', body: JSON.stringify({ approval }) }));
+  const approval = signPacketApproval(input, seed);
+  const accepted = await approve(approval);
+  assert.equal(accepted.status, 200);
+  assert.equal((await accepted.json()).payload.maxSpendLamports, '1000000001');
+  for (const bad of [
+    undefined,
+    signPacketApproval(input, randomBytes(32)),
+    signPacketApproval({ ...input, walletPublicKey: launchIntent.poolTopology.sweepDestination }, seed),
+    signPacketApproval({ ...input, network: 'mainnet' }, seed),
+    signPacketApproval({ ...input, expiresAt: new Date(Date.now() - 1000).toISOString() }, seed),
+  ]) assert.equal((await approve(bad)).status, 422);
+  const missing = await fetch(`${base}/v1/launches`, authed('', { method: 'POST', body: JSON.stringify({ packetId: packet.packetId }) }));
+  assert.equal(missing.status, 422);
+  const ready = await fetch(`${base}/v1/launches`, authed('', { method: 'POST', body: JSON.stringify({ packetId: packet.packetId, approval }) }));
+  assert.equal(ready.status, 503, 'the shared engine still owns the live execution gate');
+
+  const file = path.join(stateDir, 'packets', packet.packetId, 'extract', 'packet', 'manifest.json');
+  const changed = JSON.parse(readFileSync(file, 'utf8'));
+  changed.packet = 'changed-after-approval';
+  writeFileSync(file, JSON.stringify(changed));
+  const changedPacket = await approve(approval);
+  assert.equal(changedPacket.status, 422);
+  assert.ok((await changedPacket.json()).errors.some((item) => item.message.includes('manifestDigest')));
+});

@@ -95,6 +95,26 @@ The first desktop viewport must show the active launch, next action, tokenomics,
 liquidity shape, funding envelope, and execution/proof status without page-level
 scrolling.
 
+### NFTs
+
+- Create Metaplex Core collections from a Sugar-style folder (`N.png` +
+  `N.json`, optional `collection.png` + `collection.json`).
+- Review items before upload: missing traits, duplicate names or images,
+  unsupported or oversized images, numbering gaps.
+- Grind a vanity collection address and, optionally, one pattern for every
+  item address, using split-key grinding (the grinder never holds a key).
+- Estimate cost from measured Core costs, the sampled priority fee, and an
+  Irys storage quote; mint only after the operator approves a spend cap.
+- Upload metadata to Arweave, create the collection, and mint every item.
+  Record each signature as it lands; a rerun skips anything on chain.
+- Verify on chain: pattern, membership, name, URI, owner, royalties, supply.
+  Export a proof JSON.
+- Metaplex Core only, by decision: it is the cheapest standard that keeps a
+  real per-asset address (so vanity works) and enforces royalties. Token
+  Metadata, pNFT and compressed NFTs are not supported.
+- Not built yet: collection authority transfer and making a collection
+  immutable.
+
 ### Wallet
 
 - Create or import one Trebuchet-managed launch wallet.
@@ -282,3 +302,14 @@ After the production v2 token-launch gate is satisfied:
 - more modular v2 renderer/proof packages;
 - browser-compatible read/configuration surfaces that do not weaken custody or
   execution boundaries.
+
+## Market evidence and lock recovery
+
+- Resolve a landed lock using the active network's lock program and the
+  derived position account. Verify its pool and Fee Key before resuming.
+- Show pool inventory value and quote reserves separately. Price quotes name
+  their asset, amount, route source, slippage threshold, and read time.
+- Classify verified Raydium CLMM vaults separately from sampled wallets.
+- Export observed position ranges, lock accounts and current Fee Key owners.
+- Preserve successful reads when an RPC fails. Show the scope and read time.
+- Describe flywheels as static allocations and automatic fee routing as planned.

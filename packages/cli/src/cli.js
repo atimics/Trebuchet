@@ -1,5 +1,6 @@
 import process from 'node:process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createTrebuchetCore,
   TREBUCHET_CORE_VERSION,
@@ -24,7 +25,6 @@ import {
   openCustodySession,
   readCustodyKeyfileMeta,
 } from '@trebuchet/core/custody';
-import { createLaunchStore } from '@trebuchet/core/launch-store';
 import { createFlywheelPoolStore, isValidFlywheelMint } from '@trebuchet/core/flywheel-pools';
 import { isPlaceholderSweepDestination } from '@trebuchet/core/validators';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
@@ -57,14 +57,14 @@ function parseNodeVersion(version = process.versions.node) {
 }
 
 function nodeVersionSupported(node) {
-  return node.major > 22 || (node.major === 22 && node.minor >= 12);
+  return node.major > 22 || (node.major === 22 && node.minor >= 13);
 }
 
 function commandError(code, message, details = null) {
   return new TrebuchetCoreError(code, message, { details });
 }
 
-// Saved-launch store resolution: explicit --config-dir, then the app's
+// Profile resolution: explicit --config-dir, then the app's
 // TREBUCHET_CONFIG_DIR, then the current directory (matching the fallback the
 // root compat entrypoints use).
 function cliFlywheelStore(configDirOption) {
@@ -76,13 +76,27 @@ function cliFlywheelStore(configDirOption) {
   });
 }
 
-function cliLaunchStore(configDirOption) {
-  const dir = configDirOption || process.env.TREBUCHET_CONFIG_DIR || process.cwd();
-  return createLaunchStore({
-    filePath: path.join(dir, 'launches.json'),
-    onWarn: () => {},
-    onError: (message) => { throw new Error(message); },
+async function cliLaunchClient(configDirOption) {
+  const { ensureRuntime } = await import('@trebuchet/runtime/client');
+  const profile = path.resolve(configDirOption || process.env.TREBUCHET_CONFIG_DIR || process.cwd());
+  const runtime = await ensureRuntime(profile, {
+    args: [fileURLToPath(new URL('../../../server.js', import.meta.url))],
   });
+  const request = async (endpoint, options) => {
+    try { return await runtime.request(endpoint, options); }
+    catch (error) {
+      if (error.statusCode === 400 && error.code === 'RUNTIME_REQUEST_FAILED') {
+        throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, error.message);
+      }
+      throw error;
+    }
+  };
+  return {
+    filePath: path.join(runtime.identity.profile, 'execution.sqlite'),
+    list: async () => (await request('/api/v2/launch-configs')).launches,
+    save: async (input) => (await request('/api/v2/launch-configs', { method: 'POST', body: input })).launch,
+    remove: async (id) => (await request('/api/v2/launch-configs/remove', { method: 'POST', body: { id } })).removed,
+  };
 }
 
 function requirePositionals(positionals, expected, usage) {
@@ -284,6 +298,25 @@ export async function runCli(argv = [], {
         throw commandError(TrebuchetCoreErrorCode.INTEGRITY_MISMATCH, 'Trebuchet proof is invalid.', data);
       }
       humanOutput = () => humanVerification('Trebuchet proof', data, stdout, stderr);
+    } else if (positionals[0] === 'runtime') {
+      const usage = 'trebuchet runtime <start|status|stop> [--config-dir <dir>] [--json]';
+      const action = positionals[1];
+      if (positionals.length !== 2 || !['start', 'status', 'stop'].includes(action)) {
+        throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `Usage: ${usage}`);
+      }
+      requireOptions(options, ['config-dir', 'json'], usage);
+      const profile = path.resolve(options['config-dir'] || process.env.TREBUCHET_CONFIG_DIR || process.cwd());
+      const { connectRuntime, ensureRuntime } = await import('@trebuchet/runtime/client');
+      const runtime = action === 'start'
+        ? await ensureRuntime(profile, { args: [fileURLToPath(new URL('../../../server.js', import.meta.url))] })
+        : await connectRuntime(profile);
+      data = runtime
+        ? action === 'stop' ? await runtime.request('/api/runtime/stop', { method: 'POST' }) : { ...runtime.identity, url: runtime.url }
+        : { profile, state: 'stopped' };
+      humanOutput = () => {
+        writeLine(stdout, `Runtime ${data.state}${data.url ? ` at ${data.url}` : ''}`);
+        writeLine(stdout, `Profile: ${profile}`);
+      };
     } else if (positionals[0] === 'execute') {
       const usage = 'trebuchet execute --config <launch.json> [--network demo] [--out <run.json>] [--server <server.js>] [--timeout <seconds>] [--json]';
       requirePositionals(positionals, ['execute'], usage);
@@ -327,8 +360,8 @@ export async function runCli(argv = [], {
       requireOptions(options, ['config', 'name', 'id', 'config-dir', 'json'], usage);
       if (!options.config) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--config is required.');
       const input = await readJsonFile(options.config, 'Launch config');
-      const store = cliLaunchStore(options['config-dir']);
-      const saved = store.save({
+      const store = await cliLaunchClient(options['config-dir']);
+      const saved = await store.save({
         id: options.id || null,
         name: options.name || null,
         config: input.value,
@@ -345,8 +378,8 @@ export async function runCli(argv = [], {
       const usage = 'trebuchet launch list [--config-dir <dir>] [--json]';
       requirePositionals(positionals, ['launch', 'list'], usage);
       requireOptions(options, ['config-dir', 'json'], usage);
-      const store = cliLaunchStore(options['config-dir']);
-      const launches = store.list().map((entry) => ({
+      const store = await cliLaunchClient(options['config-dir']);
+      const launches = (await store.list()).map((entry) => ({
         id: entry.id,
         name: entry.name,
         symbol: entry.config?.token?.symbol ?? null,
@@ -371,8 +404,8 @@ export async function runCli(argv = [], {
       requirePositionals(positionals, ['launch', 'remove'], usage);
       requireOptions(options, ['id', 'config-dir', 'json'], usage);
       if (!options.id) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, '--id is required.');
-      const store = cliLaunchStore(options['config-dir']);
-      const removed = store.remove(options.id);
+      const store = await cliLaunchClient(options['config-dir']);
+      const removed = await store.remove(options.id);
       if (!removed) {
         throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `No saved launch with id ${options.id}.`);
       }
@@ -461,6 +494,50 @@ export async function runCli(argv = [], {
         writeLine(stdout, `Public key (raw hex): ${publicKeyHex}`);
         writeLine(stdout, data.imported ? 'Imported an existing keypair.' : 'Generated a fresh keypair.');
         writeLine(stdout, 'Keep the passphrase safe: without it the key is unrecoverable.');
+      };
+    } else if (positionals[0] === 'packet' && positionals[1] === 'approve') {
+      const usage = 'trebuchet packet approve --manifest <manifest.json> --plan <plan.json> --keyfile <custody.json> --network <network> --max-spend-sol <amount> [--expires-in <hours>] [--out <approval.json>] [--json]';
+      requirePositionals(positionals, ['packet', 'approve'], usage);
+      requireOptions(options, ['manifest', 'plan', 'keyfile', 'network', 'max-spend-sol', 'expires-in', 'passphrase', 'out', 'json'], usage);
+      for (const key of ['manifest', 'plan', 'keyfile', 'network', 'max-spend-sol']) {
+        if (!options[key]) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, `--${key} is required.`);
+      }
+      const { signPacketApproval, solToLamports } = await import('@trebuchet/core/packet-approval');
+      const [manifest, plan] = await Promise.all([readJsonFile(options.manifest, 'Packet manifest'), readJsonFile(options.plan, 'Launch plan')]);
+      const verified = core.verifyPlan(plan.value);
+      const planEntries = manifest.value?.files?.filter?.((entry) => entry.path === 'plan.json') || [];
+      if (!verified.valid || manifest.value?.schema !== 'trebuchet-launch-packet/v1'
+          || manifest.value.planDigest !== verified.digest || manifest.value.security?.containsPrivateKeys !== false
+          || planEntries.length !== 1 || planEntries[0].sha256 !== plan.sha256 || planEntries[0].bytes !== plan.bytes) {
+        throw commandError(TrebuchetCoreErrorCode.INTEGRITY_MISMATCH, 'Use the verified plan bytes listed in the packet manifest.');
+      }
+      const walletPublicKey = plan.value.v2LaunchWalletFingerprint;
+      if (!walletPublicKey) throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, 'Build the packet plan with its launch wallet public key before approval.');
+      if (options.network !== 'demo' && isPlaceholderSweepDestination(plan.value.poolTopology?.sweepDestination)) {
+        throw commandError(TrebuchetCoreErrorCode.INVALID_INPUT, 'Choose a sweep destination wallet you control before approval.');
+      }
+      const hours = options['expires-in'] === undefined ? 24 : Number(options['expires-in']);
+      if (!Number.isFinite(hours) || hours <= 0 || !Number.isFinite(Date.now() + hours * 3600_000)) throw new TypeError('Approval lifetime must be a positive number of hours.');
+      const expiry = new Date(Date.now() + hours * 3600_000);
+      if (!Number.isFinite(expiry.getTime())) throw new TypeError('Approval lifetime exceeds the supported date range.');
+      const expiresAt = expiry.toISOString();
+      const maxSpendLamports = solToLamports(options['max-spend-sol']);
+      const passphrase = options.passphrase || process.env.TREBUCHET_CUSTODY_PASSPHRASE;
+      if (!passphrase) throw commandError(TrebuchetCoreErrorCode.CUSTODY_LOCKED, 'Supply the custody passphrase through TREBUCHET_CUSTODY_PASSPHRASE.');
+      const keyfile = await readJsonFile(options.keyfile, 'Custody keyfile');
+      const session = openCustodySession(decryptCustodyKeyfile(keyfile.value, { passphrase }));
+      let approval;
+      try {
+        approval = signPacketApproval({ manifestDigest: manifest.sha256, planDigest: verified.digest, walletPublicKey, network: options.network, maxSpendLamports, expiresAt }, session.getSecretKey());
+      } finally { session.lock(); }
+      const outputPath = options.out ? await writeJsonFileAtomic(options.out, approval) : null;
+      data = { approval, outputPath };
+      humanOutput = () => {
+        writeLine(stdout, `Packet approved: ${manifest.sha256}`);
+        writeLine(stdout, `Operator key: ${approval.payload.operatorKey}`);
+        writeLine(stdout, `Wallet: ${walletPublicKey}`);
+        writeLine(stdout, `Network: ${options.network}; ceiling: ${maxSpendLamports} lamports`);
+        if (outputPath) writeLine(stdout, `Approval: ${outputPath}`);
       };
     } else if (positionals[0] === 'confirm') {
       const usage = 'trebuchet confirm --plan <plan.json> --keyfile <custody.json> --network <demo|devnet|mainnet> --max-spend-sol <n> [--wallet <pubkey>] [--expires-in <hours>] [--passphrase <p>] [--out <confirmation.json>] [--json]';
@@ -566,6 +643,8 @@ export async function runCli(argv = [], {
         ? commandError(TrebuchetCoreErrorCode.RETRYABLE_DEPENDENCY, error.message, error.serverLog ? [error.serverLog.slice(-4000)] : null)
       : error?.name === 'CustodyError'
         ? commandError(TrebuchetCoreErrorCode.CUSTODY_LOCKED, error.message)
+      : /^(RUNTIME_|RECOVERY_STORAGE_UNAVAILABLE$)/.test(error?.code || '')
+        ? commandError(error.code, error.message)
       : error instanceof CliArgumentError || error instanceof TypeError || error?.code === 'ENOENT'
         ? commandError(TrebuchetCoreErrorCode.INVALID_INPUT, error.message)
         : commandError(TrebuchetCoreErrorCode.INTERNAL, error.message || 'Unexpected CLI failure.');

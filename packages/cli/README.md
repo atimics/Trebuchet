@@ -23,7 +23,7 @@ trebuchet launch list [--config-dir dir]
 trebuchet launch remove --id id [--config-dir dir]
 ```
 
-`trebuchet launch save` persists a planned launch (`launches.json` in the
+`trebuchet launch save` connects to the profile runtime and saves a planned launch (`execution.sqlite` in the
 config dir) so it survives an app restart and shows up in the desktop app's
 saved-launch list, exactly like saved vanity addresses. This is also how a
 launch can be created programmatically instead of being retyped in the UI.
@@ -51,3 +51,15 @@ idempotency contracts are already in Core (see `docs/secure-launch-packet.md`
 for the gate table and the recovery drill); the remaining coverage is the
 liquidity-stage recovery drill, which needs a local validator with cloned
 Raydium programs because Raydium's CLMM is mainnet-only.
+
+## Local runtime
+
+`trebuchet runtime start --config-dir <profile>` starts a real local API process or attaches to the profile's existing owner. `runtime status` reports its identity, address, and state. `runtime stop` stops an idle owner. These commands support `--json`.
+
+The runtime stays available after a CLI client exits. It binds to loopback, holds the profile's process lock, and publishes a private connection descriptor. Its log is `<profile>/runtime.log`. Execution commands will use this connection when the shared engine and custody checks are connected.
+
+Saved-launch commands (`launch save`, `launch list`, and `launch remove`) attach to this runtime or start it under the profile lock. The runtime owns their SQLite access. Use `runtime stop` when the profile is idle and its work is finished.
+
+## Packet approval
+
+`trebuchet packet approve --manifest <manifest.json> --plan <plan.json> --keyfile <custody.json> --network <network> --max-spend-sol <amount> --out <approval.json>` signs the packet's exact manifest and verified plan with the encrypted operator key. The plan must already name its launch wallet. The spending limit accepts up to nine decimal places and is stored as integer lamports. Supply the keyfile passphrase with `TREBUCHET_CUSTODY_PASSPHRASE`; `--expires-in` sets the lifetime in hours and defaults to 24. Use `--json` for the complete signed envelope.

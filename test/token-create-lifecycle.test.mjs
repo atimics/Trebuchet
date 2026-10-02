@@ -110,6 +110,136 @@ test('sealed metadata reveal verifies both the placeholder and final identity ha
   }), /does not match the sealed identity commitment/);
 });
 
+test('sealed launches upload nothing identifying before the reveal', async () => {
+  const { getSealedIdentity } = await import('../sealedIdentityStore.js');
+  const { PNG } = await import('pngjs');
+  const png = new PNG({ width: 256, height: 256 });
+  png.data.fill(200);
+  const logo = `data:image/png;base64,${PNG.sync.write(png).toString('base64')}`;
+  const vanity = Keypair.generate();
+  const mint = vanity.publicKey.toBase58();
+  const uploadedJson = [];
+  const uploadedFiles = [];
+  tokenService.setConnectionFactoryForTests(() => makeFakeConnection());
+  tokenService.setUmiFactoryForTests(() => ({
+    ...makeFakeUmi(),
+    uploader: {
+      async upload(files) { uploadedFiles.push(files); return ['https://arweave.test/image']; },
+      async uploadJson(document) {
+        uploadedJson.push(document);
+        throw new Error('stop-after-placeholder');
+      },
+    },
+  }));
+  tokenService.setUploaderForTests(async () => {
+    throw new Error('the real identity must not be uploaded at launch');
+  });
+
+  await assert.rejects(() => tokenService.createTokenWithMetaplex({
+    tempWalletSecretKey: SECRET_KEY,
+    name: 'Secret Token',
+    symbol: 'SCRT',
+    description: 'hidden until locked',
+    totalSupply: '1000000',
+    logoBase64: logo,
+    vanityCAKeypair: [...vanity.secretKey],
+    sealedLaunch: true,
+  }), /stop-after-placeholder/);
+
+  assert.equal(uploadedFiles.length, 0, 'no image upload before the reveal');
+  assert.equal(uploadedJson.length, 1);
+  const placeholder = JSON.stringify(uploadedJson[0]);
+  for (const secret of ['Secret Token', 'SCRT', 'hidden until locked', mint]) {
+    assert.equal(placeholder.includes(secret), false, `placeholder leaks ${secret}`);
+  }
+  const identity = getSealedIdentity(mint);
+  assert.ok(identity, 'identity kept on this machine for the reveal');
+  assert.equal(identity.logoStamped, true);
+  assert.ok(placeholder.includes(`sha256:${identity.commitment}`));
+});
+
+test('the reveal uploads the kept identity and it verifies against the commitment', async () => {
+  const { prepareSealedIdentity, uploadTokenMetadata } = await import('../metadataUploadService.js');
+  const { PNG } = await import('pngjs');
+  const png = new PNG({ width: 256, height: 256 });
+  png.data.fill(120);
+  const mint = Keypair.generate().publicKey.toBase58();
+  const identity = {
+    ...prepareSealedIdentity({
+      logoBase64: `data:image/png;base64,${PNG.sync.write(png).toString('base64')}`,
+      name: 'XRAT',
+      symbol: 'XRAT',
+      description: 'Official launch',
+      mint,
+    }),
+    mint,
+  };
+  tokenService.setUmiFactoryForTests(() => makeFakeUmi());
+  tokenService.setUploaderForTests((args) => uploadTokenMetadata({ ...args, logger: { log() {}, warn() {}, error() {} } }));
+  const uploaded = await tokenService.uploadSealedIdentity({ tempWalletSecretKey: SECRET_KEY, identity });
+  assert.equal(uploaded.metadataUri, 'https://arweave.test/metadata');
+
+  const finalDocument = {
+    name: 'XRAT',
+    symbol: 'XRAT',
+    description: `Official launch\n\nOfficial CA: ${mint}. Any other mint using this metadata is a copy.`,
+    image: 'https://arweave.test/image',
+    mint,
+  };
+  assert.equal(uploaded.metadataHash, metadataDocumentHash(finalDocument));
+  const verified = tokenService.verifySealedMetadataCommitment({
+    placeholderDocument: { description: `sha256:${identity.commitment}` },
+    finalDocument,
+    metadataHash: identity.commitment,
+    imageSha256: identity.imageSha256,
+    name: 'XRAT',
+    symbol: 'XRAT',
+    mint,
+  });
+  assert.equal(verified.finalHash, uploaded.metadataHash);
+  assert.throws(() => tokenService.verifySealedMetadataCommitment({
+    placeholderDocument: { description: `sha256:${identity.commitment}` },
+    finalDocument,
+    metadataHash: identity.commitment,
+    imageSha256: '0'.repeat(64),
+    name: 'XRAT',
+    symbol: 'XRAT',
+    mint,
+  }), /does not match the sealed identity commitment/, 'a different image breaks the commitment');
+
+  await assert.rejects(
+    () => tokenService.uploadSealedIdentity({
+      tempWalletSecretKey: SECRET_KEY,
+      identity: { ...identity, description: 'swapped after launch' },
+    }),
+    /does not match the sealed commitment/,
+  );
+});
+
+test('sealed metadata reveal refuses a document bound to a different mint', () => {
+  const mint = Keypair.generate().publicKey.toBase58();
+  const finalDocument = {
+    name: 'XRAT',
+    symbol: 'XRAT',
+    description: 'Official launch',
+    image: 'https://arweave.net/xrat',
+    mint,
+  };
+  const metadataHash = metadataDocumentHash(finalDocument);
+  const args = {
+    placeholderDocument: { description: `sha256:${metadataHash}` },
+    finalDocument,
+    metadataHash,
+    name: 'XRAT',
+    symbol: 'XRAT',
+  };
+  assert.equal(tokenService.verifySealedMetadataCommitment({ ...args, mint }).metadataHash, metadataHash);
+  assert.throws(
+    () => tokenService.verifySealedMetadataCommitment({ ...args, mint: Keypair.generate().publicKey.toBase58() }),
+    /names a different mint/,
+  );
+});
+
 test('sealed metadata reveal waits for finalized RPC posture without resending', async () => {
   let reads = 0;
   const state = await tokenService.waitForSealedMetadataPosture(async () => {
@@ -221,6 +351,37 @@ test('createTokenWithMetaplex: supply math + renounce reporting via injected upl
   assert.equal(captured.description, 'a token');
 });
 
+test('createTokenWithMetaplex: metadata names the mint that will be created', async () => {
+  tokenService.setConnectionFactoryForTests(() => makeFakeConnection());
+  tokenService.setUmiFactoryForTests(() => makeFakeUmi());
+  const vanity = Keypair.generate();
+  let captured = null;
+  tokenService.setUploaderForTests(async (args) => {
+    captured = args;
+    throw new Error('stop-after-upload');
+  });
+
+  await assert.rejects(() => tokenService.createTokenWithMetaplex({
+    tempWalletSecretKey: SECRET_KEY,
+    name: 'My Token',
+    symbol: 'MYT',
+    description: 'a token',
+    totalSupply: '1000000',
+    vanityCAKeypair: [...vanity.secretKey],
+  }), /stop-after-upload/);
+  assert.equal(captured.mint, vanity.publicKey.toBase58());
+
+  // A random mint is chosen before upload too, so every launch binds a mint.
+  await assert.rejects(() => tokenService.createTokenWithMetaplex({
+    tempWalletSecretKey: SECRET_KEY,
+    name: 'My Token',
+    symbol: 'MYT',
+    description: 'a token',
+    totalSupply: '1000000',
+  }), /stop-after-upload/);
+  assert.match(captured.mint, /^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+});
+
 test('createTokenWithMetaplex: connection DI seam defaults to real factory after reset (production unchanged)', () => {
   // Calling reset must not throw and must restore the real factory. We can't
   // assert the real RPC works offline, but we can assert the seam is a no-op
@@ -229,4 +390,21 @@ test('createTokenWithMetaplex: connection DI seam defaults to real factory after
   tokenService.resetConnectionFactoryForTests();
   // refreshConnection now rebuilds via the real factory; it must not throw.
   assert.doesNotThrow(() => tokenService.refreshConnection());
+});
+
+test('token creation propagates a failed metadata checkpoint before the next step', async () => {
+  const failure = Object.assign(new Error('checkpoint write failed'), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+  let continued = 0;
+  tokenService.setConnectionFactoryForTests(() => makeFakeConnection());
+  tokenService.setUmiFactoryForTests(() => makeFakeUmi());
+  tokenService.setUploaderForTests(async ({ onProgress }) => {
+    onProgress({ stage: 'metadata_uploaded', metadataUri: 'https://example.test/metadata' });
+    continued++;
+    throw new Error('continued after failed checkpoint');
+  });
+  await assert.rejects(tokenService.createTokenWithMetaplex({
+    tempWalletSecretKey: SECRET_KEY, name: 'Test', symbol: 'TST', totalSupply: '1000',
+    onProgress: () => { throw failure; },
+  }), (error) => error === failure);
+  assert.equal(continued, 0);
 });

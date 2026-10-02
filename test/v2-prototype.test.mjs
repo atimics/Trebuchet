@@ -565,6 +565,7 @@ function loadClassicRetirementGateHarness() {
         : null;
     },
     shortAddress: (value) => String(value || '').slice(0, 8),
+    fullAddress: (value) => String(value || ''),
     selectedLaunchWalletPublicKey: () => harnessState.selectedWalletPublicKey || harnessState.managedWallets[0]?.publicKey || null,
     selectedManagedWallet: () => {
       const publicKey = harnessState.selectedWalletPublicKey || harnessState.managedWallets[0]?.publicKey || null;
@@ -1759,6 +1760,7 @@ function loadQuoteAcquireHarness() {
   assert.ok(quoteStart >= 0 && quoteEnd > quoteStart, 'quote acquire helpers should be extractable');
   const harnessState = {
     classicFundingEstimate: null,
+    customPools: [],
     quoteAcquire: {
       jobId: null,
       job: null,
@@ -1781,9 +1783,11 @@ function loadQuoteAcquireHarness() {
     BigInt,
     state: harnessState,
     currentLaunchConfig: () => harnessState.currentConfig,
+    customQuoteInfoBadge: () => ({ label: 'Verified', className: '' }),
     selectedLaunchWalletPublicKey: () => harnessState.selectedWalletPublicKey,
     clampPercent: (value) => Math.max(0, Math.min(100, Number(value) || 0)),
     shortAddress: (value) => String(value || '').slice(0, 8),
+    fullAddress: (value) => String(value || ''),
   };
   vm.runInNewContext(
     [
@@ -1876,13 +1880,15 @@ test('v2 navigation and views stay wired together', () => {
     .map((match) => match[1])
     .sort();
 
-  assert.deepEqual(navViews, ['discovery', 'history', 'launch', 'settings', 'wallet']);
-  assert.deepEqual(sectionViews, navViews);
-  assert.deepEqual(viewKeys, navViews);
+  // Coins come first. Creating a token is an action on a coin, so the create
+  // view (still "launch" internally) is opened from a coin, not the nav.
+  assert.deepEqual(navViews, ['coins', 'discovery', 'history', 'nfts', 'settings', 'wallet']);
+  assert.deepEqual(sectionViews, [...navViews, 'launch'].sort());
+  assert.deepEqual(viewKeys, [...navViews, 'launch'].sort());
 });
 
 test('v2 JavaScript render targets exist in the HTML shell', () => {
-  const ids = new Set(attrValues(html, 'id'));
+  const ids = new Set([...attrValues(html, 'id'), ...attrValues(js, 'id')]);
   const selectors = new Set([...js.matchAll(/\$\(['"]#([A-Za-z0-9_-]+)['"]\)/g)].map((match) => match[1]));
   const missing = [...selectors].filter((id) => !ids.has(id));
 
@@ -1991,8 +1997,7 @@ test('v2 is the Electron default with an explicit tested Classic fallback', () =
   assert.match(electronMainJs, /BrowserWindow\.getAllWindows\(\)/);
   assert.match(electronMainJs, /win\.loadURL\(`http:\/\/127\.0\.0\.1:\$\{serverPort\}\$\{desktopUiPath\}`\)/);
   assert.match(v2BrowserE2eJs, /page\.goto\(`\$\{baseUrl\}\/v2\/`/);
-  assert.match(v2BrowserE2eJs, /data-experience=\"guided\"/);
-  assert.match(v2BrowserE2eJs, /data-action=\"guided-practice\"/);
+  assert.match(v2BrowserE2eJs, /data-action=\"run-demo-launch\"/);
   assert.match(v2BrowserE2eJs, /dataset\.apiStatus === 'connected'/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\)/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\{ classic: true \}\)/);
@@ -2059,21 +2064,27 @@ test('v2 Discovery combines a personal wallet graph with live evidence and no so
 });
 
 test('v2 makes custody risk visible without replacing semantic UI colors', () => {
-  assert.match(html, /id="custodySignalLabel">CHECKING ENVIRONMENT/);
+  assert.match(html, /id="custodySignalLabel">Checking…/);
   assert.match(js, /function custodySignalState\(\)/);
   assert.match(js, /function balanceContainsControlledFunds\(balance\)/);
   assert.match(js, /document\.body\.dataset\.custodySignal = signal\.id/);
-  assert.match(js, /LIVE \/ AWAITING FUNDS/);
-  assert.match(js, /LIVE \/ FUNDS IN CUSTODY/);
+  assert.match(js, /Live · waiting for funds/);
+  assert.match(js, /Live · funds in launch wallet/);
   assert.match(css, /body\[data-custody-signal="live"\][\s\S]*?--custody-signal: #f2c84b/);
   assert.match(css, /body\[data-custody-signal="funded"\][\s\S]*?--custody-signal: #ff5d5d/);
   assert.doesNotMatch(css, /data-custody-signal="(?:live|funded)"[^}]*--green/);
 });
 
-test('v2 removes the staged NFT collection product surface', () => {
+test('v2 keeps the old staged NFT surface out; NFTs run on the real executor', () => {
   const combined = `${html}\n${css}\n${js}`;
+  const nfts = read('public/v2/nfts.js');
 
-  assert.doesNotMatch(combined, /NFT collection/i);
+  // The NFTs view is backed by nftRoutes.js (real Core transactions, a
+  // journal, and on-chain verification), not a staged manifest.
+  assert.match(html, /id="view-nfts"/);
+  assert.match(html, /nfts\.js\?v=\d+/);
+  assert.match(nfts, /\/api\/v2\/nfts/);
+  assert.match(nfts, /\/verify`/);
   assert.doesNotMatch(combined, /avatarCollection/);
   assert.doesNotMatch(combined, /avatar-collection/);
   assert.doesNotMatch(combined, /v2-avatar-collection/);
@@ -2084,45 +2095,32 @@ test('v2 removes the staged NFT collection product surface', () => {
 test('v2 applies Trebuchet branding from the v1 launch site', () => {
   const combined = `${html}\n${css}\n${js}`;
 
-  assert.match(html, /T R E B U C H E T/);
+  assert.match(html, /<strong>Trebuchet<\/strong>/);
   assert.match(combined, /makesometokens\.com/);
-  assert.match(combined, /Launch Solana tokens\. No middleman\./);
-  assert.match(combined, /Your machine \/ your keys \/ your launch/);
   assert.match(combined, /Token being launched/);
   assert.match(html, /topbar-brand/);
   assert.match(css, /\.brand-mark::before/);
   assert.match(css, /\.brand-mark::after/);
 });
 
-test('v2 launch page presents an agentic control panel instead of instruction walls', () => {
+test('v2 launch page shows the launch, not an agent panel or custody jargon', () => {
   const combined = `${html}\n${css}\n${js}`;
 
-  assert.match(combined, /Trebuchet agent/);
-  assert.match(html, /id="agentStatusTitle"/);
-  assert.match(html, /id="agentNextTitle"/);
-  assert.match(html, /id="agentNextDetail"/);
-  assert.match(html, /data-agent-check="setup"/);
-  assert.match(html, /data-agent-check="fund"/);
-  assert.match(html, /data-agent-check="run"/);
-  assert.match(html, /data-agent-check="recover"/);
-  assert.match(combined, /Trebuchet wallet/);
-  assert.match(combined, /App-managed wallets/);
-  assert.match(combined, /Custody workspace/);
-  assert.match(combined, /Wallet operations/);
-  assert.match(combined, /Active signer/);
-  assert.match(combined, /Recovery inventory/);
-  assert.match(combined, /Separate recovery queue/);
+  // The "agent" box repeated the step tabs; the wallet page names things
+  // plainly and points to History instead of repeating it.
+  assert.doesNotMatch(combined, /Trebuchet agent/);
+  assert.doesNotMatch(html, /id="agentStatusTitle"/);
+  assert.doesNotMatch(html, /data-agent-check=/);
+  assert.doesNotMatch(combined, /Custody workspace/);
+  assert.doesNotMatch(combined, /Active signer/);
+  assert.doesNotMatch(combined, /App-managed wallets/);
+  assert.match(html, /<h2>Launch wallets<\/h2>/);
+  assert.match(html, /Launch wallet in use/);
   assert.match(html, /id="walletRecoveryInventory"/);
-  assert.match(js, /data-action="inspect-recovery-record"/);
-  assert.match(js, /data-recovery-pane=/);
-  assert.match(css, /\.wallet-inventory-drawer\s*\{/);
-  assert.match(css, /\.wallet-inventory-drawer\[open\]/);
-  assert.match(combined, /External funding wallet/);
+  assert.match(js, /function recoveryWalletsNeedingAttention\(\)/);
+  assert.match(js, /Open in History/);
   assert.match(combined, /Solflare/);
-  assert.match(combined, /Does not sign launch execution/);
-  assert.match(combined, /Managed wallet import/);
-  assert.match(combined, /Imported wallet support/);
-  assert.match(combined, /Import mnemonic, base58, or JSON local wallets/);
+  assert.match(js, /Use as return wallet/);
   assert.match(html, /id="tokenLogoFile"/);
   assert.match(html, /id="tokenLogoPreview"/);
   assert.match(html, /accept="image\/png,image\/jpeg,image\/gif"/);
@@ -2162,9 +2160,9 @@ test('v2 launch page presents an agentic control panel instead of instruction wa
   assert.match(combined, /renderRecoveryWizard/);
   assert.match(combined, /currentRecoveryWizardModel/);
   assert.match(combined, /Recovery next action/);
-  assert.match(combined, /Recovery needs local app/);
-  assert.match(combined, /Find failed launch state/);
-  assert.match(combined, /Unlock recovery material/);
+  assert.match(combined, /Open the Trebuchet desktop app to see recovery/);
+  assert.match(combined, /Unfinished launches and old wallets/);
+  assert.match(combined, /Unlock old launch wallets/);
   assert.match(combined, /Resume only missing work/);
   assert.match(combined, /Manual recovery required/);
   assert.match(combined, /Recovery details/);
@@ -2186,14 +2184,7 @@ test('v2 launch page presents an agentic control panel instead of instruction wa
   assert.match(combined, /applySolflareAsSweepDestination/);
   assert.match(combined, /copy-wallet-address/);
   assert.match(combined, /data-action="discard-wallet"/);
-  assert.match(combined, /Ready to build the launch plan/);
-  assert.match(combined, /Next move/);
-  assert.match(combined, /Trebuchet holds the launch key locally/);
   assert.match(combined, /Review run plan/);
-  assert.match(combined, /Guided launch/);
-  assert.match(combined, /Practice run/);
-  assert.match(css, /agent-console/);
-  assert.match(css, /agent-checks/);
   assert.doesNotMatch(html, /<section class="operator-guide"/);
 });
 
@@ -2210,7 +2201,8 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="classicBridge"/);
   assert.match(html, /id="liveOpsPanel"/);
   assert.match(html, /id="activityLogDrawer"/);
-  assert.match(html, /id="launchWorkspaceTabs"/);
+  assert.match(html, /id="coinState"/);
+  assert.doesNotMatch(html, /launch-workspace-tab|Six launch phases/);
   assert.match(html, /id="launchWorkspaceViewport"/);
   for (const workspace of ['wallet', 'configure', 'fund', 'mint', 'liquidity', 'finish']) {
     assert.match(html, new RegExp(`data-launch-workspace="${workspace}"`));
@@ -2226,9 +2218,11 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="supplyEditor"/);
   assert.doesNotMatch(html, /Classic parity controls/);
   assert.match(html, /class="launch-toolbar"/);
-  assert.match(html, /class="launch-settings-drawer"/);
+  // Mode is a visible switch, not a drawer behind a "+".
+  assert.match(html, /class="launch-mode"/);
+  assert.doesNotMatch(html + css, /launch-settings-drawer/);
   assert.match(html, /id="launchSettingsEnvironment"/);
-  assert.match(html, /id="launchSettingsExperience"/);
+  assert.doesNotMatch(html, /id="launchSettingsExperience"/);
   assert.match(combined, /Launch wallet/);
   assert.doesNotMatch(combined, /Estimate, send, then verify/);
   assert.match(combined, /I funded it · check balance/);
@@ -2237,10 +2231,10 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.doesNotMatch(js, /class="launch-guidance-list"/);
   assert.doesNotMatch(js, /Verify funding to continue/);
   assert.match(css, /\.funding-task\s*\{/);
-  assert.match(css, /\.launch-settings-drawer\[open\] \.launch-choice-bar/);
+  assert.match(js, /Fixed by this coin\\'s mint/);
   assert.doesNotMatch(js, /Check prerequisites/);
   assert.doesNotMatch(js, /Classic execution payloads ready/);
-  assert.match(combined, /Create sealed token/);
+  assert.match(combined, /The name and logo stay hidden until the pool is locked/);
   assert.match(combined, /Create &amp; lock liquidity/);
   assert.match(combined, /Finish launch/);
   assert.match(html, /id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000"/);
@@ -2248,7 +2242,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="sliceShares"/);
   assert.match(html, /id="ladderBands" type="number" value="0" min="0" max="20"/);
   assert.match(js, /Round slices to 100%/);
-  assert.match(html, /Starts &amp; Ends With/);
+  assert.match(html, /<span>Starts with<\/span>[\s\S]*<span>Ends with<\/span>/);
   assert.match(combined, /Diagnostics/);
   assert.match(combined, /System status/);
   assert.match(combined, /Custom Vanity CA grinder/);
@@ -2267,7 +2261,8 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(css, /activity-filter-tabs/);
   assert.match(css, /body\[data-active-view="launch"\][\s\S]*overflow: hidden/);
   assert.match(css, /launch-workspace-viewport[\s\S]*overflow: hidden auto/);
-  assert.match(css, /launch-workspace-tab\.is-selected/);
+  assert.match(css, /\.coin-fact\.is-selected/);
+  assert.doesNotMatch(css, /launch-workspace-tab/);
   assert.match(css, /journal-resume-plan/);
   assert.match(css, /token-logo-preview/);
   assert.match(css, /asset-mark\.has-logo/);
@@ -2277,14 +2272,14 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(combined, /duplicatePoolRouteIssues/);
   assert.match(js, /function setLaunchWorkspace/);
   assert.match(js, /function renderLaunchWorkspace/);
-  assert.match(js, /trebuchet-v2-launch-workspace/);
+  assert.doesNotMatch(js, /trebuchet-v2-launch-workspace/);
   assert.match(combined, /Raydium uses both to identify a pool/);
   assert.match(combined, /classicSimpleLadderConfig/);
   assert.match(combined, /CLASSIC_LADDER_DEFAULT_CEILING_MULTIPLIER/);
   assert.match(combined, /feeKeyRecipientIssues/);
   assert.match(combined, /Fee Key recipient does not look like a valid Solana address/);
   assert.match(combined, /sweepDestinationIssues/);
-  assert.match(combined, /Sweep destination does not look like a valid Solana address/);
+  assert.match(combined, /Return wallet does not look like a valid Solana address/);
   assert.match(combined, /airdropRecipientIssues/);
   assert.match(combined, /Airdrop recipient/);
   assert.match(combined, /token amount must be greater than 0/);
@@ -2312,7 +2307,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(css, /criteria-chip/);
   assert.match(css, /signature-panel:not\(.is-staged\)/);
   assert.match(css, /signature-panel\.is-live/);
-  assert.match(css, /signature-step\.blocked/);
   assert.match(css, /execution-ledger/);
   assert.match(css, /history-audit-panel/);
   assert.match(css, /history-audit-actions/);
@@ -2321,12 +2315,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /setChartBadge/);
   assert.match(js, /setChartBadge\('#tokenomicsState', tokenomicsBadge\)/);
   assert.match(js, /setChartBadge\('#liquidityState', liquidityBadge\)/);
-  assert.match(js, /renderAgentConsole/);
-  assert.match(js, /agentCheckForStage/);
-  assert.match(js, /#agentStatusTitle/);
-  assert.match(js, /#agentNextTitle/);
-  assert.match(js, /#agentNextDetail/);
-  assert.match(js, /data-agent-check/);
   assert.match(js, /buildV2TokenomicsItems/);
   assert.match(js, /renderV2TokenomicsDonutSvg/);
   assert.match(js, /liquidityDepthRows/);
@@ -2343,11 +2331,11 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /const walletRuntimeEvidence = Boolean\(/);
   assert.match(js, /state\.apiStatus === 'connected'\s*&& selectedWalletPublicKey/);
   assert.match(js, /selectedWallet\.hasSecretKey === true/);
-  assert.match(js, /Connect the local app to verify this managed wallet signing secret/);
+  assert.match(js, /Connect the desktop app to verify this launch wallet signing secret/);
   assert.match(js, /Selected launch wallet is PIN locked/);
   assert.match(js, /state\.apiStatus === 'connected'\s*&& candidate\?\.persisted === true/);
   assert.match(js, /state\.apiStatus === 'connected' && state\.vanityAvailable/);
-  assert.match(js, /Connect the local app to verify the native grinder/);
+  assert.match(js, /Connect the desktop app to verify the native grinder/);
   assert.match(js, /const CLASSIC_TOKEN_NAME_MAX_BYTES = 32/);
   assert.match(js, /const CLASSIC_TOKEN_SYMBOL_MAX_BYTES = 10/);
   assert.match(js, /const CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES = 1000/);
@@ -2362,7 +2350,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /Classic retirement proof path/);
   assert.match(js, /'classic-comparison': 'Classic artifact'/);
   assert.match(js, /renderClassicRetirementProofRail\(retirementGate\)/);
-  assert.match(js, /Token fields are valid; stage the launch plan through the local API before replacing Classic token creation/);
+  assert.match(js, /Token fields are valid; stage the launch plan through the desktop app before replacing Classic token creation/);
   assert.match(js, /const chartRendererEvidence = Boolean\(typeof renderV2TokenomicsDonutSvg === 'function' && typeof liquidityDepthRows === 'function'\)/);
   assert.match(js, /const V2_VIEWPORT_SMOKE_REQUIRED_ASSETS = Object\.freeze\(\['index\.html', 'styles\.css', 'api-client\.js', 'app\.js'\]\)/);
   assert.match(js, /const V2_VIEWPORT_SMOKE_REQUIRED_CHECKS = Object\.freeze\(\[/);
@@ -2376,7 +2364,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /const viewportSmokeProof = validatedLocalViewportSmokeProof\(\)/);
   assert.match(js, /const viewportSmokeApiConnected = state\.apiStatus === 'connected'/);
   assert.match(js, /const viewportSmokeEvidence = viewportSmokeApiConnected && Boolean\(viewportSmokeProof\)/);
-  assert.match(js, /Connect the local app to verify viewport smoke proof against current Trebuchet assets/);
+  assert.match(js, /Connect the desktop app to verify viewport smoke proof against current Trebuchet assets/);
   assert.match(js, /const viewportSmokeStatus = state\.viewportSmoke \|\| proof\?\.viewportSmoke \|\| proof\?\.reportParity\?\.viewportSmoke \|\| null/);
   assert.match(js, /state\.viewportSmoke = boot\.viewportSmoke \|\| null/);
   assert.match(js, /Run `npm run test:v2:viewport` to generate desktop\/mobile viewport-smoke proof/);
@@ -2418,12 +2406,12 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /const localApiLaunchPlan = localApiLaunchPlanStatus\(state\.launchPlan, config\)/);
   assert.match(js, /const localApiLaunchPlanEvidence = localApiLaunchPlan\.ready/);
   assert.match(js, /const chartModelEvidence = Boolean\(hasCompletedLiveProof \|\| localApiLaunchPlanEvidence\)/);
-  assert.match(js, /Chart renderers and viewport smoke are ready; stage the launch plan through the local API so charts are bound to the executable token\/pool model/);
+  assert.match(js, /Chart renderers and viewport smoke are ready; stage the launch plan through the desktop app so charts are bound to the executable token\/pool model/);
   assert.match(js, /Chart renderers are wired against the executable launch model/);
   assert.match(js, /const poolConfigEvidence = Boolean\(\s*plannedPools\.length\s*&& poolBlockerCount === 0\s*&& \(hasCompletedLiveProof \|\| localApiLaunchPlanEvidence\)\s*\)/);
   assert.match(js, /localApiLaunchPlanStaleReason\(localApiLaunchPlan\)/);
   assert.match(js, /it is missing required operation/);
-  assert.match(js, /Stage the launch plan through the local API before replacing Classic pool configuration/);
+  assert.match(js, /Stage the launch plan through the desktop app before replacing Classic pool configuration/);
   assert.match(js, /if \(localApiLaunchPlanStatus\(\)\.ready\) return \{ label: 'Model', className: 'warn' \}/);
   assert.doesNotMatch(js, /\|\| config\?\.poolTopology\s*\)/);
   assert.match(js, /function classicFundingEstimateFingerprint\(config = currentLaunchConfig\(\)\)/);
@@ -2441,7 +2429,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.doesNotMatch(js, /const walletSol = Number\(selectedWallet\?\.balanceSol\)/);
   assert.match(js, /walletPublicKey: selectedLaunchWalletPublicKey\(\)/);
   assert.match(js, /const fundingBalanceEvidence = state\.apiStatus === 'connected' && funding\.hasWalletBalance === true && funding\.walletBalanceFresh === true/);
-  assert.match(js, /Selected Trebuchet launch-wallet balance is stale; wait for the local app refresh or click Check balance/);
+  assert.match(js, /Selected Trebuchet launch-wallet balance is stale; wait for the desktop app refresh or click Check balance/);
   assert.match(js, /function quoteAcquireFingerprint\(config = currentLaunchConfig\(\), walletPublicKey = selectedLaunchWalletPublicKey\(\)\)/);
   assert.match(js, /function quoteAcquireResultMatchesRoute\(result, route\)/);
   assert.match(js, /function quoteAcquireSuccessEvidence\(routes, job\)/);
@@ -2487,7 +2475,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /quote acquire route\$\{quoteRoutes\.length === 1 \? '' : 's'\} still need successful completion/);
   assert.match(js, /const fundingSolReady = Number\(funding\.missingSol \|\| 0\) <= 0\.001/);
   assert.match(js, /if \(phase\.id === 'pools'\) return topologyAllocationIssues\(config\.poolTopology\)\.length \? 'danger' : 'pass'/);
-  assert.match(js, /Selected launch-wallet balance is stale; wait for the local app refresh or click Check balance/);
+  assert.match(js, /Selected launch-wallet balance is stale; wait for the desktop app refresh or click Check balance/);
   assert.match(js, /Selected launch-wallet balance has not been verified yet/);
   assert.match(js, /Launch wallet is short \$\{funding\.missingSol\.toFixed\(3\)\} SOL/);
   assert.match(js, /liveRunProgressContext/);
@@ -2495,7 +2483,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /const context = runProgressContext\(\)/);
   assert.match(js, /isLive\s*\?/);
   assert.match(js, /Live checkpoint blocked/);
-  assert.match(js, /Trebuchet is watching launch proof and readiness evidence/);
+  assert.match(js, /Trebuchet is watching launch record and readiness evidence/);
   assert.match(js, /Source<\/span><strong>\$\{escapeHtml\(context\.source\)\}/);
   assert.match(js, /readinessPhaseState/);
   assert.match(js, /renderExecutionLedger/);
@@ -2539,27 +2527,27 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /executionLedgerAttemptLabel/);
   assert.match(js, /renderHistoryExecutionAudit/);
   assert.match(js, /Execution ledger/);
-  assert.match(js, /Latest guarded operations/);
-  assert.match(js, /Classic proof trail/);
-  assert.match(js, /No guarded operations yet/);
-  assert.match(js, /Guarded execution audit/);
+  assert.match(js, /Latest steps/);
+  assert.match(js, /Nothing sent yet/);
+  assert.match(js, /No launch steps sent yet/);
+  assert.match(js, /Launch steps sent/);
   assert.match(js, /Observed SOL/);
   assert.match(js, /clear-execution-audit/);
   assert.match(js, /Live launch progress/);
-  assert.match(js, /Wallet SOL/);
-  assert.match(js, /Planned SOL/);
-  assert.match(js, /Missing SOL/);
-  assert.match(js, /Observed spend/);
-  assert.match(js, /Acquired quotes/);
+  assert.match(js, /In the wallet/);
+  assert.match(js, /'Budget'/);
+  assert.match(js, /Still needed/);
+  assert.match(js, /Spent so far/);
+  assert.match(js, /Pair tokens bought/);
   assert.match(js, /vanityCandidateDetail/);
   assert.match(js, /vanityAvailabilityMeta/);
   assert.match(js, /vanityPatternEstimate/);
   assert.match(js, /vanityEstimateSummary/);
   assert.match(js, /VANITY_BASE58_ALPHABET/);
   assert.match(js, /VANITY_PLANNING_RATE/);
-  assert.match(js, /Invalid Base58/);
+  assert.match(js, /Not allowed/);
   assert.match(js, /Expected/);
-  assert.match(js, /50% by/);
+  assert.match(js, /95% by/);
   assert.match(js, /95% by/);
   assert.match(js, /vanityProgressStats/);
   assert.match(js, /removeVanityCandidateByPublicKey/);
@@ -2568,7 +2556,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /prune-hidden-vanity/);
   assert.match(js, /Remove selected/);
   assert.match(js, /Prune hidden/);
-  assert.match(js, /Native grinder ready/);
+  assert.match(js, /Ready to grind/);
   assert.match(js, /Grinder unavailable/);
   assert.match(js, /Unlock to grind/);
   assert.match(js, /const unlocked = await unlockSecretPin\(\{ reason: 'vanity' \}\)/);
@@ -2584,14 +2572,14 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /CLASSIC_LOGO_MAX_BYTES/);
   assert.match(js, /CLASSIC_LOGO_MAX_DIMENSION/);
   assert.match(js, /LOGO_SOURCE_MAX_BYTES/);
-  assert.match(js, /AUTO-COMPRESSED/);
+  assert.match(js, /\$\{kb\} KB\$\{animated\}/);
   assert.match(js, /Token logo auto-compressed and attached/);
   assert.match(js, /Logo must be a PNG, JPG, or GIF image/);
   assert.match(html, /id="tokenLogoFile" type="file" accept="image\/png,image\/jpeg,image\/gif"/);
-  assert.match(html, /Token logo \/ auto-compress/);
+  assert.match(html, /<span class="logo-input-label">Logo<\/span>/);
   assert.match(html, /class="logo-upload-control" for="tokenLogoFile"/);
   assert.match(html, /class="logo-upload-command"/);
-  assert.match(html, /PNG\/JPG\/GIF · source ≤10MB · auto-compressed/);
+  assert.match(html, /PNG, JPG or GIF, up to 10 MB/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
   assert.match(gifOptimizerJs, /optimizeAnimatedGif/);
   assert.match(gifOptimizerJs, /decompressFrames/);
@@ -2605,7 +2593,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(css, /\.logo-upload-command/);
   assert.match(css, /data-launch-identity="active"/);
   assert.match(css, /\.launch-identity-dock/);
-  assert.match(css, /\.launch-identity-progress-ring/);
+  assert.doesNotMatch(css, /launch-identity-progress-ring/);
   assert.match(css, /\.live-launch-monitor/);
   assert.match(css, /data-launch-focus="active"/);
   assert.doesNotMatch(js, /launchIdentityPhaseRail/);
@@ -2667,7 +2655,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /refreshManualPrefundBalance/);
   assert.match(js, /startQuoteAcquire/);
   assert.match(js, /Funding estimate is stale for this launch model; rerun it before acquiring quote tokens/);
-  assert.match(js, /data-action="\$\{hasCurrentEstimate \? 'start-quote-acquire' : 'estimate-funding'\}"/);
+  assert.match(js, /data-action="\$\{hasCurrentEstimate \|\| savedAction \? 'start-quote-acquire' : 'estimate-funding'\}"/);
   assert.match(js, /notify\(fundingEstimateStatus\.stale \? 'Rerun funding estimate first' : 'Run funding estimate first'\)/);
   assert.match(js, /if \(!classicFundingEstimateStatus\(currentLaunchConfig\(\)\)\.matchesConfig \|\| !items\.length\) return ''/);
   assert.match(js, /pollQuoteAcquire/);
@@ -2684,7 +2672,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.doesNotMatch(js.match(/function renderFinalizationPanel\(\) \{[\s\S]*?\n\}/)?.[0] || '', /Classic artifact|replacement criteria|fieldHandoffRows/);
   assert.match(js, /Report publish failed:/);
   assert.match(js, /Click Publish report to retry/);
-  assert.match(js, /Download a fresh final dossier so the artifact carries the final sweep hash/);
+  assert.match(js, /Download a fresh final launch record so the artifact carries the final sweep hash/);
   assert.match(css, /recovery-sweep-result/);
   assert.match(css, /recovery-sweep-grid/);
   assert.match(css, /recovery-wizard-panel/);
@@ -2713,7 +2701,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /status: terminal \? 'terminal' : hasRecord \? 'needs-proof' : 'not-recorded'/);
   assert.match(js, /renderV2ReportFactRow\('Sweep status', finalSweep\.label\)/);
   assert.match(js, /renderV2ReportFactRow\('Wallet empty'/);
-  assert.match(js, /renderV2ReportAddressRow\('Planned sweep destination', finalDestination\)/);
+  assert.match(js, /renderV2ReportAddressRow\('Planned return wallet', finalDestination\)/);
   assert.match(js, /`Destination: \$\{proofEffectiveDestination\(proof, config\) \|\| 'pending'\}`/);
   assert.match(js, /quoteSymbol: pool\.quoteSymbol \|\| pool\.quoteSymbolOverride \|\| result\?\.quoteSymbol \|\| pool\.quoteToken \|\| null/);
   assert.match(js, /v2ClassicReportCss/);
@@ -2801,7 +2789,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /Classic artifact compare/);
   assert.match(js, /Live classic comparison/);
   assert.match(js, /artifact-source/);
-  assert.match(js, /Trebuchet proof or dossier/);
+  assert.match(js, /Trebuchet proof or launch record/);
   assert.match(js, /Loaded artifact was generated by Trebuchet/);
   assert.match(js, /Comparison is for another Trebuchet proof/);
   assert.match(js, /Classic comparison belongs to another Trebuchet proof/);
@@ -2862,7 +2850,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /Live proof/);
   assert.match(js, /Demo only/);
   assert.match(js, /needs proof/);
-  assert.match(js, /Demo proof proves wiring only/);
+  assert.match(js, /Test launch record proves wiring only/);
   assert.match(js, /proof fields missing/);
   assert.match(js, /journals remain the source of truth/);
   assert.match(js, /renderFundingWalletHint/);
@@ -2875,43 +2863,109 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /renderParityPanel/);
 });
 
-test('v2 guided launch is a focused first-launch wizard over the guarded plan', () => {
+test('v2 launch is one flow with no separate guided mode', () => {
   const combined = `${html}\n${css}\n${js}`;
 
-  assert.match(html, /id="guidedLaunchFlow"/);
-  assert.match(html, /id="guidedRunShell"/);
-  assert.match(html, /data-experience="guided"/);
-  assert.match(html, /Advanced/);
-  assert.match(html, /data-action="select-environment"/);
-  assert.match(js, /const GUIDED_RECIPE_ID = 'simple-sol-v1'/);
-  assert.match(js, /function applyGuidedRecipe/);
-  assert.match(js, /function renderGuidedLaunchFlow/);
-  assert.match(js, /function guidedStepErrors/);
-  assert.match(js, /mainPoolPercent'\)\.value = '100'/);
-  assert.match(js, /quotePoolPercent'\)\.value = '0'/);
-  assert.match(js, /sliceShares'\)\.value = '100'/);
-  assert.match(js, /ladderBands'\)\.value = String\(strategy\.ladderBands\)/);
-  assert.match(js, /supportSol'\)\.value = String\(strategy\.supportSol\)/);
-  assert.match(combined, /Minimum[\s\S]*1 SOL[\s\S]*10 SOL[\s\S]*100 SOL/);
-  assert.match(js, /function launchBudgetRecommendation/);
-  assert.match(js, /feeKeyRecipient'\)\.value = ''/);
-  assert.match(js, /sweepDestination'\)\.value = practiceEnvironmentSelected\(\)/);
-  assert.match(js, /data-action="guided-practice"/);
-  assert.match(js, /function startGuidedPractice/);
-  assert.match(js, /await generateManagedWallet\(\)/);
-  assert.match(js, /await runDemoLaunch\(\)/);
-  assert.match(js, /Start practice launch/);
-  assert.match(js, /stageTransactions\(\{ openApproval: false, announce: false \}\)/);
-  assert.match(js, /guidedPracticeErrorMessage/);
-  assert.match(apiClientJs, /V2_DEMO_LAUNCH_RUN_PATH[\s\S]*?timeoutMs: 60_000/);
-  assert.match(js, /Choose your home wallet, not the temporary launch wallet/);
-  assert.match(combined, /sends no transaction, and spends no SOL/);
+  // One launch flow: the six-phase workspace is the only way to launch.
+  assert.doesNotMatch(combined, /experienceMode|data-experience-mode|data-experience=/);
+  assert.doesNotMatch(combined, /guidedLaunchFlow|guidedRunShell|guided-/);
+  assert.doesNotMatch(js, /select-experience/);
+  // Practice and Live stay an explicit environment choice.
+  assert.match(html, /data-action="select-environment" data-environment="practice"/);
+  assert.match(html, /data-action="select-environment" data-environment="live"/);
   assert.match(js, /function setExecutionEnvironment/);
-  assert.match(js, /function requestGuidedFundingEstimate/);
-  assert.match(js, /function settleGuidedStepPosition/);
-  assert.match(js, /focus\(\{ preventScroll: true \}\)/);
-  assert.match(css, /\.guided-launch-flow\s*\{[\s\S]*?overflow-anchor: none/);
-  assert.match(css, /data-experience-mode="guided"/);
+  assert.match(js, /function renderEnvironmentControls/);
+  // Existing journals keep their plan fingerprints.
+  assert.match(js, /mode: 'advanced',\n\s*recipeId: null,\n\s*version: null,/);
+  assert.match(combined, /None[\s\S]*1 SOL[\s\S]*10 SOL[\s\S]*100 SOL/);
+  assert.match(js, /function launchBudgetRecommendation/);
+  assert.match(apiClientJs, /V2_DEMO_LAUNCH_RUN_PATH[\s\S]*?timeoutMs: 60_000/);
+});
+
+test('v2 shows where assets go and lets funding wallets share held-back tokens', () => {
+  // Visible on Token & pools, outside More options.
+  const moreStart = html.indexOf('id="launchMoreOptions"');
+  assert.ok(html.indexOf('id="returnWalletCard"') < moreStart, 'Where assets go is folded away');
+  assert.match(js, /function assetDestinationsHtml\(\)/);
+  assert.match(js, /Where assets go/);
+  // Funders share by SOL sent, through the existing airdrop rows.
+  assert.match(js, /function heldSharePlan\(/);
+  assert.match(js, /tokens: Math\.floor\(heldTokens \* \(entry\.sol \/ totalSol\)\)/);
+  assert.match(js, /\.\.\.share\.rows,/);
+  assert.match(js, /source: 'funder-share'/);
+  // Only wallets in the current funder list count; nothing is ticked by default.
+  assert.match(js, /\.map\(\(address\) => known\.get\(address\)\)/);
+  assert.match(js, /heldShare: \{ selected: \[\] \}/);
+  // Bound to the plan once a live token exists.
+  assert.match(js, /function heldShareLocked\(\)/);
+  assert.match(js, /action === 'toggle-held-share'/);
+  assert.match(js, /anyone can send SOL to the launch wallet|Anyone can send SOL to the launch wallet/);
+});
+
+test('v2 SOL pool takes the remainder so the supply split totals 100%', () => {
+  assert.match(js, /function mainPoolRemainderPercent\(\)/);
+  assert.match(js, /function rebalanceMainPool\(\)/);
+  assert.match(js, /const SUPPLY_SHARE_INPUT_IDS = new Set\(\[/);
+  assert.match(js, /'preallocationSupplyPercent',/);
+  assert.match(js, /dataset\?\.customPoolField === 'supplyPercent'[\s\S]*?scheduleMainPoolRebalance\(\)/);
+  // Presets and pair changes keep held-back and airdrop shares.
+  assert.doesNotMatch(js, /\$\('#mainPoolPercent'\)\.value = '100';/);
+  assert.match(js, /\$\('#mainPoolPercent'\)\.value = String\(mainPoolRemainderPercent\(\)\)/);
+  assert.match(js, /notify\(hub \? `\$\{hub.symbol\} pair added` : 'Pair added'\)/);
+});
+
+test('v2 liquidity budget puts real SOL in the pool as buy support', () => {
+  const start = js.indexOf('function launchBudgetRecommendation(value) {');
+  const end = js.indexOf('\nfunction ', start + 10);
+  const body = js.slice(start, end);
+  // coreSol was never deposited by any pool; every preset must route its
+  // SOL into the support band that lpService actually opens.
+  assert.doesNotMatch(body, /coreSol: (?!0,)/);
+  assert.equal((body.match(/supportSol: budgetSol,/g) || []).length, 3);
+  assert.doesNotMatch(js, /Core liquidity/);
+  assert.match(html, /<h3 id=\"launchBudgetTitle\">SOL in the pool<\/h3>/);
+});
+
+test('v2 new pools use the 0.25% tier and pairs open above the SOL price', () => {
+  assert.match(js, /const DEFAULT_POOL_CONFIG_INDEX = 1;/);
+  assert.match(html, /id="targetMarketCapUsd"[^>]*value="25,000"/);
+  assert.match(js, /targetMarketCapUsd: 25000,/);
+  assert.match(js, /\$\('#targetMarketCapUsd'\)\) \$\('#targetMarketCapUsd'\)\.value = '25,000'/);
+  assert.match(read('public/index.html'), /id="targetMarketCap"[^>]*value="25,000"/);
+  assert.match(read('public/modules/token-config.js'), /ammConfigIndex: 1,/);
+  assert.match(js, /const PAIR_START_PREMIUM_PCT = 25;/);
+  assert.match(js, /ammConfigIndex: state\.solPoolConfigIndex,/);
+  assert.match(js, /ammConfigIndex: state\.pairPoolConfigIndex,/);
+  assert.match(js, /startPricePremiumPct: state\.pairStartPremiumPct,/);
+  // Restored launches keep the tier and premium they were planned with.
+  assert.match(js, /restoredSolPool\.ammConfigIndex \?\? 8/);
+  assert.match(js, /pairPool\.startPricePremiumPct \?\? 0/);
+  assert.match(js, /function pairArbitrageWarningHtml\(/);
+});
+
+test('v2 funding labels separate pool deposits, pair buys, setup, and buffer', () => {
+  assert.match(js, /<small>SOL pool funding<\/small>/);
+  assert.match(js, /<small>Pair-token buys<\/small>/);
+  assert.match(js, /<small>Accounts and fees<\/small>/);
+  assert.match(js, /<small>Buffer<\/small>/);
+  assert.match(js, /Set SOL in the pool on Token &amp; pools to add direct SOL buy support/);
+});
+
+test('coin page shows the launch as facts checked against the chain', () => {
+  assert.match(js, /function coinCreationHtml\(creation, coin\)/);
+  assert.match(js, /mismatch: \{ icon: 'fa-triangle-exclamation', label: 'Recorded, but the chain disagrees' \}/);
+  assert.match(js, /unrecorded: \{ icon: 'fa-circle-question', label: 'Not recorded; not checked on-chain' \}/);
+  assert.match(js, /function continueCoinStep\(mint\)/);
+  assert.match(js, /data-action="sweep-recovery-wallet"/);
+  // One coin page: nothing in the app refers to a separate launch screen.
+  assert.doesNotMatch(`${html}\n${js}`, /create flow|Coin page<\/button>|Create a coin/);
+});
+
+test('coin page lists this app\'s positions and withdraws them after a typed confirmation', () => {
+  assert.match(js, /function coinPositionsHtml\(\)/);
+  assert.match(js, /confirmationText: 'WITHDRAW'/);
+  assert.match(js, /expected: \{ liquidity: position\.liquidity \}/);
+  assert.match(apiClientJs, /\/api\/v2\/positions\/withdraw/);
 });
 
 test('v2 auto-compresses oversized logos into the Classic upload envelope', async () => {
@@ -3193,7 +3247,7 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(combined, /Report, airdrop, and proof/);
   assert.match(combined, /Proof review/);
   assert.match(combined, /Explorer bundle ready/);
-  assert.match(js, /Launch Dossier/);
+  assert.match(js, /Launch Record/);
   assert.match(js, /Token launch report · permanent record/);
   assert.match(js, /const proofFingerprint = launchProofFingerprint\(proof, config\)/);
   assert.match(js, /proofFingerprint,/);
@@ -3299,7 +3353,7 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /Acquire map/);
   assert.match(js, /Auto acquire/);
   assert.match(js, /Manual prefund checklist/);
-  assert.match(js, /Final asset return/);
+  assert.match(js, /Return wallet/);
   assert.match(js, /Return wallet not verified/);
   // Return wallets are proven (funder or signature), never typed.
   assert.match(html, /<input id="sweepDestination" type="hidden"/);
@@ -3309,7 +3363,6 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /edit-return-wallet/);
   assert.match(js, /detect-funding-wallet/);
   assert.match(js, /use-funding-wallet-sweep/);
-  assert.match(js, /External funding wallet/);
   assert.match(js, /connect-solflare/);
   assert.match(js, /use-solflare-destination/);
   assert.match(js, /Check balance/);
@@ -3363,7 +3416,7 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /compare-classic-artifact/);
   assert.match(js, /clear-classic-artifact/);
   assert.match(js, /publishV2LaunchReport/);
-  assert.match(js, /Refresh journal-backed launch proof before publishing a report/);
+  assert.match(js, /Refresh journal-backed launch record before publishing a report/);
   assert.match(js, /launchJournalMissing: true/);
   assert.match(js, /runV2Airdrop/);
   assert.match(js, /downloadV2Proof/);
@@ -3393,9 +3446,9 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(reportHtmlSource, /const data = rawData && typeof rawData === 'object'\s*\?\s*\{ \.\.\.rawData, \.\.\.parityBundle \}\s*:\s*rawData/);
   assert.doesNotMatch(reportHtmlSource, /const data = launchData \|\| buildV2LaunchReportData/);
   assert.match(js, /Load proof/);
-  assert.match(js, /Download dossier/);
-  assert.match(js, /Local dossier attached/);
-  assert.match(js, /Launch proof loaded/);
+  assert.match(js, /Download launch record/);
+  assert.match(js, /Saved launch record attached/);
+  assert.match(js, /Launch record loaded/);
   assert.match(js, /Load artifact/);
   assert.match(js, /Classic artifact loaded/);
   assert.match(js, /function proofExportParityBundle/);
@@ -3404,7 +3457,7 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /classicRetirementGate: parityBundle\.classicRetirementGate/);
   assert.match(js, /fieldVerification: parityBundle\.fieldVerification/);
   assert.match(js, /classicReportComparison: classicReportComparisonForProofExport/);
-  assert.match(js, /Launch proof summary/);
+  assert.match(js, /Launch record summary/);
   assert.match(js, /complete demo token, LP, and sweep path/);
   assert.match(js, /startVanityGrind/);
   assert.match(js, /vanityCandidateDetail/);
@@ -3469,7 +3522,7 @@ test('v2 manual prefund evidence is bound to the selected wallet', () => {
 
   assert.equal(staleStatus.label, 'Check balance');
   assert.equal(staleStatus.className, 'warn');
-  assert.match(staleStatus.detail, /another Trebuchet wallet/);
+  assert.match(staleStatus.detail, /another launch wallet/);
   assert.equal(staleSummary.className, 'warn');
 
   harness.state.selectedWalletPublicKey = 'Wallet111';
@@ -3555,7 +3608,7 @@ test('v2 funding meter requires a selected-wallet detailed balance snapshot', ()
   let snapshot = harness.fundingMeterSnapshot(config);
   assert.equal(snapshot.hasWalletBalance, false);
   assert.equal(snapshot.availableSol, 5);
-  assert.equal(snapshot.availableLabel, 'Planned SOL');
+  assert.equal(snapshot.availableLabel, 'Budget');
   assert.equal(snapshot.estimateAvailable, true);
   assert.equal(snapshot.estimatedCost, 2);
 
@@ -3570,7 +3623,7 @@ test('v2 funding meter requires a selected-wallet detailed balance snapshot', ()
   assert.equal(snapshot.hasWalletBalance, true);
   assert.equal(snapshot.walletBalanceFresh, true);
   assert.equal(snapshot.availableSol, 3.25);
-  assert.equal(snapshot.availableLabel, 'Wallet SOL');
+  assert.equal(snapshot.availableLabel, 'In the wallet');
 
   harness.state.manualPrefund.lastUpdatedAt = '2000-01-01T00:00:00.000Z';
   snapshot = harness.fundingMeterSnapshot(config);
@@ -3578,7 +3631,7 @@ test('v2 funding meter requires a selected-wallet detailed balance snapshot', ()
   assert.equal(snapshot.walletBalanceFresh, false);
   assert.equal(snapshot.walletBalanceStale, true);
   assert.equal(snapshot.availableSol, 5);
-  assert.equal(snapshot.availableLabel, 'Planned SOL');
+  assert.equal(snapshot.availableLabel, 'Budget');
   assert.equal(snapshot.badge.label, 'Stale balance');
 
   harness.state.selectedWalletPublicKey = 'Wallet222';
@@ -3852,7 +3905,9 @@ test('v2 launch report exports a normalized field verification packet', () => {
   assert.match(js, /gateFingerprint === expectedFingerprint/);
   assert.match(js, /fieldVerification: parityBundle\.fieldVerification/);
   assert.match(js, /fieldVerification,/);
-  assert.match(js, /buildV2ReportParityAuditSection\(data\.reportParityAudit, data\.classicRetirementGate, data\.fieldVerification\)/);
+  // The Classic retirement audit is a developer check; the public report
+  // does not carry it.
+  assert.doesNotMatch(js, /\$\{buildV2ReportParityAuditSection\(/);
 });
 
 test('v2 field verification routes replacement-criterion blockers to concrete actions', () => {
@@ -4049,7 +4104,7 @@ test('v2 copied proof summary prioritizes the next launch operation before relea
     poolTopology: {},
   });
 
-  assert.match(summary, /Trebuchet launch proof: MKT/);
+  assert.match(summary, /Trebuchet launch record: MKT/);
   assert.match(summary, /Liquidity: 0 recorded pools \/ 3 positions/);
   assert.match(summary, /Next: Create and lock liquidity/);
   assert.match(summary, /Airdrop: needs proof: recipient rows, transaction signatures/);
@@ -4263,7 +4318,7 @@ test('v2 proof import does not resurrect artifacts pruned during merge', async (
   assert.equal(sandbox.state.lastReportPublish, null);
   assert.equal(sandbox.state.lastLocalDossier, null);
   assert.equal(sandbox.restoredProof, mergedProof);
-  assert.equal(sandbox.message, 'Launch proof loaded');
+  assert.equal(sandbox.message, 'Launch record loaded');
 });
 
 test('v2 Classic comparison action uses proof-bound launch config', () => {
@@ -4682,7 +4737,7 @@ test('v2 proof import only restores fingerprint-matched local dossier evidence',
   );
   assert.throws(
     () => sandbox.proofFromImportedPayload(externalReportWithSpoofedV2Envelope),
-    /does not contain a Trebuchet launch proof/,
+    /does not contain a Trebuchet launch record/,
   );
   assert.throws(
     () => sandbox.proofFromImportedPayload(fieldVerificationOnlyProofPacket),
@@ -6160,12 +6215,12 @@ test('v2 manual run-next preserves classic finalization before sweep', () => {
   assert.match(helper, /if \(airdropIssue\) return airdropIssue/);
   assert.doesNotMatch(helper, /if \(state\.prefs\.publishLaunchReport === false\) return null/);
   assert.match(helper, /!report\?\.jsonUri && !report\?\.htmlUri && !localDossier/);
-  assert.match(helper, /Report publishing is off; download the local dossier before final sweep/);
+  assert.match(helper, /Report publishing is off; download the saved launch record before final sweep/);
   assert.match(helper, /staleReportPublishForProof\(proof, safeConfig\)/);
   assert.match(helper, /currentReportPublish\(proof, safeConfig\)/);
   assert.match(helper, /currentLocalDossier\(proof, safeConfig\)/);
   assert.match(helper, /localDossierFinalizationIssue\(staleLocalDossier, proof, safeConfig\)/);
-  assert.match(helper, /Local dossier proof is stale or incomplete/);
+  assert.match(helper, /Saved launch record proof is stale or incomplete/);
   assert.match(helper, /Publish or download the launch report before final sweep/);
 
   const sandbox = {
@@ -6190,7 +6245,7 @@ test('v2 manual run-next preserves classic finalization before sweep', () => {
     { nextEndpoint: '/api/transfer-assets' },
     { poolTopology: {} },
   );
-  assert.match(issue, /download the local dossier before final sweep/);
+  assert.match(issue, /download the saved launch record before final sweep/);
   sandbox.airdropStatus = {
     configured: true,
     complete: false,
@@ -6218,7 +6273,7 @@ test('v2 manual run-next preserves classic finalization before sweep', () => {
     { nextEndpoint: '/api/transfer-assets' },
     { poolTopology: {} },
   );
-  assert.match(issue, /Local dossier proof is stale or incomplete/);
+  assert.match(issue, /Saved launch record proof is stale or incomplete/);
   assert.match(issue, /proof fingerprint mismatch/);
   sandbox.proof = { canPublishReport: false };
   sandbox.localDossier = {
@@ -6301,7 +6356,7 @@ test('v2 full launch runner requires proof before marking completion', () => {
   assert.match(helper, /Matching launch journal is not loaded from the local recovery store/);
   assert.match(helper, /Launch journal has not reached transfer_completed/);
 
-  const verifyIdx = runner.indexOf("state.fullRunStep = 'Verifying launch proof'");
+  const verifyIdx = runner.indexOf("state.fullRunStep = 'Verifying launch record'");
   const refreshRecoveryIdx = runner.indexOf('await refreshLocalApiState()');
   const auditIdx = runner.indexOf('const completion = fullRunCompletionAudit(currentLaunchProof(), config)');
   const lastRunIdx = runner.indexOf('state.lastFullRun = {');
@@ -6315,7 +6370,7 @@ test('v2 full launch runner requires proof before marking completion', () => {
   assert.match(runner, /completion,/);
   assert.match(runner, /completedAt: completion\.complete \? new Date\(\)\.toISOString\(\) : null/);
   assert.match(runner, /if \(!reportDone && state\.prefs\.publishLaunchReport === false\)/);
-  assert.match(runner, /throw new Error\('Report publishing is off; download the local dossier before final sweep\.'\)/);
+  assert.match(runner, /throw new Error\('Report publishing is off; download the saved launch record before final sweep\.'\)/);
   assert.match(runner, /let proofConfig = proofConfigForFingerprint\(proof, config\)/);
   assert.match(runner, /airdropCompletionStatus\(proof, proofConfig\.poolTopology\)/);
   assert.match(runner, /const reportConfig = proofConfigForFingerprint\(reportProof, config\)/);
@@ -6328,8 +6383,8 @@ test('v2 full launch runner requires proof before marking completion', () => {
   assert.doesNotMatch(runner, /state\.prefs\.publishLaunchReport !== false && reportProof\?\.canPublishReport && !reportDone/);
   assert.match(runner, /Full launch needs proof/);
   assert.match(js, /const reportNeedsFinalArtifact = Boolean\(/);
-  assert.match(js, /Download final dossier/);
-  assert.match(js, /Terminal sweep is recorded; download a fresh proof dossier so the artifact carries the final sweep hash/);
+  assert.match(js, /Download final launch record/);
+  assert.match(js, /Terminal sweep is recorded; download a fresh launch record so the artifact carries the final sweep hash/);
 
   const sandbox = {
     state: { prefs: { publishLaunchReport: true } },
@@ -6423,7 +6478,7 @@ test('v2 full launch runner requires proof before marking completion', () => {
   sandbox.state.prefs.publishLaunchReport = false;
   completion = sandbox.fullRunCompletionAudit(completeProof, completeConfig);
   assert.equal(completion.complete, false);
-  assert.match(completion.blockers.join('\n'), /download or attach the local dossier/);
+  assert.match(completion.blockers.join('\n'), /download or attach the saved launch record/);
 
   sandbox.localDossier = { filename: 'trebuchet-final-proof.html' };
   sandbox.reportSweepBound = true;
@@ -6514,21 +6569,21 @@ test('v2 launch mechanism stages one Trebuchet-managed local wallet run', () => 
   assert.match(html, /id="signaturePanel"/);
   assert.match(combined, /Local wallet run/);
   assert.match(combined, /Live launch progress/);
-  assert.match(combined, /signature-progress/);
-  assert.match(combined, /signature-track/);
+  // A run shows what is happening and what exists, never a count of phases or a percentage.
+  assert.doesNotMatch(combined, /signature-progress|signature-track|live-launch-progress|phases complete|operations complete|checkpoints complete/);
+  assert.doesNotMatch(js, /<small>Queued<\/small>|% complete</);
+  assert.match(js, /class="live-launch-facts"/);
   assert.match(combined, /Current operation/);
-  assert.match(combined, /Next checkpoint/);
+  assert.doesNotMatch(js, /Next checkpoint|'Next step'|Run every step|Step 6 as reviewable/);
   assert.match(combined, /Execution ledger/);
-  assert.match(combined, /Latest guarded operations/);
+  assert.match(combined, /Latest steps/);
   assert.match(combined, /historyExecutionAudit/);
   assert.match(combined, /Retries/);
   assert.match(combined, /attempt/);
   assert.match(combined, /variable/);
-  assert.match(combined, /operations complete/);
-  assert.match(combined, /phases complete/);
   assert.match(combined, /Review run plan first/);
   assert.match(combined, /trebuchet-managed-launch-wallet/);
-  assert.match(combined, /Arm local run/);
+  assert.match(combined, /'Approve'/);
   assert.match(combined, /run-launch/);
   assert.match(js, /tx-config/);
   assert.match(js, /tx-funding/);
@@ -6547,20 +6602,20 @@ test('v2 Phase 4 exposes the missing arm step before Create token', () => {
   assert.ok(bridgeStart >= 0 && bridgeEnd > bridgeStart, 'Classic bridge should be extractable');
   assert.ok(reviewStart >= 0 && reviewEnd > reviewStart, 'run-envelope review helper should be extractable');
   assert.match(bridgeSource, /needsRunEnvelope/);
-  assert.match(bridgeSource, /Review and arm this launch/);
+  assert.match(bridgeSource, /Review this launch/);
   assert.match(bridgeSource, /Authorize final sweep/);
-  assert.match(bridgeSource, /Review &amp; arm final sweep/);
-  assert.match(bridgeSource, /Save local launch proof/);
-  assert.match(bridgeSource, /Save local dossier/);
+  assert.match(bridgeSource, /Review final sweep/);
+  assert.match(bridgeSource, /Save local launch record/);
+  assert.match(bridgeSource, /Save launch record/);
   assert.match(bridgeSource, /executeNextTransferFinalizationIssue\(readiness, config\)/);
   assert.match(bridgeSource, /is-primary-action/);
   assert.match(bridgeSource, /data-action="review-and-arm-run"/);
-  assert.match(bridgeSource, /Review the operations and maximum spend once/);
+  assert.match(bridgeSource, /Check what will be sent and the most it can spend/);
   assert.match(bridgeSource, /data-action="execute-next-run"[\s\S]*?runLabel/);
   assert.doesNotMatch(bridgeSource, /\|\| readiness\?\.nextEndpoint\s*\|\|/);
   assert.match(reviewSource, /stageTransactions\(\{ openApproval: true, announce: false \}\)/);
   assert.match(js, /action === 'review-and-arm-run'[\s\S]*?reviewAndArmRun\(\)/);
-  assert.match(js, /Local run armed; execute only after readiness passes\. Next: \$\{nextOperation\}\./);
+  assert.match(js, /Approved\. Next: \$\{nextOperation\}\./);
 });
 
 test('v2 hides release-comparison warnings until the operational launch is complete', () => {
@@ -6581,7 +6636,7 @@ test('v2 terminal recovery collapses into the completed proof panel', () => {
   assert.match(bridgeSource, /state\.restoredLaunchJournalId && !finalSweepComplete/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('has-recovery-notice'/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('is-terminal-launch', finalSweepComplete\)/);
-  assert.match(bridgeSource, /Assets swept and launch wallet verified empty/);
+  assert.match(bridgeSource, /Everything is in the return wallet and the launch wallet is empty/);
   assert.match(bridgeSource, /!finalSweepComplete && !completedJournal \? `<details class="drawer launch-recovery-details"/);
   assert.match(css, /#classicBridge\.is-terminal-launch \.classic-workspace-verify\s*\{[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\)/);
   assert.match(css, /\.recovered-plan-notice\s*\{[\s\S]*?max-height: 44px/);
@@ -6599,7 +6654,9 @@ test('v2 interrupted mints finish safely before liquidity resumes', () => {
   assert.match(js, /'\/api\/finish-token-creation': 'Finishing interrupted token'/);
   assert.match(apiClientJs, /V2_RUN_EXECUTE_NEXT_PATH[\s\S]*?timeoutMs: 0/);
   assert.match(serverJs, /async function rejectIfTokenIncompleteForLiquidity/);
-  assert.equal((serverJs.match(/rejectIfTokenIncompleteForLiquidity\(res/g) || []).length, 4);
+  assert.equal((serverJs.match(/rejectIfTokenIncompleteForLiquidity\(res/g) || []).length, 2);
+  const services = readFileSync(new URL('../launchExecution.js', import.meta.url), 'utf8');
+  assert.equal((services.match(/await requireTokenCompleteForLiquidity\(/g) || []).length, 2);
   assert.match(serverJs, /code: 'TOKEN_CREATION_INCOMPLETE'/);
 });
 
@@ -6614,7 +6671,7 @@ test('v2 sealed identity reveal cannot replace liquidity creation before pools e
   assert.match(bridgeSource, /metadataRevealPending \? 'Reveal & lock identity'[\s\S]*?: readiness\?\.nextEndpoint === '\/api\/resume-launch' \? 'Resume missing work' : 'Create liquidity'/);
 });
 
-test('v2 Vanity CA candidates use a compact terminal list and Signal grade colors', () => {
+test('v2 contract address grinder lists saved addresses as rows with Signal grade colors', () => {
   const renderStart = js.indexOf('function renderVanityCandidates()');
   const renderEnd = js.indexOf('function poolLadderCount', renderStart);
   const renderSource = js.slice(renderStart, renderEnd);
@@ -6622,20 +6679,29 @@ test('v2 Vanity CA candidates use a compact terminal list and Signal grade color
   assert.ok(renderStart >= 0 && renderEnd > renderStart);
   assert.match(js, /const VANITY_VISIBLE_CANDIDATE_LIMIT = 4/);
   assert.match(js, /function vanityRarityGrade/);
-  assert.match(renderSource, /vanity-candidate-list/);
-  assert.doesNotMatch(renderSource, /vanity-candidate-grid/);
-  assert.match(renderSource, /vanity-ca-address[^\n]+\$\{escapeHtml\(shortAddress\(candidate\.publicKey\)\)\}/);
-  assert.match(js, /return `\$\{text\.slice\(0, 4\)\}\.\.\.\$\{text\.slice\(-4\)\}`/);
-  assert.match(renderSource, /vanity-candidate-meta/);
+  assert.match(renderSource, /grinder-list/);
+  assert.match(renderSource, /grinder-row/);
+  assert.match(renderSource, /\$\{escapeHtml\(fullAddress\(candidate\.publicKey\)\)\}/);
+  assert.match(js, /: `\$\{text\.slice\(0, 4\)\}\.\.\.\$\{text\.slice\(-4\)\}`;/);
   assert.match(renderSource, /aria-pressed/);
-  assert.match(renderSource, /aria-label="Select random CA"/);
+  assert.match(renderSource, /Random address/);
+  // No terminal chrome: no "$" prompts, slot numbers, or epochs.
+  assert.doesNotMatch(renderSource, /<span aria-hidden="true">\$<\/span>/);
+  assert.doesNotMatch(renderSource, /padStart\(2, '0'\)/);
+  assert.doesNotMatch(renderSource, /\} epochs`/);
+  // Search effort is labeled as local on the candidate and in its note.
+  assert.match(renderSource, /the expected tries/);
+  assert.match(renderSource, /Local grind grade:/);
+  assert.match(renderSource, /The address confirms the letter pattern/);
   assert.match(css, /--rarity-common: #c8dce6/);
   assert.match(css, /--rarity-fine: #8cdcff/);
   assert.match(css, /--rarity-rare: #be82ff/);
   assert.match(css, /--rarity-rati: #ffc85a/);
   assert.match(css, /--rarity-commissioned: #fff082/);
-  assert.match(css, /\.vanity-candidate-list\s*\{[\s\S]*?display: flex;[\s\S]*?flex-direction: column;/);
-  assert.match(css, /#view-launch \.vanity-candidate\s*\{[\s\S]*?font-family: inherit;/);
+  // The grinder uses only theme colors, so light and dark mode both read.
+  const grinderCss = css.slice(css.indexOf('/* Contract address grinder.'));
+  assert.ok(grinderCss.length > 0);
+  assert.doesNotMatch(grinderCss.slice(0, grinderCss.indexOf('@media (max-width: 700px)')), /#[0-9a-f]{3,8}\b/i);
 });
 
 test('v2 active wallet identity uses its rarity color without replacing status colors', () => {
@@ -6666,7 +6732,7 @@ test('v2 locked launch wallet opens the Recovery PIN gate directly', () => {
   assert.ok(walletClickStart >= 0 && walletClickEnd > walletClickStart);
   assert.match(walletClickSource, /!walletIsUnlocked\(\) \|\| state\.secretPin\.locked \|\| selected\?\.secretPinLocked === true/);
   assert.match(walletClickSource, /unlockSecretPin\(\{ reason: 'wallet' \}\)/);
-  assert.match(js, /title: 'Enter Recovery PIN'[\s\S]*?Unlock the selected launch wallet on this Mac/);
+  assert.match(js, /title: 'Enter Recovery PIN'[\s\S]*?Unlock the selected launch wallet on this device/);
   assert.match(js, /walletButton\.setAttribute\('aria-label', walletButtonLabel\)/);
 });
 
@@ -6695,12 +6761,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=82/);
-  assert.match(html, /runtime-state\.js\?v=1/);
-  assert.match(html, /api-client\.js\?v=37/);
+  assert.match(html, /styles\.css\?v=102/);
+  assert.match(html, /runtime-state\.js\?v=2/);
+  assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=173/);
-  assert.doesNotMatch(html, /app\.js\?v=173" type="module"/);
+  assert.match(html, /app\.js\?v=196/);
+  assert.doesNotMatch(html, /app\.js\?v=196" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -6872,7 +6938,7 @@ test('v2 retirement gate requires terminal final sweep evidence', () => {
   assert.match(js, /const reportProofReady = proofHasReportPublishEvidence\(proof, config\) && airdropStatus\.complete/);
   assert.match(js, /const localDossierReady = proofCanCreateLocalDossier\(proof, config\) && airdropStatus\.complete/);
   assert.match(js, /const canDownloadDossier = canDownload && \(!proof\?\.token\?\.mint \|\| localDossierReady \|\| reportNeedsFinalArtifact\)/);
-  assert.match(js, /const airdropIssue = airdropCompletionIssue\(\s*airdropCompletionStatus\(proof, config\.poolTopology\),\s*'downloading the launch dossier',\s*\)/);
+  assert.match(js, /const airdropIssue = airdropCompletionIssue\(\s*airdropCompletionStatus\(proof, config\.poolTopology\),\s*'downloading the launch record',\s*\)/);
   assert.match(js, /function airdropCompletionStatus\(proof = currentLaunchProof\(\), topology = currentClassicModel\(\)\)/);
   assert.match(js, /const evidence = comparisonAirdropDeliveryEvidenceState\(\{/);
   assert.match(js, /complete: evidence\.complete/);
@@ -6893,7 +6959,7 @@ test('v2 retirement gate requires terminal final sweep evidence', () => {
   assert.match(js, /if \(!proofHasReportPublishEvidence\(proof, config\)\) \{/);
   assert.match(js, /Complete liquidity proof before publishing a report/);
   assert.match(js, /poolIds: recordedPoolIds/);
-  assert.match(js, /Report publishing is off; download the local HTML\/JSON dossier before review/);
+  assert.match(js, /Report publishing is off; download the local HTML\/JSON launch record before review/);
   assert.doesNotMatch(js, /state\.prefs\.publishLaunchReport === false,\s*\)/);
   assert.match(js, /const terminalSweepComplete = Boolean\(completedDemoRun \|\| transferHasWalletEmptyFinalSweepEvidence\(proof\?\.transfer\)\)/);
   assert.match(js, /const sweepNeedsProof = sweepReadinessComplete && !terminalSweepComplete/);
@@ -6918,7 +6984,7 @@ test('v2 retirement gate requires terminal final sweep evidence', () => {
   assert.match(js, /const feeKeyRecipientTarget = liquidityTxEvidence\.feeKeyRecipientRows\.length/);
   assert.match(js, /const feeKeyRecipientsDelivered = feeKeyRecipientTarget <= 0 \|\| feeKeyRecipientTransferred >= feeKeyRecipientTarget/);
   assert.match(js, /const lockComplete = Boolean\(\s*completedDemoRun\s*\|\|\s*\(locksRecorded && feeKeysRecorded && feeKeyRecipientsDelivered\)\s*\)/);
-  assert.match(js, /Fee Key recipient transfer\$\{feeKeyRecipientTarget === 1 \? '' : 's'\} recorded; retry or forward from sweep destination before completion/);
+  assert.match(js, /Fee Key recipient transfer\$\{feeKeyRecipientTarget === 1 \? '' : 's'\} recorded; retry or forward from return wallet before completion/);
   assert.match(js, /pool-create tx proof is \$\{poolCreateTxCount\}\/\$\{poolTarget\}, position-open tx proof is \$\{openTxCount\}\/\$\{recordedPositionCount \|\| plannedPositionCount \|\| '\?'\}/);
   assert.match(js, /const liveLiquidityProofComplete = Boolean\(livePoolIdentityComplete && livePositionProofComplete && liveLockProofComplete\)/);
   assert.match(js, /Pool-create transaction proof is \$\{txEvidence\.poolCreateTxCount\}\/\$\{plannedPoolCount\}/);
@@ -6931,7 +6997,7 @@ test('v2 retirement gate requires terminal final sweep evidence', () => {
   assert.match(js, /proof\?\.journalId \? 'pass' : proof \? 'warn' : state\.recovery\?\.journalCount \? 'warn' : 'missing'/);
   assert.match(js, /attach the completed launch journal id to the proof before retiring Classic/);
   assert.match(js, /const hasProofLaunchWallet = Boolean\(proof\?\.walletPublicKey\)/);
-  assert.match(js, /Mint \$\{shortAddress\(token\.mint\)\} is recorded, but launch wallet proof is missing/);
+  assert.match(js, /Mint \$\{fullAddress\(token\.mint\)\} is recorded, but launch wallet proof is missing/);
 });
 
 test('v2 local terminal journal proof binds pool records, not only pool ids', () => {
@@ -8053,7 +8119,7 @@ test('v2 retirement gate only passes completed live proof compared to Classic', 
     demoRunComplete: false,
   }).find((item) => item.id === 'wallet-lifecycle');
   assert.equal(walletCriterion.pass, false);
-  assert.match(walletCriterion.evidence, /Connect the local app to verify this managed wallet signing secret/);
+  assert.match(walletCriterion.evidence, /Connect the desktop app to verify this launch wallet signing secret/);
 
   harness.state.managedWallets = [];
   harness.state.selectedWalletPublicKey = '';
@@ -8064,7 +8130,7 @@ test('v2 retirement gate only passes completed live proof compared to Classic', 
     demoRunComplete: true,
   }).find((item) => item.id === 'wallet-lifecycle');
   assert.equal(walletCriterion.pass, false);
-  assert.match(walletCriterion.evidence, /Generate, import, or load a Trebuchet-managed wallet/);
+  assert.match(walletCriterion.evidence, /Generate, import, or load a launch wallet/);
 
   walletCriterion = harness.buildV2ReplacementCriteriaAudit({
     proof: { walletPublicKey: proof.walletPublicKey },
@@ -8109,7 +8175,7 @@ test('v2 retirement gate only passes completed live proof compared to Classic', 
     demoRunComplete: false,
   }).find((item) => item.id === 'vanity-options');
   assert.equal(vanityCriterion.pass, false);
-  assert.match(vanityCriterion.evidence, /Connect the local app/);
+  assert.match(vanityCriterion.evidence, /Connect the desktop app/);
 
   harness.state.apiStatus = 'connected';
   harness.state.vanityCandidates = [{ publicKey: 'PersistedVanity111111111111111111111111111', persisted: true, hasSecretKey: true }];
@@ -8190,7 +8256,7 @@ test('v2 retirement gate only passes completed live proof compared to Classic', 
     demoRunComplete: false,
   }).find((item) => item.id === 'token-config-parity');
   assert.equal(tokenCriterion.pass, false);
-  assert.match(tokenCriterion.evidence, /stage the launch plan through the local API/);
+  assert.match(tokenCriterion.evidence, /stage the launch plan through the desktop app/);
 
   harness.state.launchPlan = {
     source: 'local-api',
@@ -8294,7 +8360,7 @@ test('v2 retirement gate only passes completed live proof compared to Classic', 
     demoRunComplete: false,
   }).find((item) => item.id === 'charts-and-viewport');
   assert.equal(chartCriterion.pass, false);
-  assert.match(chartCriterion.evidence, /Connect the local app to verify viewport smoke proof/);
+  assert.match(chartCriterion.evidence, /Connect the desktop app to verify viewport smoke proof/);
 
   harness.state.apiStatus = 'connected';
   chartCriterion = harness.buildV2ReplacementCriteriaAudit({
@@ -8330,7 +8396,7 @@ test('v2 retirement gate only passes completed live proof compared to Classic', 
     demoRunComplete: false,
   }).find((item) => item.id === 'charts-and-viewport');
   assert.equal(chartCriterion.pass, false);
-  assert.match(chartCriterion.evidence, /stage the launch plan through the local API/);
+  assert.match(chartCriterion.evidence, /stage the launch plan through the desktop app/);
 
   harness.state.currentConfig = tokenReadyConfig;
   harness.state.launchPlan = {
@@ -8403,7 +8469,7 @@ test('v2 retirement gate only passes completed live proof compared to Classic', 
     demoRunComplete: false,
   }).find((item) => item.id === 'pool-config-parity');
   assert.equal(stagedPoolCriterion.pass, false);
-  assert.match(stagedPoolCriterion.evidence, /Stage the launch plan through the local API/);
+  assert.match(stagedPoolCriterion.evidence, /Stage the launch plan through the desktop app/);
 
   harness.state.launchPlan = { source: 'local-api' };
   stagedPoolCriterion = harness.buildV2ReplacementCriteriaAudit({
@@ -8794,7 +8860,7 @@ test('v2 retirement gate only passes completed live proof compared to Classic', 
     demoRunComplete: false,
   }).find((item) => item.id === 'run-and-resume');
   assert.equal(resumeCriterion.pass, true);
-  assert.match(resumeCriterion.evidence, /loaded for the launch proof/);
+  assert.match(resumeCriterion.evidence, /loaded for the launch record/);
 
   harness.state.recovery = {
     journalCount: 1,
@@ -8863,7 +8929,7 @@ test('v2 retirement gate only passes completed live proof compared to Classic', 
   const demoGate = harness.buildClassicRetirementGate({ ...proof, source: 'demo-run' }, audit);
   assert.equal(demoGate.state, 'danger');
   assert.equal(demoGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(demoGate.requirements.find((item) => item.id === 'live-proof').detail, /Demo proof proves wiring only/);
+  assert.match(demoGate.requirements.find((item) => item.id === 'live-proof').detail, /Test launch record proves wiring only/);
 
   harness.state.classicReportComparison = {
     result: { ...classicComparison, artifactSource: 'trebuchet-v2' },
@@ -10684,7 +10750,7 @@ test('v2 API client bootstraps local session and read-only app state', async () 
   assert.equal(boot.prefs.publishLaunchReport, false);
   assert.equal(boot.rpc.label, 'Dedicated RPC');
   assert.equal(boot.rpc.saved[0].url, 'https://rpc.example.test');
-  assert.equal(boot.rpc.healthLabel, 'healthy 42ms');
+  assert.equal(boot.rpc.healthLabel, 'Connected · 42 ms');
   assert.equal(boot.recovery.activeJournalCount, 1);
   assert.equal(boot.recovery.pendingWalletCount, 1);
   assert.equal(boot.secretPin.configured, true);
@@ -10753,7 +10819,7 @@ test('v2 API client falls back cleanly for file previews', async () => {
 test('v2 static previews do not manufacture launch wallet placeholders', () => {
   assert.doesNotMatch(js, /StaticWallet/);
   assert.doesNotMatch(js, /Static wallet placeholder added/);
-  assert.match(js, /Launch wallet generation requires the local Trebuchet app/);
+  assert.match(js, /Launch wallet generation requires the Trebuchet desktop app/);
 });
 
 test('v2 API client treats missing /api/session as static HTTP preview', async () => {
@@ -11262,7 +11328,7 @@ test('startup routes an interrupted launch to recovery before the tutorial', () 
   assert.match(js, /if \(journalNeedsTokenFinish\(journal\)\) return false/);
   assert.match(js, /action === 'open-token-recovery'[\s\S]*?openTokenRecovery/);
   assert.match(js, /restoreLaunchConfigFromJournal\(journal\)/);
-  assert.match(js, /state\.experienceMode = 'advanced'/);
+  assert.match(js, /state\.launchWorkspace = workspace/);
 });
 
 test('completed liquidity recovery opens Finish without replaying resume or funding', () => {
@@ -11277,14 +11343,14 @@ test('completed liquidity recovery opens Finish without replaying resume or fund
   assert.match(js, /const fundingEstimate = recoveryEndpoint\s*\?\s*null/);
   assert.match(js, /title: 'Finish launch'/);
   assert.match(js, /Final saved step/);
-  assert.match(js, /Arming sends nothing/);
+  assert.match(js, /Approving sends nothing/);
   assert.doesNotMatch(js, /New funding estimate/);
 });
 
 test('local dossier is an explicit final-sweep proof alternative', () => {
   assert.match(js, /function proofCanCreateLocalDossier/);
   assert.match(js, /localDossierReady/);
-  assert.match(js, /Use local dossier/);
+  assert.match(js, /Use saved launch record/);
   assert.match(js, /Either choice unlocks final sweep/);
   assert.match(js, /final sweep can continue without publishing/);
 });
@@ -11623,4 +11689,90 @@ test('v2 API client bridges classic vanity, funding, and diagnostics APIs', asyn
   assert.equal(rpcRemoved.saved[0].name, 'Backup RPC');
   assert.equal(report.tokenMint, 'Mint111');
   assert.equal(calls.filter((call) => call.url === '/api/session').length, 1);
+});
+
+test('a finished launch is matched to the coin by its mint, never its name', () => {
+  const source = js.match(/function completedLaunchJournal[\s\S]*?\n}\n/)?.[0];
+  const mintHelpers = ['proofTokenMint', 'journalTokenMint']
+    .map((name) => js.match(new RegExp(`function ${name}[\\s\\S]*?\\n}\\n`))?.[0]);
+  assert.ok(source && mintHelpers.every(Boolean), 'completedLaunchJournal and mint helpers should be extractable');
+  const finished = { status: 'completed', token: { mint: 'MintA', name: 'Pepe', symbol: 'PEPE' }, launchConfig: { token: { name: 'Pepe', symbol: 'PEPE' } } };
+  const sandbox = {
+    state: { recovery: { journals: [finished] } },
+    currentLaunchProof: () => null,
+    Date,
+  };
+  vm.runInNewContext([...mintHelpers, source, 'globalThis.completedLaunchJournal = completedLaunchJournal;'].join('\n'), sandbox);
+  // A new draft with the same name and ticker is not that launch.
+  assert.equal(sandbox.completedLaunchJournal(null), null);
+  assert.equal(sandbox.completedLaunchJournal({ token: { name: 'Pepe', symbol: 'PEPE' } }), null);
+  assert.equal(sandbox.completedLaunchJournal({ token: { mint: 'MintB' } }), null);
+  assert.equal(sandbox.completedLaunchJournal({ token: { mint: 'MintA' } }), finished);
+});
+
+test('a coin being created shows its facts, not a numbered track of phases', () => {
+  // One row per fact, with no ordinals and no Continue/back navigation.
+  for (const fact of ['wallet', 'configure', 'fund', 'mint', 'liquidity', 'finish']) {
+    assert.match(html, new RegExp(`class="coin-fact"[^>]*data-coin-fact="${fact}"`));
+  }
+  assert.doesNotMatch(css, /content: "0[1-6]"/);
+  assert.doesNotMatch(html + js, /Continue to (funding|create token)|Back to token|> Review funding/);
+  assert.doesNotMatch(js.match(/function coinFacts[\s\S]*?\n}\n/)?.[0] || '', /Waiting|Continue/);
+  // Which row is open is a view: never saved, never a percentage.
+  assert.doesNotMatch(js, /launchWorkspaces\.length\) \* 100/);
+
+  const source = js.match(/function nextCoinFact[\s\S]*?\n}\n/)?.[0];
+  assert.ok(source, 'nextCoinFact should be extractable');
+  const sandbox = {};
+  vm.runInNewContext(`${source}\nglobalThis.nextCoinFact = nextCoinFact;`, sandbox);
+  const facts = (states) => states.map((state, index) => ({ id: `f${index}`, state }));
+  // A plan still being edited never blocks; the first fact that doesn't hold does.
+  assert.equal(sandbox.nextCoinFact(facts(['done', 'draft', 'todo', 'todo'])).id, 'f2');
+  // What is happening now comes first, and a chain mismatch needs doing.
+  assert.equal(sandbox.nextCoinFact(facts(['todo', 'running'])).id, 'f1');
+  assert.equal(sandbox.nextCoinFact(facts(['done', 'recorded', 'mismatch'])).id, 'f2');
+  assert.equal(sandbox.nextCoinFact(facts(['done', 'recorded', 'draft'])), null);
+});
+
+test('a coin page names its creation facts as nouns', () => {
+  const labels = [...serverJs.matchAll(/^\s+label: '([^']+)',$/gm)].map((match) => match[1]);
+  for (const label of ['Token', 'Pools', 'Liquidity locks', 'Identity', 'Launch wallet']) {
+    assert.ok(labels.includes(label), `${label} should be a creation fact`);
+  }
+  assert.doesNotMatch(serverJs, /label: '(Create the token|Open the pools|Lock the liquidity|Return the assets)/);
+});
+
+test('the parity audit states which checks pass, not a percentage score', () => {
+  assert.doesNotMatch(js, /audit\?\.score \|\| 0\}% complete|token-stat-label">Score</);
+  assert.match(js, /checks pass · \$\{audit\?\.missingCount \|\| 0\} missing/);
+});
+
+test('the coin page and the create view share one facts vocabulary', () => {
+  assert.doesNotMatch(js, /CREATION_STEP_STATES|Not done yet|remaining steps can/);
+  assert.match(js, /const meta = COIN_FACT_MARKS\[step\.state\] \|\| COIN_FACT_MARKS\.todo;/);
+  assert.match(js, /unrecorded: \{ icon: 'fa-circle-question'/);
+  // The same action words in both places.
+  assert.match(js, /return: 'Sweep the launch wallet'/);
+});
+
+test('an NFT collection shows its facts, not numbered phases', () => {
+  const nfts = read('public/v2/nfts.js');
+  assert.match(nfts, /<nav class="nft-fact-list" aria-label="What is true about this collection">/);
+  assert.doesNotMatch(nfts, /nft-tab-n|Collection phases|<span class="eyebrow">0[1-6]<\/span>|'Not started'|'After import'/);
+  assert.doesNotMatch(css, /\.nft-tabs\b|\.nft-tab-n/);
+  // The rail keeps one action; the facts list replaces its checks.
+  assert.doesNotMatch(nfts, /nft-gap">Checks</);
+});
+
+test('a coin is called Live only once the chain agrees', () => {
+  const source = js.match(/function coinChainStatus[\s\S]*?\n}\n/)?.[0];
+  assert.ok(source, 'coinChainStatus should be extractable');
+  const sandbox = {};
+  vm.runInNewContext(`${source}\nglobalThis.coinChainStatus = coinChainStatus;`, sandbox);
+  const steps = (...states) => ({ steps: states.map((state, index) => ({ id: `s${index}`, state })) });
+  assert.equal(sandbox.coinChainStatus(null), null, 'no chain read yet: keep what the record claims');
+  assert.equal(sandbox.coinChainStatus(steps('done', 'done', 'recorded', 'done')), 'Live');
+  assert.equal(sandbox.coinChainStatus(steps('done', 'done', 'unrecorded', 'mismatch')), 'Chain disagrees');
+  assert.equal(sandbox.coinChainStatus(steps('done', 'todo', 'unrecorded', 'todo')), 'Unfinished');
+  assert.doesNotMatch(js, /transferHasWalletEmptyFinalSweepEvidence\(proof\?\.transfer\) \? 'Live'/);
 });

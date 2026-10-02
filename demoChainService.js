@@ -37,7 +37,8 @@
 // It verifies UI flow, the state machine, conditional rendering, the
 // report generator, and the visual coherence of every screen.
 
-import { Keypair } from '@solana/web3.js';
+import crypto from 'node:crypto';
+import { Keypair, PublicKey } from '@solana/web3.js';
 
 // ===========================================================================
 // Constants — the well-known quote mints, so SOL/USDC/USDT pools resolve to
@@ -290,6 +291,157 @@ export function handleStatus(req, res, { active }) {
 
 export function handleFindFunder(req, res) {
   res.json({ success: true, result: null });
+}
+
+// Practice stand-in for the funding wallets of a launch wallet. A practice
+// wallet has no chain history, so once "Pretend funding arrived" sets a
+// balance, two fixed look-alike funders split it 70/30. They let the
+// "Where assets go" choices be tried without real SOL.
+export function listDemoFunders(publicKey) {
+  const st = publicKey ? getState(publicKey) : null;
+  const sol = Number(st?.solBalance || 0);
+  if (!(sol > 0)) return [];
+  const funder = (label) => new PublicKey(
+    crypto.createHash('sha256').update(`trebuchet-demo-funder:${publicKey}:${label}`).digest(),
+  ).toBase58();
+  const first = Math.round(sol * 0.7 * 1e9) / 1e9;
+  return [
+    { address: funder('first'), sol: first, firstSignature: 'demo-funding-1', transfers: 1 },
+    { address: funder('second'), sol: Math.round((sol - first) * 1e9) / 1e9, firstSignature: 'demo-funding-2', transfers: 1 },
+  ];
+}
+
+// Practice stand-in for adding buy support to an existing token/SOL pool.
+// A practice wallet has no real pool, so this plans against a fixed one:
+// SOL pool at 1.0e-6 SOL per token, the token 10% cheaper in a pair pool,
+// and one of the two tick arrays already created. Shape matches
+// lpService.previewSolSupport so the same screen renders both.
+export function planDemoSolSupport({ walletPublicKey, poolId, solAmount, depthPct } = {}) {
+  const amount = Number(solAmount);
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error('solAmount must be a positive number of SOL');
+  const depth = Number.isFinite(Number(depthPct)) ? Math.min(99, Math.max(1, Number(depthPct))) : 50;
+  const current = 1.0e-6;
+  const top = current * 0.9 * 0.99;
+  const bottom = top * (1 - depth / 100);
+  const depositLamports = Math.floor(amount * 1e9);
+  const newArrayRentLamports = 52_669_440;
+  const positionRentLamports = 5_613_400;
+  const feeBufferLamports = 10_000_000;
+  const totalLamports = depositLamports + newArrayRentLamports + positionRentLamports + feeBufferLamports;
+  const st = walletPublicKey ? getState(walletPublicKey) : null;
+  const walletLamports = Math.round(Number(st?.solBalance || 0) * 1e9);
+  const warnings = [
+    'Practice: this plans against a sample pool. Nothing is read from or sent to the chain.',
+    'The range starts 11% below the current price: the token is cheaper in its PAIR pool, so SOL placed higher would be taken by arbitrage bots right away.',
+  ];
+  if (walletLamports < totalLamports) {
+    warnings.push(`The wallet has ${(walletLamports / 1e9).toFixed(4)} SOL; this needs ${(totalLamports / 1e9).toFixed(4)} SOL.`);
+  }
+  return {
+    poolId: String(poolId || 'DemoSupportPoo1111111111111111111111111111'),
+    token: { mint: 'DemoToken1111111111111111111111111111111111', symbol: 'DEMO', decimals: 9 },
+    tickSpacing: 120,
+    feeRate: 10000,
+    currentTick: -138120,
+    currentPriceSol: current,
+    ceiling: { priceSol: current * 0.9, poolId: 'DemoPairPoo11111111111111111111111111111111', quoteSymbol: 'PAIR' },
+    otherPools: [],
+    depthPct: depth,
+    tickLower: -145080,
+    tickUpper: -139200,
+    capped: true,
+    topPriceSol: top,
+    bottomPriceSol: bottom,
+    tickArrays: [
+      { startIndex: -151200, address: 'DemoTickArrayLower111111111111111111111111', exists: false },
+      { startIndex: -144000, address: 'DemoTickArrayUpper111111111111111111111111', exists: true },
+    ],
+    newTickArrays: 1,
+    depositLamports: String(depositLamports),
+    newArrayRentLamports: String(newArrayRentLamports),
+    positionRentLamports: String(positionRentLamports),
+    feeBufferLamports: String(feeBufferLamports),
+    totalLamports: String(totalLamports),
+    walletLamports: String(walletLamports),
+    enoughSol: walletLamports >= totalLamports,
+    locked: false,
+    warnings,
+    practice: true,
+  };
+}
+
+// A real (read-only) plan, with the practice wallet's balance in place of a
+// chain balance: practice reads real pools and simulates only the send.
+export function practiceSupportPlan(plan, walletPublicKey) {
+  const st = walletPublicKey ? getState(walletPublicKey) : null;
+  const walletLamports = Math.round(Number(st?.solBalance || 0) * 1e9);
+  const enoughSol = walletLamports >= Number(plan.totalLamports);
+  const warnings = [
+    'Practice: the pool is real and read-only; adding support is simulated and sends nothing.',
+    ...plan.warnings.filter((warning) => !/^The wallet has /.test(warning)),
+  ];
+  if (!enoughSol) {
+    warnings.push(`The wallet has ${(walletLamports / 1e9).toFixed(4)} SOL; this needs ${(Number(plan.totalLamports) / 1e9).toFixed(4)} SOL.`);
+  }
+  return { ...plan, walletLamports: String(walletLamports), enoughSol, warnings, practice: true };
+}
+
+// Practice positions opened with "Add buy support", so they can be listed
+// and withdrawn like real ones.
+const demoPositions = [];
+
+export function listDemoPositions(tokenMint) {
+  return demoPositions.filter((position) => !tokenMint || position.tokenMint === tokenMint).map((position) => ({ ...position }));
+}
+
+export function withdrawDemoPosition({ walletPublicKey, nftMint, expected } = {}) {
+  const index = demoPositions.findIndex((position) => position.nftMint === nftMint && position.owner === walletPublicKey);
+  if (index < 0) {
+    const error = new Error('This wallet no longer holds that position. Nothing was sent.');
+    error.code = 'POSITION_NOT_FOUND';
+    throw error;
+  }
+  const position = demoPositions[index];
+  if (!expected || String(expected.liquidity) !== position.liquidity) {
+    const error = new Error('The position changed since you reviewed it. Review it again, then confirm. Nothing was sent.');
+    error.code = 'POSITION_CHANGED';
+    throw error;
+  }
+  demoPositions.splice(index, 1);
+  const st = getState(walletPublicKey);
+  const solReturned = position.quoteAmount + 0.0056134;
+  st.solBalance = Number(st.solBalance || 0) + solReturned;
+  return { poolId: position.poolId, nftMint, txId: `Demo${randomBase58(84)}`, adopted: false, solReturned };
+}
+
+export function openDemoSolSupport(body = {}) {
+  const plan = planDemoSolSupport(body);
+  if (!plan.enoughSol) {
+    const error = new Error('Not enough SOL in the practice wallet. Nothing was sent.');
+    error.code = 'SUPPORT_INSUFFICIENT_SOL';
+    error.plan = plan;
+    throw error;
+  }
+  const st = getState(body.walletPublicKey);
+  st.solBalance = Math.max(0, Number(st.solBalance || 0) - Number(plan.totalLamports) / 1e9 + Number(plan.feeBufferLamports) / 1e9);
+  const nftMint = randomBase58(44);
+  demoPositions.push({
+    owner: body.walletPublicKey,
+    tokenMint: String(body.tokenMint || plan.token.mint),
+    nftMint,
+    poolId: plan.poolId,
+    quoteSymbol: 'SOL',
+    isSolPool: true,
+    tickLower: plan.tickLower,
+    tickUpper: plan.tickUpper,
+    liquidity: `demo-${nftMint.slice(0, 8)}`,
+    tokenAmount: 0,
+    quoteAmount: Number(plan.depositLamports) / 1e9,
+    priceLow: plan.bottomPriceSol,
+    priceHigh: plan.topPriceSol,
+    inRange: false,
+  });
+  return { ...plan, nftMint, txId: `Demo${randomBase58(84)}`, adopted: false };
 }
 
 // ===========================================================================

@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -115,7 +115,7 @@ try {
   await page.goto(`${baseUrl}/v2/`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await page.waitForFunction(() => (
     document.body.dataset.apiStatus === 'connected'
-    && document.querySelector('#networkLabel')?.textContent?.trim() === 'Demo'
+    && document.querySelector('#networkLabel')?.textContent?.trim() === 'Nothing is sent'
   ), null, { timeout: 30_000 });
   assert.equal(new URL(page.url()).pathname, '/v2/');
 
@@ -126,9 +126,11 @@ try {
   assert.equal(session.success, true);
   assert.ok(session.token, 'Trebuchet did not receive a local API session token');
 
-  assert.equal(await page.getAttribute('body', 'data-experience-mode'), 'guided');
-  assert.equal(await page.isVisible('.sidebar'), false, 'Guided Mode should start as a focused tutorial');
-  await page.click('.guided-advanced-shortcut');
+  // Coins come first: the app opens on the coin list, and creating a token
+  // is an action on a coin. No separate guided mode.
+  assert.equal(await page.getAttribute('body', 'data-experience-mode'), null);
+  await page.waitForSelector('#view-coins.is-active');
+  assert.equal(await page.locator('[data-view="launch"]').count(), 0, 'Launch is back in the navigation');
   await page.waitForSelector('.sidebar', { state: 'visible' });
   await page.click('[data-view="wallet"]');
   await page.waitForSelector('#view-wallet.is-active');
@@ -181,8 +183,14 @@ try {
   await page.waitForSelector('#historyPanelJournal:not([hidden])');
   assert.equal(await page.getAttribute('#historyTabJournal', 'aria-selected'), 'true');
 
-  await page.click('[data-view="launch"]');
-  await page.click('.launch-workspace-tab[data-launch-workspace="wallet"]');
+  await page.click('.nav-item[data-view="coins"]');
+  await page.click('[data-action="new-coin"]');
+  await page.waitForSelector('#view-launch.is-active');
+  assert.equal(await page.getAttribute('body', 'data-launch-workspace'), 'configure');
+  assert.match(await page.locator('#viewTitle').innerText(), /New coin/i);
+  assert.match(await page.locator('#viewEyebrow').innerText(), /Coins/i);
+  assert.equal(await page.getAttribute('.nav-item.is-active', 'data-view'), 'coins', 'A coin being created is still under Coins');
+  await page.click('.coin-fact[data-coin-fact="wallet"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'wallet');
   assert.deepEqual(await page.evaluate(() => (
     [...document.querySelectorAll('[data-classic-workspace]')]
@@ -192,7 +200,7 @@ try {
 
   await page.click('.launch-wallet-choice');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'configure');
-  assert.equal(await page.getAttribute('#launchWorkspaceTabConfigure', 'aria-selected'), 'true');
+  assert.equal(await page.getAttribute('.coin-fact[data-coin-fact="configure"]', 'aria-pressed'), 'true');
   assert.match(await page.locator('#configureStepTitle').textContent(), /Token & pools/i);
   assert.deepEqual(await page.evaluate(() => (
     [...document.querySelectorAll('[data-classic-workspace]')]
@@ -200,22 +208,35 @@ try {
       .map((panel) => panel.dataset.classicWorkspace)
   )), [], 'Classic phases leaked into Phase 2');
 
-  await page.click('#advancedLaunchControls button[data-launch-workspace="fund"]');
+  await page.click('.coin-fact[data-coin-fact="fund"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'fund');
   assert.match(await page.locator('#fundStepTitle').textContent(), /^Fund$/i);
   // Assets return to the wallet that funds the launch (or one that signs),
   // so estimating does not wait on a typed return wallet.
-  assert.equal(await page.locator('.classic-workspace-fund button[data-launch-workspace="mint"]').count(), 0);
+  // The only way on is the action the coin's facts ask for, never a "Continue".
+  assert.equal(await page.locator('.classic-workspace-fund').getByText(/Continue/).count(), 0);
+  assert.deepEqual(
+    await page.evaluate(() => [...document.querySelectorAll('.classic-workspace-fund [data-next-fact]:not([hidden])')].map((button) => button.dataset.launchWorkspace)),
+    await page.evaluate(() => (nextCoinFact()?.action && nextCoinFact().id !== 'fund' ? [nextCoinFact().id] : [])),
+  );
   await page.click('.classic-workspace-fund [data-action="estimate-funding"]');
-  await page.waitForSelector('.classic-workspace-fund .funding-task-address', { timeout: 30_000 });
+  // In test mode the estimate says no SOL is needed and links to the next
+  // step; there is no deposit address to show.
+  await page.waitForSelector('.classic-workspace-fund .funding-task .funding-receipt', { timeout: 30_000 });
   await page.evaluate(() => renderClassicBridge());
   assert.deepEqual(await page.evaluate(() => (
     [...document.querySelectorAll('[data-classic-workspace]')]
       .filter((panel) => !panel.hidden)
       .map((panel) => panel.dataset.classicWorkspace)
   )), ['fund'], 'An async funding refresh exposed multiple launch phases');
-  assert.match(await page.locator('.classic-workspace-fund .funding-task').innerText(), /did not move funds/i);
-  assert.equal(await page.locator('.classic-workspace-fund button[data-launch-workspace="mint"]').count(), 0);
+  assert.match(await page.locator('.classic-workspace-fund .funding-task').innerText(), /No SOL needed/i);
+  assert.equal(await page.locator('.classic-workspace-fund .funding-task-address').count(), 0);
+  // The only way on is the action the coin's facts ask for, never a "Continue".
+  assert.equal(await page.locator('.classic-workspace-fund').getByText(/Continue/).count(), 0);
+  assert.deepEqual(
+    await page.evaluate(() => [...document.querySelectorAll('.classic-workspace-fund [data-next-fact]:not([hidden])')].map((button) => button.dataset.launchWorkspace)),
+    await page.evaluate(() => (nextCoinFact()?.action && nextCoinFact().id !== 'fund' ? [nextCoinFact().id] : [])),
+  );
   await page.evaluate(() => {
     const config = currentLaunchConfig();
     const walletPublicKey = selectedLaunchWalletPublicKey();
@@ -255,15 +276,15 @@ try {
   });
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'mint');
   const mintWorkspace = page.locator('[data-classic-workspace="mint"]');
-  assert.match(await mintWorkspace.innerText(), /Review and arm this launch/i);
-  assert.match(await mintWorkspace.innerText(), /Review & arm launch/i);
+  assert.match(await mintWorkspace.innerText(), /Review this launch/i);
+  assert.match(await mintWorkspace.innerText(), /Review launch/i);
   assert.doesNotMatch(await mintWorkspace.innerText(), /\/api\/create-token/i);
 
   await mintWorkspace.locator('[data-action="review-and-arm-run"]').click();
   await page.waitForSelector('#approvalFloating.is-open');
   assert.match(await page.locator('#approvalFloating').innerText(), /Review before creating/i);
-  assert.match(await page.locator('#approvalFloating').innerText(), /Arming sends nothing/i);
-  assert.match(await page.locator('#approvalFloating').innerText(), /Arm & return to Create token/i);
+  assert.match(await page.locator('#approvalFloating').innerText(), /Approving sends nothing/i);
+  assert.match(await page.locator('#approvalFloating').innerText(), /Approve/);
   await page.click('[data-action="close-approval"]');
   await page.evaluate(() => {
     state.lastRunEnvelope = { id: 'phase-4-e2e-envelope', status: 'armed' };
@@ -308,59 +329,134 @@ try {
     renderAll();
   });
 
-  await page.click('.launch-settings-drawer > summary');
-  await page.locator(
-    '[data-action="select-experience"][data-experience="guided"]:visible',
-  ).first().click();
-  await page.evaluate(() => {
-    state.guidedStep = 0;
-    renderGuidedLaunchFlow();
-  });
-  await page.fill('[data-guided-field="name"]', 'First Launch');
-  await page.fill('[data-guided-field="symbol"]', 'FIRST');
+  // Practice launch through the same six phases a live launch uses.
+  await page.click('.coin-fact[data-coin-fact="configure"]');
+  await page.fill('#tokenName', 'First Launch');
+  await page.fill('#tokenSymbol', 'FIRST');
   await page.setInputFiles(
     '#tokenLogoFile',
     path.join(root, 'public', 'release-assets', 'frames', 'f01.png'),
   );
-  await page.waitForSelector('.guided-logo-button .guided-logo-mark img');
-  assert.match(
-    await page.locator('.guided-logo-button').innerText(),
-    /Logo attached/,
-    'Guided Mode did not show the uploaded logo until a later navigation refresh',
-  );
+  // Where assets go: hold back 10%, then share it with both funding wallets.
+  // Holding back 10% shrinks the SOL pool to 90%, so the split stays at 100%.
   await page.evaluate(() => {
-    const symbol = document.querySelector('[data-guided-field="symbol"]');
-    symbol.focus();
-    symbol.setSelectionRange(2, 2);
-    document.querySelector('[data-action="select-environment"][data-environment="live"]').click();
+    const input = document.querySelector('#preallocationSupplyPercent');
+    input.value = '10';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
   });
-  await page.waitForFunction(() => document.body.dataset.executionEnvironment === 'live');
-  assert.deepEqual(await page.evaluate(() => ({
-    field: document.activeElement?.dataset?.guidedField,
-    cursor: document.activeElement?.selectionStart,
-  })), { field: 'symbol', cursor: 2 }, 'environment refresh moved focus inside Guided Mode');
-  await page.evaluate(() => {
-    document.querySelector('[data-action="select-environment"][data-environment="practice"]').click();
+  await page.waitForFunction(() => document.querySelector('#mainPoolPercent').value === '90');
+  assert.match(await page.locator('#returnWalletCard').innerText(), /Funding wallets show here once SOL arrives/);
+  await page.evaluate(async () => {
+    const session = await (await fetch('/api/session')).json();
+    await fetch('/api/demo/inject-funds', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${session.token}`, 'x-trebuchet-session': session.token },
+      body: JSON.stringify({ publicKey: selectedLaunchWalletPublicKey(), sol: 2 }),
+    });
+    await refreshDestinations({ force: true });
   });
-  await page.waitForFunction(() => document.body.dataset.executionEnvironment === 'practice');
-  // Token -> Liquidity pairs -> Review -> Fund -> Launch.
-  await page.click('[data-action="guided-next"]');
-  await page.click('[data-action="guided-value-preset"][data-value="100000"]');
-  for (let step = 0; step < 3; step += 1) await page.click('[data-action="guided-next"]');
-  await page.click('[data-action="guided-practice"]');
-  await page.waitForFunction(() => (
-    document.querySelector('#guidedRunShell')?.textContent?.includes('Practice complete')
-  ), null, { timeout: 60_000 });
+  const shareBoxes = page.locator('#returnWalletCard input[data-action="toggle-held-share"]');
+  assert.equal(await shareBoxes.count(), 2, 'Both practice funders should be listed');
+  assert.equal(await shareBoxes.nth(0).isChecked(), false, 'No funder is ticked by default');
+  await shareBoxes.nth(0).click();
+  await shareBoxes.nth(1).click();
+  const shared = await page.evaluate(() => currentAirdropPlan().recipients.map((row) => row.tokens));
+  assert.deepEqual(shared, [70_000_000, 30_000_000], 'Held-back tokens are not split by SOL sent');
 
-  const guidedRunText = await page.locator('#guidedRunShell').innerText();
-  assert.match(guidedRunText, /The complete launch recipe worked/i);
-  assert.match(guidedRunText, /Prepare live launch/i);
-  assert.match(guidedRunText, /Review local practice record/i);
+  await page.click('.coin-fact[data-coin-fact="mint"]');
+  await page.click('[data-classic-workspace="mint"] [data-action="run-demo-launch"]');
+  await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'finish', null, { timeout: 60_000 });
+  const finishText = await page.locator('[data-classic-workspace="finish"]').innerText();
+  assert.match(finishText, /Test launch complete/i);
+  assert.match(finishText, /Nothing was sent/i);
+  assert.match(finishText, /SOL spent\s*0/i);
+  assert.match(finishText, /Switch to live/i);
+  assert.doesNotMatch(finishText, /Needs proof/i, 'Practice result showed live proof requirements');
+  const delivered = await page.evaluate(() => (state.lastDemoLaunchRun?.transfer?.airdrop?.transferred || []).map((row) => row.tokens));
+  assert.deepEqual(delivered, [70_000_000, 30_000_000], 'Practice run did not airdrop the shared tokens');
+
+  // Add buy support to an existing pool (practice plans against a sample pool).
+  await page.evaluate(async () => {
+    const session = await (await fetch('/api/session')).json();
+    await fetch('/api/demo/inject-funds', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${session.token}`, 'x-trebuchet-session': session.token },
+      body: JSON.stringify({ publicKey: selectedLaunchWalletPublicKey(), sol: 1 }),
+    });
+  });
+  // The practiced coin is listed under Coins with its own page; buy support
+  // is an action there.
+  await page.click('#viewEyebrow [data-action="coins-back"]');
+  await page.click('.coin-card-ui:has-text("Test coin")');
+  await page.waitForSelector('#view-coins.is-active #coinPage:not([hidden])');
+  await page.waitForSelector('#poolSupportPanel:not([hidden])');
+  await page.fill('#poolSupportSol', '0.1');
+  await page.click('[data-action="preview-pool-support"]');
+  await page.waitForSelector('.pool-support-plan');
+  const supportPlanText = await page.locator('#poolSupportResult').innerText();
+  assert.match(supportPlanText, /Cheapest elsewhere/i);
+  assert.match(supportPlanText, /never returned/i);
+  await page.click('[data-action="open-pool-support"]');
+  await page.waitForSelector('#operatorPromptGate:not([hidden])');
+  assert.match(await page.locator('#operatorPromptGate').innerText(), /ADD SUPPORT/);
+  await page.fill('#operatorPromptInput', 'ADD SUPPORT');
+  await page.click('#operatorPromptSubmit');
+  await page.waitForSelector('.pool-support-done');
+
+  // The support is now a position the coin page lists; withdraw it.
+  await page.waitForSelector('.coin-positions [data-action="withdraw-coin-position"]');
+  assert.equal(await page.locator('.coin-positions li').count(), 1);
+  await page.click('.coin-positions [data-action="withdraw-coin-position"]');
+  await page.waitForSelector('#operatorPromptGate:not([hidden])');
+  assert.match(await page.locator('#operatorPromptGate').innerText(), /WITHDRAW/);
+  await page.fill('#operatorPromptInput', 'WITHDRAW');
+  await page.click('#operatorPromptSubmit');
+  await page.waitForFunction(() => document.querySelectorAll('.coin-positions li').length === 0, null, { timeout: 30_000 });
+  await page.waitForFunction(() => /Position withdrawn/.test(document.querySelector('.coin-activity')?.textContent || ''), null, { timeout: 30_000 });
+  assert.equal(await page.locator('[data-action="read-coin-evidence"]').count(), 0, 'Practice coins explain how to inspect a live coin');
+
+  // Public evidence stays usable when a lock scan has only partial coverage.
+  const evidenceMint = 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG';
+  const evidence = {
+    schema: 'trebuchet-market-evidence/v1', mint: evidenceMint, network: 'mainnet', inspectedAt: '2026-09-28T07:00:00Z',
+    holderSample: null, holderError: 'Holder RPC needs another try',
+    feeRights: 'Trading fees accrue to the current Fee Key holder.', flywheel: 'Static pool allocation. Fee routing is a planned feature.',
+    poolCoverage: { requested: 1, inspected: 1 }, pools: [{
+      poolId: '2SV3NWgJes9mHkWdBeuHFg8kNqfJS1XQKtNb1eJStVDC',
+      token: { mint: evidenceMint, amount: '300000000000000000', decimals: 9 },
+      quote: { mint: 'So11111111111111111111111111111111111111112', amount: '427512764', decimals: 9 },
+      locks: [], lockStatus: 'unavailable', lockError: 'Lock RPC needs another try',
+    }],
+  };
+  await page.route(`**/api/v2/coins/${evidenceMint}`, (route) => route.fulfill({ json: { success: true, coin: { mint: evidenceMint, info: { name: 'RUGOWEEN', symbol: 'RUG' }, events: [], markets: { pools: [] } } } }));
+  await page.route(`**/api/v2/coins/${evidenceMint}/positions`, (route) => route.fulfill({ json: { success: true, positions: [] } }));
+  await page.route(`**/api/v2/coins/${evidenceMint}/evidence`, (route) => route.fulfill({ json: { success: true, evidence } }));
+  let quotedAmount;
+  await page.route(`**/api/v2/coins/${evidenceMint}/sell-quote`, (route) => {
+    quotedAmount = route.request().postDataJSON().amount;
+    return route.fulfill({ json: { success: true, quote: { amount: quotedAmount, outputLamports: '1234567', minimumLamports: '1222221', quotedAt: '2026-09-28T07:00:00Z', source: 'Raydium Trade API', scope: 'Route estimate at the quoted time.' } } });
+  });
+  await page.evaluate((mint) => openCoinByMint(mint), evidenceMint);
+  await page.waitForSelector('[data-action="read-coin-evidence"]');
+  await page.fill('#sellQuoteAmount', '1000.000000001');
+  await page.click('[data-action="read-coin-evidence"]');
+  await page.waitForSelector('[data-action="download-coin-evidence"]');
+  assert.equal(await page.inputValue('#sellQuoteAmount'), '1000.000000001', 'A chain refresh preserves the exact typed amount');
+  await page.click('.market-evidence-pool summary');
+  assert.match(await page.locator('.market-evidence').innerText(), /0\.427512764 SOL/);
+  assert.match(await page.locator('.market-evidence').innerText(), /Lock RPC needs another try/);
+  await page.click('[data-action="quote-coin-sale"]');
+  await page.waitForFunction(() => /0\.001234567 SOL/.test(document.querySelector('.market-sell-quote')?.textContent || ''));
+  assert.equal(quotedAmount, '1000.000000001');
+  const downloadEvent = page.waitForEvent('download');
+  await page.click('[data-action="download-coin-evidence"]');
+  const evidenceDownload = await downloadEvent;
+  assert.deepEqual(JSON.parse(readFileSync(await evidenceDownload.path(), 'utf8')), evidence);
   assert.deepEqual(nativeDialogs, [], 'Trebuchet opened a native prompt/confirm dialog');
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');
 
-  console.log('Trebuchet API-backed E2E passed: session, wallet, secure dialog, Guided launch');
+  console.log('Trebuchet API-backed E2E passed: session, wallet, secure dialog, practice launch');
 } catch (error) {
   if (serverOutput) process.stderr.write(`\n--- Trebuchet E2E server output ---\n${serverOutput}\n`);
   throw error;

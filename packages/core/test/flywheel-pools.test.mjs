@@ -9,7 +9,6 @@ import {
   pickFlywheelMint,
 } from '../src/flywheel-pools.js';
 
-const FLYBRAIN = 'FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY';
 
 function makeStore(t) {
   const dir = mkdtempSync(path.join(tmpdir(), 'trebuchet-flywheel-'));
@@ -17,12 +16,13 @@ function makeStore(t) {
   return createFlywheelPoolStore({ filePath: path.join(dir, 'flywheelPools.json') });
 }
 
-test('the seeded meme pool contains the sample memecoins', () => {
+test('the seeded meme pool contains the default hub tokens', () => {
   assert.ok(DEFAULT_MEME_FLYWHEEL_MINTS.includes('HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r'));
   assert.ok(DEFAULT_MEME_FLYWHEEL_MINTS.includes('FLFLJp1XTPrY7iLoKXZ9ZVZHGfxZMQMdPZtZCxfjHtsm'));
   assert.ok(DEFAULT_MEME_FLYWHEEL_MINTS.includes('2vGfseKJFt6iakqFrWoeDdSz8dweWYk5xPXV9uvVXRAT'));
-  assert.ok(DEFAULT_MEME_FLYWHEEL_MINTS.includes(FLYBRAIN));
-  assert.equal(DEFAULT_MEME_FLYWHEEL_MINTS.length, 4);
+  assert.ok(DEFAULT_MEME_FLYWHEEL_MINTS.includes('RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG'));
+  assert.ok(DEFAULT_MEME_FLYWHEEL_MINTS.includes('Ci6Y1UX8bY4jxn6YiogJmdCxFEu2jmZhCcG65PStpump'));
+  assert.equal(DEFAULT_MEME_FLYWHEEL_MINTS.length, 12);
 });
 
 test('picking is random, bounded, and avoids the last pick when it can', () => {
@@ -36,7 +36,7 @@ test('picking is random, bounded, and avoids the last pick when it can', () => {
 
 test('the store starts from defaults and persists edits', (t) => {
   const store = makeStore(t);
-  assert.equal(store.get('meme').length, 4);
+  assert.equal(store.get('meme').length, 12);
 
   store.add('meme', 'D'.repeat(32));
   assert.ok(store.get('meme').includes('D'.repeat(32)));

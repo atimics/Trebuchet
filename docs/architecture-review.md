@@ -1,0 +1,104 @@
+# Architecture review
+
+Review scope: the shared-runtime worktree through production quote drafts, reviewed spending, HTTP recovery, durable position withdrawal and support creation, and private-validator recovery. The changes are delivered through draft PR #52. The completion checklist in [execution-runtime.md](execution-runtime.md) records the full build scope.
+
+## Assessment
+
+Trebuchet has a useful execution foundation: one profile owner, SQLite operation records, saved signed transactions, explicit approval checks, and finalized receipt checks. Browser and CLI planning share Core rules. Packet validation binds the verified inputs to an operator's signed approval.
+
+The main risk is uneven adoption. Several live actions use the engine; other actions still depend on process memory and direct transaction submission. Complete coverage should be the next delivery goal. Each action that can spend needs the same ownership, approval, durable record, and recovery rules.
+
+## Should the CLI start a real instance?
+
+Yes. An execution command should attach to the profile's runtime. If the profile has no owner, the command should start a runtime under the profile lock. Each response should identify that runtime and the saved operation. The runtime should continue an accepted job after the client exits.
+
+Planning, estimates, and proof checks can run directly against Core. `runtime start`, `runtime status`, `runtime stop`, and saved-launch commands already use the real local owner. `execute` currently uses the demo runtime. Live execution needs the remaining spending adapters, whole-launch approval, and host custody.
+
+The desktop currently hosts the local API in its main process. The target gives the runtime its own process. Both desktop and CLI use the same authenticated client contract.
+
+## Target structure
+
+```mermaid
+flowchart TD
+    Desktop[Desktop client] --> Local[Local runtime process]
+    CLI[CLI execution] --> Local
+    Planning[Browser and CLI planning] --> Core[Shared Core rules]
+    Planning --> Packet[Verified packet and signed approval]
+    Packet --> Runner[Operator runner]
+    Local --> Engine[Shared execution engine]
+    Runner --> Engine
+    Engine --> Core
+    Engine --> Store[(Durable jobs, operations, budgets, receipts)]
+    Engine --> Signer[Host signer and encrypted recovery]
+    Engine --> Services[Solana and storage adapters]
+```
+
+Each local profile has one runtime owner. Each runner uses its own durable profile. Hosts supply the signer, storage location, and service connections. The engine owns operation order and recovery decisions.
+
+## Priority improvements
+
+### 1. Move every spend into a durable workflow
+
+Buy Quotes now uses a durable acquisition workflow. The runtime combines allocations for each mint, checks existing balances, reviews the complete unsigned provider bundle, and saves its digest and spending ceiling before confirmation. Classic and v2 approve the saved wallet, network, input, fees, and rent. Each purchase and cleanup keeps its original receipts across restart.
+
+Wallet position withdrawal now saves its unsigned plan and spending limits before review. The runtime verifies the original receipt, returned tokens, closed position accounts, NFT burn, and exact fee and rent changes. A saved withdrawal remains recoverable after the position closes.
+
+Buy support now uses the owned runtime through prepare, execute, and saved-job HTTP routes. The client reviews the saved wallet, network, NFT identity, range, deposit, rent, fees, and total ceiling. Saved jobs remain available after restart. The host derives the same NFT signer from the existing wallet recovery key and verifies the original receipt. The service also passes real CLMM crash drills for both pool token orders.
+
+The remaining spending paths include production token creation, uploads, and other wallet actions. Each path needs the same ownership, approval, signed-transaction record, and recovery rules. Token creation and upload host changes have pending approval requests described below.
+
+Acceptance: extend the private-validator tests through each production host. Include interrupted submission, changed approval, failed storage commits, and cleanup after a finalized failure. The quote HTTP test covers session access, competing requests, runtime restart, original receipt recovery, and separately approved cleanup. The support HTTP test covers exact approval, competing wallet actions, runtime restart, original NFT and receipt recovery, failed fees, and cached replay while RPC is offline. The production quote builder and the position withdrawal service also passed real Raydium transactions and process-recovery drills on the private validator. Withdrawal checks cover classic and Token-2022 position NFTs, transfer fees, new output accounts, and output accounts with existing SOL.
+
+### 2. Enforce a budget for the whole launch
+
+Existing engine adapters approve bounded operations. A launch also needs one shared spending ledger across uploads, swaps, mint creation, liquidity, retries, and sweep fees.
+
+A shared launch budget ledger now saves the complete plan approval, operation reservations, and verified costs in SQLite. The engine has reservation checks before signing and every broadcast, plus cost settlement after terminal receipts. Failed fees consume approval. Gross spending, returned funds, and net cost remain separate; the initial policy keeps returned funds in the report while gross spending retains its budget charge.
+
+Production hosts still need to connect their exact operation ceilings and verified cost readers to this ledger. The launch review must approve one full ceiling across every spending phase. These connections remain the next budget delivery step.
+
+Acceptance: interrupt a launch at each spending phase, resume it, and compare the full ledger with finalized transaction receipts. Two clients must observe the same remaining budget.
+
+### 3. Give execution its own process and lifecycle
+
+`main.js` imports and starts `server.js` in Electron's main process. The runtime client and profile lock already provide much of the attachment contract.
+
+Move runtime startup into a supervised child process. Define when the owner accepts work, drains active requests, stops, and recovers. Let a client disconnect while the runtime keeps its durable job. Include protocol and capability versions in the handshake so each client can check host support.
+
+Acceptance: close and reopen desktop during a submitted operation, attach from CLI, and recover the original operation. Repeat with two clients starting together.
+
+### 4. Complete the custody contract for every host
+
+Fresh local wallets now require protected recovery storage. Token creation also needs durable custody of the selected mint signer. The runner needs encrypted operator-controlled recovery material and durable storage through final sweep verification.
+
+Use one signer interface with explicit capabilities. Keep encrypted key material separate from public execution records. Preserve old recovery material during migration. Verify recovery after a host restart before accepting funding.
+
+Acceptance: recover the same wallet and mint identity after process loss. A completed sweep receipt must commit before the host removes recovery material.
+
+The desktop process split, mint signer custody, and production upload connection have concrete proposals. Their automatic approval review requests remain pending; see the proposal links in [execution-runtime.md](execution-runtime.md).
+
+### 5. Finish the service and renderer boundaries
+
+`server.js` still has about 8,400 lines. Ordinary launch methods have been extracted, but HTTP setup, background jobs, and feature services remain closely tied together. The renderer has 46 feature source files, which the build joins into one shared scope.
+
+Give each server feature an ordinary service contract and a small HTTP adapter. Move job state into durable services. In the renderer, give features explicit imports and a small shared state interface. Keep cost and validation rules in browser-safe Core.
+
+Acceptance: test services through ordinary inputs and outputs. Add dependency checks for Core's browser boundary and for host-only signing and storage modules. Verify the shipped browser bundles after each feature move.
+
+### 6. Qualify CLI and runner through the same launch contract
+
+The runner verifies packets and signed approval. Its launch endpoint currently returns `NOT_READY`, and its deployment configuration uses temporary state. The CLI's live execution command also needs connection to the shared engine.
+
+Connect both hosts to the same launch workflow once spending coverage and custody are ready. Give the runner a durable profile and a clear operator recovery path. Expose stable launch IDs, current operations, receipts, and the action needed to resume.
+
+Acceptance: execute the same saved plan through desktop, CLI, and runner test hosts. Cover competing clients, failed database commits, uncertain RPC responses, expired approval, partial liquidity, and restart through the final sweep. Retain the validator drills for actual chain behavior alongside the fast fault-injection tests.
+
+## Delivery order
+
+1. Remaining spending paths and production-host recovery tests.
+2. Whole-launch spending reservations and recovery.
+3. Desktop process split and host custody, after the pending approvals.
+4. Live CLI and durable runner execution.
+5. Further HTTP and renderer module extraction alongside focused feature work.
+
+The existing engine tests and validator drills provide a strong base. Completion should be judged by a full recovered launch through each supported host, with every payment and final receipt accounted for.

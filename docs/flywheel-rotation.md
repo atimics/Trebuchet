@@ -16,7 +16,7 @@ exists and is tested).
 ## The constraint that shapes everything
 
 **Trebuchet locks liquidity.** Positions are locked in Raydium's lock program
-(`DLockwT7X7sxtLmGH9g5kmfcjaBtncdbUmi738m5bvQC`) and authorities are revoked.
+(`LockrWmn6K5twhz3y9w1dQERbmgSaRkfnTeTKbpofwE`) and authorities are revoked.
 That is the product: buyers can verify the operator cannot pull liquidity.
 
 A rotating flywheel means liquidity *moves*. So rotation is not a feature that

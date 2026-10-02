@@ -35,6 +35,7 @@
 // with the SDK calls injected, so every branch is testable offline.
 
 import Decimal from 'decimal.js';
+import { VENUE_PROGRAMS } from './venuePoolService.js';
 
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -56,6 +57,8 @@ export const RAYDIUM_PROGRAMS = Object.freeze({
 // fallback for index entries (or test fixtures) that omit it.
 export function poolReaderKind(pool) {
   const pid = pool?.programId ? String(pool.programId) : null;
+  // Orca and Meteora pools arrive already read (venuePoolService.js).
+  if (pool?.state && Object.values(VENUE_PROGRAMS).includes(pid)) return 'venue';
   if (pid === RAYDIUM_PROGRAMS.CLMM) return 'clmm';
   if (pid === RAYDIUM_PROGRAMS.CPMM) return 'cpmm';
   if (pid === RAYDIUM_PROGRAMS.AMM_V4 || pid === RAYDIUM_PROGRAMS.AMM_STABLE) return 'amm';
@@ -90,6 +93,39 @@ export function reservePriceQuotePerBase(baseReserveRaw, quoteReserveRaw, baseDe
   const quote = new Decimal(quoteReserveRaw.toString()).div(new Decimal(10).pow(quoteDecimals));
   if (!base.gt(0)) return null;
   return quote.div(base);
+}
+
+// Meteora DLMM: each bin is a fixed price step, so the active bin's price
+// is (1 + binStep / 10000) ^ activeId in raw units of Y per X.
+export function dlmmPriceYPerX(activeId, binStep, decimalsX, decimalsY) {
+  const raw = new Decimal(1).plus(new Decimal(binStep).div(10000)).pow(activeId);
+  return raw.mul(new Decimal(10).pow(decimalsX - decimalsY));
+}
+
+// Price, depth, and in-range for an Orca or Meteora pool that
+// venuePoolService already read. Depth counts only the anchor side
+// (SOL/USDC/USDT held in the pool), doubled: what sellers can actually be
+// paid, measured on-chain, and not inflated by the pool's own price.
+export function evaluateVenuePool(pool, { assetIsA, anchorPrice }) {
+  const st = pool.state;
+  const decA = Number(pool.mintA.decimals); const decB = Number(pool.mintB.decimals);
+  const bPerA = st.kind === 'bin'
+    ? dlmmPriceYPerX(st.activeId, st.binStep, decA, decB)
+    : clmmPriceBPerA(st.sqrtPriceX64, decA, decB);
+  if (!bPerA.gt(0)) return null;
+  const assetInAnchor = assetIsA ? bPerA : new Decimal(1).div(bPerA);
+  const anchorRaw = assetIsA ? st.reserveB : st.reserveA;
+  const anchorDecimals = assetIsA ? decB : decA;
+  if (anchorRaw == null) return null;
+  const anchorWhole = new Decimal(anchorRaw.toString()).div(new Decimal(10).pow(anchorDecimals));
+  const reservesPresent = st.reserveA != null && st.reserveB != null
+    && new Decimal(st.reserveA.toString()).gt(0) && new Decimal(st.reserveB.toString()).gt(0);
+  const hasLiquidity = st.kind === 'bin' ? true : new Decimal((st.liquidity ?? 0).toString()).gt(0);
+  return {
+    priceUsd: assetInAnchor.mul(anchorPrice),
+    liquidityUsd: anchorWhole.mul(anchorPrice).mul(2),
+    inRange: reservesPresent && hasLiquidity,
+  };
 }
 
 function anchorUsd(anchorMint, solUsd) {
@@ -149,8 +185,14 @@ export async function evaluatePool(pool, { mint, solUsd, readClmm, readStandard,
   if (!anchorPrice) return null; // not paired with a trusted anchor
 
   const decA = Number(pool.mintA.decimals); const decB = Number(pool.mintB.decimals);
+  const anchorSymbol = anchorMint === WSOL_MINT ? 'SOL' : (anchorMint === USDC_MINT ? 'USDC' : 'USDT');
 
   try {
+    if (readerKind === 'venue') {
+      const v = evaluateVenuePool(pool, { assetIsA, anchorPrice });
+      if (!v) return null;
+      return { poolId: pool.id, kind: pool.venue, anchorMint, anchorSymbol, ...v };
+    }
     if (readerKind === 'clmm') {
       const st = await readClmm(pool.id);
       if (!st) return null;

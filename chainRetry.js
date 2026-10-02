@@ -118,11 +118,15 @@ function errorText(err) {
   return parts.join(' \n ');
 }
 
-// Classify a thrown transaction error into one of the three buckets above.
-// Insufficient-funds is checked first: it is the most consequential to get
-// right (it must never be retried), and its signatures are specific enough
-// not to collide with the transient set.
+// Recovery failures stop every enclosing launch phase and retry path.
+export function throwIfExecutionPaused(error) {
+  if (['RECOVERY_STORAGE_UNAVAILABLE', 'CHAIN_STATE_UNAVAILABLE', 'EXECUTION_RECOVERY_REQUIRED'].includes(error?.code)) throw error;
+}
+
+// Classify a thrown transaction error by recovery state and retry policy.
+// Recovery state takes priority. Funds and network errors follow.
 export function classifyChainError(err) {
+  if (['RECOVERY_STORAGE_UNAVAILABLE', 'CHAIN_STATE_UNAVAILABLE', 'EXECUTION_RECOVERY_REQUIRED'].includes(err?.code)) return 'recovery_required';
   const text = errorText(err);
   if (!text) return 'deterministic';
   for (const re of INSUFFICIENT_FUNDS_SIGNS) if (re.test(text)) return 'insufficient_funds';
@@ -139,10 +143,8 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 //   alreadyDone — async () => boolean (optional). Idempotency guard, evaluated
 //                 BEFORE each attempt. If it returns true, the work is already
 //                 on-chain (a prior attempt landed) and we return { skipped:true }
-//                 WITHOUT sending again. Implementations should be defensive:
-//                 if the check itself can't run (e.g. a test's mock connection
-//                 doesn't support the read), throw or return false so the
-//                 attempt proceeds normally rather than silently skipping.
+//                 WITHOUT sending again. A failed check pauses execution until
+//                 chain state can be read again.
 //   onRetry     — async (attempt, err) => void (optional). Side effects between
 //                 attempts, e.g. refreshing the SDK's cached token accounts so
 //                 the rebuilt transaction is clean.
@@ -179,12 +181,16 @@ export async function landTxWithRetry({
   let lastErr = null;
   let attempts = 0;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    // Idempotency guard. A defensive implementation returns false (or throws)
-    // when it can't determine state, so we proceed rather than wrongly skip.
+    // Read chain state before every send, including retries after a timeout.
     if (alreadyDone) {
-      let done = false;
+      let done;
       try { done = await alreadyDone(); }
-      catch (_) { done = false; }
+      catch (cause) {
+        throwIfExecutionPaused(cause);
+        throw Object.assign(new Error(`${label}: chain state needs verification before sending.`, { cause }), {
+          code: 'CHAIN_STATE_UNAVAILABLE', kind: 'recovery_required', attempts,
+        });
+      }
       if (done) return { value: null, skipped: true, attempts };
     }
 
@@ -193,11 +199,12 @@ export async function landTxWithRetry({
       const value = await send();
       return { value, skipped: false, attempts };
     } catch (err) {
+      throwIfExecutionPaused(err);
       lastErr = err;
       let kind = classifyChainError(err);
       if (kind === 'deterministic' && retryIf) {
         let allowRetry = false;
-        try { allowRetry = await retryIf(err, attempt); } catch (_) { allowRetry = false; }
+        try { allowRetry = await retryIf(err, attempt); } catch (error) { throwIfExecutionPaused(error); allowRetry = false; }
         if (allowRetry) kind = 'transient';
       }
       console.warn(`    ${label}: attempt ${attempt}/${maxAttempts} failed (${kind}): ${err && err.message}`);
@@ -210,8 +217,8 @@ export async function landTxWithRetry({
         throw err;
       }
 
-      if (onRetry) { try { await onRetry(attempt, err); } catch (_) { /* best-effort */ } }
       if (attempt >= maxAttempts) break;
+      if (onRetry) await onRetry(attempt, err);
       await sleep(settleMs);
     }
   }

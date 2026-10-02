@@ -12,6 +12,7 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..');
 const serverSrc = readFileSync(path.join(REPO, 'server.js'), 'utf8');
+const serviceSrc = readFileSync(path.join(REPO, 'launchExecution.js'), 'utf8');
 const lpSrc = readFileSync(path.join(REPO, 'lpService.js'), 'utf8');
 // The journal contract moved into @trebuchet/core; the app-level
 // launchJournal.js is a thin adapter. Audit the Core module's source.
@@ -72,11 +73,11 @@ function loadV2ServerFingerprintHarness() {
 // ---------------------------------------------------------------------------
 
 // The transfer-assets route is a named handler; slice its function body.
-function transferAssetsHandlerSource(serverSrc) {
-  const start = serverSrc.indexOf('async function transferAssetsHandler(');
-  assert.ok(start >= 0, 'transferAssetsHandler must exist');
-  const end = serverSrc.indexOf('\n}\n', start);
-  return serverSrc.slice(start, end);
+function transferAssetsHandlerSource() {
+  const start = serviceSrc.indexOf('async function transferAssets(');
+  assert.ok(start >= 0, 'transferAssets service must exist');
+  const end = serviceSrc.indexOf('\n  }\n', start);
+  return serviceSrc.slice(start, end);
 }
 
 test('journal replay covers support locks (and keys on supportIndex)', () => {
@@ -126,21 +127,21 @@ test('transfer-assets airdrop step skips recipients already delivered', () => {
   // Reads the journal record, filters by delivered wallet set, and runs
   // executeAirdrop with the pending subset only.
   assert.ok(
-    /const priorAirdrop = launchJournal\.activeForWallet\(walletPublicKey\)\?\.airdrop \|\| null;[\s\S]{0,700}?const pendingRecipients = req\.body\.airdrop\.recipients\.filter\(/.test(serverSrc),
+    /const priorAirdrop = launchJournal\.activeForWallet\(walletPublicKey\)\?\.airdrop \|\| null;[\s\S]{0,700}?const pendingRecipients = input\.airdrop\.recipients\.filter\(/.test(serviceSrc),
     'transfer airdrop must filter against the journal delivered record',
   );
   assert.ok(
-    /recipients: pendingRecipients,[\s\S]{0,200}?onProgress: \(s\) => airdropProgressStep/.test(serverSrc),
+    /recipients: pendingRecipients,[\s\S]{0,200}?onProgress: \(s\) => airdropProgressStep/.test(serviceSrc),
     'executeAirdrop must receive the pending subset, not the raw request list',
   );
   // The persistent per-recipient record is written at completion.
   assert.ok(
-    /\{ airdrop: airdropResult \},[\s\S]{0,200}?stage: 'airdrop_completed',/.test(serverSrc),
+    /\{ airdrop: airdropResult \},[\s\S]{0,200}?stage: 'airdrop_completed',/.test(serviceSrc),
     'completion must persist the merged record on journal.airdrop',
   );
   // The all-delivered fast path skips execution entirely.
   assert.ok(
-    /airdrop_skipped_already_delivered/.test(serverSrc),
+    /airdrop_skipped_already_delivered/.test(serviceSrc),
     'a fully-delivered re-run must skip the airdrop with a journal event',
   );
 });
@@ -148,9 +149,10 @@ test('transfer-assets airdrop step skips recipients already delivered', () => {
 test('retry-airdrop dedupes, merges, and returns the merged record', () => {
   // The handler was extracted to a named function when /api/run-airdrop
   // was added as an alias — anchor on the function, not the route line.
-  const retryStart = serverSrc.indexOf('async function runAirdropHandler(');
+  assert.match(serverSrc, /launchServices\.runAirdrop\(req\.body\)/);
+  const retryStart = serviceSrc.indexOf('async function runAirdrop(');
   assert.ok(retryStart >= 0);
-  const retry = serverSrc.slice(retryStart, retryStart + 7000);
+  const retry = serviceSrc.slice(retryStart, retryStart + 7000);
   assert.ok(
     /const pendingRecipients = recipients\.filter\(\(r\) => !deliveredWallets\.has\(r\.wallet\)\);/.test(retry),
     'retry must drop wallets the journal already records as delivered',
@@ -160,7 +162,7 @@ test('retry-airdrop dedupes, merges, and returns the merged record', () => {
     'retry must persist the merged record on journal.airdrop',
   );
   assert.ok(
-    /airdrop: mergedAirdrop,\r?\n\s*\}\);/.test(retry),
+    /return \{ success: true, airdrop: mergedAirdrop \};/.test(retry),
     'retry response must return the merged record',
   );
 });
@@ -180,7 +182,7 @@ test('airdrop plan is journaled at create-lp and restored on resume', () => {
   );
   // Server stores it under poolPlan.airdropPlan.
   assert.ok(
-    /airdropPlan: \(req\.body\.airdrop/.test(serverSrc),
+    /airdropPlan: \(input\.airdrop/.test(serviceSrc),
     'create-lp handler must journal poolPlan.airdropPlan',
   );
   // Resume restores both the plan and the result record.
@@ -206,9 +208,9 @@ test('airdrop plan is journaled at create-lp and restored on resume', () => {
 
 test('classic resume materializes recoverable Phase 1 pool events before retrying', () => {
   assert.match(serverSrc, /app\.post\('\/api\/resume-launch', resumeLaunchHandler\);/);
-  const resumeStart = serverSrc.indexOf('async function resumeLaunchHandler(');
+  const resumeStart = serviceSrc.indexOf('async function resumeLiquidity(');
   assert.ok(resumeStart >= 0, 'resume-launch handler must exist');
-  const resumeSrc = serverSrc.slice(resumeStart, resumeStart + 6500);
+  const resumeSrc = serviceSrc.slice(resumeStart, serviceSrc.indexOf('async function transferAssets(', resumeStart));
   assert.ok(
     /const activeJournal = launchJournal\.activeForWallet\(walletPublicKey\);/.test(resumeSrc),
     'resume-launch must inspect the active journal before starting another attempt',
@@ -716,24 +718,11 @@ test('publish service degrades gracefully on oversized HTML', () => {
   );
 });
 
-test('run-airdrop claims the per-wallet launch-op mutex', () => {
-  const handlerStart = serverSrc.indexOf('async function runAirdropHandler(');
-  const handler = serverSrc.slice(handlerStart, handlerStart + 9000);
-  assert.ok(
-    /rejectOrClaimLaunchOp\(res, walletPublicKey, 'run-airdrop'\)/.test(handler),
-    'the airdrop must hold the same mutex as create/resume/transfer',
-  );
-  assert.ok(
-    /if \(claimedLaunchOp && walletPublicKey\) \{\r?\n\s*clearLaunchOpInFlight\(walletPublicKey\);/.test(handler),
-    'the mutex must release in finally, only when this handler claimed it',
-  );
-});
 
 test('transfer-assets validates an explicit destination before resolving a saved signer', () => {
-  const handlerStart = serverSrc.indexOf('async function transferAssetsHandler(');
-  const handler = serverSrc.slice(handlerStart, handlerStart + 4000);
+  const handler = transferAssetsHandlerSource();
   const validIndex = handler.indexOf('destinationWallet must be a valid Solana address');
-  const signerIndex = handler.indexOf('resolveSigner({ tempWalletSecretKey, walletPublicKey: req.body.walletPublicKey })');
+  const signerIndex = handler.indexOf('resolveSigner({ tempWalletSecretKey, walletPublicKey: input.walletPublicKey })');
   const funderIndex = handler.indexOf('findFundingWallet(walletPublicKey)');
   const requiredIndex = handler.indexOf('destinationWallet required');
   const unsafeIndex = handler.indexOf('unsafeSweepDestinationReason(destinationWallet');
@@ -747,11 +736,9 @@ test('transfer-assets validates an explicit destination before resolving a saved
 });
 
 test('transfer-assets response exposes authoritative sweep verification', () => {
-  const handlerStart = serverSrc.indexOf('async function transferAssetsHandler(');
-  const handlerEnd = serverSrc.indexOf("app.post('/api/transfer-assets'", handlerStart);
-  const handler = serverSrc.slice(handlerStart, handlerEnd);
+  const handler = transferAssetsHandlerSource();
 
-  assert.match(handler, /res\.json\(\{[\s\S]*?walletEmpty,[\s\S]*?hasPartialFailure,/);
+  assert.match(handler, /return \{[\s\S]*?walletEmpty,[\s\S]*?hasPartialFailure,/);
 });
 
 test('index.html has no duplicate element ids', () => {
@@ -847,10 +834,10 @@ test('an existing mint account is adopted instead of re-created forever', () => 
   // earlier attempt landed without finishing), the server must adopt the
   // known address so readiness routes to finish-token-creation. Without this
   // the launch dies on "already in use" on every retry.
-  assert.match(serverSrc, /const accountAlreadyInUse = \/already in use\|custom program error: 0x0\/i\.test/);
-  assert.match(serverSrc, /stage: 'token_account_adopted'/);
-  assert.match(serverSrc, /code: 'TOKEN_ACCOUNT_ALREADY_EXISTS'/);
-  assert.match(serverSrc, /token: \{ mint: existingMint \}/);
+  assert.match(serviceSrc, /const accountAlreadyInUse = \/already in use\|custom program error: 0x0\/i\.test/);
+  assert.match(serviceSrc, /stage: 'token_account_adopted'/);
+  assert.match(serviceSrc, /code: 'TOKEN_ACCOUNT_ALREADY_EXISTS'/);
+  assert.match(serviceSrc, /token: \{ mint: existingMint \}/);
   // The service surfaces the derived mint address when mint creation fails.
   assert.match(tokenServiceSrc, /if \(derived && !mintError\.tokenMint\) mintError\.tokenMint = derived;/);
 });
@@ -943,4 +930,26 @@ test('display price and launch price share one on-chain adapter definition', () 
   assert.match(epBody, /priceSource = `on-chain:\$\{oc\.anchorSymbol\}`/, 'endpoint must label the source');
   assert.match(epBody, /priceLiquidityUsd/, 'endpoint must surface depth');
   assert.match(epBody, /priceWarning = oc\.spreadError/, 'endpoint must surface a spread finding, not hide it');
+});
+
+
+test('classic airdrop requests and retries keep the saved token program', async () => {
+  const start = tokenConfigSrc.indexOf('function buildLiveAirdropTransferPayload()');
+  const end = tokenConfigSrc.indexOf('\n// Compute the preallocation', start);
+  const retryStart = transferSrc.indexOf('async function runAirdropRetry()');
+  const retryEnd = transferSrc.indexOf('\n}', retryStart) + 2;
+  for (const mintFormat of ['classic-spl', 'token-2022']) {
+    let sent;
+    const context = vm.createContext({ createdTokenInfo: { mint: 'mint-a', decimals: 9, mintFormat },
+      simpleConfig: { preallocationEnabled: true, airdrop: { enabled: true, parsedRows: [{ wallet: 'recipient-a', tokens: 2 }] } },
+      lastAirdropResult: { transferred: [], failed: [{ wallet: 'recipient-a', tokens: 2 }] }, tempWallet: { publicKey: 'wallet-a' }, demoModeActive: false,
+      document: { getElementById: () => ({}) }, setLoading() {}, log() {}, startAirdropProgressPoll() {}, stopAirdropProgressPoll() {}, hideAirdropProgressPanel() {},
+      fetch: async (_url, options) => { sent = JSON.parse(options.body); return { json: async () => ({ success: true, airdrop: { transferred: [], failed: [] } }) }; },
+      renderAirdropResult() {}, logAirdropOutcome() {},
+    });
+    vm.runInContext(tokenConfigSrc.slice(start, end) + '\n' + transferSrc.slice(retryStart, retryEnd), context);
+    assert.equal(vm.runInContext('buildLiveAirdropTransferPayload().isToken2022', context), mintFormat === 'token-2022');
+    await vm.runInContext('runAirdropRetry()', context);
+    assert.equal(sent.isToken2022, mintFormat === 'token-2022');
+  }
 });

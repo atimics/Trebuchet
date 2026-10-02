@@ -55,7 +55,7 @@ route execution, or token adoption.
 
 Requirements:
 
-- Node.js `22.12.0` (the version used in CI)
+- Node.js `22.23.3` (the version used in CI)
 - npm
 - A C compiler for the optional/native Vanity CA grinder
 - A dedicated RPC for a live launch
@@ -79,6 +79,24 @@ npm run web            # local Express app; open /v2/ for the Trebuchet shell
 The Electron process starts an authenticated loopback Express server on a free
 port and opens the selected UI in a sandboxed browser window.
 
+### Choose a hub token
+
+In a launch draft, open **More options → Supply and pools → Add pair**.
+The scroll list starts with **SEIGE, RUGOWEEN, RATICOIN, FLOOFY DOG, XRAT, Degen Unit (DGU)**,
+followed by **XLRT, wBTC, wETH, USDC, USDT, USD1**.
+KYRO, RATi, and Ruby retain their devnet entries.
+Discovery tokens with a recorded direct SOL pool follow the defaults.
+You can also paste a Solana token CA and choose **Find SOL pool**.
+
+The preview shows the full token CA, pool address, and venue. Choose **Use**
+to add the token pair at 5% of supply; SOL takes the remaining share.
+The selected CA stays in the saved launch plan. Token checks and funding
+estimates run through the usual launch flow.
+
+Pool lookup uses mainnet DexScreener data, with GeckoTerminal as a fallback.
+Every selection refreshes the lookup. The preview identifies an existing
+HUB/SOL market; swap routes are checked separately when funding the launch.
+
 ### Experimental read-only CLI
 
 Trebuchet now includes a headless command surface for deterministic planning
@@ -100,23 +118,27 @@ and current safety limits.
 
 ### Launch
 
-Launch is organized around the six decisions and actions a user actually takes:
+A coin being created shows what is true about it, one fact per row. The first
+fact that doesn't hold is the one to do, and the page offers that one action:
 
-- **Launch wallet** — select the temporary, locally controlled signer.
-- **Token & pools** — define the token, set a liquidity budget, and let
-  Trebuchet derive a minimal Minimum/1/10/100 SOL strategy before expanding
-  optional distribution controls.
-- **Fund wallet** — calculate the requirement, verify the wallet balance, and
-  acquire or manually deposit any required quote tokens.
-- **Create token** — review the permanent token facts, create the mint and
-  metadata, and confirm the authority posture.
-- **Create liquidity** — create pools and positions, lock liquidity, and deliver
-  the Fee Keys.
-- **Finish launch** — complete airdrops, sweep remaining assets to their final
-  destination, and save the launch proof.
+- **Signer** — the temporary, locally controlled launch wallet, and whether it
+  is unlocked.
+- **Plan** — the token and its pools: a liquidity budget, and the minimal
+  None/1/10/100 SOL strategy Trebuchet derives from it, with optional
+  distribution controls. It can change until the token is created.
+- **Funding** — what the launch needs, what the launch wallet holds, and any
+  quote tokens still to acquire or deposit.
+- **Token** — whether the mint exists on-chain with its authorities revoked.
+- **Liquidity** — whether the pools are open and locked, and the Fee Keys
+  delivered.
+- **Launch wallet** — whether it is empty, with its assets returned and the
+  launch proof saved.
+
+A live coin's facts are checked against the chain. A fact the launch record
+claims but the chain contradicts shows as a mismatch, not as done.
 
 Recovery and release-comparison diagnostics remain available from History and
-the collapsed diagnostics area; they are not presented as launch phases.
+the collapsed diagnostics area; they are not presented as facts of the coin.
 
 ### Wallet
 
@@ -151,6 +173,24 @@ The network score measures personal holder overlap, not safety. Selecting a
 known or discovered token runs the separate evidence inspection for authority,
 Token-2022 compatibility, Raydium route, market, concentration, provenance, and
 confidence. Unavailable evidence is labeled unavailable; it is not invented.
+
+### Market evidence
+
+A coin page can read its Raydium CLMM vault balances, position ranges, lock
+accounts, and current Fee Key owners. **Check chain** reads fresh public data;
+**Download market evidence** saves the timestamped JSON with the inspected
+addresses and any partial reads. The holder sample separates verified pool
+vaults from wallets and other accounts. Coverage is limited to the largest
+20 token accounts, 12 discovered pools, and 32 lock records per pool.
+
+Discovery shows the pool inventory value alongside the quote reserve. The coin
+page labels each reserve in the asset the pool actually holds. **Get sell quote**
+reads a Raydium route estimate for the entered token amount into SOL, with a
+1% slippage threshold and a timestamp. Network fees apply separately. Use a
+fresh quote when assessing a sale.
+
+The current flywheel is a static pool allocation. Trading fees accrue to the
+current Fee Key holder. Automatic fee routing remains planned work.
 
 ### History
 
@@ -194,6 +234,17 @@ update checks, startup preferences, release state, and local diagnostics.
 Interrupted work is resumable only when on-chain and journal evidence make the
 next action safe. Trebuchet does not pretend an unknown partial state is
 complete.
+
+### Vanity CA search grades
+
+The grinder reports `attempts` across its worker threads. It divides that
+count by the expected attempts for the chosen letter pattern to show `epochs`
+and a local grade: Common, Rare, Legendary, or Mythic. Thread timing affects
+the count, so these values describe this device's search. They are not an
+independent rarity proof. The public address lets anyone check the letter
+pattern. The private seed stays on the device because it can recreate the
+mint key. Native and API JSON mark these fields with
+`"effortVerification":"local-unverified"`.
 
 ## Pool and distribution controls
 

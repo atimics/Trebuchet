@@ -245,6 +245,67 @@ export function computeSupportTicks({
 }
 
 // ===========================================================================
+// Buy support for an existing pool
+// ===========================================================================
+//
+// Tick (in the pool's raw mintB-per-mintA space) at which the launched token
+// trades at `priceInQuote` whole quote per whole token. Fractional; callers
+// align it to the tick spacing.
+export function tickForTokenPrice({ priceInQuote, launchedIsMintA, decimalsA, decimalsB }) {
+  const price = Number(priceInQuote);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const bPerA = launchedIsMintA ? price : 1 / price;
+  const raw = bPerA * 10 ** (decimalsB - decimalsA);
+  return Math.log(raw) / Math.log(1.0001);
+}
+
+// Launched-token price, in whole quote per whole token, at a tick.
+export function tokenPriceAtTick({ tick, launchedIsMintA, decimalsA, decimalsB }) {
+  const bPerA = 1.0001 ** tick * 10 ** (decimalsA - decimalsB);
+  return launchedIsMintA ? bPerA : 1 / bPerA;
+}
+
+/**
+ * Quote-only (buy support) range for an existing pool, like
+ * computeSupportTicks but capped: its top is at or below BOTH the current
+ * price and `capTick`, the tick of the cheapest price the token can be
+ * bought for in its other pools. Support above that cap is drained at once:
+ * arbitrage buys the token in the cheaper pool and sells it into this one.
+ * `capTick` is in the pool's tick space; null means no cap.
+ *
+ * launchedIsMintA: token price rises with tick, so support lives below
+ * min(currentTick, capTick). launchedIsMintB: token price falls as tick
+ * rises, so support lives above max(currentTick, capTick).
+ */
+export function computeCappedSupportTicks({
+  currentTick,
+  tickSpacing,
+  launchedIsMintA,
+  capTick = null,
+  depthPct = SUPPORT_DEPTH_PCT_DEFAULT,
+}) {
+  const depth = Math.min(99, Math.max(1, Number(depthPct) || SUPPORT_DEPTH_PCT_DEFAULT));
+  const tickDelta = Math.abs(Math.round(Math.log((100 - depth) / 100) / Math.log(1.0001)));
+  const cap = Number.isFinite(capTick) ? capTick : null;
+  const minAligned = ceilToSpacing(MIN_TICK, tickSpacing);
+  const maxAligned = floorToSpacing(MAX_TICK, tickSpacing);
+
+  if (launchedIsMintA) {
+    const top = cap === null ? currentTick - 1 : Math.min(currentTick - 1, Math.floor(cap));
+    const tickUpper = floorToSpacing(top, tickSpacing);
+    let tickLower = Math.max(minAligned, ceilToSpacing(tickUpper - tickDelta, tickSpacing));
+    if (tickLower >= tickUpper) tickLower = tickUpper - tickSpacing;
+    return { tickLower, tickUpper, capped: cap !== null && cap < currentTick - 1 };
+  }
+
+  const bottom = cap === null ? currentTick + 1 : Math.max(currentTick + 1, Math.ceil(cap));
+  const tickLower = ceilToSpacing(bottom, tickSpacing);
+  let tickUpper = Math.min(maxAligned, floorToSpacing(tickLower + tickDelta, tickSpacing));
+  if (tickUpper <= tickLower) tickUpper = tickLower + tickSpacing;
+  return { tickLower, tickUpper, capped: cap !== null && cap > currentTick + 1 };
+}
+
+// ===========================================================================
 // Price drift helpers
 // ===========================================================================
 //

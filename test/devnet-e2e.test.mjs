@@ -31,7 +31,9 @@ test('devnet transaction budget is narrowly bounded', () => {
 });
 
 test('devnet transaction harness refuses every non-devnet genesis hash', () => {
+  assert.equal(DEVNET_GENESIS_HASH, 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG');
   assert.doesNotThrow(() => assertDevnetGenesisHash(DEVNET_GENESIS_HASH));
+  assert.throws(() => assertDevnetGenesisHash('EtWTRABZaYq6iMfeYKouRu166VU2xqa1'), /not Solana devnet/);
   assert.throws(
     () => assertDevnetGenesisHash('5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'),
     /not Solana devnet/,

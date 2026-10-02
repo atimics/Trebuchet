@@ -1,4 +1,4 @@
-/node_modules
+node_modules/
 rpcConfig.json
 files.zip
 /dist
@@ -22,9 +22,23 @@ test/ui/diffs/*.png
 # Local capture output and runtime records
 /artifacts
 /brandShield.json
+/sealedIdentities.json
 /incident-tx.json
 
 # Cloudflare wrangler local state
 /.wrangler
 docs/LAUNCH-RISK-BACKLOG.md
 docs/RELEASE-AUDIT-BACKLOG.md
+
+# Local durable runtime state
+/execution.sqlite*
+/runtime-owner.sqlite*
+/runtime.json
+
+# Private local runtime output
+/runtime.log
+
+# Private recovery backups and interrupted PIN writes
+/pendingWallets.json.*
+/.secretPin.json*
+/.tmp-*.json

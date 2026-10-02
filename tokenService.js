@@ -18,6 +18,7 @@ import {
 // priority fee. See priorityFees.js.
 import { 
   getMint,
+  unpackMint,
   getAccount,
   AuthorityType,
   TOKEN_PROGRAM_ID,
@@ -58,12 +59,15 @@ import { generateVanityKeypair } from './vanityKeygen.js';
 import { scalarPublicKey, signWithScalar } from '@trebuchet/core/split-key';
 import {
   createTokenMetadataUmi,
+  prepareSealedIdentity,
   SEALED_TOKEN_NAME,
   SEALED_TOKEN_SYMBOL,
+  sealedCommitmentDocument,
   uploadSealedPlaceholderMetadata,
   uploadTokenMetadata,
 } from './metadataUploadService.js';
-import { landTxWithRetry } from './chainRetry.js';
+import { saveSealedIdentity } from './sealedIdentityStore.js';
+import { landTxWithRetry, throwIfExecutionPaused } from './chainRetry.js';
 import { redactUrl } from './logRedaction.js';
 import { parseMetaplexUri } from './tokenMetadataLayout.js';
 import {
@@ -725,14 +729,7 @@ export async function createTokenWithMetaplex({
   keepMetadataAuthority = false,
 }) {
   try {
-    const progress = (event) => {
-      if (!onProgress) return;
-      try {
-        onProgress(event);
-      } catch (e) {
-        console.warn('Token progress callback failed:', e.message);
-      }
-    };
+    const progress = (event) => onProgress?.(event);
 
     console.log('Starting token creation...');
     
@@ -741,37 +738,16 @@ export async function createTokenWithMetaplex({
     
     const umi = _umiFactory(tempWallet);
 
-    console.log('Uploading logo to Arweave...');
-    console.log('Uploading metadata to Arweave...');
-
-    const { metadataUri, imageUri, metadataHash } = await _uploadMetadata({
-      umi,
-      logoBase64,
-      name,
-      symbol,
-      description,
-      onProgress: progress,
-    });
-    let onChainMetadataUri = metadataUri;
-    let onChainMetadataName = name;
-    let onChainMetadataSymbol = symbol;
-    if (sealedLaunch) {
-      const placeholder = await uploadSealedPlaceholderMetadata({
-        umi,
-        commitmentHash: metadataHash,
-        onProgress: progress,
-      });
-      onChainMetadataUri = placeholder.metadataUri;
-      onChainMetadataName = SEALED_TOKEN_NAME;
-      onChainMetadataSymbol = SEALED_TOKEN_SYMBOL;
-    }
-    
     // Select the mint keypair.
     //
     // - vanityCAKeypair (pre-ground via the web UI): use it as-is.
     // - vanityPrefix/vanitySuffix (live grind request from server): invoke
     //   the C grinder.
-    // - Neither: leave mintKeypair null so createMint generates a random one.
+    // - Neither: generate a random one here.
+    //
+    // The mint is chosen BEFORE the metadata upload so the uploaded document
+    // can name its own mint. Copy launchers reuse the official metadata URI
+    // verbatim; a document that names its mint exposes every such copy.
     //
     // No mintA-sort constraint is applied. The lpService launch pipeline
     // detects which side the launched token lands on after pool creation
@@ -786,10 +762,57 @@ export async function createTokenWithMetaplex({
     } else if (vanityPrefix || vanitySuffix) {
       mintKeypair = await grindVanityKeypair({ vanityPrefix, vanitySuffix });
     } else {
+      mintKeypair = Keypair.generate();
       console.log('Using random mint keypair');
     }
 
     const normalizedMintFormat = normalizeMintFormat(mintFormat);
+    if (mintKeypair?.scalar && normalizedMintFormat !== MINT_FORMAT_TOKEN_2022) {
+      // createMint needs a seed Keypair; split-key CAs only sign in the
+      // Token-2022 path. Refuse before anything is uploaded.
+      throw new Error('Split-key vanity CAs need the Token-2022 mint format.');
+    }
+
+    const mintAddress = mintKeypair.publicKey.toBase58();
+    let metadataUri = null;
+    let imageUri = null;
+    let metadataHash;
+    let onChainMetadataUri;
+    let onChainMetadataName = name;
+    let onChainMetadataSymbol = symbol;
+    if (sealedLaunch) {
+      // Nothing identifying leaves this machine until the reveal: Irys uploads
+      // are public, and an early upload links name and art to this mint.
+      const identity = prepareSealedIdentity({ logoBase64, name, symbol, description, mint: mintAddress });
+      saveSealedIdentity(mintAddress, identity);
+      metadataHash = identity.commitment;
+      progress({
+        stage: identity.logoStamped ? 'logo_stamped' : 'sealed_identity_prepared',
+        mint: mintAddress,
+        metadataHash,
+      });
+      const placeholder = await uploadSealedPlaceholderMetadata({
+        umi,
+        commitmentHash: metadataHash,
+        onProgress: progress,
+      });
+      onChainMetadataUri = placeholder.metadataUri;
+      onChainMetadataName = SEALED_TOKEN_NAME;
+      onChainMetadataSymbol = SEALED_TOKEN_SYMBOL;
+    } else {
+      console.log('Uploading logo and metadata to Arweave...');
+      ({ metadataUri, imageUri, metadataHash } = await _uploadMetadata({
+        umi,
+        logoBase64,
+        name,
+        symbol,
+        description,
+        mint: mintAddress,
+        onProgress: progress,
+      }));
+      onChainMetadataUri = metadataUri;
+    }
+
     if (normalizedMintFormat === MINT_FORMAT_TOKEN_2022) {
       return await createToken2022WithOnMintMetadata({
         tempWallet,
@@ -809,11 +832,6 @@ export async function createTokenWithMetaplex({
     }
 
     // Compatibility profile: classic SPL Token + Metaplex metadata PDA.
-    if (mintKeypair?.scalar) {
-      // createMint needs a seed Keypair; split-key CAs only sign in the
-      // Token-2022 path above.
-      throw new Error('Split-key vanity CAs need the Token-2022 mint format.');
-    }
 
     // Create mint using standard SPL token first. Two instructions in one
     // tx (exactly what spl-token's createMint wrapper did internally),
@@ -836,11 +854,9 @@ export async function createTokenWithMetaplex({
       await landTxWithRetry({
         label: 'create mint',
         alreadyDone: async () => {
-          // getMint throws while the account doesn't exist / isn't initialized.
-          try {
-            await getMint(connection, mint, 'finalized', TOKEN_PROGRAM_ID);
-            return true;
-          } catch (_) { return false; }
+          const account = await connection.getAccountInfo(mint, 'finalized');
+          if (account === null) return false;
+          return unpackMint(mint, account, TOKEN_PROGRAM_ID).isInitialized;
         },
         send: () => sendIxsWithPriority({
           payer: tempWallet,
@@ -866,6 +882,7 @@ export async function createTokenWithMetaplex({
         }),
       });
     } catch (mintError) {
+      throwIfExecutionPaused(mintError);
       // The mint address is known before the transaction lands, so surface it
       // on failure: an account that already exists can then be adopted and
       // finished instead of re-created.
@@ -997,6 +1014,7 @@ export async function createTokenWithMetaplex({
         txId: renounceMintAuthSig,
       });
     } catch (error) {
+      throwIfExecutionPaused(error);
       console.error('Error renouncing mint authority:', error);
       throw new Error('Failed to renounce mint authority. Token creation aborted for safety.');
     }
@@ -1073,6 +1091,7 @@ export async function createTokenWithMetaplex({
       });
       
     } catch (error) {
+      throwIfExecutionPaused(error);
       console.error('Error revoking update authority:', error);
       console.error('Full error details:', error.message);
       
@@ -1120,6 +1139,7 @@ export async function createTokenWithMetaplex({
         });
         
       } catch (altError) {
+        throwIfExecutionPaused(altError);
         console.error('Alternative approach also failed:', altError.message);
         
         // Wait a bit before final attempt
@@ -1147,6 +1167,7 @@ export async function createTokenWithMetaplex({
           progress({ stage: 'metadata_update_authority_revoked', tokenMint: mint.toString() });
           
         } catch (finalError) {
+          throwIfExecutionPaused(finalError);
           console.error('Final attempt failed:', finalError.message);
           // At this point, we've tried everything - the token is still functional
           console.warn('WARNING: Could not revoke metadata update authority.');
@@ -1206,6 +1227,7 @@ export async function createTokenWithMetaplex({
         console.log('Verified token balance:', accountInfo.amount.toString());
         break;
       } catch (error) {
+        throwIfExecutionPaused(error);
         console.error(`Error getting account info (attempt ${4 - retries}):`, error.message);
         retries--;
         if (retries === 0) {
@@ -1247,6 +1269,7 @@ export async function createTokenWithMetaplex({
           : 'Metadata update authority could not be revoked. Please verify token safety on Solscan.'
     };
   } catch (error) {
+    throwIfExecutionPaused(error);
     console.error('Error in createTokenWithMetaplex:', error);
     throw error;
   }
@@ -1358,10 +1381,7 @@ export async function finishTokenCreation({
   // revoke it. Read from the launch journal's token record by the caller.
   keepMetadataAuthority = false,
 }) {
-  const progress = (event) => {
-    if (!onProgress) return;
-    try { onProgress(event); } catch (e) { console.warn('finish-token progress callback failed:', e.message); }
-  };
+  const progress = (event) => onProgress?.(event);
 
   const tempWallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
   const umi = _umiFactory(tempWallet);
@@ -1390,6 +1410,7 @@ export async function finishTokenCreation({
   try {
     mintInfo = await getMint(connection, mint, 'finalized', programId);
   } catch (e) {
+    throwIfExecutionPaused(e);
     throw new Error(`finish-token: cannot read mint ${tokenMint} on-chain: ${e.message}`);
   }
   status.supplyMinted = mintInfo.supply >= totalTokens;
@@ -1402,11 +1423,11 @@ export async function finishTokenCreation({
   let metaAccount = null;
   let inlineMetadata = null;
   if (isToken2022) {
-    try { inlineMetadata = await getTokenMetadata(connection, mint, 'finalized', programId); } catch (_) { /* absent */ }
+    try { inlineMetadata = await getTokenMetadata(connection, mint, 'finalized', programId); } catch (error) { throwIfExecutionPaused(error); /* absent */ }
     status.metadataExists = Boolean(inlineMetadata);
     status.updateAuthorityRevoked = Boolean(inlineMetadata && !inlineMetadata.updateAuthority);
   } else {
-    try { metaAccount = await connection.getAccountInfo(metadataPda, 'finalized'); } catch (_) { /* treat as absent */ }
+    try { metaAccount = await connection.getAccountInfo(metadataPda, 'finalized'); } catch (error) { throwIfExecutionPaused(error); /* treat as absent */ }
     status.metadataExists = !!(metaAccount && metaAccount.data && metaAccount.data.length > 0);
   }
   if (!isToken2022 && status.metadataExists && metaAccount.data.length >= 33) {
@@ -1612,6 +1633,7 @@ export async function finishTokenCreation({
       status.steps.push('revoked metadata update authority');
       progress({ stage: 'metadata_update_authority_revoked', tokenMint });
     } catch (e) {
+      throwIfExecutionPaused(e);
       status.steps.push(`could not revoke metadata update authority: ${e.message}`);
     }
   }
@@ -1625,6 +1647,45 @@ export async function finishTokenCreation({
   return status;
 }
 
+// Upload a sealed launch's identity at reveal time and check it still matches
+// the commitment made at launch. Returns the final metadata URI and hash.
+export async function uploadSealedIdentity({ tempWalletSecretKey, identity, onProgress }) {
+  if (!identity?.commitment || !identity?.mint) {
+    throw new Error('The sealed identity for this launch is missing on this machine.');
+  }
+  const tempWallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
+  const uploaded = await _uploadMetadata({
+    umi: _umiFactory(tempWallet),
+    logoBase64: identity.logoDataUrl || null,
+    name: identity.name,
+    symbol: identity.symbol,
+    description: identity.description,
+    mint: identity.mint,
+    stampLogo: false,
+    requireLogo: Boolean(identity.logoDataUrl),
+    onProgress,
+  });
+  const committed = metadataDocumentHash(sealedCommitmentDocument(uploaded.metadata, identity.imageSha256));
+  if (committed !== identity.commitment) {
+    throw new Error('The uploaded identity does not match the sealed commitment.');
+  }
+  return {
+    metadataUri: uploaded.metadataUri,
+    imageUri: uploaded.imageUri,
+    metadataHash: uploaded.metadataHash,
+  };
+}
+
+// A document uploaded moments ago can take a few seconds to reach the gateway.
+async function fetchFreshMetadataDocument(uri, { attempts = 8, delayMs = 1500, fetchDocument = fetchMetadataDocument } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const document = await fetchDocument(uri);
+    if (document) return document;
+    if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return null;
+}
+
 export async function revealSealedTokenMetadata({
   tempWalletSecretKey,
   tokenMint,
@@ -1632,18 +1693,23 @@ export async function revealSealedTokenMetadata({
   symbol,
   metadataUri,
   metadataHash,
+  imageSha256 = null,
   onProgress,
+  metadataExecution = null,
+  fetchDocument = fetchMetadataDocument,
 }) {
-  const progress = (event) => {
-    if (!onProgress) return;
-    try { onProgress(event); } catch (_) { /* progress is best-effort */ }
-  };
+  const progress = (event) => onProgress?.(event);
   if (!tokenMint || !metadataUri) {
     throw new Error('Sealed metadata reveal requires a mint and final metadata URI.');
   }
   const expectedMetadataHash = String(metadataHash || '').trim().toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(expectedMetadataHash)) {
     throw new Error('Sealed metadata reveal requires the recorded SHA-256 identity commitment.');
+  }
+  let operationResult = null;
+  if (metadataExecution) {
+    if (typeof metadataExecution.recover !== 'function' || typeof metadataExecution.update !== 'function') throw new TypeError('Metadata execution requires update and recovery interfaces');
+    operationResult = await metadataExecution.recover({ tempWalletSecretKey, tokenMint, name, symbol, metadataUri });
   }
   const tempWallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey));
   const umi = _umiFactory(tempWallet);
@@ -1677,15 +1743,19 @@ export async function revealSealedTokenMetadata({
 
   const before = await inspect();
   if (before.uri === metadataUri && before.updateAuthority === SYSTEM_PROGRAM_ADDRESS) {
-    const finalDocument = await fetchMetadataDocument(metadataUri);
-    verifySealedMetadataCommitment({
+    const finalDocument = await fetchFreshMetadataDocument(metadataUri, { fetchDocument });
+    const { finalHash: revealedHash } = verifySealedMetadataCommitment({
       finalDocument,
       metadataHash: expectedMetadataHash,
+      imageSha256,
       name,
       symbol,
+      mint: tokenMint,
       requirePlaceholder: false,
     });
     return {
+      ...(operationResult ? { operationId: operationResult.operationId, txId: operationResult.txId } : {}),
+      finalMetadataHash: revealedHash,
       tokenMint,
       metadataUri,
       mintFormat: isToken2022 ? MINT_FORMAT_TOKEN_2022 : MINT_FORMAT_CLASSIC,
@@ -1706,23 +1776,35 @@ export async function revealSealedTokenMetadata({
   }
 
   const [placeholderDocument, finalDocument] = await Promise.all([
-    fetchMetadataDocument(before.uri),
-    fetchMetadataDocument(metadataUri),
+    fetchDocument(before.uri),
+    fetchFreshMetadataDocument(metadataUri, { fetchDocument }),
   ]);
-  verifySealedMetadataCommitment({
+  const { finalHash } = verifySealedMetadataCommitment({
     placeholderDocument,
     finalDocument,
     metadataHash: expectedMetadataHash,
+    imageSha256,
     name,
     symbol,
+    mint: tokenMint,
   });
 
   progress({ stage: 'metadata_reveal_started', tokenMint, metadataUri });
-  if (isToken2022) {
+  if (metadataExecution) {
+    operationResult = await metadataExecution.update({
+      tempWalletSecretKey, tokenMint, newAuthority: SYSTEM_PROGRAM_ADDRESS, makeImmutable: true,
+      fields: { name, symbol, uri: metadataUri, ...(isToken2022 && finalHash !== expectedMetadataHash ? { 'trebuchet:sha256': finalHash } : {}) },
+    });
+  } else if (isToken2022) {
     // URI is written last, so a retry after an interrupted reveal can still
     // load and validate the sealed placeholder commitment. Authority is
     // retired only after every final identity field has landed.
-    for (const [field, value] of [['Name', name], ['Symbol', symbol], ['Uri', metadataUri]]) {
+    // The launch-time commitment field becomes the plain hash of the final
+    // document, so a revealed token reads exactly like an unsealed one.
+    const fields = [['Name', name], ['Symbol', symbol]];
+    if (finalHash !== expectedMetadataHash) fields.push(['trebuchet:sha256', finalHash]);
+    fields.push(['Uri', metadataUri]);
+    for (const [field, value] of fields) {
       await tokenMetadataUpdateFieldWithRentTransfer(
         connection,
         tempWallet,
@@ -1786,6 +1868,8 @@ export async function revealSealedTokenMetadata({
     metadataUpdateAuthorityRevoked: true,
     metadataImmutable: true,
     sealedMetadataPending: false,
+    finalMetadataHash: finalHash,
+    ...(operationResult ? { operationId: operationResult.operationId, txId: operationResult.txId } : {}),
     skipped: false,
   };
   progress({ stage: 'metadata_revealed', ...result });
@@ -1826,8 +1910,10 @@ export function verifySealedMetadataCommitment({
   placeholderDocument = null,
   finalDocument = null,
   metadataHash,
+  imageSha256 = null,
   name,
   symbol,
+  mint = null,
   requirePlaceholder = true,
 } = {}) {
   const expectedHash = String(metadataHash || '').trim().toLowerCase();
@@ -1843,8 +1929,13 @@ export function verifySealedMetadataCommitment({
   if (!finalDocument || typeof finalDocument !== 'object' || Array.isArray(finalDocument)) {
     throw new Error('Final token metadata could not be loaded for commitment verification.');
   }
+  // Launches sealed before deferred uploads committed to the document itself;
+  // deferred ones commit to it with the image replaced by its content hash.
   const actualHash = metadataDocumentHash(finalDocument);
-  if (actualHash !== expectedHash) {
+  const committedHash = imageSha256
+    ? metadataDocumentHash(sealedCommitmentDocument(finalDocument, imageSha256))
+    : actualHash;
+  if (actualHash !== expectedHash && committedHash !== expectedHash) {
     throw new Error('Final token metadata does not match the sealed identity commitment.');
   }
   if (String(finalDocument.name || '').trim() !== String(name || '').trim()) {
@@ -1853,7 +1944,13 @@ export function verifySealedMetadataCommitment({
   if (String(finalDocument.symbol || '').trim() !== String(symbol || '').trim()) {
     throw new Error('Final token metadata symbol does not match the recorded launch identity.');
   }
-  return { metadataHash: actualHash };
+  // Documents from before mint binding carry no `mint`; a document that names
+  // a different mint belongs to another launch and must not be revealed here.
+  const declaredMint = String(finalDocument.mint || '').trim();
+  if (declaredMint && mint && declaredMint !== String(mint).trim()) {
+    throw new Error('Final token metadata names a different mint than this launch.');
+  }
+  return { metadataHash: expectedHash, finalHash: actualHash };
 }
 
 // Transfer tokens and remaining SOL
@@ -2039,6 +2136,114 @@ export function pickFundingTransfer(parsedTxsOldestFirst, publicKey) {
   return null;
 }
 
+// Parsed transaction of any version. web3.js 1.x can neither request nor
+// validate version-1 transactions, and one unreadable transaction used to
+// fail the whole funder lookup. Those are read as raw jsonParsed RPC JSON,
+// which has the same meta/message shape the funding parsers use.
+export async function getParsedTransactionAnyVersion(signature, conn = connection) {
+  try {
+    return await conn.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 });
+  } catch (error) {
+    if (typeof conn._rpcRequest !== 'function') throw error;
+    const response = await conn._rpcRequest('getTransaction', [
+      signature,
+      { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1, commitment: 'confirmed' },
+    ]);
+    if (response?.error) throw new Error(response.error.message || String(error.message || error));
+    return response?.result || null;
+  }
+}
+
+// Qualifying inbound SOL transfers in one parsed transaction.
+function fundingTransferRows(signature, tx, publicKey) {
+  if (!tx || !tx.meta || tx.meta.err) return [];
+  const allInstructions = [...(tx.transaction?.message?.instructions || [])];
+  for (const inner of tx.meta.innerInstructions || []) allInstructions.push(...(inner.instructions || []));
+  const rows = [];
+  for (const instruction of allInstructions) {
+    if (
+      instruction.program !== 'system'
+      || instruction.parsed?.type !== 'transfer'
+      || instruction.parsed.info.destination !== publicKey
+    ) continue;
+    const lamports = Number(instruction.parsed.info.lamports);
+    const source = instruction.parsed.info.source;
+    if (!(lamports >= MIN_FUNDING_LAMPORTS) || !source || source === publicKey) continue;
+    rows.push({ address: source, lamports, signature });
+  }
+  return rows;
+}
+
+function summarizeFundingRows(rowsOldestFirst) {
+  const byFunder = new Map();
+  for (const row of rowsOldestFirst) {
+    const entry = byFunder.get(row.address) || { address: row.address, lamports: 0, firstSignature: row.signature, transfers: 0 };
+    entry.lamports += row.lamports;
+    entry.transfers += 1;
+    byFunder.set(row.address, entry);
+  }
+  return [...byFunder.values()].map((entry) => ({
+    address: entry.address,
+    sol: entry.lamports / LAMPORTS_PER_SOL,
+    firstSignature: entry.firstSignature,
+    transfers: entry.transfers,
+  }));
+}
+
+/**
+ * Every wallet that sent real SOL to the launch wallet, earliest first, with
+ * the total each sent. Parsed transactions must be ordered OLDEST first.
+ * Anyone can send SOL to an address, so only the first entry is trusted by
+ * default; the rest are listed for the operator to choose from.
+ */
+export function collectFundingTransfers(parsedTxsOldestFirst, publicKey) {
+  return summarizeFundingRows(parsedTxsOldestFirst.flatMap(({ signature, tx }) => (
+    fundingTransferRows(signature, tx, publicKey)
+  )));
+}
+
+// Per launch wallet: the newest signature already read and the funding rows
+// found so far, so a repeat scan only reads what arrived since.
+const fundingTransferCache = new Map();
+
+export async function findFundingWallets(publicKey) {
+  try {
+    const pubKey = new PublicKey(publicKey);
+    const cached = fundingTransferCache.get(publicKey) || { newestSignature: null, rows: [] };
+    const signatures = [];
+    let before;
+    for (let page = 0; page < MAX_SIGNATURE_PAGES; page++) {
+      const batch = await connection.getSignaturesForAddress(pubKey, {
+        limit: 1000,
+        before,
+        until: cached.newestSignature || undefined,
+      });
+      signatures.push(...batch);
+      if (batch.length < 1000) break;
+      before = batch[batch.length - 1].signature;
+    }
+    const rows = [...cached.rows];
+    let complete = true;
+    for (const sig of signatures.slice().reverse()) {
+      if (sig.err) continue;
+      const tx = await getParsedTransactionAnyVersion(sig.signature);
+      // A transaction the RPC cannot return yet is read again next time.
+      if (!tx) complete = false;
+      rows.push(...fundingTransferRows(sig.signature, tx, publicKey));
+    }
+    if (complete) {
+      fundingTransferCache.set(publicKey, {
+        newestSignature: signatures[0]?.signature || cached.newestSignature,
+        rows,
+      });
+    }
+    return summarizeFundingRows(rows);
+  } catch (error) {
+    console.error('Error listing funding wallets:', error);
+    return [];
+  }
+}
+
 export async function findFundingWallet(publicKey) {
   if (fundingWalletCache.has(publicKey)) return fundingWalletCache.get(publicKey);
   try {
@@ -2063,9 +2268,7 @@ export async function findFundingWallet(publicKey) {
     // both count.
     for (const sig of signatures.slice().reverse()) {
       if (sig.err) continue;
-      const tx = await connection.getParsedTransaction(sig.signature, {
-        maxSupportedTransactionVersion: 0,
-      });
+      const tx = await getParsedTransactionAnyVersion(sig.signature);
       const result = pickFundingTransfer([{ signature: sig.signature, tx }], publicKey);
       if (result) {
         fundingWalletCache.set(publicKey, result);

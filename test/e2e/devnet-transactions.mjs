@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { SOLANA_GENESIS_HASHES } from '@trebuchet/runtime/solana';
 // Secret-gated Solana devnet transaction smoke.
 //
 // The long-lived GitHub Actions wallet is used only to fund a fresh ephemeral
@@ -30,7 +31,7 @@ import {
 } from '@solana/spl-token';
 import { redactSensitiveText } from '../../logRedaction.js';
 
-export const DEVNET_GENESIS_HASH = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+export const DEVNET_GENESIS_HASH = SOLANA_GENESIS_HASHES.devnet;
 export const DEFAULT_MAX_SPEND_SOL = 0.03;
 export const ABSOLUTE_MAX_SPEND_SOL = 0.1;
 export const MIN_MAX_SPEND_SOL = 0.01;

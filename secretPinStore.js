@@ -59,10 +59,22 @@ function writePrivateJson(file, data) {
   ensurePrivateDir(dir);
   const tmp = path.join(dir, `.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.json`);
   const text = JSON.stringify(data, null, 2) + '\n';
-  fs.writeFileSync(tmp, text, { mode: 0o600 });
-  fs.renameSync(tmp, file);
-  if (process.platform !== 'win32') {
-    try { fs.chmodSync(file, 0o600); } catch { /* best effort */ }
+  let descriptor;
+  let renamed = false;
+  try {
+    descriptor = fs.openSync(tmp, 'wx', 0o600);
+    fs.writeFileSync(descriptor, text);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor); descriptor = undefined;
+    fs.renameSync(tmp, file); renamed = true;
+    if (process.platform !== 'win32') {
+      descriptor = fs.openSync(dir, 'r');
+      fs.fsyncSync(descriptor);
+      fs.closeSync(descriptor); descriptor = undefined;
+    }
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    if (!renamed) { try { fs.unlinkSync(tmp); } catch { /* retain the commit error */ } }
   }
 }
 

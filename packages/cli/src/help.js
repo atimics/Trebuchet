@@ -2,6 +2,7 @@ export const CLI_HELP = `Trebuchet CLI (experimental; demo execution)
 
 Usage:
   trebuchet doctor [--json]
+  trebuchet runtime <start|status|stop> [--config-dir <dir>] [--json]
   trebuchet plan build --config <launch.json> [--out <plan.json>] [--json]
   trebuchet plan verify <plan.json> [--json]
   trebuchet estimate (--plan <plan.json> | --config <launch.json>) [--json]
@@ -15,6 +16,9 @@ Usage:
   trebuchet confirm --plan <plan.json> --keyfile <custody.json> --network <n>
                     --max-spend-sol <n> [--wallet <pubkey>] [--expires-in <h>]
                     [--passphrase <p>] [--out <confirmation.json>] [--json]
+  trebuchet packet approve --manifest <manifest.json> --plan <plan.json>
+                    --keyfile <custody.json> --network <n> --max-spend-sol <n>
+                    [--expires-in <hours>] [--out <approval.json>] [--json]
   trebuchet confirmation verify <confirmation.json> [--expect-plan <plan.json>] [--json]
   trebuchet launch save --config <launch.json> [--name <label>] [--config-dir <dir>] [--json]
   trebuchet launch list [--config-dir <dir>] [--json]

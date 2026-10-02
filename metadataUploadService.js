@@ -1,9 +1,11 @@
+import { throwIfExecutionPaused } from './chainRetry.js';
 import { createUmi } from '@metaplex-foundation/umi-bundle-defaults';
 import { mplTokenMetadata } from '@metaplex-foundation/mpl-token-metadata';
 import { createGenericFile, keypairIdentity } from '@metaplex-foundation/umi';
 import { irysUploader } from '@metaplex-foundation/umi-uploader-irys';
 import { getRpcUrl } from './rpcConfig.js';
-import { metadataDocumentHash } from './brandShieldService.js';
+import { metadataDocumentHash, sha256Hex } from './brandShieldService.js';
+import { stampLogoDataUrl } from './logoStampService.js';
 
 export const DEFAULT_IRYS_ADDRESS = 'https://node1.irys.xyz';
 export const DEVNET_IRYS_ADDRESS = 'https://devnet.irys.xyz';
@@ -12,13 +14,40 @@ export const PLACEHOLDER_TOKEN_IMAGE_URI = 'https://arweave.net/placeholder-toke
 export const SEALED_TOKEN_NAME = 'Trebuchet Sealed Launch';
 export const SEALED_TOKEN_SYMBOL = 'SEALED';
 
-export function tokenMetadataJson({ name, symbol, description, imageUri }) {
+// A metadata document that names its own mint. Copy launchers reuse the
+// official metadata URI verbatim, so the document itself tells every reader
+// (explorers, wallets, Brand Shield) which mint it belongs to. The hash
+// committed on-chain covers the mint too, so the commitment can't be replayed.
+export function officialMintNotice(mint) {
+  return `Official CA: ${mint}. Any other mint using this metadata is a copy.`;
+}
+
+export function tokenMetadataJson({ name, symbol, description, imageUri, mint = null }) {
+  const address = String(mint || '').trim();
+  if (!address) {
+    return {
+      name,
+      symbol,
+      description,
+      image: imageUri,
+    };
+  }
+  const notice = officialMintNotice(address);
+  const text = String(description || '').trim();
   return {
     name,
     symbol,
-    description,
+    description: text ? `${text}\n\n${notice}` : notice,
     image: imageUri,
+    mint: address,
   };
+}
+
+export function networkImageUri(imageUri, rpcUrl = getRpcUrl()) {
+  if (rpcUrl?.includes('devnet') && imageUri?.includes('arweave.net')) {
+    return `https://gateway.irys.xyz/${imageUri.split('/').pop()}`;
+  }
+  return imageUri;
 }
 
 export function logoDataUrlToGenericFile(logoBase64) {
@@ -65,6 +94,9 @@ export async function uploadTokenMetadata({
   name,
   symbol,
   description,
+  mint = null,
+  stampLogo = true,
+  requireLogo = false,
   onProgress,
   logger = console,
   placeholderImageUri = PLACEHOLDER_TOKEN_IMAGE_URI,
@@ -72,6 +104,21 @@ export async function uploadTokenMetadata({
   rpcUrl = getRpcUrl(),
 }) {
   let imageUri = placeholderImageUri;
+  let logoStamped = false;
+
+  // Put the mint on the logo itself: a copy that reuses this image shows the
+  // real CA wherever the image is displayed.
+  if (logoBase64 && mint && stampLogo) {
+    const stamp = stampLogoDataUrl(logoBase64, mint);
+    if (stamp.stamped) {
+      logoBase64 = stamp.dataUrl;
+      logoStamped = true;
+      onProgress?.({ stage: 'logo_stamped', mint, bytes: stamp.bytes });
+    } else {
+      logger.warn?.('Logo left unstamped:', stamp.reason);
+      onProgress?.({ stage: 'logo_stamp_skipped', mint, reason: stamp.reason });
+    }
+  }
 
   const withTimeout = (promise, label) => {
     if (!uploadTimeoutMs || uploadTimeoutMs <= 0) return promise;
@@ -94,6 +141,10 @@ export async function uploadTokenMetadata({
       logger.log?.('Logo uploaded:', imageUri);
       onProgress?.({ stage: 'logo_uploaded', imageUri });
     } catch (uploadError) {
+      throwIfExecutionPaused(uploadError);
+      // A sealed reveal committed to these exact logo bytes; a placeholder
+      // would break the commitment, so the reveal fails and is retried.
+      if (requireLogo) throw uploadError;
       logger.error?.('Error uploading logo:', uploadError);
       imageUri = placeholderImageUri;
       onProgress?.({
@@ -105,12 +156,9 @@ export async function uploadTokenMetadata({
 
   // Rewrite arweave.net → gateway.irys.xyz on devnet for both uploaded
   // logos and placeholder images (the rewrite above only ran for uploads).
-  if (rpcUrl?.includes('devnet') && imageUri?.includes('arweave.net')) {
-    const txId = imageUri.split('/').pop();
-    imageUri = `https://gateway.irys.xyz/${txId}`;
-  }
+  imageUri = networkImageUri(imageUri, rpcUrl);
 
-  const metadata = tokenMetadataJson({ name, symbol, description, imageUri });
+  const metadata = tokenMetadataJson({ name, symbol, description, imageUri, mint });
   let metadataUri = await withTimeout(
     umi.uploader.uploadJson(metadata),
     'Metadata upload'
@@ -125,7 +173,63 @@ export async function uploadTokenMetadata({
   logger.log?.('Metadata uploaded:', metadataUri);
   onProgress?.({ stage: 'metadata_uploaded', metadataUri, imageUri, metadataHash });
 
-  return { metadataUri, imageUri, metadata, metadataHash };
+  return { metadataUri, imageUri, metadata, metadataHash, logoStamped };
+}
+
+// A sealed launch commits to its final metadata document before anything is
+// uploaded. The image URI doesn't exist yet, so the commitment covers the
+// image's bytes instead: the final document with `image` replaced by
+// `sha256:<hex of the logo bytes>`. Anyone can verify a reveal by fetching the
+// final document and its image, substituting the image hash, and hashing.
+export function sealedCommitmentDocument(finalDocument, imageSha256 = null) {
+  if (!imageSha256) return { ...finalDocument };
+  return { ...finalDocument, image: `sha256:${imageSha256}` };
+}
+
+export function logoDataUrlSha256(logoDataUrl) {
+  const match = /^data:[^;,]+;base64,(.*)$/s.exec(String(logoDataUrl || ''));
+  return match ? sha256Hex(Buffer.from(match[1], 'base64')) : null;
+}
+
+// Build a sealed launch's identity locally: stamp the logo, then commit to the
+// final document. Nothing is uploaded.
+export function prepareSealedIdentity({
+  logoBase64 = null,
+  name,
+  symbol,
+  description,
+  mint,
+  stampLogo = true,
+  placeholderImageUri = PLACEHOLDER_TOKEN_IMAGE_URI,
+  rpcUrl = getRpcUrl(),
+}) {
+  let logoDataUrl = logoBase64 || null;
+  let logoStamped = false;
+  if (logoDataUrl && mint && stampLogo) {
+    const stamp = stampLogoDataUrl(logoDataUrl, mint);
+    if (stamp.stamped) {
+      logoDataUrl = stamp.dataUrl;
+      logoStamped = true;
+    }
+  }
+  const imageSha256 = logoDataUrlSha256(logoDataUrl);
+  const finalDocument = tokenMetadataJson({
+    name,
+    symbol,
+    description,
+    imageUri: imageSha256 ? null : networkImageUri(placeholderImageUri, rpcUrl),
+    mint,
+  });
+  const commitment = metadataDocumentHash(sealedCommitmentDocument(finalDocument, imageSha256));
+  return {
+    commitment,
+    imageSha256,
+    logoDataUrl: imageSha256 ? logoDataUrl : null,
+    logoStamped,
+    name,
+    symbol,
+    description,
+  };
 }
 
 export async function uploadSealedPlaceholderMetadata({

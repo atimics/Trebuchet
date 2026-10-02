@@ -35,6 +35,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TREBUCHET_CORE_VERSION } from '@trebuchet/core';
+import { verifyPacketApproval } from '@trebuchet/core/packet-approval';
+import { CONFIRMATION_NETWORKS } from '@trebuchet/core/confirmation';
 import { extractPacketArchive, verifyPacketDir, locatePacketRoot, PacketError } from './packet.js';
 
 export const RUNNER_SCHEMA = 'trebuchet-sealed-runner/v1';
@@ -97,7 +99,9 @@ function sendJson(res, status, payload) {
  *   stateDir    ephemeral packet/launch state (default: /tmp/trebuchet-runner)
  *   coreVersion override reported Core version (tests)
  */
-export function createRunnerServer({ token, stateDir, coreVersion = TREBUCHET_CORE_VERSION } = {}) {
+export function createRunnerServer({ token, stateDir, operatorKey = null, network = 'devnet', coreVersion = TREBUCHET_CORE_VERSION } = {}) {
+  if (operatorKey !== null && !/^[0-9a-f]{64}$/.test(operatorKey)) throw new TypeError('Runner operatorKey must be a raw public key in lowercase hex.');
+  if (!CONFIRMATION_NETWORKS.has(network)) throw new TypeError('Runner network must be demo, devnet, or mainnet.');
   if (!token || typeof token !== 'string') {
     throw new Error('createRunnerServer requires a token');
   }
@@ -106,6 +110,21 @@ export function createRunnerServer({ token, stateDir, coreVersion = TREBUCHET_CO
 
   const runnerId = `runner_${crypto.randomUUID().slice(0, 12)}`;
   const launches = new Map();
+
+  async function checkApproval(packetId, approval) {
+    if (!operatorKey) return { status: 503, body: { ok: false, error: { code: 'OPERATOR_REQUIRED', message: 'Configure the runner operator public key before accepting approvals.' } } };
+    const extractDir = path.join(state, 'packets', packetId, 'extract');
+    if (!fs.existsSync(extractDir)) return { status: 404, body: { ok: false, error: 'Upload the packet before approval.' } };
+    const verified = await verifyPacketDir(locatePacketRoot(extractDir));
+    const result = verifyPacketApproval(approval, { expected: {
+      manifestDigest: verified.manifestDigest,
+      planDigest: verified.digest,
+      operatorKey,
+      walletPublicKey: verified.plan.v2LaunchWalletFingerprint,
+      network,
+    } });
+    return { status: result.valid ? 200 : 422, body: { ok: result.valid, packetId, ...result } };
+  }
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', 'http://runner.local');
@@ -118,7 +137,8 @@ export function createRunnerServer({ token, stateDir, coreVersion = TREBUCHET_CO
           schema: RUNNER_SCHEMA,
           runnerId,
           coreVersion,
-          capabilities: ['attach', 'packet-verify'],
+          capabilities: ['attach', 'packet-verify', ...(operatorKey ? ['packet-approval'] : [])],
+          operatorKey, network,
           liveExecution: { enabled: false, gate: LIVE_GATE_MESSAGE },
         });
       }
@@ -135,7 +155,8 @@ export function createRunnerServer({ token, stateDir, coreVersion = TREBUCHET_CO
           schema: RUNNER_SCHEMA,
           runnerId,
           coreVersion,
-          capabilities: ['attach', 'packet-verify'],
+          capabilities: ['attach', 'packet-verify', ...(operatorKey ? ['packet-approval'] : [])],
+          operatorKey, network,
           note: 'Packet upload and verification are live. Launch execution is gated.',
           liveExecution: { enabled: false, gate: LIVE_GATE_MESSAGE },
         });
@@ -145,19 +166,24 @@ export function createRunnerServer({ token, stateDir, coreVersion = TREBUCHET_CO
         const archive = await readBody(req, MAX_PACKET_BYTES);
         if (!archive.length) return sendJson(res, 400, { ok: false, error: 'empty body' });
         const packetId = crypto.createHash('sha256').update(archive).digest('hex').slice(0, 24);
-        const dir = path.join(state, 'packets', packetId);
-        fs.mkdirSync(dir, { recursive: true });
+        const dir = await fsp.mkdtemp(path.join(state, 'packets', '.upload-'));
         const archivePath = path.join(dir, 'packet.tar.gz');
         await fsp.writeFile(archivePath, archive, { mode: 0o600 });
         try {
           const extractDir = path.join(dir, 'extract');
-          fs.mkdirSync(extractDir, { recursive: true });
           await extractPacketArchive(archivePath, extractDir);
           const verified = await verifyPacketDir(locatePacketRoot(extractDir));
+          try {
+            await fsp.rename(dir, path.join(state, 'packets', packetId));
+          } catch (error) {
+            if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
+            await fsp.rm(dir, { recursive: true, force: true });
+          }
           return sendJson(res, 201, {
             ok: true,
             packetId,
             planDigest: verified.digest,
+            manifestDigest: verified.manifestDigest,
             token: verified.launchConfig?.token
               ? {
                 name: verified.launchConfig.token.name ?? null,
@@ -175,12 +201,23 @@ export function createRunnerServer({ token, stateDir, coreVersion = TREBUCHET_CO
         }
       }
 
+      const approvalMatch = req.method === 'POST' && url.pathname.match(/^\/v1\/packets\/([a-f0-9]{24})\/approval$/);
+      if (approvalMatch) {
+        const body = await readJsonBody(req);
+        const result = await checkApproval(approvalMatch[1], body.approval);
+        return sendJson(res, result.status, result.body);
+      }
+
       if (route === 'POST /v1/launches') {
         const body = await readJsonBody(req).catch(() => null);
         const packetId = String(body?.packetId || '').trim();
-        if (!packetId) return sendJson(res, 400, { ok: false, error: 'packetId required' });
+        if (!/^[a-f0-9]{24}$/.test(packetId)) return sendJson(res, 400, { ok: false, error: 'packetId must be 24 lowercase hex characters' });
         if (!fs.existsSync(path.join(state, 'packets', packetId))) {
           return sendJson(res, 404, { ok: false, error: 'unknown packetId — upload it first' });
+        }
+        if (operatorKey) {
+          const checked = await checkApproval(packetId, body.approval);
+          if (checked.status !== 200) return sendJson(res, checked.status, checked.body);
         }
         // The gate: execution is not wired until the Core contracts land.
         return sendJson(res, 503, {
@@ -204,7 +241,7 @@ export function createRunnerServer({ token, stateDir, coreVersion = TREBUCHET_CO
 
       return sendJson(res, 404, { ok: false, error: 'not found' });
     } catch (error) {
-      return sendJson(res, 500, { ok: false, error: error.message || 'unexpected runner failure' });
+      return sendJson(res, error instanceof PacketError ? 422 : 500, { ok: false, error: error.message || 'unexpected runner failure' });
     }
   });
 
@@ -222,7 +259,7 @@ if (invokedDirectly) {
     process.exit(2);
   }
   const port = Number(process.env.PORT || 8080);
-  const { server, runnerId } = createRunnerServer({ token });
+  const { server, runnerId } = createRunnerServer({ token, stateDir: process.env.TREBUCHET_RUNNER_STATE_DIR, operatorKey: process.env.TREBUCHET_OPERATOR_KEY || null, network: process.env.TREBUCHET_RUNNER_NETWORK || 'devnet' });
   server.listen(port, '0.0.0.0', () => {
     console.log(`Trebuchet sealed runner ${runnerId} listening on :${port} (packet verification live, launches gated)`);
   });

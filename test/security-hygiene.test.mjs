@@ -43,7 +43,7 @@ test('dependency risk controls document audit residuals and PR checklist', () =>
   // If you bump one, update the table in SECURITY.md in the same commit.
   assert.equal(pkg.overrides.tmp, '^0.2.7');
   assert.equal(pkg.overrides.tar, '^7.5.21');
-  assert.equal(pkg.overrides.axios, '^1.19.0');
+  assert.equal(pkg.overrides.axios, '^1.20.0');
   assert.equal(pkg.overrides['form-data'], '^4.0.6');
   assert.equal(pkg.dependencies.multer, '^2.3.0');
   assert.match(security, /SDK compatibility matrix/);

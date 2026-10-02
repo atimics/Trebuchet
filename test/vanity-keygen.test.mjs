@@ -33,7 +33,10 @@ function b58decode(str) {
 before(() => {
   // The binary is built by `npm run build:c`. Build it if CI hasn't.
   if (!existsSync(BINARY)) {
-    execFileSync('make', ['-C', 'c'], { cwd: REPO, stdio: 'inherit' });
+    // build-c.mjs writes to a temp file and renames it into place; `make`
+    // writes in place, and other test files running in parallel would see
+    // a half-written, non-executable binary.
+    execFileSync(process.execPath, ['scripts/build-c.mjs'], { cwd: REPO, stdio: 'inherit' });
   }
 });
 
@@ -66,6 +69,7 @@ test('grind returns a valid keypair matching the requested prefix', async () => 
   const result = await generateVanityKeypair({ prefix: 'R', threads: 2 });
   assert.ok(result.publicKey.startsWith('R'), `publicKey ${result.publicKey} should start with R`);
   assert.equal(result.secretKey.length, 64, 'secretKey should be 64 bytes');
+  assert.equal(result.effortVerification, 'local-unverified');
 });
 
 test('grind returns a keypair matching both requested start and end', async () => {

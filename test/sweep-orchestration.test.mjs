@@ -215,12 +215,22 @@ test('dust-only remainder -> gate passes, SOL swept', async () => {
 
 // --- journal resilience -------------------------------------------------------
 
-test('a throwing recordEvent never blocks the sweep decision', async () => {
+test('a failed gate checkpoint preserves the storage error and leaves SOL available', async () => {
   const h = harness();
-  h.deps.recordEvent = () => { throw new Error('journal disk full'); };
-  const r = await runGate(h, {
+  const failure = new Error('journal disk full');
+  h.deps.recordEvent = () => { throw failure; };
+  await assert.rejects(runGate(h, {
     tokenSweep: { transferred: [], errors: [{ mint: 'M', error: 'x' }] },
-  });
-  // The skip still happened and was still reported despite the journal error.
-  assert.ok(r.solSweepSkipped);
+  }), (error) => error === failure);
+  assert.equal(h.calls.sweepSol, 0);
+});
+
+test('a failed second-pass checkpoint stops before further asset transfers', async () => {
+  const h = harness({ enumerations: [balanceWith(['mint-a'])] });
+  const failure = Object.assign(new Error('checkpoint write failed'), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
+  h.deps.recordEvent = () => { throw failure; };
+  await assert.rejects(runGate(h), (error) => error === failure);
+  assert.equal(h.calls.sweepNfts, 0);
+  assert.equal(h.calls.sweepTokens, 0);
+  assert.equal(h.calls.sweepSol, 0);
 });
