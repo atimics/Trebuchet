@@ -7739,6 +7739,27 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
   return `<svg viewBox="0 0 ${W} ${BASE + 56}" role="img" aria-label="${title}" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
 }
 
+// The same picture for a pool as the launch will build it (Create liquidity tab).
+function poolMapForPool(pool) {
+  const support = pool?.support?.mode === 'custom' ? pool.support : null;
+  const slices = (pool?.distribution || []).map((slice) => Number(slice.sharePercent) || 0).filter((share) => share > 0);
+  let bands = [];
+  if (pool?.ladder?.mode === 'manual') {
+    bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: band.supplyPercent, label: `${Number(Number(band.supplyPercent).toFixed(1))}%` }));
+  } else if (pool?.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
+    const count = pool.ladder.bandCount;
+    const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
+    bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: 1, label: '' }));
+  }
+  return poolMapSvg({
+    premiumPct: 0,
+    supportSol: support ? Number(support.solValue) || 0 : 0,
+    depthPct: support ? Number(support.depthPct) || 12 : 12,
+    slices: slices.length ? slices : [100],
+    bands,
+  });
+}
+
 function renderPoolMap(panel) {
   const host = panel.querySelector('[data-pool-map]');
   if (!host) return;
@@ -14995,11 +15016,20 @@ function renderClassicBridge() {
         </div>
         ${state.demoActive || tokenComplete ? '' : `<aside><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span><strong>Can't be undone.</strong> Fix mistakes in Token &amp; pools first.</span></aside>`}
       </section>
-      <div class="launch-fact-grid">
-        <span><small>Name</small><strong>${escapeHtml(config.token.name || 'Untitled')}</strong></span>
-        <span><small>Symbol</small><strong>${escapeHtml(config.token.symbol || 'TOK')}</strong></span>
-        <span><small>Supply</small><strong>${escapeHtml(String(config.token.supply || '0'))}</strong></span>
-        <span><small>Contract address</small><strong>${escapeHtml(state.selectedVanityPublicKey ? fullAddress(state.selectedVanityPublicKey) : 'Random')}</strong></span>
+      <div class="plan-preview">
+        <div class="preview-mark">
+          ${state.tokenLogo?.dataUrl ? `<img src="${escapeHtml(state.tokenLogo.dataUrl)}" alt="">` : `<span aria-hidden="true">${escapeHtml(String(config.token.symbol || 'TOK').slice(0, 3).toUpperCase())}</span>`}
+          <strong>${escapeHtml(config.token.name || 'Untitled')}</strong>
+          <small>$${escapeHtml(String(config.token.symbol || 'TOK').toUpperCase())}</small>
+        </div>
+        <dl class="preview-rows">
+          <div><dt>Supply</dt><dd>${escapeHtml(String(config.token.supply || '0'))}</dd></div>
+          <div><dt>Standard</dt><dd>${config.token.mintFormat === 'classic-spl' ? 'Classic SPL' : 'Token-2022'}</dd></div>
+          <div><dt>Address</dt><dd>${escapeHtml(state.selectedVanityPublicKey ? fullAddress(state.selectedVanityPublicKey) : 'Random')}</dd></div>
+          <div><dt>Name and logo</dt><dd>${config.token.sealedLaunch ? 'Sealed until the pool is locked' : 'Public at creation'}</dd></div>
+          <div><dt>Mint authority</dt><dd class="${tokenComplete ? 'is-ok' : ''}">${tokenComplete ? 'Removed' : 'Removed at creation'}</dd></div>
+          <div><dt>Freeze authority</dt><dd class="${tokenComplete ? 'is-ok' : ''}">${tokenComplete ? 'Removed' : 'Removed at creation'}</dd></div>
+        </dl>
       </div>
       ${readinessPanel({
         title: tokenComplete ? 'Token created' : mintEndpoint === '/api/finish-token-creation' ? 'Finish interrupted token' : 'Create token',
@@ -15018,11 +15048,16 @@ function renderClassicBridge() {
         </div>
         ${state.demoActive || liquidityComplete ? '' : `<aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>`}
       </section>
-      <div class="launch-fact-grid">
-        <span><small>Pools</small><strong>${poolCount}</strong></span>
-        <span><small>Positions</small><strong>${sliceCount}</strong></span>
-        ${ladderCount ? `<span><small>Extra price bands</small><strong>${ladderCount}</strong></span>` : ''}
-        ${topology.pools.some((pool) => pool.support?.enabled) ? '<span><small>Buy support</small><strong>On</strong></span>' : ''}
+      <div class="plan-preview is-liquidity">
+        <div class="preview-map pool-map" role="group" aria-label="Where this launch puts its liquidity">${poolMapForPool(topology.pools[0])}</div>
+        <dl class="preview-rows">
+          <div><dt>Pair</dt><dd>${escapeHtml(String(topology.pools[0]?.quoteSymbol || topology.pools[0]?.quoteToken || 'SOL'))}${poolCount > 1 ? ` <i>+${poolCount - 1}</i>` : ''}</dd></div>
+          <div><dt>Support</dt><dd>${topology.pools[0]?.support?.mode === 'custom' ? `${Number(topology.pools[0].support.solValue || 0)} SOL <i>to −${Number(topology.pools[0].support.depthPct || 12)}%</i>` : 'Off'}</dd></div>
+          <div><dt>Start market cap</dt><dd>$${escapeHtml(Number(topology.targetMarketCapUsd || 0).toLocaleString('en-US'))}</dd></div>
+          <div><dt>Fee tier</dt><dd>${escapeHtml(feeTierDisplay(topology.pools[0]?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX))}</dd></div>
+          <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}</dd></div>
+          <div><dt>Locked</dt><dd class="${liquidityComplete ? 'is-ok' : ''}">${liquidityComplete ? 'Yes' : 'At creation'}</dd></div>
+        </dl>
       </div>
       ${readinessPanel({
         title: metadataRevealPending ? 'Reveal the name and logo' : liquidityComplete ? 'Liquidity created and locked' : 'Create and lock liquidity',
@@ -17149,6 +17184,34 @@ function walletLabelState(secretBlocked, unlocked, publicKey) {
   return secretBlocked || !unlocked ? 'Locked' : shortAddress(publicKey);
 }
 
+// The Wallet screen reads the chain for the wallet it shows: SOL and every token it holds.
+// Asked at most once every 30 seconds per wallet, and only while that screen is open.
+function walletPanelBalance(publicKey) {
+  const cached = state.walletPanel;
+  if (cached && cached.publicKey === publicKey) return cached;
+  return null;
+}
+
+function refreshWalletPanelBalance(publicKey) {
+  if (!publicKey || state.activeView !== 'wallet') return;
+  if (state.apiStatus !== 'connected' || !state.apiClient?.checkDetailedBalance) return;
+  const cached = walletPanelBalance(publicKey);
+  if (cached && (cached.loading || Date.now() - cached.at < 30000)) return;
+  state.walletPanel = { ...(cached || {}), publicKey, loading: true, at: Date.now() };
+  state.apiClient.checkDetailedBalance(publicKey)
+    .then((balance) => { state.walletPanel = { publicKey, balance, loading: false, at: Date.now(), error: null }; })
+    .catch((error) => { state.walletPanel = { publicKey, balance: cached?.balance || null, loading: false, at: Date.now(), error: error.message || 'Balance check failed' }; })
+    .finally(() => { if (state.activeView === 'wallet') renderWallet(); });
+}
+
+function walletHoldingRows(balance) {
+  const coinSymbol = (mint) => (state.coins?.list || []).find((coin) => coin.mint === mint)?.symbol || null;
+  return Object.entries(balance?.tokens && typeof balance.tokens === 'object' ? balance.tokens : {})
+    .filter(([, token]) => Number(token?.amountUi) > 0)
+    .map(([mint, token]) => ({ mint, symbol: coinSymbol(mint) || token.symbol || shortAddress(mint), amount: Number(token.amountUi) }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
 function renderWallet() {
   const current = account();
   const unlocked = walletIsUnlocked();
@@ -17260,36 +17323,63 @@ function renderWallet() {
     `;
   }).join('') || '<div class="empty-state">Create or import a launch wallet.</div>';
 
+  refreshWalletPanelBalance(selectedPublicKey);
+  const panel = selectedPublicKey ? walletPanelBalance(selectedPublicKey) : null;
+  const solBalance = panel?.balance ? Number(panel.balance.sol) : null;
+  const holdings = walletHoldingRows(panel?.balance);
+  const spend = observedExecutionSpendSummary();
+  const net = spend.inflowSol - spend.outflowSol;
+  const sol4 = (value) => Number(value || 0).toFixed(4);
+  const launchedCoins = (state.coins?.list || []).filter((coin) => coin.launchedHere && coin.mint).slice(0, 6);
+  const stat = (label, value, unit = '', tone = '') => `<div class="wallet-stat${tone ? ` is-${tone}` : ''}"><span>${escapeHtml(label)}</span><b>${value}</b>${unit ? `<i>${escapeHtml(unit)}</i>` : ''}</div>`;
   $('#walletDetailPanel').innerHTML = selectedPublicKey && selectedRow ? `
-    <div class="wallet-detail-grid">
+    <header class="wallet-head">
+      <span class="wallet-head-name"><strong>${escapeHtml(selectedRow.name)}</strong><span>${escapeHtml(shortAddress(selectedPublicKey))}</span></span>
+      <span class="wallet-head-actions">
+        <button class="pill-button" type="button" data-action="copy-wallet-address"><i class="fa-solid fa-copy"></i><span>Copy</span></button>
+        <button class="pill-button" type="button" data-action="${secretBlocked || pinLockedForUnlock ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy || (keyGone && !pinLockedForUnlock) ? 'disabled' : ''}>
+          <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked || pinLockedForUnlock ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
+        </button>
+        <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
+          <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
+        </button>
+      </span>
+    </header>
+    ${keyGone ? `<p class="wallet-detail-error">${escapeHtml(lockReason.detail)}</p>` : ''}
+    <div class="wallet-stats">
+      ${stat('SOL', solBalance != null ? sol4(solBalance) : (panel?.loading ? '…' : '—'), '', 'main')}
+      ${stat('Tokens', String(holdings.length))}
+      ${stat('Spent', spend.measuredCount ? sol4(spend.outflowSol) : '—', spend.measuredCount ? 'SOL' : '')}
+      ${stat('Returned', spend.measuredCount ? sol4(spend.inflowSol) : '—', spend.measuredCount ? 'SOL' : '')}
+      ${stat('Net', spend.measuredCount ? `${net >= 0 ? '+' : '−'}${sol4(Math.abs(net))}` : '—', spend.measuredCount ? 'SOL' : '', spend.measuredCount ? (net >= 0 ? 'ok' : 'warn') : '')}
+    </div>
+    ${panel?.error ? `<p class="wallet-detail-error">${escapeHtml(panel.error)}</p>` : ''}
+    <div class="wallet-cols">
+      <section class="wallet-block" aria-label="Holdings">
+        <div class="wallet-block-head"><span>Holdings</span><small>${holdings.length ? `${holdings.length} token${holdings.length === 1 ? '' : 's'}` : ''}</small></div>
+        <div class="wallet-line"><span>SOL</span><b>${solBalance != null ? sol4(solBalance) : '—'}</b></div>
+        ${holdings.slice(0, 5).map((item) => `<div class="wallet-line"><span title="${escapeHtml(item.mint)}">${escapeHtml(item.symbol)}</span><b>${escapeHtml(item.amount.toLocaleString('en-US', { maximumFractionDigits: 2 }))}</b></div>`).join('')}
+        ${holdings.length > 5 ? `<div class="wallet-line is-muted"><span>+${holdings.length - 5} more</span></div>` : ''}
+      </section>
+      <section class="wallet-block" aria-label="Coins">
+        <div class="wallet-block-head"><span>Coins</span><small>${launchedCoins.length || ''}</small></div>
+        ${launchedCoins.length ? launchedCoins.map((coin) => `<button class="wallet-line is-action" type="button" data-action="open-coin" data-coin-key="${escapeHtml(coin.key)}"><span>${escapeHtml(coin.symbol ? `$${coin.symbol}` : (coin.name || shortAddress(coin.mint)))}</span><b>${escapeHtml(coin.practice ? 'Test' : (coin.status || 'On-chain'))}</b></button>`).join('')
+          : '<div class="wallet-line is-muted"><span>None launched</span></div>'}
+      </section>
+    </div>
+    <section class="wallet-deposit" aria-label="Deposit">
       <div class="wallet-qr-box ${qrCode ? 'has-qr' : ''}">
         ${qrCode
           ? `<img src="${escapeHtml(qrCode)}" alt="Funding QR code for ${escapeHtml(fullAddress(selectedPublicKey))}">`
-          : `<span><i class="fa-solid ${qrLoading ? 'fa-spinner fa-spin' : 'fa-qrcode'}"></i></span>`}
+          : `<button class="pill-button" type="button" data-action="load-wallet-qr" ${qrLoading ? 'disabled' : ''}><i class="fa-solid ${qrLoading ? 'fa-spinner fa-spin' : 'fa-qrcode'}"></i><span>QR</span></button>`}
       </div>
-      <div class="wallet-funding-box">
-        <span class="eyebrow">Funding address</span>
-        <h3>${escapeHtml(selectedRow.name)}</h3>
+      <div class="wallet-deposit-main">
+        <span class="wallet-block-head"><span>Deposit address</span></span>
         <code>${escapeHtml(selectedPublicKey)}</code>
-        <div class="operator-toolbar compact">
-          <button class="pill-button" type="button" data-action="copy-wallet-address">
-            <i class="fa-solid fa-copy"></i><span>Copy</span>
-          </button>
-          <button class="pill-button" type="button" data-action="load-wallet-qr" ${qrLoading ? 'disabled' : ''}>
-            <i class="fa-solid fa-qrcode"></i><span>${qrCode ? 'Refresh QR' : 'Load QR'}</span>
-          </button>
-          <button class="pill-button" type="button" data-action="${secretBlocked || pinLockedForUnlock ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy || (keyGone && !pinLockedForUnlock) ? 'disabled' : ''}>
-            <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked || pinLockedForUnlock ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
-          </button>
-          <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
-            <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
-          </button>
-        </div>
-        ${keyGone ? `<p class="wallet-detail-error">${escapeHtml(lockReason.detail)}</p>` : ''}
         ${qrError ? `<p class="wallet-detail-error">${escapeHtml(qrError)}</p>` : ''}
         ${renderFundingWalletHint()}
       </div>
-    </div>
+    </section>
     ${renderSolflarePanel()}
     ${revealError ? `<p class="wallet-detail-error">${escapeHtml(revealError)}</p>` : ''}
     ${revealed ? `<div class="wallet-recovery-box is-revealed">

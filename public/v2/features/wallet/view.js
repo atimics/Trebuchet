@@ -5,6 +5,34 @@ function walletLabelState(secretBlocked, unlocked, publicKey) {
   return secretBlocked || !unlocked ? 'Locked' : shortAddress(publicKey);
 }
 
+// The Wallet screen reads the chain for the wallet it shows: SOL and every token it holds.
+// Asked at most once every 30 seconds per wallet, and only while that screen is open.
+function walletPanelBalance(publicKey) {
+  const cached = state.walletPanel;
+  if (cached && cached.publicKey === publicKey) return cached;
+  return null;
+}
+
+function refreshWalletPanelBalance(publicKey) {
+  if (!publicKey || state.activeView !== 'wallet') return;
+  if (state.apiStatus !== 'connected' || !state.apiClient?.checkDetailedBalance) return;
+  const cached = walletPanelBalance(publicKey);
+  if (cached && (cached.loading || Date.now() - cached.at < 30000)) return;
+  state.walletPanel = { ...(cached || {}), publicKey, loading: true, at: Date.now() };
+  state.apiClient.checkDetailedBalance(publicKey)
+    .then((balance) => { state.walletPanel = { publicKey, balance, loading: false, at: Date.now(), error: null }; })
+    .catch((error) => { state.walletPanel = { publicKey, balance: cached?.balance || null, loading: false, at: Date.now(), error: error.message || 'Balance check failed' }; })
+    .finally(() => { if (state.activeView === 'wallet') renderWallet(); });
+}
+
+function walletHoldingRows(balance) {
+  const coinSymbol = (mint) => (state.coins?.list || []).find((coin) => coin.mint === mint)?.symbol || null;
+  return Object.entries(balance?.tokens && typeof balance.tokens === 'object' ? balance.tokens : {})
+    .filter(([, token]) => Number(token?.amountUi) > 0)
+    .map(([mint, token]) => ({ mint, symbol: coinSymbol(mint) || token.symbol || shortAddress(mint), amount: Number(token.amountUi) }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
 function renderWallet() {
   const current = account();
   const unlocked = walletIsUnlocked();
@@ -116,36 +144,63 @@ function renderWallet() {
     `;
   }).join('') || '<div class="empty-state">Create or import a launch wallet.</div>';
 
+  refreshWalletPanelBalance(selectedPublicKey);
+  const panel = selectedPublicKey ? walletPanelBalance(selectedPublicKey) : null;
+  const solBalance = panel?.balance ? Number(panel.balance.sol) : null;
+  const holdings = walletHoldingRows(panel?.balance);
+  const spend = observedExecutionSpendSummary();
+  const net = spend.inflowSol - spend.outflowSol;
+  const sol4 = (value) => Number(value || 0).toFixed(4);
+  const launchedCoins = (state.coins?.list || []).filter((coin) => coin.launchedHere && coin.mint).slice(0, 6);
+  const stat = (label, value, unit = '', tone = '') => `<div class="wallet-stat${tone ? ` is-${tone}` : ''}"><span>${escapeHtml(label)}</span><b>${value}</b>${unit ? `<i>${escapeHtml(unit)}</i>` : ''}</div>`;
   $('#walletDetailPanel').innerHTML = selectedPublicKey && selectedRow ? `
-    <div class="wallet-detail-grid">
+    <header class="wallet-head">
+      <span class="wallet-head-name"><strong>${escapeHtml(selectedRow.name)}</strong><span>${escapeHtml(shortAddress(selectedPublicKey))}</span></span>
+      <span class="wallet-head-actions">
+        <button class="pill-button" type="button" data-action="copy-wallet-address"><i class="fa-solid fa-copy"></i><span>Copy</span></button>
+        <button class="pill-button" type="button" data-action="${secretBlocked || pinLockedForUnlock ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy || (keyGone && !pinLockedForUnlock) ? 'disabled' : ''}>
+          <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked || pinLockedForUnlock ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
+        </button>
+        <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
+          <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
+        </button>
+      </span>
+    </header>
+    ${keyGone ? `<p class="wallet-detail-error">${escapeHtml(lockReason.detail)}</p>` : ''}
+    <div class="wallet-stats">
+      ${stat('SOL', solBalance != null ? sol4(solBalance) : (panel?.loading ? '…' : '—'), '', 'main')}
+      ${stat('Tokens', String(holdings.length))}
+      ${stat('Spent', spend.measuredCount ? sol4(spend.outflowSol) : '—', spend.measuredCount ? 'SOL' : '')}
+      ${stat('Returned', spend.measuredCount ? sol4(spend.inflowSol) : '—', spend.measuredCount ? 'SOL' : '')}
+      ${stat('Net', spend.measuredCount ? `${net >= 0 ? '+' : '−'}${sol4(Math.abs(net))}` : '—', spend.measuredCount ? 'SOL' : '', spend.measuredCount ? (net >= 0 ? 'ok' : 'warn') : '')}
+    </div>
+    ${panel?.error ? `<p class="wallet-detail-error">${escapeHtml(panel.error)}</p>` : ''}
+    <div class="wallet-cols">
+      <section class="wallet-block" aria-label="Holdings">
+        <div class="wallet-block-head"><span>Holdings</span><small>${holdings.length ? `${holdings.length} token${holdings.length === 1 ? '' : 's'}` : ''}</small></div>
+        <div class="wallet-line"><span>SOL</span><b>${solBalance != null ? sol4(solBalance) : '—'}</b></div>
+        ${holdings.slice(0, 5).map((item) => `<div class="wallet-line"><span title="${escapeHtml(item.mint)}">${escapeHtml(item.symbol)}</span><b>${escapeHtml(item.amount.toLocaleString('en-US', { maximumFractionDigits: 2 }))}</b></div>`).join('')}
+        ${holdings.length > 5 ? `<div class="wallet-line is-muted"><span>+${holdings.length - 5} more</span></div>` : ''}
+      </section>
+      <section class="wallet-block" aria-label="Coins">
+        <div class="wallet-block-head"><span>Coins</span><small>${launchedCoins.length || ''}</small></div>
+        ${launchedCoins.length ? launchedCoins.map((coin) => `<button class="wallet-line is-action" type="button" data-action="open-coin" data-coin-key="${escapeHtml(coin.key)}"><span>${escapeHtml(coin.symbol ? `$${coin.symbol}` : (coin.name || shortAddress(coin.mint)))}</span><b>${escapeHtml(coin.practice ? 'Test' : (coin.status || 'On-chain'))}</b></button>`).join('')
+          : '<div class="wallet-line is-muted"><span>None launched</span></div>'}
+      </section>
+    </div>
+    <section class="wallet-deposit" aria-label="Deposit">
       <div class="wallet-qr-box ${qrCode ? 'has-qr' : ''}">
         ${qrCode
           ? `<img src="${escapeHtml(qrCode)}" alt="Funding QR code for ${escapeHtml(fullAddress(selectedPublicKey))}">`
-          : `<span><i class="fa-solid ${qrLoading ? 'fa-spinner fa-spin' : 'fa-qrcode'}"></i></span>`}
+          : `<button class="pill-button" type="button" data-action="load-wallet-qr" ${qrLoading ? 'disabled' : ''}><i class="fa-solid ${qrLoading ? 'fa-spinner fa-spin' : 'fa-qrcode'}"></i><span>QR</span></button>`}
       </div>
-      <div class="wallet-funding-box">
-        <span class="eyebrow">Funding address</span>
-        <h3>${escapeHtml(selectedRow.name)}</h3>
+      <div class="wallet-deposit-main">
+        <span class="wallet-block-head"><span>Deposit address</span></span>
         <code>${escapeHtml(selectedPublicKey)}</code>
-        <div class="operator-toolbar compact">
-          <button class="pill-button" type="button" data-action="copy-wallet-address">
-            <i class="fa-solid fa-copy"></i><span>Copy</span>
-          </button>
-          <button class="pill-button" type="button" data-action="load-wallet-qr" ${qrLoading ? 'disabled' : ''}>
-            <i class="fa-solid fa-qrcode"></i><span>${qrCode ? 'Refresh QR' : 'Load QR'}</span>
-          </button>
-          <button class="pill-button" type="button" data-action="${secretBlocked || pinLockedForUnlock ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy || (keyGone && !pinLockedForUnlock) ? 'disabled' : ''}>
-            <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked || pinLockedForUnlock ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
-          </button>
-          <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
-            <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
-          </button>
-        </div>
-        ${keyGone ? `<p class="wallet-detail-error">${escapeHtml(lockReason.detail)}</p>` : ''}
         ${qrError ? `<p class="wallet-detail-error">${escapeHtml(qrError)}</p>` : ''}
         ${renderFundingWalletHint()}
       </div>
-    </div>
+    </section>
     ${renderSolflarePanel()}
     ${revealError ? `<p class="wallet-detail-error">${escapeHtml(revealError)}</p>` : ''}
     ${revealed ? `<div class="wallet-recovery-box is-revealed">

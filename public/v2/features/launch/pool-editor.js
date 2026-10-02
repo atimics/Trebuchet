@@ -385,6 +385,27 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
   return `<svg viewBox="0 0 ${W} ${BASE + 56}" role="img" aria-label="${title}" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
 }
 
+// The same picture for a pool as the launch will build it (Create liquidity tab).
+function poolMapForPool(pool) {
+  const support = pool?.support?.mode === 'custom' ? pool.support : null;
+  const slices = (pool?.distribution || []).map((slice) => Number(slice.sharePercent) || 0).filter((share) => share > 0);
+  let bands = [];
+  if (pool?.ladder?.mode === 'manual') {
+    bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: band.supplyPercent, label: `${Number(Number(band.supplyPercent).toFixed(1))}%` }));
+  } else if (pool?.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
+    const count = pool.ladder.bandCount;
+    const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
+    bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: 1, label: '' }));
+  }
+  return poolMapSvg({
+    premiumPct: 0,
+    supportSol: support ? Number(support.solValue) || 0 : 0,
+    depthPct: support ? Number(support.depthPct) || 12 : 12,
+    slices: slices.length ? slices : [100],
+    bands,
+  });
+}
+
 function renderPoolMap(panel) {
   const host = panel.querySelector('[data-pool-map]');
   if (!host) return;

@@ -17512,3 +17512,63 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 /* The token name and mark are in the header already; empty readout panels leaked borders below the frame. */
 #launchConsole { display: none !important; }
 #signaturePanel:empty { display: none; }
+
+/* Create tabs show what will exist: a mark or the price map, then plain rows. */
+.plan-preview { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 16px; padding: 4px 0; }
+.plan-preview.is-liquidity { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
+.plan-preview .preview-mark { display: grid; justify-items: start; align-content: start; gap: 6px; padding: 12px; border: 1px solid var(--line); background: var(--panel-strong); }
+.plan-preview .preview-mark img, .plan-preview .preview-mark > span { width: 96px; height: 96px; object-fit: cover; border: 1px solid var(--line-strong); }
+.plan-preview .preview-mark > span { display: grid; place-items: center; font-size: 20px; font-weight: 700; color: var(--green); background: var(--panel); }
+.plan-preview .preview-mark strong { font-size: 14px; }
+.plan-preview .preview-mark small { font-size: 12px; color: var(--muted); }
+.plan-preview .preview-map { padding: 8px 10px; border: 1px solid var(--line); background: var(--panel-strong); }
+.plan-preview .preview-map svg { width: 100%; height: auto; display: block; font-family: var(--mono); }
+.plan-preview .preview-rows { display: grid; align-content: start; margin: 0; border-top: 1px solid var(--line); }
+.plan-preview .preview-rows > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.plan-preview .preview-rows dt { color: var(--muted); }
+.plan-preview .preview-rows dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.plan-preview .preview-rows dd.is-ok { color: var(--green); }
+.plan-preview i { font-style: normal; font-size: 11px; color: var(--muted); }
+@media (max-width: 900px) { .plan-preview, .plan-preview.is-liquidity { grid-template-columns: minmax(0, 1fr); } }
+
+/* Wallet screen: balances, then what it holds and has launched, then where to deposit. */
+.wallet-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.wallet-head-name { display: grid; gap: 2px; min-width: 0; }
+.wallet-head-name strong { font-size: 14px; }
+.wallet-head-name span { font-size: 12px; color: var(--muted); }
+.wallet-head-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.wallet-stats { display: grid; grid-template-columns: 1.4fr repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); margin: 12px 0; }
+.wallet-stat { display: grid; gap: 4px; padding: 12px; border-right: 1px solid var(--line); min-width: 0; }
+.wallet-stat:last-child { border-right: 0; }
+.wallet-stat span { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.wallet-stat b { font-size: 16px; font-weight: 700; }
+.wallet-stat.is-main b { font-size: 24px; line-height: 1.1; }
+.wallet-stat.is-ok b { color: var(--green); }
+.wallet-stat.is-warn b { color: var(--amber); }
+.wallet-stat i { font-style: normal; font-size: 11px; color: var(--muted); }
+.wallet-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.wallet-block { border: 1px solid var(--line); background: var(--panel-strong); min-width: 0; }
+.wallet-block-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.wallet-block-head small { font-size: 11px; }
+.wallet-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; width: 100%; padding: 8px 12px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); font-size: 12px; text-align: left; }
+.wallet-line:last-child { border-bottom: 0; }
+.wallet-line span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wallet-line b { font-weight: 500; text-align: right; }
+.wallet-line.is-action { cursor: pointer; }
+.wallet-line.is-action:hover { background: color-mix(in srgb, var(--panel) 70%, transparent); }
+.wallet-line.is-action span { color: var(--ink); }
+.wallet-line.is-muted span { color: var(--subtle); }
+.wallet-deposit { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; margin-top: 12px; padding: 12px; border: 1px solid var(--line); }
+.wallet-deposit .wallet-qr-box { display: grid; place-items: center; width: 112px; height: 112px; background: var(--panel-strong); border: 1px solid var(--line); }
+.wallet-deposit .wallet-qr-box img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
+.wallet-deposit-main { display: grid; align-content: start; gap: 8px; min-width: 0; }
+.wallet-deposit-main code { font-family: inherit; font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 900px) { .wallet-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wallet-cols { grid-template-columns: minmax(0, 1fr); } .wallet-deposit { grid-template-columns: minmax(0, 1fr); } }
+#view-wallet .section-heading { align-items: center; }
+#view-wallet .section-heading .button-pair { display: flex; flex-direction: row; gap: 6px; }
+#view-wallet .wallet-module-heading { display: none; }
+.plan-preview.is-liquidity { grid-template-columns: minmax(0, 1fr); }
+.plan-preview.is-liquidity .preview-rows { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
+.plan-preview .preview-rows dd { white-space: nowrap; }
+.phase-tree-drawer { display: none; }
+#assetTable:not(:empty) { margin-top: 12px; }
