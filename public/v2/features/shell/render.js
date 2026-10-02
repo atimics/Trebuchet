@@ -4,6 +4,15 @@ function renderVanitySummary() {
   summary.textContent = state.selectedVanityPublicKey
     ? `${shortAddress(state.selectedVanityPublicKey)} · vanity`
     : 'Random address · recommended';
+  // A section that holds the chosen address should not start collapsed, or the
+  // address looks missing. Open it once per selected address; the operator can
+  // still collapse it and it stays that way.
+  const details = summary.closest('details');
+  if (details && state.selectedVanityPublicKey
+    && state.vanityDetailsOpenedFor !== state.selectedVanityPublicKey) {
+    state.vanityDetailsOpenedFor = state.selectedVanityPublicKey;
+    details.open = true;
+  }
 }
 
 // "More options" stays folded, so its header names every choice inside it:

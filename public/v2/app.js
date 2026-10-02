@@ -16,6 +16,7 @@ const views = {
   // A coin being created: the coin page with its creation steps.
   launch: { eyebrow: '', title: 'Coins' },
   nfts: { eyebrow: '', title: 'NFT collections' },
+  lean: { eyebrow: '', title: 'Lean launch' },
   wallet: { eyebrow: '', title: 'Wallet' },
   discovery: { eyebrow: '', title: 'Discovery' },
   history: { eyebrow: '', title: 'History' },
@@ -28,7 +29,7 @@ const launchWorkspaces = [
   { id: 'fund', title: 'Fund wallet', detail: 'Estimate the exact requirement, deposit SOL, and acquire quote tokens.' },
   { id: 'mint', title: 'Create token', detail: 'Review the permanent token facts, then mint and revoke authorities.' },
   { id: 'liquidity', title: 'Create liquidity', detail: 'Create pools and positions, lock liquidity, and deliver Fee Keys.' },
-  { id: 'finish', title: 'Finish launch', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
+  { id: 'finish', title: 'Leftovers', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
 ];
 
 
@@ -356,6 +357,7 @@ const state = {
   },
   secretPin: {
     configured: false,
+    damaged: false,
     unlocked: false,
     locked: false,
     version: null,
@@ -364,6 +366,7 @@ const state = {
     deviceSecretAvailable: true,
     busy: null,
   },
+  recoveryPinOffered: false,
   recoveryPinGate: {
     open: false,
     value: '',
@@ -405,6 +408,7 @@ const state = {
   vanityCandidates: [],
   savedLaunches: [],
   loadedSavedLaunchId: null,
+  vanityDetailsOpenedFor: null,
   flywheelPools: { meme: [], reserve: [] },
   vortexControl: null,
   memeFlywheelMint: null,
@@ -556,6 +560,14 @@ function walletIsUnlocked() {
     secretPin: state.secretPin,
     demoActive: state.demoActive,
   }) === true;
+}
+
+function walletLockReason() {
+  return window.TrebuchetV2RuntimeState?.walletLockReason({
+    wallet: selectedManagedWallet(),
+    secretPin: state.secretPin,
+    demoActive: state.demoActive,
+  }) || 'no-wallet';
 }
 
 function authoritativeNetworkLabel() {
@@ -1273,13 +1285,14 @@ function walletAccounts() {
         balance: Number(wallet.balanceSol || 0),
         role: wallet.source === 'imported-local'
           ? 'Imported local wallet'
-          : wallet.hasSecretKey ? 'Launch wallet' : 'Locked local wallet',
+          : wallet.hasSecretKey ? 'Launch wallet' : lockedRoleLabel(wallet),
         rarity,
         rarityGrade: vanityRarityGrade(rarity),
         hasSecretKey: wallet.hasSecretKey === true,
         hasMnemonic: wallet.hasMnemonic === true || typeof wallet.mnemonic === 'string',
         decryptionFailed: wallet.decryptionFailed === true,
         secretPinLocked: wallet.secretPinLocked === true,
+        secretState: wallet.secretState || null,
         qrCode: wallet.qrCode || null,
         createdAt: wallet.createdAt || null,
         source: wallet.source || 'local',
@@ -1287,6 +1300,24 @@ function walletAccounts() {
     });
   }
   return [];
+}
+
+// Any screen that tells the user to unlock the Recovery PIN gets a real button, never just words.
+function pinUnlockButton(message) {
+  const pinLocked = state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged;
+  if (!pinLocked || !/Recovery PIN|secrets PIN/i.test(String(message || ''))) return '';
+  return ' <button class="pill-button" type="button" data-action="unlock-secret-pin">Unlock PIN</button>';
+}
+
+function walletLockInfo(wallet) {
+  return window.TrebuchetV2RuntimeState?.walletSecretReason?.({ wallet, secretPin: state.secretPin })
+    || { state: null, label: '', detail: '', canUnlock: true, canReset: false };
+}
+
+function lockedRoleLabel(wallet) {
+  if (wallet?.secretState === 'missing') return 'Local wallet, key missing';
+  if (wallet?.secretState === 'wrong-key') return 'Local wallet, different PIN';
+  return 'Locked local wallet';
 }
 
 function account() {
@@ -1315,11 +1346,18 @@ function pendingRecoveryWallet(publicKey) {
 }
 
 function recoveryWalletState(wallet) {
-  if (wallet?.decryptionFailed) {
+  const reason = walletLockInfo(wallet);
+  if (reason.state === 'missing') {
+    return { label: 'Key missing', className: 'danger', detail: reason.detail };
+  }
+  if (reason.state === 'wrong-key') {
+    return { label: 'Different PIN', className: 'danger', detail: reason.detail };
+  }
+  if (wallet?.decryptionFailed && !(state.secretPin.locked || wallet?.secretPinLocked)) {
     return {
       label: 'Secret missing',
       className: 'danger',
-      detail: 'Local metadata exists, but Trebuchet cannot decrypt the saved secret here.',
+      detail: 'Local metadata exists, but Trebuchet cannot read the saved secret here.',
     };
   }
   if (state.secretPin.locked || wallet?.secretPinLocked) {
@@ -1927,18 +1965,80 @@ function normalizedSliceText(value) {
   return parseSliceShares(value).map(formatPercent).join(',');
 }
 
+// What the "Position slices" text means, in plain words, so a bare "100" (one
+// position) or "30,30" (scaled up to 50,50) is never a surprise. Mirrors
+// parseSliceShares: the same separators, the same scaling.
+function describeSliceInput(value) {
+  const tokens = String(value || '').split(/[,\s/|]+|[-–—]+/).filter(Boolean);
+  const numbers = tokens.map((token) => parseNumericInput(token, NaN));
+  const rejected = tokens.filter((token, index) => !(Number.isFinite(numbers[index]) && numbers[index] > 0));
+  const valid = numbers.filter((number) => Number.isFinite(number) && number > 0);
+  const rawTotal = valid.reduce((sum, number) => sum + number, 0);
+  const slices = parseSliceShares(value);
+  const list = slices.map((share) => `${formatPercent(share)}%`).join(' + ');
+  const parts = [];
+  let tone = 'ok';
+  if (rejected.length) {
+    tone = 'warn';
+    parts.push(`Ignored: ${rejected.slice(0, 3).join(', ')}${rejected.length > 3 ? ', ...' : ''}.`);
+  }
+  if (!valid.length) {
+    parts.push(tokens.length ? 'No usable numbers, so one position (100%).' : 'Empty, so one position (100%).');
+  } else if (slices.length === 1) {
+    parts.push('1 position, all of this pool.');
+  } else {
+    parts.push(`${slices.length} positions: ${list}.`);
+  }
+  if (valid.length && Math.abs(rawTotal - 100) > 0.005) {
+    tone = 'warn';
+    parts.push(`Your numbers total ${formatPercent(rawTotal)}, so they are scaled to 100%.`);
+  }
+  return { slices, rawTotal, rejected, tone, invalid: rejected.length > 0, text: parts.join(' ') };
+}
+
+// Limits for the numeric fields of a pool's advanced panel. The launch plan
+// clamps to these; the panel says so instead of changing the number silently.
+function checkPoolNumberField(kind, raw) {
+  const text = String(raw ?? '').trim();
+  const spec = {
+    premium: { min: 0, max: 500, fallback: 25, blank: 'fallback', unit: '%' },
+    ladderBands: { min: 0, max: CLASSIC_LADDER_MAX_BANDS, fallback: 0, blank: 'zero', whole: true, unit: ' bands' },
+    supportSol: { min: 0, max: Infinity, fallback: 0, blank: 'zero', unit: ' SOL' },
+  }[kind];
+  if (!spec) return { value: Number(raw), issue: null };
+  const range = Number.isFinite(spec.max) ? `0 to ${spec.max}` : '0 or more';
+  if (!text) {
+    return spec.blank === 'zero'
+      ? { value: 0, issue: null }
+      : { value: spec.fallback, issue: `Enter a number from ${range}. Using ${spec.fallback}${spec.unit}.` };
+  }
+  const number = parseNumericInput(text, NaN);
+  if (!Number.isFinite(number)) return { value: spec.fallback, issue: `"${text.slice(0, 12)}" is not a number. Using ${spec.fallback}${spec.unit}.` };
+  if (number < spec.min) return { value: spec.min, issue: `Cannot be below ${spec.min}. Using ${spec.min}${spec.unit}.` };
+  if (number > spec.max) return { value: spec.max, issue: `The most allowed is ${spec.max}${spec.unit}. Using ${spec.max}${spec.unit}.` };
+  if (spec.whole && !Number.isInteger(number)) return { value: Math.floor(number), issue: `Whole numbers only. Using ${Math.floor(number)}.` };
+  return { value: number, issue: null };
+}
+
 function isProbablySolanaAddress(value) {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(value || '').trim());
 }
 
 function parseManualLadderBands(value) {
+  return analyzeManualLadder(value).bands;
+}
+
+// Reads the custom ladder text. Lines it cannot use are listed in `rejected`
+// (1-based line numbers) so the panel can say which ones were skipped.
+// Blank lines, # comments and a header line are skipped on purpose.
+function analyzeManualLadder(value) {
   const bands = [];
+  const rejected = [];
   String(value || '')
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .forEach((line) => {
-      if (line.startsWith('#')) return;
+    .forEach((rawLine, lineIndex) => {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) return;
       const parts = line.split(/[,\t ]+/).map((part) => part.trim()).filter(Boolean);
       if (!parts.length || /supply/i.test(parts[0])) return;
       const supplyPercent = parseNumericInput(parts[0], NaN);
@@ -1957,9 +2057,11 @@ function parseManualLadderBands(value) {
           lowerMultiplier: Number(lowerMultiplier.toFixed(4)),
           upperMultiplier: Number(upperMultiplier.toFixed(4)),
         });
+      } else {
+        rejected.push({ line: lineIndex + 1, text: line });
       }
     });
-  return bands;
+  return { bands, rejected };
 }
 
 function classicSimpleLadderConfig(bandCount) {
@@ -3362,11 +3464,16 @@ function runProgressContext() {
 }
 
 function notify(message) {
+  // A locked Recovery PIN is answered with the PIN panel, not a sentence about it.
+  if (/^Unlock your Recovery PIN\b/i.test(String(message)) && !state.recoveryPinGate?.open) {
+    openRecoveryPinGate({ reason: 'unlock' });
+    return;
+  }
   const toast = document.createElement('div');
   toast.className = 'toast';
   toast.textContent = message;
   $('#toastStack').appendChild(toast);
-  setTimeout(() => toast.remove(), 2600);
+  setTimeout(() => toast.remove(), Math.min(9000, Math.max(4500, message.length * 70)));
 }
 
 function updateResultLabel(result = state.updateCheck.lastResult) {
@@ -3383,8 +3490,8 @@ function updateResultDetail(result = state.updateCheck.lastResult) {
   if (state.updateCheck.checking) return 'Checking for a newer version…';
   if (!result) {
     return state.updateCheck.available
-      ? 'Not checked yet.'
-      : 'Update checks need the Trebuchet desktop app.';
+      ? ''
+      : 'Needs the desktop app.';
   }
   if (result.status === 'available') {
     return `Version v${result.latest || '?'} is available${result.downloadFilename ? ` / ${result.downloadFilename}` : ''}.`;
@@ -3432,6 +3539,7 @@ window.__showUpdateResult = applyUpdateResult;
 function applySecretPinStatus(status = {}) {
   state.secretPin = {
     configured: status.configured === true,
+    damaged: status.damaged === true,
     unlocked: status.unlocked === true,
     locked: status.locked === true,
     version: status.version || null,
@@ -3440,6 +3548,16 @@ function applySecretPinStatus(status = {}) {
     deviceSecretAvailable: status.deviceSecretAvailable !== false,
     busy: null,
   };
+}
+
+const RECOVERY_PIN_DAMAGED_MESSAGE = 'The Recovery PIN file is damaged. Do not set a new PIN: it would replace the old one. A backup is at .secretPin.json.bak if present.';
+const RECOVERY_PIN_DEVICE_SECRET_MESSAGE = "This computer's keychain no longer holds the key for your Recovery PIN. Unlocking again will not help.";
+
+function recoveryPinFailureMessage(error) {
+  if (error?.code === 'BAD_SECRET_PIN') return 'Incorrect PIN';
+  if (error?.code === 'SECRET_PIN_DEVICE_SECRET_UNAVAILABLE') return RECOVERY_PIN_DEVICE_SECRET_MESSAGE;
+  if (error?.code === 'SECRET_PIN_STATE_DAMAGED') return RECOVERY_PIN_DAMAGED_MESSAGE;
+  return error?.message || 'PIN check failed';
 }
 
 function secretPinMeta() {
@@ -3453,11 +3571,21 @@ function secretPinMeta() {
       disabled: true,
     };
   }
+  if (state.secretPin.damaged) {
+    return {
+      label: 'Damaged',
+      className: 'danger',
+      detail: RECOVERY_PIN_DAMAGED_MESSAGE,
+      primaryAction: 'retry-local-api',
+      primaryLabel: 'Recheck',
+      disabled: false,
+    };
+  }
   if (!state.secretPin.configured) {
     return {
       label: 'Not set',
       className: 'warn',
-      detail: 'Launch wallets are protected by this device only.',
+      detail: '',
       primaryAction: 'setup-secret-pin',
       primaryLabel: 'Set PIN',
       disabled: false,
@@ -3823,13 +3951,13 @@ async function submitRecoveryPinGate() {
   } catch (error) {
     state.secretPin.busy = null;
     state.recoveryPinGate.status = 'error';
-    state.recoveryPinGate.message = error?.code === 'BAD_SECRET_PIN'
-      ? 'Incorrect PIN'
-      : error?.message || 'PIN check failed';
+    state.recoveryPinGate.message = recoveryPinFailureMessage(error);
+    const retryable = !error?.code || error.code === 'BAD_SECRET_PIN';
     renderRecoveryPinGate();
     recoveryPinGateTimer = window.setTimeout(() => {
       recoveryPinGateTimer = null;
       if (!state.recoveryPinGate.open || state.recoveryPinGate.status !== 'error') return;
+      if (!retryable) return;
       state.recoveryPinGate.value = '';
       state.recoveryPinGate.status = 'idle';
       state.recoveryPinGate.message = 'Try again. All four digits were cleared.';
@@ -4985,9 +5113,7 @@ function renderLaunchBudgetRecommendation() {
     button.classList.toggle('is-selected', Number(button.dataset.budget) === budgetSol);
   });
   const depth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
-  target.innerHTML = `<p>${strategy.supportSol > 0
-    ? `The SOL sits from the launch price down to −${escapeHtml(String(depth))}%, so early sellers are paid from it.${strategy.ladderBands ? ' One extra band of tokens sits above the launch price.' : ''}`
-    : 'No SOL goes in the pool. Sellers have nothing to sell into until someone buys.'}</p>`;
+  target.innerHTML = '';
   target.title = '';
 }
 
@@ -5562,7 +5688,7 @@ function setView(view) {
     state.approvalOpen = false;
   }
   // A coin's creation steps are part of its coin page, under Coins.
-  const navView = view === 'launch' ? 'coins' : view;
+  const navView = view === 'launch' || view === 'lean' ? 'coins' : view;
   $$('.nav-item').forEach((button) => {
     button.classList.toggle('is-active', button.dataset.view === navView);
   });
@@ -5572,6 +5698,7 @@ function setView(view) {
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
   if (view === 'nfts') window.TrebuchetNfts?.onShow();
+  if (view === 'lean') window.TrebuchetLean?.onShow();
   renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();
@@ -5758,7 +5885,12 @@ function renderLaunchWorkspace() {
   // true, the row that needs doing opens instead: that is the only "next".
   const openFact = facts.find((fact) => fact.id === open);
   const openJustHeld = openFact && previous[open] && previous[open] !== openFact.state && ['done', 'recorded'].includes(openFact.state);
-  const workspace = !open || openJustHeld ? (next?.id || open || 'finish') : open;
+  let workspace = !open || openJustHeld ? (next?.id || open || 'finish') : open;
+  // Naming the token is the first thing the Token phase asks: Plan is not a phase of its own.
+  if (workspace === 'configure') {
+    workspace = 'mint';
+    state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
+  }
   state.launchWorkspace = workspace;
   state.launchFactStates = Object.fromEntries(facts.map((fact) => [fact.id, fact.state]));
   document.body.dataset.launchWorkspace = workspace;
@@ -5773,7 +5905,14 @@ function renderLaunchWorkspace() {
     const icon = button.querySelector('.coin-fact-mark');
     if (icon) icon.className = `fa-solid ${mark.icon} coin-fact-mark`;
     const value = button.querySelector('[data-coin-fact-value]');
-    if (value) value.textContent = fact.value || '';
+    // Until the token is on chain, its row says what is drafted, not only what is missing.
+    const draft = facts.find((item) => item.id === 'configure');
+    const shown = fact.id === 'mint' && fact.state === 'todo' && draft
+      ? (draft.state === 'draft' ? `${String(draft.value).split(' · ')[0]} · not on-chain` : 'Not named yet')
+      : fact.id === 'liquidity' && fact.state === 'todo' && fact.value === 'No pools yet' && draft?.state === 'draft'
+        ? `${String(draft.value).split(' · ')[1] || ''} · not open`.trim()
+        : fact.value;
+    if (value) value.textContent = shown || '';
     button.title = mark.label;
   }
   // The one action the coin's state asks for, offered wherever it isn't already open.
@@ -5800,12 +5939,241 @@ function renderLaunchWorkspace() {
   if (viewport && selectedWorkspace) {
     viewport.setAttribute('aria-label', `${selectedWorkspace.title}: ${selectedWorkspace.detail}`);
   }
+  renderLaunchNextRail(facts, next, workspace);
+  renderPlanSlides(workspace, facts.find((fact) => fact.id === workspace));
   refreshLaunchChainCheck(facts);
+}
+
+// The right-hand column. One button, then the wallet it acts on: balances, what
+// the launch needs against what the wallet holds, and what has been opened.
+// Nothing here repeats a row or a tab; those say what the plan is.
+function renderLaunchNextRail(facts, next, workspace) {
+  const rail = $('#launchNextRail');
+  if (!rail) return;
+  const config = currentLaunchConfig();
+  const sol = (value) => Number(value || 0).toFixed(4);
+  const practice = Boolean(state.demoActive);
+  const estimateStatus = classicFundingEstimateStatus(config);
+  const estimate = estimateStatus.matchesConfig ? state.classicFundingEstimate : null;
+  const funding = fundingMeterSnapshot(config);
+  const detailed = selectedWalletDetailedBalance();
+  const walletKey = selectedLaunchWalletPublicKey() || state.selectedWalletPublicKey || '';
+  const proof = currentLaunchProof();
+  const mint = proofTokenMint(proof);
+  const results = Array.isArray(proof?.liquidity?.results) ? proof.liquidity.results : [];
+  const plannedPools = config.poolTopology.pools.length;
+  const canAct = Boolean(next && next.action && next.state !== 'running');
+  const irreversible = canAct && ['mint', 'liquidity', 'finish'].includes(next.id) && !practice
+    && (state.phaseSlide || {})[next.id] === 'run';
+  const holds = funding.hasWalletBalance ? Number(funding.availableSol) : null;
+  const needs = estimate ? Number(estimate.totalSol) : null;
+  const short = needs != null && holds != null ? Math.max(0, needs - holds) : null;
+  const fill = needs && holds != null ? Math.min(100, (holds / needs) * 100) : 0;
+  const tokens = detailed?.balance?.tokens && typeof detailed.balance.tokens === 'object'
+    ? Object.entries(detailed.balance.tokens).filter(([, token]) => Number(token?.amountUi) > 0).slice(0, 3)
+    : [];
+  const spend = observedExecutionSpendSummary();
+  const row = (label, value, tone = '') => `<div class="rail-row${tone ? ` is-${tone}` : ''}"><span>${escapeHtml(label)}</span><b>${value}</b></div>`;
+
+  const action = next
+    ? (canAct
+      ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>`
+      : `<div class="rail-busy" role="status"><span class="rail-spin" aria-hidden="true"></span>${escapeHtml(next.value || 'Working')}</div>`)
+    : '<div class="rail-done"><i class="fa-solid fa-check" aria-hidden="true"></i>Nothing left to do</div>';
+
+  const walletBlock = `
+    <section class="rail-block">
+      <div class="rail-head"><span class="rail-label">Wallet</span><code title="${escapeHtml(walletKey)}">${walletKey ? escapeHtml(shortAddress(walletKey)) : 'none'}</code></div>
+      ${practice ? '<div class="rail-balance"><b>Test</b><span>no SOL used</span></div>'
+        : !walletKey ? '<div class="rail-balance"><b>No wallet</b></div>'
+          : holds != null ? `<div class="rail-balance is-amount"><b>${sol(holds)}</b><span>SOL</span></div>`
+            : '<div class="rail-balance"><b>Not checked</b></div>'}
+      ${tokens.map(([tokenMint, token]) => row(String(token.symbol || shortAddress(tokenMint)), escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 })))).join('')}
+    </section>`;
+
+  // The Funding row's own panel shows what is needed; the rail repeats it nowhere.
+  const fundingBlock = practice || workspace === 'fund' || (needs == null && !estimateStatus.stale)
+    ? ''
+    : `<section class="rail-block">
+        <div class="rail-head"><span class="rail-label">Funding</span><small>${estimate ? '' : estimateStatus.stale ? 'Out of date' : 'Not estimated'}</small></div>
+        ${needs != null ? `<div class="rail-meter" role="img" aria-label="Wallet holds ${sol(holds)} of ${sol(needs)} SOL"><i style="width:${fill.toFixed(1)}%"></i></div>
+        ${row('Needs', `${sol(needs)} <i>SOL</i>`)}${short != null ? row('Short', short ? `${sol(short)} <i>SOL</i>` : '0', short ? 'warn' : 'ok') : ''}` : ''}
+      </section>`;
+
+  const lockedCount = results.reduce((count, pool) => count + [
+    ...(pool?.mainPositions || []), ...(pool?.ladderPositions || []), ...(pool?.supportPositions || []), ...(pool?.bootstrap ? [pool.bootstrap] : []),
+  ].filter((position) => position?.locked === true).length, 0);
+  const positionsBlock = `
+    <section class="rail-block">
+      <div class="rail-head"><span class="rail-label">Positions</span>${mint ? `<code title="${escapeHtml(mint)}">${escapeHtml(shortAddress(mint))}</code>` : ''}</div>
+      ${row('Pools', `${launchProofPoolIds(proof).length} <i>of ${plannedPools}</i>`)}
+      ${row('Locked', `${lockedCount}`)}
+      ${spend.measuredCount ? row('Spent', `${sol(spend.outflowSol)} <i>SOL</i>`) : ''}
+    </section>`;
+
+  rail.innerHTML = `
+    <section class="rail-next${next?.state === 'running' ? ' is-running' : ''}" aria-live="polite">
+      ${action}
+      ${irreversible ? '<p class="rail-warn">Cannot be undone.</p>' : ''}
+    </section>
+    ${walletBlock}${fundingBlock}${positionsBlock}`;
+}
+
+// Each phase owns the settings that belong to it, as at most three tabs, the last
+// being the phase's own action: Token (Details, Address, Create), Liquidity
+// (Price & pool, Pairs, Create), Leftovers (Return & report, Airdrop, Finish).
+// The tab shown is a view: nothing is saved, and nothing counts toward progress.
+const PHASE_TABS = {
+  mint: [{ id: 'details', label: 'Details' }, { id: 'address', label: 'Address' }, { id: 'run', label: 'Create' }],
+  liquidity: [{ id: 'price', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }, { id: 'run', label: 'Create' }],
+  finish: [{ id: 'return', label: 'Return & report' }, { id: 'airdrop', label: 'Airdrop' }, { id: 'run', label: 'Finish' }],
+};
+const PLAN_SLIDE_ORDER = ['details', 'address', 'price', 'pairs', 'return', 'airdrop'];
+
+function phaseTabValue(id, runValue) {
+  const text = (selector) => ($(selector)?.textContent || '').trim();
+  const name = String($('#tokenName')?.value || '').trim();
+  const symbol = String($('#tokenSymbol')?.value || '').trim().toUpperCase();
+  const supply = text('#launchMoreSummary').split('·')[0].trim();
+  switch (id) {
+    case 'details': return [name, symbol && `$${symbol}`].filter(Boolean).join(' ') || 'Not named';
+    case 'address': return text('#vanitySummary').replace(' · recommended', '') || 'Random address';
+    case 'price': return `$${String($('#targetMarketCapUsd')?.value || '').trim() || '—'} · ${Number($('#liquidityBudgetSol')?.value || 0)} SOL`;
+    case 'pairs': return text('#classicSummary') || '—';
+    case 'return': return [text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge'), text('#reportSummary')].filter(Boolean).join(' · ') || '—';
+    case 'airdrop': return text('#airdropSummary') || 'Off';
+    default: return runValue || supply;
+  }
+}
+
+function currentPhaseSlide(workspace, runDone) {
+  const tabs = PHASE_TABS[workspace];
+  if (!tabs) return null;
+  state.phaseSlide = state.phaseSlide || {};
+  const chosen = state.phaseSlide[workspace];
+  if (chosen && tabs.some((tab) => tab.id === chosen)) return chosen;
+  // A phase that already holds its fact opens on its action, which shows the result.
+  return runDone ? 'run' : tabs[0].id;
+}
+
+function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
+  const tabs = PHASE_TABS[workspace];
+  const strip = $('#planStrip');
+  const track = $('#planTrack');
+  if (!strip || !track) return;
+  const bridge = $('#classicBridge');
+  const hideRunOnly = ['#launchConsole', '#signaturePanel'];
+  if (!tabs) {
+    if (bridge) bridge.hidden = false;
+    return;
+  }
+  const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
+  const running = current === 'run';
+  strip.style.setProperty('--tabs', String(tabs.length));
+  // Built once per phase and then updated in place, so the focused tab stays focused.
+  const structure = `${workspace}|${tabs.map((tab) => tab.id).join(',')}`;
+  if (strip.dataset.structure !== structure) {
+    strip.dataset.structure = structure;
+    strip.innerHTML = tabs.map((tab) => `<button type="button" role="tab" data-plan-tab="${tab.id}"><strong>${escapeHtml(tab.label)}</strong><small></small></button>`).join('');
+  }
+  tabs.forEach((tab) => {
+    const button = strip.querySelector(`[data-plan-tab="${tab.id}"]`);
+    if (!button) return;
+    const selected = tab.id === current;
+    button.classList.toggle('is-selected', selected);
+    button.setAttribute('aria-selected', selected ? 'true' : 'false');
+    button.tabIndex = selected ? 0 : -1;
+    const value = phaseTabValue(tab.id, fact?.value);
+    const small = button.querySelector('small');
+    if (small.textContent !== value) small.textContent = value;
+  });
+  // The action tab shows the phase's own panel; every other tab slides a settings page in.
+  const frame = $('#planSlides');
+  if (frame) frame.hidden = running;
+  if (bridge) bridge.hidden = !running;
+  hideRunOnly.forEach((selector) => { const node = $(selector); if (node && !running) node.hidden = true; });
+  if (!running) $$('[data-classic-workspace]').forEach((panel) => { panel.hidden = true; });
+  $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running);
+  if (running) return;
+  const index = Math.max(0, PLAN_SLIDE_ORDER.indexOf(current));
+  track.style.transform = `translateX(-${index * 100}%)`;
+  let active = null;
+  $$('#planTrack > [data-plan-slide]').forEach((slide) => {
+    const on = slide.dataset.planSlide === current;
+    slide.toggleAttribute('inert', !on);
+    if (on) active = slide;
+  });
+  // The frame is as tall as the slide in view, so nothing scrolls and nothing leaves a gap.
+  if (frame && active) {
+    frame.style.height = `${active.offsetHeight}px`;
+    frame.scrollTop = 0;
+    frame.scrollLeft = 0;
+    if (!frame.dataset.pinned) {
+      // Focus moving into a slide must slide the frame, never scroll it.
+      frame.dataset.pinned = '1';
+      frame.addEventListener('scroll', () => { frame.scrollTop = 0; frame.scrollLeft = 0; });
+    }
+    if (!frame.dataset.watching && window.ResizeObserver) {
+      frame.dataset.watching = '1';
+      new ResizeObserver(() => {
+        const live = $(`#planTrack > [data-plan-slide="${(state.phaseSlide || {})[state.launchWorkspace]}"]`);
+        if (live) frame.style.height = `${live.offsetHeight}px`;
+      }).observe(track);
+    }
+  }
+}
+
+function setPlanSlide(id) {
+  const tabs = PHASE_TABS[state.launchWorkspace];
+  if (!tabs || !tabs.some((tab) => tab.id === id)) return;
+  state.phaseSlide = { ...(state.phaseSlide || {}), [state.launchWorkspace]: id };
+  renderLaunchWorkspace();
+}
+
+function stepPlanSlide(step) {
+  const tabs = PHASE_TABS[state.launchWorkspace];
+  if (!tabs) return;
+  const index = tabs.findIndex((tab) => tab.id === currentPhaseSlide(state.launchWorkspace, false));
+  const next = Math.min(tabs.length - 1, Math.max(0, index + step));
+  if (next !== index) setPlanSlide(tabs[next].id);
+}
+
+// One press does what the Next card says: open the row that needs doing, or,
+// when it is already open, press that row's own primary button.
+function runLaunchRailAction() {
+  const next = nextCoinFact();
+  if (!next || !next.action) return;
+  if (next.id === 'configure') {
+    state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
+    setLaunchWorkspace('mint', { focus: false });
+    $('#tokenName')?.focus();
+    return;
+  }
+  if (state.launchWorkspace !== next.id) {
+    setLaunchWorkspace(next.id, { focus: false });
+    return;
+  }
+  // A phase's action is its last tab: open it, then press the panel's own button.
+  if (PHASE_TABS[next.id] && (state.phaseSlide || {})[next.id] !== 'run') {
+    state.phaseSlide = { ...(state.phaseSlide || {}), [next.id]: 'run' };
+    renderLaunchWorkspace();
+    return;
+  }
+  const pane = $(`[data-classic-workspace="${next.id}"]`);
+  // The pane's own button can be hidden (the rail is the one visible button), so it is not required to be visible.
+  const primary = pane && pane.querySelector('.primary-button:not([data-next-fact]):not(:disabled)');
+  if (primary) { primary.click(); return; }
+  if (next.id === 'configure') $('#tokenName')?.focus();
+  else if (next.id === 'wallet') $('.launch-wallet-choice')?.click();
 }
 
 // Open a row. Which row is open is a view, never saved and never progress.
 function setLaunchWorkspace(workspace, { focus = false } = {}) {
   if (!launchWorkspaces.some((item) => item.id === workspace)) return;
+  if (workspace === 'configure') {
+    workspace = 'mint';
+    state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
+  }
   const changed = state.launchWorkspace !== workspace;
   state.launchWorkspace = workspace;
   renderLaunchWorkspace();
@@ -5987,7 +6355,7 @@ function renderLiveLaunchMonitor() {
       <span>
         <small>${blocked ? 'Stopped here' : 'Happening now'}</small>
         <strong>${escapeHtml(currentAction)}</strong>
-        <em>${escapeHtml(currentDetail)}</em>
+        <em>${escapeHtml(currentDetail)}${pinUnlockButton(currentDetail)}</em>
       </span>
     </div>
     <ul class="live-launch-facts" aria-label="What is true now">
@@ -6160,7 +6528,7 @@ function tokenLogoStampMarkup() {
   // Before the address exists the preview can only show a made-up one,
   // which reads as a broken logo; say what will happen instead.
   if (stamp.sample) {
-    return '<p class="token-logo-stamp-note">The contract address is printed along the bottom of the logo at launch.</p>';
+    return '';
   }
   const caption = `Printed on the logo: ${fullAddress(stamp.mint)}`;
   return `
@@ -6703,7 +7071,7 @@ function vanityEstimateSummary(prefix, suffix) {
   if (!estimate.targetLength) {
     return {
       label: 'Nothing to grind',
-      detail: 'Type a start or an end, or launch with a random address.',
+      detail: '',
       className: '',
     };
   }
@@ -6738,12 +7106,15 @@ function vanityAvailabilityMeta() {
     };
   }
   if (state.apiStatus === 'connected') {
-    return { label: 'Ready to grind', detail: 'Saved addresses stay here for later launches.', className: '', icon: 'fa-wand-magic-sparkles' };
+    return { label: 'Ready to grind', detail: '', className: '', icon: 'fa-wand-magic-sparkles' };
   }
   return { label: 'Desktop app only', detail: 'Open the Trebuchet desktop app to grind.', className: 'warn', icon: 'fa-eye' };
 }
 
 const ACTIVE_LAUNCH_KEY = 'trebuchet-v2-active-launch';
+// Stored in place of a launch id when the operator closes the open launch, so
+// the next load starts blank instead of re-opening the first saved launch.
+const NO_ACTIVE_LAUNCH = '__none__';
 
 function rememberActiveLaunchId(id) {
   try {
@@ -6793,12 +7164,61 @@ function canAutoSaveLaunch(config) {
   return true;
 }
 
+// The launches list: every saved launch, the open one marked, plus a way to
+// start a blank one. Without it a saved launch re-opened on every start with
+// no way to leave it or reach the others.
+function launchIsInProgress() {
+  return Number(state.recovery?.activeJournalCount || 0) > 0;
+}
+
+function renderSavedLaunchList() {
+  const host = $('#savedLaunches');
+  if (!host) return;
+  const launches = Array.isArray(state.savedLaunches) ? state.savedLaunches : [];
+  const locked = launchIsInProgress();
+  const rows = launches.map((entry) => {
+    const token = entry.config?.token || {};
+    const isOpen = entry.id === state.loadedSavedLaunchId;
+    const symbol = String(token.symbol || '').toUpperCase() || '?';
+    const name = String(token.name || entry.name || 'Untitled');
+    return `<button class="saved-launch-row${isOpen ? ' is-open' : ''}" type="button" data-action="open-saved-launch" data-launch-id="${escapeHtml(entry.id)}"${isOpen ? ' aria-current="true"' : ''}${locked && !isOpen ? ' disabled' : ''}>
+      <strong>$${escapeHtml(symbol)}</strong><span>${escapeHtml(name)}</span>
+    </button>`;
+  }).join('');
+  const list = `
+    <span class="saved-launches-title">Launches</span>
+    <div class="saved-launch-rows">${rows}</div>
+    <button class="saved-launch-new" type="button" data-action="new-launch"${locked ? ' disabled' : ''}><i class="fa-solid fa-plus" aria-hidden="true"></i> New launch</button>
+    ${locked ? '<small class="saved-launches-note">A launch is in progress. Finish or recover it in History before switching.</small>' : ''}
+  `;
+  if (host) {
+    const empty = !launches.length && !state.loadedSavedLaunchId;
+    host.hidden = empty;
+    host.innerHTML = empty ? '' : list;
+  }
+}
+
+// Switching reloads the page: the editor holds a lot of per-launch state, and a
+// clean start is the only way to be sure none of the old launch leaks into the
+// next one. The saved launch itself is already persisted, so nothing is lost.
+function switchActiveLaunch(id) {
+  if (launchIsInProgress()) return;
+  rememberActiveLaunchId(id || NO_ACTIVE_LAUNCH);
+  try {
+    v2LocalStorage()?.removeItem(GUIDED_DRAFT_STORAGE_KEY);
+  } catch {
+    // A stale draft only matters when storage works, and then removeItem works too.
+  }
+  window.location.reload();
+}
+
 // The saved (server-side) launch is explicit user intent: it opens once, and
 // is never reapplied over edits made after it loaded.
 function restoreDetectedLaunch() {
   if (!state.savedLaunches?.length) return false;
   if (state.loadedSavedLaunchId) return false;
   const rememberedId = rememberedActiveLaunchId();
+  if (rememberedId === NO_ACTIVE_LAUNCH) return false;
   const entry = state.savedLaunches.find((item) => item.id === rememberedId) || state.savedLaunches[0];
   if (!entry) return false;
   const loaded = restoreLaunchConfigFromJournal({
@@ -6845,6 +7265,7 @@ function scheduleLaunchAutoSave() {
         const index = list.findIndex((item) => item.id === entry.id);
         if (index >= 0) list[index] = entry; else list.unshift(entry);
         state.savedLaunches = list;
+        renderSavedLaunchList();
       })
       .catch(() => { /* auto-save is best-effort; the explicit errors surface elsewhere */ });
   }, 900);
@@ -6911,16 +7332,15 @@ function renderVanityCandidates() {
     </ul>
     ${state.vanityInputError
       ? `<p class="grinder-note is-error" id="vanityFeedback" role="alert">${escapeHtml(state.vanityInputError)}</p>`
-      : '<p class="grinder-note" id="vanityFeedback">Letters and numbers only, without 0, O, I or l.</p>'}
+      : '<p class="grinder-note" id="vanityFeedback"></p>'}
     <div class="grinder-list" role="group" aria-label="Saved contract addresses">
       <button class="grinder-row ${selected ? '' : 'is-active'}" type="button" data-action="select-vanity" data-public-key="" aria-pressed="${selected ? 'false' : 'true'}">
         <span class="grinder-radio" aria-hidden="true"></span>
-        <span class="grinder-row-main"><code>Random address</code><small>Made at launch. Nothing to grind.</small></span>
+        <span class="grinder-row-main"><code>Random address</code><small></small></span>
         ${selected ? '' : '<span class="grinder-row-state">In use</span>'}
       </button>
       ${candidateButtons}
     </div>
-    <p class="grinder-note">Grind grades and try counts come from this device's search. The address confirms the letter pattern.</p>
     <div class="grinder-actions">
       <button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
         <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>
@@ -7163,6 +7583,7 @@ function renderSupplyEditor() {
     target.querySelector('.supply-total')?.replaceWith(
       document.createRange().createContextualFragment(totalHtml),
     );
+    renderPoolControlFeedback(target);
     renderReturnWalletCard();
     return;
   }
@@ -7175,17 +7596,30 @@ function renderSupplyEditor() {
     });
   }
 
-  const field = (label, hint, control) => (
-    `<label class="supply-field"><span>${escapeHtml(label)}</span>${control}${hint ? `<small>${escapeHtml(hint)}</small>` : ''}</label>`
-  );
+  // Each field names its control (aria-labelledby) and describes it with its
+  // hint and live feedback (aria-describedby), so the helper text is not
+  // read as part of the name. `feedback` names the live message under it.
+  let fieldSeq = 0;
+  const field = (label, hint, control, feedback = '', wide = false) => {
+    const base = `supply-field-${++fieldSeq}`;
+    const described = [feedback ? `${base}-note` : ''].filter(Boolean).join(' ');
+    const wired = control.replace(/^\s*<(input|textarea|select)/, (match) => (
+      `${match} aria-labelledby="${base}-label"${described ? ` aria-describedby="${described}"` : ''}`
+    ));
+    return `<label class="supply-field${wide ? ' supply-field-wide' : ''}"><span id="${base}-label">${escapeHtml(label)}</span>${wired}${feedback ? `<small class="supply-feedback" id="${base}-note" data-feedback="${feedback}" role="status"></small>` : ''}</label>`;
+  };
+  const SLICE_HINT = 'Percent of the pool in each locked position, e.g. 50,50. A single 100 is one position.';
+  const LADDER_HINT = `Extra liquidity bands at higher prices. 0 to ${CLASSIC_LADDER_MAX_BANDS}. 0 = off.`;
   const settingsHtml = (row) => {
+    const mapHost = '<div class="supply-field-wide pool-map" data-pool-map></div>';
     if (row.key === 'sol') {
       return `
-        ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-supply-target="#sliceShares" data-supply-key="sol:slices" value="${escapeHtml($('#sliceShares').value)}" autocomplete="off">`)}
-        ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="text" inputmode="numeric" autocomplete="off" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`)}
-        ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`)}
+        ${mapHost}
+        ${field('Position slices', SLICE_HINT, `<input data-supply-target="#sliceShares" data-supply-key="sol:slices" value="${escapeHtml($('#sliceShares').value)}" autocomplete="off">`, 'slices')}
+        ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`, 'ladder')}
+        ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`, 'support')}
         ${field('Support depth %', 'How far below the start price support reaches.', `<input type="text" inputmode="numeric" autocomplete="off" data-base-field="baseSupportDepth" data-supply-key="sol:depth" value="${escapeHtml(state.baseSupportDepth)}">`)}
-        <label class="supply-field supply-field-wide"><span>Custom ladder</span><textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea><small>Replaces ladder bands when set.</small></label>
+        ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea>`, 'manual', true)}
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>`;
     }
     const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
@@ -7193,12 +7627,13 @@ function renderSupplyEditor() {
     const id = escapeHtml(pool.id);
     const key = escapeHtml(row.key);
     return `
-      ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-choice="slider" data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
-      ${field('Start above SOL price %', 'Opens this pair above the SOL pool price, so the pair token can fall this far before bots can drain SOL buyers.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="startPremiumPct" data-pool-id="${id}" data-supply-key="${key}:premium" value="${escapeHtml(pool.startPremiumPct ?? state.pairStartPremiumPct)}">`)}
-      ${field('Position slices', 'Split the pool into locked positions, e.g. 50,50.', `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`)}
-      ${field('Ladder bands', 'Extra liquidity bands at higher prices. 0 = off.', `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`)}
-      ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`)}
-      <label class="supply-field supply-field-wide"><span>Custom ladder</span><textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea><small>Replaces ladder bands when set.</small></label>
+      ${mapHost}
+      ${field('Fee tier', 'Swap fee charged by the pool.', `<select data-choice="slider" data-choice-readout data-custom-pool-field="ammConfigIndex" data-pool-id="${id}" data-supply-key="${key}:tier">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
+      ${field('Start above SOL price %', 'Opens this pair above the SOL pool price, so the pair token can fall this far before bots can drain SOL buyers. 0 to 500.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="startPremiumPct" data-pool-id="${id}" data-supply-key="${key}:premium" value="${escapeHtml(pool.startPremiumPct ?? state.pairStartPremiumPct)}">`, 'premium')}
+      ${field('Position slices', SLICE_HINT, `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`, 'slices')}
+      ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`, 'ladder')}
+      ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`, 'support')}
+      ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea>`, 'manual', true)}
       <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
 `;
   };
@@ -7217,7 +7652,7 @@ function renderSupplyEditor() {
       ? `<input class="supply-mint" data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(row.poolId)}" data-supply-key="${escapeHtml(row.key)}:mint" value="${escapeHtml(row.mint || '')}" placeholder="Paste token mint" autocomplete="off" spellcheck="false">`
       : `<small>${escapeHtml(row.detail)}</small>`;
     return `
-      <li class="supply-row">
+      <li class="supply-row${row.kind === 'pool' && state.supplyOpenRow === row.key ? ' is-open' : ''}">
         <i class="supply-swatch" style="background:${row.color}"></i>
         <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
         <span class="supply-amount" data-supply-amount="${escapeHtml(row.key)}">${compactAmount(supply * row.percent / 100)}</span>
@@ -7241,7 +7676,193 @@ function renderSupplyEditor() {
     ${totalHtml}`;
 
   target.dataset.rendered = '1';
+  renderPoolControlFeedback(target);
   renderReturnWalletCard();
+}
+
+// A picture of the pool the controls describe, redrawn as they change.
+// Left of the start price: how far below it support SOL reaches and, for a
+// pair, where the SOL pool's price sits. Right of it, price in multiples of the
+// start (log scale): the main position covers all of it, ladder bands add
+// liquidity at their own ranges. Below: the positions the pool is split into.
+function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
+  const W = 640, START = 196, LEFT = 24, RIGHT = 620, BASE = 150;
+  const maxMult = Math.max(1000, ...bands.map((band) => band.hi));
+  const xOf = (mult) => START + (RIGHT - START) * (Math.log(mult) / Math.log(maxMult));
+  const premiumDrop = premiumPct > 0 ? (premiumPct / (100 + premiumPct)) * 100 : 0;
+  const reach = Math.max(depthPct, premiumDrop, 10) * 1.1;
+  const xDown = (pct) => START - (START - LEFT) * (pct / reach);
+  const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n.toFixed(2)).toString());
+  const parts = [];
+  // main position: the whole range above the start price
+  parts.push(`<rect class="pm-main" x="${START}" y="${BASE - 22}" width="${RIGHT - START}" height="22"/>`);
+  parts.push(`<text class="pm-note" x="${START + 8}" y="${BASE - 7}">Main position · all prices above the start</text>`);
+  // ladder bands
+  const top = Math.max(...bands.map((band) => band.weight), 1);
+  bands.forEach((band) => {
+    const h = 16 + 62 * (band.weight / top);
+    const x = xOf(Math.max(1, band.lo));
+    const w = Math.max(3, xOf(band.hi) - x);
+    parts.push(`<rect class="pm-band" x="${x.toFixed(1)}" y="${(BASE - 22 - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}"/>`);
+    if (band.label && w > 26) parts.push(`<text class="pm-tag" x="${(x + w / 2).toFixed(1)}" y="${(BASE - 22 - h - 5).toFixed(1)}" text-anchor="middle">${band.label}</text>`);
+  });
+  // support SOL, just below the start price
+  const xs = xDown(depthPct);
+  parts.push(supportSol > 0
+    ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${(START - xs).toFixed(1)}" height="60"/><text class="pm-tag" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 66}" text-anchor="middle">${fmt(supportSol)} SOL</text>`
+    : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${(START - xs).toFixed(1)}" height="60"/><text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>`);
+  // the SOL pool's price, for a pair
+  if (premiumDrop > 0) {
+    const xp = xDown(premiumDrop);
+    parts.push(`<line class="pm-sol" x1="${xp.toFixed(1)}" x2="${xp.toFixed(1)}" y1="26" y2="${BASE}"/>`
+      + `<text class="pm-tag" x="${Math.max(xp, LEFT + 44).toFixed(1)}" y="16" text-anchor="middle">SOL pool price</text>`
+      + `<text class="pm-note" x="${((xp + START) / 2).toFixed(1)}" y="40" text-anchor="middle">+${fmt(premiumPct)}%</text>`
+      + `<line class="pm-gap" x1="${xp.toFixed(1)}" x2="${START}" y1="46" y2="46"/>`);
+  }
+  // start price and axis
+  parts.push(`<line class="pm-start" x1="${START}" x2="${START}" y1="26" y2="${BASE + 6}"/><text class="pm-tag pm-strong" x="${START}" y="${premiumDrop > 0 ? 26 : 16}" dy="-4" text-anchor="middle">Start price</text>`);
+  parts.push(`<line class="pm-axis" x1="${LEFT}" x2="${RIGHT}" y1="${BASE}" y2="${BASE}"/>`);
+  for (let m = 1; m <= maxMult; m *= 10) {
+    parts.push(`<line class="pm-axis" x1="${xOf(m).toFixed(1)}" x2="${xOf(m).toFixed(1)}" y1="${BASE}" y2="${BASE + 4}"/><text class="pm-note" x="${xOf(m).toFixed(1)}" y="${BASE + 17}" text-anchor="middle">${m === 1 ? 'start' : `${m}×`}</text>`);
+  }
+  parts.push(`<text class="pm-note" x="${xs.toFixed(1)}" y="${BASE + 17}" text-anchor="middle">−${fmt(depthPct)}%</text>`);
+  // the positions this pool is split into
+  const total = slices.reduce((sum, share) => sum + share, 0) || 100;
+  let at = LEFT;
+  slices.forEach((share, index) => {
+    const w = (RIGHT - LEFT) * (share / total);
+    parts.push(`<rect class="pm-slice pm-slice-${index % 2}" x="${at.toFixed(1)}" y="${BASE + 30}" width="${Math.max(1, w - 2).toFixed(1)}" height="18"/>`);
+    if (w > 34) parts.push(`<text class="pm-tag" x="${(at + w / 2).toFixed(1)}" y="${BASE + 43}" text-anchor="middle">${fmt(share)}%</text>`);
+    at += w;
+  });
+  const title = 'Price map: where this pool\'s liquidity sits';
+  return `<svg viewBox="0 0 ${W} ${BASE + 56}" role="img" aria-label="${title}" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
+}
+
+// The same picture for a pool as the launch will build it (Create liquidity tab).
+function poolMapForPool(pool) {
+  const support = pool?.support?.mode === 'custom' ? pool.support : null;
+  const slices = (pool?.distribution || []).map((slice) => Number(slice.sharePercent) || 0).filter((share) => share > 0);
+  let bands = [];
+  if (pool?.ladder?.mode === 'manual') {
+    bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: band.supplyPercent, label: `${Number(Number(band.supplyPercent).toFixed(1))}%` }));
+  } else if (pool?.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
+    const count = pool.ladder.bandCount;
+    const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
+    bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: 1, label: '' }));
+  }
+  return poolMapSvg({
+    premiumPct: 0,
+    supportSol: support ? Number(support.solValue) || 0 : 0,
+    depthPct: support ? Number(support.depthPct) || 12 : 12,
+    slices: slices.length ? slices : [100],
+    bands,
+  });
+}
+
+function renderPoolMap(panel) {
+  const host = panel.querySelector('[data-pool-map]');
+  if (!host) return;
+  const value = (suffix) => panel.querySelector(`[data-supply-key$="${suffix}"]`)?.value ?? '';
+  const number = (text, fallback = 0) => { const n = parseNumericInput(String(text), NaN); return Number.isFinite(n) ? n : fallback; };
+  const premiumPct = Math.min(500, Math.max(0, number(value(':premium'), 0)));
+  const supportSol = Math.max(0, number(value(':support'), 0));
+  const depthPct = Math.min(50, Math.max(1, number(value(':depth'), 12)));
+  const slices = describeSliceInput(value(':slices')).slices;
+  const manual = analyzeManualLadder(value(':manual')).bands;
+  const count = Math.floor(Math.min(CLASSIC_LADDER_MAX_BANDS, Math.max(0, number(value(':ladder'), 0))));
+  let bands = [];
+  if (manual.length) {
+    bands = manual.map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: band.supplyPercent, label: `${Number(band.supplyPercent.toFixed(1))}%` }));
+  } else if (count > 0) {
+    // Evenly spaced bands with a gap between each, up to 1000x (see computeLadderTicks).
+    const unit = Math.log(1000) / (2 * count - 1);
+    bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: 1, label: '' }));
+  }
+  const parts = [`${slices.length} position${slices.length === 1 ? '' : 's'}`];
+  parts.push(supportSol > 0 ? `${supportSol} SOL support to −${depthPct}%` : 'no support');
+  parts.push(bands.length ? `${bands.length} ladder band${bands.length === 1 ? '' : 's'}` : 'no ladder');
+  if (premiumPct > 0) parts.push(`opens ${premiumPct}% above the SOL price`);
+  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands })}`;
+  if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
+}
+
+// Says what each advanced pool control will do with what was typed, next to
+// the control: what the slices mean, which numbers were out of range, which
+// ladder lines were skipped, and that a custom ladder replaces ladder bands.
+function renderPoolControlFeedback(target) {
+  target.querySelectorAll('.supply-settings').forEach((panel) => {
+    renderPoolMap(panel);
+    const input = (suffix) => panel.querySelector(`[data-supply-key$="${suffix}"]`);
+    const say = (name, text, tone = 'ok') => {
+      const note = panel.querySelector(`[data-feedback="${name}"]`);
+      if (!note) return;
+      if (note.textContent !== text) note.textContent = text;
+      note.classList.toggle('is-warn', tone === 'warn');
+    };
+    const flag = (control, bad) => {
+      if (!control) return;
+      if (bad) control.setAttribute('aria-invalid', 'true');
+      else control.removeAttribute('aria-invalid');
+    };
+
+    const slices = input(':slices');
+    if (slices) {
+      const info = describeSliceInput(slices.value);
+      say('slices', info.text, info.tone);
+      flag(slices, info.invalid);
+    }
+
+    const manual = input(':manual');
+    const ladder = analyzeManualLadder(manual?.value);
+    if (manual) {
+      const parts = [];
+      if (ladder.bands.length) {
+        const used = ladder.bands.reduce((sum, band) => sum + band.supplyPercent, 0);
+        parts.push(`${ladder.bands.length} band${ladder.bands.length === 1 ? '' : 's'} used, ${Number(used.toFixed(2))}% of supply.`);
+      }
+      if (ladder.rejected.length) {
+        const shown = ladder.rejected.slice(0, 3).map((item) => `line ${item.line} "${item.text.slice(0, 24)}"`).join(', ');
+        parts.push(`Skipped ${shown}${ladder.rejected.length > 3 ? ` and ${ladder.rejected.length - 3} more` : ''}. Each band needs supply%, low× (1 or more) and high× (above low).`);
+      }
+      say('manual', parts.join(' '), ladder.rejected.length ? 'warn' : 'ok');
+      flag(manual, ladder.rejected.length > 0);
+    }
+
+    const bands = input(':ladder');
+    if (bands) {
+      const replaced = ladder.bands.length > 0;
+      // The plan uses the custom ladder and ignores this number, so the
+      // field is switched off while it has no effect.
+      bands.disabled = replaced;
+      const check = checkPoolNumberField('ladderBands', bands.value);
+      say('ladder', replaced ? 'Not used: the Custom ladder below replaces it.' : check.issue || '', replaced || check.issue ? 'warn' : 'ok');
+      flag(bands, !replaced && Boolean(check.issue));
+    }
+    [['premium', ':premium', 'premium'], ['support', ':support', 'supportSol']].forEach(([name, suffix, kind]) => {
+      const control = input(suffix);
+      if (!control) return;
+      const check = checkPoolNumberField(kind, control.value);
+      say(name, check.issue || '', check.issue ? 'warn' : 'ok');
+      flag(control, Boolean(check.issue));
+    });
+  });
+}
+
+// When a number field is left, show the value the plan will use. Typing is
+// never interrupted; this runs on the change event only.
+function commitPoolControl(control) {
+  const key = control?.dataset?.supplyKey || '';
+  const kind = key.endsWith(':premium') ? 'premium'
+    : key.endsWith(':ladder') ? 'ladderBands'
+      : key.endsWith(':support') ? 'supportSol' : null;
+  if (!kind || !control.closest?.('.supply-settings')) return;
+  const check = checkPoolNumberField(kind, control.value);
+  if (check.issue === null && control.value.trim() !== '') return;
+  const label = { premium: 'Start premium', ladderBands: 'Ladder bands', supportSol: 'Support SOL' }[kind];
+  control.value = String(check.value);
+  control.dispatchEvent(new Event('input', { bubbles: true }));
+  if (check.issue) notify(`${label}: ${check.issue}`);
 }
 
 function renderPoolEditorPanel() {
@@ -7263,7 +7884,7 @@ function renderPoolEditorPanel() {
           <label><span>Quote symbol</span><input data-custom-pool-field="quoteSymbol" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.quoteSymbol || '')}" autocomplete="off"></label>
           <label><span>Quote mint</span><input data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.quoteMint || '')}" placeholder="Mint address" autocomplete="off"></label>
           <label><span>Supply %</span><input data-custom-pool-field="supplyPercent" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="100" step="0.1" value="${escapeHtml(pool.supplyPercent ?? 5)}"></label>
-          <label><span>Fee tier</span><select data-choice="slider" data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(pool.id)}">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select></label>
+          <label><span>Fee tier</span><select data-choice="slider" data-choice-readout data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(pool.id)}">${feeTierOptionsHtml(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select></label>
           <label><span>Slices</span><input data-custom-pool-field="sliceShares" data-pool-id="${escapeHtml(pool.id)}" value="${escapeHtml(pool.sliceShares || '100')}" autocomplete="off"></label>
           <label><span>Ladder bands</span><input data-custom-pool-field="ladderBands" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" max="${CLASSIC_LADDER_MAX_BANDS}" step="1" value="${escapeHtml(pool.ladderBands ?? 0)}"></label>
           <label><span>Support SOL</span><input data-custom-pool-field="supportSol" data-pool-id="${escapeHtml(pool.id)}" type="number" min="0" step="0.05" value="${escapeHtml(pool.supportSol ?? 0)}"></label>
@@ -14171,7 +14792,7 @@ function renderClassicBridge() {
     ? {
       eyebrow: 'Not estimated',
       title: 'Estimate the launch cost',
-      detail: 'Work out how much SOL this launch needs.',
+      detail: '',
       action: 'estimate-funding',
       actionLabel: fundingEstimateStatus.stale ? 'Update estimate' : 'Estimate cost',
     }
@@ -14187,7 +14808,7 @@ function renderClassicBridge() {
       ? {
         eyebrow: 'Send to launch wallet',
         title: `${totalSol.toFixed(4)} SOL`,
-        detail: 'Send this much SOL to the address below, then check the balance.',
+        detail: '',
         action: 'refresh-manual-prefund',
         actionLabel: state.manualPrefund.polling ? 'Checking balance' : 'I funded it · check balance',
       }
@@ -14298,7 +14919,7 @@ function renderClassicBridge() {
             : recoveringToken ? 'Finish interrupted token safely' : 'Review this launch'
           : readiness?.nextAction || title;
     const panelDetail = state.demoActive && !complete
-      ? 'Creates the token, pool and locks in a simulator. Nothing is sent.'
+      ? 'Nothing is sent.'
       : complete
       ? detail
       : needsFunding
@@ -14392,17 +15013,23 @@ function renderClassicBridge() {
       <section class="launch-step-guide irreversible" aria-labelledby="mintStepTitle">
         <div>
           <h2 id="mintStepTitle">Create token</h2>
-          <p>${config.token.sealedLaunch
-            ? 'Mints the supply and removes mint and freeze control. The name and logo stay hidden until the pool is locked.'
-            : 'Mints the supply and removes mint and freeze control.'}</p>
         </div>
         ${state.demoActive || tokenComplete ? '' : `<aside><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span><strong>Can't be undone.</strong> Fix mistakes in Token &amp; pools first.</span></aside>`}
       </section>
-      <div class="launch-fact-grid">
-        <span><small>Name</small><strong>${escapeHtml(config.token.name || 'Untitled')}</strong></span>
-        <span><small>Symbol</small><strong>${escapeHtml(config.token.symbol || 'TOK')}</strong></span>
-        <span><small>Supply</small><strong>${escapeHtml(String(config.token.supply || '0'))}</strong></span>
-        <span><small>Contract address</small><strong>${escapeHtml(state.selectedVanityPublicKey ? fullAddress(state.selectedVanityPublicKey) : 'Random')}</strong></span>
+      <div class="plan-preview">
+        <div class="preview-mark">
+          ${state.tokenLogo?.dataUrl ? `<img src="${escapeHtml(state.tokenLogo.dataUrl)}" alt="">` : `<span aria-hidden="true">${escapeHtml(String(config.token.symbol || 'TOK').slice(0, 3).toUpperCase())}</span>`}
+          <strong>${escapeHtml(config.token.name || 'Untitled')}</strong>
+          <small>$${escapeHtml(String(config.token.symbol || 'TOK').toUpperCase())}</small>
+        </div>
+        <dl class="preview-rows">
+          <div><dt>Supply</dt><dd>${escapeHtml(String(config.token.supply || '0'))}</dd></div>
+          <div><dt>Standard</dt><dd>${config.token.mintFormat === 'classic-spl' ? 'Classic SPL' : 'Token-2022'}</dd></div>
+          <div><dt>Address</dt><dd>${escapeHtml(state.selectedVanityPublicKey ? fullAddress(state.selectedVanityPublicKey) : 'Random')}</dd></div>
+          <div><dt>Name and logo</dt><dd>${config.token.sealedLaunch ? 'Sealed until the pool is locked' : 'Public at creation'}</dd></div>
+          <div><dt>Mint authority</dt><dd class="${tokenComplete ? 'is-ok' : ''}">${tokenComplete ? 'Removed' : 'Removed at creation'}</dd></div>
+          <div><dt>Freeze authority</dt><dd class="${tokenComplete ? 'is-ok' : ''}">${tokenComplete ? 'Removed' : 'Removed at creation'}</dd></div>
+        </dl>
       </div>
       ${readinessPanel({
         title: tokenComplete ? 'Token created' : mintEndpoint === '/api/finish-token-creation' ? 'Finish interrupted token' : 'Create token',
@@ -14421,11 +15048,16 @@ function renderClassicBridge() {
         </div>
         ${state.demoActive || liquidityComplete ? '' : `<aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>`}
       </section>
-      <div class="launch-fact-grid">
-        <span><small>Pools</small><strong>${poolCount}</strong></span>
-        <span><small>Positions</small><strong>${sliceCount}</strong></span>
-        ${ladderCount ? `<span><small>Extra price bands</small><strong>${ladderCount}</strong></span>` : ''}
-        ${topology.pools.some((pool) => pool.support?.enabled) ? '<span><small>Buy support</small><strong>On</strong></span>' : ''}
+      <div class="plan-preview is-liquidity">
+        <div class="preview-map pool-map" role="group" aria-label="Where this launch puts its liquidity">${poolMapForPool(topology.pools[0])}</div>
+        <dl class="preview-rows">
+          <div><dt>Pair</dt><dd>${escapeHtml(String(topology.pools[0]?.quoteSymbol || topology.pools[0]?.quoteToken || 'SOL'))}${poolCount > 1 ? ` <i>+${poolCount - 1}</i>` : ''}</dd></div>
+          <div><dt>Support</dt><dd>${topology.pools[0]?.support?.mode === 'custom' ? `${Number(topology.pools[0].support.solValue || 0)} SOL <i>to −${Number(topology.pools[0].support.depthPct || 12)}%</i>` : 'Off'}</dd></div>
+          <div><dt>Start market cap</dt><dd>$${escapeHtml(Number(topology.targetMarketCapUsd || 0).toLocaleString('en-US'))}</dd></div>
+          <div><dt>Fee tier</dt><dd>${escapeHtml(feeTierDisplay(topology.pools[0]?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX))}</dd></div>
+          <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}</dd></div>
+          <div><dt>Locked</dt><dd class="${liquidityComplete ? 'is-ok' : ''}">${liquidityComplete ? 'Yes' : 'At creation'}</dd></div>
+        </dl>
       </div>
       ${readinessPanel({
         title: metadataRevealPending ? 'Reveal the name and logo' : liquidityComplete ? 'Liquidity created and locked' : 'Create and lock liquidity',
@@ -14446,8 +15078,8 @@ function renderClassicBridge() {
     <section class="classic-workspace-section classic-workspace-verify" data-classic-workspace="finish">
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
-          <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Finish launch'}</h2>
-          <p>${practiceComplete ? 'Every step ran. Nothing was sent.' : finalSweepComplete ? 'Everything is in the return wallet and the launch wallet is empty.' : 'Send the remaining assets to the return wallet and save the launch record.'}</p>
+          <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Leftovers'}</h2>
+          <p>${practiceComplete ? 'Nothing was sent.' : ''}</p>
         </div>
         ${practiceComplete ? '' : `<aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Launch record ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for the final sweep.' : 'Fix the item below.'}</span></aside>`}
       </section>`}
@@ -14737,7 +15369,7 @@ function renderSignaturePanel() {
     <div class="signature-focus">
       <span>
         <small>${escapeHtml(context.focusLabel)}</small>
-        <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet will list the local-wallet run before you arm it.')}</p>
+        <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet will list the local-wallet run before you arm it.')}${pinUnlockButton(activeTx?.effects?.[0])}</p>
       </span>
     </div>
     ${renderExecutionLedger()}
@@ -15009,7 +15641,7 @@ function renderQueue() {
       <div class="queue-row compact ${escapeHtml(activeTx?.state || '')}">
         <span class="queue-copy">
           <h3>${escapeHtml(activeTx?.state === 'blocked' ? 'Live checkpoint blocked' : context.focusLabel)}</h3>
-          <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet is watching launch record and readiness evidence.')}</p>
+          <p>${escapeHtml(activeTx?.effects?.[0] || 'Trebuchet is watching launch record and readiness evidence.')}${pinUnlockButton(activeTx?.effects?.[0])}</p>
         </span>
       </div>
       <div class="kv-row"><span>Source</span><strong>${escapeHtml(context.source)}</strong></div>
@@ -16545,6 +17177,41 @@ function renderParityPanel() {
     </details>`;
 }
 
+// "Locked" only when unlocking the PIN would help. A wallet whose key cannot be
+// read with the PIN already unlocked says so instead of pretending to be locked.
+function walletLabelState(secretBlocked, unlocked, publicKey) {
+  if (walletLockReason() === 'unreadable') return 'Key unreadable';
+  return secretBlocked || !unlocked ? 'Locked' : shortAddress(publicKey);
+}
+
+// The Wallet screen reads the chain for the wallet it shows: SOL and every token it holds.
+// Asked at most once every 30 seconds per wallet, and only while that screen is open.
+function walletPanelBalance(publicKey) {
+  const cached = state.walletPanel;
+  if (cached && cached.publicKey === publicKey) return cached;
+  return null;
+}
+
+function refreshWalletPanelBalance(publicKey) {
+  if (!publicKey || state.activeView !== 'wallet') return;
+  if (state.apiStatus !== 'connected' || !state.apiClient?.checkDetailedBalance) return;
+  const cached = walletPanelBalance(publicKey);
+  if (cached && (cached.loading || Date.now() - cached.at < 30000)) return;
+  state.walletPanel = { ...(cached || {}), publicKey, loading: true, at: Date.now() };
+  state.apiClient.checkDetailedBalance(publicKey)
+    .then((balance) => { state.walletPanel = { publicKey, balance, loading: false, at: Date.now(), error: null }; })
+    .catch((error) => { state.walletPanel = { publicKey, balance: cached?.balance || null, loading: false, at: Date.now(), error: error.message || 'Balance check failed' }; })
+    .finally(() => { if (state.activeView === 'wallet') renderWallet(); });
+}
+
+function walletHoldingRows(balance) {
+  const coinSymbol = (mint) => (state.coins?.list || []).find((coin) => coin.mint === mint)?.symbol || null;
+  return Object.entries(balance?.tokens && typeof balance.tokens === 'object' ? balance.tokens : {})
+    .filter(([, token]) => Number(token?.amountUi) > 0)
+    .map(([mint, token]) => ({ mint, symbol: coinSymbol(mint) || token.symbol || shortAddress(mint), amount: Number(token.amountUi) }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
 function renderWallet() {
   const current = account();
   const unlocked = walletIsUnlocked();
@@ -16555,9 +17222,13 @@ function renderWallet() {
       ? walletRows.find((item) => item.publicKey === selectedPublicKey || item.id === selectedPublicKey)
       : null
   ) || walletRows[0] || null;
-  const secretBlocked = state.secretPin.locked || selectedRow?.secretPinLocked === true;
+  const lockReason = selectedRow ? walletLockInfo(selectedRow) : { state: null, canUnlock: true };
+  const keyGone = lockReason.state === 'missing' || lockReason.state === 'wrong-key';
+  const secretBlocked = !keyGone && (state.secretPin.locked || selectedRow?.secretPinLocked === true);
+  // Even when this wallet's key is gone, a locked PIN is still the way into every other saved key.
+  const pinLockedForUnlock = keyGone && state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged;
   $('#walletLabel').textContent = selectedPublicKey
-    ? `${selectedRow?.name || current.name} ${secretBlocked || !unlocked ? 'Locked' : shortAddress(selectedPublicKey)}`
+    ? `${selectedRow?.name || current.name} ${keyGone ? lockReason.label : walletLabelState(secretBlocked, unlocked, selectedPublicKey)}`
     : 'Choose launch wallet';
   $('.wallet-led').classList.toggle('is-on', Boolean(selectedPublicKey && unlocked && !secretBlocked));
   const activeRarity = selectedRow?.rarity || 'Common';
@@ -16573,6 +17244,8 @@ function renderWallet() {
   if (walletButton) {
     const walletButtonLabel = !selectedRow
       ? 'Choose a launch wallet'
+      : keyGone
+        ? lockReason.detail
       : secretBlocked || !unlocked
         ? `Unlock ${selectedRow.name || 'launch wallet'} with Recovery PIN`
         : `Open ${selectedRow.name || 'launch wallet'}`;
@@ -16650,35 +17323,63 @@ function renderWallet() {
     `;
   }).join('') || '<div class="empty-state">Create or import a launch wallet.</div>';
 
+  refreshWalletPanelBalance(selectedPublicKey);
+  const panel = selectedPublicKey ? walletPanelBalance(selectedPublicKey) : null;
+  const solBalance = panel?.balance ? Number(panel.balance.sol) : null;
+  const holdings = walletHoldingRows(panel?.balance);
+  const spend = observedExecutionSpendSummary();
+  const net = spend.inflowSol - spend.outflowSol;
+  const sol4 = (value) => Number(value || 0).toFixed(4);
+  const launchedCoins = (state.coins?.list || []).filter((coin) => coin.launchedHere && coin.mint).slice(0, 6);
+  const stat = (label, value, unit = '', tone = '') => `<div class="wallet-stat${tone ? ` is-${tone}` : ''}"><span>${escapeHtml(label)}</span><b>${value}</b>${unit ? `<i>${escapeHtml(unit)}</i>` : ''}</div>`;
   $('#walletDetailPanel').innerHTML = selectedPublicKey && selectedRow ? `
-    <div class="wallet-detail-grid">
+    <header class="wallet-head">
+      <span class="wallet-head-name"><strong>${escapeHtml(selectedRow.name)}</strong><span>${escapeHtml(shortAddress(selectedPublicKey))}</span></span>
+      <span class="wallet-head-actions">
+        <button class="pill-button" type="button" data-action="copy-wallet-address"><i class="fa-solid fa-copy"></i><span>Copy</span></button>
+        <button class="pill-button" type="button" data-action="${secretBlocked || pinLockedForUnlock ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy || (keyGone && !pinLockedForUnlock) ? 'disabled' : ''}>
+          <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked || pinLockedForUnlock ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
+        </button>
+        <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
+          <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
+        </button>
+      </span>
+    </header>
+    ${keyGone ? `<p class="wallet-detail-error">${escapeHtml(lockReason.detail)}</p>` : ''}
+    <div class="wallet-stats">
+      ${stat('SOL', solBalance != null ? sol4(solBalance) : (panel?.loading ? '…' : '—'), '', 'main')}
+      ${stat('Tokens', String(holdings.length))}
+      ${stat('Spent', spend.measuredCount ? sol4(spend.outflowSol) : '—', spend.measuredCount ? 'SOL' : '')}
+      ${stat('Returned', spend.measuredCount ? sol4(spend.inflowSol) : '—', spend.measuredCount ? 'SOL' : '')}
+      ${stat('Net', spend.measuredCount ? `${net >= 0 ? '+' : '−'}${sol4(Math.abs(net))}` : '—', spend.measuredCount ? 'SOL' : '', spend.measuredCount ? (net >= 0 ? 'ok' : 'warn') : '')}
+    </div>
+    ${panel?.error ? `<p class="wallet-detail-error">${escapeHtml(panel.error)}</p>` : ''}
+    <div class="wallet-cols">
+      <section class="wallet-block" aria-label="Holdings">
+        <div class="wallet-block-head"><span>Holdings</span><small>${holdings.length ? `${holdings.length} token${holdings.length === 1 ? '' : 's'}` : ''}</small></div>
+        <div class="wallet-line"><span>SOL</span><b>${solBalance != null ? sol4(solBalance) : '—'}</b></div>
+        ${holdings.slice(0, 5).map((item) => `<div class="wallet-line"><span title="${escapeHtml(item.mint)}">${escapeHtml(item.symbol)}</span><b>${escapeHtml(item.amount.toLocaleString('en-US', { maximumFractionDigits: 2 }))}</b></div>`).join('')}
+        ${holdings.length > 5 ? `<div class="wallet-line is-muted"><span>+${holdings.length - 5} more</span></div>` : ''}
+      </section>
+      <section class="wallet-block" aria-label="Coins">
+        <div class="wallet-block-head"><span>Coins</span><small>${launchedCoins.length || ''}</small></div>
+        ${launchedCoins.length ? launchedCoins.map((coin) => `<button class="wallet-line is-action" type="button" data-action="open-coin" data-coin-key="${escapeHtml(coin.key)}"><span>${escapeHtml(coin.symbol ? `$${coin.symbol}` : (coin.name || shortAddress(coin.mint)))}</span><b>${escapeHtml(coin.practice ? 'Test' : (coin.status || 'On-chain'))}</b></button>`).join('')
+          : '<div class="wallet-line is-muted"><span>None launched</span></div>'}
+      </section>
+    </div>
+    <section class="wallet-deposit" aria-label="Deposit">
       <div class="wallet-qr-box ${qrCode ? 'has-qr' : ''}">
         ${qrCode
           ? `<img src="${escapeHtml(qrCode)}" alt="Funding QR code for ${escapeHtml(fullAddress(selectedPublicKey))}">`
-          : `<span><i class="fa-solid ${qrLoading ? 'fa-spinner fa-spin' : 'fa-qrcode'}"></i></span>`}
+          : `<button class="pill-button" type="button" data-action="load-wallet-qr" ${qrLoading ? 'disabled' : ''}><i class="fa-solid ${qrLoading ? 'fa-spinner fa-spin' : 'fa-qrcode'}"></i><span>QR</span></button>`}
       </div>
-      <div class="wallet-funding-box">
-        <span class="eyebrow">Funding address</span>
-        <h3>${escapeHtml(selectedRow.name)}</h3>
+      <div class="wallet-deposit-main">
+        <span class="wallet-block-head"><span>Deposit address</span></span>
         <code>${escapeHtml(selectedPublicKey)}</code>
-        <div class="operator-toolbar compact">
-          <button class="pill-button" type="button" data-action="copy-wallet-address">
-            <i class="fa-solid fa-copy"></i><span>Copy</span>
-          </button>
-          <button class="pill-button" type="button" data-action="load-wallet-qr" ${qrLoading ? 'disabled' : ''}>
-            <i class="fa-solid fa-qrcode"></i><span>${qrCode ? 'Refresh QR' : 'Load QR'}</span>
-          </button>
-          <button class="pill-button" type="button" data-action="${secretBlocked ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy ? 'disabled' : ''}>
-            <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
-          </button>
-          <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
-            <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
-          </button>
-        </div>
         ${qrError ? `<p class="wallet-detail-error">${escapeHtml(qrError)}</p>` : ''}
         ${renderFundingWalletHint()}
       </div>
-    </div>
+    </section>
     ${renderSolflarePanel()}
     ${revealError ? `<p class="wallet-detail-error">${escapeHtml(revealError)}</p>` : ''}
     ${revealed ? `<div class="wallet-recovery-box is-revealed">
@@ -16719,7 +17420,7 @@ function renderWallet() {
           </button>
         </div>
     </div>` : ''}
-  ` : '<div class="empty-state">Generate or import a launch wallet to see funding and recovery controls.</div>';
+  ` : '<div class="empty-state">No launch wallet.</div>';
 
   // Old launch wallets and unfinished launches live in History; here they
   // only get a pointer, and only when there is something to look at.
@@ -16890,7 +17591,7 @@ function renderPersonalDiscovery() {
     || (snapshot
       ? scanSummary
       : enabledWatchOnlyCount + enabledManagedCount > 0
-        ? 'Refresh to find tokens.'
+        ? ''
         : 'Add a wallet first.');
   const progress = state.discovery.job?.progress || {};
   const progressTotal = Math.max(0, Number(progress.total) || 0);
@@ -16916,7 +17617,7 @@ function renderPersonalDiscovery() {
 
   if (!snapshot) {
     if ($('#personalDiscoveryTokenCount')) $('#personalDiscoveryTokenCount').textContent = '0';
-    $('#personalTokenNetwork').innerHTML = '<div class="discovery-feed-empty">Refresh to find tokens.</div>';
+    $('#personalTokenNetwork').innerHTML = '<div class="discovery-feed-empty">No tokens yet.</div>';
     return;
   }
   const feed = [
@@ -17157,7 +17858,7 @@ function renderDiscovery() {
       <span><small>Trades</small><strong>${tradeCount || '—'}</strong></span>
     </div>
     ${window.TrebuchetMarketEvidence?.reserves(market?.reserves) || ''}
-    <p class="pool-support-intro">Pool value includes the token inventory. Quote reserves span price ranges. Check a sell quote for the amount you plan to sell.</p>
+    
     <p class="pool-support-intro">Volume: ${formatDiscoveryUsd(market?.volume6hUsd)} over 6 hours · ${formatDiscoveryUsd(market?.volume24hUsd)} over 24 hours.</p>
     <button class="secondary-button compact" type="button" data-action="open-market-evidence" data-mint="${escapeHtml(selected.mint)}">Pool locks, fee owners and sell quotes</button>
     <div class="detail-section-label">
@@ -17237,22 +17938,29 @@ function approvalTransaction() {
 function approvalHtml() {
   const current = account();
   const tx = approvalTransaction();
+  const selectedLock = selectedManagedWallet() ? walletLockInfo(selectedManagedWallet()) : { state: null };
+  const keyGone = selectedLock.state === 'missing' || selectedLock.state === 'wrong-key';
+  const lockedWord = keyGone ? selectedLock.label : 'Locked';
+  // The Recovery PIN opens every saved key, so it can be unlocked even when the selected wallet's own key is gone.
+  const pinLocked = state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged;
   if (!tx) {
     return `
       <div class="approval-head">
         <span>
           <span class="eyebrow">Launch wallet</span>
-          <h2>${walletIsUnlocked() ? 'Unlocked' : 'Locked'}</h2>
+          <h2>${walletIsUnlocked() ? 'Unlocked' : escapeHtml(lockedWord)}</h2>
         </span>
         <span class="badge">${escapeHtml(authoritativeNetworkLabel())}</span>
       </div>
       <div class="approval-body">
-        <div class="kv-row"><span>Wallet</span><strong>${walletIsUnlocked() ? escapeHtml(current.name) : 'Locked'}</strong></div>
-        <p>Nothing to approve yet. Set up the token, then fund the launch wallet.</p>
+        <div class="kv-row"><span>Wallet</span><strong>${walletIsUnlocked() ? escapeHtml(current.name) : escapeHtml(lockedWord)}</strong></div>
+        <p>${keyGone ? escapeHtml(selectedLock.detail) : 'Nothing to approve yet. Set up the token, then fund the launch wallet.'}${keyGone && pinLocked ? ' The Recovery PIN is also locked: unlock it to use your other saved keys.' : ''}</p>
       </div>
       <div class="approval-actions">
         <button class="secondary-button" type="button" data-action="close-approval">Close</button>
-        <button class="primary-button" type="button" data-action="toggle-wallet">${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>
+        ${pinLocked
+          ? '<button class="primary-button" type="button" data-action="unlock-secret-pin">Unlock PIN</button>'
+          : `<button class="primary-button" type="button" data-action="toggle-wallet" ${keyGone ? 'disabled' : ''}>${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>`}
       </div>
     `;
   }
@@ -17304,7 +18012,7 @@ function approvalHtml() {
       ${recoverySpec
         ? `<div class="kv-row approval-pin-row"><span>PIN</span><strong>${walletIsUnlocked() ? 'Ready' : 'Unlock required'}</strong></div>`
         : `<div class="kv-row"><span>Estimate</span><strong>${currentEstimate.available ? fmtSol(currentEstimate.value) : 'Required'}</strong></div>`}
-      <p class="approval-scope-note"><i class="fa-solid fa-shield-halved"></i> ${recoverySpec?.detail ? `${escapeHtml(recoverySpec.detail)} ` : ''}Approving sends nothing; each step still runs from its own button.</p>
+      <p class="approval-scope-note"><i class="fa-solid fa-shield-halved"></i> ${recoverySpec?.detail ? `${escapeHtml(recoverySpec.detail)} ` : ''} Approving sends nothing.</p>
       ${!recoverySpec ? pendingRows.slice(0, 2).map((item) => `<p><i class="fa-solid fa-check"></i> ${escapeHtml(item.label)}</p>`).join('') : ''}
       ${!recoverySpec && pendingRows.length > 2 ? `<p><i class="fa-solid fa-ellipsis"></i> ${pendingRows.length - 2} more</p>` : ''}
     </div>
@@ -17390,7 +18098,7 @@ function renderRpcSettingsPanel() {
       ? test.ok
         ? `OK - Solana ${test.version || 'version'} / ${test.latencyMs ?? '?'}ms`
         : `Failed - ${test.error || 'RPC test failed'}`
-      : 'Test a new endpoint before saving it.';
+      : '';
   return `
     <article class="rpc-settings-panel ${escapeHtml(healthClass)}">
       <div class="rpc-settings-head">
@@ -17445,9 +18153,7 @@ function renderSettings() {
     <article class="setting-row ${state.demoActive ? '' : 'warn'}">
       <span>
         <h3>${state.demoActive ? 'Test mode' : 'Live mode'}</h3>
-        <p>${state.demoActive
-          ? 'Test launches send nothing and spend no SOL.'
-          : 'Launches send real transactions and spend real SOL.'}</p>
+
       </span>
       <button class="pill-button ${state.demoActive ? '' : 'danger'}" type="button" data-action="toggle-demo-mode" ${state.apiStatus === 'connected' ? '' : 'disabled'}>
         ${state.demoActive ? 'Switch to live' : 'Switch to test'}
@@ -17839,7 +18545,11 @@ function recoveryWizardModel({
       detail: recoverableCount
         ? `${recoverableCount} old launch wallet${recoverableCount === 1 ? '' : 's'} can be swept or revealed with the Recovery PIN.`
         : hasDecryptionFailures
-          ? 'Some local wallet metadata exists but cannot be decrypted on this machine.'
+          ? (wallets.some((wallet) => wallet.secretState === 'missing')
+            ? 'The saved key is gone from this computer for some wallets. Unlocking will not help. Restore it from a backup, or create a new wallet.'
+            : wallets.some((wallet) => wallet.secretState === 'wrong-key')
+              ? 'Some keys were saved under a different PIN and cannot be opened with this one.'
+              : 'Some local wallet metadata exists but the saved key cannot be read on this computer.')
           : 'No pending wallet secrets are waiting.',
       state: unlockState,
       stats: [
@@ -17849,7 +18559,7 @@ function recoveryWizardModel({
       ],
       items: [
         state.secretPin.configured ? 'Recovery PIN gates reveal, sweep, and manual recovery actions.' : 'Set a Recovery PIN before storing new launch secrets.',
-        hasDecryptionFailures ? 'Use an external backup for wallets this machine cannot decrypt.' : 'Reveal secrets only for manual recovery; prefer resume or sweep when available.',
+        hasDecryptionFailures ? 'Use an external backup for wallets whose saved key cannot be read here.' : 'Reveal secrets only for manual recovery; prefer resume or sweep when available.',
       ],
       actions: unlockActions,
     },
@@ -18091,7 +18801,7 @@ function renderHistoryExecutionAudit() {
   if (!entries.length) {
     return `
       <section class="history-audit-panel">
-        <p class="history-empty">Nothing sent yet. Each step of a live launch is listed here with how it ended and the SOL it used.</p>
+        <p class="history-empty">Nothing sent yet.</p>
       </section>
     `;
   }
@@ -18241,6 +18951,15 @@ function renderVanitySummary() {
   summary.textContent = state.selectedVanityPublicKey
     ? `${shortAddress(state.selectedVanityPublicKey)} · vanity`
     : 'Random address · recommended';
+  // A section that holds the chosen address should not start collapsed, or the
+  // address looks missing. Open it once per selected address; the operator can
+  // still collapse it and it stays that way.
+  const details = summary.closest('details');
+  if (details && state.selectedVanityPublicKey
+    && state.vanityDetailsOpenedFor !== state.selectedVanityPublicKey) {
+    state.vanityDetailsOpenedFor = state.selectedVanityPublicKey;
+    details.open = true;
+  }
 }
 
 // "More options" stays folded, so its header names every choice inside it:
@@ -18469,7 +19188,7 @@ function renderFundingWalletHint({ compact = false } = {}) {
     ? `${fullAddress(status.address)} was typed, not proven. Sign with it or use the funding wallet.`
     : status.address
       ? `${fullAddress(status.address)} receives Fee Keys, remaining tokens, and leftover SOL.`
-      : 'Fund the launch wallet from your own wallet. That wallet receives everything after launch.';
+      : '';
   const className = status.kind === 'unverified' ? 'danger' : status.address ? '' : 'warn';
   const detectLabel = hint.checking ? 'Checking history' : 'Find funding wallet';
   return `<div class="funding-wallet-hint ${className} ${compact ? 'compact' : ''}">
@@ -18503,7 +19222,7 @@ function renderSolflarePanel() {
     ? `Connected as ${fullAddress(state.solflare.publicKey)}.`
     : state.solflare.error
       ? state.solflare.error
-      : 'Optional. Connect it to fund the launch wallet, or to use it as the return wallet.';
+      : '';
 
   return `
     <div class="solflare-panel ${escapeHtml(className)}">
@@ -18712,22 +19431,21 @@ function renderHubPicker() {
   const result = hubPicker.result;
   const pool = result?.solPool;
   host.innerHTML = `
-    <div class="hub-picker-heading"><strong>Choose HUB / SOL</strong><button type="button" class="pill-button" data-action="close-hub-picker" aria-label="Close hub picker">Close</button></div>
-    <p>Add a pair with a hub token. Its existing SOL pool completes the route.</p>
+    <div class="hub-picker-heading"><strong>Choose a hub token</strong><button type="button" class="pill-button" data-action="close-hub-picker" aria-label="Close hub picker">Close</button></div>
     <div class="hub-picker-scroll" aria-label="Hub tokens">
       ${['default', 'discovery'].map((source) => `<p class="hub-picker-group">${source === 'default' ? 'Defaults' : 'From Discovery · SOL pools'}</p>
         ${rows.filter((hub) => hub.source === source).map((hub) => `<button class="hub-picker-token" type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}">
           <strong>${escapeHtml(hub.name || hub.symbol || shortAddress(hub.mint))}</strong><span>${escapeHtml(hub.symbol || 'HUB')} / SOL</span><code>${escapeHtml(shortAddress(hub.mint))}</code>
         </button>`).join('')}
-        ${source === 'discovery' && !rows.some((hub) => hub.source === source) ? '<small>Tokens with a SOL pool appear here after Discovery finds them.</small>' : ''}`).join('')}
+`).join('')}
     </div>
     <label class="hub-picker-ca" for="hubTokenCa">Token CA<input id="hubTokenCa" value="${escapeHtml(hubPicker.mint)}" placeholder="Paste any Solana token CA" autocomplete="off" spellcheck="false"></label>
-    <button class="pill-button" type="button" data-action="find-hub-pool">Find SOL pool</button>
-    <p class="hub-picker-status" role="status">${escapeHtml(hubPicker.loading ? 'Finding a SOL pool…' : hubPicker.error)}</p>
-    ${result ? `<div class="hub-picker-result"><strong>${escapeHtml(result.name)} · ${escapeHtml(result.symbol)} / SOL</strong>
+    <button class="pill-button" type="button" data-action="find-hub-pool">Find pool</button>
+    <p class="hub-picker-status" role="status">${escapeHtml(hubPicker.loading ? 'Finding a pool…' : hubPicker.error)}</p>
+    ${result ? `<div class="hub-picker-result"><strong>${escapeHtml(result.name)} · ${escapeHtml(result.symbol)} / ${escapeHtml(result.via?.symbol || 'SOL')}</strong>
       <small>Token CA</small><code>${escapeHtml(result.mint)}</code>
-      <small>${escapeHtml(pool.dex)} · existing SOL pool</small><code>${escapeHtml(pool.address)}</code>
-      <small>Found through ${escapeHtml(pool.source)}. Pair checks run after selection.</small>
+      <small>${escapeHtml(pool.dex)} · existing ${escapeHtml(result.via?.symbol || 'SOL')} pool</small><code>${escapeHtml(pool.address)}</code>
+      <small>${result.via ? `No SOL pool: buys route SOL → ${escapeHtml(result.via.symbol)} → ${escapeHtml(result.symbol)}. ` : ''}Found through ${escapeHtml(pool.source)}. Pair checks run after selection.</small>
       <button class="pill-button primary" type="button" data-action="use-hub-token">Use ${escapeHtml(result.symbol)}</button></div>` : ''}`;
 }
 
@@ -18769,14 +19487,14 @@ async function findHubPool(mint) {
   renderHubPicker();
   try {
     if (!isProbablySolanaAddress(query)) throw new Error('Enter a valid Solana token CA.');
-    if (!state.apiClient?.resolveFlywheelHub) throw new Error('Connect to the Trebuchet app to find a SOL pool.');
+    if (!state.apiClient?.resolveFlywheelHub) throw new Error('Connect to the Trebuchet app to find a pool.');
     const hub = await state.apiClient.resolveFlywheelHub(query);
     if (!hubPicker.open || requestId !== hubPicker.requestId) return;
-    if (hub.mint !== query || !hub.solPool?.address) throw new Error('Refresh the SOL pool lookup.');
+    if (hub.mint !== query || !hub.solPool?.address) throw new Error('Refresh the pool lookup.');
     hubPicker.result = hub;
   } catch (error) {
     if (!hubPicker.open || requestId !== hubPicker.requestId) return;
-    hubPicker.error = error.message || 'Try the SOL pool lookup again.';
+    hubPicker.error = error.message || 'Try the pool lookup again.';
   } finally {
     if (hubPicker.open && requestId === hubPicker.requestId) {
       hubPicker.loading = false;
@@ -18837,14 +19555,17 @@ function removeCustomPool(poolId) {
 }
 
 function normalizeAllSlices() {
+  const before = [$('#sliceShares').value, ...state.customPools.map((pool) => pool.sliceShares ?? '100')];
   $('#sliceShares').value = normalizedSliceText($('#sliceShares').value);
   state.customPools = state.customPools.map((pool) => ({
     ...pool,
     sliceShares: normalizedSliceText(pool.sliceShares || '100'),
   }));
+  const after = [$('#sliceShares').value, ...state.customPools.map((pool) => pool.sliceShares)];
+  const changed = after.some((value, index) => value !== before[index]);
   invalidateClassicOutputs();
   renderAll();
-  notify('Slice percentages rounded to 100%');
+  notify(changed ? 'Slice percentages rounded to 100%' : 'Slices already add up to 100%');
 }
 
 function setAirdropText(value) {
@@ -20259,8 +20980,15 @@ function selectRecoveryWallet(publicKey, { switchToWallet = true } = {}) {
   return wallet;
 }
 
+// A locked PIN asks for the PIN first, then carries on with what was asked.
+async function ensureRecoveryPinUnlocked() {
+  if (!(state.secretPin?.configured && state.secretPin?.locked)) return true;
+  return Boolean(await openRecoveryPinGate({ reason: 'unlock' }));
+}
+
 async function generateManagedWallet() {
   if (state.apiStatus === 'connected' && state.apiClient?.generateManagedWallet) {
+    if (!state.demoActive && !(await ensureRecoveryPinUnlocked())) return null;
     const wallet = await state.apiClient.generateManagedWallet();
     addManagedWallet(wallet);
     renderAll();
@@ -20277,6 +21005,7 @@ async function importManagedWallet() {
     notify('Import requires the Trebuchet desktop app');
     return;
   }
+  if (!state.demoActive && !(await ensureRecoveryPinUnlocked())) return;
   const secret = await openOperatorPrompt({
     eyebrow: 'Local wallet import',
     title: 'Import Solana wallet',
@@ -20310,6 +21039,10 @@ async function setupSecretPin() {
     notify('Recovery PIN requires the Trebuchet desktop app');
     return false;
   }
+  if (state.secretPin.damaged) {
+    notify(RECOVERY_PIN_DAMAGED_MESSAGE);
+    return false;
+  }
   if (state.secretPin.configured) {
     notify('Recovery PIN is already configured');
     return false;
@@ -20339,6 +21072,10 @@ async function setupSecretPin() {
     return true;
   } catch (error) {
     state.secretPin.busy = null;
+    if (error?.code === 'SECRET_PIN_ALREADY_SET') {
+      // The server says a PIN already exists. Our view was stale: refresh it.
+      try { await refreshSecretPinStatus(); } catch { /* keep the notice below */ }
+    }
     notify(error.message || 'Recovery PIN setup failed');
     return false;
   } finally {
@@ -20352,10 +21089,28 @@ async function unlockSecretPin({ reason = 'unlock' } = {}) {
     notify('Recovery PIN requires the Trebuchet desktop app');
     return false;
   }
+  if (state.secretPin.damaged) {
+    notify(RECOVERY_PIN_DAMAGED_MESSAGE);
+    return false;
+  }
   if (!state.secretPin.configured) {
     return setupSecretPin();
   }
   if (state.secretPin.unlocked) {
+    // The PIN is open but the wallet may still look locked from data loaded
+    // before the unlock: reload once, and only then say what is really wrong.
+    if (selectedLaunchWalletPublicKey() && !walletIsUnlocked()) {
+      await refreshLocalApiState();
+      if (walletIsUnlocked()) {
+        notify('Launch wallet ready');
+        return true;
+      }
+      if (walletLockReason() === 'unreadable') {
+        setView('wallet');
+        notify('The Recovery PIN is unlocked, but this launch wallet\'s key cannot be read. Choose or create another launch wallet.');
+        return false;
+      }
+    }
     notify('Recovery PIN already unlocked');
     return true;
   }
@@ -20389,6 +21144,10 @@ async function unlockLaunchWalletAndContinue() {
 async function changeSecretPin() {
   if (state.apiStatus !== 'connected' || !state.apiClient?.changeSecretPin) {
     notify('Recovery PIN change requires the Trebuchet desktop app');
+    return;
+  }
+  if (state.secretPin.damaged) {
+    notify(RECOVERY_PIN_DAMAGED_MESSAGE);
     return;
   }
   if (!state.secretPin.configured) {
@@ -20455,6 +21214,37 @@ async function lockSecretPin() {
   }
 }
 
+function inventoryItemLabel(item) {
+  const id = item.publicKey || item.id || '';
+  const where = item.publicKey ? shortAddress(item.publicKey) : String(id).slice(0, 18);
+  const attempts = Number(item.attempts) > 0 ? `, ${Number(item.attempts).toLocaleString('en-US')} attempts of grinding` : '';
+  return `${item.kind} ${where}${attempts}`;
+}
+
+function describeSecretInventory(inventory) {
+  const t = inventory.totals || {};
+  const counts = `Saved keys: ${t.readable || 0} readable, ${t.locked || 0} locked, ${t['wrong-key'] || 0} saved under a different PIN, ${t.missing || 0} missing.`;
+  const all = Object.values(inventory.stores || {}).flat();
+  const readable = all.filter((item) => item.state === 'readable' && item.wouldBeLostByReset);
+  const lost = (inventory.wouldBeLostByReset || []);
+  const list = (items) => items.slice(0, 6).map(inventoryItemLabel).join('; ') + (items.length > 6 ? `; and ${items.length - 6} more` : '');
+  return { counts, readable, lost, list };
+}
+
+async function showSecretPinResetResult(result) {
+  const archivePath = result.archive?.path;
+  if (!archivePath) return;
+  await openOperatorPrompt({
+    eyebrow: 'Recovery PIN reset',
+    title: 'Encrypted copies were saved',
+    detail: 'Before deleting anything, Trebuchet copied the old encrypted key files into this folder inside the Trebuchet data folder. They are still encrypted by the old PIN.',
+    label: 'Archive folder',
+    value: archivePath,
+    readOnly: true,
+    confirmLabel: 'Done',
+  });
+}
+
 async function resetSecretPin() {
   if (state.apiStatus !== 'connected' || !state.apiClient?.resetSecretPin) {
     notify('Recovery PIN reset requires the Trebuchet desktop app');
@@ -20464,10 +21254,37 @@ async function resetSecretPin() {
     notify('No Recovery PIN is configured');
     return;
   }
+  let inventory = null;
+  try {
+    inventory = state.apiClient.getSecretPinInventory ? await state.apiClient.getSecretPinInventory() : null;
+  } catch (error) {
+    inventory = null;
+  }
+  if (!inventory) {
+    notify('Could not check which saved keys a reset would destroy. Nothing was reset.');
+    return;
+  }
+  const summary = describeSecretInventory(inventory);
+  if (inventory.resetAllowed === false) {
+    const choice = await openOperatorPrompt({
+      eyebrow: 'Reset not offered',
+      title: 'Some keys can still be read',
+      detail: `Some keys can still be read. Change the PIN instead, or save them first. ${summary.counts} Readable now: ${summary.list(summary.readable)}.`,
+      hideInput: true,
+      confirmLabel: 'Change PIN instead',
+      cancelLabel: 'Close',
+      message: 'Reset stays hidden while the PIN is unlocked and a key can still be read.',
+    });
+    if (choice !== null) await changeSecretPin();
+    return;
+  }
+  const lostText = summary.lost.length
+    ? `Reset will destroy ${summary.lost.length} saved item${summary.lost.length === 1 ? '' : 's'}: ${summary.list(summary.lost)}. Nothing can bring them back.`
+    : 'No saved key is stored under this PIN, so nothing is destroyed.';
   const phrase = await openOperatorPrompt({
     eyebrow: 'Destructive local reset',
     title: 'Reset Recovery PIN',
-    detail: 'This deletes the PIN wrapper and permanently discards locally saved launch wallets and Vanity CAs encrypted by that PIN. Use it only if the PIN is lost and no recoverable launch is in progress.',
+    detail: `${summary.counts} ${lostText} Encrypted copies are saved to an archive folder first, but they cannot be opened without the old PIN. Use reset only if the PIN is lost and no recoverable launch is in progress.`,
     label: 'Type RESET RECOVERY PIN',
     placeholder: 'RESET RECOVERY PIN',
     confirmLabel: 'Reset local secrets',
@@ -20490,12 +21307,14 @@ async function resetSecretPin() {
     const removedCAs = Number(result.removed?.vanityCAs || 0);
     state.lastSecretPinReset = {
       at: new Date().toISOString(),
+      archive: result.archive || null,
       removed: {
         pendingWallets: removedWallets,
         vanityCAs: removedCAs,
       },
       status: result.status || state.secretPin,
     };
+    await showSecretPinResetResult(result);
     notify(`Recovery PIN reset; discarded ${removedWallets} wallet${removedWallets === 1 ? '' : 's'} and ${removedCAs} Vanity CA${removedCAs === 1 ? '' : 's'}`);
   } catch (error) {
     state.secretPin.busy = null;
@@ -21550,7 +22369,7 @@ function assetDestinationsHtml() {
       <strong>${escapeHtml(title)}</strong>
       ${address}
       ${warning}
-      <p class="return-wallet-note">Gets the Fee Keys (they collect the pools' trading fees), leftover SOL and any held-back tokens.</p>
+
       <div class="operator-toolbar compact">
         <button class="pill-button" type="button" data-action="sign-return-wallet" ${state.destinations.waiting ? 'disabled' : ''}>
           ${state.destinations.waiting ? 'Waiting for signature…' : 'Sign with another wallet'}
@@ -21669,8 +22488,26 @@ function newCoin() {
   $('#tokenName')?.focus();
 }
 
-function openDraftForCreation(draftId) {
-  const entry = (state.savedLaunches || []).find((item) => item.id === draftId);
+// The page's saved-launch list and the coin list come from separate requests, so
+// the page can be missing a draft the coin list shows (the list request failed or
+// the page is older than the draft). Ask the server before calling it gone.
+async function savedDraftEntry(draftId) {
+  const known = (state.savedLaunches || []).find((item) => item.id === draftId);
+  if (known) return known;
+  try {
+    const payload = await state.apiClient?.listSavedLaunches?.();
+    const launches = Array.isArray(payload?.launches)
+      ? payload.launches.filter((entry) => entry && entry.id && entry.config)
+      : [];
+    if (launches.length) state.savedLaunches = launches;
+    return launches.find((item) => item.id === draftId) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function openDraftForCreation(draftId) {
+  const entry = await savedDraftEntry(draftId);
   if (!entry) {
     notify('That draft is no longer saved');
     refreshCoins().catch(() => null);
@@ -21695,7 +22532,7 @@ function openCoin(key) {
   const target = coinByKey(key);
   // A draft is created on its own page: its steps.
   if (target?.kind === 'draft') {
-    openDraftForCreation(target.draftId);
+    openDraftForCreation(target.draftId).catch((error) => notify(error?.message || 'Could not open that draft'));
     return;
   }
   state.coins = { ...state.coins, key, detail: null, detailError: null };
@@ -21810,7 +22647,7 @@ function coinPositionsHtml() {
       <button class="pill-button danger" type="button" data-action="withdraw-coin-position" data-nft="${escapeHtml(position.nftMint)}" ${withdrawing ? 'disabled' : ''}>${withdrawing === position.nftMint ? 'Withdrawing…' : 'Withdraw'}</button>
     </li>`).join('');
   return `
-    ${rows ? `<ul class="coin-positions">${rows}</ul>` : '<p class="coins-empty">No positions you can withdraw. Locked launch positions stay locked; their Fee Keys collect the trading fees.</p>'}
+    ${rows ? `<ul class="coin-positions">${rows}</ul>` : '<p class="coins-empty">No withdrawable positions.</p>'}
     ${coinWithdrawalHistoryHtml()}
     ${error ? `<p class="pool-support-error">${escapeHtml(error)}</p>` : ''}`;
 }
@@ -22037,7 +22874,7 @@ function renderCoins() {
   const target = $('#coinsList');
   if (!target) return;
   if (state.apiStatus !== 'connected') {
-    target.innerHTML = '<p class="coins-empty">Your coins appear here when the Trebuchet desktop app is connected.</p>';
+    target.innerHTML = '<p class="coins-empty">Not connected.</p>';
     return;
   }
   if (state.coins.loading && !state.coins.loaded) {
@@ -22070,14 +22907,14 @@ function formatTokenAmount(raw, decimals) {
 const coinEvidence = new Map();
 
 function coinMarketEvidenceHtml(mint) {
-  if (mint.startsWith('Demo')) return '<section class="coin-section"><h2>Reserves and fee rights</h2><p class="pool-support-intro">Open a live coin to check pool reserves, Fee Key owners and sell quotes.</p></section>';
+  if (mint.startsWith('Demo')) return '<section class="coin-section"><h2>Reserves and fee rights</h2></section>';
   const entry = coinEvidence.get(mint) || {};
   const renderer = window.TrebuchetMarketEvidence;
   return `<section class="coin-section" aria-label="Market evidence">
     <div class="section-heading"><div><span class="eyebrow">Verification</span><h2>Reserves and fee rights</h2></div>
       <button class="pill-button" type="button" data-action="read-coin-evidence" data-mint="${escapeHtml(mint)}" ${entry.loading ? 'disabled' : ''}>${entry.loading ? 'Checking chain…' : 'Check chain'}</button>
     </div>
-    <p class="pool-support-intro">Trading fees accrue to Fee Key holders. The current flywheel uses static pool allocations.</p>
+    
     ${entry.error ? `<p class="pool-support-error" role="status">${escapeHtml(entry.error)}</p>` : ''}
     ${renderer?.render(entry.evidence) || ''}
     ${entry.evidence ? `<button class="pill-button" type="button" data-action="download-coin-evidence" data-mint="${escapeHtml(mint)}">Download market evidence</button>` : ''}
@@ -22304,9 +23141,7 @@ function renderCoinPage(coin) {
     // sample pool, and the panel says so.
     const intro = supportPanel.querySelector('.pool-support-intro');
     if (intro) {
-      intro.textContent = coin.practice
-        ? 'Test: this runs against a sample pool in the simulator. Nothing is sent. On a real coin it puts SOL below the price in its Raydium SOL pool, so sellers have something to sell into.'
-        : "Put SOL below this coin's price in its Raydium SOL pool, so sellers have something to sell into. It is signed by the selected wallet and is not locked: you can withdraw it later.";
+      intro.textContent = coin.practice ? 'Test: nothing is sent.' : '';
     }
     const target = $('#poolSupportTarget');
     if (target && target.value !== coin.mint) {
@@ -22603,11 +23438,9 @@ function renderReturnWalletCard() {
 
 function editReturnWallet() {
   setView('launch');
-  setLaunchWorkspace('configure');
+  setLaunchWorkspace('finish');
   window.requestAnimationFrame(() => {
-    const card = $('#returnWalletCard');
-    card?.closest('details')?.setAttribute('open', '');
-    card?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setPlanSlide('return');
   });
 }
 
@@ -23717,14 +24550,20 @@ function applyBootState(boot) {
   state.vanityCandidates = Array.isArray(boot.vanity?.candidates)
     ? boot.vanity.candidates.filter((candidate) => candidate && candidate.publicKey && !candidate.decryptionFailed)
     : [];
-  state.savedLaunches = Array.isArray(boot.savedLaunches?.launches)
-    ? boot.savedLaunches.launches.filter((entry) => entry && entry.id && entry.config)
-    : [];
+  // A failed saved-launch request comes back as an empty list. Keep what we
+  // already had then: the coin list is a separate request and would still show
+  // the drafts, and clicking one would say it was no longer saved.
+  if (boot.savedLaunches?.available !== false || !state.savedLaunches?.length) {
+    state.savedLaunches = Array.isArray(boot.savedLaunches?.launches)
+      ? boot.savedLaunches.launches.filter((entry) => entry && entry.id && entry.config)
+      : [];
+  }
   state.flywheelPools = {
     meme: Array.isArray(boot.flywheelPools?.pools?.meme) ? boot.flywheelPools.pools.meme : [],
     reserve: Array.isArray(boot.flywheelPools?.pools?.reserve) ? boot.flywheelPools.pools.reserve : [],
   };
   restoreDetectedLaunch();
+  renderSavedLaunchList();
   state.vanityAvailable = boot.vanity?.available === true;
   state.vanityReason = boot.vanity?.reason || null;
   state.clmmFeeTiers = normalizeClmmFeeTiers(boot.feeTiers?.tiers);
@@ -23733,9 +24572,32 @@ function applyBootState(boot) {
   if (state.vanityCandidates.length && !state.selectedVanityPublicKey) {
     state.selectedVanityPublicKey = state.vanityCandidates[state.vanityCandidates.length - 1].publicKey;
   }
-  if (state.managedWallets.length && !state.selectedWalletPublicKey) {
-    state.selectedWalletPublicKey = state.managedWallets[0].publicKey;
-    state.accountId = state.selectedWalletPublicKey;
+  // Prefer a wallet whose key still exists (readable, then locked) over one whose saved key is gone
+  // from this computer. A key-gone wallet can never sign, and selecting one made the screen say
+  // "unlocking will not help" while 3 usable wallets sat behind the locked PIN.
+  const keyRank = (wallet) => ({ readable: 0, locked: 1 })[wallet?.secretState] ?? (wallet?.secretState ? 3 : 2);
+  const bestWallet = [...state.managedWallets].sort((a, b) => keyRank(a) - keyRank(b))[0] || null;
+  const selectedNow = state.managedWallets.find((wallet) => wallet.publicKey === state.selectedWalletPublicKey) || null;
+  if (bestWallet && (!selectedNow || (selectedNow.secretState === 'missing' && keyRank(bestWallet) < keyRank(selectedNow)))) {
+    state.selectedWalletPublicKey = bestWallet.publicKey;
+    state.accountId = bestWallet.publicKey;
+  }
+  // With the PIN open, a selected wallet whose key still cannot be read can never
+  // sign (typically it was auto-selected while the PIN was locked). Move to the
+  // first wallet that can, rather than leaving the launch stuck on "locked".
+  if (state.managedWallets.length && walletLockReason() === 'unreadable') {
+    const readable = state.managedWallets.find((wallet) => wallet.hasSecretKey === true && wallet.decryptionFailed !== true);
+    if (readable) {
+      state.selectedWalletPublicKey = readable.publicKey;
+      state.accountId = readable.publicKey;
+      notify('Switched to a launch wallet whose key can be read');
+    }
+  }
+  // A locked Recovery PIN is the first thing to deal with, so show the PIN screen once per page load.
+  // It can be closed, and every locked screen also has its own Unlock button.
+  if (state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged && !state.recoveryPinOffered) {
+    state.recoveryPinOffered = true;
+    setTimeout(() => { Promise.resolve(openRecoveryPinGate({ reason: 'unlock' })).catch(() => {}); }, 0);
   }
   $('#networkLabel').textContent = authoritativeNetworkLabel();
 }
@@ -24243,6 +25105,12 @@ function handleClick(event) {
     return;
   }
 
+  const planTab = event.target.closest('[data-plan-tab]');
+  if (planTab) {
+    setPlanSlide(planTab.dataset.planTab);
+    return;
+  }
+
   const workspaceControl = event.target.closest('button[data-launch-workspace]');
   if (workspaceControl) {
     setLaunchWorkspace(workspaceControl.dataset.launchWorkspace, {
@@ -24275,6 +25143,14 @@ function handleClick(event) {
     renderLaunchWorkspace();
     return;
   }
+  if (action === 'open-saved-launch') {
+    switchActiveLaunch(actionTarget.dataset.launchId);
+    return;
+  }
+  if (action === 'new-launch') {
+    switchActiveLaunch(null);
+    return;
+  }
   if (action === 'open-launch-identity') {
     setView('launch');
     renderLaunchIdentity();
@@ -24292,6 +25168,10 @@ function handleClick(event) {
   if (action === 'show-more-discovery-wallets') {
     state.discovery.walletRenderLimit = Math.max(100, Number(state.discovery.walletRenderLimit) || 100) + 100;
     renderPersonalDiscovery();
+    return;
+  }
+  if (action === 'launch-rail-act') {
+    runLaunchRailAction();
     return;
   }
   if (action === 'select-environment') {
@@ -24344,7 +25224,7 @@ function handleClick(event) {
   }
   if (state.activeView === 'launch') {
     const actionWorkspace = {
-      'start-vanity': 'configure',
+      'start-vanity': 'mint',
       'estimate-funding': 'fund',
       'start-quote-acquire': 'fund',
       'publish-launch-report': 'finish',
@@ -24354,7 +25234,11 @@ function handleClick(event) {
       'cancel-refund-launch': 'finish',
       'resume-journal': 'finish',
     }[action];
-    if (actionWorkspace) setLaunchWorkspace(actionWorkspace);
+    if (actionWorkspace) {
+      // Each of these acts on the phase's own panel, or on the address settings.
+      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : 'run' };
+      setLaunchWorkspace(actionWorkspace);
+    }
   }
   if (action === 'review') {
     if (!walletIsUnlocked()) {
@@ -24857,7 +25741,9 @@ function handleClick(event) {
       notify('Set a Recovery PIN to add explicit wallet lock controls');
       return;
     }
-    if (state.secretPin.locked) {
+    if (state.secretPin.locked || !walletIsUnlocked()) {
+      // The button reads "Unlock" whenever the wallet is not usable, so it must
+      // never lock the PIN in that state (an unreadable wallet is not a locked PIN).
       unlockSecretPin().catch((error) => notify(error.message || 'Wallet unlock failed'));
     } else {
       lockSecretPin().catch((error) => notify(error.message || 'Wallet lock failed'));
@@ -25231,6 +26117,7 @@ function bindEvents() {
   // A pasted pair mint resolves its symbol as soon as the field is left.
   document.addEventListener('change', (event) => {
     if (event.target.closest?.('#advancedLaunchControls')) renderMoreOptionsSummary(); if (['tokenName', 'tokenSymbol'].includes(event.target?.id)) { renderCoinContext(); renderWorkingCoinCards(); }
+    commitPoolControl(event.target);
     const mint = event.target.closest?.('.supply-mint');
     if (mint?.value.trim()) {
       resolveCustomQuoteToken(mint.dataset.poolId).catch((error) => notify(error.message || 'Token lookup failed'));
@@ -25311,6 +26198,12 @@ function bindEvents() {
 
     const tagName = String(event.target.tagName || '').toLowerCase();
     const editing = ['input', 'textarea', 'select'].includes(tagName) || event.target.isContentEditable;
+    if (!editing && !event.altKey && !event.metaKey && !event.ctrlKey && ['ArrowLeft', 'ArrowRight'].includes(event.key)
+      && event.target.closest?.('#planSlides')) {
+      event.preventDefault();
+      stepPlanSlide(event.key === 'ArrowRight' ? 1 : -1);
+      return;
+    }
     if (!editing && event.altKey && !event.metaKey && !event.ctrlKey && /^Digit[1-5]$/.test(event.code)) {
       const index = Number(event.code.slice(-1)) - 1;
       const workspace = launchWorkspaces[index];
@@ -25542,7 +26435,10 @@ function syncChoiceControl(select) {
   if (range) {
     range.value = String(Math.max(0, select.selectedIndex));
     range.disabled = select.disabled;
-    range.setAttribute('aria-valuetext', select.options[select.selectedIndex]?.textContent?.trim() || '');
+    const valueText = select.options[select.selectedIndex]?.textContent?.trim() || '';
+    range.setAttribute('aria-valuetext', valueText);
+    const readout = control.querySelector('.choice-readout');
+    if (readout && readout.textContent !== valueText) readout.textContent = valueText;
   }
   control.querySelectorAll('button[data-choice-index]').forEach((button) => {
     const on = Number(button.dataset.choiceIndex) === select.selectedIndex;
@@ -25563,13 +26459,21 @@ function enhanceChoiceControls(root = document) {
     const name = select.getAttribute('aria-label')
       || select.closest('label')?.querySelector('span')?.textContent?.trim()
       || 'Choice';
+    // On a slider the range input is the keyboard control, so its labels are
+    // a mouse shortcut only: not tab stops, and hidden from screen readers
+    // (the range announces the chosen value).
     const labels = [...select.options].map((option, index) => (
-      `<button type="button" role="radio" data-choice-index="${index}">${escapeHtml(option.dataset.short || option.textContent.trim())}</button>`
+      `<button type="button" role="radio" data-choice-index="${index}"${kind === 'slider' ? ' tabindex="-1"' : ''}>${escapeHtml(option.dataset.short || option.textContent.trim())}</button>`
     )).join('');
     const control = document.createElement('div');
-    control.className = `choice-control is-${kind}`;
+    control.className = `choice-control is-${kind}${kind === 'slider' && select.options.length > 9 ? ' has-many' : ''}`;
+    // A long list wraps onto two rows, so the labels cannot line up with the
+    // thumb. A readout above the track states the chosen value instead.
+    const readout = kind === 'slider' && select.hasAttribute('data-choice-readout')
+      ? '<output class="choice-readout" aria-hidden="true"></output>'
+      : '';
     control.innerHTML = kind === 'slider'
-      ? `<input type="range" min="0" max="${select.options.length - 1}" step="1" aria-label="${escapeHtml(name)}"><div class="choice-ticks" role="radiogroup" aria-label="${escapeHtml(name)}">${labels}</div>`
+      ? `${readout}<input type="range" min="0" max="${select.options.length - 1}" step="1" aria-label="${escapeHtml(name)}"><div class="choice-ticks" role="radiogroup" aria-hidden="true" aria-label="${escapeHtml(name)}">${labels}</div>`
       : `<div class="choice-buttons" role="radiogroup" aria-label="${escapeHtml(name)}">${labels}</div>`;
     control.addEventListener('input', (event) => {
       if (event.target.matches('input[type="range"]')) chooseOption(select, Number(event.target.value));

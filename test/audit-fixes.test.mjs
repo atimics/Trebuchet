@@ -76,6 +76,21 @@ test('v2 runtime state derives wallet/network/funding truth from authoritative i
   assert.equal(runtime.walletUnlocked({ wallet: null }), false);
   assert.equal(runtime.walletUnlocked({ wallet: { hasSecretKey: true }, secretPin: { configured: true, locked: true } }), false);
   assert.equal(runtime.walletUnlocked({ wallet: { hasSecretKey: true }, secretPin: { configured: true, unlocked: true } }), true);
+  // The wallet label and the unlock button need to know WHY a wallet is unusable.
+  // The server sets hasSecretKey and decryptionFailed from one decrypt result, so
+  // an unreadable managed wallet is { hasSecretKey: false, decryptionFailed: true }.
+  const ok = { hasSecretKey: true, decryptionFailed: false };
+  const bad = { hasSecretKey: false, decryptionFailed: true };
+  assert.equal(runtime.walletLockReason({ wallet: null }), 'no-wallet');
+  assert.equal(runtime.walletLockReason({ wallet: {} }), 'no-wallet', 'external signer: no key to unlock');
+  assert.equal(runtime.walletLockReason({ wallet: bad, secretPin: { configured: true, locked: true } }), 'pin-locked', 'locked PIN wins: unlocking is the fix');
+  assert.equal(runtime.walletLockReason({ wallet: ok, secretPin: { configured: true, unlocked: false } }), 'pin-locked');
+  assert.equal(runtime.walletLockReason({ wallet: bad, secretPin: { configured: true, unlocked: true } }), 'unreadable', 'PIN open but key unreadable is not a locked PIN');
+  assert.equal(runtime.walletLockReason({ wallet: ok, secretPin: { configured: true, unlocked: true } }), 'none');
+  assert.equal(runtime.walletLockReason({ wallet: ok, secretPin: {} }), 'none', 'no PIN configured');
+  assert.equal(runtime.walletLockReason({ wallet: bad, demoActive: true }), 'unreadable');
+  assert.equal(runtime.walletUnlocked({ wallet: bad, secretPin: { configured: true, unlocked: true } }), false);
+  assert.equal(runtime.walletUnlocked({ wallet: ok, secretPin: { configured: true, unlocked: true } }), true);
   assert.equal(runtime.networkLabel({ demoActive: true, rpcName: 'Mainnet' }), 'Nothing is sent');
   assert.deepEqual({ ...runtime.fundingEstimate({ estimateMatches: false, estimatedSol: 6.33 }) }, {
     available: false,

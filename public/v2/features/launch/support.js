@@ -235,11 +235,9 @@ function renderReturnWalletCard() {
 
 function editReturnWallet() {
   setView('launch');
-  setLaunchWorkspace('configure');
+  setLaunchWorkspace('finish');
   window.requestAnimationFrame(() => {
-    const card = $('#returnWalletCard');
-    card?.closest('details')?.setAttribute('open', '');
-    card?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setPlanSlide('return');
   });
 }
 

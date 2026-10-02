@@ -90,8 +90,26 @@ function newCoin() {
   $('#tokenName')?.focus();
 }
 
-function openDraftForCreation(draftId) {
-  const entry = (state.savedLaunches || []).find((item) => item.id === draftId);
+// The page's saved-launch list and the coin list come from separate requests, so
+// the page can be missing a draft the coin list shows (the list request failed or
+// the page is older than the draft). Ask the server before calling it gone.
+async function savedDraftEntry(draftId) {
+  const known = (state.savedLaunches || []).find((item) => item.id === draftId);
+  if (known) return known;
+  try {
+    const payload = await state.apiClient?.listSavedLaunches?.();
+    const launches = Array.isArray(payload?.launches)
+      ? payload.launches.filter((entry) => entry && entry.id && entry.config)
+      : [];
+    if (launches.length) state.savedLaunches = launches;
+    return launches.find((item) => item.id === draftId) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function openDraftForCreation(draftId) {
+  const entry = await savedDraftEntry(draftId);
   if (!entry) {
     notify('That draft is no longer saved');
     refreshCoins().catch(() => null);
@@ -116,7 +134,7 @@ function openCoin(key) {
   const target = coinByKey(key);
   // A draft is created on its own page: its steps.
   if (target?.kind === 'draft') {
-    openDraftForCreation(target.draftId);
+    openDraftForCreation(target.draftId).catch((error) => notify(error?.message || 'Could not open that draft'));
     return;
   }
   state.coins = { ...state.coins, key, detail: null, detailError: null };
@@ -231,7 +249,7 @@ function coinPositionsHtml() {
       <button class="pill-button danger" type="button" data-action="withdraw-coin-position" data-nft="${escapeHtml(position.nftMint)}" ${withdrawing ? 'disabled' : ''}>${withdrawing === position.nftMint ? 'Withdrawing…' : 'Withdraw'}</button>
     </li>`).join('');
   return `
-    ${rows ? `<ul class="coin-positions">${rows}</ul>` : '<p class="coins-empty">No positions you can withdraw. Locked launch positions stay locked; their Fee Keys collect the trading fees.</p>'}
+    ${rows ? `<ul class="coin-positions">${rows}</ul>` : '<p class="coins-empty">No withdrawable positions.</p>'}
     ${coinWithdrawalHistoryHtml()}
     ${error ? `<p class="pool-support-error">${escapeHtml(error)}</p>` : ''}`;
 }
@@ -458,7 +476,7 @@ function renderCoins() {
   const target = $('#coinsList');
   if (!target) return;
   if (state.apiStatus !== 'connected') {
-    target.innerHTML = '<p class="coins-empty">Your coins appear here when the Trebuchet desktop app is connected.</p>';
+    target.innerHTML = '<p class="coins-empty">Not connected.</p>';
     return;
   }
   if (state.coins.loading && !state.coins.loaded) {
@@ -491,14 +509,14 @@ function formatTokenAmount(raw, decimals) {
 const coinEvidence = new Map();
 
 function coinMarketEvidenceHtml(mint) {
-  if (mint.startsWith('Demo')) return '<section class="coin-section"><h2>Reserves and fee rights</h2><p class="pool-support-intro">Open a live coin to check pool reserves, Fee Key owners and sell quotes.</p></section>';
+  if (mint.startsWith('Demo')) return '<section class="coin-section"><h2>Reserves and fee rights</h2></section>';
   const entry = coinEvidence.get(mint) || {};
   const renderer = window.TrebuchetMarketEvidence;
   return `<section class="coin-section" aria-label="Market evidence">
     <div class="section-heading"><div><span class="eyebrow">Verification</span><h2>Reserves and fee rights</h2></div>
       <button class="pill-button" type="button" data-action="read-coin-evidence" data-mint="${escapeHtml(mint)}" ${entry.loading ? 'disabled' : ''}>${entry.loading ? 'Checking chain…' : 'Check chain'}</button>
     </div>
-    <p class="pool-support-intro">Trading fees accrue to Fee Key holders. The current flywheel uses static pool allocations.</p>
+    
     ${entry.error ? `<p class="pool-support-error" role="status">${escapeHtml(entry.error)}</p>` : ''}
     ${renderer?.render(entry.evidence) || ''}
     ${entry.evidence ? `<button class="pill-button" type="button" data-action="download-coin-evidence" data-mint="${escapeHtml(mint)}">Download market evidence</button>` : ''}
@@ -725,9 +743,7 @@ function renderCoinPage(coin) {
     // sample pool, and the panel says so.
     const intro = supportPanel.querySelector('.pool-support-intro');
     if (intro) {
-      intro.textContent = coin.practice
-        ? 'Test: this runs against a sample pool in the simulator. Nothing is sent. On a real coin it puts SOL below the price in its Raydium SOL pool, so sellers have something to sell into.'
-        : "Put SOL below this coin's price in its Raydium SOL pool, so sellers have something to sell into. It is signed by the selected wallet and is not locked: you can withdraw it later.";
+      intro.textContent = coin.practice ? 'Test: nothing is sent.' : '';
     }
     const target = $('#poolSupportTarget');
     if (target && target.value !== coin.mint) {

@@ -22,7 +22,7 @@ VANITY_SRCS = vanity_keygen/vanity_keygen.c $(TWEETNACL_SRCS) $(REF10_SRCS)
 VANITY_BIN  = $(BUILD_DIR)/vanity_keygen
 VANITY_BIN_FAST = $(BUILD_DIR)/vanity_keygen_fast
 
-.PHONY: all clean dev fast portable
+.PHONY: all clean dev fast portable check
 
 # Default: libsodium-backed grinder, linked statically so the binary runs
 # without libsodium installed. libsodium scales across cores; OpenSSL 3 does
@@ -47,6 +47,11 @@ dev: $(VANITY_BIN)
 fast: CFLAGS = -O3 -flto -march=native -DTREBUCHET_OPENSSL_FAST -Wall -Wextra -Wpedantic -Wno-sign-compare
 fast: LDLIBS += -lcrypto
 fast: $(VANITY_BIN_FAST)
+
+# Unit checks for the walk's field math and suffix filter (no libsodium needed).
+check: $(BUILD_DIR)
+	$(CC) -O2 -Wall -Wextra -Wno-sign-compare vanity_keygen/test_fe51.c $(REF10_SRCS) -o $(BUILD_DIR)/test_fe51 $(INCLUDES)
+	./$(BUILD_DIR)/test_fe51
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)

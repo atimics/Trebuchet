@@ -276,14 +276,20 @@ function applyBootState(boot) {
   state.vanityCandidates = Array.isArray(boot.vanity?.candidates)
     ? boot.vanity.candidates.filter((candidate) => candidate && candidate.publicKey && !candidate.decryptionFailed)
     : [];
-  state.savedLaunches = Array.isArray(boot.savedLaunches?.launches)
-    ? boot.savedLaunches.launches.filter((entry) => entry && entry.id && entry.config)
-    : [];
+  // A failed saved-launch request comes back as an empty list. Keep what we
+  // already had then: the coin list is a separate request and would still show
+  // the drafts, and clicking one would say it was no longer saved.
+  if (boot.savedLaunches?.available !== false || !state.savedLaunches?.length) {
+    state.savedLaunches = Array.isArray(boot.savedLaunches?.launches)
+      ? boot.savedLaunches.launches.filter((entry) => entry && entry.id && entry.config)
+      : [];
+  }
   state.flywheelPools = {
     meme: Array.isArray(boot.flywheelPools?.pools?.meme) ? boot.flywheelPools.pools.meme : [],
     reserve: Array.isArray(boot.flywheelPools?.pools?.reserve) ? boot.flywheelPools.pools.reserve : [],
   };
   restoreDetectedLaunch();
+  renderSavedLaunchList();
   state.vanityAvailable = boot.vanity?.available === true;
   state.vanityReason = boot.vanity?.reason || null;
   state.clmmFeeTiers = normalizeClmmFeeTiers(boot.feeTiers?.tiers);
@@ -292,9 +298,32 @@ function applyBootState(boot) {
   if (state.vanityCandidates.length && !state.selectedVanityPublicKey) {
     state.selectedVanityPublicKey = state.vanityCandidates[state.vanityCandidates.length - 1].publicKey;
   }
-  if (state.managedWallets.length && !state.selectedWalletPublicKey) {
-    state.selectedWalletPublicKey = state.managedWallets[0].publicKey;
-    state.accountId = state.selectedWalletPublicKey;
+  // Prefer a wallet whose key still exists (readable, then locked) over one whose saved key is gone
+  // from this computer. A key-gone wallet can never sign, and selecting one made the screen say
+  // "unlocking will not help" while 3 usable wallets sat behind the locked PIN.
+  const keyRank = (wallet) => ({ readable: 0, locked: 1 })[wallet?.secretState] ?? (wallet?.secretState ? 3 : 2);
+  const bestWallet = [...state.managedWallets].sort((a, b) => keyRank(a) - keyRank(b))[0] || null;
+  const selectedNow = state.managedWallets.find((wallet) => wallet.publicKey === state.selectedWalletPublicKey) || null;
+  if (bestWallet && (!selectedNow || (selectedNow.secretState === 'missing' && keyRank(bestWallet) < keyRank(selectedNow)))) {
+    state.selectedWalletPublicKey = bestWallet.publicKey;
+    state.accountId = bestWallet.publicKey;
+  }
+  // With the PIN open, a selected wallet whose key still cannot be read can never
+  // sign (typically it was auto-selected while the PIN was locked). Move to the
+  // first wallet that can, rather than leaving the launch stuck on "locked".
+  if (state.managedWallets.length && walletLockReason() === 'unreadable') {
+    const readable = state.managedWallets.find((wallet) => wallet.hasSecretKey === true && wallet.decryptionFailed !== true);
+    if (readable) {
+      state.selectedWalletPublicKey = readable.publicKey;
+      state.accountId = readable.publicKey;
+      notify('Switched to a launch wallet whose key can be read');
+    }
+  }
+  // A locked Recovery PIN is the first thing to deal with, so show the PIN screen once per page load.
+  // It can be closed, and every locked screen also has its own Unlock button.
+  if (state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged && !state.recoveryPinOffered) {
+    state.recoveryPinOffered = true;
+    setTimeout(() => { Promise.resolve(openRecoveryPinGate({ reason: 'unlock' })).catch(() => {}); }, 0);
   }
   $('#networkLabel').textContent = authoritativeNetworkLabel();
 }

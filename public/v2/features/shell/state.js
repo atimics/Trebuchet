@@ -15,6 +15,7 @@ const views = {
   // A coin being created: the coin page with its creation steps.
   launch: { eyebrow: '', title: 'Coins' },
   nfts: { eyebrow: '', title: 'NFT collections' },
+  lean: { eyebrow: '', title: 'Lean launch' },
   wallet: { eyebrow: '', title: 'Wallet' },
   discovery: { eyebrow: '', title: 'Discovery' },
   history: { eyebrow: '', title: 'History' },
@@ -27,7 +28,7 @@ const launchWorkspaces = [
   { id: 'fund', title: 'Fund wallet', detail: 'Estimate the exact requirement, deposit SOL, and acquire quote tokens.' },
   { id: 'mint', title: 'Create token', detail: 'Review the permanent token facts, then mint and revoke authorities.' },
   { id: 'liquidity', title: 'Create liquidity', detail: 'Create pools and positions, lock liquidity, and deliver Fee Keys.' },
-  { id: 'finish', title: 'Finish launch', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
+  { id: 'finish', title: 'Leftovers', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
 ];
 
 
@@ -355,6 +356,7 @@ const state = {
   },
   secretPin: {
     configured: false,
+    damaged: false,
     unlocked: false,
     locked: false,
     version: null,
@@ -363,6 +365,7 @@ const state = {
     deviceSecretAvailable: true,
     busy: null,
   },
+  recoveryPinOffered: false,
   recoveryPinGate: {
     open: false,
     value: '',
@@ -404,6 +407,7 @@ const state = {
   vanityCandidates: [],
   savedLaunches: [],
   loadedSavedLaunchId: null,
+  vanityDetailsOpenedFor: null,
   flywheelPools: { meme: [], reserve: [] },
   vortexControl: null,
   memeFlywheelMint: null,
@@ -555,6 +559,14 @@ function walletIsUnlocked() {
     secretPin: state.secretPin,
     demoActive: state.demoActive,
   }) === true;
+}
+
+function walletLockReason() {
+  return window.TrebuchetV2RuntimeState?.walletLockReason({
+    wallet: selectedManagedWallet(),
+    secretPin: state.secretPin,
+    demoActive: state.demoActive,
+  }) || 'no-wallet';
 }
 
 function authoritativeNetworkLabel() {

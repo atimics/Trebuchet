@@ -1882,7 +1882,9 @@ test('v2 navigation and views stay wired together', () => {
 
   // Coins come first. Creating a token is an action on a coin, so the create
   // view (still "launch" internally) is opened from a coin, not the nav.
-  assert.deepEqual(navViews, ['coins', 'discovery', 'history', 'nfts', 'settings', 'wallet']);
+  // 'lean' is not a nav item: it is a button on the Coins page, another way to create a coin
+  // (test/damm-v2-ui.test.mjs checks it is not in the nav).
+  assert.deepEqual(navViews, ['coins', 'discovery', 'history', 'lean', 'nfts', 'settings', 'wallet']);
   assert.deepEqual(sectionViews, [...navViews, 'launch'].sort());
   assert.deepEqual(viewKeys, [...navViews, 'launch'].sort());
 });
@@ -1997,7 +1999,7 @@ test('v2 is the Electron default with an explicit tested Classic fallback', () =
   assert.match(electronMainJs, /BrowserWindow\.getAllWindows\(\)/);
   assert.match(electronMainJs, /win\.loadURL\(`http:\/\/127\.0\.0\.1:\$\{serverPort\}\$\{desktopUiPath\}`\)/);
   assert.match(v2BrowserE2eJs, /page\.goto\(`\$\{baseUrl\}\/v2\/`/);
-  assert.match(v2BrowserE2eJs, /data-action=\"run-demo-launch\"/);
+  assert.match(v2BrowserE2eJs, /data-action=\"launch-rail-act\"/);
   assert.match(v2BrowserE2eJs, /dataset\.apiStatus === 'connected'/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\)/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\{ classic: true \}\)/);
@@ -2204,7 +2206,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="coinState"/);
   assert.doesNotMatch(html, /launch-workspace-tab|Six launch phases/);
   assert.match(html, /id="launchWorkspaceViewport"/);
-  for (const workspace of ['wallet', 'configure', 'fund', 'mint', 'liquidity', 'finish']) {
+  for (const workspace of ['wallet', 'fund', 'mint', 'liquidity', 'finish']) {
     assert.match(html, new RegExp(`data-launch-workspace="${workspace}"`));
   }
   assert.match(html, /id="poolEditorPanel"/);
@@ -2214,7 +2216,8 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="airdropAutoFit"/);
   assert.match(html, /id="airdropBudgetPanel"/);
   assert.match(html, /id="reportPreview"/);
-  assert.match(html, /Supply and pools/);
+  assert.match(html, /data-plan-slide="pairs"/);
+  assert.doesNotMatch(html, /id="launchMoreOptions"/, 'Plan options are slides, not nested drawers');
   assert.match(html, /id="supplyEditor"/);
   assert.doesNotMatch(html, /Classic parity controls/);
   assert.match(html, /class="launch-toolbar"/);
@@ -2234,7 +2237,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /Fixed by this coin\\'s mint/);
   assert.doesNotMatch(js, /Check prerequisites/);
   assert.doesNotMatch(js, /Classic execution payloads ready/);
-  assert.match(combined, /The name and logo stay hidden until the pool is locked/);
   assert.match(combined, /Create &amp; lock liquidity/);
   assert.match(combined, /Finish launch/);
   assert.match(html, /id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000"/);
@@ -2579,7 +2581,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /<span class="logo-input-label">Logo<\/span>/);
   assert.match(html, /class="logo-upload-control" for="tokenLogoFile"/);
   assert.match(html, /class="logo-upload-command"/);
-  assert.match(html, /PNG, JPG or GIF, up to 10 MB/);
+  assert.match(html, /PNG · JPG · GIF · 10 MB/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
   assert.match(gifOptimizerJs, /optimizeAnimatedGif/);
   assert.match(gifOptimizerJs, /decompressFrames/);
@@ -2883,9 +2885,8 @@ test('v2 launch is one flow with no separate guided mode', () => {
 });
 
 test('v2 shows where assets go and lets funding wallets share held-back tokens', () => {
-  // Visible on Token & pools, outside More options.
-  const moreStart = html.indexOf('id="launchMoreOptions"');
-  assert.ok(html.indexOf('id="returnWalletCard"') < moreStart, 'Where assets go is folded away');
+  // Its own slide on Token & pools: never folded away.
+  assert.match(html, /data-plan-slide="return"[\s\S]*id="returnWalletCard"/);
   assert.match(js, /function assetDestinationsHtml\(\)/);
   assert.match(js, /Where assets go/);
   // Funders share by SOL sent, through the existing airdrop rows.
@@ -3242,7 +3243,7 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(combined, /Manual ladder bands/);
   assert.match(combined, /Pool topology map/);
   assert.match(combined, /Launch position tree/);
-  assert.match(combined, /Launch report export/);
+  assert.match(combined, /data-plan-slide="return"/);
   assert.match(combined, /Launch completion/);
   assert.match(combined, /Report, airdrop, and proof/);
   assert.match(combined, /Proof review/);
@@ -3507,6 +3508,120 @@ test('v2 slice parser accepts chat-style percentage ladders', () => {
   assert.deepEqual([...parseSliceShares('48 - 1 - 1')], [96, 2, 2]);
   assert.deepEqual([...parseSliceShares('48 / 1 / 1')], [96, 2, 2]);
   assert.equal(normalizedSliceText('48% - 1% - 1%'), '96,2,2');
+});
+
+function loadPoolControlHarness() {
+  const start = js.indexOf('function parseNumericInput');
+  const end = js.indexOf('\nfunction classicSimpleLadderConfig', start);
+  assert.ok(start >= 0 && end > start, 'pool control helpers should be extractable');
+  const sandbox = { console, CLASSIC_LADDER_MAX_BANDS: 20 };
+  vm.runInNewContext(
+    [
+      js.slice(start, end),
+      'globalThis.describeSliceInput = describeSliceInput;',
+      'globalThis.checkPoolNumberField = checkPoolNumberField;',
+      'globalThis.analyzeManualLadder = analyzeManualLadder;',
+      'globalThis.parseManualLadderBands = parseManualLadderBands;',
+    ].join('\n'),
+    sandbox,
+    { filename: 'public/v2/app.js pool control harness' },
+  );
+  return sandbox;
+}
+
+test('v2 position slices say what the text means in plain words', () => {
+  const { describeSliceInput } = loadPoolControlHarness();
+
+  assert.equal(describeSliceInput('100').text, '1 position, all of this pool.');
+  assert.equal(describeSliceInput('100').tone, 'ok');
+  assert.equal(describeSliceInput('').text, 'Empty, so one position (100%).');
+  assert.equal(describeSliceInput('50,50').text, '2 positions: 50% + 50%.');
+  const scaled = describeSliceInput('30,30');
+  assert.equal(scaled.tone, 'warn');
+  assert.match(scaled.text, /2 positions: 50% \+ 50%\. Your numbers total 60, so they are scaled to 100%\./);
+  assert.match(describeSliceInput('1').text, /total 1, so they are scaled to 100%/);
+  const junk = describeSliceInput('50,abc');
+  assert.equal(junk.invalid, true);
+  assert.deepEqual([...junk.rejected], ['abc']);
+  assert.match(junk.text, /^Ignored: abc\./);
+  assert.match(describeSliceInput('33.3,33.3,33.3').text, /3 positions: 33\.33% \+ 33\.33% \+ 33\.34%\./);
+  assert.equal(describeSliceInput('0').invalid, true);
+  // The summary and the plan agree on the split.
+  const { parseSliceShares } = loadSliceParserHarness();
+  for (const text of ['100', '30,30', '48 - 1 - 1', '50,abc', '33.3,33.3,33.3', '']) {
+    assert.deepEqual([...describeSliceInput(text).slices], [...parseSliceShares(text)]);
+  }
+});
+
+test('v2 pool number fields report what they will do with out-of-range input', () => {
+  const { checkPoolNumberField } = loadPoolControlHarness();
+
+  assert.deepEqual({ ...checkPoolNumberField('premium', '25') }, { value: 25, issue: null });
+  assert.deepEqual({ ...checkPoolNumberField('premium', '12.5') }, { value: 12.5, issue: null });
+  assert.equal(checkPoolNumberField('premium', '99999').value, 500);
+  assert.match(checkPoolNumberField('premium', '99999').issue, /most allowed is 500%/);
+  assert.equal(checkPoolNumberField('premium', '-5').value, 0);
+  assert.match(checkPoolNumberField('premium', 'abc').issue, /not a number/);
+  assert.equal(checkPoolNumberField('premium', 'abc').value, 25);
+  // Blank premium is not silently zero (zero lets bots drain SOL buyers).
+  assert.equal(checkPoolNumberField('premium', '').value, 25);
+  assert.match(checkPoolNumberField('premium', '').issue, /Enter a number from 0 to 500/);
+
+  assert.deepEqual({ ...checkPoolNumberField('ladderBands', '') }, { value: 0, issue: null });
+  assert.equal(checkPoolNumberField('ladderBands', '99').value, 20);
+  assert.equal(checkPoolNumberField('ladderBands', '2.7').value, 2);
+  assert.match(checkPoolNumberField('ladderBands', '2.7').issue, /Whole numbers only/);
+  assert.equal(checkPoolNumberField('ladderBands', '-3').value, 0);
+  assert.equal(checkPoolNumberField('ladderBands', '7').issue, null);
+
+  assert.deepEqual({ ...checkPoolNumberField('supportSol', '') }, { value: 0, issue: null });
+  assert.equal(checkPoolNumberField('supportSol', '-1').value, 0);
+  assert.match(checkPoolNumberField('supportSol', 'abc').issue, /not a number/);
+  assert.deepEqual({ ...checkPoolNumberField('supportSol', '0.5') }, { value: 0.5, issue: null });
+});
+
+test('v2 custom ladder names the lines it cannot use and keeps its parsed bands', () => {
+  const { analyzeManualLadder, parseManualLadderBands } = loadPoolControlHarness();
+  const result = analyzeManualLadder('supply%, low, high\n# note\n10, 1.5, 3\n\nbad line\n5, 0.5, 2\n5, 3, 2');
+
+  assert.equal(result.bands.length, 1);
+  assert.deepEqual([...result.rejected.map((item) => item.line)], [5, 6, 7]);
+  assert.equal(result.rejected[0].text, 'bad line');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(parseManualLadderBands('10, 1.5, 3\nbad'))),
+    [{ supplyPercent: 10, lowerMultiplier: 1.5, upperMultiplier: 3 }],
+  );
+  assert.equal(analyzeManualLadder('').bands.length, 0);
+  assert.equal(analyzeManualLadder('').rejected.length, 0);
+});
+
+test('v2 pool advanced panel wires feedback, names, and slider keyboard use', () => {
+  const editor = read('public/v2/features/launch/pool-editor.js');
+  const startup = read('public/v2/features/shell/startup.js');
+  const funding = read('public/v2/features/launch/funding.js');
+
+  // Both panel variants (SOL pool and pair pool) carry the live messages.
+  assert.equal([...editor.matchAll(/, 'slices'\)\}/g)].length, 2);
+  assert.equal([...editor.matchAll(/, 'manual', true\)\}/g)].length, 2);
+  assert.match(editor, /aria-labelledby="\$\{base\}-label"/);
+  assert.match(editor, /aria-describedby=/);
+  assert.match(editor, /bands\.disabled = replaced/);
+  assert.match(editor, /commitPoolControl\(control\)/);
+  assert.match(startup, /commitPoolControl\(event\.target\)/);
+  // The fee tier slider: keyboard goes through the range, labels are a mouse shortcut.
+  assert.match(startup, /tabindex="-1"/);
+  assert.match(startup, /class="choice-readout"/);
+  assert.equal([...editor.matchAll(/data-choice="slider" data-choice-readout/g)].length, 2);
+  assert.match(funding, /Slices already add up to 100%/);
+  assert.match(css, /\.supply-feedback\.is-warn/);
+  assert.match(css, /\.choice-control\.has-many \.choice-ticks/);
+});
+
+test('v2 pool controls browser check is wired into npm scripts', () => {
+  assert.equal(packageJson.scripts['test:e2e:pool-controls'], 'node test/e2e/v2-pool-controls.mjs');
+  const script = read('test/e2e/v2-pool-controls.mjs');
+  assert.match(script, /TREBUCHET_CONFIG_DIR: configDir/);
+  assert.match(script, /listen\(0, '127\.0\.0\.1'/);
 });
 
 test('v2 manual prefund evidence is bound to the selected wallet', () => {
@@ -6636,7 +6751,6 @@ test('v2 terminal recovery collapses into the completed proof panel', () => {
   assert.match(bridgeSource, /state\.restoredLaunchJournalId && !finalSweepComplete/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('has-recovery-notice'/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('is-terminal-launch', finalSweepComplete\)/);
-  assert.match(bridgeSource, /Everything is in the return wallet and the launch wallet is empty/);
   assert.match(bridgeSource, /!finalSweepComplete && !completedJournal \? `<details class="drawer launch-recovery-details"/);
   assert.match(css, /#classicBridge\.is-terminal-launch \.classic-workspace-verify\s*\{[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\)/);
   assert.match(css, /\.recovered-plan-notice\s*\{[\s\S]*?max-height: 44px/);
@@ -6692,7 +6806,6 @@ test('v2 contract address grinder lists saved addresses as rows with Signal grad
   // Search effort is labeled as local on the candidate and in its note.
   assert.match(renderSource, /the expected tries/);
   assert.match(renderSource, /Local grind grade:/);
-  assert.match(renderSource, /The address confirms the letter pattern/);
   assert.match(css, /--rarity-common: #c8dce6/);
   assert.match(css, /--rarity-fine: #8cdcff/);
   assert.match(css, /--rarity-rare: #be82ff/);
@@ -6761,12 +6874,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=102/);
+  assert.match(html, /styles\.css\?v=116/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=196/);
-  assert.doesNotMatch(html, /app\.js\?v=196" type="module"/);
+  assert.match(html, /app\.js\?v=207/);
+  assert.doesNotMatch(html, /app\.js\?v=207" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11712,9 +11825,11 @@ test('a finished launch is matched to the coin by its mint, never its name', () 
 
 test('a coin being created shows its facts, not a numbered track of phases', () => {
   // One row per fact, with no ordinals and no Continue/back navigation.
-  for (const fact of ['wallet', 'configure', 'fund', 'mint', 'liquidity', 'finish']) {
+  // Plan is not a phase of its own: its settings live in Token, Liquidity and Leftovers.
+  for (const fact of ['wallet', 'mint', 'liquidity', 'fund', 'finish']) {
     assert.match(html, new RegExp(`class="coin-fact"[^>]*data-coin-fact="${fact}"`));
   }
+  assert.doesNotMatch(html, /data-coin-fact="configure"/);
   assert.doesNotMatch(css, /content: "0[1-6]"/);
   assert.doesNotMatch(html + js, /Continue to (funding|create token)|Back to token|> Review funding/);
   assert.doesNotMatch(js.match(/function coinFacts[\s\S]*?\n}\n/)?.[0] || '', /Waiting|Continue/);
@@ -11775,4 +11890,13 @@ test('a coin is called Live only once the chain agrees', () => {
   assert.equal(sandbox.coinChainStatus(steps('done', 'done', 'unrecorded', 'mismatch')), 'Chain disagrees');
   assert.equal(sandbox.coinChainStatus(steps('done', 'todo', 'unrecorded', 'todo')), 'Unfinished');
   assert.doesNotMatch(js, /transferHasWalletEmptyFinalSweepEvidence\(proof\?\.transfer\) \? 'Live'/);
+});
+
+
+test('a locked Recovery PIN opens the PIN panel instead of a toast, and generate/import ask for it first', () => {
+  const dialogs = readFileSync(new URL('../public/v2/features/shell/dialogs.js', import.meta.url), 'utf8');
+  const actions = readFileSync(new URL('../public/v2/features/wallet/actions.js', import.meta.url), 'utf8');
+  assert.match(dialogs, /Unlock your Recovery PIN[\s\S]{0,200}openRecoveryPinGate\(\{ reason: 'unlock' \}\);\s*return;/);
+  assert.match(actions, /async function ensureRecoveryPinUnlocked\(\)/);
+  assert.equal((actions.match(/ensureRecoveryPinUnlocked\(\)\)\) return/g) || []).length, 2);
 });

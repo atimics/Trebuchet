@@ -9,22 +9,29 @@ function approvalTransaction() {
 function approvalHtml() {
   const current = account();
   const tx = approvalTransaction();
+  const selectedLock = selectedManagedWallet() ? walletLockInfo(selectedManagedWallet()) : { state: null };
+  const keyGone = selectedLock.state === 'missing' || selectedLock.state === 'wrong-key';
+  const lockedWord = keyGone ? selectedLock.label : 'Locked';
+  // The Recovery PIN opens every saved key, so it can be unlocked even when the selected wallet's own key is gone.
+  const pinLocked = state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged;
   if (!tx) {
     return `
       <div class="approval-head">
         <span>
           <span class="eyebrow">Launch wallet</span>
-          <h2>${walletIsUnlocked() ? 'Unlocked' : 'Locked'}</h2>
+          <h2>${walletIsUnlocked() ? 'Unlocked' : escapeHtml(lockedWord)}</h2>
         </span>
         <span class="badge">${escapeHtml(authoritativeNetworkLabel())}</span>
       </div>
       <div class="approval-body">
-        <div class="kv-row"><span>Wallet</span><strong>${walletIsUnlocked() ? escapeHtml(current.name) : 'Locked'}</strong></div>
-        <p>Nothing to approve yet. Set up the token, then fund the launch wallet.</p>
+        <div class="kv-row"><span>Wallet</span><strong>${walletIsUnlocked() ? escapeHtml(current.name) : escapeHtml(lockedWord)}</strong></div>
+        <p>${keyGone ? escapeHtml(selectedLock.detail) : 'Nothing to approve yet. Set up the token, then fund the launch wallet.'}${keyGone && pinLocked ? ' The Recovery PIN is also locked: unlock it to use your other saved keys.' : ''}</p>
       </div>
       <div class="approval-actions">
         <button class="secondary-button" type="button" data-action="close-approval">Close</button>
-        <button class="primary-button" type="button" data-action="toggle-wallet">${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>
+        ${pinLocked
+          ? '<button class="primary-button" type="button" data-action="unlock-secret-pin">Unlock PIN</button>'
+          : `<button class="primary-button" type="button" data-action="toggle-wallet" ${keyGone ? 'disabled' : ''}>${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>`}
       </div>
     `;
   }
@@ -76,7 +83,7 @@ function approvalHtml() {
       ${recoverySpec
         ? `<div class="kv-row approval-pin-row"><span>PIN</span><strong>${walletIsUnlocked() ? 'Ready' : 'Unlock required'}</strong></div>`
         : `<div class="kv-row"><span>Estimate</span><strong>${currentEstimate.available ? fmtSol(currentEstimate.value) : 'Required'}</strong></div>`}
-      <p class="approval-scope-note"><i class="fa-solid fa-shield-halved"></i> ${recoverySpec?.detail ? `${escapeHtml(recoverySpec.detail)} ` : ''}Approving sends nothing; each step still runs from its own button.</p>
+      <p class="approval-scope-note"><i class="fa-solid fa-shield-halved"></i> ${recoverySpec?.detail ? `${escapeHtml(recoverySpec.detail)} ` : ''} Approving sends nothing.</p>
       ${!recoverySpec ? pendingRows.slice(0, 2).map((item) => `<p><i class="fa-solid fa-check"></i> ${escapeHtml(item.label)}</p>`).join('') : ''}
       ${!recoverySpec && pendingRows.length > 2 ? `<p><i class="fa-solid fa-ellipsis"></i> ${pendingRows.length - 2} more</p>` : ''}
     </div>
@@ -162,7 +169,7 @@ function renderRpcSettingsPanel() {
       ? test.ok
         ? `OK - Solana ${test.version || 'version'} / ${test.latencyMs ?? '?'}ms`
         : `Failed - ${test.error || 'RPC test failed'}`
-      : 'Test a new endpoint before saving it.';
+      : '';
   return `
     <article class="rpc-settings-panel ${escapeHtml(healthClass)}">
       <div class="rpc-settings-head">
@@ -217,9 +224,7 @@ function renderSettings() {
     <article class="setting-row ${state.demoActive ? '' : 'warn'}">
       <span>
         <h3>${state.demoActive ? 'Test mode' : 'Live mode'}</h3>
-        <p>${state.demoActive
-          ? 'Test launches send nothing and spend no SOL.'
-          : 'Launches send real transactions and spend real SOL.'}</p>
+
       </span>
       <button class="pill-button ${state.demoActive ? '' : 'danger'}" type="button" data-action="toggle-demo-mode" ${state.apiStatus === 'connected' ? '' : 'disabled'}>
         ${state.demoActive ? 'Switch to live' : 'Switch to test'}

@@ -297,6 +297,7 @@
       },
       secretPin: {
         configured: secretPinStatus.configured === true,
+        damaged: secretPinStatus.damaged === true,
         unlocked: secretPinStatus.unlocked === true,
         locked: secretPinStatus.locked === true,
         version: secretPinStatus.version || null,
@@ -648,7 +649,13 @@
       return {
         status: data.status || {},
         removed: data.removed || {},
+        archive: data.archive || null,
       };
+    }
+
+    async function getSecretPinInventory() {
+      const data = await request(`${SECRET_PIN_PATH}/inventory`);
+      return data.inventory || null;
     }
 
     async function listVanityCandidates() {
@@ -1223,6 +1230,7 @@
       removeFlywheelMint,
       removeDiscoveryWallet,
       resetSecretPin,
+      getSecretPinInventory,
       retryAirdrop,
       runAirdrop,
       runDemoLaunch,

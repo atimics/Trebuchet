@@ -682,7 +682,7 @@ function renderClassicBridge() {
     ? {
       eyebrow: 'Not estimated',
       title: 'Estimate the launch cost',
-      detail: 'Work out how much SOL this launch needs.',
+      detail: '',
       action: 'estimate-funding',
       actionLabel: fundingEstimateStatus.stale ? 'Update estimate' : 'Estimate cost',
     }
@@ -698,7 +698,7 @@ function renderClassicBridge() {
       ? {
         eyebrow: 'Send to launch wallet',
         title: `${totalSol.toFixed(4)} SOL`,
-        detail: 'Send this much SOL to the address below, then check the balance.',
+        detail: '',
         action: 'refresh-manual-prefund',
         actionLabel: state.manualPrefund.polling ? 'Checking balance' : 'I funded it · check balance',
       }
@@ -809,7 +809,7 @@ function renderClassicBridge() {
             : recoveringToken ? 'Finish interrupted token safely' : 'Review this launch'
           : readiness?.nextAction || title;
     const panelDetail = state.demoActive && !complete
-      ? 'Creates the token, pool and locks in a simulator. Nothing is sent.'
+      ? 'Nothing is sent.'
       : complete
       ? detail
       : needsFunding
@@ -903,17 +903,23 @@ function renderClassicBridge() {
       <section class="launch-step-guide irreversible" aria-labelledby="mintStepTitle">
         <div>
           <h2 id="mintStepTitle">Create token</h2>
-          <p>${config.token.sealedLaunch
-            ? 'Mints the supply and removes mint and freeze control. The name and logo stay hidden until the pool is locked.'
-            : 'Mints the supply and removes mint and freeze control.'}</p>
         </div>
         ${state.demoActive || tokenComplete ? '' : `<aside><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span><strong>Can't be undone.</strong> Fix mistakes in Token &amp; pools first.</span></aside>`}
       </section>
-      <div class="launch-fact-grid">
-        <span><small>Name</small><strong>${escapeHtml(config.token.name || 'Untitled')}</strong></span>
-        <span><small>Symbol</small><strong>${escapeHtml(config.token.symbol || 'TOK')}</strong></span>
-        <span><small>Supply</small><strong>${escapeHtml(String(config.token.supply || '0'))}</strong></span>
-        <span><small>Contract address</small><strong>${escapeHtml(state.selectedVanityPublicKey ? fullAddress(state.selectedVanityPublicKey) : 'Random')}</strong></span>
+      <div class="plan-preview">
+        <div class="preview-mark">
+          ${state.tokenLogo?.dataUrl ? `<img src="${escapeHtml(state.tokenLogo.dataUrl)}" alt="">` : `<span aria-hidden="true">${escapeHtml(String(config.token.symbol || 'TOK').slice(0, 3).toUpperCase())}</span>`}
+          <strong>${escapeHtml(config.token.name || 'Untitled')}</strong>
+          <small>$${escapeHtml(String(config.token.symbol || 'TOK').toUpperCase())}</small>
+        </div>
+        <dl class="preview-rows">
+          <div><dt>Supply</dt><dd>${escapeHtml(String(config.token.supply || '0'))}</dd></div>
+          <div><dt>Standard</dt><dd>${config.token.mintFormat === 'classic-spl' ? 'Classic SPL' : 'Token-2022'}</dd></div>
+          <div><dt>Address</dt><dd>${escapeHtml(state.selectedVanityPublicKey ? fullAddress(state.selectedVanityPublicKey) : 'Random')}</dd></div>
+          <div><dt>Name and logo</dt><dd>${config.token.sealedLaunch ? 'Sealed until the pool is locked' : 'Public at creation'}</dd></div>
+          <div><dt>Mint authority</dt><dd class="${tokenComplete ? 'is-ok' : ''}">${tokenComplete ? 'Removed' : 'Removed at creation'}</dd></div>
+          <div><dt>Freeze authority</dt><dd class="${tokenComplete ? 'is-ok' : ''}">${tokenComplete ? 'Removed' : 'Removed at creation'}</dd></div>
+        </dl>
       </div>
       ${readinessPanel({
         title: tokenComplete ? 'Token created' : mintEndpoint === '/api/finish-token-creation' ? 'Finish interrupted token' : 'Create token',
@@ -932,11 +938,16 @@ function renderClassicBridge() {
         </div>
         ${state.demoActive || liquidityComplete ? '' : `<aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>`}
       </section>
-      <div class="launch-fact-grid">
-        <span><small>Pools</small><strong>${poolCount}</strong></span>
-        <span><small>Positions</small><strong>${sliceCount}</strong></span>
-        ${ladderCount ? `<span><small>Extra price bands</small><strong>${ladderCount}</strong></span>` : ''}
-        ${topology.pools.some((pool) => pool.support?.enabled) ? '<span><small>Buy support</small><strong>On</strong></span>' : ''}
+      <div class="plan-preview is-liquidity">
+        <div class="preview-map pool-map" role="group" aria-label="Where this launch puts its liquidity">${poolMapForPool(topology.pools[0])}</div>
+        <dl class="preview-rows">
+          <div><dt>Pair</dt><dd>${escapeHtml(String(topology.pools[0]?.quoteSymbol || topology.pools[0]?.quoteToken || 'SOL'))}${poolCount > 1 ? ` <i>+${poolCount - 1}</i>` : ''}</dd></div>
+          <div><dt>Support</dt><dd>${topology.pools[0]?.support?.mode === 'custom' ? `${Number(topology.pools[0].support.solValue || 0)} SOL <i>to −${Number(topology.pools[0].support.depthPct || 12)}%</i>` : 'Off'}</dd></div>
+          <div><dt>Start market cap</dt><dd>$${escapeHtml(Number(topology.targetMarketCapUsd || 0).toLocaleString('en-US'))}</dd></div>
+          <div><dt>Fee tier</dt><dd>${escapeHtml(feeTierDisplay(topology.pools[0]?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX))}</dd></div>
+          <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}</dd></div>
+          <div><dt>Locked</dt><dd class="${liquidityComplete ? 'is-ok' : ''}">${liquidityComplete ? 'Yes' : 'At creation'}</dd></div>
+        </dl>
       </div>
       ${readinessPanel({
         title: metadataRevealPending ? 'Reveal the name and logo' : liquidityComplete ? 'Liquidity created and locked' : 'Create and lock liquidity',
@@ -957,8 +968,8 @@ function renderClassicBridge() {
     <section class="classic-workspace-section classic-workspace-verify" data-classic-workspace="finish">
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
-          <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Finish launch'}</h2>
-          <p>${practiceComplete ? 'Every step ran. Nothing was sent.' : finalSweepComplete ? 'Everything is in the return wallet and the launch wallet is empty.' : 'Send the remaining assets to the return wallet and save the launch record.'}</p>
+          <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Leftovers'}</h2>
+          <p>${practiceComplete ? 'Nothing was sent.' : ''}</p>
         </div>
         ${practiceComplete ? '' : `<aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Launch record ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for the final sweep.' : 'Fix the item below.'}</span></aside>`}
       </section>`}
