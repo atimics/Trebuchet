@@ -297,6 +297,7 @@
       },
       secretPin: {
         configured: secretPinStatus.configured === true,
+        damaged: secretPinStatus.damaged === true,
         unlocked: secretPinStatus.unlocked === true,
         locked: secretPinStatus.locked === true,
         version: secretPinStatus.version || null,

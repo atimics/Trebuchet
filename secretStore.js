@@ -181,11 +181,26 @@ export function secretPinStatus() {
 }
 
 export function setupSecretPin(pin) {
+  // setPin makes a brand new data key, which would orphan every existing
+  // pin: token. Refuse whenever a state file exists, even a damaged one.
+  if (secretPinStore.stateFileExists()) {
+    throw Object.assign(
+      new Error(
+        'A Recovery PIN is already set up on this computer. Setting a new one would make saved wallet keys unreadable. ' +
+        'Use Change PIN, or the Reset flow if you accept losing those keys.',
+      ),
+      { code: 'SECRET_PIN_ALREADY_SET', statusCode: 409 },
+    );
+  }
   return secretPinStore.setPin(String(pin ?? ''));
 }
 
 export function unlockSecretPin(pin) {
   return secretPinStore.unlock(String(pin ?? ''));
+}
+
+export function unlockSecretPinDetailed(pin) {
+  return secretPinStore.unlockDetailed(String(pin ?? ''));
 }
 
 export function changeSecretPin(pin) {

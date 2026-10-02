@@ -356,6 +356,7 @@ const state = {
   },
   secretPin: {
     configured: false,
+    damaged: false,
     unlocked: false,
     locked: false,
     version: null,

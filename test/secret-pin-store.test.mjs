@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  statSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -222,4 +223,79 @@ test('an interrupted PIN commit preserves the prior key and removes its temporar
   secretPinStore.lock();
   assert.equal(secretPinStore.unlock('1234'), true);
   assert.equal(secretPinStore.decryptString(token), 'retained recovery key');
+});
+
+test('status reports a damaged state file instead of pretending no PIN exists', (t) => {
+  const dir = useConfigDir(t);
+  assert.equal(secretPinStore.status().configured, false);
+  assert.equal(secretPinStore.status().damaged, false);
+  assert.equal(secretPinStore.stateFileExists(), false);
+
+  writeFileSync(path.join(dir, '.secretPin.json'), '{ not json');
+  const status = secretPinStore.status();
+  assert.equal(status.configured, true);
+  assert.equal(status.damaged, true);
+  assert.equal(status.unlocked, false);
+  assert.equal(secretPinStore.stateFileExists(), true);
+  assert.deepEqual(secretPinStore.unlockDetailed('1234'), { ok: false, code: 'STATE_DAMAGED' });
+
+  writeFileSync(path.join(dir, '.secretPin.json'), JSON.stringify({ version: 99 }));
+  assert.equal(secretPinStore.status().damaged, true);
+});
+
+test('status is healthy for a good state file', (t) => {
+  useConfigDir(t);
+  secretPinStore.setPin('1234');
+  const status = secretPinStore.status();
+  assert.equal(status.configured, true);
+  assert.equal(status.damaged, false);
+  assert.equal(status.unlocked, true);
+});
+
+test('setupSecretPin refuses when a state file exists, readable or not', (t) => {
+  const dir = useConfigDir(t);
+  const file = path.join(dir, '.secretPin.json');
+  secretStore.setupSecretPin('1234');
+  const before = readFileSync(file);
+  assert.throws(() => secretStore.setupSecretPin('5678'), (e) => e.code === 'SECRET_PIN_ALREADY_SET' && e.statusCode === 409);
+  assert.deepEqual(readFileSync(file), before);
+
+  writeFileSync(file, 'garbage');
+  assert.throws(() => secretStore.setupSecretPin('5678'), (e) => e.code === 'SECRET_PIN_ALREADY_SET');
+  assert.equal(readFileSync(file, 'utf8'), 'garbage');
+});
+
+test('changing the PIN backs up the previous state file first', (t) => {
+  const dir = useConfigDir(t);
+  const file = path.join(dir, '.secretPin.json');
+  secretPinStore.setPin('1234');
+  assert.equal(existsSync(`${file}.bak`), false, 'first write has nothing to back up');
+  const first = readFileSync(file);
+
+  secretPinStore.rotateUnlockedPin('5678');
+  assert.deepEqual(readFileSync(`${file}.bak`), first);
+  const second = readFileSync(file);
+  assert.notDeepEqual(second, first);
+  if (process.platform !== 'win32') assert.equal(statSync(`${file}.bak`).mode & 0o777, 0o600);
+
+  secretPinStore.rotateUnlockedPin('2468');
+  assert.deepEqual(readFileSync(`${file}.bak`), second, 'backup stays one deep');
+});
+
+test('unlock tells a wrong PIN from an unavailable device secret', (t) => {
+  useConfigDir(t);
+  secretPinStore.setSafeStorage(fakeSafeStorage());
+  secretPinStore.setPin('1234');
+  secretPinStore.lock();
+
+  assert.deepEqual(secretPinStore.unlockDetailed('9999'), { ok: false, code: 'BAD_PIN' });
+  assert.equal(secretPinStore.unlock('9999'), false);
+
+  const broken = fakeSafeStorage();
+  broken.decryptString = () => { throw new Error('keychain item missing'); };
+  secretPinStore.setSafeStorage(broken);
+  assert.deepEqual(secretPinStore.unlockDetailed('1234'), { ok: false, code: 'DEVICE_SECRET_UNAVAILABLE' });
+
+  secretPinStore.setSafeStorage(fakeSafeStorage());
+  assert.deepEqual(secretPinStore.unlockDetailed('1234'), { ok: true });
 });
