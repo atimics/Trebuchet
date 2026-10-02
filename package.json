@@ -165,10 +165,12 @@
     "@metaplex-foundation/umi-bundle-defaults": "^1.5.1",
     "@metaplex-foundation/umi-uploader-irys": "^1.5.0",
     "@metaplex-foundation/umi-web3js-adapters": "^1.5.1",
+    "@meteora-ag/cp-amm-sdk": "^1.5.1",
     "@raydium-io/raydium-sdk-v2": "0.1.144-alpha",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
     "@trebuchet/core": "file:packages/core",
+    "@trebuchet/runtime": "file:packages/runtime",
     "arconnect": "0.4.2",
     "arweave": "^1.15.7",
     "bip39": "^3.1.0",
@@ -183,8 +185,7 @@
     "marked": "^14.1.4",
     "multer": "^2.3.0",
     "pngjs": "^7.0.0",
-    "qrcode": "^1.5.4",
-    "@trebuchet/runtime": "file:packages/runtime"
+    "qrcode": "^1.5.4"
   },
   "bundleDependencies": [
     "@trebuchet/core",
