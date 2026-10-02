@@ -28,9 +28,13 @@ import {
 import { createInitializeInstruction, pack } from '@solana/spl-token-metadata';
 import { CpAmm } from '@meteora-ag/cp-amm-sdk';
 import {
-  DAMM_V2_PROGRAM_ID, createLockedPool, claimFees, dammV2PriceRange, listPositions, transferPositionNft, verifyLockedPool,
+  DAMM_V2_PROGRAM_ID, createLockedPool, claimFees, dammV2PriceRange, findExistingPool, listPositions, transferPositionNft, verifyLockedPool,
 } from '../../dammV2Service.js';
+import { normalizeDammV2Config } from '@trebuchet/core/damm-v2-plan';
+const store = await import('../../dammV2Store.js');
+const { runLaunch } = await import('../../dammV2Launch.js');
 
+process.env.TREBUCHET_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-damm-config-'));
 if (spawnSync('solana-test-validator', ['--version']).error) {
   console.log('Skipped: solana-test-validator is not on PATH.');
   process.exit(0);
@@ -211,6 +215,133 @@ const wrongMint = await makeToken(launcher);
 const bad = await verifyLockedPool({ connection, pool: poolKey, position: new (await import('@solana/web3.js')).PublicKey(launched.position), mint: wrongMint, supplyRaw: SUPPLY });
 assert.equal(bad.passed, false, 'a pool for another token does not verify');
 console.log('ok  verification fails for a pool that is not this token\'s');
+
+
+// ---- 6. the whole launch, through the runner the route uses -------------------------------------
+const TOKEN_RESULT = (mint) => ({ tokenMint: mint.toBase58(), isSafe: true, mintAuthorityRenounced: true, freezeAuthorityDisabled: true, metadataImmutable: true, metadataUri: 'https://example.invalid/t.json', imageUri: null });
+const makeDeps = (wallet, overrides = {}) => ({
+  connection,
+  solUsd: 118,
+  getVanityCandidate: () => null,
+  removeVanityCandidate: () => {},
+  createToken: async (args) => {
+    assert.equal(args.mintFormat, 'token-2022');
+    assert.equal(args.sealedLaunch, false);
+    assert.equal(args.totalSupply, '1000000000');
+    return TOKEN_RESULT(await makeToken(Keypair.fromSecretKey(Uint8Array.from(args.tempWalletSecretKey))));
+  },
+  ...overrides,
+});
+const leanConfig = (extra = {}) => normalizeDammV2Config({ token: { name: 'Trebuchet', symbol: 'treb', supply: '1000000000', description: 'lean' }, ...extra });
+
+// A full run: token, pool, Fee Key to another wallet.
+{
+  const wallet = await fund(Keypair.generate(), 5);
+  const destination = Keypair.generate();
+  const record = store.create({ config: leanConfig({ destination: destination.publicKey.toBase58() }), walletPublicKey: wallet.publicKey.toBase58() });
+  const done = await runLaunch({ id: record.id, walletSecretKey: Array.from(wallet.secretKey), deps: makeDeps(wallet) });
+  assert.equal(done.status, 'completed');
+  assert.equal(done.steps.token.complete, true);
+  assert.equal(done.steps.pool.verification.passed, true);
+  assert.equal(done.steps.pool.adopted, false);
+  assert.equal(done.steps.keyTransfer.to, destination.publicKey.toBase58());
+  assert.equal(done.positionNftSaved, true, 'the position NFT key was saved before the pool was sent');
+  assert.ok(!JSON.stringify(done).includes('positionNftEnc'));
+  const stages = store.get(record.id).events.map((event) => event.stage);
+  for (const stage of ['token_starting', 'damm_pool_simulated', 'damm_pool_created', 'damm_pool_verified', 'fee_key_sending', 'fee_key_sent', 'launch_complete']) {
+    assert.ok(stages.includes(stage), `event ${stage} recorded (got ${stages.join(', ')})`);
+  }
+  const held = await listPositions({ connection, owner: destination.publicKey });
+  assert.equal(held.length, 1, 'the destination holds the Fee Key');
+  assert.equal(held[0].position, done.steps.pool.position);
+  assert.equal(held[0].permanentlyLocked, true);
+  // Starting price follows the frozen SOL price: $250,000 / $118.
+  assert.ok(Math.abs(done.steps.pool.startMarketCapSol - 250_000 / 118) < 1e-9);
+  await assert.rejects(() => runLaunch({ id: record.id, walletSecretKey: Array.from(wallet.secretKey), deps: makeDeps(wallet) }), /already complete/);
+  console.log('ok  full run: token, locked pool, Fee Key sent; a second start is refused');
+}
+
+// A run that died after the pool was sent resumes by adopting it, not by creating another.
+{
+  const wallet = await fund(Keypair.generate(), 5);
+  const record = store.create({ config: leanConfig(), walletPublicKey: wallet.publicKey.toBase58() });
+  const mint = await makeToken(wallet);
+  const nft = Keypair.generate();
+  store.savePositionNft(record.id, nft.secretKey);
+  store.update(record.id, { solUsd: 118, steps: { token: { complete: true, mint: mint.toBase58() } } });
+  const sent = await createLockedPool({ connection, payer: wallet, mint, supplyRaw: SUPPLY, startingMarketCapLamports: BigInt(Math.round((250_000 / 118) * LAMPORTS_PER_SOL)), rangeMultiple: 1000, feeBps: 25, positionNft: nft });
+  store.update(record.id, { status: 'failed', error: 'the app closed after sending' });
+  const found = await findExistingPool({ connection, mint, positionNft: nft.publicKey });
+  assert.equal(found.pool.toBase58(), sent.pool, 'the derived pool address is the real one');
+  assert.equal(found.position.toBase58(), sent.position, 'the derived position address is the real one');
+  assert.equal(found.poolExists && found.positionExists, true);
+  const before = await lamports(wallet.publicKey);
+  const resumed = await runLaunch({ id: record.id, walletSecretKey: Array.from(wallet.secretKey), deps: makeDeps(wallet, { createToken: async () => { throw new Error('token must not be created again'); } }) });
+  assert.equal(resumed.status, 'completed');
+  assert.equal(resumed.steps.pool.adopted, true);
+  assert.equal(resumed.steps.pool.pool, sent.pool);
+  assert.equal(before - (await lamports(wallet.publicKey)), 0, 'adopting costs nothing: no second pool, no fee');
+  console.log('ok  resume after a crash adopts the existing pool and spends nothing');
+}
+
+// A pool for this token that is not this launch's position is never adopted.
+{
+  const wallet = await fund(Keypair.generate(), 5);
+  const record = store.create({ config: leanConfig(), walletPublicKey: wallet.publicKey.toBase58() });
+  const mint = await makeToken(wallet);
+  await createLockedPool({ connection, payer: wallet, mint, supplyRaw: SUPPLY, startingMarketCapLamports: BigInt(Math.round((250_000 / 118) * LAMPORTS_PER_SOL)), rangeMultiple: 1000, feeBps: 25 });
+  store.savePositionNft(record.id, Keypair.generate().secretKey); // a different NFT
+  store.update(record.id, { solUsd: 118, steps: { token: { complete: true, mint: mint.toBase58() } } });
+  await assert.rejects(
+    () => runLaunch({ id: record.id, walletSecretKey: Array.from(wallet.secretKey), deps: makeDeps(wallet) }),
+    /not this launch's position/,
+  );
+  const failed = store.get(record.id);
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error, /Nothing was created/);
+  console.log('ok  a pool that is not this launch\'s position is refused');
+}
+
+// A failed token step leaves a failed record with no pool, and a re-run starts clean.
+{
+  const wallet = await fund(Keypair.generate(), 5);
+  const record = store.create({ config: leanConfig(), walletPublicKey: wallet.publicKey.toBase58() });
+  await assert.rejects(
+    () => runLaunch({ id: record.id, walletSecretKey: Array.from(wallet.secretKey), deps: makeDeps(wallet, { createToken: async () => { throw new Error('upload failed'); } }) }),
+    /upload failed/,
+  );
+  let failed = store.get(record.id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.error, 'upload failed');
+  assert.equal(failed.steps.token, null);
+  assert.equal(failed.steps.pool, null);
+  const retried = await runLaunch({ id: record.id, walletSecretKey: Array.from(wallet.secretKey), deps: makeDeps(wallet) });
+  assert.equal(retried.status, 'completed');
+  assert.equal(retried.error, null);
+  // An unverified token never reaches the pool stage.
+  const unsafe = store.create({ config: leanConfig(), walletPublicKey: wallet.publicKey.toBase58() });
+  await assert.rejects(
+    () => runLaunch({ id: unsafe.id, walletSecretKey: Array.from(wallet.secretKey), deps: makeDeps(wallet, { createToken: async () => ({ tokenMint: Keypair.generate().publicKey.toBase58(), isSafe: false }) }) }),
+    /not verified as safe/,
+  );
+  assert.equal(store.get(unsafe.id).steps.pool, null);
+  console.log('ok  a failed token step records the failure; a re-run completes; an unsafe token never gets a pool');
+}
+
+// The wrong wallet cannot run someone else's launch, and a run cannot start twice at once.
+{
+  const owner = await fund(Keypair.generate(), 5);
+  const record = store.create({ config: leanConfig(), walletPublicKey: owner.publicKey.toBase58() });
+  await assert.rejects(() => runLaunch({ id: record.id, walletSecretKey: Array.from(Keypair.generate().secretKey), deps: makeDeps(owner) }), /different wallet/);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const first = runLaunch({ id: record.id, walletSecretKey: Array.from(owner.secretKey), deps: makeDeps(owner, { createToken: async (args) => { await gate; return TOKEN_RESULT(await makeToken(Keypair.fromSecretKey(Uint8Array.from(args.tempWalletSecretKey)))); } }) });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await assert.rejects(() => runLaunch({ id: record.id, walletSecretKey: Array.from(owner.secretKey), deps: makeDeps(owner) }), /already running/);
+  release();
+  assert.equal((await first).status, 'completed');
+  console.log('ok  the wrong wallet is refused and a launch cannot run twice at once');
+}
 
 console.log('\nDAMM v2 lean launch: all checks passed');
 stop();

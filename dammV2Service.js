@@ -38,6 +38,8 @@ import {
   CpAmm,
   MAX_SQRT_PRICE,
   MIN_SQRT_PRICE,
+  deriveCustomizablePoolAddress,
+  derivePositionAddress,
   derivePositionNftAccount,
   getBaseFeeParams,
   getUnClaimLpFee,
@@ -210,6 +212,7 @@ export async function createLockedPool({
   feeBps,
   priorityMicroLamports = 0,
   commitment = 'confirmed',
+  positionNft = Keypair.generate(),
   onProgress = () => {},
 }) {
   const ata = getAssociatedTokenAddressSync(mint, payer.publicKey, false, await mintOwnerProgram(connection, mint));
@@ -222,7 +225,7 @@ export async function createLockedPool({
   if (held < BigInt(supplyRaw)) throw new Error('The launch wallet holds less of this token than the pool needs.');
 
   const built = await buildLockedPoolTransaction({
-    connection, creator: payer.publicKey, mint, supplyRaw, startingMarketCapLamports, rangeMultiple, feeBps, priorityMicroLamports,
+    connection, creator: payer.publicKey, mint, supplyRaw, startingMarketCapLamports, rangeMultiple, feeBps, priorityMicroLamports, positionNft,
   });
   const signers = [payer, built.positionNft];
   const simulated = await simulateOrThrow(connection, built.transaction, signers);
@@ -240,6 +243,22 @@ export async function createLockedPool({
     positionNft: built.positionNft.publicKey.toBase58(),
     verification,
   };
+}
+
+/**
+ * Where this token's pool and position would be, and whether they already exist.
+ * A run that died after sending the pool transaction uses this to resume without
+ * creating a second pool: the pool address depends only on the two mints, and the
+ * position address only on the position NFT, whose key was saved before sending.
+ */
+export async function findExistingPool({ connection, mint, positionNft }) {
+  const pool = deriveCustomizablePoolAddress(mint, NATIVE_MINT);
+  const position = derivePositionAddress(positionNft);
+  const [poolInfo, positionInfo] = await Promise.all([
+    connection.getAccountInfo(pool, 'confirmed'),
+    connection.getAccountInfo(position, 'confirmed'),
+  ]);
+  return { pool, position, poolExists: Boolean(poolInfo), positionExists: Boolean(positionInfo) };
 }
 
 /** Read the pool and position back and check what a launch promises. */
