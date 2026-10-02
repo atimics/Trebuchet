@@ -17572,3 +17572,41 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 .plan-preview .preview-rows dd { white-space: nowrap; }
 .phase-tree-drawer { display: none; }
 #assetTable:not(:empty) { margin-top: 12px; }
+
+/* --- Fit: the phase panel answers to its own width, not the window's ---------------- */
+#launchWorkspaceViewport { container-type: inline-size; container-name: phase; min-width: 0; }
+@container phase (max-width: 780px) {
+  .funding-task { grid-template-columns: minmax(0, 1fr); }
+  .funding-task-action { justify-content: flex-start; }
+  .funding-wallet-hint { grid-template-columns: minmax(0, 1fr); }
+  .funding-wallet-hint .operator-toolbar { flex-wrap: wrap; }
+  .quote-guidance-list article { grid-template-columns: 18px minmax(0, 1fr) auto; }
+  .quote-guidance-list article > :nth-child(n+4) { grid-column: 2 / -1; }
+}
+@container phase (max-width: 620px) {
+  .funding-split, .quote-acquire-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .quote-acquire-head, .funding-task-main { min-width: 0; }
+}
+.operator-toolbar { flex-wrap: wrap; }
+
+/* A pair's settings are three columns, so they fit the frame instead of running past it. */
+.supply-settings { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 14px; padding: 10px 14px 12px; }
+.supply-settings > .pool-map { grid-column: 1 / -1; }
+.supply-settings > .supply-field-wide { grid-column: 1 / -1; }
+.supply-settings > .supply-field:first-of-type { grid-column: span 2; }
+.supply-settings textarea { min-height: 52px; max-height: 64px; resize: none; }
+.supply-editor:has(.supply-settings) .supply-warning { display: none; }
+
+/* Wide window with a narrow phase column: give the column the room. */
+@media (min-width: 1200px) and (max-width: 1500px) {
+  .coin-state-layout { grid-template-columns: 200px minmax(0, 1fr) 260px; }
+}
+/* Under 1200 the Next card sits above the rows and takes only what it needs. */
+@media (max-width: 1199px) and (min-width: 901px) {
+  .coin-state-layout { grid-template-rows: auto minmax(0, 1fr); }
+  .coin-state-layout > .launch-next-rail { align-self: start; }
+}
+#classicBridge[data-fund-tab="cost"] [data-fund-part="tokens"],
+#classicBridge[data-fund-tab="tokens"] [data-fund-part="cost"] { display: none; }
+.funding-wallet-hint { grid-template-columns: minmax(0, 1fr) !important; }
+.funding-wallet-hint .operator-toolbar { flex-wrap: wrap; justify-content: flex-start; }

@@ -6028,6 +6028,19 @@ const PHASE_TABS = {
   liquidity: [{ id: 'price', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }, { id: 'run', label: 'Create' }],
   finish: [{ id: 'return', label: 'Return & report' }, { id: 'airdrop', label: 'Airdrop' }, { id: 'run', label: 'Finish' }],
 };
+// Funding's two parts are tabs only when there are pair tokens to acquire; its panel is
+// built by the bridge, so these tabs just choose which part shows.
+function fundTabs() {
+  const config = currentLaunchConfig();
+  const estimate = classicFundingEstimateStatus(config).matchesConfig ? state.classicFundingEstimate : null;
+  const pairTokens = (estimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount();
+  return estimate && pairTokens
+    ? [{ id: 'cost', label: 'Cost' }, { id: 'tokens', label: 'Pair tokens' }]
+    : null;
+}
+function phaseTabsFor(workspace) {
+  return workspace === 'fund' ? fundTabs() : PHASE_TABS[workspace] || null;
+}
 const PLAN_SLIDE_ORDER = ['details', 'address', 'price', 'pairs', 'return', 'airdrop'];
 
 function phaseTabValue(id, runValue) {
@@ -6042,12 +6055,14 @@ function phaseTabValue(id, runValue) {
     case 'pairs': return text('#classicSummary') || '—';
     case 'return': return [text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge'), text('#reportSummary')].filter(Boolean).join(' · ') || '—';
     case 'airdrop': return text('#airdropSummary') || 'Off';
+    case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
+    case 'tokens': return `${(state.classicFundingEstimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount()} to acquire`;
     default: return runValue || supply;
   }
 }
 
 function currentPhaseSlide(workspace, runDone) {
-  const tabs = PHASE_TABS[workspace];
+  const tabs = phaseTabsFor(workspace);
   if (!tabs) return null;
   state.phaseSlide = state.phaseSlide || {};
   const chosen = state.phaseSlide[workspace];
@@ -6057,18 +6072,22 @@ function currentPhaseSlide(workspace, runDone) {
 }
 
 function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
-  const tabs = PHASE_TABS[workspace];
+  const tabs = phaseTabsFor(workspace);
   const strip = $('#planStrip');
   const track = $('#planTrack');
   if (!strip || !track) return;
   const bridge = $('#classicBridge');
   const hideRunOnly = ['#launchConsole', '#signaturePanel'];
+  const dock = $('.setup-dock');
+  if (dock) dock.hidden = !tabs;
   if (!tabs) {
-    if (bridge) bridge.hidden = false;
+    if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; }
     return;
   }
   const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
-  const running = current === 'run';
+  // Funding shows its own panel always; its tabs only choose the part.
+  const running = current === 'run' || workspace === 'fund';
+  if (bridge) bridge.dataset.fundTab = workspace === 'fund' ? current : '';
   strip.style.setProperty('--tabs', String(tabs.length));
   // Built once per phase and then updated in place, so the focused tab stays focused.
   const structure = `${workspace}|${tabs.map((tab) => tab.id).join(',')}`;
@@ -6124,14 +6143,14 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
 }
 
 function setPlanSlide(id) {
-  const tabs = PHASE_TABS[state.launchWorkspace];
+  const tabs = phaseTabsFor(state.launchWorkspace);
   if (!tabs || !tabs.some((tab) => tab.id === id)) return;
   state.phaseSlide = { ...(state.phaseSlide || {}), [state.launchWorkspace]: id };
   renderLaunchWorkspace();
 }
 
 function stepPlanSlide(step) {
-  const tabs = PHASE_TABS[state.launchWorkspace];
+  const tabs = phaseTabsFor(state.launchWorkspace);
   if (!tabs) return;
   const index = tabs.findIndex((tab) => tab.id === currentPhaseSlide(state.launchWorkspace, false));
   const next = Math.min(tabs.length - 1, Math.max(0, index + step));
@@ -7708,9 +7727,11 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
   });
   // support SOL, just below the start price
   const xs = xDown(depthPct);
+  const supportW = START - xs;
+  const supportText = `${fmt(supportSol)} SOL · −${fmt(depthPct)}%`;
   parts.push(supportSol > 0
-    ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${(START - xs).toFixed(1)}" height="60"/><text class="pm-tag" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 66}" text-anchor="middle">${fmt(supportSol)} SOL</text>`
-    : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${(START - xs).toFixed(1)}" height="60"/><text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>`);
+    ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/><text class="pm-tag" x="${(START - 6).toFixed(1)}" y="${BASE - 66}" text-anchor="end">${supportText}</text>`
+    : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/>${supportW > 70 ? `<text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>` : ''}`);
   // the SOL pool's price, for a pair
   if (premiumDrop > 0) {
     const xp = xDown(premiumDrop);
@@ -7725,7 +7746,6 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
   for (let m = 1; m <= maxMult; m *= 10) {
     parts.push(`<line class="pm-axis" x1="${xOf(m).toFixed(1)}" x2="${xOf(m).toFixed(1)}" y1="${BASE}" y2="${BASE + 4}"/><text class="pm-note" x="${xOf(m).toFixed(1)}" y="${BASE + 17}" text-anchor="middle">${m === 1 ? 'start' : `${m}×`}</text>`);
   }
-  parts.push(`<text class="pm-note" x="${xs.toFixed(1)}" y="${BASE + 17}" text-anchor="middle">−${fmt(depthPct)}%</text>`);
   // the positions this pool is split into
   const total = slices.reduce((sum, share) => sum + share, 0) || 100;
   let at = LEFT;
@@ -14101,7 +14121,6 @@ function renderQuoteAcquirePanel() {
         ${rows || '<article><i class="fa-solid fa-wallet"></i><span><strong>No route rows yet</strong><small>Estimate funding first</small></span></article>'}
       </div>
       <div class="operator-toolbar compact">${button}${clear}</div>
-      ${renderFundingWalletHint({ compact: true })}
       ${renderManualPrefundPanel()}
       ${state.quoteAcquire.error ? `<p class="quote-acquire-error">${escapeHtml(state.quoteAcquire.error)}</p>` : ''}
     </div>
@@ -15002,9 +15021,10 @@ function renderClassicBridge() {
     </section>
     <section class="classic-workspace-section classic-workspace-fund" data-classic-workspace="fund">
       <h2 class="visually-hidden" id="fundStepTitle">Fund</h2>
-      ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
-      ${!completedJournal && (state.destinations.funders || []).length ? `<section class="return-wallet fund-asset-destinations" aria-label="Where assets go">${assetDestinationsHtml()}</section>` : ''}
-      ${estimate && (routeCount || manualQuoteCount) ? `<details class="drawer funding-extra" open><summary><span>Pair tokens</span><strong>${routeCount + manualQuoteCount} item${routeCount + manualQuoteCount === 1 ? '' : 's'}</strong></summary>${renderQuoteAcquirePanel()}</details>` : ''}
+      <div data-fund-part="cost">
+        ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
+      </div>
+      ${estimate && (routeCount || manualQuoteCount) ? `<div data-fund-part="tokens">${renderQuoteAcquirePanel()}</div>` : ''}
       <div class="launch-phase-actions">
         <button class="primary-button" type="button" data-next-fact hidden></button>
       </div>
