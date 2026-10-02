@@ -1,5 +1,6 @@
 function bindEvents() {
   document.addEventListener('click', handleClick);
+  applyNavMode(readNavMode());
   document.addEventListener('input', handleDynamicInput);
   document.addEventListener('input', scheduleLaunchAutoSave);
   // A pasted pair mint resolves its symbol as soon as the field is left.

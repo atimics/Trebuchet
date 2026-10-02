@@ -17627,3 +17627,30 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
   .plan-preview, .plan-preview.is-liquidity { grid-template-columns: minmax(0, 1fr); }
   .plan-preview.is-liquidity .preview-rows { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Icon rail: the sidebar shows icons, and the full labels are tooltips and the toggle. */
+.nav-toggle { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 32px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+.nav-toggle:hover, .nav-toggle:focus-visible { color: var(--ink); border-color: var(--line-strong); outline: none; }
+@media (max-width: 900px) { .nav-toggle { display: none; } }
+@media (min-width: 901px) {
+  body[data-nav="icons"] { --sidebar: 60px; }
+  body[data-nav="icons"] .sidebar { padding: 16px 8px; gap: 14px; align-items: center; }
+  body[data-nav="icons"] .brand { justify-content: center; }
+  body[data-nav="icons"] .brand > span:last-child,
+  body[data-nav="icons"] .nav-item > span,
+  body[data-nav="icons"] .network-button-copy,
+  body[data-nav="icons"] .network-button > i,
+  body[data-nav="icons"] .saved-launches,
+  body[data-nav="icons"] .launch-identity-sidebar .coin-card-ui__copy { display: none !important; }
+  body[data-nav="icons"] .nav-list { width: 100%; }
+  body[data-nav="icons"] .nav-item { justify-content: center; padding: 8px 0; }
+  body[data-nav="icons"] .nav-item i { width: auto; font-size: 14px; }
+  body[data-nav="icons"] .launch-identity-sidebar { width: 100%; padding: 4px; }
+  body[data-nav="icons"] .launch-identity-sidebar .coin-card-ui { grid-template-columns: minmax(0, 1fr); justify-items: center; padding: 4px; }
+  body[data-nav="icons"] .sidebar-footer { width: 100%; padding: 10px 0 0; }
+  body[data-nav="icons"] .network-button { justify-content: center; padding: 8px 0; min-height: 36px; }
+}
+@media (min-width: 901px) {
+  body[data-nav="icons"] .network-button { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; align-items: center; }
+  body[data-nav="icons"] .network-button .status-dot { margin: 0; }
+}
