@@ -8,7 +8,12 @@
   //                 read (stale data or a key from another PIN/device): unlocking
   //                 again will not help
   function walletLockReason({ wallet = null, secretPin = {}, demoActive = false } = {}) {
-    if (!wallet || wallet.hasSecretKey !== true) return 'no-wallet';
+    if (!wallet) return 'no-wallet';
+    // The server derives hasSecretKey and decryptionFailed from the same decrypt
+    // result, so an unreadable managed wallet arrives as hasSecretKey: false AND
+    // decryptionFailed: true. Only a wallet with neither (an external signer) has
+    // no key to speak of.
+    if (wallet.hasSecretKey !== true && wallet.decryptionFailed !== true) return 'no-wallet';
     if (demoActive) return wallet.decryptionFailed === true ? 'unreadable' : 'none';
     if (secretPin.locked === true) return 'pin-locked';
     if (secretPin.configured === true && secretPin.unlocked !== true) return 'pin-locked';

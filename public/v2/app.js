@@ -23289,6 +23289,17 @@ function applyBootState(boot) {
     state.selectedWalletPublicKey = state.managedWallets[0].publicKey;
     state.accountId = state.selectedWalletPublicKey;
   }
+  // With the PIN open, a selected wallet whose key still cannot be read can never
+  // sign (typically it was auto-selected while the PIN was locked). Move to the
+  // first wallet that can, rather than leaving the launch stuck on "locked".
+  if (state.managedWallets.length && walletLockReason() === 'unreadable') {
+    const readable = state.managedWallets.find((wallet) => wallet.hasSecretKey === true && wallet.decryptionFailed !== true);
+    if (readable) {
+      state.selectedWalletPublicKey = readable.publicKey;
+      state.accountId = readable.publicKey;
+      notify('Switched to a launch wallet whose key can be read');
+    }
+  }
   $('#networkLabel').textContent = authoritativeNetworkLabel();
   if ($('#environmentLabel')) $('#environmentLabel').textContent = state.demoActive ? 'PRACTICE' : 'LIVE';
 }
