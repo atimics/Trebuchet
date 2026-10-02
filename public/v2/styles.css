@@ -17657,3 +17657,82 @@ body[data-launch-running="true"] .workspace {
   position: static;
   margin: 8px 16px 16px;
 }
+
+/* Launches list in the sidebar: switch between saved launches or start a new one. */
+.saved-launches[hidden] { display: none; }
+.saved-launches {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  min-width: 0;
+}
+.saved-launches-title {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.saved-launch-rows { display: grid; gap: 4px; }
+.saved-launch-row,
+.saved-launch-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--line, rgb(255 255 255 / .12));
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.saved-launch-row span {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-launch-row.is-open { border-left: 2px solid var(--green); }
+.saved-launch-row:hover:not(:disabled),
+.saved-launch-new:hover:not(:disabled),
+.saved-launch-row:focus-visible,
+.saved-launch-new:focus-visible { border-color: var(--green); outline: none; }
+.saved-launch-row:disabled,
+.saved-launch-new:disabled { opacity: .45; cursor: not-allowed; }
+.saved-launches-note { color: var(--muted); font-size: 10px; line-height: 1.4; }
+
+/* Guided mode hides the sidebar, so the launches menu lives in the guided header. */
+.guided-launch-menu { display: none; position: relative; }
+body[data-experience-mode="guided"][data-active-view="launch"] .guided-launch-menu { display: block; }
+.guided-launch-menu > summary {
+  list-style: none;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.guided-launch-menu > summary::-webkit-details-marker { display: none; }
+.guided-launch-menu > summary::after { content: " \25BE"; color: var(--muted); }
+.guided-launch-menu[open] > summary { border-color: var(--green); }
+.guided-launch-menu-panel {
+  position: absolute;
+  right: 0;
+  z-index: 40;
+  display: grid;
+  gap: 6px;
+  width: min(280px, 86vw);
+  margin-top: 4px;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-strong);
+  box-shadow: 0 12px 32px rgb(0 0 0 / .45);
+}
