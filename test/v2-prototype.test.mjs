@@ -3611,7 +3611,8 @@ test('v2 pool advanced panel wires feedback, names, and slider keyboard use', ()
   // The fee tier slider: keyboard goes through the range, labels are a mouse shortcut.
   assert.match(startup, /tabindex="-1"/);
   assert.match(startup, /class="choice-readout"/);
-  assert.equal([...editor.matchAll(/data-choice="slider" data-choice-readout/g)].length, 2);
+  // Custom pairs, the older pool form, and the flywheel pair each have one.
+  assert.equal([...editor.matchAll(/data-choice="slider" data-choice-readout/g)].length, 3);
   assert.match(funding, /Slices already add up to 100%/);
   assert.match(css, /\.supply-feedback\.is-warn/);
   assert.match(css, /\.choice-control\.has-many \.choice-ticks/);
