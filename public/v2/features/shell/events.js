@@ -273,6 +273,10 @@ function handleClick(event) {
     customizeQuotePool();
     return;
   }
+  if (action === 'toggle-nav') {
+    setNavMode(document.body.dataset.nav === 'icons' ? 'full' : 'icons');
+    return;
+  }
   if (action === 'select-environment') {
     setExecutionEnvironment(actionTarget.dataset.environment).catch((error) => {
       notify(error.message || 'Could not change the execution environment');
