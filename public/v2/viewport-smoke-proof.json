@@ -3,9 +3,9 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-10-02T17:44:24.005Z",
-  "durationMs": 2000,
-  "target": "file:///Users/ratimics/develop/trebuchet/public/v2/index.html",
+  "generatedAt": "2026-10-02T20:11:23.432Z",
+  "durationMs": 2025,
+  "target": "file:///Users/ratimics/.codex/worktrees/v2-integration/trebuchet/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
     "horizontalOverflow",

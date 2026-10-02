@@ -90,9 +90,8 @@ try {
   await page.waitForFunction(() => document.body.dataset.apiStatus === 'connected', null, { timeout: 30_000 });
   await page.evaluate(() => {
     setView('launch');
-    setLaunchWorkspace('configure');
-    document.querySelector('#launchMoreOptions').open = true;
-    document.querySelector('.launch-design-details').open = true;
+    setLaunchWorkspace('liquidity');
+    setPlanSlide('pairs');
     addCustomPool({ symbol: 'SEIGE', mint: 'HipYxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyb5r' });
     state.supplyOpenRow = `custom:${state.customPools.at(-1).id}`;
     renderSupplyEditor();
@@ -115,7 +114,7 @@ try {
   };
 
   // Fee tier slider: the highlighted label, thumb, readout and the value sent
-  // in the plan all agree; arrow keys work; labels are not extra tab stops.
+  // in the plan all agree; arrow keys work; hidden labels are not extra tab stops.
   const range = panel.locator('input[type="range"]');
   const readout = panel.locator('.choice-readout');
   const readState = () => page.evaluate(() => {
@@ -158,10 +157,16 @@ try {
   agree(info, 'End');
   assert.equal(info.planned, 19);
   assert.equal(await page.evaluate(() => document.activeElement.type), 'range', 'focus stays on the slider');
-  await page.locator('.supply-settings .choice-ticks button[data-choice-index="3"]').click();
+  await range.focus();
+  await page.keyboard.press('Home');
+  for (let step = 0; step < 3; step += 1) await page.keyboard.press('ArrowRight');
   info = await readState();
-  agree(info, 'label click');
+  agree(info, 'keyboard tier selection');
   assert.equal(info.range, 3);
+  await page.locator('.supply-settings .choice-ticks button[data-choice-index="5"]').click();
+  info = await readState();
+  agree(info, 'visible label click');
+  assert.equal(info.range, 5);
   const tabStops = await page.evaluate(() => (
     [...document.querySelectorAll('.supply-settings .choice-ticks button')].filter((button) => button.tabIndex >= 0).length
   ));
@@ -277,31 +282,39 @@ try {
   await field(':manual').fill('');
   assert.equal(await note('manual').textContent(), '');
 
-  // Names and descriptions: labels name the control, helper text describes it.
+  // Each control has a label, and its live feedback is connected by ID.
+  // Feedback for a valid value can be empty; errors are checked above.
   const names = await page.evaluate(() => [...document.querySelectorAll('.supply-settings input[type="text"], .supply-settings input:not([type]), .supply-settings textarea')].map((control) => {
     const label = document.getElementById(control.getAttribute('aria-labelledby'));
-    const described = (control.getAttribute('aria-describedby') || '').split(' ').filter(Boolean).map((id) => document.getElementById(id)?.textContent || '');
-    return { name: label?.textContent, described: described.join(' ') };
+    const ids = (control.getAttribute('aria-describedby') || '').split(' ').filter(Boolean);
+    return { name: label?.textContent, feedback: ids.map((id) => {
+      const node = document.getElementById(id);
+      return { exists: Boolean(node), role: node?.getAttribute('role') };
+    }) };
   }));
   assert.ok(names.length >= 5);
   names.forEach((item) => {
     assert.ok(item.name, 'every field has a name');
-    assert.ok(item.described, `${item.name} has a description`);
+    assert.ok(item.feedback.length, `${item.name} has a feedback reference`);
+    item.feedback.forEach((node) => {
+      assert.equal(node.exists, true, `${item.name} feedback is present`);
+      assert.equal(node.role, 'status', `${item.name} feedback is announced`);
+    });
   });
 
-  // Helper text is readable (4.5:1 or better against the panel).
+  // Feedback text is readable (4.5:1 or better against the panel).
   const contrast = await page.evaluate(() => {
     const parse = (value) => value.match(/[\d.]+/g).slice(0, 3).map(Number);
     const lum = ([r, g, b]) => {
       const [x, y, z] = [r, g, b].map((v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
       return 0.2126 * x + 0.7152 * y + 0.0722 * z;
     };
-    const hint = document.querySelector('.supply-settings .supply-field > small:not(.supply-feedback)');
-    const fg = lum(parse(getComputedStyle(hint).color));
+    const feedback = document.querySelector('.supply-settings [data-feedback="slices"]');
+    const fg = lum(parse(getComputedStyle(feedback).color));
     const bg = lum(parse(getComputedStyle(document.body).backgroundColor));
     return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
   });
-  assert.ok(contrast >= 4.5, `helper text contrast ${contrast.toFixed(2)} should be at least 4.5`);
+  assert.ok(contrast >= 4.5, `feedback contrast ${contrast.toFixed(2)} should be at least 4.5`);
 
   // Narrow screen: no sideways scroll, and the tier labels stay inside.
   await page.setViewportSize({ width: 390, height: 900 });
@@ -310,7 +323,9 @@ try {
   const overflow = await page.evaluate(() => {
     const body = document.documentElement;
     const settings = document.querySelector('.supply-settings').getBoundingClientRect();
-    const ticks = [...document.querySelectorAll('.supply-settings .choice-ticks button')].map((button) => button.getBoundingClientRect());
+    const ticks = [...document.querySelectorAll('.supply-settings .choice-ticks button')]
+      .filter((button) => button.getClientRects().length > 0)
+      .map((button) => button.getBoundingClientRect());
     return {
       page: body.scrollWidth - body.clientWidth,
       ticksOutside: ticks.filter((box) => box.right > settings.right + 1 || box.left < settings.left - 1).length,
