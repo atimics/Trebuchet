@@ -5113,9 +5113,7 @@ function renderLaunchBudgetRecommendation() {
     button.classList.toggle('is-selected', Number(button.dataset.budget) === budgetSol);
   });
   const depth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
-  target.innerHTML = `<p>${strategy.supportSol > 0
-    ? `The SOL sits from the launch price down to −${escapeHtml(String(depth))}%, so early sellers are paid from it.${strategy.ladderBands ? ' One extra band of tokens sits above the launch price.' : ''}`
-    : 'No SOL goes in the pool. Sellers have nothing to sell into until someone buys.'}</p>`;
+  target.innerHTML = '';
   target.title = '';
 }
 
@@ -5887,7 +5885,12 @@ function renderLaunchWorkspace() {
   // true, the row that needs doing opens instead: that is the only "next".
   const openFact = facts.find((fact) => fact.id === open);
   const openJustHeld = openFact && previous[open] && previous[open] !== openFact.state && ['done', 'recorded'].includes(openFact.state);
-  const workspace = !open || openJustHeld ? (next?.id || open || 'finish') : open;
+  let workspace = !open || openJustHeld ? (next?.id || open || 'finish') : open;
+  // Naming the token is the first thing the Token phase asks: Plan is not a phase of its own.
+  if (workspace === 'configure') {
+    workspace = 'mint';
+    state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
+  }
   state.launchWorkspace = workspace;
   state.launchFactStates = Object.fromEntries(facts.map((fact) => [fact.id, fact.state]));
   document.body.dataset.launchWorkspace = workspace;
@@ -5902,7 +5905,14 @@ function renderLaunchWorkspace() {
     const icon = button.querySelector('.coin-fact-mark');
     if (icon) icon.className = `fa-solid ${mark.icon} coin-fact-mark`;
     const value = button.querySelector('[data-coin-fact-value]');
-    if (value) value.textContent = fact.value || '';
+    // Until the token is on chain, its row says what is drafted, not only what is missing.
+    const draft = facts.find((item) => item.id === 'configure');
+    const shown = fact.id === 'mint' && fact.state === 'todo' && draft
+      ? (draft.state === 'draft' ? `${String(draft.value).split(' · ')[0]} · not on-chain` : 'Not named yet')
+      : fact.id === 'liquidity' && fact.state === 'todo' && fact.value === 'No pools yet' && draft?.state === 'draft'
+        ? `${String(draft.value).split(' · ')[1] || ''} · not open`.trim()
+        : fact.value;
+    if (value) value.textContent = shown || '';
     button.title = mark.label;
   }
   // The one action the coin's state asks for, offered wherever it isn't already open.
@@ -5930,7 +5940,7 @@ function renderLaunchWorkspace() {
     viewport.setAttribute('aria-label', `${selectedWorkspace.title}: ${selectedWorkspace.detail}`);
   }
   renderLaunchNextRail(facts, next, workspace);
-  renderPlanSlides();
+  renderPlanSlides(workspace, facts.find((fact) => fact.id === workspace));
   refreshLaunchChainCheck(facts);
 }
 
@@ -5980,40 +5990,84 @@ function renderLaunchNextRail(facts, next, workspace) {
   `;
 }
 
-// The Plan row is a strip of slides, one at a time: Token, Pool, Pairs, Address,
-// Airdrop, Return, Report. Which slide shows is a view; nothing is saved or counted.
-const PLAN_SLIDES = ['token', 'pool', 'pairs', 'address', 'airdrop', 'return', 'report'];
+// Each phase owns the settings that belong to it, as at most three tabs, the last
+// being the phase's own action: Token (Details, Address, Create), Liquidity
+// (Price & pool, Pairs, Create), Leftovers (Return & report, Airdrop, Finish).
+// The tab shown is a view: nothing is saved, and nothing counts toward progress.
+const PHASE_TABS = {
+  mint: [{ id: 'details', label: 'Details' }, { id: 'address', label: 'Address' }, { id: 'run', label: 'Create' }],
+  liquidity: [{ id: 'price', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }, { id: 'run', label: 'Create' }],
+  finish: [{ id: 'return', label: 'Return & report' }, { id: 'airdrop', label: 'Airdrop' }, { id: 'run', label: 'Finish' }],
+};
+const PLAN_SLIDE_ORDER = ['details', 'address', 'price', 'pairs', 'return', 'airdrop'];
 
-function planSlideValues() {
+function phaseTabValue(id, runValue) {
   const text = (selector) => ($(selector)?.textContent || '').trim();
   const name = String($('#tokenName')?.value || '').trim();
   const symbol = String($('#tokenSymbol')?.value || '').trim().toUpperCase();
-  return {
-    token: [name, symbol && `$${symbol}`].filter(Boolean).join(' ') || '—',
-    pool: [`${Number($('#liquidityBudgetSol')?.value || 0)} SOL`, text('#launchMoreSummary').split('·')[0].trim()].filter(Boolean).join(' · '),
-    pairs: text('#classicSummary') || '—',
-    address: text('#vanitySummary').replace(' · recommended', '') || '—',
-    airdrop: text('#airdropSummary') || 'Off',
-    return: text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge') || '—',
-    report: text('#reportSummary') || 'Draft',
-  };
+  const supply = text('#launchMoreSummary').split('·')[0].trim();
+  switch (id) {
+    case 'details': return [name, symbol && `$${symbol}`].filter(Boolean).join(' ') || 'Not named';
+    case 'address': return text('#vanitySummary').replace(' · recommended', '') || 'Random address';
+    case 'price': return `$${String($('#targetMarketCapUsd')?.value || '').trim() || '—'} · ${Number($('#liquidityBudgetSol')?.value || 0)} SOL`;
+    case 'pairs': return text('#classicSummary') || '—';
+    case 'return': return [text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge'), text('#reportSummary')].filter(Boolean).join(' · ') || '—';
+    case 'airdrop': return text('#airdropSummary') || 'Off';
+    default: return runValue || supply;
+  }
 }
 
-function renderPlanSlides() {
+function currentPhaseSlide(workspace, runDone) {
+  const tabs = PHASE_TABS[workspace];
+  if (!tabs) return null;
+  state.phaseSlide = state.phaseSlide || {};
+  const chosen = state.phaseSlide[workspace];
+  if (chosen && tabs.some((tab) => tab.id === chosen)) return chosen;
+  // A phase that already holds its fact opens on its action, which shows the result.
+  return runDone ? 'run' : tabs[0].id;
+}
+
+function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
+  const tabs = PHASE_TABS[workspace];
+  const strip = $('#planStrip');
   const track = $('#planTrack');
-  if (!track) return;
-  const current = PLAN_SLIDES.includes(state.planSlide) ? state.planSlide : 'token';
-  const index = PLAN_SLIDES.indexOf(current);
-  const values = planSlideValues();
-  track.style.transform = `translateX(-${index * 100}%)`;
-  $$('#planStrip [data-plan-tab]').forEach((tab) => {
-    const selected = tab.dataset.planTab === current;
-    tab.classList.toggle('is-selected', selected);
-    tab.setAttribute('aria-selected', selected ? 'true' : 'false');
-    tab.tabIndex = selected ? 0 : -1;
-    const value = tab.querySelector('[data-plan-value]');
-    if (value && value.textContent !== values[tab.dataset.planTab]) value.textContent = values[tab.dataset.planTab] || '';
+  if (!strip || !track) return;
+  const bridge = $('#classicBridge');
+  const hideRunOnly = ['#launchConsole', '#signaturePanel'];
+  if (!tabs) {
+    if (bridge) bridge.hidden = false;
+    return;
+  }
+  const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
+  const running = current === 'run';
+  strip.style.setProperty('--tabs', String(tabs.length));
+  // Built once per phase and then updated in place, so the focused tab stays focused.
+  const structure = `${workspace}|${tabs.map((tab) => tab.id).join(',')}`;
+  if (strip.dataset.structure !== structure) {
+    strip.dataset.structure = structure;
+    strip.innerHTML = tabs.map((tab) => `<button type="button" role="tab" data-plan-tab="${tab.id}"><strong>${escapeHtml(tab.label)}</strong><small></small></button>`).join('');
+  }
+  tabs.forEach((tab) => {
+    const button = strip.querySelector(`[data-plan-tab="${tab.id}"]`);
+    if (!button) return;
+    const selected = tab.id === current;
+    button.classList.toggle('is-selected', selected);
+    button.setAttribute('aria-selected', selected ? 'true' : 'false');
+    button.tabIndex = selected ? 0 : -1;
+    const value = phaseTabValue(tab.id, fact?.value);
+    const small = button.querySelector('small');
+    if (small.textContent !== value) small.textContent = value;
   });
+  // The action tab shows the phase's own panel; every other tab slides a settings page in.
+  const frame = $('#planSlides');
+  if (frame) frame.hidden = running;
+  if (bridge) bridge.hidden = !running;
+  hideRunOnly.forEach((selector) => { const node = $(selector); if (node && !running) node.hidden = true; });
+  if (!running) $$('[data-classic-workspace]').forEach((panel) => { panel.hidden = true; });
+  $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running);
+  if (running) return;
+  const index = Math.max(0, PLAN_SLIDE_ORDER.indexOf(current));
+  track.style.transform = `translateX(-${index * 100}%)`;
   let active = null;
   $$('#planTrack > [data-plan-slide]').forEach((slide) => {
     const on = slide.dataset.planSlide === current;
@@ -6021,7 +6075,6 @@ function renderPlanSlides() {
     if (on) active = slide;
   });
   // The frame is as tall as the slide in view, so nothing scrolls and nothing leaves a gap.
-  const frame = $('#planSlides');
   if (frame && active) {
     frame.style.height = `${active.offsetHeight}px`;
     frame.scrollTop = 0;
@@ -6034,7 +6087,7 @@ function renderPlanSlides() {
     if (!frame.dataset.watching && window.ResizeObserver) {
       frame.dataset.watching = '1';
       new ResizeObserver(() => {
-        const live = $(`#planTrack > [data-plan-slide="${state.planSlide || 'token'}"]`);
+        const live = $(`#planTrack > [data-plan-slide="${(state.phaseSlide || {})[state.launchWorkspace]}"]`);
         if (live) frame.style.height = `${live.offsetHeight}px`;
       }).observe(track);
     }
@@ -6042,15 +6095,18 @@ function renderPlanSlides() {
 }
 
 function setPlanSlide(id) {
-  if (!PLAN_SLIDES.includes(id)) return;
-  state.planSlide = id;
-  renderPlanSlides();
+  const tabs = PHASE_TABS[state.launchWorkspace];
+  if (!tabs || !tabs.some((tab) => tab.id === id)) return;
+  state.phaseSlide = { ...(state.phaseSlide || {}), [state.launchWorkspace]: id };
+  renderLaunchWorkspace();
 }
 
 function stepPlanSlide(step) {
-  const index = PLAN_SLIDES.indexOf(state.planSlide || 'token');
-  const next = Math.min(PLAN_SLIDES.length - 1, Math.max(0, index + step));
-  if (next !== index) setPlanSlide(PLAN_SLIDES[next]);
+  const tabs = PHASE_TABS[state.launchWorkspace];
+  if (!tabs) return;
+  const index = tabs.findIndex((tab) => tab.id === currentPhaseSlide(state.launchWorkspace, false));
+  const next = Math.min(tabs.length - 1, Math.max(0, index + step));
+  if (next !== index) setPlanSlide(tabs[next].id);
 }
 
 // One press does what the Next card says: open the row that needs doing, or,
@@ -6058,8 +6114,20 @@ function stepPlanSlide(step) {
 function runLaunchRailAction() {
   const next = nextCoinFact();
   if (!next || !next.action) return;
+  if (next.id === 'configure') {
+    state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
+    setLaunchWorkspace('mint', { focus: false });
+    $('#tokenName')?.focus();
+    return;
+  }
   if (state.launchWorkspace !== next.id) {
     setLaunchWorkspace(next.id, { focus: false });
+    return;
+  }
+  // A phase's action is its last tab: open it, then press the panel's own button.
+  if (PHASE_TABS[next.id] && (state.phaseSlide || {})[next.id] !== 'run') {
+    state.phaseSlide = { ...(state.phaseSlide || {}), [next.id]: 'run' };
+    renderLaunchWorkspace();
     return;
   }
   const pane = $(`[data-classic-workspace="${next.id}"]`);
@@ -6072,6 +6140,10 @@ function runLaunchRailAction() {
 // Open a row. Which row is open is a view, never saved and never progress.
 function setLaunchWorkspace(workspace, { focus = false } = {}) {
   if (!launchWorkspaces.some((item) => item.id === workspace)) return;
+  if (workspace === 'configure') {
+    workspace = 'mint';
+    state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
+  }
   const changed = state.launchWorkspace !== workspace;
   state.launchWorkspace = workspace;
   renderLaunchWorkspace();
@@ -23246,7 +23318,7 @@ function renderReturnWalletCard() {
 
 function editReturnWallet() {
   setView('launch');
-  setLaunchWorkspace('configure');
+  setLaunchWorkspace('finish');
   window.requestAnimationFrame(() => {
     setPlanSlide('return');
   });
@@ -25032,7 +25104,7 @@ function handleClick(event) {
   }
   if (state.activeView === 'launch') {
     const actionWorkspace = {
-      'start-vanity': 'configure',
+      'start-vanity': 'mint',
       'estimate-funding': 'fund',
       'start-quote-acquire': 'fund',
       'publish-launch-report': 'finish',
@@ -25042,7 +25114,11 @@ function handleClick(event) {
       'cancel-refund-launch': 'finish',
       'resume-journal': 'finish',
     }[action];
-    if (actionWorkspace) setLaunchWorkspace(actionWorkspace);
+    if (actionWorkspace) {
+      // Each of these acts on the phase's own panel, or on the address settings.
+      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : 'run' };
+      setLaunchWorkspace(actionWorkspace);
+    }
   }
   if (action === 'review') {
     if (!walletIsUnlocked()) {

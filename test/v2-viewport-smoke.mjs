@@ -84,7 +84,7 @@ async function smokeViewport(browser, viewport) {
       tokenNameVisible: Boolean(document.querySelector('#tokenName')?.getClientRects().length),
     }));
     assert.equal(firstOpen.experienceMode, null, `${viewport.name}: a separate experience mode is back`);
-    assert.equal(firstOpen.workspace, 'configure', `${viewport.name}: launch does not open on Token & pools`);
+    assert.equal(firstOpen.workspace, 'mint', `${viewport.name}: launch does not open on Token`);
     assert.match(firstOpen.setupHelp, /nothing is sent/i);
     assert.equal(firstOpen.tabsVisible, true, `${viewport.name}: coin facts are hidden`);
     assert.equal(firstOpen.tokenNameVisible, true, `${viewport.name}: token name field is hidden`);
@@ -93,7 +93,7 @@ async function smokeViewport(browser, viewport) {
       `${viewport.name}: launch overflows horizontally`,
     );
 
-    await page.click('.coin-fact[data-coin-fact="configure"]');
+    await page.click('.coin-fact[data-coin-fact="mint"]');
 
     const collapsedMetrics = await page.evaluate(() => {
       const cockpit = document.querySelector('.launch-summary-drawer');
@@ -172,7 +172,7 @@ async function smokeViewport(browser, viewport) {
     });
 
     const workspaceStates = {};
-    for (const workspace of ['wallet', 'configure', 'fund', 'mint', 'liquidity', 'finish']) {
+    for (const workspace of ['wallet', 'mint', 'liquidity', 'fund', 'finish']) {
       await page.click(`.coin-fact[data-coin-fact="${workspace}"]`);
       workspaceStates[workspace] = await page.evaluate((selectedWorkspace) => {
         const selectedTab = document.querySelector(`.coin-fact[data-coin-fact="${selectedWorkspace}"]`);
@@ -183,13 +183,17 @@ async function smokeViewport(browser, viewport) {
           bodyWorkspace: document.body.dataset.launchWorkspace,
           selected: selectedTab?.getAttribute('aria-pressed') === 'true',
           visiblePaneCount,
-          classicSectionVisible: classicSection
+          // A phase with settings opens on a settings tab; its own panel is the last tab.
+          classicSectionVisible: ['mint', 'liquidity', 'finish'].includes(selectedWorkspace)
+            ? Boolean(document.querySelector('#planSlides')?.getClientRects().length)
+              || Boolean(classicSection && !classicSection.hidden && classicSection.getClientRects().length)
+            : classicSection
             ? !classicSection.hidden && classicSection.getClientRects().length > 0
-            : selectedWorkspace === 'configure',
+            : false,
         };
       }, workspace);
     }
-    await page.click('.coin-fact[data-coin-fact="configure"]');
+    await page.click('.coin-fact[data-coin-fact="mint"]');
 
     assert.deepEqual(pageErrors, [], `${viewport.name}: page errors`);
     assert.deepEqual(consoleErrors, [], `${viewport.name}: console errors`);

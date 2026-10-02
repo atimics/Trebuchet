@@ -2206,7 +2206,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="coinState"/);
   assert.doesNotMatch(html, /launch-workspace-tab|Six launch phases/);
   assert.match(html, /id="launchWorkspaceViewport"/);
-  for (const workspace of ['wallet', 'configure', 'fund', 'mint', 'liquidity', 'finish']) {
+  for (const workspace of ['wallet', 'fund', 'mint', 'liquidity', 'finish']) {
     assert.match(html, new RegExp(`data-launch-workspace="${workspace}"`));
   }
   assert.match(html, /id="poolEditorPanel"/);
@@ -2216,7 +2216,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="airdropAutoFit"/);
   assert.match(html, /id="airdropBudgetPanel"/);
   assert.match(html, /id="reportPreview"/);
-  assert.match(html, /data-plan-tab="pairs"/);
+  assert.match(html, /data-plan-slide="pairs"/);
   assert.doesNotMatch(html, /id="launchMoreOptions"/, 'Plan options are slides, not nested drawers');
   assert.match(html, /id="supplyEditor"/);
   assert.doesNotMatch(html, /Classic parity controls/);
@@ -3243,7 +3243,7 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(combined, /Manual ladder bands/);
   assert.match(combined, /Pool topology map/);
   assert.match(combined, /Launch position tree/);
-  assert.match(combined, /data-plan-slide="report"/);
+  assert.match(combined, /data-plan-slide="return"/);
   assert.match(combined, /Launch completion/);
   assert.match(combined, /Report, airdrop, and proof/);
   assert.match(combined, /Proof review/);
@@ -6874,12 +6874,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=107/);
+  assert.match(html, /styles\.css\?v=108/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=201/);
-  assert.doesNotMatch(html, /app\.js\?v=201" type="module"/);
+  assert.match(html, /app\.js\?v=202/);
+  assert.doesNotMatch(html, /app\.js\?v=202" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11825,9 +11825,11 @@ test('a finished launch is matched to the coin by its mint, never its name', () 
 
 test('a coin being created shows its facts, not a numbered track of phases', () => {
   // One row per fact, with no ordinals and no Continue/back navigation.
-  for (const fact of ['wallet', 'configure', 'fund', 'mint', 'liquidity', 'finish']) {
+  // Plan is not a phase of its own: its settings live in Token, Liquidity and Leftovers.
+  for (const fact of ['wallet', 'mint', 'liquidity', 'fund', 'finish']) {
     assert.match(html, new RegExp(`class="coin-fact"[^>]*data-coin-fact="${fact}"`));
   }
+  assert.doesNotMatch(html, /data-coin-fact="configure"/);
   assert.doesNotMatch(css, /content: "0[1-6]"/);
   assert.doesNotMatch(html + js, /Continue to (funding|create token)|Back to token|> Review funding/);
   assert.doesNotMatch(js.match(/function coinFacts[\s\S]*?\n}\n/)?.[0] || '', /Waiting|Continue/);

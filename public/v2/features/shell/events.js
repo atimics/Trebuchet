@@ -307,7 +307,7 @@ function handleClick(event) {
   }
   if (state.activeView === 'launch') {
     const actionWorkspace = {
-      'start-vanity': 'configure',
+      'start-vanity': 'mint',
       'estimate-funding': 'fund',
       'start-quote-acquire': 'fund',
       'publish-launch-report': 'finish',
@@ -317,7 +317,11 @@ function handleClick(event) {
       'cancel-refund-launch': 'finish',
       'resume-journal': 'finish',
     }[action];
-    if (actionWorkspace) setLaunchWorkspace(actionWorkspace);
+    if (actionWorkspace) {
+      // Each of these acts on the phase's own panel, or on the address settings.
+      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : 'run' };
+      setLaunchWorkspace(actionWorkspace);
+    }
   }
   if (action === 'review') {
     if (!walletIsUnlocked()) {

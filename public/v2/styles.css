@@ -17452,3 +17452,13 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 .supply-editor:has(.supply-settings) :is(.supply-bar, .supply-group-head, .supply-add, .supply-total, .pair-arbitrage-warning) { display: none; }
 .supply-editor:has(.supply-settings) .supply-list:not(:has(.supply-settings)) { display: none; }
 .supply-list:has(> .supply-settings) > .supply-row:not(.is-open) { display: none; }
+
+/* One strip per phase: its settings tabs, then its action. */
+.plan-strip { grid-template-columns: repeat(var(--tabs, 3), minmax(0, 1fr)); }
+.setup-dock-head { display: none; }
+.advanced-launch-controls.is-running-tab .launch-phase-actions { display: none; }
+.price-grid { grid-template-columns: minmax(0, 1fr); }
+
+/* On a phase's action tab the dock is only the strip; its panel follows directly. */
+.setup-dock:has(.is-running-tab) { min-height: 0 !important; height: auto !important; display: block; }
+.setup-dock:has(.is-running-tab) .advanced-launch-controls { min-height: 0; height: auto; }

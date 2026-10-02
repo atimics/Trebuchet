@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=107">
+  <link rel="stylesheet" href="./styles.css?v=108">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -243,14 +243,6 @@
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
                 <span><strong>Launch wallet</strong><small data-coin-fact-value="wallet"></small></span>
               </button>
-              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="configure" data-coin-fact="configure">
-                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Plan</strong><small data-coin-fact-value="configure"></small></span>
-              </button>
-              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="fund" data-coin-fact="fund">
-                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Funding</strong><small data-coin-fact-value="fund"></small></span>
-              </button>
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="mint" data-coin-fact="mint">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
                 <span><strong>Token</strong><small data-coin-fact-value="mint"></small></span>
@@ -258,6 +250,10 @@
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="liquidity" data-coin-fact="liquidity">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
                 <span><strong>Liquidity</strong><small data-coin-fact-value="liquidity"></small></span>
+              </button>
+              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="fund" data-coin-fact="fund">
+                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
+                <span><strong>Funding</strong><small data-coin-fact-value="fund"></small></span>
               </button>
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="finish" data-coin-fact="finish">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
@@ -269,7 +265,7 @@
 
             <div class="launch-workspace-viewport" id="launchWorkspaceViewport" role="region" tabindex="0" aria-live="polite">
             <section class="launch-identity-dock" id="launchIdentityDock" aria-label="Active token launch identity" hidden></section>
-            <section class="setup-dock" data-launch-pane="configure" aria-label="Launch setup dock">
+            <section class="setup-dock" data-launch-pane="mint liquidity finish" aria-label="Phase settings">
               <div class="setup-dock-head">
                 <span>
                   <span class="eyebrow">Launch</span>
@@ -281,19 +277,11 @@
               </div>
               <div class="advanced-launch-controls plan-slides-shell" id="advancedLaunchControls">
               <h2 class="visually-hidden" id="configureStepTitle">Token &amp; pools</h2>
-              <div class="plan-strip" id="planStrip" role="tablist" aria-label="Plan">
-                <button type="button" role="tab" data-plan-tab="token"><strong>Token</strong><small data-plan-value="token"></small></button>
-                <button type="button" role="tab" data-plan-tab="pool"><strong>Pool</strong><small data-plan-value="pool"></small></button>
-                <button type="button" role="tab" data-plan-tab="pairs"><strong>Pairs</strong><small data-plan-value="pairs"></small></button>
-                <button type="button" role="tab" data-plan-tab="address"><strong>Address</strong><small data-plan-value="address"></small></button>
-                <button type="button" role="tab" data-plan-tab="airdrop"><strong>Airdrop</strong><small data-plan-value="airdrop"></small></button>
-                <button type="button" role="tab" data-plan-tab="return"><strong>Return</strong><small data-plan-value="return"></small></button>
-                <button type="button" role="tab" data-plan-tab="report"><strong>Report</strong><small data-plan-value="report"></small></button>
-              </div>
+              <div class="plan-strip" id="planStrip" role="tablist" aria-label="Phase"></div>
               <div class="plan-slides" id="planSlides">
                 <div class="plan-track" id="planTrack">
-                  <section class="plan-slide" data-plan-slide="token" role="tabpanel">
-                    <form class="config-grid" id="launchConfig" aria-label="Launch configuration">
+<section class="plan-slide" data-plan-slide="details" data-phase="mint" role="tabpanel">
+<form class="config-grid" id="launchConfig" aria-label="Launch configuration">
                   <label>
                     <span>Token name</span>
                     <input id="tokenName" type="text" value="" placeholder="Your token name" autocomplete="off">
@@ -306,10 +294,6 @@
                     <span>Description</span>
                     <input id="tokenDescription" type="text" value="" placeholder="What is this token for?" autocomplete="off">
                   </label>
-                  <label>
-                    <span>Target market cap (USD)</span>
-                    <input id="targetMarketCapUsd" type="text" value="25,000" autocomplete="off" >
-                  </label>
                   <div class="logo-input-row">
                     <span class="logo-input-label">Logo</span>
                     <label class="logo-upload-control" for="tokenLogoFile">
@@ -320,28 +304,7 @@
                   </div>
                   <div class="token-logo-preview" id="tokenLogoPreview"></div>
                 </form>
-                  </section>
-                  <section class="plan-slide" data-plan-slide="pool" role="tabpanel">
-                    <section class="launch-budget-recommender" aria-labelledby="launchBudgetTitle">
-                  <input id="launchSol" type="hidden" value="1">
-                  <div class="launch-budget-head">
-                    <span>
-                      <h3 id="launchBudgetTitle">SOL in the pool</h3>
-                    </span>
-                    <label class="launch-budget-input" for="liquidityBudgetSol">
-                      <span class="visually-hidden">SOL in the pool</span>
-                      <span><input id="liquidityBudgetSol" type="number" value="1" min="0" step="0.1"><strong>SOL</strong></span>
-                    </label>
-                  </div>
-                  <div class="launch-budget-presets" role="group" aria-label="Liquidity budget presets">
-                    <button type="button" data-action="select-launch-budget" data-budget="0"><strong>None</strong></button>
-                    <button class="is-selected" type="button" data-action="select-launch-budget" data-budget="1"><strong>1 SOL</strong></button>
-                    <button type="button" data-action="select-launch-budget" data-budget="10"><strong>10 SOL</strong></button>
-                    <button type="button" data-action="select-launch-budget" data-budget="100"><strong>100 SOL</strong></button>
-                  </div>
-                  <div class="launch-budget-strategy" id="launchBudgetStrategy" aria-live="polite"></div>
-                </section>
-                    <div class="config-grid launch-more-grid">
+<div class="config-grid launch-more-grid">
                     <label>
                       <span>Total supply</span>
                       <input id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000" autocomplete="off">
@@ -360,34 +323,9 @@
                       </select>
                     </label>
                 </div>
-                  </section>
-                  <section class="plan-slide" data-plan-slide="pairs" role="tabpanel">
-                    <section class="supply-editor" id="supplyEditor" aria-label="Supply split"></section>
-                    <section class="hub-picker" id="hubPicker" aria-label="Choose a hub token" hidden></section>
-                    <form class="classic-grid" id="classicConfig" aria-label="Pool options">
-                    <div class="classic-hidden-fields" hidden>
-                      <input id="mainPoolPercent" type="number" value="100" min="0" max="100" step="0.1">
-                      <input id="quotePoolPercent" type="number" value="0" min="0" max="100" step="0.1">
-                      <select id="quotePoolVenue">
-                        <option value="meme" selected>Meme flywheel</option>
-                        <option value="reserve">Reserve flywheel</option>
-                        <option value="usdc">Stable USDC</option>
-                      </select>
-                      <div class="flywheel-pick" id="flywheelPick">
-                        <code class="flywheel-pick-mint" id="flywheelPickMint">—</code>
-                      </div>
-                      <input id="preallocationSupplyPercent" type="number" value="0" min="0" max="99" step="0.1">
-                      <input id="sliceShares" type="text" value="100" autocomplete="off">
-                      <input id="ladderBands" type="number" value="0" min="0" max="20" step="1">
-                      <input id="supportSol" type="number" value="0" min="0" step="0.05">
-                      <div class="pool-editor-panel" id="poolEditorPanel"></div>
-                      <input id="sweepDestination" type="hidden" value="">
-                      <input id="feeKeyRecipient" type="hidden" value="">
-                    </div>
-                  </form>
-                  </section>
-                  <section class="plan-slide" data-plan-slide="address" role="tabpanel">
-                    <div class="vanity-details-body grinder" aria-label="Optional custom contract address">
+</section>
+<section class="plan-slide" data-plan-slide="address" data-phase="mint" role="tabpanel">
+<div class="vanity-details-body grinder" aria-label="Optional custom contract address">
                   <div class="vanity-inputs grinder-fields">
                     <label class="grinder-field">
                       <span>Starts with</span>
@@ -419,11 +357,69 @@
                     <button class="pill-button" type="button" data-action="start-vanity">Grind</button>
                   </div>
                   </div>
-                  </section>
-                  <section class="plan-slide" data-plan-slide="airdrop" role="tabpanel">
-                    
-                    
-                    <label class="supply-field" for="airdropCsvText"><span>CSV recipients</span></label>
+</section>
+<section class="plan-slide" data-plan-slide="price" data-phase="liquidity" role="tabpanel">
+<div class="config-grid price-grid">
+<label>
+                    <span>Target market cap (USD)</span>
+                    <input id="targetMarketCapUsd" type="text" value="25,000" autocomplete="off" >
+                  </label>
+</div>
+<section class="launch-budget-recommender" aria-labelledby="launchBudgetTitle">
+                  <input id="launchSol" type="hidden" value="1">
+                  <div class="launch-budget-head">
+                    <span>
+                      <h3 id="launchBudgetTitle">SOL in the pool</h3>
+                    </span>
+                    <label class="launch-budget-input" for="liquidityBudgetSol">
+                      <span class="visually-hidden">SOL in the pool</span>
+                      <span><input id="liquidityBudgetSol" type="number" value="1" min="0" step="0.1"><strong>SOL</strong></span>
+                    </label>
+                  </div>
+                  <div class="launch-budget-presets" role="group" aria-label="Liquidity budget presets">
+                    <button type="button" data-action="select-launch-budget" data-budget="0"><strong>None</strong></button>
+                    <button class="is-selected" type="button" data-action="select-launch-budget" data-budget="1"><strong>1 SOL</strong></button>
+                    <button type="button" data-action="select-launch-budget" data-budget="10"><strong>10 SOL</strong></button>
+                    <button type="button" data-action="select-launch-budget" data-budget="100"><strong>100 SOL</strong></button>
+                  </div>
+                  <div class="launch-budget-strategy" id="launchBudgetStrategy" aria-live="polite"></div>
+                </section>
+</section>
+<section class="plan-slide" data-plan-slide="pairs" data-phase="liquidity" role="tabpanel">
+<section class="supply-editor" id="supplyEditor" aria-label="Supply split"></section>
+                    <section class="hub-picker" id="hubPicker" aria-label="Choose a hub token" hidden></section>
+                    <form class="classic-grid" id="classicConfig" aria-label="Pool options">
+                    <div class="classic-hidden-fields" hidden>
+                      <input id="mainPoolPercent" type="number" value="100" min="0" max="100" step="0.1">
+                      <input id="quotePoolPercent" type="number" value="0" min="0" max="100" step="0.1">
+                      <select id="quotePoolVenue">
+                        <option value="meme" selected>Meme flywheel</option>
+                        <option value="reserve">Reserve flywheel</option>
+                        <option value="usdc">Stable USDC</option>
+                      </select>
+                      <div class="flywheel-pick" id="flywheelPick">
+                        <code class="flywheel-pick-mint" id="flywheelPickMint">—</code>
+                      </div>
+                      <input id="preallocationSupplyPercent" type="number" value="0" min="0" max="99" step="0.1">
+                      <input id="sliceShares" type="text" value="100" autocomplete="off">
+                      <input id="ladderBands" type="number" value="0" min="0" max="20" step="1">
+                      <input id="supportSol" type="number" value="0" min="0" step="0.05">
+                      <div class="pool-editor-panel" id="poolEditorPanel"></div>
+                      <input id="sweepDestination" type="hidden" value="">
+                      <input id="feeKeyRecipient" type="hidden" value="">
+                    </div>
+                  </form>
+</section>
+<section class="plan-slide" data-plan-slide="return" data-phase="finish" role="tabpanel">
+<section class="return-wallet asset-destinations" id="returnWalletCard" aria-label="Where assets go"></section>
+<div class="mini-table" id="reportPreview"></div>
+                    <div class="operator-toolbar compact">
+                      <button class="pill-button" type="button" data-action="toggle-report-publish">Toggle publish</button>
+                      <button class="pill-button" type="button" data-action="download-report-preview">Download preview</button>
+                    </div>
+</section>
+<section class="plan-slide" data-plan-slide="airdrop" data-phase="finish" role="tabpanel">
+<label class="supply-field" for="airdropCsvText"><span>CSV recipients</span></label>
                     <textarea id="airdropCsvText" rows="4" spellcheck="false" placeholder="wallet,tokens&#10;Recipient111...,1000"></textarea>
                     <div class="airdrop-budget-controls">
                       <label>
@@ -446,22 +442,8 @@
                     </div>
                     <div class="airdrop-budget-panel" id="airdropBudgetPanel"></div>
                     <div class="mini-table" id="airdropRecipientPreview"></div>
-                  
-                  </section>
-                  <section class="plan-slide" data-plan-slide="return" role="tabpanel">
-                    <section class="return-wallet asset-destinations" id="returnWalletCard" aria-label="Where assets go"></section>
-                  </section>
-                  <section class="plan-slide" data-plan-slide="report" role="tabpanel">
-                    
-                    
-                    <div class="mini-table" id="reportPreview"></div>
-                    <div class="operator-toolbar compact">
-                      <button class="pill-button" type="button" data-action="toggle-report-publish">Toggle publish</button>
-                      <button class="pill-button" type="button" data-action="download-report-preview">Download preview</button>
-                    </div>
-                  
-                  </section>
-                </div>
+</section>
+</div>
               </div>
               <div class="plan-summaries" hidden>
 <strong id="launchMoreSummary"></strong><strong id="vanitySummary"></strong><strong id="classicSummary"></strong><span id="airdropSummary" class="risk-badge is-neutral">Off</span><span id="reportSummary" class="risk-badge">Draft</span>
@@ -763,7 +745,7 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=1"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=201"></script>
+  <script src="./app.js?v=202"></script>
   <script src="./nfts.js?v=2"></script>
   <script src="./lean.js?v=2"></script>
 </body>

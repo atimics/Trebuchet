@@ -186,7 +186,7 @@ try {
   await page.click('.nav-item[data-view="coins"]');
   await page.click('[data-action="new-coin"]');
   await page.waitForSelector('#view-launch.is-active');
-  assert.equal(await page.getAttribute('body', 'data-launch-workspace'), 'configure');
+  assert.equal(await page.getAttribute('body', 'data-launch-workspace'), 'mint');
   assert.match(await page.locator('#viewTitle').innerText(), /New coin/i);
   assert.match(await page.locator('#viewEyebrow').innerText(), /Coins/i);
   assert.equal(await page.getAttribute('.nav-item.is-active', 'data-view'), 'coins', 'A coin being created is still under Coins');
@@ -199,8 +199,8 @@ try {
   )), ['wallet'], 'Phase 1 was not isolated before wallet selection');
 
   await page.click('.launch-wallet-choice');
-  await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'configure');
-  assert.equal(await page.getAttribute('.coin-fact[data-coin-fact="configure"]', 'aria-pressed'), 'true');
+  await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'mint');
+  assert.equal(await page.getAttribute('.coin-fact[data-coin-fact="mint"]', 'aria-pressed'), 'true');
   assert.match(await page.locator('#configureStepTitle').textContent(), /Token & pools/i);
   assert.deepEqual(await page.evaluate(() => (
     [...document.querySelectorAll('[data-classic-workspace]')]
@@ -272,6 +272,7 @@ try {
     state.lastRunEnvelope = null;
     applyLaunchPlan(fallbackLaunchPlan(), config, { openApproval: false });
     state.launchWorkspace = 'mint';
+    state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'run' };
     renderAll();
   });
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'mint');
@@ -325,12 +326,14 @@ try {
     state.transactions = [];
     state.demoActive = true;
     state.prefs.demoMode = true;
-    state.launchWorkspace = 'configure';
+    state.launchWorkspace = 'mint';
+    state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
     renderAll();
   });
 
   // Practice launch through the same six phases a live launch uses.
-  await page.click('.coin-fact[data-coin-fact="configure"]');
+  await page.click('.coin-fact[data-coin-fact="mint"]');
+  await page.click('[data-plan-tab="details"]');
   await page.fill('#tokenName', 'First Launch');
   await page.fill('#tokenSymbol', 'FIRST');
   await page.setInputFiles(
@@ -346,6 +349,7 @@ try {
   });
   await page.waitForFunction(() => document.querySelector('#mainPoolPercent').value === '90');
   // Where assets go is its own slide of the Plan row.
+  await page.click('.coin-fact[data-coin-fact="finish"]');
   await page.click('[data-plan-tab="return"]');
   assert.match(await page.locator('#returnWalletCard').innerText(), /Funding wallets show here once SOL arrives/);
   await page.evaluate(async () => {
@@ -366,6 +370,7 @@ try {
   assert.deepEqual(shared, [70_000_000, 30_000_000], 'Held-back tokens are not split by SOL sent');
 
   await page.click('.coin-fact[data-coin-fact="mint"]');
+  await page.click('[data-plan-tab="run"]');
   await page.click('[data-classic-workspace="mint"] [data-action="run-demo-launch"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'finish', null, { timeout: 60_000 });
   const finishText = await page.locator('[data-classic-workspace="finish"]').innerText();

@@ -603,9 +603,7 @@ function renderLaunchBudgetRecommendation() {
     button.classList.toggle('is-selected', Number(button.dataset.budget) === budgetSol);
   });
   const depth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
-  target.innerHTML = `<p>${strategy.supportSol > 0
-    ? `The SOL sits from the launch price down to −${escapeHtml(String(depth))}%, so early sellers are paid from it.${strategy.ladderBands ? ' One extra band of tokens sits above the launch price.' : ''}`
-    : 'No SOL goes in the pool. Sellers have nothing to sell into until someone buys.'}</p>`;
+  target.innerHTML = '';
   target.title = '';
 }
 
