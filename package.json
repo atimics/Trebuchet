@@ -46,6 +46,8 @@
     "test:e2e": "node test/e2e/ui-flows.mjs --mobile",
     "test:e2e:v2": "node test/e2e/v2-flows.mjs",
     "test:e2e:nft:localnet": "node test/e2e/v2-nft-localnet.mjs",
+    "test:e2e:damm:localnet": "node test/e2e/v2-damm-localnet.mjs",
+    "test:e2e:lean:ui": "node test/e2e/v2-lean-ui.mjs",
     "test:e2e:devnet": "node test/e2e/devnet-transactions.mjs",
     "test:e2e:devnet:recovery": "node test/e2e/devnet-recovery-drills.mjs",
     "test:electron:v2": "node test/e2e/electron-v2-smoke.mjs",
@@ -130,6 +132,10 @@
     "launchStore.js",
     "coinStore.js",
     "coinService.js",
+    "dammV2Launch.js",
+    "dammV2Routes.js",
+    "dammV2Service.js",
+    "dammV2Store.js",
     "destinationProofStore.js",
     "launchReportService.js",
     "metadataUploadService.js",
@@ -165,10 +171,12 @@
     "@metaplex-foundation/umi-bundle-defaults": "^1.5.1",
     "@metaplex-foundation/umi-uploader-irys": "^1.5.0",
     "@metaplex-foundation/umi-web3js-adapters": "^1.5.1",
+    "@meteora-ag/cp-amm-sdk": "^1.5.1",
     "@raydium-io/raydium-sdk-v2": "0.1.144-alpha",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
     "@trebuchet/core": "file:packages/core",
+    "@trebuchet/runtime": "file:packages/runtime",
     "arconnect": "0.4.2",
     "arweave": "^1.15.7",
     "bip39": "^3.1.0",
@@ -183,8 +191,7 @@
     "marked": "^14.1.4",
     "multer": "^2.3.0",
     "pngjs": "^7.0.0",
-    "qrcode": "^1.5.4",
-    "@trebuchet/runtime": "file:packages/runtime"
+    "qrcode": "^1.5.4"
   },
   "bundleDependencies": [
     "@trebuchet/core",
@@ -216,7 +223,8 @@
       "undici": "^6.28.1"
     },
     "uuid": "^11.1.1",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "toml": "^4.2.0"
   },
   "build": {
     "appId": "com.makesometokens.trebuchet",
@@ -280,6 +288,10 @@
       "launchStore.js",
       "coinStore.js",
       "coinService.js",
+      "dammV2Launch.js",
+      "dammV2Routes.js",
+      "dammV2Service.js",
+      "dammV2Store.js",
       "destinationProofStore.js",
       "launchReportService.js",
       "metadataUploadService.js",

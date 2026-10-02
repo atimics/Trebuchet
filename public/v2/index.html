@@ -90,6 +90,7 @@
         <div class="coins-list-view" id="coinsListView">
           <div class="coins-toolbar">
             <button class="primary-button" type="button" data-action="new-coin"><i class="fa-solid fa-plus"></i><span>New coin</span></button>
+            <button class="secondary-button" type="button" data-view="lean" title="One pool, locked for good, a fraction of the venue cost"><i class="fa-solid fa-bolt"></i><span>Lean launch</span></button>
             <div class="coins-add" id="coinsAddForm">
               <input id="addCoinMint" type="text" autocomplete="off" spellcheck="false" placeholder="Add an existing coin: paste its mint address" aria-label="Mint address of an existing coin">
               <button class="secondary-button" type="button" data-action="add-coin"><i class="fa-solid fa-link"></i><span>Add</span></button>
@@ -521,6 +522,10 @@
         <div class="nft-root" id="nftRoot" aria-live="polite"></div>
       </section>
 
+      <section class="view" id="view-lean" aria-labelledby="viewTitle">
+        <div class="nft-root" id="leanRoot" aria-live="polite"></div>
+      </section>
+
       <section class="view" id="view-wallet" aria-labelledby="viewTitle">
         <div class="two-column">
           <section class="surface">
@@ -760,5 +765,6 @@
   <script src="./market-evidence.js?v=1"></script>
   <script src="./app.js?v=196"></script>
   <script src="./nfts.js?v=1"></script>
+  <script src="./lean.js?v=1"></script>
 </body>
 </html>

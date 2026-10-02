@@ -17207,3 +17207,18 @@ body[data-launch-identity="active"] #view-launch .primary-button:not(.custody-ac
 .hub-picker-result code { overflow-wrap: anywhere; font-size: 11px; }
 .hub-picker-result button { justify-self: start; }
 .hub-picker-status:empty { display: none; }
+
+/* Lean launch view. It borrows the NFT view's panels, tables and tags. */
+.lean-lead { margin: 0; line-height: 1.5; max-width: 82ch; }
+.lean-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.lean-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.lean-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lean-field.lean-wide, .lean-form > .lean-wide { grid-column: 1 / -1; }
+.lean-field input:not([type="file"]):not([type="checkbox"]), .lean-field textarea, .lean-field select {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--panel-strong); color: var(--ink); font: inherit; min-width: 0; box-sizing: border-box;
+}
+.lean-field select { height: 30px; padding: 0 6px; }
+.lean-depth { display: flex; flex-direction: column; gap: 10px; }
+.lean-facts { margin: 0; padding-left: 18px; display: grid; gap: 6px; line-height: 1.45; }
+@media (max-width: 960px) { .lean-grid { grid-template-columns: minmax(0, 1fr); } }

@@ -1882,7 +1882,9 @@ test('v2 navigation and views stay wired together', () => {
 
   // Coins come first. Creating a token is an action on a coin, so the create
   // view (still "launch" internally) is opened from a coin, not the nav.
-  assert.deepEqual(navViews, ['coins', 'discovery', 'history', 'nfts', 'settings', 'wallet']);
+  // 'lean' is not a nav item: it is a button on the Coins page, another way to create a coin
+  // (test/damm-v2-ui.test.mjs checks it is not in the nav).
+  assert.deepEqual(navViews, ['coins', 'discovery', 'history', 'lean', 'nfts', 'settings', 'wallet']);
   assert.deepEqual(sectionViews, [...navViews, 'launch'].sort());
   assert.deepEqual(viewKeys, [...navViews, 'launch'].sort());
 });
