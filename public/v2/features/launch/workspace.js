@@ -483,9 +483,12 @@ function fundTabs() {
   const config = currentLaunchConfig();
   const estimate = classicFundingEstimateStatus(config).matchesConfig ? state.classicFundingEstimate : null;
   const pairTokens = (estimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount();
-  return estimate && pairTokens
-    ? [{ id: 'cost', label: 'Cost' }, { id: 'tokens', label: 'Pair tokens' }]
-    : null;
+  if (!estimate || !pairTokens) return null;
+  return [
+    { id: 'cost', label: 'Cost' },
+    { id: 'acquire', label: 'Pair tokens' },
+    ...(quoteAcquireManualCount() ? [{ id: 'prefund', label: 'Send yourself' }] : []),
+  ];
 }
 function phaseTabsFor(workspace) {
   return workspace === 'fund' ? fundTabs() : PHASE_TABS[workspace] || null;
@@ -505,7 +508,8 @@ function phaseTabValue(id, runValue) {
     case 'return': return [text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge'), text('#reportSummary')].filter(Boolean).join(' · ') || '—';
     case 'airdrop': return text('#airdropSummary') || 'Off';
     case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
-    case 'tokens': return `${(state.classicFundingEstimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount()} to acquire`;
+    case 'acquire': return `${state.classicFundingEstimate?.autoSwapPlan?.length || 0} to buy`;
+    case 'prefund': return `${quoteAcquireManualCount()} to send`;
     default: return runValue || supply;
   }
 }
@@ -517,7 +521,8 @@ function currentPhaseSlide(workspace, runDone) {
   const chosen = state.phaseSlide[workspace];
   if (chosen && tabs.some((tab) => tab.id === chosen)) return chosen;
   // A phase that already holds its fact opens on its action, which shows the result.
-  return runDone ? 'run' : tabs[0].id;
+  // Funding has no action tab: its parts are Cost, Pair tokens and Send yourself.
+  return runDone && workspace !== 'fund' ? 'run' : tabs[0].id;
 }
 
 function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
@@ -589,6 +594,12 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
       }).observe(track);
     }
   }
+}
+
+// Re-applies the open phase's tabs after something redrew the panel under them.
+function syncPlanSlides() {
+  const workspace = state.launchWorkspace;
+  renderPlanSlides(workspace, coinFacts().find((fact) => fact.id === workspace));
 }
 
 function setPlanSlide(id) {

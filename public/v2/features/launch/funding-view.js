@@ -641,8 +641,10 @@ function renderQuoteAcquirePanel() {
     ? '<button class="pill-button" type="button" data-action="clear-quote-acquire">Clear</button>'
     : '';
 
+  const manualPanel = renderManualPrefundPanel();
+  // Two parts, each its own tab on the Funding row: the acquire routes, then the tokens you send yourself.
   return `
-    <div class="quote-acquire-panel">
+    <div class="quote-acquire-panel" data-fund-part="acquire">
       <div class="quote-acquire-head">
         <span>
           <span class="eyebrow">Quote-token acquire</span>
@@ -665,8 +667,8 @@ function renderQuoteAcquirePanel() {
         ${rows || '<article><i class="fa-solid fa-wallet"></i><span><strong>No route rows yet</strong><small>Estimate funding first</small></span></article>'}
       </div>
       <div class="operator-toolbar compact">${button}${clear}</div>
-      ${renderManualPrefundPanel()}
       ${state.quoteAcquire.error ? `<p class="quote-acquire-error">${escapeHtml(state.quoteAcquire.error)}</p>` : ''}
     </div>
+    ${manualPanel ? `<div data-fund-part="prefund">${manualPanel}</div>` : ''}
   `;
 }
