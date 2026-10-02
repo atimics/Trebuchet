@@ -53,11 +53,18 @@ export function parseGeckoSolPools(mint, payload) {
   })));
 }
 
-// Raydium CLMM pool state: 8-byte discriminator, bump, amm_config, owner, then
-// the two mints (73, 105) and their vaults (137, 169). Pools are always stored
-// with the mints in byte order, so the SOL pair is found by asking for both.
-const CLMM_PROGRAM = 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
-const CLMM_POOL_SIZE = 1544;
+// Pool account layouts: where each program stores its two mints and vaults.
+// A pool stores its mints in a fixed order, so the SOL pair is found by
+// asking for both orderings. CLMM state: 8-byte discriminator, bump, config,
+// owner, then mints (73, 105) and vaults (137, 169).
+const POOL_LAYOUTS = [
+  { dex: 'raydium-clmm', program: 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK', size: 1544, mintA: 73, mintB: 105, vaultA: 137, vaultB: 169 },
+  { dex: 'raydium-cpmm', program: 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C', size: 637, mintA: 168, mintB: 200, vaultA: 72, vaultB: 104 },
+  { dex: 'raydium-amm', program: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', size: 752, mintA: 400, mintB: 432, vaultA: 336, vaultB: 368 },
+  { dex: 'meteora-damm-v2', program: 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG', size: 1112, mintA: 168, mintB: 200, vaultA: 232, vaultB: 264 },
+  { dex: 'meteora-dlmm', program: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', size: 904, mintA: 88, mintB: 120, vaultA: 152, vaultB: 184 },
+  { dex: 'orca-whirlpool', program: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc', size: 653, mintA: 101, mintB: 181, vaultA: 133, vaultB: 213 },
+];
 const HELIUS_HOST_RE = /(^|\.)helius-rpc\.com$/i;
 
 export function heliusUrl(url) {
@@ -66,7 +73,7 @@ export function heliusUrl(url) {
 
 // Asks the Helius RPC for the SOL pool straight from the chain, so a pool that
 // the public indexers have not listed yet (or never will) is still found.
-export async function findClmmSolPoolsOnChain(mint, rpcUrl, { fetchImpl = globalThis.fetch } = {}) {
+export async function findSolPoolsOnChain(mint, rpcUrl, { fetchImpl = globalThis.fetch } = {}) {
   const rpc = async (method, params) => {
     const response = await fetchImpl(rpcUrl, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -77,24 +84,46 @@ export async function findClmmSolPoolsOnChain(mint, rpcUrl, { fetchImpl = global
     if (body.error) throw new Error(body.error.message || 'RPC error');
     return body.result;
   };
-  const found = [];
-  for (const [first, second] of [[mint, HUB_SOL_MINT], [HUB_SOL_MINT, mint]]) {
-    const accounts = await rpc('getProgramAccounts', [CLMM_PROGRAM, {
-      encoding: 'base64', dataSlice: { offset: 137, length: 64 },
-      filters: [{ dataSize: CLMM_POOL_SIZE },
-        { memcmp: { offset: 73, bytes: first } }, { memcmp: { offset: 105, bytes: second } }],
-    }]);
-    for (const account of accounts || []) {
-      const data = Buffer.from(account.account.data[0], 'base64');
-      const solVault = new PublicKey(data.subarray(first === HUB_SOL_MINT ? 0 : 32, first === HUB_SOL_MINT ? 32 : 64)).toBase58();
-      let reserve = 0;
-      try { reserve = Number((await rpc('getTokenAccountBalance', [solVault]))?.value?.uiAmount) || 0; } catch { /* ranked last */ }
-      found.push({ address: account.pubkey, baseMint: mint, quoteMint: HUB_SOL_MINT, dex: 'raydium-clmm',
-        source: 'Helius', solReserve: reserve, liquidityUsd: null, volume24hUsd: null, name: '', symbol: '' });
+  const search = async (layout) => {
+    const lo = Math.min(layout.vaultA, layout.vaultB);
+    const length = Math.abs(layout.vaultA - layout.vaultB) + 32;
+    const pools = [];
+    for (const solFirst of [false, true]) {
+      const [first, second] = solFirst ? [HUB_SOL_MINT, mint] : [mint, HUB_SOL_MINT];
+      const accounts = await rpc('getProgramAccounts', [layout.program, {
+        encoding: 'base64', dataSlice: { offset: lo, length },
+        filters: [{ dataSize: layout.size },
+          { memcmp: { offset: layout.mintA, bytes: first } }, { memcmp: { offset: layout.mintB, bytes: second } }],
+      }]);
+      for (const account of accounts || []) {
+        const data = Buffer.from(account.account.data[0], 'base64');
+        const at = (offset) => new PublicKey(data.subarray(offset - lo, offset - lo + 32)).toBase58();
+        pools.push({ address: account.pubkey, baseMint: mint, quoteMint: HUB_SOL_MINT, dex: layout.dex,
+          source: 'Helius', solVault: at(solFirst ? layout.vaultA : layout.vaultB), solReserve: 0,
+          liquidityUsd: null, volume24hUsd: null, name: '', symbol: '' });
+      }
     }
+    return pools;
+  };
+  // One failing program does not hide the pools found on the others.
+  const settled = await Promise.allSettled(POOL_LAYOUTS.map(search));
+  const found = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+  if (!found.length && settled.every((result) => result.status === 'rejected')) throw settled[0].reason;
+  // SOL in each pool's vault, read 100 vaults per call (the token amount sits at byte 64).
+  for (let i = 0; i < found.length; i += 100) {
+    const batch = found.slice(i, i + 100);
+    try {
+      const result = await rpc('getMultipleAccounts', [batch.map((pool) => pool.solVault), { encoding: 'base64', dataSlice: { offset: 64, length: 8 } }]);
+      batch.forEach((pool, index) => {
+        const raw = result?.value?.[index]?.data?.[0];
+        if (raw) pool.solReserve = Number(Buffer.from(raw, 'base64').readBigUInt64LE(0)) / 1e9;
+      });
+    } catch { /* pools without a reading rank last */ }
   }
+  found.forEach((pool) => { delete pool.solVault; });
   return found.sort((a, b) => b.solReserve - a.solReserve || a.address.localeCompare(b.address));
 }
+export const findClmmSolPoolsOnChain = findSolPoolsOnChain;
 
 export function listFlywheelHubs(snapshot = {}) {
   const defaults = DEFAULT_FLYWHEEL_HUBS.map((hub) => ({ ...hub, source: 'default' }));
@@ -132,7 +161,7 @@ export async function resolveFlywheelHub(value, { fetchImpl = globalThis.fetch, 
   // The chain is the best source: Helius first, the public indexers as backup.
   if (helius) {
     try {
-      const pool = (await findClmmSolPoolsOnChain(mint, helius, { fetchImpl }))[0];
+      const pool = (await findSolPoolsOnChain(mint, helius, { fetchImpl }))[0];
       if (pool) return finish(pool);
     } catch { lookupFailed = true; }
   }

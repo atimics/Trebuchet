@@ -130,6 +130,7 @@ test('late lookup results and closed pickers cannot select a stale token', async
 
 test('a Helius RPC finds the SOL pool on chain before the public indexers are asked', async () => {
   const vault = new PublicKey(Buffer.alloc(32, 7)).toBase58();
+  // CLMM: vault 0 at 137, vault 1 at 169, so the slice holds both; SOL is the second mint here.
   const data = Buffer.concat([Buffer.alloc(32, 1), new PublicKey(Buffer.alloc(32, 7)).toBytes()]).toString('base64');
   const calls = [];
   const fetchImpl = async (url, init) => {
@@ -138,10 +139,12 @@ test('a Helius RPC finds the SOL pool on chain before the public indexers are as
     const { method, params } = JSON.parse(init.body);
     if (method === 'getProgramAccounts') {
       // The SOL pair is stored with the mints in byte order: only one ordering holds a pool.
-      return response({ result: params[1].filters[1].memcmp.bytes === MINT ? [{ pubkey: POOL, account: { data: [data, 'base64'] } }] : [] });
+      return response({ result: params[0] === 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK' && params[1].filters[1].memcmp.bytes === MINT ? [{ pubkey: POOL, account: { data: [data, 'base64'] } }] : [] });
     }
-    assert.equal(params[0], vault);
-    return response({ result: { value: { uiAmount: 12.5 } } });
+    assert.deepEqual(params[0], [vault]);
+    const amountBytes = Buffer.alloc(8);
+    amountBytes.writeBigUInt64LE(12_500_000_000n);
+    return response({ result: { value: [{ data: [amountBytes.toString('base64'), 'base64'] }] } });
   };
   const hub = await resolveFlywheelHub(MINT, { fetchImpl, rpcUrl: 'https://mainnet.helius-rpc.com/?api-key=x' });
   assert.equal(hub.solPool.address, POOL);
