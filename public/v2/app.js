@@ -29,7 +29,7 @@ const launchWorkspaces = [
   { id: 'fund', title: 'Fund wallet', detail: 'Estimate the exact requirement, deposit SOL, and acquire quote tokens.' },
   { id: 'mint', title: 'Create token', detail: 'Review the permanent token facts, then mint and revoke authorities.' },
   { id: 'liquidity', title: 'Create liquidity', detail: 'Create pools and positions, lock liquidity, and deliver Fee Keys.' },
-  { id: 'finish', title: 'Finish launch', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
+  { id: 'finish', title: 'Leftovers', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
 ];
 
 
@@ -3376,7 +3376,7 @@ function notify(message) {
   toast.className = 'toast';
   toast.textContent = message;
   $('#toastStack').appendChild(toast);
-  setTimeout(() => toast.remove(), 2600);
+  setTimeout(() => toast.remove(), Math.min(9000, Math.max(4500, message.length * 70)));
 }
 
 function updateResultLabel(result = state.updateCheck.lastResult) {
@@ -5811,7 +5811,70 @@ function renderLaunchWorkspace() {
   if (viewport && selectedWorkspace) {
     viewport.setAttribute('aria-label', `${selectedWorkspace.title}: ${selectedWorkspace.detail}`);
   }
+  renderLaunchNextRail(facts, next, workspace);
   refreshLaunchChainCheck(facts);
+}
+
+// The right-hand column: the one action the first unmet fact asks for, then
+// what this launch costs and holds. It reads the same facts as the rows.
+function renderLaunchNextRail(facts, next, workspace) {
+  const rail = $('#launchNextRail');
+  if (!rail) return;
+  const config = currentLaunchConfig();
+  const sol = (value) => `${Number(value || 0).toFixed(4)} SOL`;
+  const estimateStatus = classicFundingEstimateStatus(config);
+  const estimate = estimateStatus.matchesConfig ? state.classicFundingEstimate : null;
+  const funding = fundingMeterSnapshot(config);
+  const practice = Boolean(state.demoActive);
+  const poolCount = config.poolTopology.pools.length;
+  const irreversible = next && ['mint', 'liquidity', 'finish'].includes(next.id) && !practice;
+  const title = next ? (next.action || next.value) : 'Nothing left to do';
+  const detail = next
+    ? (next.state === 'running' ? 'Keep Trebuchet open.' : next.value)
+    : 'Every row holds. The proof file lists each address and transaction.';
+  const canAct = Boolean(next && next.action && next.state !== 'running');
+  const costState = practice
+    ? 'Test · nothing is sent'
+    : estimate ? 'Estimate · matches this plan' : estimateStatus.stale ? 'Estimate out of date' : 'Not estimated for this plan';
+  const total = estimate ? sol(estimate.totalSol) : '—';
+  const mint = proofTokenMint(currentLaunchProof());
+  rail.innerHTML = `
+    <section class="rail-next${next?.state === 'running' ? ' is-running' : ''}" aria-live="polite">
+      <span class="rail-label">Next</span>
+      <h2>${escapeHtml(title)}</h2>
+      <p>${escapeHtml(detail)}</p>
+      ${irreversible ? '<p class="rail-warn">Cannot be undone.</p>' : ''}
+      ${canAct ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>` : ''}
+    </section>
+    <section class="rail-block">
+      <div class="rail-head"><span class="rail-label">Cost</span><small>${escapeHtml(costState)}</small></div>
+      <div class="rail-row"><span>Launch wallet holds</span><b>${funding.hasWalletBalance ? sol(funding.availableSol) : 'Not checked'}</b></div>
+      <div class="rail-row rail-total"><span>Total</span><b>${practice && !estimate ? '—' : total}</b></div>
+    </section>
+    <section class="rail-block">
+      <span class="rail-label">Supply and liquidity</span>
+      <div class="rail-row"><span>Supply</span><b>${escapeHtml(String(config.token.supply || ''))}</b></div>
+      <div class="rail-row"><span>SOL in the pool</span><b>${Number(config.launchSol || 0)}</b></div>
+      <div class="rail-row"><span>Pools</span><b>${poolCount}</b></div>
+    </section>
+    ${mint ? `<section class="rail-block"><span class="rail-label">On-chain</span><div class="rail-row"><span>Mint</span><b>${escapeHtml(shortAddress(mint))}</b></div></section>` : ''}
+  `;
+}
+
+// One press does what the Next card says: open the row that needs doing, or,
+// when it is already open, press that row's own primary button.
+function runLaunchRailAction() {
+  const next = nextCoinFact();
+  if (!next || !next.action) return;
+  if (state.launchWorkspace !== next.id) {
+    setLaunchWorkspace(next.id, { focus: false });
+    return;
+  }
+  const pane = $(`[data-classic-workspace="${next.id}"]`);
+  const primary = pane && [...pane.querySelectorAll('.primary-button:not([data-next-fact]):not(:disabled)')].find((button) => button.getClientRects().length);
+  if (primary) { primary.click(); return; }
+  if (next.id === 'configure') $('#tokenName')?.focus();
+  else if (next.id === 'wallet') $('.launch-wallet-choice')?.click();
 }
 
 // Open a row. Which row is open is a view, never saved and never progress.
@@ -14510,7 +14573,7 @@ function renderClassicBridge() {
     <section class="classic-workspace-section classic-workspace-verify" data-classic-workspace="finish">
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
-          <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Finish launch'}</h2>
+          <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Leftovers'}</h2>
           <p>${practiceComplete ? 'Every step ran. Nothing was sent.' : finalSweepComplete ? 'Everything is in the return wallet and the launch wallet is empty.' : 'Send the remaining assets to the return wallet and save the launch record.'}</p>
         </div>
         ${practiceComplete ? '' : `<aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Launch record ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for the final sweep.' : 'Fix the item below.'}</span></aside>`}
@@ -24429,6 +24492,10 @@ function handleClick(event) {
   if (action === 'show-more-discovery-wallets') {
     state.discovery.walletRenderLimit = Math.max(100, Number(state.discovery.walletRenderLimit) || 100) + 100;
     renderPersonalDiscovery();
+    return;
+  }
+  if (action === 'launch-rail-act') {
+    runLaunchRailAction();
     return;
   }
   if (action === 'select-environment') {
