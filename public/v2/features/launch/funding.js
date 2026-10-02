@@ -494,6 +494,36 @@ function nextCustomPoolId() {
   return id;
 }
 
+// Turns the flywheel preset pair into an ordinary pair with the same token, share, fee tier and
+// start premium, so its slices, ladder and support can be set like any other pair's.
+function customizeQuotePool() {
+  const venue = selectedClassicQuoteVenue();
+  const percent = parsePercentInput($('#quotePoolPercent').value, 0);
+  if (percent <= 0 || !venue.quoteMint) return;
+  const id = nextCustomPoolId();
+  state.customPools.push({
+    id,
+    quoteSymbol: venue.symbol,
+    quoteMint: venue.quoteMint,
+    supplyPercent: percent,
+    ammConfigIndex: state.pairPoolConfigIndex,
+    startPremiumPct: state.pairStartPremiumPct,
+    sliceShares: '100',
+    feeKeyRecipient: '',
+    ladderBands: 0,
+    ladderText: '',
+    supportSol: 0,
+    supportDepth: 12,
+  });
+  $('#quotePoolPercent').value = '0';
+  $('#quotePoolPercent').dispatchEvent(new Event('input', { bubbles: true }));
+  state.supplyOpenRow = `custom:${id}`;
+  invalidateClassicOutputs();
+  renderAll();
+  scheduleLaunchAutoSave();
+  notify(`${venue.symbol} pair is now editable`);
+}
+
 function addCustomPool(hub = null) {
   state.customPools.push({
     id: nextCustomPoolId(),

@@ -7665,6 +7665,15 @@ function renderSupplyEditor() {
         ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea>`, 'manual', true)}
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>`;
     }
+    // The flywheel pair comes from a preset, not a custom pair: it has the two settings the preset
+    // exposes, and can become a custom pair when it needs slices, a ladder or support.
+    if (row.key === 'quote') {
+      return `
+        ${mapHost}
+        ${field('Fee tier', '', `<select data-choice="slider" data-choice-readout data-quote-pool-field="ammConfigIndex" data-supply-key="quote:tier">${feeTierOptionsHtml(state.pairPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
+        ${field('Start above SOL price %', '', `<input type="text" inputmode="decimal" autocomplete="off" data-quote-pool-field="startPremiumPct" data-supply-key="quote:premium" value="${escapeHtml(state.pairStartPremiumPct)}">`, 'premium')}
+        <div class="supply-field-wide"><button class="pill-button" type="button" data-action="customize-quote-pool"><i class="fa-solid fa-sliders" aria-hidden="true"></i><span>Edit slices, ladder and support</span></button></div>`;
+    }
     const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
     if (!pool) return '<p class="supply-settings-empty">This pool uses the default settings.</p>';
     const id = escapeHtml(pool.id);
@@ -19581,6 +19590,36 @@ function nextCustomPoolId() {
   return id;
 }
 
+// Turns the flywheel preset pair into an ordinary pair with the same token, share, fee tier and
+// start premium, so its slices, ladder and support can be set like any other pair's.
+function customizeQuotePool() {
+  const venue = selectedClassicQuoteVenue();
+  const percent = parsePercentInput($('#quotePoolPercent').value, 0);
+  if (percent <= 0 || !venue.quoteMint) return;
+  const id = nextCustomPoolId();
+  state.customPools.push({
+    id,
+    quoteSymbol: venue.symbol,
+    quoteMint: venue.quoteMint,
+    supplyPercent: percent,
+    ammConfigIndex: state.pairPoolConfigIndex,
+    startPremiumPct: state.pairStartPremiumPct,
+    sliceShares: '100',
+    feeKeyRecipient: '',
+    ladderBands: 0,
+    ladderText: '',
+    supportSol: 0,
+    supportDepth: 12,
+  });
+  $('#quotePoolPercent').value = '0';
+  $('#quotePoolPercent').dispatchEvent(new Event('input', { bubbles: true }));
+  state.supplyOpenRow = `custom:${id}`;
+  invalidateClassicOutputs();
+  renderAll();
+  scheduleLaunchAutoSave();
+  notify(`${venue.symbol} pair is now editable`);
+}
+
 function addCustomPool(hub = null) {
   state.customPools.push({
     id: nextCustomPoolId(),
@@ -25102,6 +25141,18 @@ function handleDynamicInput(event) {
     return;
   }
 
+  const quoteInput = event.target.closest('[data-quote-pool-field]');
+  if (quoteInput) {
+    if (quoteInput.dataset.quotePoolField === 'ammConfigIndex') {
+      state.pairPoolConfigIndex = Math.floor(parseNumericInput(quoteInput.value, DEFAULT_POOL_CONFIG_INDEX));
+    } else if (quoteInput.dataset.quotePoolField === 'startPremiumPct') {
+      state.pairStartPremiumPct = clampNumber(parseNumericInput(quoteInput.value, state.pairStartPremiumPct), 0, 500);
+    }
+    invalidateClassicOutputs();
+    refreshClassicPreview();
+    return;
+  }
+
   const customInput = event.target.closest('[data-custom-pool-field]');
   if (customInput) {
     const pool = state.customPools.find((item) => item.id === customInput.dataset.poolId);
@@ -25230,6 +25281,10 @@ function handleClick(event) {
   }
   if (action === 'launch-rail-act') {
     runLaunchRailAction();
+    return;
+  }
+  if (action === 'customize-quote-pool') {
+    customizeQuotePool();
     return;
   }
   if (action === 'select-environment') {

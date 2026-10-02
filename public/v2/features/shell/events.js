@@ -127,6 +127,18 @@ function handleDynamicInput(event) {
     return;
   }
 
+  const quoteInput = event.target.closest('[data-quote-pool-field]');
+  if (quoteInput) {
+    if (quoteInput.dataset.quotePoolField === 'ammConfigIndex') {
+      state.pairPoolConfigIndex = Math.floor(parseNumericInput(quoteInput.value, DEFAULT_POOL_CONFIG_INDEX));
+    } else if (quoteInput.dataset.quotePoolField === 'startPremiumPct') {
+      state.pairStartPremiumPct = clampNumber(parseNumericInput(quoteInput.value, state.pairStartPremiumPct), 0, 500);
+    }
+    invalidateClassicOutputs();
+    refreshClassicPreview();
+    return;
+  }
+
   const customInput = event.target.closest('[data-custom-pool-field]');
   if (customInput) {
     const pool = state.customPools.find((item) => item.id === customInput.dataset.poolId);
@@ -255,6 +267,10 @@ function handleClick(event) {
   }
   if (action === 'launch-rail-act') {
     runLaunchRailAction();
+    return;
+  }
+  if (action === 'customize-quote-pool') {
+    customizeQuotePool();
     return;
   }
   if (action === 'select-environment') {

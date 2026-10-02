@@ -268,6 +268,15 @@ function renderSupplyEditor() {
         ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea>`, 'manual', true)}
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>`;
     }
+    // The flywheel pair comes from a preset, not a custom pair: it has the two settings the preset
+    // exposes, and can become a custom pair when it needs slices, a ladder or support.
+    if (row.key === 'quote') {
+      return `
+        ${mapHost}
+        ${field('Fee tier', '', `<select data-choice="slider" data-choice-readout data-quote-pool-field="ammConfigIndex" data-supply-key="quote:tier">${feeTierOptionsHtml(state.pairPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
+        ${field('Start above SOL price %', '', `<input type="text" inputmode="decimal" autocomplete="off" data-quote-pool-field="startPremiumPct" data-supply-key="quote:premium" value="${escapeHtml(state.pairStartPremiumPct)}">`, 'premium')}
+        <div class="supply-field-wide"><button class="pill-button" type="button" data-action="customize-quote-pool"><i class="fa-solid fa-sliders" aria-hidden="true"></i><span>Edit slices, ladder and support</span></button></div>`;
+    }
     const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
     if (!pool) return '<p class="supply-settings-empty">This pool uses the default settings.</p>';
     const id = escapeHtml(pool.id);
