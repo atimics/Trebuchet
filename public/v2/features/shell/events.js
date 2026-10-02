@@ -319,7 +319,7 @@ function handleClick(event) {
     }[action];
     if (actionWorkspace) {
       // Each of these acts on the phase's own panel, or on the address settings.
-      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : 'run' };
+      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : actionWorkspace === 'fund' ? 'cost' : 'run' };
       setLaunchWorkspace(actionWorkspace);
     }
   }
