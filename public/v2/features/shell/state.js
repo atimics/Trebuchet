@@ -365,6 +365,7 @@ const state = {
     deviceSecretAvailable: true,
     busy: null,
   },
+  recoveryPinOffered: false,
   recoveryPinGate: {
     open: false,
     value: '',

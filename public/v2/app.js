@@ -366,6 +366,7 @@ const state = {
     deviceSecretAvailable: true,
     busy: null,
   },
+  recoveryPinOffered: false,
   recoveryPinGate: {
     open: false,
     value: '',
@@ -16824,6 +16825,8 @@ function renderWallet() {
   const lockReason = selectedRow ? walletLockInfo(selectedRow) : { state: null, canUnlock: true };
   const keyGone = lockReason.state === 'missing' || lockReason.state === 'wrong-key';
   const secretBlocked = !keyGone && (state.secretPin.locked || selectedRow?.secretPinLocked === true);
+  // Even when this wallet's key is gone, a locked PIN is still the way into every other saved key.
+  const pinLockedForUnlock = keyGone && state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged;
   $('#walletLabel').textContent = selectedPublicKey
     ? `${selectedRow?.name || current.name} ${keyGone ? lockReason.label : walletLabelState(secretBlocked, unlocked, selectedPublicKey)}`
     : 'Choose launch wallet';
@@ -16938,8 +16941,8 @@ function renderWallet() {
           <button class="pill-button" type="button" data-action="load-wallet-qr" ${qrLoading ? 'disabled' : ''}>
             <i class="fa-solid fa-qrcode"></i><span>${qrCode ? 'Refresh QR' : 'Load QR'}</span>
           </button>
-          <button class="pill-button" type="button" data-action="${secretBlocked ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy || keyGone ? 'disabled' : ''}>
-            <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
+          <button class="pill-button" type="button" data-action="${secretBlocked || pinLockedForUnlock ? 'unlock-secret-pin' : 'reveal-wallet-secret'}" ${revealBusy || state.secretPin.busy || (keyGone && !pinLockedForUnlock) ? 'disabled' : ''}>
+            <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked || pinLockedForUnlock ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
           </button>
           <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
             <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
@@ -17511,6 +17514,8 @@ function approvalHtml() {
   const selectedLock = selectedManagedWallet() ? walletLockInfo(selectedManagedWallet()) : { state: null };
   const keyGone = selectedLock.state === 'missing' || selectedLock.state === 'wrong-key';
   const lockedWord = keyGone ? selectedLock.label : 'Locked';
+  // The Recovery PIN opens every saved key, so it can be unlocked even when the selected wallet's own key is gone.
+  const pinLocked = state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged;
   if (!tx) {
     return `
       <div class="approval-head">
@@ -17522,11 +17527,13 @@ function approvalHtml() {
       </div>
       <div class="approval-body">
         <div class="kv-row"><span>Wallet</span><strong>${walletIsUnlocked() ? escapeHtml(current.name) : escapeHtml(lockedWord)}</strong></div>
-        <p>${keyGone ? escapeHtml(selectedLock.detail) : 'Nothing to approve yet. Set up the token, then fund the launch wallet.'}</p>
+        <p>${keyGone ? escapeHtml(selectedLock.detail) : 'Nothing to approve yet. Set up the token, then fund the launch wallet.'}${keyGone && pinLocked ? ' The Recovery PIN is also locked: unlock it to use your other saved keys.' : ''}</p>
       </div>
       <div class="approval-actions">
         <button class="secondary-button" type="button" data-action="close-approval">Close</button>
-        <button class="primary-button" type="button" data-action="toggle-wallet" ${keyGone ? 'disabled' : ''}>${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>
+        ${pinLocked
+          ? '<button class="primary-button" type="button" data-action="unlock-secret-pin">Unlock PIN</button>'
+          : `<button class="primary-button" type="button" data-action="toggle-wallet" ${keyGone ? 'disabled' : ''}>${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>`}
       </div>
     `;
   }
@@ -24137,9 +24144,15 @@ function applyBootState(boot) {
   if (state.vanityCandidates.length && !state.selectedVanityPublicKey) {
     state.selectedVanityPublicKey = state.vanityCandidates[state.vanityCandidates.length - 1].publicKey;
   }
-  if (state.managedWallets.length && !state.selectedWalletPublicKey) {
-    state.selectedWalletPublicKey = state.managedWallets[0].publicKey;
-    state.accountId = state.selectedWalletPublicKey;
+  // Prefer a wallet whose key still exists (readable, then locked) over one whose saved key is gone
+  // from this computer. A key-gone wallet can never sign, and selecting one made the screen say
+  // "unlocking will not help" while 3 usable wallets sat behind the locked PIN.
+  const keyRank = (wallet) => ({ readable: 0, locked: 1 })[wallet?.secretState] ?? (wallet?.secretState ? 3 : 2);
+  const bestWallet = [...state.managedWallets].sort((a, b) => keyRank(a) - keyRank(b))[0] || null;
+  const selectedNow = state.managedWallets.find((wallet) => wallet.publicKey === state.selectedWalletPublicKey) || null;
+  if (bestWallet && (!selectedNow || (selectedNow.secretState === 'missing' && keyRank(bestWallet) < keyRank(selectedNow)))) {
+    state.selectedWalletPublicKey = bestWallet.publicKey;
+    state.accountId = bestWallet.publicKey;
   }
   // With the PIN open, a selected wallet whose key still cannot be read can never
   // sign (typically it was auto-selected while the PIN was locked). Move to the
@@ -24151,6 +24164,12 @@ function applyBootState(boot) {
       state.accountId = readable.publicKey;
       notify('Switched to a launch wallet whose key can be read');
     }
+  }
+  // A locked Recovery PIN is the first thing to deal with, so show the PIN screen once per page load.
+  // It can be closed, and every locked screen also has its own Unlock button.
+  if (state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged && !state.recoveryPinOffered) {
+    state.recoveryPinOffered = true;
+    setTimeout(() => { Promise.resolve(openRecoveryPinGate({ reason: 'unlock' })).catch(() => {}); }, 0);
   }
   $('#networkLabel').textContent = authoritativeNetworkLabel();
 }

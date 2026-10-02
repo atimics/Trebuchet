@@ -12,6 +12,8 @@ function approvalHtml() {
   const selectedLock = selectedManagedWallet() ? walletLockInfo(selectedManagedWallet()) : { state: null };
   const keyGone = selectedLock.state === 'missing' || selectedLock.state === 'wrong-key';
   const lockedWord = keyGone ? selectedLock.label : 'Locked';
+  // The Recovery PIN opens every saved key, so it can be unlocked even when the selected wallet's own key is gone.
+  const pinLocked = state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged;
   if (!tx) {
     return `
       <div class="approval-head">
@@ -23,11 +25,13 @@ function approvalHtml() {
       </div>
       <div class="approval-body">
         <div class="kv-row"><span>Wallet</span><strong>${walletIsUnlocked() ? escapeHtml(current.name) : escapeHtml(lockedWord)}</strong></div>
-        <p>${keyGone ? escapeHtml(selectedLock.detail) : 'Nothing to approve yet. Set up the token, then fund the launch wallet.'}</p>
+        <p>${keyGone ? escapeHtml(selectedLock.detail) : 'Nothing to approve yet. Set up the token, then fund the launch wallet.'}${keyGone && pinLocked ? ' The Recovery PIN is also locked: unlock it to use your other saved keys.' : ''}</p>
       </div>
       <div class="approval-actions">
         <button class="secondary-button" type="button" data-action="close-approval">Close</button>
-        <button class="primary-button" type="button" data-action="toggle-wallet" ${keyGone ? 'disabled' : ''}>${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>
+        ${pinLocked
+          ? '<button class="primary-button" type="button" data-action="unlock-secret-pin">Unlock PIN</button>'
+          : `<button class="primary-button" type="button" data-action="toggle-wallet" ${keyGone ? 'disabled' : ''}>${walletIsUnlocked() ? 'Lock' : 'Unlock'}</button>`}
       </div>
     `;
   }

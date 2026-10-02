@@ -298,9 +298,15 @@ function applyBootState(boot) {
   if (state.vanityCandidates.length && !state.selectedVanityPublicKey) {
     state.selectedVanityPublicKey = state.vanityCandidates[state.vanityCandidates.length - 1].publicKey;
   }
-  if (state.managedWallets.length && !state.selectedWalletPublicKey) {
-    state.selectedWalletPublicKey = state.managedWallets[0].publicKey;
-    state.accountId = state.selectedWalletPublicKey;
+  // Prefer a wallet whose key still exists (readable, then locked) over one whose saved key is gone
+  // from this computer. A key-gone wallet can never sign, and selecting one made the screen say
+  // "unlocking will not help" while 3 usable wallets sat behind the locked PIN.
+  const keyRank = (wallet) => ({ readable: 0, locked: 1 })[wallet?.secretState] ?? (wallet?.secretState ? 3 : 2);
+  const bestWallet = [...state.managedWallets].sort((a, b) => keyRank(a) - keyRank(b))[0] || null;
+  const selectedNow = state.managedWallets.find((wallet) => wallet.publicKey === state.selectedWalletPublicKey) || null;
+  if (bestWallet && (!selectedNow || (selectedNow.secretState === 'missing' && keyRank(bestWallet) < keyRank(selectedNow)))) {
+    state.selectedWalletPublicKey = bestWallet.publicKey;
+    state.accountId = bestWallet.publicKey;
   }
   // With the PIN open, a selected wallet whose key still cannot be read can never
   // sign (typically it was auto-selected while the PIN was locked). Move to the
@@ -312,6 +318,12 @@ function applyBootState(boot) {
       state.accountId = readable.publicKey;
       notify('Switched to a launch wallet whose key can be read');
     }
+  }
+  // A locked Recovery PIN is the first thing to deal with, so show the PIN screen once per page load.
+  // It can be closed, and every locked screen also has its own Unlock button.
+  if (state.secretPin.configured && state.secretPin.locked && !state.secretPin.damaged && !state.recoveryPinOffered) {
+    state.recoveryPinOffered = true;
+    setTimeout(() => { Promise.resolve(openRecoveryPinGate({ reason: 'unlock' })).catch(() => {}); }, 0);
   }
   $('#networkLabel').textContent = authoritativeNetworkLabel();
 }

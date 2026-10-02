@@ -476,7 +476,7 @@
               <tr><td>SOL put into the pool</td><td>${sol(0)}</td></tr>
             </tbody></table>
             <ul class="lean-facts">${e.facts.map((fact) => `<li>${esc(fact)}</li>`).join('')}</ul>` : '<p class="nft-muted">The estimate appears once the token has a name and symbol.</p>'}
-          ${pinLocked ? '<div class="nft-banner nft-banner-bad"><span>Your Recovery PIN is locked. Unlock it before launching.</span><button class="nft-link" type="button" data-view="wallet">Open Wallet</button></div>' : ''}
+          ${pinLocked ? '<div class="nft-banner nft-banner-bad"><span>Your Recovery PIN is locked. Unlock it before launching.</span><button class="nft-link" type="button" data-action="unlock-secret-pin">Unlock PIN</button></div>' : ''}
           ${ui.form.walletPublicKey ? `<p class="nft-muted nft-small">Launch wallet ${addr(ui.form.walletPublicKey)} holds ${Number.isFinite(ui.balance) ? sol(ui.balance) : 'an unknown balance'}.
             <button class="nft-link" type="button" data-lean-action="balance">Refresh</button></p>` : ''}
           ${shortfall ? `<p class="nft-warn">Send at least <strong>${sol(shortfall)}</strong> to <code>${esc(ui.form.walletPublicKey)}</code> first.</p>` : ''}
