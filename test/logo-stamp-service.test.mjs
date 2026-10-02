@@ -105,15 +105,15 @@ test('animated GIF logos keep every frame and its timing, each stamped', () => {
   const result = stampLogoDataUrl(source, MINT);
   assert.equal(result.stamped, true);
   assert.equal(result.mimeType, 'image/gif');
-  const gif = parseGIF(Uint8Array.from(decode(result.dataUrl)));
-  const frames = decompressFrames(gif, true);
-  assert.equal(frames.length, 3);
+  // Frames store only what changed, so judge what a viewer sees after each one.
+  const { shown } = playGif(decode(result.dataUrl));
+  assert.equal(shown.length, 3);
   const plan = planStamp(240, 240, MINT);
-  for (const frame of frames) {
+  for (const frame of shown) {
     assert.equal(frame.delay, 120);
-    assert.ok(whitePixels(frame.patch, 240, plan.bandTop, 240) > 100);
+    assert.ok(whitePixels(frame.rgba, 240, plan.bandTop, 240) > 100);
   }
-  assert.deepEqual([...frames[1].patch.subarray(0, 3)], [0, 0, 255], 'frame colours survive');
+  assert.deepEqual([...shown[1].rgba.subarray(0, 3)], [0, 0, 255], 'frame colours survive');
 });
 
 test('logos that cannot carry a stamp come back unchanged with a reason', () => {
@@ -172,4 +172,171 @@ test('metadata upload sends the stamped logo when it knows the mint', async () =
   });
   assert.equal(unstamped.logoStamped, false);
   assert.deepEqual(uploaded[1].buffer, decode(logo));
+});
+
+// ---- Animated GIFs that look like real logos ------------------------------------------------
+// A static background with a moving subject, stored the way GIF optimisers do it: the first frame
+// whole, every later frame only the rectangle that changed (transparent elsewhere).
+
+const SIZE = 256;
+
+function gifBackground() {
+  const bg = new Uint8ClampedArray(SIZE * SIZE * 4);
+  for (let y = 0; y < SIZE; y += 1) {
+    for (let x = 0; x < SIZE; x += 1) bg.set([30 + (x * 100) / SIZE, 20 + (y * 120) / SIZE, 90, 255], (y * SIZE + x) * 4);
+  }
+  return bg;
+}
+
+function gifScene(frame, frames) {
+  const img = gifBackground();
+  const cx = SIZE / 2 + Math.cos((frame / frames) * 6.283) * SIZE * 0.25;
+  const cy = SIZE / 2 + Math.sin((frame / frames) * 6.283) * SIZE * 0.25;
+  const r = SIZE * 0.14;
+  for (let y = 0; y < SIZE; y += 1) {
+    for (let x = 0; x < SIZE; x += 1) {
+      if ((x - cx) ** 2 + (y - cy) ** 2 < r * r) img.set([250, Math.max(0, 200 - frame), 40, 255], (y * SIZE + x) * 4);
+    }
+  }
+  return img;
+}
+
+// Encode full scenes as delta frames: unchanged pixels transparent, frame left in place.
+function encodeDeltaGif(scenes, delay = 60) {
+  const enc = GIFEncoder();
+  scenes.forEach((img, i) => {
+    let out = img;
+    if (i > 0) {
+      out = new Uint8ClampedArray(img.length);
+      for (let p = 0; p < img.length; p += 4) {
+        const prev = scenes[i - 1];
+        if (img[p] !== prev[p] || img[p + 1] !== prev[p + 1] || img[p + 2] !== prev[p + 2]) out.set(img.subarray(p, p + 4), p);
+      }
+    }
+    const palette = quantize(out, 256, { format: 'rgba4444', oneBitAlpha: true });
+    const clear = palette.findIndex((color) => color[3] === 0);
+    enc.writeFrame(applyPalette(out, palette, 'rgba4444'), SIZE, SIZE, {
+      palette, delay, repeat: i === 0 ? 0 : undefined, transparent: clear >= 0, transparentIndex: Math.max(0, clear), dispose: 1,
+    });
+  });
+  enc.finish();
+  return Buffer.from(enc.bytes());
+}
+
+// What a viewer shows after each frame, honouring placement, transparency and disposal.
+function playGif(buffer) {
+  const gif = parseGIF(Uint8Array.from(buffer));
+  const { width, height } = gif.lsd;
+  const canvas = new Uint8ClampedArray(width * height * 4);
+  const shown = [];
+  let previous = null;
+  for (const frame of decompressFrames(gif, true)) {
+    if (previous?.disposalType === 2) {
+      const { left, top, width: w, height: h } = previous.dims;
+      for (let y = top; y < top + h; y += 1) canvas.fill(0, (y * width + left) * 4, (y * width + left + w) * 4);
+    }
+    const { left, top, width: w, height: h } = frame.dims;
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const from = (y * w + x) * 4;
+        if (frame.patch[from + 3] === 0) continue;
+        canvas.set(frame.patch.subarray(from, from + 4), ((top + y) * width + left + x) * 4);
+      }
+    }
+    shown.push({ rgba: canvas.slice(), delay: frame.delay, dims: frame.dims });
+    previous = frame;
+  }
+  return { width, height, shown };
+}
+
+function meanError(a, b, fromRow, toRow, width) {
+  let total = 0;
+  let count = 0;
+  for (let y = fromRow; y < toRow; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const o = (y * width + x) * 4;
+      total += Math.abs(a[o] - b[o]) + Math.abs(a[o + 1] - b[o + 1]) + Math.abs(a[o + 2] - b[o + 2]);
+      count += 3;
+    }
+  }
+  return total / count;
+}
+
+test('a delta-optimised animated GIF is stamped and stays under the logo cap', () => {
+  const frames = 24;
+  const scenes = Array.from({ length: frames }, (_, i) => gifScene(i, frames));
+  const source = encodeDeltaGif(scenes);
+  const result = stampLogoDataUrl(`data:image/gif;base64,${source.toString('base64')}`, MINT);
+
+  // Before the fix every frame was re-encoded whole: ~5x larger, over the cap, stamp skipped.
+  assert.equal(result.stamped, true, result.reason);
+  assert.ok(result.bytes <= 100 * 1024, `stamped GIF is ${result.bytes} bytes`);
+
+  const { width, height, shown } = playGif(decode(result.dataUrl));
+  assert.equal(width, SIZE);
+  assert.equal(height, SIZE);
+  assert.equal(shown.length, frames, 'every frame is kept');
+  assert.ok(shown.every((frame) => frame.delay === 60), 'timing is kept');
+
+  const plan = planStamp(SIZE, SIZE, MINT);
+  shown.forEach((frame, i) => {
+    assert.ok(whitePixels(frame.rgba, SIZE, plan.bandTop, SIZE) > 100, `frame ${i} carries the stamp`);
+    // Above the band the picture is the original scene, within colour-quantisation error.
+    const error = meanError(frame.rgba, scenes[i], 0, plan.bandTop, SIZE);
+    assert.ok(error < 6, `frame ${i} drifted ${error.toFixed(1)} from the source`);
+  });
+});
+
+test('a GIF whose frames clear pixels is stamped without ghosting', () => {
+  const scenes = [];
+  for (let i = 0; i < 6; i += 1) {
+    const img = new Uint8ClampedArray(SIZE * SIZE * 4); // fully transparent
+    const x0 = 20 + i * 30;
+    for (let y = 40; y < 140; y += 1) for (let x = x0; x < x0 + 60; x += 1) img.set([220, 40, 60, 255], (y * SIZE + x) * 4);
+    scenes.push(img);
+  }
+  const enc = GIFEncoder();
+  scenes.forEach((img, i) => {
+    const palette = quantize(img, 256, { format: 'rgba4444', oneBitAlpha: true });
+    const clear = palette.findIndex((color) => color[3] === 0);
+    enc.writeFrame(applyPalette(img, palette, 'rgba4444'), SIZE, SIZE, {
+      palette, delay: 80, repeat: i === 0 ? 0 : undefined, transparent: true, transparentIndex: Math.max(0, clear), dispose: 2,
+    });
+  });
+  enc.finish();
+  const result = stampLogoDataUrl(`data:image/gif;base64,${Buffer.from(enc.bytes()).toString('base64')}`, MINT);
+  assert.equal(result.stamped, true, result.reason);
+  const { shown } = playGif(decode(result.dataUrl));
+  assert.equal(shown.length, 6);
+  shown.forEach((frame, i) => {
+    const x0 = 20 + i * 30;
+    const at = (x, y) => frame.rgba[(y * SIZE + x) * 4 + 3];
+    assert.equal(at(x0 + 30, 90), 255, `frame ${i}: the square is there`);
+    if (i > 0) assert.ok(at(20 + (i - 1) * 30 + 5, 90) < 128 || x0 <= 20 + (i - 1) * 30 + 65, `frame ${i}: the previous square is gone`);
+  });
+  assert.ok(shown[5].rgba[(90 * SIZE + 25) * 4 + 3] < 128, 'the first square does not ghost into the last frame');
+});
+
+test('an animated GIF that cannot fit at full quality trades colours and frame rate, keeping the loop length', () => {
+  // Noisy frames defeat delta coding, so this needs the size fallbacks.
+  const frames = 30;
+  const scenes = Array.from({ length: frames }, (_, f) => {
+    const img = gifScene(f, frames);
+    for (let p = 0; p < img.length; p += 4) {
+      const n = ((p * 2654435761 + f * 40503) >>> 8) & 15;
+      img[p] = Math.min(255, img[p] + n);
+      img[p + 1] = Math.min(255, img[p + 1] + n);
+    }
+    return img;
+  });
+  const source = encodeDeltaGif(scenes, 50);
+  const result = stampLogoDataUrl(`data:image/gif;base64,${source.toString('base64')}`, MINT);
+  if (!result.stamped) {
+    assert.equal(result.reason, 'stamped-logo-too-large', 'if it cannot fit, the reason says so');
+    return;
+  }
+  assert.ok(result.bytes <= 100 * 1024);
+  const { shown } = playGif(decode(result.dataUrl));
+  const total = shown.reduce((sum, frame) => sum + frame.delay, 0);
+  assert.ok(Math.abs(total - frames * 50) <= shown.length * 10, `loop is ${total}ms, expected about ${frames * 50}ms`);
 });

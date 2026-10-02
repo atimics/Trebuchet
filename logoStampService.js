@@ -283,21 +283,31 @@ function stampStill(buffer, mint, sourceMime, maxBytes) {
   return smallest;
 }
 
-// Animated GIFs: composite every frame onto the full canvas (honouring each
-// frame's disposal), stamp it, and re-encode the frames whole.
-function stampGif(buffer, mint) {
-  const gif = parseGIF(Uint8Array.from(buffer));
-  const frames = decompressFrames(gif, true);
-  const width = gif.lsd.width;
-  const height = gif.lsd.height;
-  const fit = fitStamp(width, height, mint);
-  if (!fit) return { reason: 'logo-too-small' };
-  if (!frames.length) return { reason: 'logo-unreadable' };
+// Animated GIFs.
+//
+// Every source frame is composited onto the full canvas (honouring its
+// disposal) and stamped. Re-encoding each of those frames whole made a typical
+// delta-optimised GIF 5-6x larger and pushed it over the upload cap, so the
+// stamp was silently skipped. Instead each frame stores only the rectangle that
+// changed from the previous one (the static stamp band never changes, so it is
+// stored once). If the result is still over the cap the encoder trades colours,
+// then frame rate, for size, keeping the loop's total duration.
+const GIF_ATTEMPTS = [
+  { colors: 256, step: 1 },
+  { colors: 128, step: 1 },
+  { colors: 64, step: 1 },
+  { colors: 64, step: 2 },
+  { colors: 32, step: 2 },
+  { colors: 32, step: 3 },
+  { colors: 16, step: 4 },
+];
+const GIF_OPAQUE_ALPHA = 128;
 
+// Stamped full-canvas RGBA for each source frame, one at a time.
+function* stampedGifFrames(frames, width, height, fit) {
   const canvas = new Uint8ClampedArray(width * height * 4);
-  const encoder = GIFEncoder();
   let previous = null;
-  frames.forEach((frame, index) => {
+  for (const frame of frames) {
     if (previous?.disposalType === 2) {
       const { left, top, width: w, height: h } = previous.dims;
       for (let y = top; y < Math.min(height, top + h); y += 1) {
@@ -320,21 +330,159 @@ function stampGif(buffer, mint) {
     }
     const out = fit.factor === 1 ? canvas.slice() : upscale(canvas, width, height, fit.factor);
     drawStamp(out, fit.width, fit.height, fit.plan);
-    const palette = quantize(out, 256, { format: 'rgba4444', oneBitAlpha: true });
-    const indexed = applyPalette(out, palette, 'rgba4444');
-    const transparentIndex = palette.findIndex((color) => color[3] === 0);
-    encoder.writeFrame(indexed, fit.width, fit.height, {
-      palette,
-      delay: frame.delay || 0,
-      repeat: index === 0 ? 0 : undefined,
-      transparent: transparentIndex >= 0,
-      transparentIndex: Math.max(0, transparentIndex),
-      dispose: transparentIndex >= 0 ? 2 : -1,
-    });
+    yield { out, delay: frame.delay || 0 };
     previous = { disposalType: frame.disposalType, dims: frame.dims, saved };
-  });
+  }
+}
+
+function samePixel(a, b, offset) {
+  const aClear = a[offset + 3] < GIF_OPAQUE_ALPHA;
+  const bClear = b[offset + 3] < GIF_OPAQUE_ALPHA;
+  if (aClear || bClear) return aClear && bClear;
+  return a[offset] === b[offset] && a[offset + 1] === b[offset + 1] && a[offset + 2] === b[offset + 2];
+}
+
+// Bounding box of the pixels that differ, or null when the frames match.
+function changedBox(out, previous, width, height) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (samePixel(out, previous, (y * width + x) * 4)) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  return maxX < 0 ? null : { left: minX, top: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+
+// True when showing `next` on top of `current` needs no pixel to go from
+// visible back to transparent, i.e. a transparent "unchanged" pixel is enough.
+function canLayerOver(current, next) {
+  for (let i = 3; i < current.length; i += 4) {
+    if (current[i] >= GIF_OPAQUE_ALPHA && next[i] < GIF_OPAQUE_ALPHA) return false;
+  }
+  return true;
+}
+
+// gifenc always writes a frame at (0, 0). Move the frame it just wrote by
+// rewriting the left/top of its image descriptor (0x2C, left, top, width, height).
+function placeLastFrame(encoder, startOffset, left, top) {
+  if (!left && !top) return;
+  const bytes = encoder.bytesView();
+  for (let i = startOffset; i < bytes.length - 12; i += 1) {
+    // Graphic control extension: 21 F9 04 <flags> <delay x2> <transparent> 00 (8 bytes), then 2C.
+    if (bytes[i] === 0x21 && bytes[i + 1] === 0xf9 && bytes[i + 2] === 0x04 && bytes[i + 7] === 0x00 && bytes[i + 8] === 0x2c) {
+      const at = i + 9;
+      bytes[at] = left & 0xff;
+      bytes[at + 1] = (left >> 8) & 0xff;
+      bytes[at + 2] = top & 0xff;
+      bytes[at + 3] = (top >> 8) & 0xff;
+      return;
+    }
+  }
+  throw new Error('gif frame descriptor not found');
+}
+
+function encodeStampedGif(frames, width, height, fit, { colors, step }) {
+  const encoder = GIFEncoder();
+  let pending = null; // the frame waiting for its disposal to be decided
+
+  const write = (frame, dispose) => {
+    const { out, box, delta, delay } = frame;
+    const region = new Uint8ClampedArray(box.width * box.height * 4);
+    let hasClear = false;
+    for (let y = 0; y < box.height; y += 1) {
+      for (let x = 0; x < box.width; x += 1) {
+        const from = ((box.top + y) * fit.width + box.left + x) * 4;
+        const to = (y * box.width + x) * 4;
+        if (delta && samePixel(out, delta, from)) { hasClear = true; continue; }
+        if (out[from + 3] < GIF_OPAQUE_ALPHA) { hasClear = true; continue; }
+        region[to] = out[from];
+        region[to + 1] = out[from + 1];
+        region[to + 2] = out[from + 2];
+        region[to + 3] = 255;
+      }
+    }
+    const format = hasClear ? 'rgba4444' : 'rgb565';
+    const palette = quantize(region, colors, hasClear ? { format, oneBitAlpha: true } : { format });
+    const indexed = applyPalette(region, palette, format);
+    const clearIndex = hasClear ? palette.findIndex((color) => color[3] === 0) : -1;
+    const startOffset = encoder.bytesView().length;
+    encoder.writeFrame(indexed, box.width, box.height, {
+      palette,
+      delay: frame.delay,
+      repeat: frame.first ? 0 : undefined,
+      transparent: clearIndex >= 0,
+      transparentIndex: Math.max(0, clearIndex),
+      dispose,
+    });
+    placeLastFrame(encoder, startOffset, box.left, box.top);
+  };
+
+  // `step` > 1 drops frames to save bytes; the delays of the dropped ones are
+  // added to the frame that stays so the loop keeps its length.
+  let kept = null;
+  let index = 0;
+  const flush = (next) => {
+    if (!kept) return;
+    if (!pending) {
+      pending = { out: kept.out, box: { left: 0, top: 0, width: fit.width, height: fit.height }, delta: null, delay: kept.delay, first: true };
+      kept = null;
+      return;
+    }
+    if (canLayerOver(pending.out, kept.out)) {
+      const box = changedBox(kept.out, pending.out, fit.width, fit.height);
+      if (!box) {
+        pending.delay += kept.delay;
+        kept = null;
+        return;
+      }
+      write(pending, 1);
+      pending = { out: kept.out, box, delta: pending.out, delay: kept.delay, first: false };
+    } else {
+      write(pending, 2);
+      pending = { out: kept.out, box: { left: 0, top: 0, width: fit.width, height: fit.height }, delta: null, delay: kept.delay, first: false };
+    }
+    kept = null;
+    void next;
+  };
+  for (const frame of stampedGifFrames(frames, width, height, fit)) {
+    if (index % step === 0) {
+      flush();
+      kept = { out: frame.out, delay: frame.delay };
+    } else if (kept) {
+      kept.delay += frame.delay;
+    }
+    index += 1;
+  }
+  flush();
+  if (pending) write(pending, 1);
   encoder.finish();
-  return { buffer: Buffer.from(encoder.bytes()), mimeType: 'image/gif' };
+  return Buffer.from(encoder.bytes());
+}
+
+function stampGif(buffer, mint, maxBytes) {
+  const gif = parseGIF(Uint8Array.from(buffer));
+  const frames = decompressFrames(gif, true);
+  const width = gif.lsd.width;
+  const height = gif.lsd.height;
+  const fit = fitStamp(width, height, mint);
+  if (!fit) return { reason: 'logo-too-small' };
+  if (!frames.length) return { reason: 'logo-unreadable' };
+
+  let smallest = null;
+  for (const attempt of GIF_ATTEMPTS) {
+    if (attempt.step > 1 && frames.length < 4) break;
+    const encoded = encodeStampedGif(frames, width, height, fit, attempt);
+    if (!smallest || encoded.length < smallest.length) smallest = encoded;
+    if (encoded.length <= maxBytes) break;
+  }
+  return { buffer: smallest, mimeType: 'image/gif' };
 }
 
 // Stamp `mint` onto a logo data URL. Always resolves; `stamped: false` comes
@@ -349,7 +497,7 @@ export function stampLogoDataUrl(logoDataUrl, mint, { maxBytes = LOGO_MAX_BYTES 
   let result;
   try {
     if (mimeType === 'image/png' || mimeType === 'image/jpeg') result = stampStill(input, mint, mimeType, maxBytes);
-    else if (mimeType === 'image/gif') result = stampGif(input, mint);
+    else if (mimeType === 'image/gif') result = stampGif(input, mint, maxBytes);
     else result = { reason: 'logo-format-unsupported' };
   } catch (error) {
     result = { reason: 'logo-unreadable', error: error?.message || String(error) };
