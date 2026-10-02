@@ -614,7 +614,7 @@ function renderHistoryExecutionAudit() {
   if (!entries.length) {
     return `
       <section class="history-audit-panel">
-        <p class="history-empty">Nothing sent yet. Each step of a live launch is listed here with how it ended and the SOL it used.</p>
+        <p class="history-empty">Nothing sent yet.</p>
       </section>
     `;
   }

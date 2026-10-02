@@ -403,8 +403,8 @@
 
   function renderEmpty() {
     return `<section class="nft-panel"><div class="nft-panel-body">
-      <p>Make a Metaplex Core collection with a vanity collection address and, optionally, a vanity address for every item.</p>
-      <p class="nft-muted">Keys come from split-key grinding: the grinder only sees a public point, and Trebuchet keeps each key encrypted under your PIN.</p>
+      
+      
     </div></section>`;
   }
 
@@ -514,7 +514,7 @@
           ${d.collectionKey ? `<div class="nft-big-addr">${addr(d.collectionKey.address, d.config.collectionVanity)} <button type="button" class="text-button" data-nft-copy="${esc(d.collectionKey.address)}">Copy</button></div>` : ''}
           ${vanityControls('collection', dr.collectionVanity, onChain)}
           ${oddsTable(ui.odds.collection, false)}
-          <p class="nft-muted nft-small">Changing the pattern discards an unused collection key that no longer matches. Addresses are ground under Addresses.</p>
+          
         </div>
       </section>
       <div class="nft-actions">
@@ -669,7 +669,7 @@
           </table>
           ${e?.storageError ? `<p class="nft-warn nft-small">Storage price lookup failed: ${esc(e.storageError)}</p>` : ''}
           ${e?.shortfallSol > 0 ? `<p>Send at least <strong>${sol(e.shortfallSol)}</strong> to <code>${esc(e.walletPublicKey)}</code> <button type="button" class="text-button" data-nft-copy="${esc(e.walletPublicKey)}">Copy</button>, then estimate again.</p>` : ''}
-          <p class="nft-muted nft-small">Asset and collection costs were measured on the Metaplex Core program and include its protocol fee. Rent comes back only if an asset is burned.</p>
+          
         </div>
       </section>`;
   }
@@ -711,7 +711,7 @@
             </tbody></table>
             <label class="nft-inline"><input class="nft-check" type="checkbox" data-nft-field="approved" ${ui.approved ? 'checked' : ''}> I approve spending up to ${sol(e.totalSol)} from this wallet. The run stops if it would go over.</label>
             <div class="nft-actions"><button class="primary-button" type="button" data-nft-action="run" ${ui.approved ? '' : 'disabled'}>${n.failed ? `Retry ${n.failed} failed and continue` : n.minted ? 'Resume minting' : 'Upload and mint'}</button></div>
-            <p class="nft-muted nft-small">A rerun skips anything already on chain, so it never double-mints.</p>` : `<p class="nft-muted">${!n.items || n.ground < n.items || !d.collectionKey ? 'Grind every address first.' : 'Estimate funding with enough balance first.'}</p><button class="secondary-button" type="button" data-nft-action="tab" data-nft-goto="${!n.items || n.ground < n.items || !d.collectionKey ? 'addresses' : 'fund'}">Open ${!n.items || n.ground < n.items || !d.collectionKey ? 'addresses' : 'fund'}</button>`}
+            ` : `<p class="nft-muted">${!n.items || n.ground < n.items || !d.collectionKey ? 'Grind every address first.' : 'Estimate funding with enough balance first.'}</p><button class="secondary-button" type="button" data-nft-action="tab" data-nft-goto="${!n.items || n.ground < n.items || !d.collectionKey ? 'addresses' : 'fund'}">Open ${!n.items || n.ground < n.items || !d.collectionKey ? 'addresses' : 'fund'}</button>`}
         </div>
       </section>`;
   }
@@ -741,7 +741,7 @@
             <tr><td class="${v.checks.supply.onChain === n.items ? 'nft-ok' : 'nft-warn'}">${v.checks.supply.onChain === n.items ? '✓' : '○'}</td><td>Supply on chain</td><td>${v.checks.supply.onChain} / ${n.items}</td></tr>
           </tbody>
         </table>
-        <p class="nft-muted nft-small nft-pad">Checked ${esc(new Date(v.checkedAt).toLocaleString())}.</p>` : '<div class="nft-panel-body nft-muted">Reads the collection and every asset back from chain and checks address, membership, name, URI, owner and royalties.</div>'}
+        <p class="nft-muted nft-small nft-pad">Checked ${esc(new Date(v.checkedAt).toLocaleString())}.</p>` : ''}
       </section>
       <div class="nft-actions"><button class="secondary-button" type="button" data-nft-action="proof" ${v ? '' : 'disabled'}>Download proof JSON</button></div>`;
   }

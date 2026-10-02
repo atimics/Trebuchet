@@ -83,7 +83,7 @@ function approvalHtml() {
       ${recoverySpec
         ? `<div class="kv-row approval-pin-row"><span>PIN</span><strong>${walletIsUnlocked() ? 'Ready' : 'Unlock required'}</strong></div>`
         : `<div class="kv-row"><span>Estimate</span><strong>${currentEstimate.available ? fmtSol(currentEstimate.value) : 'Required'}</strong></div>`}
-      <p class="approval-scope-note"><i class="fa-solid fa-shield-halved"></i> ${recoverySpec?.detail ? `${escapeHtml(recoverySpec.detail)} ` : ''}Approving sends nothing; each step still runs from its own button.</p>
+      <p class="approval-scope-note"><i class="fa-solid fa-shield-halved"></i> ${recoverySpec?.detail ? `${escapeHtml(recoverySpec.detail)} ` : ''} Approving sends nothing.</p>
       ${!recoverySpec ? pendingRows.slice(0, 2).map((item) => `<p><i class="fa-solid fa-check"></i> ${escapeHtml(item.label)}</p>`).join('') : ''}
       ${!recoverySpec && pendingRows.length > 2 ? `<p><i class="fa-solid fa-ellipsis"></i> ${pendingRows.length - 2} more</p>` : ''}
     </div>
@@ -169,7 +169,7 @@ function renderRpcSettingsPanel() {
       ? test.ok
         ? `OK - Solana ${test.version || 'version'} / ${test.latencyMs ?? '?'}ms`
         : `Failed - ${test.error || 'RPC test failed'}`
-      : 'Test a new endpoint before saving it.';
+      : '';
   return `
     <article class="rpc-settings-panel ${escapeHtml(healthClass)}">
       <div class="rpc-settings-head">
@@ -224,9 +224,7 @@ function renderSettings() {
     <article class="setting-row ${state.demoActive ? '' : 'warn'}">
       <span>
         <h3>${state.demoActive ? 'Test mode' : 'Live mode'}</h3>
-        <p>${state.demoActive
-          ? 'Test launches send nothing and spend no SOL.'
-          : 'Launches send real transactions and spend real SOL.'}</p>
+
       </span>
       <button class="pill-button ${state.demoActive ? '' : 'danger'}" type="button" data-action="toggle-demo-mode" ${state.apiStatus === 'connected' ? '' : 'disabled'}>
         ${state.demoActive ? 'Switch to live' : 'Switch to test'}

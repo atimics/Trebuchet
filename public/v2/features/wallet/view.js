@@ -186,7 +186,7 @@ function renderWallet() {
           </button>
         </div>
     </div>` : ''}
-  ` : '<div class="empty-state">Generate or import a launch wallet to see funding and recovery controls.</div>';
+  ` : '<div class="empty-state">No launch wallet.</div>';
 
   // Old launch wallets and unfinished launches live in History; here they
   // only get a pointer, and only when there is something to look at.

@@ -403,7 +403,7 @@ function renderDiscovery() {
       <span><small>Trades</small><strong>${tradeCount || '—'}</strong></span>
     </div>
     ${window.TrebuchetMarketEvidence?.reserves(market?.reserves) || ''}
-    <p class="pool-support-intro">Pool value includes the token inventory. Quote reserves span price ranges. Check a sell quote for the amount you plan to sell.</p>
+    
     <p class="pool-support-intro">Volume: ${formatDiscoveryUsd(market?.volume6hUsd)} over 6 hours · ${formatDiscoveryUsd(market?.volume24hUsd)} over 24 hours.</p>
     <button class="secondary-button compact" type="button" data-action="open-market-evidence" data-mint="${escapeHtml(selected.mint)}">Pool locks, fee owners and sell quotes</button>
     <div class="detail-section-label">

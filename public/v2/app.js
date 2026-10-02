@@ -17149,7 +17149,7 @@ function renderWallet() {
           </button>
         </div>
     </div>` : ''}
-  ` : '<div class="empty-state">Generate or import a launch wallet to see funding and recovery controls.</div>';
+  ` : '<div class="empty-state">No launch wallet.</div>';
 
   // Old launch wallets and unfinished launches live in History; here they
   // only get a pointer, and only when there is something to look at.
@@ -17587,7 +17587,7 @@ function renderDiscovery() {
       <span><small>Trades</small><strong>${tradeCount || '—'}</strong></span>
     </div>
     ${window.TrebuchetMarketEvidence?.reserves(market?.reserves) || ''}
-    <p class="pool-support-intro">Pool value includes the token inventory. Quote reserves span price ranges. Check a sell quote for the amount you plan to sell.</p>
+    
     <p class="pool-support-intro">Volume: ${formatDiscoveryUsd(market?.volume6hUsd)} over 6 hours · ${formatDiscoveryUsd(market?.volume24hUsd)} over 24 hours.</p>
     <button class="secondary-button compact" type="button" data-action="open-market-evidence" data-mint="${escapeHtml(selected.mint)}">Pool locks, fee owners and sell quotes</button>
     <div class="detail-section-label">
@@ -17741,7 +17741,7 @@ function approvalHtml() {
       ${recoverySpec
         ? `<div class="kv-row approval-pin-row"><span>PIN</span><strong>${walletIsUnlocked() ? 'Ready' : 'Unlock required'}</strong></div>`
         : `<div class="kv-row"><span>Estimate</span><strong>${currentEstimate.available ? fmtSol(currentEstimate.value) : 'Required'}</strong></div>`}
-      <p class="approval-scope-note"><i class="fa-solid fa-shield-halved"></i> ${recoverySpec?.detail ? `${escapeHtml(recoverySpec.detail)} ` : ''}Approving sends nothing; each step still runs from its own button.</p>
+      <p class="approval-scope-note"><i class="fa-solid fa-shield-halved"></i> ${recoverySpec?.detail ? `${escapeHtml(recoverySpec.detail)} ` : ''} Approving sends nothing.</p>
       ${!recoverySpec ? pendingRows.slice(0, 2).map((item) => `<p><i class="fa-solid fa-check"></i> ${escapeHtml(item.label)}</p>`).join('') : ''}
       ${!recoverySpec && pendingRows.length > 2 ? `<p><i class="fa-solid fa-ellipsis"></i> ${pendingRows.length - 2} more</p>` : ''}
     </div>
@@ -17827,7 +17827,7 @@ function renderRpcSettingsPanel() {
       ? test.ok
         ? `OK - Solana ${test.version || 'version'} / ${test.latencyMs ?? '?'}ms`
         : `Failed - ${test.error || 'RPC test failed'}`
-      : 'Test a new endpoint before saving it.';
+      : '';
   return `
     <article class="rpc-settings-panel ${escapeHtml(healthClass)}">
       <div class="rpc-settings-head">
@@ -17882,9 +17882,7 @@ function renderSettings() {
     <article class="setting-row ${state.demoActive ? '' : 'warn'}">
       <span>
         <h3>${state.demoActive ? 'Test mode' : 'Live mode'}</h3>
-        <p>${state.demoActive
-          ? 'Test launches send nothing and spend no SOL.'
-          : 'Launches send real transactions and spend real SOL.'}</p>
+
       </span>
       <button class="pill-button ${state.demoActive ? '' : 'danger'}" type="button" data-action="toggle-demo-mode" ${state.apiStatus === 'connected' ? '' : 'disabled'}>
         ${state.demoActive ? 'Switch to live' : 'Switch to test'}
@@ -18532,7 +18530,7 @@ function renderHistoryExecutionAudit() {
   if (!entries.length) {
     return `
       <section class="history-audit-panel">
-        <p class="history-empty">Nothing sent yet. Each step of a live launch is listed here with how it ended and the SOL it used.</p>
+        <p class="history-empty">Nothing sent yet.</p>
       </section>
     `;
   }
@@ -22370,7 +22368,7 @@ function coinPositionsHtml() {
       <button class="pill-button danger" type="button" data-action="withdraw-coin-position" data-nft="${escapeHtml(position.nftMint)}" ${withdrawing ? 'disabled' : ''}>${withdrawing === position.nftMint ? 'Withdrawing…' : 'Withdraw'}</button>
     </li>`).join('');
   return `
-    ${rows ? `<ul class="coin-positions">${rows}</ul>` : '<p class="coins-empty">No positions you can withdraw. Locked launch positions stay locked; their Fee Keys collect the trading fees.</p>'}
+    ${rows ? `<ul class="coin-positions">${rows}</ul>` : '<p class="coins-empty">No withdrawable positions.</p>'}
     ${coinWithdrawalHistoryHtml()}
     ${error ? `<p class="pool-support-error">${escapeHtml(error)}</p>` : ''}`;
 }
@@ -22597,7 +22595,7 @@ function renderCoins() {
   const target = $('#coinsList');
   if (!target) return;
   if (state.apiStatus !== 'connected') {
-    target.innerHTML = '<p class="coins-empty">Your coins appear here when the Trebuchet desktop app is connected.</p>';
+    target.innerHTML = '<p class="coins-empty">Not connected.</p>';
     return;
   }
   if (state.coins.loading && !state.coins.loaded) {
@@ -22630,14 +22628,14 @@ function formatTokenAmount(raw, decimals) {
 const coinEvidence = new Map();
 
 function coinMarketEvidenceHtml(mint) {
-  if (mint.startsWith('Demo')) return '<section class="coin-section"><h2>Reserves and fee rights</h2><p class="pool-support-intro">Open a live coin to check pool reserves, Fee Key owners and sell quotes.</p></section>';
+  if (mint.startsWith('Demo')) return '<section class="coin-section"><h2>Reserves and fee rights</h2></section>';
   const entry = coinEvidence.get(mint) || {};
   const renderer = window.TrebuchetMarketEvidence;
   return `<section class="coin-section" aria-label="Market evidence">
     <div class="section-heading"><div><span class="eyebrow">Verification</span><h2>Reserves and fee rights</h2></div>
       <button class="pill-button" type="button" data-action="read-coin-evidence" data-mint="${escapeHtml(mint)}" ${entry.loading ? 'disabled' : ''}>${entry.loading ? 'Checking chain…' : 'Check chain'}</button>
     </div>
-    <p class="pool-support-intro">Trading fees accrue to Fee Key holders. The current flywheel uses static pool allocations.</p>
+    
     ${entry.error ? `<p class="pool-support-error" role="status">${escapeHtml(entry.error)}</p>` : ''}
     ${renderer?.render(entry.evidence) || ''}
     ${entry.evidence ? `<button class="pill-button" type="button" data-action="download-coin-evidence" data-mint="${escapeHtml(mint)}">Download market evidence</button>` : ''}
@@ -22864,9 +22862,7 @@ function renderCoinPage(coin) {
     // sample pool, and the panel says so.
     const intro = supportPanel.querySelector('.pool-support-intro');
     if (intro) {
-      intro.textContent = coin.practice
-        ? 'Test: this runs against a sample pool in the simulator. Nothing is sent. On a real coin it puts SOL below the price in its Raydium SOL pool, so sellers have something to sell into.'
-        : "Put SOL below this coin's price in its Raydium SOL pool, so sellers have something to sell into. It is signed by the selected wallet and is not locked: you can withdraw it later.";
+      intro.textContent = coin.practice ? 'Test: nothing is sent.' : '';
     }
     const target = $('#poolSupportTarget');
     if (target && target.value !== coin.mint) {

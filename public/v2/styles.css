@@ -17424,3 +17424,4 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 .launch-budget-strategy { display: none; }
 .launch-step-guide p:empty, .classic-task p:empty { display: none; }
 .grinder-note:empty, .grinder-row-main small:empty { display: none; }
+.nft-panel-body:empty, .lean-lead:empty, .pool-support-intro:empty { display: none; }

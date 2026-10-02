@@ -360,7 +360,7 @@
           </select>
         </div>
       </div>
-      <p class="nft-muted lean-lead">One pool holds the whole supply, locked for good. No SOL goes in; buyers supply it.${cmp ? ` The venue costs about <strong>${sol(cmp.dammVenueSol)}</strong> instead of about ${sol(cmp.raydiumVenueSol)} on Raydium, ${cmp.savedPct}% less (${sol(cmp.savedSol)}, about ${usd(cmp.savedUsd)}).` : ''}</p>`;
+      <p class="nft-muted lean-lead">${cmp ? `Venue <strong>${sol(cmp.dammVenueSol)}</strong> · Raydium ${sol(cmp.raydiumVenueSol)} · ${cmp.savedPct}% less` : ''}</p>`;
   }
 
   function statusKind(status) {
@@ -390,7 +390,7 @@
                 <span class="nft-label">Logo</span>
                 <div class="nft-row-controls">
                   <input type="file" data-lean-file="logo" accept="image/png,image/jpeg,image/gif" aria-label="Token logo">
-                  ${f.logoName ? `<span class="nft-muted nft-small">${esc(f.logoName)}</span><button class="nft-link" type="button" data-lean-action="clear-logo">Remove</button>` : '<span class="nft-muted nft-small">PNG, JPEG or GIF. Shrunk to fit under 100 KB.</span>'}
+                  ${f.logoName ? `<span class="nft-muted nft-small">${esc(f.logoName)}</span><button class="nft-link" type="button" data-lean-action="clear-logo">Remove</button>` : '<span class="nft-muted nft-small">PNG · JPEG · GIF · 100 KB</span>'}
                 </div>
               </div>
             </div>
@@ -438,7 +438,7 @@
 
   function renderDepth() {
     const e = ui.estimate;
-    if (!e) return `<p class="nft-muted nft-small">${ui.estimateError ? esc(ui.estimateError) : 'Enter a name and symbol to see the starting price and what buying does to it.'}</p>`;
+    if (!e) return `<p class="nft-muted nft-small">${ui.estimateError ? esc(ui.estimateError) : ''}</p>`;
     const p = e.pricing;
     return `
       <div class="lean-depth">
@@ -454,7 +454,7 @@
           <thead><tr><th>A fresh buy of</th><th>Gets</th><th>Pays above the start</th></tr></thead>
           <tbody>${p.buys.map((b) => `<tr><td>${num(b.solIn)} SOL</td><td>${num(b.percentOfSupply, 2)}% of supply</td><td>${((b.averagePriceMultiple - 1) * 100).toFixed(1)}%</td></tr>`).join('')}</tbody>
         </table>
-        <p class="nft-muted nft-small">Before anyone else has traded. SOL price used: $${num(e.solUsd, 2)}${e.solUsdIsFallback ? ' (estimate: the live price was unavailable)' : ''}.</p>
+        <p class="nft-muted nft-small">SOL $${num(e.solUsd, 2)}${e.solUsdIsFallback ? ' (estimate)' : ''}</p>
       </div>`;
   }
 
@@ -475,7 +475,7 @@
               <tr class="nft-total"><td>Most this can spend</td><td>${sol(e.cost.total, 4)}</td></tr>
               <tr><td>SOL put into the pool</td><td>${sol(0)}</td></tr>
             </tbody></table>
-            <ul class="lean-facts">${e.facts.map((fact) => `<li>${esc(fact)}</li>`).join('')}</ul>` : '<p class="nft-muted">The estimate appears once the token has a name and symbol.</p>'}
+            <ul class="lean-facts">${e.facts.map((fact) => `<li>${esc(fact)}</li>`).join('')}</ul>` : ''}
           ${pinLocked ? '<div class="nft-banner nft-banner-bad"><span>Your Recovery PIN is locked. Unlock it before launching.</span><button class="nft-link" type="button" data-action="unlock-secret-pin">Unlock PIN</button></div>' : ''}
           ${ui.form.walletPublicKey ? `<p class="nft-muted nft-small">Launch wallet ${addr(ui.form.walletPublicKey)} holds ${Number.isFinite(ui.balance) ? sol(ui.balance) : 'an unknown balance'}.
             <button class="nft-link" type="button" data-lean-action="balance">Refresh</button></p>` : ''}
@@ -529,7 +529,7 @@
               ${d.status === 'running' ? '<p class="nft-muted">Keep Trebuchet open until this finishes.</p>' : ''}
               ${d.status === 'failed' ? `
                 <div class="nft-banner nft-banner-bad"><span>${esc(d.error || 'The launch stopped.')}</span></div>
-                <p class="nft-muted nft-small">Finished steps are kept. Running it again continues from here and will not create a second pool.</p>
+                <p class="nft-muted nft-small">Finished steps are kept. Running it again will not create a second pool.</p>
                 <div class="nft-actions"><button class="primary-button" type="button" data-lean-action="run">Run again</button></div>` : ''}
             </div>
           </section>
