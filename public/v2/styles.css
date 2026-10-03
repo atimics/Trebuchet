@@ -18058,3 +18058,10 @@ body #toastStack { left: auto; right: 16px; bottom: 16px; transform: none; width
   #view-launch { padding-bottom: 140px; }
   body #toastStack { bottom: 132px; }
 }
+
+/* A pool line's mark: the token's logo in a frame of the pool's colour. */
+.supply-row > .supply-logo { width: 26px; height: 26px; display: grid; place-items: center; overflow: hidden; border: 2px solid var(--pool-color); border-radius: 50%; background: color-mix(in srgb, var(--pool-color) 18%, var(--panel)); color: var(--ink); font-size: 11px; font-weight: 700; }
+.supply-row > .supply-logo img { width: 100%; height: 100%; object-fit: cover; }
+.supply-row { grid-template-columns: 26px minmax(0, 1fr) 72px 64px 96px 28px 28px; }
+@media (max-width: 760px) { .supply-row { grid-template-columns: 26px minmax(0, 1fr) 84px 28px 28px; } }
+.supply-row > .supply-swatch { justify-self: center; }

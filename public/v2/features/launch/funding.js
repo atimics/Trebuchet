@@ -479,7 +479,7 @@ function hubTileHtml(hub = {}, options = {}) {
 
 function requestHubLogos(mints) {
   const missing = mints.filter((mint) => mint && !hubLogos.has(mint) && !hubLogoPending.has(mint));
-  if (!missing.length || !state.apiClient?.getTokenLogos) return;
+  if (!missing.length || !state.apiClient?.getTokenLogos || state.apiStatus !== 'connected') return;
   missing.forEach((mint) => hubLogoPending.add(mint));
   state.apiClient.getTokenLogos(missing)
     .then((logos) => { missing.forEach((mint) => hubLogos.set(mint, logos?.[mint] || null)); })
@@ -487,6 +487,9 @@ function requestHubLogos(mints) {
     .finally(() => {
       missing.forEach((mint) => hubLogoPending.delete(mint));
       if (hubPicker.open) renderHubPicker();
+      // Pool lines show these logos too.
+      const editor = $('#supplyEditor');
+      if (editor?.contains && !editor.contains(document.activeElement)) renderSupplyEditor();
     });
 }
 

@@ -468,7 +468,7 @@ function renderSupplyEditor() {
       : `<small>${escapeHtml(row.detail)}</small>`;
     return `
       <li class="supply-row${row.kind === 'pool' && state.supplyOpenRow === row.key ? ' is-open' : ''}">
-        <i class="supply-swatch" style="background:${row.color}"></i>
+        ${supplyRowMarkHtml(row)}
         <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
         <span class="supply-amount" data-supply-amount="${escapeHtml(row.key)}">${compactAmount(supply * row.percent / 100)}</span>
         ${row.kind === 'pool' ? poolGlyphSvg(planPoolFor(row), row.color) : '<span class="supply-glyph"></span>'}
@@ -511,6 +511,11 @@ function renderSupplyEditor() {
   }
 
   target.dataset.rendered = '1';
+  // A logo that fails to load gives way to the initials.
+  target.querySelectorAll('.supply-logo img').forEach((image) => {
+    image.addEventListener('error', () => { const mark = image.parentElement; if (mark) mark.textContent = mark.dataset.initials || ''; }, { once: true });
+  });
+  requestHubLogos(pools.map((row) => supplyRowMint(row)).filter(Boolean));
   renderPoolControlFeedback(target);
   renderReturnWalletCard();
 }
@@ -1292,4 +1297,21 @@ function applyPoolSwitch(action, control) {
   invalidateClassicOutputs();
   refreshClassicPreview();
   renderSupplyEditorAfterTier(control);
+}
+
+// The token a pool line trades against, for its logo: SOL, the preset pair's token, or an added pair's.
+function supplyRowMint(row) {
+  if (row.key === 'sol') return DEFAULT_SOL_MINT;
+  if (row.key === 'quote') return selectedClassicQuoteVenue()?.quoteMint || '';
+  return row.mint || '';
+}
+
+// A pool line's mark: the token's logo framed in the pool's colour, or its initials until the logo is known.
+// Held-back lines keep the plain colour square.
+function supplyRowMarkHtml(row) {
+  if (row.kind !== 'pool') return `<i class="supply-swatch" style="background:${row.color}"></i>`;
+  const mint = supplyRowMint(row);
+  const src = mint ? coinImageSrc(hubLogos.get(mint) || '') : '';
+  const initials = escapeHtml(String(row.label || '?').replace(/^\$/, '').slice(0, 2).toUpperCase());
+  return `<span class="supply-logo" style="--pool-color:${row.color}" data-initials="${initials}" aria-hidden="true">${src ? `<img src="${escapeHtml(src)}" alt="">` : initials}</span>`;
 }
