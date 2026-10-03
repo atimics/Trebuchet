@@ -1457,10 +1457,12 @@ function renderReportPanel() {
     : funder ? `Funding wallet · ${fullAddress(funder)}` : 'Funding wallet';
   const publish = topology.report.publish;
   const summary = $('#reportSummary');
-  summary.textContent = publish ? 'Publish on' : 'Local only';
+  summary.textContent = publish ? 'Saved on Arweave' : 'Local only';
   summary.className = `risk-badge ${publish ? '' : 'warn'}`;
+  const publishButton = document.querySelector('[data-action="toggle-report-publish"]');
+  if (publishButton) publishButton.textContent = publish ? 'Keep it on this computer only' : 'Also save it on Arweave';
   $('#reportPreview').innerHTML = `
-    <div class="mini-row"><span>Report</span><strong>${publish ? 'Arweave + local' : 'Local download'}</strong></div>
+    <div class="mini-row"><span>Launch report</span><strong>${publish ? 'Saved permanently on Arweave and on this computer' : 'Kept on this computer only'}</strong></div>
     <div class="mini-row ${destination && !isProbablySolanaAddress(destination) ? 'danger' : ''}"><span>Return wallet</span><strong>${escapeHtml(destinationState)}</strong></div>
     <div class="mini-row"><span>Airdrop rows</span><strong>${topology.airdrop.recipients.length || topology.airdrop.recipientCount}</strong></div>
     <div class="mini-row"><span>Fee Key recipient</span><strong>${topology.feeKeyRecipient ? escapeHtml(fullAddress(topology.feeKeyRecipient)) : 'Same as sweep'}</strong></div>
