@@ -95,11 +95,11 @@ test('assertLogoConstraints: 200×200 exactly is allowed (limit is inclusive)', 
   assert.deepEqual({ w: r.width, h: r.height }, { w: 200, h: 200 });
 });
 
-test('assertLogoConstraints: 201px in EITHER dimension is rejected with actual size named', () => {
-  assert.throws(() => assertLogoConstraints(pngOf(201, 100)), /201×100.*200×200/s);
-  assert.throws(() => assertLogoConstraints(pngOf(100, 201)), /100×201/);
-  // The old client limit must no longer pass anywhere.
-  assert.throws(() => assertLogoConstraints(pngOf(1024, 1024)), /1024×1024/);
+test('assertLogoConstraints: 1025px in EITHER dimension is rejected with actual size named', () => {
+  assert.throws(() => assertLogoConstraints(pngOf(1025, 100)), /1025×100.*1024×1024/s);
+  assert.throws(() => assertLogoConstraints(pngOf(100, 1025)), /100×1025/);
+  // A 320px logo under the byte cap is fine: pixels are not the chain's limit.
+  assert.doesNotThrow(() => assertLogoConstraints(pngOf(320, 320)));
 });
 
 test('assertLogoConstraints: byte cap rejects a small-pixel, huge-byte file', () => {
@@ -118,7 +118,7 @@ test('assertLogoConstraints: zero-dimension image is rejected as corrupt', () =>
 });
 
 test('constants: limits match the product rule and stay in sync with the frontend', () => {
-  assert.equal(LOGO_MAX_DIMENSION_PX, 200, 'the product rule is 200×200 max');
+  assert.equal(LOGO_MAX_DIMENSION_PX, 1024, 'the product rule is 1024×1024 max; bytes are the real limit');
   // The frontend's MAX_LOGO_DIMENSION / MAX_LOGO_BYTES (preamble.js) must
   // agree with the server's — a looser client doesn't bypass anything, it
   // just moves the rejection to a worse moment (after upload, with a less

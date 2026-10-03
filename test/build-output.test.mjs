@@ -175,7 +175,7 @@ test('index.html carries the current markup (catches a stale merge of the page)'
     ['id="revokeMetadataToggle"', 'metadata-authority option'],
     ['data-explain="', 'concept-help links'],
     ['id="createLpConfirmRefreshBtn"', 'Refresh prices button on the pool-confirm modal'],
-    ['max 200×200 px', 'logo size label'],
+    ['max 1024×1024 px', 'logo size label'],
   ]) {
     assert.ok(html.includes(marker), `index.html is missing the ${feature} (${marker})`);
   }

@@ -5999,7 +5999,7 @@ function uploadLogo(req, res, next) {
     }
     if (req.file) {
       try {
-        // Authoritative logo validation: type + byte cap + 200×200 pixel
+        // Authoritative logo validation: type + byte cap + 1024×1024 pixel
         // ceiling (see validators.js for why the ceiling exists). The
         // frontend pre-checks the same rule for a friendlier error, but
         // the server never trusts the client.
@@ -6017,7 +6017,7 @@ function uploadLogo(req, res, next) {
 const V2_LOGO_DATA_URL_RE = /^data:(image\/(?:png|jpeg|gif));base64,([A-Za-z0-9+/=]+)$/;
 const V2_MAX_LOGO_BYTES = 100 * 1024;
 const CLASSIC_LOGO_MIN_DIMENSION = 64;
-const CLASSIC_LOGO_MAX_DIMENSION = 200;
+const CLASSIC_LOGO_MAX_DIMENSION = 1024;
 
 function assertClassicLogoDimensions(buffer) {
   const dimensions = detectLogoImageDimensions(buffer);
