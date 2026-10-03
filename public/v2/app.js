@@ -7579,6 +7579,45 @@ const SUPPLY_PAIR_COLORS = ['#78a8ff', '#e07ab0', '#5fc7c7', '#f08a5d', '#8fd06a
 
 // One row per place the supply goes. Pool % inputs write through to the
 // existing form fields (or custom pool state), so the launch model is unchanged.
+// What a fee tier means for a pool: the swap fee, and how coarse its price steps are
+// (one tick is 0.01%, a tier's spacing is that many ticks).
+function feeTierInfo(index) {
+  const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
+  const tier = tiers.find((item) => item.index === Math.floor(Number(index)));
+  if (!tier) return null;
+  return {
+    index: tier.index,
+    fee: Number(tier.tradeFeeRate) / 10000,
+    spacing: tier.tickSpacing,
+    step: (Math.pow(1.0001, tier.tickSpacing) - 1) * 100,
+    rank: tiers.indexOf(tier),
+    count: tiers.length,
+  };
+}
+
+function rowTierIndex(row) {
+  if (row.key === 'sol') return state.solPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX;
+  if (row.key === 'quote') return state.pairPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX;
+  const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
+  return pool?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX;
+}
+
+// The fee tier on the pool's own line: a short select showing the fee, so it reads and changes
+// without opening the pool.
+function rowTierSelectHtml(row) {
+  const selected = Math.floor(Number(rowTierIndex(row)));
+  const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
+  const options = tiers.map((tier) => `<option value="${tier.index}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(`${Number(tier.tradeFeeRate) / 10000}%`)}</option>`).join('')
+    + (tiers.some((tier) => tier.index === selected) ? '' : `<option value="${selected}" selected>#${selected}</option>`);
+  const field = row.key === 'sol'
+    ? 'data-sol-pool-field="ammConfigIndex"'
+    : row.key === 'quote'
+      ? 'data-quote-pool-field="ammConfigIndex"'
+      : `data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(row.poolId)}"`;
+  const info = feeTierInfo(selected);
+  return `<select class="supply-tier" ${field} data-supply-key="${escapeHtml(row.key)}:rowtier" aria-label="${escapeHtml(row.label)} fee tier" title="${escapeHtml(info ? `${info.fee}% swap fee · price steps of ${Number(info.step.toFixed(2))}%` : 'Fee tier')}">${options}</select>`;
+}
+
 function supplyEditorRows() {
   const topology = currentClassicModel();
   const rows = [];
@@ -7826,6 +7865,7 @@ function renderSupplyEditor() {
         <i class="supply-swatch" style="background:${row.color}"></i>
         <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
         <span class="supply-amount" data-supply-amount="${escapeHtml(row.key)}">${compactAmount(supply * row.percent / 100)}</span>
+        ${row.kind === 'pool' ? rowTierSelectHtml(row) : '<span class="supply-tier-spacer"></span>'}
         <label class="supply-percent"><input type="text" inputmode="decimal" autocomplete="off" value="${escapeHtml(String(row.percent))}" ${input} data-supply-key="${escapeHtml(row.key)}" aria-label="${escapeHtml(row.label)} percent of supply"><span>%</span></label>
         ${row.kind === 'pool'
           ? `<button class="supply-gear ${state.supplyOpenRow === row.key ? 'is-open' : ''}" type="button" data-action="supply-toggle-settings" data-supply-row="${escapeHtml(row.key)}" aria-expanded="${state.supplyOpenRow === row.key}" aria-label="${escapeHtml(row.label)} settings"><i class="fa-solid fa-sliders"></i></button>`
@@ -7873,7 +7913,7 @@ function renderSupplyEditor() {
 // pair, where the SOL pool's price sits. Right of it, price in multiples of the
 // start (log scale): the main position covers all of it, ladder bands add
 // liquidity at their own ranges. Below: the positions the pool is split into.
-function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
+function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier = null }) {
   const W = 640, START = 196, LEFT = 24, RIGHT = 620, BASE = 150;
   const maxMult = Math.max(1000, ...bands.map((band) => band.hi));
   const xOf = (mult) => START + (RIGHT - START) * (Math.log(mult) / Math.log(maxMult));
@@ -7884,6 +7924,14 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
   const parts = [];
   // main position: the whole range above the start price
   parts.push(`<rect class="pm-main" x="${START}" y="${BASE - 22}" width="${RIGHT - START}" height="22"/>`);
+  // The fee tier's price steps, drawn as the lattice the position is cut into: wide spacing, few steps.
+  if (tier) {
+    const steps = Math.min(60, Math.max(4, Math.round(480 / tier.spacing)));
+    for (let i = 1; i < steps; i += 1) {
+      const x = START + ((RIGHT - START) * i) / steps;
+      parts.push(`<line class="pm-tick" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${BASE - 22}" y2="${BASE}"/>`);
+    }
+  }
   parts.push(`<text class="pm-note" x="${START + 8}" y="${BASE - 7}">Main position · all prices above the start</text>`);
   // ladder bands
   const top = Math.max(...bands.map((band) => band.weight), 1);
@@ -7924,6 +7972,18 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
     if (w > 34) parts.push(`<text class="pm-tag" x="${(at + w / 2).toFixed(1)}" y="${BASE + 43}" text-anchor="middle">${fmt(share)}%</text>`);
     at += w;
   });
+  // The fee tier as a meter: one notch per tier from the cheapest to the dearest, this one lit.
+  if (tier) {
+    // The meter is 40 wide however many tiers there are.
+    const slot = 40 / tier.count;
+    const mx = RIGHT - 40;
+    for (let i = 0; i < tier.count; i += 1) {
+      const h = 5 + (i * 14) / Math.max(1, tier.count - 1);
+      parts.push(`<rect class="${i === tier.rank ? 'pm-tier-on' : 'pm-tier-off'}" x="${(mx + i * slot).toFixed(1)}" y="${(24 - h).toFixed(1)}" width="${Math.max(1.5, slot - 1).toFixed(1)}" height="${h.toFixed(1)}"/>`);
+    }
+    parts.push(`<text class="pm-tag pm-strong" x="${RIGHT - 44}" y="12" text-anchor="end">${fmt(tier.fee)}% fee</text>`
+      + `<text class="pm-note" x="${RIGHT - 44}" y="24" text-anchor="end">$${fmt(tier.fee * 10)} per $1,000 · steps ${fmt(Number(tier.step.toFixed(2)))}%</text>`);
+  }
   const title = 'Price map: where this pool\'s liquidity sits';
   return `<svg viewBox="0 0 ${W} ${BASE + 56}" role="img" aria-label="${title}" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
 }
@@ -7951,6 +8011,7 @@ function poolsMapForPlan(pools = []) {
     }
     return {
       symbol: String(pool.quoteSymbol || pool.quoteToken || 'SOL').toUpperCase(),
+      tier: feeTierInfo(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
       color: colorOf(pool),
       share,
       support: pool.support?.mode === 'custom' ? { sol: Number(pool.support.solValue) || 0, depth: Number(pool.support.depthPct) || 12 } : null,
@@ -8012,7 +8073,7 @@ function poolsMapForPlan(pools = []) {
       at += w;
     });
   });
-  const legend = layers.map((layer) => `<span><i style="background:${layer.color}"></i>${escapeHtml(layer.symbol)} <b>${fmt(layer.share)}%</b></span>`).join('');
+  const legend = layers.map((layer) => `<span><i style="background:${layer.color}"></i>${escapeHtml(layer.symbol)} <b>${fmt(layer.share)}%</b>${layer.tier ? ` · ${fmt(layer.tier.fee)}% fee` : ''}</span>`).join('');
   return `<svg viewBox="0 0 ${W} ${barY + 28}" role="img" aria-label="Where every pool's liquidity sits" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg><div class="pool-legend">${legend}</div>`;
 }
 
@@ -8034,6 +8095,7 @@ function poolMapForPool(pool) {
     depthPct: support ? Number(support.depthPct) || 12 : 12,
     slices: slices.length ? slices : [100],
     bands,
+    tier: feeTierInfo(pool?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
   });
 }
 
@@ -8060,7 +8122,8 @@ function renderPoolMap(panel) {
   parts.push(supportSol > 0 ? `${supportSol} SOL support to −${depthPct}%` : 'no support');
   parts.push(bands.length ? `${bands.length} ladder band${bands.length === 1 ? '' : 's'}` : 'no ladder');
   if (premiumPct > 0) parts.push(`opens ${premiumPct}% above the SOL price`);
-  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands })}`;
+  const tierIndex = panel.querySelector('[data-supply-key$=":tier"]')?.value ?? panel.closest('li')?.previousElementSibling?.querySelector('.supply-tier')?.value;
+  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier: feeTierInfo(tierIndex ?? DEFAULT_POOL_CONFIG_INDEX) })}`;
   if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
 }
 
@@ -8520,6 +8583,16 @@ async function importPoolConfig() {
   } catch (error) {
     notify(error.message || 'Could not import the pool config');
   }
+}
+
+// A tier picked on a pool's line also moves the slider and the map inside its settings, so the
+// editor is drawn again in full, and the select that was used keeps the keyboard focus.
+function renderSupplyEditorAfterTier(control) {
+  const key = control?.dataset?.supplyKey;
+  const target = $('#supplyEditor');
+  if (target) target.dataset.rendered = '';
+  renderSupplyEditor();
+  if (key) document.querySelector(`[data-supply-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
 }
 
 function buildReportPreview() {
@@ -25725,10 +25798,20 @@ function handleDynamicInput(event) {
     return;
   }
 
+  const solInput = event.target.closest('[data-sol-pool-field]');
+  if (solInput) {
+    state.solPoolConfigIndex = Math.floor(parseNumericInput(solInput.value, DEFAULT_POOL_CONFIG_INDEX));
+    invalidateClassicOutputs();
+    refreshClassicPreview();
+    renderSupplyEditorAfterTier(solInput);
+    return;
+  }
+
   const quoteInput = event.target.closest('[data-quote-pool-field]');
   if (quoteInput) {
     if (quoteInput.dataset.quotePoolField === 'ammConfigIndex') {
       state.pairPoolConfigIndex = Math.floor(parseNumericInput(quoteInput.value, DEFAULT_POOL_CONFIG_INDEX));
+      if (quoteInput.classList.contains('supply-tier')) { invalidateClassicOutputs(); refreshClassicPreview(); renderSupplyEditorAfterTier(quoteInput); return; }
     } else if (quoteInput.dataset.quotePoolField === 'startPremiumPct') {
       state.pairStartPremiumPct = clampNumber(parseNumericInput(quoteInput.value, state.pairStartPremiumPct), 0, 500);
     }
@@ -25742,6 +25825,7 @@ function handleDynamicInput(event) {
     const pool = state.customPools.find((item) => item.id === customInput.dataset.poolId);
     if (!pool) return;
     pool[customInput.dataset.customPoolField] = customInput.value;
+    if (customInput.classList.contains('supply-tier')) { invalidateClassicOutputs(); refreshClassicPreview(); renderSupplyEditorAfterTier(customInput); return; }
     if (['quoteMint', 'quoteSymbol'].includes(customInput.dataset.customPoolField)) {
       delete state.quoteTokenInfo[pool.id];
     }
