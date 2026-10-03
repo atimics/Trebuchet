@@ -632,10 +632,14 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     }
     if (!frame.dataset.watching && window.ResizeObserver) {
       frame.dataset.watching = '1';
-      new ResizeObserver(() => {
+      const observer = new ResizeObserver(() => {
         const live = $(`#planTrack > [data-plan-slide="${(state.phaseSlide || {})[state.launchWorkspace]}"]`);
         if (live) frame.style.height = `${live.offsetHeight}px`;
-      }).observe(track);
+      });
+      // Each slide is watched itself: a page that grows after it is shown (the Add pair list loads
+      // its tokens, a section opens) must grow the frame with it, or its lower rows are cut off.
+      observer.observe(track);
+      $$('#planTrack > [data-plan-slide]').forEach((slide) => observer.observe(slide));
     }
   }
 }

@@ -6226,10 +6226,14 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     }
     if (!frame.dataset.watching && window.ResizeObserver) {
       frame.dataset.watching = '1';
-      new ResizeObserver(() => {
+      const observer = new ResizeObserver(() => {
         const live = $(`#planTrack > [data-plan-slide="${(state.phaseSlide || {})[state.launchWorkspace]}"]`);
         if (live) frame.style.height = `${live.offsetHeight}px`;
-      }).observe(track);
+      });
+      // Each slide is watched itself: a page that grows after it is shown (the Add pair list loads
+      // its tokens, a section opens) must grow the frame with it, or its lower rows are cut off.
+      observer.observe(track);
+      $$('#planTrack > [data-plan-slide]').forEach((slide) => observer.observe(slide));
     }
   }
 }
@@ -7834,8 +7838,8 @@ function renderSupplyEditor() {
   target.innerHTML = `
     <div class="supply-bar" role="img" aria-label="Supply split">${segments}${gap}</div>
     <div class="supply-group-head"><span>Pools</span><span class="pool-config-actions">
-      <button class="pill-button" type="button" data-action="export-pool-config" title="Copy the pool config to the clipboard"><i class="fa-regular fa-copy" aria-hidden="true"></i> Export</button>
-      <button class="pill-button" type="button" data-action="import-pool-config" title="Load a pool config from the clipboard"><i class="fa-solid fa-file-import" aria-hidden="true"></i> Import</button>
+      <button class="pill-button" type="button" data-action="export-pool-config" title="Copy the pools as CSV"><i class="fa-regular fa-copy" aria-hidden="true"></i> Export</button>
+      <button class="pill-button" type="button" data-action="import-pool-config" title="Load pools from CSV on the clipboard"><i class="fa-solid fa-file-import" aria-hidden="true"></i> Import</button>
       <span data-supply-pools-head>${pools.length} · ${pct(poolPercent)}</span></span></div>
     <ol class="supply-list">${pools.map((row) => rowHtml(row)).join('')}</ol>
     ${pairArbitrageWarningHtml(pools)}
@@ -8341,43 +8345,140 @@ function renderAirdropPanel() {
 }
 
 
-// Pool config as JSON: every pool with its share, tier, slices, ladder and
-// support, plus the launch SOL and target market cap. No token, wallet or key.
+// Pool config as CSV, in the same plain style as the custom ladder field: a line per pool, and
+// `ladder,supply%,low×,high×` lines under a pool for its own bands. No token, wallet or key.
+//
+//   launch SOL,1
+//   market cap USD,25000
+//   symbol,mint,supply%,fee tier,start premium %,slices,ladder bands,support SOL,support depth %
+//   SOL,,85,8,,100,5,0.1,12
+//   RUG,RUGx1zSD…,5,4,25,50|50,0,0,12
+//   ladder,50,2,10
 const POOL_CONFIG_FORMAT = 'trebuchet-pool-config';
+const POOL_CONFIG_HEADER = 'symbol,mint,supply%,fee tier,start premium %,slices,ladder bands,support SOL,support depth %';
+
+function csvCell(value) {
+  return String(value ?? '').replace(/[,\r\n]+/g, ' ').trim();
+}
 
 function buildPoolConfigExport() {
   const config = currentLaunchConfig();
   const topology = config.poolTopology || {};
   return {
-    format: POOL_CONFIG_FORMAT,
-    version: 1,
     launchSol: config.launchSol,
     targetMarketCapUsd: topology.targetMarketCapUsd,
     pools: topology.pools || [],
   };
 }
 
-function exportPoolConfig() {
-  return copyText(JSON.stringify(buildPoolConfigExport(), null, 2), 'Pool config');
+function poolConfigToCsv(data = buildPoolConfigExport()) {
+  const lines = [
+    '# Trebuchet pool config',
+    `launch SOL,${csvCell(data.launchSol)}`,
+    `market cap USD,${csvCell(data.targetMarketCapUsd)}`,
+    POOL_CONFIG_HEADER,
+  ];
+  (data.pools || []).forEach((pool) => {
+    const isSol = String(pool.quoteSymbol || pool.quoteToken || '').toUpperCase() === 'SOL' || pool.id === 'sol-main';
+    const slices = (Array.isArray(pool.distribution) && pool.distribution.length ? pool.distribution : [{ sharePercent: 100 }])
+      .map((slice) => Number(slice.sharePercent || 0)).join('|');
+    const manual = pool.ladder?.mode === 'manual' && Array.isArray(pool.ladder.bands) ? pool.ladder.bands : [];
+    const bandCount = manual.length ? 0 : (pool.ladder?.mode === 'simple' ? Number(pool.ladder.bandCount || 0) : 0);
+    const support = pool.support?.mode === 'custom';
+    lines.push([
+      isSol ? 'SOL' : csvCell(pool.quoteSymbol || 'PAIR'),
+      isSol ? '' : csvCell(pool.quoteMint || pool.quoteToken),
+      Number(pool.supplyPercent || 0),
+      Number(pool.ammConfigIndex ?? ''),
+      isSol ? '' : Number(pool.startPricePremiumPct ?? 0),
+      slices,
+      bandCount,
+      support ? Number(pool.support.solValue || 0) : 0,
+      support ? Number(pool.support.depthPct || 12) : 12,
+    ].join(','));
+    manual.forEach((band) => lines.push(`ladder,${band.supplyPercent},${band.lowerMultiplier},${band.upperMultiplier}`));
+  });
+  return `${lines.join('\n')}\n`;
 }
 
-function parsePoolConfigImport(text) {
-  let data;
-  try { data = JSON.parse(String(text || '').trim()); } catch { throw new Error('That is not JSON'); }
-  if (!data || data.format !== POOL_CONFIG_FORMAT) throw new Error('That is not a Trebuchet pool config');
-  if (data.version !== 1) throw new Error('This pool config is from a newer version');
-  if (!Array.isArray(data.pools) || !data.pools.length || data.pools.length > 24) {
-    throw new Error('The pool config has no usable pools');
-  }
-  data.pools.forEach((pool) => {
+function exportPoolConfig() {
+  return copyText(poolConfigToCsv(), 'Pool config');
+}
+
+function validatePoolConfigPools(pools) {
+  if (!Array.isArray(pools) || !pools.length || pools.length > 24) throw new Error('The pool config has no usable pools');
+  pools.forEach((pool) => {
     const percent = Number(pool?.supplyPercent);
     if (!pool || typeof pool !== 'object' || !Number.isFinite(percent) || percent < 0 || percent > 100) {
       throw new Error('A pool in the config has a bad supply share');
     }
   });
-  if (data.pools.reduce((sum, pool) => sum + Number(pool.supplyPercent), 0) > 100.0001) {
+  if (pools.reduce((sum, pool) => sum + Number(pool.supplyPercent), 0) > 100.0001) {
     throw new Error('The pool shares add up to more than 100%');
   }
+}
+
+function parsePoolConfigCsv(text) {
+  const data = { launchSol: undefined, targetMarketCapUsd: undefined, pools: [] };
+  let current = null;
+  let ladderText = '';
+  const finish = () => {
+    if (!current) return;
+    const bands = ladderText ? parseManualLadderBands(ladderText) : [];
+    if (ladderText && !bands.length) throw new Error(`The ladder lines under ${current.quoteSymbol} have no usable band`);
+    if (bands.length) current.ladder = { mode: 'manual', bands };
+    data.pools.push(current);
+    current = null;
+    ladderText = '';
+  };
+  String(text || '').split(/\r?\n/).forEach((raw, index) => {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) return;
+    const cells = line.split(',').map((cell) => cell.trim());
+    const key = cells[0].toLowerCase();
+    if (key === 'launch sol') { data.launchSol = Number(cells[1]); return; }
+    if (key === 'market cap usd') { data.targetMarketCapUsd = Number(cells[1]); return; }
+    if (key === 'symbol') return;
+    if (key === 'ladder') {
+      if (!current) throw new Error(`Line ${index + 1}: a ladder line needs a pool above it`);
+      ladderText += `${cells.slice(1).join(', ')}\n`;
+      return;
+    }
+    finish();
+    const [symbol, mint, supply, tier, premium, slices, bands, supportSol, supportDepth] = cells;
+    const isSol = symbol.toUpperCase() === 'SOL' && !mint;
+    if (!isSol && !isProbablySolanaAddress(mint)) throw new Error(`Line ${index + 1}: ${symbol || 'the pool'} needs a token mint`);
+    const shares = (slices || '100').split(/[|\s]+/).filter(Boolean).map(Number);
+    if (!shares.length || shares.some((share) => !Number.isFinite(share) || share <= 0)) throw new Error(`Line ${index + 1}: the slices must be numbers like 50|50`);
+    const bandCount = Math.floor(Number(bands || 0));
+    const solValue = Number(supportSol || 0);
+    current = {
+      ...(isSol ? { id: 'sol-main', quoteToken: 'SOL', quoteSymbol: 'SOL' } : { quoteToken: mint, quoteMint: mint, quoteSymbol: symbol.toUpperCase() }),
+      supplyPercent: Number(supply),
+      ammConfigIndex: Number.isFinite(Number(tier)) && tier !== '' ? Math.floor(Number(tier)) : undefined,
+      ...(isSol ? {} : { startPricePremiumPct: Number(premium || 0) }),
+      distribution: shares.map((share) => ({ sharePercent: share, recipient: null })),
+      bootstrap: { mode: 'minimal' },
+      ladder: bandCount > 0 ? classicSimpleLadderConfig(bandCount) : { mode: 'off' },
+      support: solValue > 0 ? { mode: 'custom', solValue, depthPct: Number(supportDepth || 12) } : { mode: 'off' },
+    };
+  });
+  finish();
+  return data;
+}
+
+function parsePoolConfigImport(text) {
+  const body = String(text || '').trim();
+  let data;
+  if (body.startsWith('{')) {
+    // The first export format was JSON; it still imports.
+    try { data = JSON.parse(body); } catch { throw new Error('That is not a pool config'); }
+    if (!data || data.format !== POOL_CONFIG_FORMAT || data.version !== 1) throw new Error('That is not a Trebuchet pool config');
+  } else {
+    if (!/^symbol\s*,/im.test(body)) throw new Error('That is not a Trebuchet pool config');
+    data = parsePoolConfigCsv(body);
+  }
+  validatePoolConfigPools(data.pools);
   return data;
 }
 
@@ -8388,7 +8489,7 @@ async function readPoolConfigText() {
   return openOperatorPrompt({
     eyebrow: 'Import',
     title: 'Paste a pool config',
-    detail: 'Automatic clipboard access is unavailable. Paste the exported JSON below.',
+    detail: 'Automatic clipboard access is unavailable. Paste the exported CSV below.',
     label: 'Pool config',
     multiline: true,
     confirmLabel: 'Import',
@@ -19931,8 +20032,8 @@ function hubPickerRows(catalog = {}, records = []) {
 
 // The picker is a page of the Pairs slide, not a list inside a scrolling box: the pair list steps
 // aside while it is open, the token CA is the first thing in it, and the tokens are a fixed grid
-// of twelve with a pager when there are more.
-const HUB_PICKER_PAGE_SIZE = 12;
+// of nine with a pager when there are more.
+const HUB_PICKER_PAGE_SIZE = 9;
 
 function renderHubPicker() {
   const host = $('#hubPicker');
@@ -19955,15 +20056,38 @@ function renderHubPicker() {
     </div>
     <p class="hub-picker-status" role="status">${escapeHtml(hubPicker.loading ? 'Finding a pool…' : hubPicker.error)}</p>
     ${result ? `<div class="hub-picker-result">
-      <span><strong>${escapeHtml(result.name)} · ${escapeHtml(result.symbol)} / ${escapeHtml(result.via?.symbol || 'SOL')}</strong>
-      <small>${escapeHtml(pool.dex)}${result.via ? ` · routes SOL → ${escapeHtml(result.via.symbol)} → ${escapeHtml(result.symbol)}` : ''} · ${escapeHtml(shortAddress(pool.address))} · ${escapeHtml(pool.source)}</small></span>
-      <button class="pill-button primary" type="button" data-action="use-hub-token">Use ${escapeHtml(result.symbol)}</button></div>` : ''}
+      ${hubTileHtml({ ...result, mint: result.mint }, { tag: 'div', trailing: `<button class="pill-button primary" type="button" data-action="use-hub-token">Use ${escapeHtml(result.symbol)}</button>`, status: `${pool.dex}${result.via ? ` · routes SOL → ${result.via.symbol} → ${result.symbol}` : ''} · ${pool.source}` })}</div>` : ''}
     <div class="hub-picker-grid" role="group" aria-label="Hub tokens">
-      ${shown.map((hub) => `<button class="hub-picker-token" type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}" title="${escapeHtml(hub.mint)}">
-        <strong>${escapeHtml(hub.name || hub.symbol || shortAddress(hub.mint))}</strong><span>${escapeHtml(hub.symbol || 'HUB')}${hub.source === 'discovery' ? ' · found' : ''}</span>
-      </button>`).join('')}
+      ${shown.map((hub) => hubTileHtml(hub, { tag: 'button', attrs: `type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}" title="${escapeHtml(hub.mint)}"` })).join('')}
     </div>
     ${pages > 1 ? `<div class="hub-picker-pager"><button type="button" class="pill-button" data-action="hub-picker-page" data-dir="-1" aria-label="Previous tokens" ${hubPicker.page === 0 ? 'disabled' : ''}><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></button><span>${hubPicker.page + 1} / ${pages}</span><button type="button" class="pill-button" data-action="hub-picker-page" data-dir="1" aria-label="Next tokens" ${hubPicker.page >= pages - 1 ? 'disabled' : ''}><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button></div>` : ''}`;
+  hydrateCoinCards();
+  requestHubLogos(shown.map((hub) => hub.mint));
+}
+
+// The standard coin tile, as on Coins and Discovery. Logos are read once per token and kept.
+const hubLogos = new Map();
+const hubLogoPending = new Set();
+
+function hubTileHtml(hub = {}, options = {}) {
+  const mint = hub.mint || hubPicker.mint || '';
+  return coinCardHtml(
+    { name: hub.name || hub.symbol, symbol: hub.symbol, address: mint, image: hub.image || hub.imageUrl || hub.logoDataUrl || hubLogos.get(mint) || '' },
+    { variant: 'row', ...options },
+  );
+}
+
+function requestHubLogos(mints) {
+  const missing = mints.filter((mint) => mint && !hubLogos.has(mint) && !hubLogoPending.has(mint));
+  if (!missing.length || !state.apiClient?.getTokenLogos) return;
+  missing.forEach((mint) => hubLogoPending.add(mint));
+  state.apiClient.getTokenLogos(missing)
+    .then((logos) => { missing.forEach((mint) => hubLogos.set(mint, logos?.[mint] || null)); })
+    .catch(() => { missing.forEach((mint) => hubLogos.set(mint, null)); })
+    .finally(() => {
+      missing.forEach((mint) => hubLogoPending.delete(mint));
+      if (hubPicker.open) renderHubPicker();
+    });
 }
 
 async function openHubPicker() {

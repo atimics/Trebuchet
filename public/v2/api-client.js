@@ -848,6 +848,11 @@
       return request('/api/v2/flywheel-hubs');
     }
 
+    async function getTokenLogos(mints) {
+      const data = await request('/api/v2/token-logos', { method: 'POST', body: { mints }, timeoutMs: 20000 });
+      return data?.logos && typeof data.logos === 'object' ? data.logos : {};
+    }
+
     async function resolveFlywheelHub(mint) {
       const data = await request('/api/v2/flywheel-hubs/resolve', {
         method: 'POST', body: { mint: String(mint || '').trim() }, timeoutMs: 16000,
@@ -1204,6 +1209,7 @@
       getClmmFeeTiers,
       getQuoteTokenInfo,
       listFlywheelHubs,
+      getTokenLogos,
       resolveFlywheelHub,
       getAirdropProgress,
       getAcquireQuoteTokens,

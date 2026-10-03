@@ -17878,3 +17878,17 @@ body #view-launch .launch-budget-recommender { padding: 4px 0; }
 body #classicBridge.slide-in-right, body #planSlides.slide-in-right { animation: page-in-right .28s cubic-bezier(.2,.7,.2,1); }
 body #classicBridge.slide-in-left, body #planSlides.slide-in-left { animation: page-in-left .28s cubic-bezier(.2,.7,.2,1); }
 @media (prefers-reduced-motion: reduce) { body #classicBridge.slide-in-right, body #planSlides.slide-in-right, body #classicBridge.slide-in-left, body #planSlides.slide-in-left { animation: none; } }
+
+/* Add pair: the standard coin tile, in a plain page. */
+body #view-launch .hub-picker { border: 0; background: transparent; padding: 0; margin: 0; gap: 12px; }
+body #view-launch .hub-picker-result { display: block; padding: 0; border: 0; border-left: 2px solid var(--green); background: transparent; }
+body #view-launch .hub-picker-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 10px; }
+body #view-launch .hub-picker-grid .coin-card-ui, body #view-launch .hub-picker-result .coin-card-ui {
+  width: 100%; min-width: 0; text-align: left; cursor: pointer; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); border-radius: 0; background: transparent; padding: 6px 4px; color: inherit; font: inherit;
+}
+body #view-launch .hub-picker-result .coin-card-ui { cursor: default; border-bottom: 0; padding-left: 10px; }
+body #view-launch .hub-picker-grid .coin-card-ui:hover, body #view-launch .hub-picker-grid .coin-card-ui:focus-visible { background: color-mix(in srgb, var(--green) 6%, transparent); outline: none; }
+body #view-launch .hub-picker-grid .coin-card-ui__copy, body #view-launch .hub-picker-result .coin-card-ui__copy { min-width: 0; }
+body #view-launch .hub-picker-grid .coin-card-ui strong, body #view-launch .hub-picker-grid .coin-card-ui code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body #view-launch .hub-picker-result .coin-card-ui { display: flex; align-items: center; gap: 12px; }
+body #view-launch .hub-picker-result .coin-card-ui__copy { flex: 1; }
