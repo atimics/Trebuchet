@@ -18079,3 +18079,15 @@ body #toastStack { left: auto; right: 16px; bottom: 16px; transform: none; width
 .launch-next-rail .rail-cost small.is-warn { color: var(--amber); }
 .launch-next-rail .rail-cost small.is-ok { color: var(--green); }
 @media (max-width: 1199px) and (min-width: 901px) { .launch-next-rail .rail-cost .rail-meter { display: none; } }
+
+/* Presets: always one row of five; the amount and the market count sit on two lines, so nothing is cut off. */
+body #view-launch .launch-budget-presets { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+body #view-launch .launch-budget-presets > button { align-content: start; padding: 8px 10px; }
+body #view-launch .launch-budget-presets > button strong { overflow: hidden; text-overflow: ellipsis; }
+body #view-launch .launch-budget-presets > button small { display: flex; flex-direction: column; white-space: normal; overflow: visible; }
+body #view-launch .launch-budget-presets > button small span { white-space: nowrap; }
+body #view-launch .launch-budget-head { align-items: center; }
+@container phase (max-width: 640px) {
+  body #view-launch .launch-budget-presets > button { padding: 8px 6px; }
+  body #view-launch .launch-budget-presets > button strong { font-size: 11px; }
+}
