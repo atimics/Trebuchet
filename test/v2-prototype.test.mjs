@@ -6885,7 +6885,7 @@ test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
   assert.match(html, /styles\.css\?v=164/);
   assert.match(html, /runtime-state\.js\?v=2/);
-  assert.match(html, /api-client\.js\?v=42/);
+  assert.match(html, /api-client\.js\?v=43/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
   assert.match(html, /app\.js\?v=250/);
   assert.doesNotMatch(html, /app\.js\?v=250" type="module"/);
@@ -11949,4 +11949,10 @@ test('Meteora is a venue for any pool inside the launch, not a separate Lean lau
   assert.match(js, /\['meteora-damm-v2', 'Meteora'/);
   assert.match(js, /venue: 'meteora-damm-v2',\n\s+damm: \{ feeBps:/);
   assert.match(js, /meteora,\$\{pool\.damm\?\.feeBps \|\| 25\}/);
+});
+
+test('v2 quote acquisition requests allow for live quotes instead of the short UI timeout', () => {
+  assert.match(apiClientJs, /autoSwapPlan: safeArray\(autoSwapPlan\), .*\n.*\n\s*timeoutMs: 90_000/);
+  assert.match(apiClientJs, /recoveryDigest \? \{ recoveryDigest \} : \{\}\) \}, timeoutMs: 60_000/);
+  assert.match(apiClientJs, /cleanup\/prepare`, \{ method: 'POST', body: \{ walletPublicKey \}, timeoutMs: 90_000 \}/);
 });
