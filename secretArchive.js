@@ -32,6 +32,12 @@ function archiveSources() {
       rel: path.join('nftCollections', id, 'collection.json'),
     });
   }
+  const dammRoot = path.join(root, 'dammLaunches');
+  let dammFiles = [];
+  try { dammFiles = fs.readdirSync(dammRoot); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  for (const file of dammFiles.filter((name) => name.endsWith('.json'))) {
+    sources.push({ from: path.join(dammRoot, file), rel: path.join('dammLaunches', file) });
+  }
   return sources;
 }
 

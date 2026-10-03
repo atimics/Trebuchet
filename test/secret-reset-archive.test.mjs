@@ -16,6 +16,7 @@ const pendingWallets = await import('../pendingWallets.js');
 const vanityCaStore = await import('../vanityCaStore.js');
 const splitJobStore = await import('../splitJobStore.js');
 const nftCollectionStore = await import('../nftCollectionStore.js');
+const dammStore = await import('../dammV2Store.js');
 const { archiveSecrets } = await import('../secretArchive.js');
 const { secretInventory } = await import('../secretInventory.js');
 const { resetWithArchive, RESET_PHRASE } = await import('../secretReset.js');
@@ -23,6 +24,32 @@ const { resetWithArchive, RESET_PHRASE } = await import('../secretReset.js');
 const PIN = '4821';
 const sha = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const bytes = (n) => Array.from(crypto.randomBytes(n));
+
+test('Meteora mint and position keys appear in the reset inventory and archive', (t) => {
+  const dir = freshConfig(t);
+  secretPinStore.setPin(PIN);
+  const mintKey = bytes(64), positionKey = bytes(64);
+  const record = dammStore.create({ config: { token: { name: 'Recovery' } } });
+  dammStore.saveTokenMint(record.id, { publicKey: 'SavedMint', secretKey: mintKey });
+  dammStore.savePositionNft(record.id, positionKey);
+  const inventory = secretInventory();
+  assert.equal(inventory.stores.dammKeys.length, 2);
+  assert.equal(inventory.totals.wouldBeLostByReset, 2);
+  assert.equal(inventory.resetAllowed, false);
+  assert.throws(() => resetWithArchive({ confirmReset: RESET_PHRASE }), /Some keys can still be read/);
+  const file = path.join('dammLaunches', `${record.id}.json`);
+  const before = fs.readFileSync(path.join(dir, file));
+  secretPinStore.lock();
+  const result = resetWithArchive({ confirmReset: RESET_PHRASE });
+  assert.equal(result.removed.dammKeys, 2);
+  const archived = path.join(dir, result.archive.path);
+  assert.ok(fs.readFileSync(path.join(archived, file)).equals(before));
+  fs.copyFileSync(path.join(archived, '.secretPin.json'), path.join(dir, '.secretPin.json'));
+  fs.copyFileSync(path.join(archived, file), path.join(dir, file));
+  assert.equal(secretPinStore.unlock(PIN), true);
+  assert.deepEqual(dammStore.loadTokenMint(record.id).secretKey, mintKey);
+  assert.deepEqual(Array.from(dammStore.loadPositionNft(record.id)), positionKey);
+});
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 

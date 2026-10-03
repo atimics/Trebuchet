@@ -2053,6 +2053,7 @@ registerDammV2Routes(app, {
   getRpcUrl,
   getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
   createToken: createTokenWithMetaplex,
+  finishToken: finishTokenCreation,
   getVanityCandidate: (publicKey) => vanityCaStore.get(publicKey),
   removeVanityCandidate: (publicKey) => vanityCaStore.remove(publicKey),
   getSolUsd: () => getUsdPrice(KNOWN_QUOTES.SOL.address),

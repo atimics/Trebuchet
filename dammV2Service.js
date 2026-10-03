@@ -234,7 +234,9 @@ export async function createLockedPool({
   const signature = await sendAndConfirm(connection, built.transaction, signers, commitment);
   onProgress({ stage: 'damm_pool_created', pool: built.pool.toBase58(), position: built.position.toBase58(), positionNft: built.positionNft.publicKey.toBase58(), txId: signature });
 
-  const verification = await verifyLockedPool({ connection, pool: built.pool, position: built.position, mint, supplyRaw, commitment });
+  const verification = await verifyLockedPool({ connection, pool: built.pool, position: built.position, mint,
+    supplyRaw, startingMarketCapLamports, rangeMultiple, positionNft: built.positionNft.publicKey, commitment });
+  if (!verification.passed) throw new Error('Verify the saved pool and its permanently locked position before continuing.');
   onProgress({ stage: 'damm_pool_verified', ...verification });
   return {
     signature,
@@ -262,12 +264,26 @@ export async function findExistingPool({ connection, mint, positionNft }) {
 }
 
 /** Read the pool and position back and check what a launch promises. */
-export async function verifyLockedPool({ connection, pool, position, mint, supplyRaw, commitment = 'confirmed' }) {
+export async function verifyLockedPool({ connection, pool, position, mint, supplyRaw,
+  startingMarketCapLamports, rangeMultiple, positionNft, recovery = false, commitment = 'confirmed' }) {
   const cpAmm = new CpAmm(connection);
   const poolState = await cpAmm.fetchPoolState(pool);
   const positionState = await cpAmm.fetchPositionState(position);
   const programId = await mintOwnerProgram(connection, mint);
   const vaultA = await getAccount(connection, poolState.tokenAVault, commitment, programId);
+  const hasPlan = startingMarketCapLamports != null && rangeMultiple != null && positionNft;
+  if (recovery && !hasPlan) throw new Error('Read the saved pool price range and position identity before recovery.');
+  let lockedSupply = false;
+  if (hasPlan) {
+    const range = dammV2PriceRange({ supplyRaw, startingMarketCapLamports, rangeMultiple });
+    const expectedLiquidity = cpAmm.preparePoolCreationSingleSide({ tokenAAmount: bn(supplyRaw),
+      minSqrtPrice: range.sqrtMinPrice, maxSqrtPrice: range.sqrtMaxPrice,
+      initSqrtPrice: range.initSqrtPrice, collectFeeMode: CollectFeeMode.OnlyB });
+    lockedSupply = positionState.pool.equals(pool) && positionState.nftMint.equals(positionNft)
+      && derivePositionAddress(positionNft).equals(position)
+      && poolState.sqrtMinPrice.eq(range.sqrtMinPrice) && poolState.sqrtMaxPrice.eq(range.sqrtMaxPrice)
+      && positionState.permanentLockedLiquidity.gte(expectedLiquidity);
+  }
   const checks = {
     pool: pool.toBase58(),
     position: position.toBase58(),
@@ -278,11 +294,12 @@ export async function verifyLockedPool({ connection, pool, position, mint, suppl
     permanentlyLocked: cpAmm.isPermanentLockedPosition(positionState),
     nothingWithdrawable: positionState.unlockedLiquidity.isZero(),
     vaultHoldsSupply: vaultA.amount >= BigInt(supplyRaw),
+    lockedSupply,
     quoteSideEmpty: true,
     feesInQuote: poolState.collectFeeMode === CollectFeeMode.OnlyB,
   };
   checks.passed = checks.isNewTokenSideA && checks.isQuoteSol && checks.permanentlyLocked
-    && checks.nothingWithdrawable && checks.vaultHoldsSupply && checks.feesInQuote;
+    && checks.nothingWithdrawable && (hasPlan ? checks.lockedSupply : checks.vaultHoldsSupply) && checks.feesInQuote;
   return checks;
 }
 

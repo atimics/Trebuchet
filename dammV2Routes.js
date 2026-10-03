@@ -72,6 +72,7 @@ export function registerDammV2Routes(app, deps) {
     getRpcUrl,
     getManagedWallet,
     createToken,
+    finishToken,
     getVanityCandidate,
     removeVanityCandidate,
     getSolUsd,
@@ -244,6 +245,7 @@ export function registerDammV2Routes(app, deps) {
       deps: {
         connection: chain,
         createToken,
+        finishToken,
         getVanityCandidate,
         removeVanityCandidate,
         addCoin,
