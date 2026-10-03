@@ -451,7 +451,11 @@ function renderLaunchNextRail(facts, next, workspace) {
     : !estimate || estimateStatus.stale
       ? `<button class="primary-button rail-act" type="button" data-action="estimate-funding" data-stay="1" ${state.fundingEstimating ? 'disabled' : ''}>${state.fundingEstimating ? 'Estimating…' : estimateStatus.stale ? 'Estimate funding again' : 'Estimate funding'}</button>`
       : `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(fundFact.action || 'Fund the launch wallet')}</button>`;
-  const launchButton = `<button class="rail-act rail-launch${launchReady ? ' is-ready' : ''}" type="button" data-action="${practice ? 'launch-rail-act' : 'run-full-launch'}" ${launchReady ? '' : 'disabled'}>Launch</button>`;
+  // One button at a time: Launch, which reads Resume once the token exists and the launch is
+  // unfinished, and Sweep only once the launch is complete (a sweep mid-launch empties the wallet
+  // the remaining steps need).
+  const resuming = !practice && Boolean(mint) && !liquidityDone;
+  const launchButton = `<button class="rail-act rail-launch${launchReady ? ' is-ready' : ''}" type="button" data-action="${practice ? 'launch-rail-act' : 'run-full-launch'}" ${launchReady ? '' : 'disabled'}>${resuming ? 'Resume' : 'Launch'}</button>`;
   const sweepButton = `<button class="rail-act rail-sweep${leftovers ? ' has-leftovers' : ''}" type="button" data-action="${liquidityDone ? 'launch-rail-act' : 'cancel-refund-launch'}" ${leftovers ? '' : 'disabled'}>Sweep</button>`;
   const action = busy
     ? `<div class="rail-busy" role="status"><span class="rail-spin" aria-hidden="true"></span>${escapeHtml(next.value || 'Working')}</div>`
@@ -459,7 +463,7 @@ function renderLaunchNextRail(facts, next, workspace) {
       ? (next && canAct
         ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>`
         : '<div class="rail-done"><i class="fa-solid fa-check" aria-hidden="true"></i>Nothing left to do</div>')
-      : `${fundingButton}<div class="rail-pair">${launchButton}${sweepButton}</div>`;
+      : `${fundingButton}<div class="rail-pair is-single">${liquidityDone && !practice ? sweepButton : launchButton}</div>`;
 
   const walletBlock = `
     <section class="rail-block">
@@ -510,7 +514,7 @@ function renderLaunchNextRail(facts, next, workspace) {
   rail.innerHTML = `
     <section class="rail-next${next?.state === 'running' ? ' is-running' : ''}" aria-live="polite">
       ${action}
-      ${launchReady && !practice ? '<p class="rail-warn">Launch cannot be undone.</p>' : ''}
+      ${launchReady && !practice ? `<p class="rail-warn">${resuming ? 'Resume continues the launch on-chain.' : 'Launch cannot be undone.'}</p>` : ''}
       ${blockers.length && !beforePlan && !busy ? `<div class="rail-blockers" role="status">
         <span class="rail-label">Can't launch yet</span>
         <ul>${blockers.map((item) => `<li><strong>${escapeHtml(item.title || 'Blocked')}</strong>${item.detail ? `<span>${escapeHtml(item.detail)}</span>` : ''}</li>`).join('')}</ul>

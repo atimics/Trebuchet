@@ -6,6 +6,7 @@ import { liquidityPlan, saveLiquidityPlan } from './liquidityExecution.js';
 import { LockClPositionLayoutV2, CLMM_PROGRAM_ID, CLMM_LOCK_PROGRAM_ID, DEVNET_PROGRAM_ID, getPdaPersonalPositionAddress, getPdaLockClPositionIdV2 } from '@raydium-io/raydium-sdk-v2';
 import { normalizeDistribution } from './lpDistribution.js';
 import { getNetwork, getRpcUrl } from './rpcConfig.js';
+import { createExecutionConnection } from './rpcConnection.js';
 
 const purpose = 'liquidity-fee-key';
 const paused = (message, operationId) => Object.assign(new Error(message), { code: 'EXECUTION_RECOVERY_REQUIRED', statusCode: 409, operationId });
@@ -13,7 +14,7 @@ const paused = (message, operationId) => Object.assign(new Error(message), { cod
 // A Fee Key action belongs to a saved main position and its planned recipient.
 // The same action returns its durable receipt after a transfer or client restart.
 export function createFeeKeyExecutionRuntime({ owner, walletExecution, getJournal, getPosition, recordProgress,
-  createConnection = () => new Connection(getRpcUrl(), 'finalized'), networkForRequest = getNetwork,
+  createConnection = () => createExecutionConnection(), networkForRequest = getNetwork,
 }) {
   const withStore = (run) => {
     owner.assertActive();

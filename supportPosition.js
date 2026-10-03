@@ -6,10 +6,11 @@ import { createSolanaSigner, SOLANA_GENESIS_HASHES } from '@trebuchet/runtime/so
 import { deriveLiquidityAccount } from './liquidityExecution.js';
 import { previewSolSupport } from './lpService.js';
 import { getNetwork, getRpcUrl } from './rpcConfig.js';
+import { createExecutionConnection } from './rpcConnection.js';
 
 const fail = (code, message, statusCode = 409) => Object.assign(new Error(message), { code, statusCode });
 const owners = new WeakMap();
-export function createSupportPositionRuntime({ owner, createConnection = () => new Connection(getRpcUrl(), 'finalized'),
+export function createSupportPositionRuntime({ owner, createConnection = () => createExecutionConnection(),
   networkForRequest = getNetwork, genesisForNetwork = (network) => SOLANA_GENESIS_HASHES[network], planSupport = previewSolSupport, now = Date.now, timeoutMs = 60000 }) {
   if (!owners.has(owner)) owners.set(owner, new Set());
   const running = owners.get(owner);

@@ -18151,3 +18151,4 @@ body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }
 .launch-next-rail .rail-blockers li { display: grid; gap: 2px; padding-left: 10px; border-left: 2px solid var(--amber, #e6b450); }
 .launch-next-rail .rail-blockers li strong { font-size: 12px; color: var(--ink); }
 .launch-next-rail .rail-blockers li span { font-size: 11px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+.launch-next-rail .rail-pair.is-single { grid-template-columns: minmax(0, 1fr); }
