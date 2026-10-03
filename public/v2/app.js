@@ -535,6 +535,8 @@ const state = {
   // The SOL pool's venue: Raydium CLMM, or a Meteora DAMM v2 pool (one locked position).
   solPoolVenue: 'raydium',
   solPoolDamm: { feeBps: 25, rangeMultiple: 1000 },
+  quotePoolVenue: 'raydium',
+  quotePoolDamm: { feeBps: 25, rangeMultiple: 1000 },
   customPools: [],
   customPoolCounter: 0,
   airdropCsvText: '',
@@ -5250,15 +5252,6 @@ function currentClassicModel() {
       ? { mode: 'custom', solValue: supportSol, depthPct: supportDepth, ...(supportLayers.length ? { layers: supportLayers } : {}) }
       : { mode: 'off' },
   };
-  if (state.solPoolVenue === 'meteora-damm-v2') {
-    Object.assign(solPool, {
-      venue: 'meteora-damm-v2',
-      damm: { feeBps: Number(state.solPoolDamm?.feeBps) || 25, rangeMultiple: Number(state.solPoolDamm?.rangeMultiple) || 1000 },
-      distribution: [{ sharePercent: 100, recipient: null }],
-      ladder: { mode: 'off' },
-      support: { mode: 'off' },
-    });
-  }
   const pools = [solPool];
   if (quotePoolPercent > 0) {
     pools.push({
@@ -5322,6 +5315,24 @@ function currentClassicModel() {
           ...(parseSupportLayers(pool.supportLayersText).length ? { layers: parseSupportLayers(pool.supportLayersText) } : {}),
         }
         : { mode: 'off' },
+    });
+  });
+
+  // A pool set to Meteora is one locked position: no slices, ladder or support.
+  pools.forEach((pool) => {
+    const custom = state.customPools.find((item) => item.id === pool.id) || null;
+    const choice = pool.id === 'sol-main'
+      ? { venue: state.solPoolVenue, damm: state.solPoolDamm }
+      : String(pool.id || '').endsWith('-flywheel')
+        ? { venue: state.quotePoolVenue, damm: state.quotePoolDamm }
+        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange } } : null;
+    if (choice?.venue !== 'meteora-damm-v2') return;
+    Object.assign(pool, {
+      venue: 'meteora-damm-v2',
+      damm: { feeBps: Number(choice.damm?.feeBps) || 25, rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000 },
+      distribution: [{ sharePercent: 100, recipient: null }],
+      ladder: { mode: 'off' },
+      support: { mode: 'off' },
     });
   });
 
@@ -5681,6 +5692,9 @@ function customPoolFromRecovery(pool = {}, index = 0) {
     supportSol: pool?.support?.mode === 'custom' ? Number(pool.support.solValue || 0) : 0,
     supportDepth: pool?.support?.mode === 'custom' ? Number(pool.support.depthPct || 12) : 12,
     supportLayersText: pool?.support?.mode === 'custom' ? supportLayersText(pool.support.layers) : '',
+    venue: pool?.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium',
+    dammFeeBps: Number(pool?.damm?.feeBps) || 25,
+    dammRange: Number(pool?.damm?.rangeMultiple) || 1000,
   };
 }
 
@@ -5709,6 +5723,8 @@ function restoreLaunchConfigFromJournal(journal = {}) {
     feeBps: Number(restoredSolPool?.damm?.feeBps) || 25,
     rangeMultiple: Number(restoredSolPool?.damm?.rangeMultiple) || 1000,
   };
+  state.quotePoolVenue = restoredFlywheelPool?.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+  state.quotePoolDamm = { feeBps: Number(restoredFlywheelPool?.damm?.feeBps) || 25, rangeMultiple: Number(restoredFlywheelPool?.damm?.rangeMultiple) || 1000 };
   state.solPoolConfigIndex = restoredSolPool
     ? Math.floor(Number(restoredSolPool.ammConfigIndex ?? 8))
     : DEFAULT_POOL_CONFIG_INDEX;
@@ -5722,13 +5738,18 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   const nonSolPools = pools.filter((pool) => pool !== solPool);
   // A pair is the built-in flywheel pair only when it has no ladder, support or extra slices of its own;
   // one that has any is kept as an ordinary pair so none of those settings are lost.
-  const isPlainPair = (pool) => (!pool.ladder || pool.ladder.mode === 'off')
+  const isPlainPair = (pool) => pool.venue !== 'meteora-damm-v2'
+    && (!pool.ladder || pool.ladder.mode === 'off')
     && (!pool.support || pool.support.mode !== 'custom')
     && (!Array.isArray(pool.distribution) || pool.distribution.length <= 1);
   const builtInPoolIndex = nonSolPools.findIndex((pool) => recoveryVenueForPool(pool) && isPlainPair(pool));
   const builtInPool = builtInPoolIndex >= 0 ? nonSolPools[builtInPoolIndex] : null;
   const builtInVenue = builtInPool ? recoveryVenueForPool(builtInPool) : null;
   const customPools = nonSolPools.filter((_, index) => index !== builtInPoolIndex);
+  if (builtInPool) {
+    state.quotePoolVenue = builtInPool.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+    state.quotePoolDamm = { feeBps: Number(builtInPool.damm?.feeBps) || 25, rangeMultiple: Number(builtInPool.damm?.rangeMultiple) || 1000 };
+  }
 
   if ($('#tokenName') && token.name != null) $('#tokenName').value = String(token.name).slice(0, 32);
   if ($('#tokenSymbol') && token.symbol != null) $('#tokenSymbol').value = String(token.symbol).slice(0, 10).toUpperCase();
@@ -7923,28 +7944,71 @@ function rowTierIndex(row) {
 // The fee tier on the pool's own line: a short select showing the fee, so it reads and changes
 // without opening the pool.
 const METEORA_FEES = [25, 50, 100, 200];
-const METEORA_RANGES_UI = [[100, '×100 · deeper near the start'], [1000, '×1,000 · recommended'], [10000, '×10,000 · runs further']];
+const METEORA_RANGES_UI = [[100, '×100'], [1000, '×1,000'], [10000, '×10,000']];
+const RAYDIUM_ROW_TIERS = [4, 5, 1, 3];
 
-function solIsMeteora() {
-  return state.solPoolVenue === 'meteora-damm-v2';
+// Where a pool's venue and its fee live: the SOL pool and the preset pair in state, an added pair on the pair itself.
+function poolVenueFor(row) {
+  if (row.key === 'sol') return { venue: state.solPoolVenue, damm: state.solPoolDamm };
+  if (row.key === 'quote') return { venue: state.quotePoolVenue, damm: state.quotePoolDamm };
+  const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
+  return { venue: pool?.venue, damm: { feeBps: pool?.dammFeeBps, rangeMultiple: pool?.dammRange } };
 }
 
-function rowTierSelectHtml(row) {
-  if (row.key === 'sol' && solIsMeteora()) {
-    const fee = Number(state.solPoolDamm?.feeBps) || 25;
-    return `<select class="supply-tier" data-sol-pool-field="dammFeeBps" data-supply-key="sol:rowtier" aria-label="SOL pool fee" title="Meteora pool swap fee">${METEORA_FEES.map((bps) => `<option value="${bps}" ${bps === fee ? 'selected' : ''}>${bps / 100}%</option>`).join('')}</select>`;
+function rowIsMeteora(row) {
+  return poolVenueFor(row).venue === 'meteora-damm-v2';
+}
+
+function setPoolVenueChoice(rowKey, patch) {
+  if (rowKey === 'sol') {
+    if (patch.venue) state.solPoolVenue = patch.venue;
+    state.solPoolDamm = { ...state.solPoolDamm, ...(patch.feeBps ? { feeBps: patch.feeBps } : {}), ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}) };
+    if (patch.tierIndex != null) state.solPoolConfigIndex = patch.tierIndex;
+    return;
   }
-  const selected = Math.floor(Number(rowTierIndex(row)));
-  const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
-  const options = tiers.map((tier) => `<option value="${tier.index}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(`${Number(tier.tradeFeeRate) / 10000}%`)}</option>`).join('')
-    + (tiers.some((tier) => tier.index === selected) ? '' : `<option value="${selected}" selected>#${selected}</option>`);
-  const field = row.key === 'sol'
-    ? 'data-sol-pool-field="ammConfigIndex"'
-    : row.key === 'quote'
-      ? 'data-quote-pool-field="ammConfigIndex"'
-      : `data-custom-pool-field="ammConfigIndex" data-pool-id="${escapeHtml(row.poolId)}"`;
-  const info = feeTierInfo(selected);
-  return `<select class="supply-tier" ${field} data-supply-key="${escapeHtml(row.key)}:rowtier" aria-label="${escapeHtml(row.label)} fee tier" title="${escapeHtml(info ? `${info.fee}% swap fee · price steps of ${Number(info.step.toFixed(2))}%` : 'Fee tier')}">${options}</select>`;
+  if (rowKey === 'quote') {
+    if (patch.venue) state.quotePoolVenue = patch.venue;
+    state.quotePoolDamm = { ...state.quotePoolDamm, ...(patch.feeBps ? { feeBps: patch.feeBps } : {}), ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}) };
+    if (patch.tierIndex != null) state.pairPoolConfigIndex = patch.tierIndex;
+    return;
+  }
+  const pool = state.customPools.find((item) => `custom:${item.id}` === rowKey);
+  if (!pool) return;
+  if (patch.venue) pool.venue = patch.venue;
+  if (patch.feeBps) pool.dammFeeBps = patch.feeBps;
+  if (patch.rangeMultiple) pool.dammRange = patch.rangeMultiple;
+  if (patch.tierIndex != null) pool.ammConfigIndex = patch.tierIndex;
+}
+
+
+// A row of buttons, one pressed: the venue (Raydium or Meteora) and the fee, under the pool's name.
+function toggleGroupHtml({ label, action, rowKey, options, selected, extra = '' }) {
+  return `<span class="pool-toggle" role="group" aria-label="${escapeHtml(label)}">${options.map(([value, text, title]) => (
+    `<button type="button" class="${String(value) === String(selected) ? 'is-on' : ''}" data-action="${action}" data-row-key="${escapeHtml(rowKey)}" data-value="${escapeHtml(String(value))}" data-supply-key="${escapeHtml(rowKey)}:${action}:${escapeHtml(String(value))}" aria-pressed="${String(value) === String(selected)}"${title ? ` title="${escapeHtml(title)}"` : ''}${extra}>${escapeHtml(text)}</button>`
+  )).join('')}</span>`;
+}
+
+function rowSwitchesHtml(row) {
+  const meteora = rowIsMeteora(row);
+  const venue = toggleGroupHtml({
+    label: `${row.label} venue`, action: 'set-pool-venue', rowKey: row.key, selected: meteora ? 'meteora-damm-v2' : 'raydium',
+    options: [['raydium', 'Raydium', 'Ranges: slices, ladder bands and support'], ['meteora-damm-v2', 'Meteora', 'One position, locked when the pool is made']],
+  });
+  let fee;
+  if (meteora) {
+    const current = Number(poolVenueFor(row).damm?.feeBps) || 25;
+    fee = toggleGroupHtml({ label: `${row.label} fee`, action: 'set-pool-fee', rowKey: row.key, selected: current, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+  } else {
+    const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
+    const selected = Math.floor(Number(rowTierIndex(row)));
+    const shown = tiers.filter((tier) => RAYDIUM_ROW_TIERS.includes(tier.index) || tier.index === selected);
+    fee = toggleGroupHtml({
+      label: `${row.label} fee tier`, action: 'set-pool-tier', rowKey: row.key, selected,
+      options: (shown.length ? shown : tiers.slice(0, 4)).map((tier) => [tier.index, `${Number(tier.tradeFeeRate) / 10000}%`, `price steps of ${Number(((Math.pow(1.0001, tier.tickSpacing) - 1) * 100).toFixed(2))}%`])
+        .concat(tiers.some((tier) => tier.index === selected) ? [] : [[selected, `#${selected}`]]),
+    });
+  }
+  return `<span class="pool-switches">${venue}${fee}</span>`;
 }
 
 function supplyEditorRows() {
@@ -8140,12 +8204,12 @@ function renderSupplyEditor() {
   const LADDER_HINT = `Extra liquidity bands at higher prices. 0 to ${CLASSIC_LADDER_MAX_BANDS}. 0 = off.`;
   const settingsHtml = (row) => {
     const mapHost = '<div class="supply-field-wide pool-map" data-pool-map></div>';
-    if (row.key === 'sol' && solIsMeteora()) {
-      const range = Number(state.solPoolDamm?.rangeMultiple) || 1000;
+    if (rowIsMeteora(row)) {
+      const range = Number(poolVenueFor(row).damm?.rangeMultiple) || 1000;
       return `
         ${mapHost}
-        ${field('Price range', '', `<select data-sol-pool-field="dammRange" data-supply-key="sol:range">${METEORA_RANGES_UI.map(([value, label]) => `<option value="${value}" ${value === range ? 'selected' : ''}>${label}</option>`).join('')}</select>`)}
-        <p class="supply-field-wide supply-settings-empty">A Meteora pool is one position holding this share of the supply, locked when the pool is made. It has no slices, ladder or support; buyers bring the SOL.</p>`;
+        <div class="supply-field supply-field-wide"><span>Price range</span>${toggleGroupHtml({ label: `${row.label} price range`, action: 'set-pool-range', rowKey: row.key, selected: range, options: METEORA_RANGES_UI.map(([value, text]) => [value, text]) })}</div>
+        <p class="supply-field-wide supply-settings-empty">One position with this share of the supply, locked when the pool is made. No slices, ladder or support; buyers bring the ${escapeHtml(row.label)}.</p>`;
     }
     if (row.key === 'sol') {
       return `
@@ -8201,19 +8265,15 @@ function renderSupplyEditor() {
         ? `<button class="supply-remove" type="button" data-action="supply-clear" data-supply-target="${row.removeTarget}" aria-label="Remove ${escapeHtml(row.label)}"><i class="fa-solid fa-xmark"></i></button>`
         : '<span class="supply-remove-spacer"></span>';
     const editingMint = row.poolId && (row.needsMint || focusKey === `${row.key}:mint`);
-    const venueChoice = row.key === 'sol'
-      ? `<select class="supply-venue" data-sol-pool-field="venue" data-supply-key="sol:venue" aria-label="SOL pool venue"><option value="raydium" ${solIsMeteora() ? '' : 'selected'}>Raydium · ranges</option><option value="meteora-damm-v2" ${solIsMeteora() ? 'selected' : ''}>Meteora · one locked pool</option></select>`
-      : '';
-    const detail = venueChoice || editingMint
-      ? (venueChoice || `<input class="supply-mint" data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(row.poolId)}" data-supply-key="${escapeHtml(row.key)}:mint" value="${escapeHtml(row.mint || '')}" placeholder="Paste token mint" autocomplete="off" spellcheck="false">`)
+    const detail = editingMint
+      ? (`<input class="supply-mint" data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(row.poolId)}" data-supply-key="${escapeHtml(row.key)}:mint" value="${escapeHtml(row.mint || '')}" placeholder="Paste token mint" autocomplete="off" spellcheck="false">`)
       : `<small>${escapeHtml(row.detail)}</small>`;
     return `
       <li class="supply-row${row.kind === 'pool' && state.supplyOpenRow === row.key ? ' is-open' : ''}">
         <i class="supply-swatch" style="background:${row.color}"></i>
-        <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
+        <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}${row.kind === 'pool' ? rowSwitchesHtml(row) : ''}</span>
         <span class="supply-amount" data-supply-amount="${escapeHtml(row.key)}">${compactAmount(supply * row.percent / 100)}</span>
         ${row.kind === 'pool' ? poolGlyphSvg(planPoolFor(row), row.color) : '<span class="supply-glyph"></span>'}
-        ${row.kind === 'pool' ? rowTierSelectHtml(row) : '<span class="supply-tier-spacer"></span>'}
         <label class="supply-percent"><input type="text" inputmode="decimal" autocomplete="off" value="${escapeHtml(String(row.percent))}" ${input} data-supply-key="${escapeHtml(row.key)}" aria-label="${escapeHtml(row.label)} percent of supply"><span>%</span></label>
         ${row.kind === 'pool'
           ? `<button class="supply-gear ${state.supplyOpenRow === row.key ? 'is-open' : ''}" type="button" data-action="supply-toggle-settings" data-supply-row="${escapeHtml(row.key)}" aria-expanded="${state.supplyOpenRow === row.key}" aria-label="${escapeHtml(row.label)} settings"><i class="fa-solid fa-sliders"></i></button>`
@@ -8261,9 +8321,9 @@ function renderSupplyEditor() {
 // pair, where the SOL pool's price sits. Right of it, price in multiples of the
 // start (log scale): the main position covers all of it, ladder bands add
 // liquidity at their own ranges. Below: the positions the pool is split into.
-function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier = null, supportLayers = [] }) {
+function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier = null, supportLayers = [], meteora = null }) {
   const W = 640, START = 196, LEFT = 24, RIGHT = 620, BASE = 150;
-  const maxMult = Math.max(1000, ...bands.map((band) => band.hi));
+  const maxMult = meteora ? Math.max(10, Number(meteora.rangeMultiple) || 1000) : Math.max(1000, ...bands.map((band) => band.hi));
   const xOf = (mult) => START + (RIGHT - START) * (Math.log(mult) / Math.log(maxMult));
   const premiumDrop = premiumPct > 0 ? (premiumPct / (100 + premiumPct)) * 100 : 0;
   const reach = Math.max(depthPct, premiumDrop, 10) * 1.1;
@@ -8280,7 +8340,8 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier = nu
       parts.push(`<line class="pm-tick" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${BASE - 22}" y2="${BASE}"/>`);
     }
   }
-  parts.push(`<text class="pm-note" x="${START + 8}" y="${BASE - 7}">Main position · all prices above the start</text>`);
+  parts.push(`<text class="pm-note" x="${START + 8}" y="${BASE - 7}">${meteora ? `Locked position · up to ×${Number(meteora.rangeMultiple).toLocaleString('en-US')}` : 'Main position · all prices above the start'}</text>`);
+  if (meteora) parts.push(`<text class="pm-tag pm-strong" x="${RIGHT}" y="12" text-anchor="end">Meteora · ${Number(meteora.feeBps) / 100}% fee</text>`);
   // ladder bands
   const top = Math.max(...bands.map((band) => band.weight), 1);
   bands.forEach((band) => {
@@ -8498,8 +8559,14 @@ function renderPoolMap(panel) {
   parts.push(supportSol > 0 ? `${supportSol} SOL support to −${depthPct}%` : 'no support');
   parts.push(bands.length ? `${bands.length} ladder band${bands.length === 1 ? '' : 's'}` : 'no ladder');
   if (premiumPct > 0) parts.push(`opens ${premiumPct}% above the SOL price`);
-  const tierIndex = panel.querySelector('[data-supply-key$=":tier"]')?.value ?? panel.closest('li')?.previousElementSibling?.querySelector('.supply-tier')?.value;
-  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, supportLayers: layerInput, tier: feeTierInfo(tierIndex ?? DEFAULT_POOL_CONFIG_INDEX) })}`;
+  const tierIndex = panel.querySelector('[data-supply-key$=":tier"]')?.value
+    ?? panel.closest('li')?.previousElementSibling?.querySelector('[data-action="set-pool-tier"].is-on')?.dataset.value;
+  const rowKey = panel.closest('.supply-settings-wrap')?.dataset.settingsFor;
+  const venueRow = rowKey ? supplyEditorRows().find((item) => item.key === rowKey) : null;
+  const meteora = venueRow && rowIsMeteora(venueRow) ? poolVenueFor(venueRow).damm : null;
+  const html = meteora
+    ? poolMapSvg({ premiumPct: 0, supportSol: 0, depthPct: 12, slices: [100], bands: [], meteora: { feeBps: Number(meteora.feeBps) || 25, rangeMultiple: Number(meteora.rangeMultiple) || 1000 } })
+    : `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, supportLayers: layerInput, tier: feeTierInfo(tierIndex ?? DEFAULT_POOL_CONFIG_INDEX) })}`;
   if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
 }
 
@@ -8815,7 +8882,7 @@ function renderAirdropPanel() {
 //   RUG,RUGx1zSD…,5,4,25,50|50,0,0,12
 //   ladder,50,2,10
 //   bid,70,0.7,1       (a quote-side support layer: share % of the quote, low x, high x)
-//   meteora,25,1000    (the SOL pool is a Meteora pool: fee in basis points, price range multiple)
+//   meteora,25,1000    (the pool above is a Meteora pool: fee in basis points, price range multiple)
 const POOL_CONFIG_FORMAT = 'trebuchet-pool-config';
 const POOL_CONFIG_HEADER = 'symbol,mint,supply%,fee tier,start premium %,slices,ladder bands,support SOL,support depth %';
 
@@ -8917,7 +8984,7 @@ function parsePoolConfigCsv(text) {
       return;
     }
     if (key === 'meteora') {
-      if (!current || current.quoteSymbol !== 'SOL') throw new Error(`Line ${index + 1}: only the SOL pool can be a Meteora pool`);
+      if (!current) throw new Error(`Line ${index + 1}: a meteora line needs a pool above it`);
       current.venue = 'meteora-damm-v2';
       current.damm = { feeBps: Number(cells[1]) || 25, rangeMultiple: Number(cells[2]) || 1000 };
       return;
@@ -26387,6 +26454,18 @@ function handleClick(event) {
   }
   if (action === 'customize-quote-pool') {
     customizeQuotePool();
+    return;
+  }
+  if (action === 'set-pool-venue' || action === 'set-pool-fee' || action === 'set-pool-tier' || action === 'set-pool-range') {
+    const value = actionTarget.dataset.value;
+    const patch = action === 'set-pool-venue' ? { venue: value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium' }
+      : action === 'set-pool-fee' ? { feeBps: Number(value) }
+        : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
+          : { tierIndex: Math.floor(Number(value)) };
+    setPoolVenueChoice(actionTarget.dataset.rowKey, patch);
+    invalidateClassicOutputs();
+    refreshClassicPreview();
+    renderSupplyEditorAfterTier(actionTarget);
     return;
   }
   if (action === 'export-pool-config') {

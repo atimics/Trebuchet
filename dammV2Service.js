@@ -114,9 +114,12 @@ export async function buildLockedPoolTransaction({
   feeBps,
   priorityMicroLamports = 0,
   positionNft = Keypair.generate(),
+  // The pool's other side: SOL unless a launch pairs this pool with another token.
+  quoteMint = NATIVE_MINT,
 }) {
   const cpAmm = new CpAmm(connection);
   const tokenProgram = await mintOwnerProgram(connection, mint);
+  const quoteProgram = quoteMint.equals(NATIVE_MINT) ? TOKEN_PROGRAM_ID : await mintOwnerProgram(connection, quoteMint);
   const tokenAAmount = bn(supplyRaw);
   const range = dammV2PriceRange({ supplyRaw, startingMarketCapLamports, rangeMultiple });
   const liquidityDelta = cpAmm.preparePoolCreationSingleSide({
@@ -131,7 +134,7 @@ export async function buildLockedPoolTransaction({
     creator,
     positionNft: positionNft.publicKey,
     tokenAMint: mint,
-    tokenBMint: NATIVE_MINT,
+    tokenBMint: quoteMint,
     tokenAAmount,
     tokenBAmount: new BN(0),
     sqrtMinPrice: range.sqrtMinPrice,
@@ -152,7 +155,7 @@ export async function buildLockedPoolTransaction({
     collectFeeMode: CollectFeeMode.OnlyB,
     activationPoint: null,
     tokenAProgram: tokenProgram,
-    tokenBProgram: TOKEN_PROGRAM_ID,
+    tokenBProgram: quoteProgram,
     isLockLiquidity: true,
   });
   const transaction = created.tx;
@@ -214,6 +217,7 @@ export async function createLockedPool({
   commitment = 'confirmed',
   positionNft = Keypair.generate(),
   onProgress = () => {},
+  quoteMint = NATIVE_MINT,
 }) {
   const ata = getAssociatedTokenAddressSync(mint, payer.publicKey, false, await mintOwnerProgram(connection, mint));
   let held;
@@ -225,7 +229,7 @@ export async function createLockedPool({
   if (held < BigInt(supplyRaw)) throw new Error('The launch wallet holds less of this token than the pool needs.');
 
   const built = await buildLockedPoolTransaction({
-    connection, creator: payer.publicKey, mint, supplyRaw, startingMarketCapLamports, rangeMultiple, feeBps, priorityMicroLamports, positionNft,
+    connection, creator: payer.publicKey, mint, supplyRaw, startingMarketCapLamports, rangeMultiple, feeBps, priorityMicroLamports, positionNft, quoteMint,
   });
   const signers = [payer, built.positionNft];
   const simulated = await simulateOrThrow(connection, built.transaction, signers);
@@ -234,7 +238,7 @@ export async function createLockedPool({
   const signature = await sendAndConfirm(connection, built.transaction, signers, commitment);
   onProgress({ stage: 'damm_pool_created', pool: built.pool.toBase58(), position: built.position.toBase58(), positionNft: built.positionNft.publicKey.toBase58(), txId: signature });
 
-  const verification = await verifyLockedPool({ connection, pool: built.pool, position: built.position, mint, supplyRaw, commitment });
+  const verification = await verifyLockedPool({ connection, pool: built.pool, position: built.position, mint, supplyRaw, commitment, quoteMint });
   onProgress({ stage: 'damm_pool_verified', ...verification });
   return {
     signature,
@@ -251,8 +255,8 @@ export async function createLockedPool({
  * creating a second pool: the pool address depends only on the two mints, and the
  * position address only on the position NFT, whose key was saved before sending.
  */
-export async function findExistingPool({ connection, mint, positionNft }) {
-  const pool = deriveCustomizablePoolAddress(mint, NATIVE_MINT);
+export async function findExistingPool({ connection, mint, positionNft, quoteMint = NATIVE_MINT }) {
+  const pool = deriveCustomizablePoolAddress(mint, quoteMint);
   const position = derivePositionAddress(positionNft);
   const [poolInfo, positionInfo] = await Promise.all([
     connection.getAccountInfo(pool, 'confirmed'),
@@ -262,7 +266,7 @@ export async function findExistingPool({ connection, mint, positionNft }) {
 }
 
 /** Read the pool and position back and check what a launch promises. */
-export async function verifyLockedPool({ connection, pool, position, mint, supplyRaw, commitment = 'confirmed' }) {
+export async function verifyLockedPool({ connection, pool, position, mint, supplyRaw, commitment = 'confirmed', quoteMint = NATIVE_MINT }) {
   const cpAmm = new CpAmm(connection);
   const poolState = await cpAmm.fetchPoolState(pool);
   const positionState = await cpAmm.fetchPositionState(position);
@@ -275,13 +279,14 @@ export async function verifyLockedPool({ connection, pool, position, mint, suppl
     tokenB: poolState.tokenBMint.toBase58(),
     isNewTokenSideA: poolState.tokenAMint.equals(mint),
     isQuoteSol: poolState.tokenBMint.equals(NATIVE_MINT),
+    isExpectedQuote: poolState.tokenBMint.equals(quoteMint),
     permanentlyLocked: cpAmm.isPermanentLockedPosition(positionState),
     nothingWithdrawable: positionState.unlockedLiquidity.isZero(),
     vaultHoldsSupply: vaultA.amount >= BigInt(supplyRaw),
     quoteSideEmpty: true,
     feesInQuote: poolState.collectFeeMode === CollectFeeMode.OnlyB,
   };
-  checks.passed = checks.isNewTokenSideA && checks.isQuoteSol && checks.permanentlyLocked
+  checks.passed = checks.isNewTokenSideA && checks.isExpectedQuote && checks.permanentlyLocked
     && checks.nothingWithdrawable && checks.vaultHoldsSupply && checks.feesInQuote;
   return checks;
 }

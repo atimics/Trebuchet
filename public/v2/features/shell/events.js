@@ -299,6 +299,18 @@ function handleClick(event) {
     customizeQuotePool();
     return;
   }
+  if (action === 'set-pool-venue' || action === 'set-pool-fee' || action === 'set-pool-tier' || action === 'set-pool-range') {
+    const value = actionTarget.dataset.value;
+    const patch = action === 'set-pool-venue' ? { venue: value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium' }
+      : action === 'set-pool-fee' ? { feeBps: Number(value) }
+        : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
+          : { tierIndex: Math.floor(Number(value)) };
+    setPoolVenueChoice(actionTarget.dataset.rowKey, patch);
+    invalidateClassicOutputs();
+    refreshClassicPreview();
+    renderSupplyEditorAfterTier(actionTarget);
+    return;
+  }
   if (action === 'export-pool-config') {
     exportPoolConfig();
     return;

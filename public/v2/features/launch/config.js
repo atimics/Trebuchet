@@ -667,15 +667,6 @@ function currentClassicModel() {
       ? { mode: 'custom', solValue: supportSol, depthPct: supportDepth, ...(supportLayers.length ? { layers: supportLayers } : {}) }
       : { mode: 'off' },
   };
-  if (state.solPoolVenue === 'meteora-damm-v2') {
-    Object.assign(solPool, {
-      venue: 'meteora-damm-v2',
-      damm: { feeBps: Number(state.solPoolDamm?.feeBps) || 25, rangeMultiple: Number(state.solPoolDamm?.rangeMultiple) || 1000 },
-      distribution: [{ sharePercent: 100, recipient: null }],
-      ladder: { mode: 'off' },
-      support: { mode: 'off' },
-    });
-  }
   const pools = [solPool];
   if (quotePoolPercent > 0) {
     pools.push({
@@ -739,6 +730,24 @@ function currentClassicModel() {
           ...(parseSupportLayers(pool.supportLayersText).length ? { layers: parseSupportLayers(pool.supportLayersText) } : {}),
         }
         : { mode: 'off' },
+    });
+  });
+
+  // A pool set to Meteora is one locked position: no slices, ladder or support.
+  pools.forEach((pool) => {
+    const custom = state.customPools.find((item) => item.id === pool.id) || null;
+    const choice = pool.id === 'sol-main'
+      ? { venue: state.solPoolVenue, damm: state.solPoolDamm }
+      : String(pool.id || '').endsWith('-flywheel')
+        ? { venue: state.quotePoolVenue, damm: state.quotePoolDamm }
+        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange } } : null;
+    if (choice?.venue !== 'meteora-damm-v2') return;
+    Object.assign(pool, {
+      venue: 'meteora-damm-v2',
+      damm: { feeBps: Number(choice.damm?.feeBps) || 25, rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000 },
+      distribution: [{ sharePercent: 100, recipient: null }],
+      ladder: { mode: 'off' },
+      support: { mode: 'off' },
     });
   });
 

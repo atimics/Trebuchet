@@ -89,6 +89,9 @@ function customPoolFromRecovery(pool = {}, index = 0) {
     supportSol: pool?.support?.mode === 'custom' ? Number(pool.support.solValue || 0) : 0,
     supportDepth: pool?.support?.mode === 'custom' ? Number(pool.support.depthPct || 12) : 12,
     supportLayersText: pool?.support?.mode === 'custom' ? supportLayersText(pool.support.layers) : '',
+    venue: pool?.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium',
+    dammFeeBps: Number(pool?.damm?.feeBps) || 25,
+    dammRange: Number(pool?.damm?.rangeMultiple) || 1000,
   };
 }
 
@@ -117,6 +120,8 @@ function restoreLaunchConfigFromJournal(journal = {}) {
     feeBps: Number(restoredSolPool?.damm?.feeBps) || 25,
     rangeMultiple: Number(restoredSolPool?.damm?.rangeMultiple) || 1000,
   };
+  state.quotePoolVenue = restoredFlywheelPool?.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+  state.quotePoolDamm = { feeBps: Number(restoredFlywheelPool?.damm?.feeBps) || 25, rangeMultiple: Number(restoredFlywheelPool?.damm?.rangeMultiple) || 1000 };
   state.solPoolConfigIndex = restoredSolPool
     ? Math.floor(Number(restoredSolPool.ammConfigIndex ?? 8))
     : DEFAULT_POOL_CONFIG_INDEX;
@@ -130,13 +135,18 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   const nonSolPools = pools.filter((pool) => pool !== solPool);
   // A pair is the built-in flywheel pair only when it has no ladder, support or extra slices of its own;
   // one that has any is kept as an ordinary pair so none of those settings are lost.
-  const isPlainPair = (pool) => (!pool.ladder || pool.ladder.mode === 'off')
+  const isPlainPair = (pool) => pool.venue !== 'meteora-damm-v2'
+    && (!pool.ladder || pool.ladder.mode === 'off')
     && (!pool.support || pool.support.mode !== 'custom')
     && (!Array.isArray(pool.distribution) || pool.distribution.length <= 1);
   const builtInPoolIndex = nonSolPools.findIndex((pool) => recoveryVenueForPool(pool) && isPlainPair(pool));
   const builtInPool = builtInPoolIndex >= 0 ? nonSolPools[builtInPoolIndex] : null;
   const builtInVenue = builtInPool ? recoveryVenueForPool(builtInPool) : null;
   const customPools = nonSolPools.filter((_, index) => index !== builtInPoolIndex);
+  if (builtInPool) {
+    state.quotePoolVenue = builtInPool.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+    state.quotePoolDamm = { feeBps: Number(builtInPool.damm?.feeBps) || 25, rangeMultiple: Number(builtInPool.damm?.rangeMultiple) || 1000 };
+  }
 
   if ($('#tokenName') && token.name != null) $('#tokenName').value = String(token.name).slice(0, 32);
   if ($('#tokenSymbol') && token.symbol != null) $('#tokenSymbol').value = String(token.symbol).slice(0, 10).toUpperCase();
