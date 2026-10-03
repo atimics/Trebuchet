@@ -592,7 +592,9 @@ const CREATION_STEP_ACTIONS = {
 function coinCreationHtml(creation, coin) {
   if (!creation) return '';
   const mismatches = creation.steps.filter((step) => step.state === 'mismatch');
-  const next = creation.steps.find((step) => ['todo', 'mismatch'].includes(step.state)) || null;
+  // A step neither recorded nor checkable on-chain has not been done as far as anyone can tell:
+  // it is still the next step. Skipping it offered a sweep before the liquidity was locked.
+  const next = creation.steps.find((step) => ['todo', 'mismatch', 'unrecorded'].includes(step.state)) || null;
   let action = '';
   if (next) {
     if (next.id === 'return' && creation.walletManaged && creation.walletPublicKey) {
