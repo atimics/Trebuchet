@@ -9082,6 +9082,19 @@ function renderSupplyEditorAfterTier(control) {
   if (key) document.querySelector(`[data-supply-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
 }
 
+// A pool line's venue, fee or range button: set it, then redraw the editor and keep focus on the button.
+function applyPoolSwitch(action, control) {
+  const value = control.dataset.value;
+  const patch = action === 'set-pool-venue' ? { venue: value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium' }
+    : action === 'set-pool-fee' ? { feeBps: Number(value) }
+      : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
+        : { tierIndex: Math.floor(Number(value)) };
+  setPoolVenueChoice(control.dataset.rowKey, patch);
+  invalidateClassicOutputs();
+  refreshClassicPreview();
+  renderSupplyEditorAfterTier(control);
+}
+
 function buildReportPreview() {
   const config = currentLaunchConfig();
   return {
@@ -26456,16 +26469,12 @@ function handleClick(event) {
     customizeQuotePool();
     return;
   }
-  if (action === 'set-pool-venue' || action === 'set-pool-fee' || action === 'set-pool-tier' || action === 'set-pool-range') {
-    const value = actionTarget.dataset.value;
-    const patch = action === 'set-pool-venue' ? { venue: value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium' }
-      : action === 'set-pool-fee' ? { feeBps: Number(value) }
-        : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
-          : { tierIndex: Math.floor(Number(value)) };
-    setPoolVenueChoice(actionTarget.dataset.rowKey, patch);
-    invalidateClassicOutputs();
-    refreshClassicPreview();
-    renderSupplyEditorAfterTier(actionTarget);
+  if (action === 'set-pool-venue' || action === 'set-pool-fee') {
+    applyPoolSwitch(action, actionTarget);
+    return;
+  }
+  if (action === 'set-pool-tier' || action === 'set-pool-range') {
+    applyPoolSwitch(action, actionTarget);
     return;
   }
   if (action === 'export-pool-config') {

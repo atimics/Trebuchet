@@ -1279,3 +1279,16 @@ function renderSupplyEditorAfterTier(control) {
   renderSupplyEditor();
   if (key) document.querySelector(`[data-supply-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
 }
+
+// A pool line's venue, fee or range button: set it, then redraw the editor and keep focus on the button.
+function applyPoolSwitch(action, control) {
+  const value = control.dataset.value;
+  const patch = action === 'set-pool-venue' ? { venue: value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium' }
+    : action === 'set-pool-fee' ? { feeBps: Number(value) }
+      : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
+        : { tierIndex: Math.floor(Number(value)) };
+  setPoolVenueChoice(control.dataset.rowKey, patch);
+  invalidateClassicOutputs();
+  refreshClassicPreview();
+  renderSupplyEditorAfterTier(control);
+}
