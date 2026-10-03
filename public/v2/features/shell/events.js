@@ -936,6 +936,11 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'cancel-support-job') {
+    cancelSavedSupportJob(actionTarget.dataset.jobId).catch((error) => notify(error.message || 'Support cancel failed'));
+    return;
+  }
+
   if (action === 'sweep-recovery-wallet') {
     sweepRecoveryWallet(actionTarget.dataset.wallet).catch((error) => notify(error.message || 'Recovery sweep failed'));
     return;
