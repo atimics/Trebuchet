@@ -653,7 +653,7 @@ var TrebuchetCore = (() => {
     if (!mime) throw new Error("Logo must be a PNG, JPG, or GIF image");
     return mime;
   }
-  var LOGO_MAX_DIMENSION_PX = 200;
+  var LOGO_MAX_DIMENSION_PX = 1024;
   var LOGO_MAX_BYTES = 100 * 1024;
   function readImageDimensions(buffer) {
     normalizeLogoImageMime(buffer);

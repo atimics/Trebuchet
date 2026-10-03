@@ -203,7 +203,9 @@ const CLASSIC_TOKEN_SYMBOL_MAX_BYTES = 10;
 const CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES = 1000;
 const CLASSIC_MAX_WHOLE_TOKEN_SUPPLY = 10_000_000_000n;
 const CLASSIC_LOGO_MAX_BYTES = 100 * 1024;
-const CLASSIC_LOGO_MAX_DIMENSION = 200;
+// No chain limits pixels: the metadata holds a link, and the image is uploaded free under ~100 KB.
+// The byte cap is the real limit; the report embeds the logo only when small and links it otherwise.
+const CLASSIC_LOGO_MAX_DIMENSION = 1024;
 const CLASSIC_LOGO_MIN_DIMENSION = 64;
 const LOGO_SOURCE_MAX_BYTES = 10 * 1024 * 1024;
 const LOGO_SOURCE_MAX_DIMENSION = 8192;

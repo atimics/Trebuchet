@@ -508,14 +508,11 @@ const MAX_TOKEN_SUPPLY = 10_000_000_000;
 // small enough to allow simple pixel-art logos while catching the
 // common "I picked the wrong file" case.
 const MAX_LOGO_BYTES = 100 * 1024;
-// 200×200 ceiling (was 1024): the logo embeds base64 into the metadata
-// JSON and the launch-report HTML, both under hard upload budgets — at
-// 1024px a logo could single-handedly blow the report past the ~95KB
-// sponsored-upload cap, which is how "my logo doesn't show in the report"
-// happened. The server enforces the same rule authoritatively
-// (validators.js assertLogoConstraints); this check just fails friendlier
-// and earlier. Keep the two in sync.
-const MAX_LOGO_DIMENSION = 200;
+// 1024×1024 ceiling. No chain limits pixels; the byte cap is the real limit (the free upload).
+// The report embeds the logo only when it is small and links the uploaded copy otherwise, so a
+// large logo no longer blows the report's budget. The server enforces the same rule
+// (validators.js assertLogoConstraints); this check just fails friendlier and earlier. Keep the two in sync.
+const MAX_LOGO_DIMENSION = 1024;
 const MIN_LOGO_DIMENSION = 64;
 
 // State for the simple-config UI. `mode` is the master switch:

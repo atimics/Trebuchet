@@ -319,14 +319,14 @@ try {
   // A logo restored from a saved launch skipped the picker; it is shrunk to the launch limit on restore.
   const restoredLogo = await page.evaluate(async () => {
     const canvas = document.createElement('canvas');
-    canvas.width = 320; canvas.height = 320;
-    canvas.getContext('2d').fillRect(0, 0, 320, 320);
+    canvas.width = 1400; canvas.height = 1400;
+    canvas.getContext('2d').fillRect(0, 0, 1400, 1400);
     const config = currentLaunchConfig();
     restoreLaunchConfigFromJournal({ launchConfig: { ...config, token: { ...config.token, logo: { dataUrl: canvas.toDataURL('image/png'), name: 'big.png' } } }, token: {} });
     for (let attempt = 0; attempt < 50 && !state.tokenLogo?.width; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 100));
     return { width: state.tokenLogo?.width, height: state.tokenLogo?.height };
   });
-  assert.ok(restoredLogo.width <= 200 && restoredLogo.height <= 200, `restored logo fits: ${JSON.stringify(restoredLogo)}`);
+  assert.ok(restoredLogo.width <= 1024 && restoredLogo.height <= 1024, `restored logo fits: ${JSON.stringify(restoredLogo)}`);
 
   assert.deepEqual(pageErrors, [], `page errors: ${pageErrors.join('; ')}`);
   console.log('v2 pool controls: ok');
