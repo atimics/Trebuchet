@@ -4609,6 +4609,25 @@ async function copyText(value, label = 'Value') {
   }
 }
 
+// A logo restored from a saved launch or a launch record skipped the picker, so it can be larger
+// than a launch accepts (an older save, or a copy enlarged for the address stamp). Put it through
+// the same shrinking the picker uses, now, instead of letting Create refuse it later.
+async function fitRestoredTokenLogo() {
+  const logo = state.tokenLogo;
+  const match = String(logo?.dataUrl || '').match(/^data:(image\/(?:png|jpeg|gif));base64,([A-Za-z0-9+/=]+)$/);
+  if (!match || typeof File !== 'function' || typeof atob !== 'function') return;
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  const file = new File([bytes], logo.name || 'token-logo', { type: match[1] });
+  const source = await loadLogoImage(file);
+  const fits = file.size <= CLASSIC_LOGO_MAX_BYTES
+    && source.width <= CLASSIC_LOGO_MAX_DIMENSION && source.height <= CLASSIC_LOGO_MAX_DIMENSION;
+  source.release();
+  if (fits || state.tokenLogo !== logo) return;
+  await selectTokenLogo(file);
+}
+
 function currentVanityConfig() {
   const prefix = $('#vanityStart').value.trim();
   const suffix = $('#vanityEnd').value.trim();
@@ -5794,6 +5813,10 @@ function restoreLaunchConfigFromJournal(journal = {}) {
       animated: token.logo.animated === true,
     };
     state.launchIdentity = null;
+    // Only while the logo has yet to be uploaded: once the metadata exists, the logo is not resent.
+    if (!journal?.token?.metadataUri) {
+      fitRestoredTokenLogo().catch((error) => { state.tokenLogoError = error.message || 'Token logo failed validation'; renderAll(); });
+    }
   }
   if ($('#mintFormat')) $('#mintFormat').value = token.mintFormat === 'classic-spl'
     ? 'classic-spl'
