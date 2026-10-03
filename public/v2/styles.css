@@ -17853,14 +17853,28 @@ body #view-launch .launch-budget-presets > button:last-child { border-right: 0; 
 body #view-launch .launch-budget-presets > button.is-selected { box-shadow: inset 0 -2px 0 var(--green); color: var(--green); }
 body #view-launch .launch-budget-recommender { padding: 4px 0; }
 
-/* Pair settings: a second pane that slides in beside the pools. */
-.supply-editor { overflow: hidden; }
-.supply-track { display: flex; width: 200%; transition: transform .28s cubic-bezier(.2,.7,.2,1); }
-.supply-track[data-pane="settings"] { transform: translateX(-50%); }
-.supply-pane { flex: 0 0 50%; min-width: 0; padding: 0 1px; }
-.supply-track:not(.is-sliding) .supply-pane:not(.is-active) { height: 0; overflow: hidden; visibility: hidden; }
-.supply-back { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 6px 0; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 11px; font-weight: 760; text-transform: uppercase; letter-spacing: .06em; cursor: pointer; }
-.supply-back:hover, .supply-back:focus-visible { color: var(--green); }
-@media (prefers-reduced-motion: reduce) { .supply-track { transition: none; } }
+/* Pair settings: an accordion under the pool's row. */
+.supply-settings-wrap { display: grid; grid-template-rows: 0fr; list-style: none; transition: grid-template-rows .28s cubic-bezier(.2,.7,.2,1); }
+.supply-settings-wrap.is-open { grid-template-rows: 1fr; }
+.supply-settings-wrap > .supply-settings { min-height: 0; overflow: hidden; }
+@media (prefers-reduced-motion: reduce) { .supply-settings-wrap { transition: none; } }
 #planSlides { transition: height .25s ease; }
 @media (prefers-reduced-motion: reduce) { #planSlides { transition: none; } }
+/* The map in an open pair stays short so the accordion fits the frame. */
+.supply-settings .pool-map svg { display: block; width: 100%; height: auto; max-height: 150px; }
+.supply-settings .pool-map { max-height: 160px; overflow: hidden; }
+.supply-settings-wrap > .supply-settings { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 12px; padding: 8px 14px 10px; }
+.supply-settings-wrap > .supply-settings > .supply-field:first-of-type { grid-column: span 1; }
+.supply-settings-wrap > .supply-settings textarea { min-height: 40px; max-height: 48px; }
+@container phase (max-width: 700px) { .supply-settings-wrap > .supply-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Tab changes slide the incoming page in from its side. */
+@keyframes page-in-right { from { transform: translateX(56px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes page-in-left { from { transform: translateX(-56px); opacity: 0; } to { transform: none; opacity: 1; } }
+.slide-in-right { animation: page-in-right .28s cubic-bezier(.2,.7,.2,1); }
+.slide-in-left { animation: page-in-left .28s cubic-bezier(.2,.7,.2,1); }
+#launchWorkspaceViewport { overflow-x: clip; }
+@media (prefers-reduced-motion: reduce) { .slide-in-right, .slide-in-left { animation: none; } }
+body #classicBridge.slide-in-right, body #planSlides.slide-in-right { animation: page-in-right .28s cubic-bezier(.2,.7,.2,1); }
+body #classicBridge.slide-in-left, body #planSlides.slide-in-left { animation: page-in-left .28s cubic-bezier(.2,.7,.2,1); }
+@media (prefers-reduced-motion: reduce) { body #classicBridge.slide-in-right, body #planSlides.slide-in-right, body #classicBridge.slide-in-left, body #planSlides.slide-in-left { animation: none; } }

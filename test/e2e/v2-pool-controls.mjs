@@ -98,9 +98,8 @@ try {
   });
   const panel = page.locator('.supply-settings').first();
   await panel.waitFor({ state: 'visible', timeout: 10_000 });
-  // The settings pane slides in; wait until it has stopped.
-  await page.waitForFunction(() => document.querySelector('.supply-track') && !document.querySelector('.supply-track.is-sliding') && document.querySelector('.supply-track').dataset.pane === 'settings');
-  await panel.scrollIntoViewIfNeeded();
+  // The settings open as an accordion; wait until the panel has finished opening.
+  await page.waitForFunction(() => { const wrap = document.querySelector('.supply-settings-wrap.is-open'); return wrap && wrap.getBoundingClientRect().height > 100 && document.querySelectorAll('.supply-settings-wrap:not(.is-open)').length === 0; });
   const shot = async (name) => { if (shots) await panel.screenshot({ path: path.join(shots, `${name}.png`) }); };
 
   const field = (suffix) => page.locator(`.supply-settings [data-supply-key$="${suffix}"]`).first();
@@ -292,7 +291,6 @@ try {
   // Narrow screen: no sideways scroll, and the tier labels stay inside.
   await page.setViewportSize({ width: 390, height: 900 });
   await page.waitForTimeout(250);
-  await panel.scrollIntoViewIfNeeded();
   const overflow = await page.evaluate(() => {
     const body = document.documentElement;
     const settings = document.querySelector('.supply-settings').getBoundingClientRect();

@@ -558,6 +558,22 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
   // Funding shows its own panel always; its tabs only choose the part.
   const running = ['run', 'record', 'recover'].includes(current) || workspace === 'fund';
+  // Moving between tabs slides the page in from the side it lies on. The slides share one
+  // track that already slides; the action page is a separate panel, so it slides itself.
+  const tabIndex = tabs.findIndex((tab) => tab.id === current);
+  const previous = strip.dataset.phase === workspace && strip.dataset.index !== undefined ? Number(strip.dataset.index) : null;
+  const wasRunning = strip.dataset.running === '1';
+  const direction = previous == null ? 0 : Math.sign(tabIndex - previous);
+  strip.dataset.phase = workspace;
+  strip.dataset.index = String(tabIndex);
+  strip.dataset.running = running ? '1' : '0';
+  const slideIn = (node) => {
+    if (!node || !direction) return;
+    node.classList.remove('slide-in-right', 'slide-in-left');
+    void node.offsetWidth;
+    node.classList.add(direction > 0 ? 'slide-in-right' : 'slide-in-left');
+    node.addEventListener('animationend', () => node.classList.remove('slide-in-right', 'slide-in-left'), { once: true });
+  };
   if (bridge) {
     bridge.dataset.fundTab = workspace === 'fund' ? current : '';
     bridge.dataset.finishTab = workspace === 'finish' ? current : '';
@@ -590,6 +606,8 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const frame = $('#planSlides');
   if (frame) frame.hidden = running;
   if (bridge) bridge.hidden = !running;
+  if (running && (previous == null || previous !== tabIndex)) slideIn(bridge);
+  else if (!running && wasRunning) slideIn(frame);
   hideRunOnly.forEach((selector) => { const node = $(selector); if (node && !running) node.hidden = true; });
   if (!running) $$('[data-classic-workspace]').forEach((panel) => { panel.hidden = true; });
   $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running);
