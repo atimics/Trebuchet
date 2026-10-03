@@ -159,7 +159,7 @@ function bindEvents() {
     selectTokenLogo(event.target.files?.[0] || null);
   });
   $('#liquidityBudgetSol')?.addEventListener('input', (event) => {
-    applyLaunchBudgetRecommendation(event.target.value, { announce: false });
+    applyLaunchBudgetRecommendation(event.target.value, { announce: false, fromInput: true });
   });
 
   $('#quickTokenName')?.addEventListener('input', renderQuickLaunchCost);
