@@ -498,6 +498,10 @@ test('v2 release gate validates evidence, attestation, ancestry, and trust toget
 
 test('field evidence permits later documentation and tests, and requires the same runtime', async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), 'trebuchet-field-runtime-'));
+  // Git hooks export repository selectors. Use the fixture's own repository.
+  const selectors = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'];
+  const previous = Object.fromEntries(selectors.map((key) => [key, process.env[key]]));
+  for (const key of selectors) delete process.env[key];
   const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
   const save = async (file, value) => {
     await mkdir(path.dirname(path.join(cwd, file)), { recursive: true });
@@ -532,6 +536,9 @@ test('field evidence permits later documentation and tests, and requires the sam
     }
     await assert.rejects(gitRuntimeMatches('c'.repeat(40), git('rev-parse', 'HEAD'), cwd));
   } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value !== undefined) process.env[key] = value;
+    }
     await rm(cwd, { recursive: true, force: true });
   }
 });

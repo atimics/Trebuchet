@@ -281,13 +281,24 @@ const leanConfig = (extra = {}) => normalizeDammV2Config({ token: { name: 'Trebu
   assert.equal(found.pool.toBase58(), sent.pool, 'the derived pool address is the real one');
   assert.equal(found.position.toBase58(), sent.position, 'the derived position address is the real one');
   assert.equal(found.poolExists && found.positionExists, true);
+  // Trading can happen while the app is closed. Recovery checks the saved
+  // locked position and range after tokens have left the vault.
+  const tradedPool = await cpAmm.fetchPoolState(found.pool);
+  await sendAndConfirmTransaction(connection, await cpAmm.swap({
+    payer: trader.publicKey, pool: found.pool, inputTokenMint: NATIVE_MINT, outputTokenMint: mint,
+    amountIn: new BN(LAMPORTS_PER_SOL), minimumAmountOut: new BN(0),
+    tokenAMint: tradedPool.tokenAMint, tokenBMint: tradedPool.tokenBMint,
+    tokenAVault: tradedPool.tokenAVault, tokenBVault: tradedPool.tokenBVault,
+    tokenAProgram: TOKEN_2022_PROGRAM_ID, tokenBProgram: TOKEN_PROGRAM_ID, referralTokenAccount: null,
+  }), [trader]);
+  assert.ok((await getAccount(connection, tradedPool.tokenAVault, 'confirmed', TOKEN_2022_PROGRAM_ID)).amount < SUPPLY);
   const before = await lamports(wallet.publicKey);
   const resumed = await runLaunch({ id: record.id, walletSecretKey: Array.from(wallet.secretKey), deps: makeDeps(wallet, { createToken: async () => { throw new Error('token must not be created again'); } }) });
   assert.equal(resumed.status, 'completed');
   assert.equal(resumed.steps.pool.adopted, true);
   assert.equal(resumed.steps.pool.pool, sent.pool);
   assert.equal(before - (await lamports(wallet.publicKey)), 0, 'adopting costs nothing: no second pool, no fee');
-  console.log('ok  resume after a crash adopts the existing pool and spends nothing');
+  console.log('ok  resume after a buy adopts the existing pool and spends nothing');
 }
 
 // A pool for this token that is not this launch's position is never adopted.
@@ -319,10 +330,13 @@ const leanConfig = (extra = {}) => normalizeDammV2Config({ token: { name: 'Trebu
   let failed = store.get(record.id);
   assert.equal(failed.status, 'failed');
   assert.equal(failed.error, 'upload failed');
-  assert.equal(failed.steps.token, null);
+  const savedMint = failed.steps.token.mint;
+  assert.equal(failed.steps.token.complete, false);
+  assert.equal(store.loadTokenMint(record.id).publicKey, savedMint);
   assert.equal(failed.steps.pool, null);
   const retried = await runLaunch({ id: record.id, walletSecretKey: Array.from(wallet.secretKey), deps: makeDeps(wallet) });
   assert.equal(retried.status, 'completed');
+  assert.equal(retried.steps.token.mint, savedMint);
   assert.equal(retried.error, null);
   // An unverified token never reaches the pool stage.
   const unsafe = store.create({ config: leanConfig(), walletPublicKey: wallet.publicKey.toBase58() });
