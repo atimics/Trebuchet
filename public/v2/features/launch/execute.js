@@ -1,4 +1,4 @@
-async function checkExecutionReadiness() {
+async function checkExecutionReadiness({ retried = false } = {}) {
   await autoVerifyQuoteTokens();
   const config = currentLaunchConfig();
   const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
@@ -14,9 +14,21 @@ async function checkExecutionReadiness() {
         airdropRecipients: config.poolTopology.airdrop.recipients,
       });
       rememberLaunchProof(state.executionReadiness);
-      const blockerCount = state.executionReadiness.blockers?.length || 0;
+      const blockers = state.executionReadiness.blockers || [];
+      // The server binds the estimate to more of the plan than the screen does. A stale estimate is
+      // fixed by estimating again, which is read-only: do it and check once more, before the token exists.
+      if (!retried && blockers.some((item) => item.id === 'funding-estimate-stale')
+          && state.executionReadiness.nextEndpoint !== '/api/create-lp') {
+        state.executionChecking = false;
+        notify('The plan changed since the estimate: estimating again');
+        if (state.classicFundingEstimate) state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };
+        await estimateClassicFunding();
+        return checkExecutionReadiness({ retried: true });
+      }
       renderAll();
-      notify(blockerCount ? `${blockerCount} launch blocker${blockerCount === 1 ? '' : 's'}` : 'Launch ready');
+      notify(blockers.length
+        ? `Can't launch yet: ${blockers[0].title || 'see the list'}${blockers.length > 1 ? ` (+${blockers.length - 1} more, listed on the right)` : ''}`
+        : 'Launch ready');
       return;
     }
 

@@ -6318,7 +6318,11 @@ function renderLaunchNextRail(facts, next, workspace) {
   const liquidityDone = ['done', 'recorded'].includes(factOf('liquidity')?.state);
   const leftovers = Boolean(walletKey) && !practice && sweepFact?.state !== 'done'
     && ((holds != null && holds > 0.001) || tokens.length > 0);
-  const launchReady = fundFact?.state === 'done' && next && ['mint', 'liquidity'].includes(next.id) && !busy;
+  // A readiness check that found blockers greys Launch out and lists them, rather than offering a
+  // button that only answers with a toast.
+  const readiness = state.executionReadiness;
+  const blockers = !practice && readiness?.status === 'blocked' && Array.isArray(readiness.blockers) ? readiness.blockers : [];
+  const launchReady = fundFact?.state === 'done' && next && ['mint', 'liquidity'].includes(next.id) && !busy && !blockers.length;
   const fundingTodo = !practice && fundFact && fundFact.state !== 'done' && next?.id === 'fund';
   const fundingButton = !fundingTodo ? ''
     : !estimate || estimateStatus.stale
@@ -6373,6 +6377,11 @@ function renderLaunchNextRail(facts, next, workspace) {
     <section class="rail-next${next?.state === 'running' ? ' is-running' : ''}" aria-live="polite">
       ${action}
       ${launchReady && !practice ? '<p class="rail-warn">Launch cannot be undone.</p>' : ''}
+      ${blockers.length && !beforePlan && !busy ? `<div class="rail-blockers" role="status">
+        <span class="rail-label">Can't launch yet</span>
+        <ul>${blockers.map((item) => `<li><strong>${escapeHtml(item.title || 'Blocked')}</strong>${item.detail ? `<span>${escapeHtml(item.detail)}</span>` : ''}</li>`).join('')}</ul>
+        <button class="rail-link" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}>${state.executionChecking ? 'Checking…' : 'Check again'}</button>
+      </div>` : ''}
     </section>
     ${walletBlock}${fundingBlock}${positionsBlock}`;
 }
@@ -17245,7 +17254,13 @@ function classicFundingEstimateRequest(config = currentLaunchConfig()) {
   };
 }
 
+// The server's readiness check decides whether an estimate is current, so the screen asks the same
+// core function: a second copy here normalized support layers differently and every preset launch
+// was blocked as "estimate stale" while the screen called it covered.
 function classicFundingEstimateFingerprint(config = currentLaunchConfig()) {
+  if (typeof TrebuchetCore !== 'undefined' && typeof TrebuchetCore.v2FundingEstimateFingerprint === 'function') {
+    return TrebuchetCore.v2FundingEstimateFingerprint(config);
+  }
   return JSON.stringify(stableFundingFingerprintValue(classicFundingEstimateRequest(config)));
 }
 
@@ -24847,7 +24862,7 @@ async function detectFundingWallet({ quiet = false } = {}) {
   }
 }
 
-async function checkExecutionReadiness() {
+async function checkExecutionReadiness({ retried = false } = {}) {
   await autoVerifyQuoteTokens();
   const config = currentLaunchConfig();
   const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
@@ -24863,9 +24878,21 @@ async function checkExecutionReadiness() {
         airdropRecipients: config.poolTopology.airdrop.recipients,
       });
       rememberLaunchProof(state.executionReadiness);
-      const blockerCount = state.executionReadiness.blockers?.length || 0;
+      const blockers = state.executionReadiness.blockers || [];
+      // The server binds the estimate to more of the plan than the screen does. A stale estimate is
+      // fixed by estimating again, which is read-only: do it and check once more, before the token exists.
+      if (!retried && blockers.some((item) => item.id === 'funding-estimate-stale')
+          && state.executionReadiness.nextEndpoint !== '/api/create-lp') {
+        state.executionChecking = false;
+        notify('The plan changed since the estimate: estimating again');
+        if (state.classicFundingEstimate) state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };
+        await estimateClassicFunding();
+        return checkExecutionReadiness({ retried: true });
+      }
       renderAll();
-      notify(blockerCount ? `${blockerCount} launch blocker${blockerCount === 1 ? '' : 's'}` : 'Launch ready');
+      notify(blockers.length
+        ? `Can't launch yet: ${blockers[0].title || 'see the list'}${blockers.length > 1 ? ` (+${blockers.length - 1} more, listed on the right)` : ''}`
+        : 'Launch ready');
       return;
     }
 

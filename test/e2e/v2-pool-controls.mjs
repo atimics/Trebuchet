@@ -304,6 +304,18 @@ try {
   assert.equal(overflow.ticksOutside, 0, 'tier labels stay inside the panel');
   await shot('05-narrow');
 
+  // The screen and the server's readiness check must agree on whether an estimate is current, for
+  // every preset (layered support once made each preset launch read as "estimate stale").
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.click('.coin-fact[data-coin-fact="liquidity"]');
+  await page.click('[data-plan-tab="run"]');
+  for (const preset of ['spark', 'anchor', 'constellation', 'vortex']) {
+    await page.click(`[data-preset="${preset}"]`);
+    await page.waitForTimeout(300);
+    const agree = await page.evaluate(() => classicFundingEstimateFingerprint(currentLaunchConfig()) === TrebuchetCore.v2FundingEstimateFingerprint(currentLaunchConfig()));
+    assert.ok(agree, `${preset}: the screen's estimate fingerprint matches the server's`);
+  }
+
   assert.deepEqual(pageErrors, [], `page errors: ${pageErrors.join('; ')}`);
   console.log('v2 pool controls: ok');
 } finally {
