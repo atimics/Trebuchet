@@ -405,8 +405,8 @@ function hubPickerRows(catalog = {}, records = []) {
 
 // The picker is a page of the Pairs slide, not a list inside a scrolling box: the pair list steps
 // aside while it is open, the token CA is the first thing in it, and the tokens are a fixed grid
-// of twelve with a pager when there are more.
-const HUB_PICKER_PAGE_SIZE = 12;
+// of nine with a pager when there are more.
+const HUB_PICKER_PAGE_SIZE = 9;
 
 function renderHubPicker() {
   const host = $('#hubPicker');
@@ -429,15 +429,38 @@ function renderHubPicker() {
     </div>
     <p class="hub-picker-status" role="status">${escapeHtml(hubPicker.loading ? 'Finding a pool…' : hubPicker.error)}</p>
     ${result ? `<div class="hub-picker-result">
-      <span><strong>${escapeHtml(result.name)} · ${escapeHtml(result.symbol)} / ${escapeHtml(result.via?.symbol || 'SOL')}</strong>
-      <small>${escapeHtml(pool.dex)}${result.via ? ` · routes SOL → ${escapeHtml(result.via.symbol)} → ${escapeHtml(result.symbol)}` : ''} · ${escapeHtml(shortAddress(pool.address))} · ${escapeHtml(pool.source)}</small></span>
-      <button class="pill-button primary" type="button" data-action="use-hub-token">Use ${escapeHtml(result.symbol)}</button></div>` : ''}
+      ${hubTileHtml({ ...result, mint: result.mint }, { tag: 'div', trailing: `<button class="pill-button primary" type="button" data-action="use-hub-token">Use ${escapeHtml(result.symbol)}</button>`, status: `${pool.dex}${result.via ? ` · routes SOL → ${result.via.symbol} → ${result.symbol}` : ''} · ${pool.source}` })}</div>` : ''}
     <div class="hub-picker-grid" role="group" aria-label="Hub tokens">
-      ${shown.map((hub) => `<button class="hub-picker-token" type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}" title="${escapeHtml(hub.mint)}">
-        <strong>${escapeHtml(hub.name || hub.symbol || shortAddress(hub.mint))}</strong><span>${escapeHtml(hub.symbol || 'HUB')}${hub.source === 'discovery' ? ' · found' : ''}</span>
-      </button>`).join('')}
+      ${shown.map((hub) => hubTileHtml(hub, { tag: 'button', attrs: `type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}" title="${escapeHtml(hub.mint)}"` })).join('')}
     </div>
     ${pages > 1 ? `<div class="hub-picker-pager"><button type="button" class="pill-button" data-action="hub-picker-page" data-dir="-1" aria-label="Previous tokens" ${hubPicker.page === 0 ? 'disabled' : ''}><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></button><span>${hubPicker.page + 1} / ${pages}</span><button type="button" class="pill-button" data-action="hub-picker-page" data-dir="1" aria-label="Next tokens" ${hubPicker.page >= pages - 1 ? 'disabled' : ''}><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button></div>` : ''}`;
+  hydrateCoinCards();
+  requestHubLogos(shown.map((hub) => hub.mint));
+}
+
+// The standard coin tile, as on Coins and Discovery. Logos are read once per token and kept.
+const hubLogos = new Map();
+const hubLogoPending = new Set();
+
+function hubTileHtml(hub = {}, options = {}) {
+  const mint = hub.mint || hubPicker.mint || '';
+  return coinCardHtml(
+    { name: hub.name || hub.symbol, symbol: hub.symbol, address: mint, image: hub.image || hub.imageUrl || hub.logoDataUrl || hubLogos.get(mint) || '' },
+    { variant: 'row', ...options },
+  );
+}
+
+function requestHubLogos(mints) {
+  const missing = mints.filter((mint) => mint && !hubLogos.has(mint) && !hubLogoPending.has(mint));
+  if (!missing.length || !state.apiClient?.getTokenLogos) return;
+  missing.forEach((mint) => hubLogoPending.add(mint));
+  state.apiClient.getTokenLogos(missing)
+    .then((logos) => { missing.forEach((mint) => hubLogos.set(mint, logos?.[mint] || null)); })
+    .catch(() => { missing.forEach((mint) => hubLogos.set(mint, null)); })
+    .finally(() => {
+      missing.forEach((mint) => hubLogoPending.delete(mint));
+      if (hubPicker.open) renderHubPicker();
+    });
 }
 
 async function openHubPicker() {

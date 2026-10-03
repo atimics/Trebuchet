@@ -3494,6 +3494,23 @@ app.get('/api/v2/flywheel-hubs', (_req, res) => {
   }
 });
 
+// Logos for the tokens on the Add pair page: at most 24 mints per call, each read through the
+// token info cache, so a repeat costs nothing. A token with no logo comes back as null.
+app.post('/api/v2/token-logos', async (req, res) => {
+  try {
+    const mints = [...new Set((Array.isArray(req.body?.mints) ? req.body.mints : []).map((mint) => String(mint || '').trim()))]
+      .filter((mint) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)).slice(0, 24);
+    const rpcUrl = getRpcUrl();
+    const found = await Promise.all(mints.map(async (mint) => {
+      const info = await getTokenMetadata(mint, { rpcUrl }).catch(() => null);
+      return [mint, info?.imageUrl || null];
+    }));
+    res.json({ success: true, logos: Object.fromEntries(found) });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
 app.post('/api/v2/flywheel-hubs/resolve', async (req, res) => {
   try {
     const hub = await resolveFlywheelHub(req.body?.mint, { rpcUrl: getRpcUrl() });
