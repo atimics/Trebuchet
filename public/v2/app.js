@@ -7764,7 +7764,10 @@ function renderSupplyEditor() {
 
   target.innerHTML = `
     <div class="supply-bar" role="img" aria-label="Supply split">${segments}${gap}</div>
-    <div class="supply-group-head"><span>Pools</span><span data-supply-pools-head>${pools.length} · ${pct(poolPercent)}</span></div>
+    <div class="supply-group-head"><span>Pools</span><span class="pool-config-actions">
+      <button class="pill-button" type="button" data-action="export-pool-config" title="Copy the pool config to the clipboard"><i class="fa-regular fa-copy" aria-hidden="true"></i> Export</button>
+      <button class="pill-button" type="button" data-action="import-pool-config" title="Load a pool config from the clipboard"><i class="fa-solid fa-file-import" aria-hidden="true"></i> Import</button>
+      <span data-supply-pools-head>${pools.length} · ${pct(poolPercent)}</span></span></div>
     <ol class="supply-list">${pools.map(rowHtml).join('')}</ol>
     ${pairArbitrageWarningHtml(pools)}
     <button class="supply-add" type="button" data-action="add-custom-pool"><i class="fa-solid fa-plus"></i> Add pair</button>
@@ -8250,6 +8253,87 @@ function renderAirdropPanel() {
   $('#airdropRecipientPreview').innerHTML = hasError
     ? `<div class="mini-row danger"><span>${escapeHtml(state.airdropParseError || state.airdropBudgetError)}</span><strong>Fix</strong></div>`
     : previewRows || `<div class="mini-row"><span>${airdrop.enabled ? 'Manual count only; attach CSV before real transfer.' : 'No recipients attached.'}</span><strong>${airdrop.source}</strong></div>`;
+}
+
+
+// Pool config as JSON: every pool with its share, tier, slices, ladder and
+// support, plus the launch SOL and target market cap. No token, wallet or key.
+const POOL_CONFIG_FORMAT = 'trebuchet-pool-config';
+
+function buildPoolConfigExport() {
+  const config = currentLaunchConfig();
+  const topology = config.poolTopology || {};
+  return {
+    format: POOL_CONFIG_FORMAT,
+    version: 1,
+    launchSol: config.launchSol,
+    targetMarketCapUsd: topology.targetMarketCapUsd,
+    pools: topology.pools || [],
+  };
+}
+
+function exportPoolConfig() {
+  return copyText(JSON.stringify(buildPoolConfigExport(), null, 2), 'Pool config');
+}
+
+function parsePoolConfigImport(text) {
+  let data;
+  try { data = JSON.parse(String(text || '').trim()); } catch { throw new Error('That is not JSON'); }
+  if (!data || data.format !== POOL_CONFIG_FORMAT) throw new Error('That is not a Trebuchet pool config');
+  if (data.version !== 1) throw new Error('This pool config is from a newer version');
+  if (!Array.isArray(data.pools) || !data.pools.length || data.pools.length > 24) {
+    throw new Error('The pool config has no usable pools');
+  }
+  data.pools.forEach((pool) => {
+    const percent = Number(pool?.supplyPercent);
+    if (!pool || typeof pool !== 'object' || !Number.isFinite(percent) || percent < 0 || percent > 100) {
+      throw new Error('A pool in the config has a bad supply share');
+    }
+  });
+  if (data.pools.reduce((sum, pool) => sum + Number(pool.supplyPercent), 0) > 100.0001) {
+    throw new Error('The pool shares add up to more than 100%');
+  }
+  return data;
+}
+
+async function readPoolConfigText() {
+  try {
+    if (navigator.clipboard?.readText) return await navigator.clipboard.readText();
+  } catch {}
+  return openOperatorPrompt({
+    eyebrow: 'Import',
+    title: 'Paste a pool config',
+    detail: 'Automatic clipboard access is unavailable. Paste the exported JSON below.',
+    label: 'Pool config',
+    multiline: true,
+    confirmLabel: 'Import',
+  });
+}
+
+async function importPoolConfig() {
+  const text = await readPoolConfigText();
+  if (text == null) return;
+  try {
+    const data = parsePoolConfigImport(text);
+    const current = currentLaunchConfig();
+    // Only the pools, launch SOL and market cap change; token, vanity and
+    // airdrop stay as they are.
+    restoreLaunchConfigFromJournal({
+      launchConfig: {
+        ...current,
+        launchSol: Number.isFinite(Number(data.launchSol)) ? Number(data.launchSol) : current.launchSol,
+        poolTopology: {
+          ...current.poolTopology,
+          pools: data.pools,
+          targetMarketCapUsd: data.targetMarketCapUsd ?? current.poolTopology?.targetMarketCapUsd,
+        },
+      },
+    });
+    renderAll();
+    notify(`Imported ${data.pools.length} pool${data.pools.length === 1 ? '' : 's'}`);
+  } catch (error) {
+    notify(error.message || 'Could not import the pool config');
+  }
 }
 
 function buildReportPreview() {
@@ -25443,6 +25527,14 @@ function handleClick(event) {
   }
   if (action === 'customize-quote-pool') {
     customizeQuotePool();
+    return;
+  }
+  if (action === 'export-pool-config') {
+    exportPoolConfig();
+    return;
+  }
+  if (action === 'import-pool-config') {
+    importPoolConfig();
     return;
   }
   if (action === 'toggle-nav') {

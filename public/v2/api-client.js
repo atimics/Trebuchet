@@ -451,6 +451,8 @@
           if (!data?.token) {
             throw new V2ApiError('API session response missing token.', { code: 'BAD_SESSION' });
           }
+          // Rent changes the funding estimate; the server reads it from the chain.
+          globalThis.TrebuchetCore?.setRentLamportsPerByte?.(data.rentLamportsPerByte);
           return data.token;
         });
       }

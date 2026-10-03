@@ -17730,3 +17730,5 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 @container phase (max-width: 640px) {
   #launchConfig { grid-template-columns: minmax(0, 1fr); }
 }
+
+.pool-config-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }

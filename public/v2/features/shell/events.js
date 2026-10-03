@@ -278,6 +278,14 @@ function handleClick(event) {
     customizeQuotePool();
     return;
   }
+  if (action === 'export-pool-config') {
+    exportPoolConfig();
+    return;
+  }
+  if (action === 'import-pool-config') {
+    importPoolConfig();
+    return;
+  }
   if (action === 'toggle-nav') {
     setNavMode(document.body.dataset.nav === 'icons' ? 'full' : 'icons');
     return;
