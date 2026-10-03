@@ -18,6 +18,7 @@ const whole = (value) => Number.isSafeInteger(value) && value >= 0;
 export function createPreparedTransactionService({
   owner, store, connection, signer, kind, network, expectedGenesisHash,
   authorize, checkResult, receiptCreditAccount = null, receiptCreditAccounts = null, now = Date.now, timeoutMs = 60_000, pollIntervalMs = 500,
+  feeQuoteAttempts = 20, feeQuoteDelayMs = 1000,
 }) {
   if (!kind || typeof authorize !== 'function' || typeof checkResult !== 'function') throw new TypeError('Supply the operation kind, approval, and result checks');
   if (receiptCreditAccount !== null && typeof receiptCreditAccount !== 'string') throw new TypeError('Name the reviewed refund account');
@@ -58,7 +59,14 @@ export function createPreparedTransactionService({
     return index;
   });
   const checkFee = async (message, payload) => {
-    const quote = await connection.getFeeForMessage(message, 'finalized');
+    // A load-balanced RPC can answer from a node that has not yet seen this finalized blockhash; it
+    // returns no fee. That is a wait, so ask again for a short while before calling it unreadable.
+    let quote;
+    for (let attempt = 1; attempt <= feeQuoteAttempts; attempt += 1) {
+      quote = await connection.getFeeForMessage(message, 'finalized');
+      if (whole(quote?.context?.slot) && whole(quote.value)) break;
+      if (attempt < feeQuoteAttempts) await new Promise((resolve) => setTimeout(resolve, feeQuoteDelayMs));
+    }
     if (!whole(quote?.context?.slot) || !whole(quote.value)) throw uncertain('Read the complete transaction fee');
     if (quote.value > payload.feeCeilingLamports) throw fail('SPEND_LIMIT_EXCEEDED', 'The transaction fee exceeds the saved ceiling');
     if (publicJson(await accountKeys(message)) !== publicJson(payload.accountKeys)) throw uncertain('Verify the saved lookup table addresses');
