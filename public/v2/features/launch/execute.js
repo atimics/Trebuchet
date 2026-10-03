@@ -477,7 +477,11 @@ async function runFullLaunch() {
     ? String(state.lastRunEnvelope.id || '')
     : '';
   if (!runEnvelopeId) {
-    notify('Review and arm the local run before starting a full launch');
+    // Launch reviews first: it opens the operation review, and approving it starts the launch.
+    state.launchAfterArm = true;
+    await reviewAndArmRun();
+    if (state.lastRunEnvelope?.status === 'armed') { state.launchAfterArm = false; return runFullLaunch(); }
+    if (!state.approvalOpen) state.launchAfterArm = false;
     return;
   }
   if (state.fullRunRunning || state.realExecutionRunning) {
@@ -763,6 +767,13 @@ async function runLaunchEnvelope() {
     : state.executionReadiness?.nextEndpoint === '/api/finish-token-creation'
       ? 'Finish token safely'
     : state.executionReadiness?.nextAction || 'the next operation';
+  if (state.launchAfterArm && !recoveryEndpoint) {
+    state.launchAfterArm = false;
+    notify('Approved. Launching.');
+    runFullLaunch().catch((error) => notify(error.message || 'The launch could not start'));
+    return;
+  }
+  state.launchAfterArm = false;
   notify(`Approved. Next: ${nextOperation}.`);
   window.requestAnimationFrame(() => {
     document.querySelector(`[data-classic-workspace="${state.launchWorkspace}"] [data-action="execute-next-run"]`)?.focus();

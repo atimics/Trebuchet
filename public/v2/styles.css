@@ -18133,3 +18133,13 @@ body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }
 .live-launch-steps li.is-blocked { color: var(--ink); }
 .live-launch-steps li.is-blocked i { color: var(--red, #ff5d5d); }
 .live-launch-steps li.is-todo i { font-size: 7px; opacity: .6; }
+
+/* Report: publishing to Arweave is an on/off switch, not a button that names the other choice. */
+.report-publish-switch { display: inline-flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 4px 0 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-weight: 600; cursor: pointer; }
+.report-publish-switch .switch-track { position: relative; width: 36px; height: 20px; border: 1px solid var(--line-strong); border-radius: 999px; background: transparent; transition: background .15s, border-color .15s; }
+.report-publish-switch .switch-track span { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
+.report-publish-switch[aria-checked="true"] .switch-track { background: color-mix(in srgb, var(--green) 25%, transparent); border-color: var(--green); }
+.report-publish-switch[aria-checked="true"] .switch-track span { transform: translateX(16px); background: var(--green); }
+.report-publish-switch:focus-visible { outline: none; }
+.report-publish-switch:focus-visible .switch-track { box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 45%, transparent); }
+@media (prefers-reduced-motion: reduce) { .report-publish-switch .switch-track, .report-publish-switch .switch-track span { transition: none; } }

@@ -490,6 +490,7 @@ const state = {
   fullRunRunning: false,
   fullRunStep: null,
   launchDetailsExpanded: false,
+  launchAfterArm: false,
   lastFullRun: null,
   lastRealExecution: null,
   executionLedger: [],
@@ -6212,13 +6213,10 @@ function refreshLaunchChainCheck(facts) {
 function renderLaunchWorkspace() {
   const facts = coinFacts();
   const next = nextCoinFact(facts);
-  const previous = state.launchFactStates || {};
   const open = launchWorkspaces.some((item) => item.id === state.launchWorkspace) ? state.launchWorkspace : null;
-  // The open row stays open while you look at it. When what it shows becomes
-  // true, the row that needs doing opens instead: that is the only "next".
-  const openFact = facts.find((fact) => fact.id === open);
-  const openJustHeld = openFact && previous[open] && previous[open] !== openFact.state && ['done', 'recorded'].includes(openFact.state);
-  let workspace = !open || openJustHeld ? (next?.id || open || 'finish') : open;
+  // The open row stays open while you look at it, even once it is done: the
+  // rail says what is next, and moving the screen out from under you is not.
+  let workspace = open || next?.id || 'finish';
   // Naming the token is the first thing the Token phase asks: Plan is not a phase of its own.
   if (workspace === 'configure') {
     workspace = 'mint';
@@ -14517,7 +14515,7 @@ function renderReportPanel() {
   summary.textContent = publish ? 'Saved on Arweave' : 'Local only';
   summary.className = `risk-badge ${publish ? '' : 'warn'}`;
   const publishButton = document.querySelector('[data-action="toggle-report-publish"]');
-  if (publishButton) publishButton.textContent = publish ? 'Keep it on this computer only' : 'Also save it on Arweave';
+  if (publishButton) publishButton.setAttribute('aria-checked', String(Boolean(publish)));
   $('#reportPreview').innerHTML = `
     <div class="mini-row"><span>Launch report</span><strong>${publish ? 'Saved permanently on Arweave and on this computer' : 'Kept on this computer only'}</strong></div>
     <div class="mini-row ${destination && !isProbablySolanaAddress(destination) ? 'danger' : ''}"><span>Return wallet</span><strong>${escapeHtml(destinationState)}</strong></div>
@@ -25327,7 +25325,11 @@ async function runFullLaunch() {
     ? String(state.lastRunEnvelope.id || '')
     : '';
   if (!runEnvelopeId) {
-    notify('Review and arm the local run before starting a full launch');
+    // Launch reviews first: it opens the operation review, and approving it starts the launch.
+    state.launchAfterArm = true;
+    await reviewAndArmRun();
+    if (state.lastRunEnvelope?.status === 'armed') { state.launchAfterArm = false; return runFullLaunch(); }
+    if (!state.approvalOpen) state.launchAfterArm = false;
     return;
   }
   if (state.fullRunRunning || state.realExecutionRunning) {
@@ -25613,6 +25615,13 @@ async function runLaunchEnvelope() {
     : state.executionReadiness?.nextEndpoint === '/api/finish-token-creation'
       ? 'Finish token safely'
     : state.executionReadiness?.nextAction || 'the next operation';
+  if (state.launchAfterArm && !recoveryEndpoint) {
+    state.launchAfterArm = false;
+    notify('Approved. Launching.');
+    runFullLaunch().catch((error) => notify(error.message || 'The launch could not start'));
+    return;
+  }
+  state.launchAfterArm = false;
   notify(`Approved. Next: ${nextOperation}.`);
   window.requestAnimationFrame(() => {
     document.querySelector(`[data-classic-workspace="${state.launchWorkspace}"] [data-action="execute-next-run"]`)?.focus();
@@ -27132,6 +27141,7 @@ function handleClick(event) {
 
   if (action === 'close-approval') {
     state.approvalOpen = false;
+    state.launchAfterArm = false;
     renderExtension();
     return;
   }

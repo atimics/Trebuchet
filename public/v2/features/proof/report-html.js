@@ -1460,7 +1460,7 @@ function renderReportPanel() {
   summary.textContent = publish ? 'Saved on Arweave' : 'Local only';
   summary.className = `risk-badge ${publish ? '' : 'warn'}`;
   const publishButton = document.querySelector('[data-action="toggle-report-publish"]');
-  if (publishButton) publishButton.textContent = publish ? 'Keep it on this computer only' : 'Also save it on Arweave';
+  if (publishButton) publishButton.setAttribute('aria-checked', String(Boolean(publish)));
   $('#reportPreview').innerHTML = `
     <div class="mini-row"><span>Launch report</span><strong>${publish ? 'Saved permanently on Arweave and on this computer' : 'Kept on this computer only'}</strong></div>
     <div class="mini-row ${destination && !isProbablySolanaAddress(destination) ? 'danger' : ''}"><span>Return wallet</span><strong>${escapeHtml(destinationState)}</strong></div>

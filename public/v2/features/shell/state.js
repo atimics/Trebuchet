@@ -489,6 +489,7 @@ const state = {
   fullRunRunning: false,
   fullRunStep: null,
   launchDetailsExpanded: false,
+  launchAfterArm: false,
   lastFullRun: null,
   lastRealExecution: null,
   executionLedger: [],

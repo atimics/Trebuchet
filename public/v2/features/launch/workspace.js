@@ -332,13 +332,10 @@ function refreshLaunchChainCheck(facts) {
 function renderLaunchWorkspace() {
   const facts = coinFacts();
   const next = nextCoinFact(facts);
-  const previous = state.launchFactStates || {};
   const open = launchWorkspaces.some((item) => item.id === state.launchWorkspace) ? state.launchWorkspace : null;
-  // The open row stays open while you look at it. When what it shows becomes
-  // true, the row that needs doing opens instead: that is the only "next".
-  const openFact = facts.find((fact) => fact.id === open);
-  const openJustHeld = openFact && previous[open] && previous[open] !== openFact.state && ['done', 'recorded'].includes(openFact.state);
-  let workspace = !open || openJustHeld ? (next?.id || open || 'finish') : open;
+  // The open row stays open while you look at it, even once it is done: the
+  // rail says what is next, and moving the screen out from under you is not.
+  let workspace = open || next?.id || 'finish';
   // Naming the token is the first thing the Token phase asks: Plan is not a phase of its own.
   if (workspace === 'configure') {
     workspace = 'mint';
