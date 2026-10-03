@@ -307,6 +307,10 @@ function handleClick(event) {
     applyPoolSwitch(action, actionTarget);
     return;
   }
+  if (action === 'reconcile-network') {
+    reconcileNetwork(actionTarget.dataset.match);
+    return;
+  }
   if (action === 'export-pool-config') {
     exportPoolConfig();
     return;

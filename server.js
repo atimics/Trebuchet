@@ -70,6 +70,8 @@ import {
   getConfig as getRpcConfig,
   getRpcUrl,
   setActiveRpc,
+  matchNetworkToRpc,
+  matchRpcToNetwork,
   addSavedRpc,
   removeSavedRpc,
   testRpc,
@@ -2691,6 +2693,7 @@ app.get('/api/rpc-config', (req, res) => {
 app.post('/api/rpc-config/select', (req, res) => {
   try {
     setActiveRpc(req.body.url);
+    userPrefs.set({ network: getNetwork() });
     refreshTokenServiceConnection();
     res.json({ success: true, config: getRpcConfig() });
   } catch (e) {
@@ -2720,6 +2723,22 @@ app.post('/api/rpc-config/remove', (req, res) => {
     removeSavedRpc(req.body.url);
     refreshTokenServiceConnection();
     res.json({ success: true, config: getRpcConfig() });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
+
+// The app's network and its RPC's network disagree: make one match the other.
+//   match: 'rpc'      keep the RPC, set the network to what it serves
+//   match: 'network'  keep the network, switch to a saved RPC on it
+app.post('/api/rpc-config/reconcile', (req, res) => {
+  try {
+    if (req.body?.match === 'rpc') matchNetworkToRpc();
+    else if (req.body?.match === 'network') matchRpcToNetwork();
+    else return res.status(400).json({ success: false, error: 'match must be "rpc" or "network"' });
+    userPrefs.set({ network: getNetwork() });
+    refreshTokenServiceConnection();
+    res.json({ success: true, config: getRpcConfig(), network: getNetwork() });
   } catch (e) {
     res.status(400).json({ success: false, error: e.message });
   }

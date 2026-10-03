@@ -18065,3 +18065,7 @@ body #toastStack { left: auto; right: 16px; bottom: 16px; transform: none; width
 .supply-row { grid-template-columns: 26px minmax(0, 1fr) 72px 64px 96px 28px 28px; }
 @media (max-width: 760px) { .supply-row { grid-template-columns: 26px minmax(0, 1fr) 84px 28px 28px; } }
 .supply-row > .supply-swatch { justify-self: center; }
+
+/* Mode bar: the network, and a mismatch between it and the RPC */
+#launchSettingsEnvironment { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+#launchSettingsEnvironment .network-mismatch { color: var(--amber, #e6b450); font-weight: 700; }

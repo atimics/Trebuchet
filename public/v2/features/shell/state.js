@@ -610,9 +610,18 @@ function renderEnvironmentControls() {
   const fixedByMint = state.activeView === 'launch' && Boolean(proofTokenMint(currentLaunchProof()));
   const settingsEnvironment = $('#launchSettingsEnvironment');
   if (settingsEnvironment) {
-    settingsEnvironment.textContent = fixedByMint
-      ? 'Fixed by this coin\'s mint'
-      : environment === 'live' ? 'Real transactions and SOL' : 'Nothing is sent';
+    const networkName = (value) => (value === 'devnet' ? 'Devnet' : value === 'mainnet' ? 'Mainnet' : '');
+    const network = networkName(state.chainNetwork);
+    if (state.networkMismatch && environment === 'live') {
+      // The app's network and its RPC's disagree: say so and offer both ways out.
+      settingsEnvironment.innerHTML = `<span class="network-mismatch" role="alert"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> Network is ${escapeHtml(network)}, RPC is ${escapeHtml(networkName(state.rpcNetwork))}</span>
+        <button class="pill-button" type="button" data-action="reconcile-network" data-match="rpc">Use ${escapeHtml(networkName(state.rpcNetwork))}</button>
+        <button class="pill-button" type="button" data-action="reconcile-network" data-match="network">Use a ${escapeHtml(network)} RPC</button>`;
+    } else {
+      settingsEnvironment.textContent = fixedByMint
+        ? `Fixed by this coin's mint${network ? ` · ${network}` : ''}`
+        : environment === 'live' ? `${network || 'Live'} · real transactions and SOL` : 'Nothing is sent';
+    }
   }
   $$('.mode-button').forEach((button) => {
     button.classList.toggle('is-selected', button.dataset.mode === state.launchMode);
@@ -649,5 +658,21 @@ async function setExecutionEnvironment(environment, { announce = true } = {}) {
   } finally {
     state.environmentSwitching = false;
     renderAll();
+  }
+}
+
+
+async function reconcileNetwork(match) {
+  if (!state.apiClient?.reconcileNetwork) return;
+  try {
+    const result = await state.apiClient.reconcileNetwork(match);
+    state.chainNetwork = result?.config?.activeNetwork || result?.network || state.chainNetwork;
+    state.rpcNetwork = result?.config?.rpcNetwork || state.rpcNetwork;
+    state.networkMismatch = result?.config?.networkMismatch === true;
+    state.rpcActiveUrl = result?.config?.active || state.rpcActiveUrl;
+    renderAll();
+    notify(`Network and RPC now both ${state.chainNetwork === 'devnet' ? 'devnet' : 'mainnet'}`);
+  } catch (error) {
+    notify(error.message || 'Could not match the network and RPC');
   }
 }
