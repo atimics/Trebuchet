@@ -58,7 +58,7 @@ function fixture() {
     finishSweepWithSolGate: async () => { calls.push('sol-gate'); return { solSweep: { solTransferred: 0.1 }, solSweepError: null, solSweepSkipped: null }; },
     checkWalletBalanceMultiToken: async (_key, options) => { assert.equal(options.commitment, 'finalized'); calls.push('verify-empty'); return { sol: state.empty ? 0 : 1, tokens: {} }; },
     isWalletEffectivelyEmpty: (balance) => balance.sol === 0,
-    pendingWallets: { remove: () => { state.removed++; calls.push('remove-custody'); } },
+    pendingWallets: { retire: () => { state.removed++; calls.push('remove-custody'); }, remove: () => { throw new Error('a finished launch never deletes its key'); } },
     transferJournalSummary: (summary) => summary,
     airdropInFlight: () => false, markAirdropInFlight: () => {}, clearAirdropInFlight: () => {},
     airdropProgressBegin: () => {}, airdropProgressStep: () => {}, airdropProgressEnd: () => {},

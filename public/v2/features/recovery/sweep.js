@@ -142,7 +142,7 @@ function openSweepConfirmation({ publicKey, defaultDestination = '' } = {}) {
   sweepConfirmationReturnFocus = document.activeElement;
   $('#sweepConfirmSource').textContent = publicKey;
   $('#sweepConfirmDestination').value = defaultDestination;
-  setSweepConfirmationMessage('The local recovery entry is removed only after Trebuchet verifies the source wallet is empty.');
+  setSweepConfirmationMessage('The launch wallet\'s key stays saved in this app after the sweep.');
   gate.hidden = false;
   gate.setAttribute('aria-hidden', 'false');
   document.body.classList.add('sweep-confirm-open');
@@ -215,7 +215,7 @@ async function sweepRecoveryWallet(publicKey) {
       error: false,
       message: partial
         ? `Sweep returned ${warningCount} warning${warningCount === 1 ? '' : 's'}${stillPending ? '; recovery entry remains for another attempt' : ''}.`
-        : 'Recovery wallet swept and cleared from the local pending-wallet store.',
+        : 'Launch wallet swept. Its key stays saved in this app.',
     };
     notify(partial ? 'Recovery sweep finished with warnings' : 'Recovery sweep completed');
   } catch (error) {
