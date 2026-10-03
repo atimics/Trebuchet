@@ -669,7 +669,9 @@ function recoveryWalletsNeedingAttention() {
   const selectedPublicKey = selectedLaunchWalletPublicKey();
   const selectedHasOpenJournal = (state.recovery.journals || [])
     .some((journal) => !isTerminalJournal(journal) && journal.walletPublicKey === selectedPublicKey);
+  // A retired wallet belongs to a finished launch: its key is kept, but it needs no attention.
   return (state.recovery.pendingWallets || [])
+    .filter((wallet) => !wallet.retiredAt)
     .filter((wallet) => wallet.publicKey !== selectedPublicKey || selectedHasOpenJournal);
 }
 

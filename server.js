@@ -8066,6 +8066,7 @@ app.get('/api/pending-wallets', (req, res) => {
         hasSecretKey,
         hasMnemonic,
         secretState: walletSecretState(w.publicKey, inventory),
+        ...(w.retiredAt ? { retiredAt: w.retiredAt } : {}),
       };
       if (!hasSecretKey && !hasMnemonic) {
         out.decryptionFailed = true;
