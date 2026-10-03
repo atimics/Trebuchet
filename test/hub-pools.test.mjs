@@ -89,10 +89,12 @@ function pickerHarness() {
   const sandbox = { DEFAULT_SOL_MINT: SOL, escapeHtml: String, shortAddress: (x) => x, isProbablySolanaAddress: () => true,
     $: () => field, document: { querySelector: () => field }, ownTokenMint: () => null,
     state: { discovery: { records: [] }, customPools: [], apiClient: {
+      getTokenLogos: async () => ({}),
       resolveFlywheelHub: () => new Promise((resolve) => pending.push(resolve)),
       listFlywheelHubs: async () => ({ defaults, discovery: [] }),
     } },
     addCustomPool: (hub) => { added.push(hub); return 'new-pool'; }, resolveCustomQuoteToken: async () => ({}),
+    coinCardHtml: () => '', hydrateCoinCards() {},
   };
   const source = app.slice(app.indexOf('let hubPicker ='), app.indexOf('function addCustomPool('));
   vm.runInNewContext(source + '\nthis.getPicker = () => hubPicker;', sandbox);
