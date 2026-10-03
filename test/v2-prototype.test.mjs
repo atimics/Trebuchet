@@ -6884,8 +6884,8 @@ test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=224/);
-  assert.doesNotMatch(html, /app\.js\?v=224" type="module"/);
+  assert.match(html, /app\.js\?v=225/);
+  assert.doesNotMatch(html, /app\.js\?v=225" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11905,4 +11905,10 @@ test('a locked Recovery PIN opens the PIN panel instead of a toast, and generate
   assert.match(dialogs, /Unlock your Recovery PIN[\s\S]{0,200}openRecoveryPinGate\(\{ reason: 'unlock' \}\);\s*return;/);
   assert.match(actions, /async function ensureRecoveryPinUnlocked\(\)/);
   assert.equal((actions.match(/ensureRecoveryPinUnlocked\(\)\)\) return/g) || []).length, 2);
+});
+
+test('with the Recovery PIN locked the rail says Unlock and opens the PIN panel, not Create a launch wallet', () => {
+  const workspace = readFileSync(new URL('../public/v2/features/launch/workspace.js', import.meta.url), 'utf8');
+  assert.match(workspace, /pinLocked && !walletKey\s*\? \{ state: 'todo', value: 'PIN locked', action: 'Unlock' \}/);
+  assert.match(workspace, /next\.id === 'wallet' && state\.secretPin\?\.locked === true[\s\S]{0,120}openRecoveryPinGate\(\{ reason: 'unlock' \}\);/);
 });

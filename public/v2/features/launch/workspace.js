@@ -212,9 +212,13 @@ function coinFacts() {
   const walletKey = practice
     ? state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || ''
     : selectedLaunchWalletPublicKey();
+  // Wallets stay hidden while the Recovery PIN is locked, so say Unlock, not Create.
+  const pinLocked = state.secretPin?.locked === true;
   const signer = practice && walletKey
     ? { state: 'done', value: `${shortAddress(walletKey)} · test mode` }
-    : !walletKey
+    : pinLocked && !walletKey
+      ? { state: 'todo', value: 'PIN locked', action: 'Unlock' }
+      : !walletKey
       ? { state: 'todo', value: 'None chosen', action: state.managedWallets.length ? 'Choose a launch wallet' : 'Create a launch wallet' }
       : walletIsUnlocked()
         ? { state: 'done', value: `${shortAddress(walletKey)} · unlocked` }
@@ -641,6 +645,10 @@ function runLaunchRailAction() {
     state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
     setLaunchWorkspace('mint', { focus: false });
     $('#tokenName')?.focus();
+    return;
+  }
+  if (next.id === 'wallet' && state.secretPin?.locked === true && !selectedLaunchWalletPublicKey()) {
+    openRecoveryPinGate({ reason: 'unlock' });
     return;
   }
   if (state.launchWorkspace !== next.id) {
