@@ -5218,10 +5218,11 @@ function renderLaunchBudgetRecommendation() {
   target.title = '';
 }
 
-function applyLaunchBudgetRecommendation(value, { announce = true } = {}) {
+function applyLaunchBudgetRecommendation(value, { announce = true, fromInput = false } = {}) {
   const budgetSol = Math.max(0, Number(value) || 0);
   const strategy = launchBudgetRecommendation(budgetSol);
-  if ($('#liquidityBudgetSol')) $('#liquidityBudgetSol').value = String(budgetSol);
+  // While the amount is being typed it is left alone: rewriting "0." as "0" would make 0.1 untypable.
+  if ($('#liquidityBudgetSol') && !fromInput) $('#liquidityBudgetSol').value = String(budgetSol);
   if ($('#launchSol')) $('#launchSol').value = String(strategy.coreSol);
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = '0';
   // SOL takes the rest: held-back tokens, airdrop, and added pairs stay.
@@ -27676,7 +27677,7 @@ function bindEvents() {
     selectTokenLogo(event.target.files?.[0] || null);
   });
   $('#liquidityBudgetSol')?.addEventListener('input', (event) => {
-    applyLaunchBudgetRecommendation(event.target.value, { announce: false });
+    applyLaunchBudgetRecommendation(event.target.value, { announce: false, fromInput: true });
   });
 
   $('#quickTokenName')?.addEventListener('input', renderQuickLaunchCost);
