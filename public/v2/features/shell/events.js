@@ -127,10 +127,20 @@ function handleDynamicInput(event) {
     return;
   }
 
+  const solInput = event.target.closest('[data-sol-pool-field]');
+  if (solInput) {
+    state.solPoolConfigIndex = Math.floor(parseNumericInput(solInput.value, DEFAULT_POOL_CONFIG_INDEX));
+    invalidateClassicOutputs();
+    refreshClassicPreview();
+    renderSupplyEditorAfterTier(solInput);
+    return;
+  }
+
   const quoteInput = event.target.closest('[data-quote-pool-field]');
   if (quoteInput) {
     if (quoteInput.dataset.quotePoolField === 'ammConfigIndex') {
       state.pairPoolConfigIndex = Math.floor(parseNumericInput(quoteInput.value, DEFAULT_POOL_CONFIG_INDEX));
+      if (quoteInput.classList.contains('supply-tier')) { invalidateClassicOutputs(); refreshClassicPreview(); renderSupplyEditorAfterTier(quoteInput); return; }
     } else if (quoteInput.dataset.quotePoolField === 'startPremiumPct') {
       state.pairStartPremiumPct = clampNumber(parseNumericInput(quoteInput.value, state.pairStartPremiumPct), 0, 500);
     }
@@ -144,6 +154,7 @@ function handleDynamicInput(event) {
     const pool = state.customPools.find((item) => item.id === customInput.dataset.poolId);
     if (!pool) return;
     pool[customInput.dataset.customPoolField] = customInput.value;
+    if (customInput.classList.contains('supply-tier')) { invalidateClassicOutputs(); refreshClassicPreview(); renderSupplyEditorAfterTier(customInput); return; }
     if (['quoteMint', 'quoteSymbol'].includes(customInput.dataset.customPoolField)) {
       delete state.quoteTokenInfo[pool.id];
     }

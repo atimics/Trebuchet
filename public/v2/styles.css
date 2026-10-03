@@ -17861,8 +17861,8 @@ body #view-launch .launch-budget-recommender { padding: 4px 0; }
 #planSlides { transition: height .25s ease; }
 @media (prefers-reduced-motion: reduce) { #planSlides { transition: none; } }
 /* The map in an open pair stays short so the accordion fits the frame. */
-.supply-settings .pool-map svg { display: block; width: 100%; height: auto; max-height: 150px; }
-.supply-settings .pool-map { max-height: 160px; overflow: hidden; }
+.supply-settings .pool-map svg { display: block; width: 100%; height: auto; max-height: 200px; }
+.supply-settings .pool-map { max-height: 210px; overflow: hidden; }
 .supply-settings-wrap > .supply-settings { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 12px; padding: 8px 14px 10px; }
 .supply-settings-wrap > .supply-settings > .supply-field:first-of-type { grid-column: span 1; }
 .supply-settings-wrap > .supply-settings textarea { min-height: 40px; max-height: 48px; }
@@ -17892,3 +17892,13 @@ body #view-launch .hub-picker-grid .coin-card-ui__copy, body #view-launch .hub-p
 body #view-launch .hub-picker-grid .coin-card-ui strong, body #view-launch .hub-picker-grid .coin-card-ui code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 body #view-launch .hub-picker-result .coin-card-ui { display: flex; align-items: center; gap: 12px; }
 body #view-launch .hub-picker-result .coin-card-ui__copy { flex: 1; }
+
+/* Fee tier on the pool's own line */
+.supply-row { grid-template-columns: 10px minmax(0, 1fr) 72px 78px 96px 28px 28px; }
+.supply-tier { min-height: 30px; padding: 0 6px; font: inherit; font-size: 12px; color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 0; }
+.supply-tier:focus-visible { outline: none; border-color: var(--green); }
+.supply-tier-spacer { display: block; }
+.pool-map .pm-tick { stroke: var(--green); stroke-opacity: .55; stroke-width: 1; }
+.pool-map .pm-tier-on { fill: var(--green); }
+.pool-map .pm-tier-off { fill: var(--line-strong); }
+@media (max-width: 760px) { .supply-row { grid-template-columns: 10px minmax(0, 1fr) 72px 84px 28px 28px; } .supply-row .supply-amount { display: none; } }
