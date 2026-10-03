@@ -395,6 +395,12 @@ function renderVanityCandidates() {
   }
   const preview = $('#vanityPreview');
   if (preview) preview.innerHTML = vanityPreviewHtml(vanity, selected);
+  const grind = $('#vanityGrind');
+  if (grind) {
+    grind.innerHTML = `<button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
+      <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>
+    </button>`;
+  }
   const savedCount = state.vanityCandidates.length;
   $('#vanityCandidates').innerHTML = `
     <div class="grinder-results-head"><span>Addresses</span><span class="grinder-count">${savedCount} saved${hiddenCount ? `, ${hiddenCount} not shown` : ''}</span></div>
@@ -410,9 +416,6 @@ function renderVanityCandidates() {
       ${candidateButtons}
     </div>
     <div class="grinder-actions">
-      <button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
-        <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>
-      </button>
       <button class="secondary-button compact" type="button" data-action="remove-selected-vanity" ${canRemoveSelected ? '' : 'disabled'}>Remove selected</button>
       ${hiddenCount ? `<button class="text-button" type="button" data-action="prune-hidden-vanity">Delete ${hiddenCount} older</button>` : ''}
     </div>
