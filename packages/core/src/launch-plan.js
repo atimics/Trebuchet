@@ -4,6 +4,8 @@ import {
   COST_LAUNCH_REPORT_SOL,
   COST_LOCK_SOL,
   COST_POOL_RENT_SOL,
+  MAX_SUPPORT_LAYERS,
+  supportLayersProblem,
   COST_POSITION_SOL,
   COST_TOKEN_CREATE_SOL,
   COST_TRANSFER_SOL,
@@ -221,14 +223,44 @@ function normalizeLadder(input = {}) {
   };
 }
 
+// Support is one quote-side range (`depthPct` below the start price), or layers: each a share of the
+// quote over its own range of start-price multiples (at most 1x). Layer shares are scaled to add
+// up to 100% and the layers are ordered nearest the start price first. Unusable layers are kept
+// as written so validation can name the problem instead of the plan silently changing.
 function normalizeSupport(input = {}) {
   const solValue = Math.max(0, numeric(input.solValue, 0));
   if (input.mode !== 'custom' || solValue <= 0) return { mode: 'off' };
-  return {
+  const support = {
     mode: 'custom',
     solValue: roundSol(solValue),
     depthPct: clamp(numeric(input.depthPct, 12), 1, 50),
   };
+  if (Array.isArray(input.layers) && input.layers.length) {
+    const layers = input.layers.map((layer) => ({
+      sharePercent: numeric(layer?.sharePercent, 0),
+      lowerMultiplier: numeric(layer?.lowerMultiplier, 0),
+      upperMultiplier: numeric(layer?.upperMultiplier, 1),
+    }));
+    const valid = layers.length <= MAX_SUPPORT_LAYERS && layers.every((layer) => (
+      layer.sharePercent > 0 && layer.lowerMultiplier > 0 && layer.upperMultiplier > layer.lowerMultiplier && layer.upperMultiplier <= 1
+    ));
+    const total = layers.reduce((sum, layer) => sum + layer.sharePercent, 0);
+    if (valid && total > 0) {
+      const ordered = [...layers].sort((a, b) => b.upperMultiplier - a.upperMultiplier || b.lowerMultiplier - a.lowerMultiplier);
+      let assigned = 0;
+      support.layers = ordered.map((layer, index) => {
+        const share = index === ordered.length - 1
+          ? roundSol(100 - assigned)
+          : roundSol((layer.sharePercent / total) * 100);
+        assigned += share;
+        return { sharePercent: share, lowerMultiplier: layer.lowerMultiplier, upperMultiplier: layer.upperMultiplier };
+      });
+      support.depthPct = clamp(roundSol((1 - Math.min(...ordered.map((layer) => layer.lowerMultiplier))) * 100), 1, 99);
+    } else {
+      support.layers = layers;
+    }
+  }
+  return support;
 }
 
 function normalizeAirdropRows(rows = []) {
@@ -1127,6 +1159,10 @@ function ladderRouteIssues(pools = []) {
     if (Number(pool.supplyPercent || 0) <= 0) return;
     const ladder = pool.ladder || { mode: 'off' };
     const poolLabel = `Pool ${index + 1}`;
+    if (pool.support?.mode === 'custom' && Array.isArray(pool.support.layers)) {
+      const problem = supportLayersProblem(pool.support.layers);
+      if (problem) issues.push({ index, detail: `${poolLabel}: support ${problem}.` });
+    }
     if (ladder.mode === 'off' || !ladder.mode) return;
     if (ladder.mode === 'simple') {
       const bandCount = Number(ladder.bandCount);
@@ -1306,7 +1342,9 @@ export function buildV2LaunchPlan(input = {}, options = {}) {
     if (pool.ladder.mode === 'manual') return sum + pool.ladder.bands.length;
     return sum;
   }, 0);
-  const supportCount = poolTopology.pools.filter((pool) => pool.support.mode === 'custom').length;
+  const supportCount = poolTopology.pools.reduce((sum, pool) => (
+    pool.support.mode !== 'custom' ? sum : sum + (Array.isArray(pool.support.layers) && pool.support.layers.length ? pool.support.layers.length : 1)
+  ), 0);
   const feeKeyTransferCount = poolTopology.pools.reduce(
     (sum, pool) => sum + pool.distribution.filter((slice) => slice.recipient).length,
     0,

@@ -244,6 +244,43 @@ export function computeSupportTicks({
   return { tickLower, tickUpper };
 }
 
+/**
+ * Tick range for one layer of single-sided quote support, as multiples of the launch
+ * price: a layer of 0.7x to 1x holds quote from 30% below the launch price up to it. The
+ * single `computeSupportTicks` range is the one-layer case (1 - depth to 1). Layers sit on
+ * the quote side of currentTick, so each holds 100% quote at deposit time and consumes no
+ * launched-token supply. Each end is snapped to the tick spacing, and a layer always
+ * spans at least one spacing.
+ */
+export function computeSupportLayerTicks({
+  currentTick,
+  tickSpacing,
+  launchedIsMintA,
+  lowerMultiplier,
+  upperMultiplier,
+}) {
+  const lower = Number(lowerMultiplier);
+  const upper = Number(upperMultiplier);
+  if (!(lower > 0) || !(upper > lower) || upper > 1) {
+    throw new Error(`Support layer must satisfy 0 < lower < upper <= 1 (got ${lowerMultiplier}x to ${upperMultiplier}x)`);
+  }
+  const logBase = Math.log(1.0001);
+  // Ticks below the launch price for a price multiple m <= 1.
+  const below = (m) => Math.abs(Math.round(Math.log(m) / logBase));
+  if (launchedIsMintA) {
+    // Range below currentTick; the top of the highest layer stays one tick under the pool tick.
+    let tickUpper = floorToSpacing(upper >= 1 ? currentTick - 1 : currentTick - below(upper), tickSpacing);
+    let tickLower = ceilToSpacing(currentTick - below(lower), tickSpacing);
+    if (tickLower >= tickUpper) tickLower = tickUpper - tickSpacing;
+    return { tickLower, tickUpper };
+  }
+  // launchedIsMintB: mirrored above currentTick.
+  let tickLower = ceilToSpacing(upper >= 1 ? currentTick + 1 : currentTick + below(upper), tickSpacing);
+  let tickUpper = floorToSpacing(currentTick + below(lower), tickSpacing);
+  if (tickUpper <= tickLower) tickUpper = tickLower + tickSpacing;
+  return { tickLower, tickUpper };
+}
+
 // ===========================================================================
 // Buy support for an existing pool
 // ===========================================================================

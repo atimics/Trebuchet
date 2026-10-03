@@ -1059,7 +1059,7 @@ function buildV2ReportPoolSections(results, config) {
         ${renderV2ReportFactRow('Initial price', pool.initialPrice ?? '-')}
         ${renderV2ReportFactRow('Launch side', pool.launchedSide || '-')}
         ${renderV2ReportFactRow('Ladder', ladder.mode === 'manual' ? `${(ladder.bands || []).length} manual bands` : ladder.mode === 'simple' ? `${ladder.bandCount || 0} bands` : 'off')}
-        ${renderV2ReportFactRow('Support', support.mode === 'custom' ? `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL at ${reportPercent(support.depthPct)} depth` : 'off')}
+        ${renderV2ReportFactRow('Support', support.mode === 'custom' ? (Array.isArray(support.layers) && support.layers.length ? `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL in ${support.layers.length} layers, down to ${reportPercent(support.depthPct)} depth` : `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL at ${reportPercent(support.depthPct)} depth`) : 'off')}
       </div>
       <div class="slice-strip">${distributionRows}</div>
       <div class="pool-addresses">

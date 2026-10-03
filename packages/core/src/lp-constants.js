@@ -164,3 +164,25 @@ export const MAX_SECOND_OPINION_SPREAD_PCT = 25;
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 export const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+
+// Support can be layered: several quote-side positions, each a share of the quote over a range of
+// start-price multiples (at most 1x). Shared by the plan check, the executor and the estimator.
+export const MAX_SUPPORT_LAYERS = 6;
+
+// Why a support.layers value cannot be used, or null when it can.
+export function supportLayersProblem(layers) {
+  if (!Array.isArray(layers) || layers.length === 0) return 'must be a non-empty list';
+  if (layers.length > MAX_SUPPORT_LAYERS) return `has ${layers.length} layers; at most ${MAX_SUPPORT_LAYERS} are supported`;
+  let total = 0;
+  for (const [index, layer] of layers.entries()) {
+    const share = Number(layer?.sharePercent);
+    const lower = Number(layer?.lowerMultiplier);
+    const upper = Number(layer?.upperMultiplier);
+    if (!Number.isFinite(share) || share <= 0 || share > 100) return `layer ${index + 1}: share must be above 0 and at most 100`;
+    if (!Number.isFinite(lower) || lower <= 0 || lower >= 1) return `layer ${index + 1}: lower multiplier must be above 0 and below 1`;
+    if (!Number.isFinite(upper) || upper <= lower || upper > 1) return `layer ${index + 1}: upper multiplier must be above the lower and at most 1`;
+    total += share;
+  }
+  if (Math.abs(total - 100) > 0.01) return `shares add up to ${Number(total.toFixed(2))}%; they must add up to 100%`;
+  return null;
+}

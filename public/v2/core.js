@@ -57,6 +57,7 @@ var TrebuchetCore = (() => {
     LOGO_MAX_DIMENSION_PX: () => LOGO_MAX_DIMENSION_PX,
     MAX_PROBE_PRICE_IMPACT_PCT: () => MAX_PROBE_PRICE_IMPACT_PCT,
     MAX_SECOND_OPINION_SPREAD_PCT: () => MAX_SECOND_OPINION_SPREAD_PCT,
+    MAX_SUPPORT_LAYERS: () => MAX_SUPPORT_LAYERS,
     MIN_BASE_TOKENS_WHEN_GAPPED: () => MIN_BASE_TOKENS_WHEN_GAPPED,
     MIN_QUOTE_LIQUIDITY_USD: () => MIN_QUOTE_LIQUIDITY_USD,
     NFT_BUFFER_PCT: () => NFT_BUFFER_PCT,
@@ -154,6 +155,7 @@ var TrebuchetCore = (() => {
     requiredClassicComparisonRowIds: () => requiredClassicComparisonRowIds,
     setRentLamportsPerByte: () => setRentLamportsPerByte,
     streamlinedIntegrityDigest: () => streamlinedIntegrityDigest,
+    supportLayersProblem: () => supportLayersProblem,
     tokenCreationComplete: () => tokenCreationComplete,
     tokenProgramAddressForMintFormat: () => tokenProgramAddressForMintFormat,
     traitDistribution: () => traitDistribution,
@@ -426,6 +428,23 @@ var TrebuchetCore = (() => {
   var WSOL_MINT = "So11111111111111111111111111111111111111112";
   var USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
   var USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+  var MAX_SUPPORT_LAYERS = 6;
+  function supportLayersProblem(layers) {
+    if (!Array.isArray(layers) || layers.length === 0) return "must be a non-empty list";
+    if (layers.length > MAX_SUPPORT_LAYERS) return `has ${layers.length} layers; at most ${MAX_SUPPORT_LAYERS} are supported`;
+    let total = 0;
+    for (const [index, layer] of layers.entries()) {
+      const share = Number(layer?.sharePercent);
+      const lower = Number(layer?.lowerMultiplier);
+      const upper = Number(layer?.upperMultiplier);
+      if (!Number.isFinite(share) || share <= 0 || share > 100) return `layer ${index + 1}: share must be above 0 and at most 100`;
+      if (!Number.isFinite(lower) || lower <= 0 || lower >= 1) return `layer ${index + 1}: lower multiplier must be above 0 and below 1`;
+      if (!Number.isFinite(upper) || upper <= lower || upper > 1) return `layer ${index + 1}: upper multiplier must be above the lower and at most 1`;
+      total += share;
+    }
+    if (Math.abs(total - 100) > 0.01) return `shares add up to ${Number(total.toFixed(2))}%; they must add up to 100%`;
+    return null;
+  }
 
   // packages/core/src/validators.js
   var TOKEN_DECIMALS = 9;
@@ -871,11 +890,33 @@ var TrebuchetCore = (() => {
   function normalizeSupport(input = {}) {
     const solValue = Math.max(0, numeric(input.solValue, 0));
     if (input.mode !== "custom" || solValue <= 0) return { mode: "off" };
-    return {
+    const support = {
       mode: "custom",
       solValue: roundSol(solValue),
       depthPct: clamp(numeric(input.depthPct, 12), 1, 50)
     };
+    if (Array.isArray(input.layers) && input.layers.length) {
+      const layers = input.layers.map((layer) => ({
+        sharePercent: numeric(layer?.sharePercent, 0),
+        lowerMultiplier: numeric(layer?.lowerMultiplier, 0),
+        upperMultiplier: numeric(layer?.upperMultiplier, 1)
+      }));
+      const valid = layers.length <= MAX_SUPPORT_LAYERS && layers.every((layer) => layer.sharePercent > 0 && layer.lowerMultiplier > 0 && layer.upperMultiplier > layer.lowerMultiplier && layer.upperMultiplier <= 1);
+      const total = layers.reduce((sum, layer) => sum + layer.sharePercent, 0);
+      if (valid && total > 0) {
+        const ordered = [...layers].sort((a, b) => b.upperMultiplier - a.upperMultiplier || b.lowerMultiplier - a.lowerMultiplier);
+        let assigned = 0;
+        support.layers = ordered.map((layer, index) => {
+          const share = index === ordered.length - 1 ? roundSol(100 - assigned) : roundSol(layer.sharePercent / total * 100);
+          assigned += share;
+          return { sharePercent: share, lowerMultiplier: layer.lowerMultiplier, upperMultiplier: layer.upperMultiplier };
+        });
+        support.depthPct = clamp(roundSol((1 - Math.min(...ordered.map((layer) => layer.lowerMultiplier))) * 100), 1, 99);
+      } else {
+        support.layers = layers;
+      }
+    }
+    return support;
   }
   function normalizeAirdropRows(rows = []) {
     if (!Array.isArray(rows)) return [];
@@ -1667,6 +1708,10 @@ var TrebuchetCore = (() => {
       if (Number(pool.supplyPercent || 0) <= 0) return;
       const ladder = pool.ladder || { mode: "off" };
       const poolLabel = `Pool ${index + 1}`;
+      if (pool.support?.mode === "custom" && Array.isArray(pool.support.layers)) {
+        const problem = supportLayersProblem(pool.support.layers);
+        if (problem) issues.push({ index, detail: `${poolLabel}: support ${problem}.` });
+      }
       if (ladder.mode === "off" || !ladder.mode) return;
       if (ladder.mode === "simple") {
         const bandCount = Number(ladder.bandCount);
@@ -1840,7 +1885,7 @@ var TrebuchetCore = (() => {
       if (pool.ladder.mode === "manual") return sum + pool.ladder.bands.length;
       return sum;
     }, 0);
-    const supportCount = poolTopology.pools.filter((pool) => pool.support.mode === "custom").length;
+    const supportCount = poolTopology.pools.reduce((sum, pool) => pool.support.mode !== "custom" ? sum : sum + (Array.isArray(pool.support.layers) && pool.support.layers.length ? pool.support.layers.length : 1), 0);
     const feeKeyTransferCount = poolTopology.pools.reduce(
       (sum, pool) => sum + pool.distribution.filter((slice) => slice.recipient).length,
       0

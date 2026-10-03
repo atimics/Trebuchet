@@ -939,7 +939,7 @@ function renderClassicBridge() {
           <div><dt>Support</dt><dd>${(() => { const sol = topology.pools.reduce((sum, pool) => sum + (pool.support?.mode === 'custom' ? Number(pool.support.solValue) || 0 : 0), 0); return sol > 0 ? `${Number(sol.toFixed(4))} SOL` : 'Off'; })()}</dd></div>
           <div><dt>Start market cap</dt><dd>$${escapeHtml(Number(topology.targetMarketCapUsd || 0).toLocaleString('en-US'))}</dd></div>
           <div><dt>Fee tier</dt><dd>${escapeHtml(feeTierDisplay(topology.pools[0]?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX))}</dd></div>
-          <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}</dd></div>
+          <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}${(() => { const bids = topology.pools.reduce((sum, pool) => sum + (pool.support?.mode === 'custom' ? (pool.support.layers?.length || 1) : 0), 0); return bids ? ` <i>+ ${bids} support</i>` : ''; })()}</dd></div>
           <div><dt>Locked</dt><dd class="${liquidityComplete ? 'is-ok' : ''}">${liquidityComplete ? 'Yes' : 'At creation'}</dd></div>
         </dl>
       </div>

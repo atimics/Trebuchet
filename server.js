@@ -6229,9 +6229,14 @@ function materializePhase1RecoveryResults(journal, priorResults, allocations) {
       txIds: { open: event.txId || null, lock: null },
     }));
 
-    const supportPositions = (journal.events || [])
+    // One support position per layer: the last event for each layer index.
+    const supportByIndex = new Map();
+    (journal.events || [])
       .filter((event) => event.stage === 'support_open_done' && event.allocationIndex === allocationIndex)
-      .slice(-1)
+      .forEach((event) => supportByIndex.set(Number.isFinite(Number(event.supportIndex)) ? Number(event.supportIndex) : 0, event));
+    const supportPositions = [...supportByIndex.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, event]) => event)
       .map((event) => ({
         tickLower: Number.isFinite(event.tickLower) ? event.tickLower : null,
         tickUpper: Number.isFinite(event.tickUpper) ? event.tickUpper : null,

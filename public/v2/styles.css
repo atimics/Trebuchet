@@ -17964,3 +17964,12 @@ body #view-launch .proof-link-grid small { color: var(--muted); }
 body #view-launch .finalize-primary-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
 body #view-launch .finalize-notices { display: grid; gap: 6px; }
 body #view-launch .finalize-warning { margin: 0; padding: 0 0 0 10px; border: 0; border-left: 2px solid var(--amber, #e6b450); background: transparent; }
+
+/* A small picture of each pool's shape on its list line, in its own colour */
+.supply-row { grid-template-columns: 10px minmax(0, 1fr) 72px 64px 78px 96px 28px 28px; }
+.supply-glyph { display: block; width: 72px; height: 28px; }
+@media (max-width: 760px) { .supply-glyph { display: none; } .supply-row { grid-template-columns: 10px minmax(0, 1fr) 72px 84px 28px 28px; } }
+
+/* Presets: a name and what it builds */
+body #view-launch .launch-budget-presets > button { display: grid; gap: 2px; align-content: center; text-align: left; padding: 8px 14px; min-width: 150px; }
+body #view-launch .launch-budget-presets > button small { color: var(--muted); font-size: 11px; font-weight: 500; }
