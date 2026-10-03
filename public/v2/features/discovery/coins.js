@@ -289,7 +289,17 @@ async function loadCoinDetail(mint) {
       detail: response.coin,
       detailLoading: false,
       checked: checkedStatus ? { ...(state.coins.checked || {}), [mint]: checkedStatus } : state.coins.checked,
+      airdropPlan: null,
     };
+    // The sweep sends the saved airdrop first: read it so the page can say so before anyone sweeps.
+    const sweepWallet = response.coin?.creation?.walletManaged ? response.coin.creation.walletPublicKey : null;
+    if (sweepWallet && state.apiClient.getAirdropPlan) {
+      state.apiClient.getAirdropPlan(sweepWallet).then((plan) => {
+        if (state.coins.key !== `mint:${mint}` || !plan || plan.tokenMint !== mint) return;
+        state.coins = { ...state.coins, airdropPlan: plan };
+        renderCoins();
+      }).catch(() => null);
+    }
   } catch (error) {
     state.coins = { ...state.coins, detailLoading: false, detailError: error.message || 'Could not read the coin' };
   }
@@ -598,8 +608,15 @@ function coinCreationHtml(creation, coin) {
   let action = '';
   if (next) {
     if (next.id === 'return' && creation.walletManaged && creation.walletPublicKey) {
-      // Sweep the launch wallet: nothing else of the plan is needed.
-      action = `<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}"><span>Sweep the launch wallet</span><i class="fa-solid fa-broom"></i></button>`;
+      // The sweep runs the saved airdrop first, then returns the rest: say both before it is pressed.
+      const plan = state.coins.airdropPlan?.tokenMint === coin?.mint ? state.coins.airdropPlan : null;
+      const delivered = new Set((creation.journal?.airdrop?.transferred || []).map((row) => row.wallet));
+      const pending = plan ? plan.recipients.filter((row) => !delivered.has(row.wallet)) : [];
+      const tokens = (rows) => rows.reduce((sum, row) => sum + (Number(row.tokens) || 0), 0).toLocaleString('en-US', { maximumFractionDigits: 4 });
+      const airdropNote = plan ? `<p class="coin-airdrop-note" role="note"><i class="fa-solid fa-parachute-box" aria-hidden="true"></i> Airdrop: ${pending.length
+        ? `${tokens(pending)} tokens to ${pending.length} wallet${pending.length === 1 ? '' : 's'} are sent first${delivered.size ? ` (${delivered.size} already delivered)` : ''}`
+        : `all ${plan.recipients.length} wallets delivered`}. Then every token and SOL left in the launch wallet goes to the return wallet.</p>` : '';
+      action = `${airdropNote}<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}"><span>${pending.length ? 'Airdrop, then sweep' : 'Sweep the launch wallet'}</span><i class="fa-solid ${pending.length ? 'fa-parachute-box' : 'fa-broom'}"></i></button>`;
     } else if (creation.hasPlan && creation.walletManaged) {
       action = `<button class="primary-button compact" type="button" data-action="continue-coin-step" data-mint="${escapeHtml(coin?.mint || '')}"><span>${escapeHtml(CREATION_STEP_ACTIONS[next.id] || 'Open the coin')}</span><i class="fa-solid fa-arrow-right"></i></button>`;
     } else if (!creation.walletManaged) {
