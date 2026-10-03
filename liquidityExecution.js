@@ -101,7 +101,9 @@ export function createLiquidityExecutionRuntime({ owner, getScopeId, recordProgr
       return await run({ store, service, approval, connection, network, walletPublicKey });
     } catch (cause) {
       if (cause.code === 'RECOVERY_STORAGE_UNAVAILABLE') throw cause;
-      throw Object.assign(new Error('Resume the saved liquidity operation to verify its result.', { cause }), {
+      // Say why: the saved operation is re-checked on every resume, so a bare "resume" message loops.
+      console.error(`[liquidity] ${cause.code || 'LIQUIDITY_INTERRUPTED'}: ${cause.message}`);
+      throw Object.assign(new Error(`A liquidity step needs its result verified before the launch can continue: ${cause.message || 'the step was interrupted'}`, { cause }), {
         code: 'EXECUTION_RECOVERY_REQUIRED', statusCode: 409, operationId: cause.operationId || store.getActiveOperation(walletPublicKey)?.id,
         errorDetails: { code: cause.code || 'LIQUIDITY_INTERRUPTED', message: cause.message },
       });
