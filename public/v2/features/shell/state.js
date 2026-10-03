@@ -15,7 +15,7 @@ const views = {
   // A coin being created: the coin page with its creation steps.
   launch: { eyebrow: '', title: 'Coins' },
   nfts: { eyebrow: '', title: 'NFT collections' },
-  lean: { eyebrow: '', title: 'Lean launch' },
+  lean: { eyebrow: '', title: 'Meteora launches' },
   wallet: { eyebrow: '', title: 'Wallet' },
   discovery: { eyebrow: '', title: 'Discovery' },
   history: { eyebrow: '', title: 'History' },
@@ -531,6 +531,9 @@ const state = {
   baseSupportLayersText: '',
   launchPresetId: null,
   launchPresetSignature: null,
+  // The SOL pool's venue: Raydium CLMM, or a Meteora DAMM v2 pool (one locked position).
+  solPoolVenue: 'raydium',
+  solPoolDamm: { feeBps: 25, rangeMultiple: 1000 },
   customPools: [],
   customPoolCounter: 0,
   airdropCsvText: '',

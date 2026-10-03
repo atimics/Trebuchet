@@ -112,6 +112,11 @@ function restoreLaunchConfigFromJournal(journal = {}) {
     || pools.find((pool) => String(pool.quoteToken || pool.quoteSymbol || '').toUpperCase() === 'SOL');
   const restoredFlywheelPool = pools.find((pool) => String(pool.id || '').endsWith('-flywheel'));
   // Before per-launch tiers, the SOL pool used config 8 and pairs config 5.
+  state.solPoolVenue = restoredSolPool?.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+  state.solPoolDamm = {
+    feeBps: Number(restoredSolPool?.damm?.feeBps) || 25,
+    rangeMultiple: Number(restoredSolPool?.damm?.rangeMultiple) || 1000,
+  };
   state.solPoolConfigIndex = restoredSolPool
     ? Math.floor(Number(restoredSolPool.ammConfigIndex ?? 8))
     : DEFAULT_POOL_CONFIG_INDEX;

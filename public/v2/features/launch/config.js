@@ -667,6 +667,15 @@ function currentClassicModel() {
       ? { mode: 'custom', solValue: supportSol, depthPct: supportDepth, ...(supportLayers.length ? { layers: supportLayers } : {}) }
       : { mode: 'off' },
   };
+  if (state.solPoolVenue === 'meteora-damm-v2') {
+    Object.assign(solPool, {
+      venue: 'meteora-damm-v2',
+      damm: { feeBps: Number(state.solPoolDamm?.feeBps) || 25, rangeMultiple: Number(state.solPoolDamm?.rangeMultiple) || 1000 },
+      distribution: [{ sharePercent: 100, recipient: null }],
+      ladder: { mode: 'off' },
+      support: { mode: 'off' },
+    });
+  }
   const pools = [solPool];
   if (quotePoolPercent > 0) {
     pools.push({

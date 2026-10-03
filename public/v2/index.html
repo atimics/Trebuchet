@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=156">
+  <link rel="stylesheet" href="./styles.css?v=157">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -91,7 +91,6 @@
         <div class="coins-list-view" id="coinsListView">
           <div class="coins-toolbar">
             <button class="primary-button" type="button" data-action="new-coin"><i class="fa-solid fa-plus"></i><span>New coin</span></button>
-            <button class="secondary-button" type="button" data-view="lean" title="One pool, locked for good, a fraction of the venue cost"><i class="fa-solid fa-bolt"></i><span>Lean launch</span></button>
             <div class="coins-add" id="coinsAddForm">
               <input id="addCoinMint" type="text" autocomplete="off" spellcheck="false" placeholder="Add an existing coin: paste its mint address" aria-label="Mint address of an existing coin">
               <button class="secondary-button" type="button" data-action="add-coin"><i class="fa-solid fa-link"></i><span>Add</span></button>
@@ -659,6 +658,7 @@
             <button class="history-pane-tab" id="historyTabWallets" type="button" role="tab" aria-selected="false" aria-controls="historyPanelWallets" data-action="select-history-pane" data-history-pane="wallets"><i class="fa-solid fa-wallet" aria-hidden="true"></i><strong>Wallets</strong></button>
             <button class="history-pane-tab" id="historyTabAudit" type="button" role="tab" aria-selected="false" aria-controls="historyPanelAudit" data-action="select-history-pane" data-history-pane="audit"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><strong>Activity</strong></button>
             <button class="history-pane-tab" id="historyTabJournal" type="button" role="tab" aria-selected="false" aria-controls="historyPanelJournal" data-action="select-history-pane" data-history-pane="journal"><i class="fa-solid fa-list" aria-hidden="true"></i><strong>Launches</strong></button>
+            <button class="history-pane-tab history-lean-link" type="button" data-view="lean" title="Launches made on their own Meteora pool before Meteora became a pool option"><i class="fa-solid fa-bolt" aria-hidden="true"></i><strong>Meteora launches</strong></button>
           </div>
           <div class="history-pane-stage">
             <section class="history-pane is-active" id="historyPanelRecovery" data-history-pane-panel="recovery" role="tabpanel" aria-labelledby="historyTabRecovery"><div class="recovery-wizard" id="recoveryWizard"></div></section>
@@ -764,7 +764,7 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=3"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=242"></script>
+  <script src="./app.js?v=243"></script>
   <script src="./nfts.js?v=2"></script>
   <script src="./lean.js?v=2"></script>
 </body>
