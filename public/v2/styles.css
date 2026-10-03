@@ -18030,3 +18030,31 @@ body #toastStack { left: auto; right: 16px; bottom: 16px; transform: none; width
 .pool-toggle > button.is-on { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); box-shadow: inset 0 -2px 0 var(--green); }
 .pool-toggle > button:focus-visible { outline: 1px solid var(--green); outline-offset: -1px; }
 @media (max-width: 760px) { .supply-row { grid-template-columns: 10px minmax(0, 1fr) 84px 28px 28px; } }
+
+/* The venue and fee buttons sit on one line under the pool's row, across its width. */
+.supply-row > .pool-switches { grid-column: 2 / -1; grid-row: 2; flex-wrap: nowrap; margin-top: 0; }
+@media (max-width: 760px) { .supply-row > .pool-switches { flex-wrap: wrap; } }
+
+/* Breakpoints, made consistent.
+   Wide (1200+): three columns that grow smoothly with the window instead of jumping at 1500/1600.
+   Medium (901-1199): the right column becomes one slim strip above the work: the action, then the
+   wallet and positions inline, instead of a tall bar that hid the wallet.
+   Narrow (900 and under): the action is pinned above the bottom nav; the page leaves room for both. */
+@media (min-width: 1200px) {
+  .coin-state-layout { grid-template-columns: clamp(200px, 15vw, 240px) minmax(0, 1fr) clamp(240px, 19vw, 300px); }
+}
+@media (max-width: 1199px) and (min-width: 901px) {
+  .coin-state-layout { grid-template-columns: clamp(190px, 21vw, 230px) minmax(0, 1fr); }
+  .coin-state-layout > .launch-next-rail { display: flex; align-items: stretch; gap: 0; min-height: 0; }
+  .launch-next-rail .rail-next { flex: 0 0 auto; min-width: 260px; max-width: 420px; padding: 8px 12px; border-right: 1px solid var(--line); }
+  .launch-next-rail .rail-next .rail-warn { display: none; }
+  .launch-next-rail .rail-pair .rail-act, .launch-next-rail .rail-act { min-height: 36px; }
+  .launch-next-rail .rail-block { display: flex; flex-direction: column; justify-content: center; gap: 2px; flex: 1 1 0; min-width: 0; padding: 6px 14px; border-top: 0; border-right: 1px solid var(--line); }
+  .launch-next-rail .rail-block:last-child { border-right: 0; }
+  .launch-next-rail .rail-block .rail-row:nth-of-type(n+3), .launch-next-rail .rail-block .rail-meter { display: none; }
+  .launch-next-rail .rail-balance.is-amount b { font-size: 16px; }
+}
+@media (max-width: 900px) {
+  #view-launch { padding-bottom: 140px; }
+  body #toastStack { bottom: 132px; }
+}
