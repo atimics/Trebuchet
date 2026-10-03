@@ -409,3 +409,30 @@ test('fresh wallet PIN custody requires a protected device secret', async (t) =>
     assert.equal(existsSync(pendingWalletFile(configDir)), false);
   });
 });
+
+test('a finished launch retires its wallet and keeps the key readable', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    secretStore.setSafeStorage(fakeSafeStorage());
+    const pendingWallets = await importFreshPendingWallets(configDir);
+    pendingWallets.add('Wallet1111111111111111111111111111111111', [1, 2, 3], 'alpha beta');
+    const before = readFileSync(pendingWalletFile(configDir), 'utf8');
+
+    const retired = pendingWallets.retire('Wallet1111111111111111111111111111111111', '2026-10-03T22:05:30.000Z');
+    assert.equal(retired.retiredAt, '2026-10-03T22:05:30.000Z');
+    assert.deepEqual(retired.secretKey, [1, 2, 3]);
+    const saved = pendingWallets.get('Wallet1111111111111111111111111111111111');
+    assert.deepEqual(saved.secretKey, [1, 2, 3]); assert.equal(saved.mnemonic, 'alpha beta');
+    const disk = JSON.parse(readFileSync(pendingWalletFile(configDir), 'utf8'));
+    assert.equal(disk.length, 1); assert.equal(disk[0].retiredAt, '2026-10-03T22:05:30.000Z');
+    assert.equal(disk[0].secretKeyEnc, JSON.parse(before)[0].secretKeyEnc, 'the ciphertext is kept as it was');
+
+    // Retiring twice keeps the first time; an unknown wallet is a no-op.
+    pendingWallets.retire('Wallet1111111111111111111111111111111111', '2026-10-04T00:00:00.000Z');
+    assert.equal(pendingWallets.get('Wallet1111111111111111111111111111111111').retiredAt, '2026-10-03T22:05:30.000Z');
+    assert.equal(pendingWallets.retire('Missing11111111111111111111111111111111'), null);
+    // A later add of the same wallet keeps it retired and its key unchanged.
+    pendingWallets.add('Wallet1111111111111111111111111111111111', [9, 9, 9], 'changed');
+    assert.deepEqual(pendingWallets.get('Wallet1111111111111111111111111111111111').secretKey, [1, 2, 3]);
+  });
+});

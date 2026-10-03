@@ -1440,7 +1440,8 @@ export function createLaunchExecutionServices({
         },
       );
       // Keep recovery custody until the final chain observation is durable.
-      if (walletEmpty) pendingWallets.remove(walletPublicKey);
+      // The key is kept (retired), never deleted here: "empty" allows dust and open token accounts.
+      if (walletEmpty) pendingWallets.retire(walletPublicKey);
       return {
         success: true,
         tokensTransferred,
