@@ -466,12 +466,23 @@ function renderLaunchNextRail(facts, next, workspace) {
       ${tokens.map(([tokenMint, token]) => row(String(token.symbol || shortAddress(tokenMint)), escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 })))).join('')}
     </section>`;
 
-  // What the launch costs, against what the wallet holds. The block opens the cost breakdown.
+  // Once the launch has started, the wallet is meant to empty: the block shows the budget the launch
+  // started from draining, never "short". Before that, what the launch costs against what the wallet holds.
+  const launched = !practice && (Boolean(mint) || Boolean(state.fullRunRunning || state.realExecutionRunning));
+  const budget = launched ? Number(state.classicFundingEstimate?.totalSol || 0) || null : null;
+  const drainBlock = launched && budget && holds != null ? `
+    <section class="rail-block rail-cost is-draining">
+      <button class="rail-cost-open" type="button" data-launch-workspace="fund" aria-label="Launch budget: open the breakdown">
+        <span class="rail-head"><span class="rail-label">Launch budget</span><small>${escapeHtml(`${sol(Math.min(Math.max(0, budget - holds), budget))} used`)}</small></span>
+        <span class="rail-balance is-amount"><b>${sol(Math.max(0, holds))}</b><span>of ${sol(budget)} SOL left</span></span>
+        <span class="rail-meter" aria-hidden="true"><i style="width:${Math.min(100, (Math.max(0, holds) / budget) * 100).toFixed(1)}%"></i></span>
+      </button>
+    </section>` : '';
   const costStatus = needs == null
     ? (estimateStatus.stale ? 'out of date' : 'not estimated')
     : holds == null ? 'balance not checked'
       : short > 0.0001 ? `short ${sol(short)} SOL` : 'covered';
-  const fundingBlock = practice ? '' : `
+  const fundingBlock = practice ? '' : drainBlock || `
     <section class="rail-block rail-cost">
       <button class="rail-cost-open" type="button" data-launch-workspace="fund" aria-label="Launch cost: open the breakdown">
         <span class="rail-head"><span class="rail-label">Launch cost</span><small class="${needs != null && holds != null ? (short > 0.0001 ? 'is-warn' : 'is-ok') : ''}">${escapeHtml(costStatus)}</small></span>
