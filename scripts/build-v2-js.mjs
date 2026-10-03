@@ -18,6 +18,7 @@ export const v2FeatureNames = [
   "shell/dialogs.js",
   "launch/logo.js",
   "launch/config.js",
+  "launch/presets.js",
   "recovery/plan.js",
   "launch/workspace.js",
   "launch/vanity.js",
