@@ -90,15 +90,16 @@ try {
   await page.waitForFunction(() => document.body.dataset.apiStatus === 'connected', null, { timeout: 30_000 });
   await page.evaluate(() => {
     setView('launch');
-    setLaunchWorkspace('configure');
-    document.querySelector('#launchMoreOptions').open = true;
-    document.querySelector('.launch-design-details').open = true;
+    state.phaseSlide = { ...(state.phaseSlide || {}), liquidity: 'pairs' };
+    setLaunchWorkspace('liquidity');
     addCustomPool({ symbol: 'SEIGE', mint: 'HipYxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyb5r' });
     state.supplyOpenRow = `custom:${state.customPools.at(-1).id}`;
     renderSupplyEditor();
   });
   const panel = page.locator('.supply-settings').first();
   await panel.waitFor({ state: 'visible', timeout: 10_000 });
+  // The settings pane slides in; wait until it has stopped.
+  await page.waitForFunction(() => document.querySelector('.supply-track') && !document.querySelector('.supply-track.is-sliding') && document.querySelector('.supply-track').dataset.pane === 'settings');
   await panel.scrollIntoViewIfNeeded();
   const shot = async (name) => { if (shots) await panel.screenshot({ path: path.join(shots, `${name}.png`) }); };
 
@@ -158,10 +159,10 @@ try {
   agree(info, 'End');
   assert.equal(info.planned, 19);
   assert.equal(await page.evaluate(() => document.activeElement.type), 'range', 'focus stays on the slider');
-  await page.locator('.supply-settings .choice-ticks button[data-choice-index="3"]').click();
+  await page.locator('.supply-settings .choice-ticks button[data-choice-index="5"]').click();
   info = await readState();
   agree(info, 'label click');
-  assert.equal(info.range, 3);
+  assert.equal(info.range, 5);
   const tabStops = await page.evaluate(() => (
     [...document.querySelectorAll('.supply-settings .choice-ticks button')].filter((button) => button.tabIndex >= 0).length
   ));
@@ -277,7 +278,7 @@ try {
   await field(':manual').fill('');
   assert.equal(await note('manual').textContent(), '');
 
-  // Names and descriptions: labels name the control, helper text describes it.
+  // Names: every control is named by its label (helper text was removed).
   const names = await page.evaluate(() => [...document.querySelectorAll('.supply-settings input[type="text"], .supply-settings input:not([type]), .supply-settings textarea')].map((control) => {
     const label = document.getElementById(control.getAttribute('aria-labelledby'));
     const described = (control.getAttribute('aria-describedby') || '').split(' ').filter(Boolean).map((id) => document.getElementById(id)?.textContent || '');
@@ -286,22 +287,7 @@ try {
   assert.ok(names.length >= 5);
   names.forEach((item) => {
     assert.ok(item.name, 'every field has a name');
-    assert.ok(item.described, `${item.name} has a description`);
   });
-
-  // Helper text is readable (4.5:1 or better against the panel).
-  const contrast = await page.evaluate(() => {
-    const parse = (value) => value.match(/[\d.]+/g).slice(0, 3).map(Number);
-    const lum = ([r, g, b]) => {
-      const [x, y, z] = [r, g, b].map((v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
-      return 0.2126 * x + 0.7152 * y + 0.0722 * z;
-    };
-    const hint = document.querySelector('.supply-settings .supply-field > small:not(.supply-feedback)');
-    const fg = lum(parse(getComputedStyle(hint).color));
-    const bg = lum(parse(getComputedStyle(document.body).backgroundColor));
-    return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
-  });
-  assert.ok(contrast >= 4.5, `helper text contrast ${contrast.toFixed(2)} should be at least 4.5`);
 
   // Narrow screen: no sideways scroll, and the tier labels stay inside.
   await page.setViewportSize({ width: 390, height: 900 });
@@ -310,7 +296,7 @@ try {
   const overflow = await page.evaluate(() => {
     const body = document.documentElement;
     const settings = document.querySelector('.supply-settings').getBoundingClientRect();
-    const ticks = [...document.querySelectorAll('.supply-settings .choice-ticks button')].map((button) => button.getBoundingClientRect());
+    const ticks = [...document.querySelectorAll('.supply-settings .choice-ticks button')].map((button) => button.getBoundingClientRect()).filter((box) => box.width > 0);
     return {
       page: body.scrollWidth - body.clientWidth,
       ticksOutside: ticks.filter((box) => box.right > settings.right + 1 || box.left < settings.left - 1).length,

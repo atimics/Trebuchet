@@ -221,10 +221,12 @@ function renderSupplyEditor() {
     const poolsHead = target.querySelector('[data-supply-pools-head]');
     if (poolsHead) poolsHead.textContent = `${pools.length} · ${pct(poolPercent)}`;
     rows.forEach((row) => {
-      const amount = target.querySelector(`[data-supply-amount="${CSS.escape(row.key)}"]`);
-      if (amount) amount.textContent = compactAmount(supply * row.percent / 100);
-      const percentInput = target.querySelector(`input[data-supply-key="${CSS.escape(row.key)}"]`);
-      if (percentInput && percentInput !== active) percentInput.value = String(row.percent);
+      target.querySelectorAll(`[data-supply-amount="${CSS.escape(row.key)}"]`).forEach((amount) => {
+        amount.textContent = compactAmount(supply * row.percent / 100);
+      });
+      target.querySelectorAll(`input[data-supply-key="${CSS.escape(row.key)}"]`).forEach((percentInput) => {
+        if (percentInput !== active) percentInput.value = String(row.percent);
+      });
     });
     target.querySelector('.supply-total')?.replaceWith(
       document.createRange().createContextualFragment(totalHtml),
@@ -293,7 +295,7 @@ function renderSupplyEditor() {
 `;
   };
 
-  const rowHtml = (row) => {
+  const rowHtml = (row, withSettings = false) => {
     const input = row.poolId
       ? `data-custom-pool-field="supplyPercent" data-pool-id="${escapeHtml(row.poolId)}"`
       : `data-supply-target="${row.target}"`;
@@ -317,21 +319,50 @@ function renderSupplyEditor() {
           : '<span class="supply-remove-spacer"></span>'}
         ${remove}
       </li>
-      ${row.kind === 'pool' && state.supplyOpenRow === row.key ? `<li class="supply-settings">${settingsHtml(row)}</li>` : ''}`;
+      ${withSettings && row.kind === 'pool' ? `<li class="supply-settings">${settingsHtml(row)}</li>` : ''}`;
   };
 
+  // Two panes side by side: the pools, and the settings of the pool that is open.
+  // Opening or closing one slides the track; nothing is hidden or rebuilt around it.
+  const openRow = state.supplyOpenRow ? pools.find((row) => row.key === state.supplyOpenRow) : null;
+  const isOpen = Boolean(openRow);
+  // The pane on screen when this render starts. A render that lands before the slide begins
+  // (the app redraws more than once per click) must not skip the slide.
+  const startOpen = target.dataset.rendered === '1' ? target.dataset.shown === 'settings' : isOpen;
+  const sliding = startOpen !== isOpen;
+  // Sliding back out, the pane keeps showing the pool it is leaving.
+  const shownRow = openRow || (sliding ? pools.find((row) => row.key === target.dataset.lastKey) : null);
   target.innerHTML = `
+    <div class="supply-track${sliding ? ' is-sliding' : ''}" data-pane="${startOpen ? 'settings' : 'list'}">
+      <div class="supply-pane supply-pane-list${isOpen ? '' : ' is-active'}">${`
     <div class="supply-bar" role="img" aria-label="Supply split">${segments}${gap}</div>
     <div class="supply-group-head"><span>Pools</span><span class="pool-config-actions">
       <button class="pill-button" type="button" data-action="export-pool-config" title="Copy the pool config to the clipboard"><i class="fa-regular fa-copy" aria-hidden="true"></i> Export</button>
       <button class="pill-button" type="button" data-action="import-pool-config" title="Load a pool config from the clipboard"><i class="fa-solid fa-file-import" aria-hidden="true"></i> Import</button>
       <span data-supply-pools-head>${pools.length} · ${pct(poolPercent)}</span></span></div>
-    <ol class="supply-list">${pools.map(rowHtml).join('')}</ol>
+    <ol class="supply-list">${pools.map((row) => rowHtml(row)).join('')}</ol>
     ${pairArbitrageWarningHtml(pools)}
     <button class="supply-add" type="button" data-action="add-custom-pool"><i class="fa-solid fa-plus"></i> Add pair</button>
     <div class="supply-group-head"><span>Held back</span></div>
-    <ol class="supply-list">${rows.filter((row) => row.kind === 'hold').map(rowHtml).join('')}</ol>
-    ${totalHtml}`;
+    <ol class="supply-list">${rows.filter((row) => row.kind === 'hold').map((row) => rowHtml(row)).join('')}</ol>
+    ${totalHtml}`}</div>
+      <div class="supply-pane supply-pane-settings${isOpen ? ' is-active' : ''}">
+        ${shownRow ? `<button class="supply-back" type="button" data-action="supply-toggle-settings" data-supply-row="${escapeHtml(shownRow.key)}"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i><span>Pools</span></button>
+        <ol class="supply-list">${rowHtml(shownRow, true)}</ol>` : ''}
+      </div>
+    </div>`;
+  if (openRow) target.dataset.lastKey = openRow.key;
+  const track = target.querySelector('.supply-track');
+  if (sliding) {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      if (!track.isConnected) return;
+      track.dataset.pane = isOpen ? 'settings' : 'list';
+      target.dataset.shown = isOpen ? 'settings' : 'list';
+    }));
+    window.setTimeout(() => { if (track.isConnected) track.classList.remove('is-sliding'); }, 340);
+  } else {
+    target.dataset.shown = isOpen ? 'settings' : 'list';
+  }
 
   target.dataset.rendered = '1';
   renderPoolControlFeedback(target);
