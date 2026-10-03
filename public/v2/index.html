@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=132">
+  <link rel="stylesheet" href="./styles.css?v=133">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -283,6 +283,15 @@
                 <div class="plan-track" id="planTrack">
 <section class="plan-slide" data-plan-slide="details" data-phase="mint" role="tabpanel">
 <form class="config-grid" id="launchConfig" aria-label="Launch configuration">
+                  <div class="token-standard-row">
+                  <label>
+                    <span>Token standard</span>
+                    <select id="mintFormat" data-choice="buttons">
+                      <option value="token-2022" data-short="Token-2022" selected>Token-2022 · on-mint identity</option>
+                      <option value="classic-spl" data-short="Classic SPL">Classic SPL · compatibility</option>
+                    </select>
+                  </label>
+                </div>
                   <div class="identity-fields">
 <label>
                     <span>Token name</span>
@@ -296,6 +305,16 @@
                     <span>Description</span>
                     <input id="tokenDescription" type="text" value="" placeholder="What is this token for?" autocomplete="off">
                   </label>
+                  <div class="identity-terms">
+                    <label>
+                      <span>Total supply</span>
+                      <input id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000" autocomplete="off">
+                    </label>
+                    <label class="sealed-launch-control" for="sealedLaunch">
+                      <input id="sealedLaunch" type="checkbox" checked>
+                      <span><strong>Sealed launch</strong></span>
+                    </label>
+                  </div>
                   </div>
                   <div class="logo-panel">
                   <div class="logo-input-row">
@@ -309,25 +328,6 @@
                   <div class="token-logo-preview" id="tokenLogoPreview"></div>
                   </div>
                 </form>
-<div class="config-grid launch-more-grid">
-                    <label>
-                      <span>Total supply</span>
-                      <input id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000" autocomplete="off">
-                    </label>
-                    <label class="sealed-launch-control" for="sealedLaunch">
-                      <input id="sealedLaunch" type="checkbox" checked>
-                      <span>
-                        <strong>Sealed launch</strong>
-                      </span>
-                    </label>
-                    <label>
-                      <span>Mint standard</span>
-                      <select id="mintFormat" data-choice="buttons">
-                        <option value="token-2022" data-short="Token-2022" selected>Token-2022 · on-mint identity</option>
-                        <option value="classic-spl" data-short="Classic SPL">Classic SPL · compatibility</option>
-                      </select>
-                    </label>
-                </div>
 </section>
 <section class="plan-slide" data-plan-slide="address" data-phase="mint" role="tabpanel">
 <div class="vanity-details-body grinder" aria-label="Optional custom contract address">
@@ -757,9 +757,9 @@
   <script src="./runtime-state.js?v=2"></script>
   <script src="./api-client.js?v=42"></script>
   <script src="../gif-optimizer.js?v=3"></script>
-  <script src="./core.js?v=2"></script>
+  <script src="./core.js?v=3"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=223"></script>
+  <script src="./app.js?v=224"></script>
   <script src="./nfts.js?v=2"></script>
   <script src="./lean.js?v=2"></script>
 </body>

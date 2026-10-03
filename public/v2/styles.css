@@ -17732,3 +17732,9 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 }
 
 .pool-config-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+#launchConfig .token-standard-row { grid-column: 1 / -1; }
+#launchConfig .token-standard-row label { display: flex; align-items: center; gap: 14px; }
+#launchConfig .token-standard-row label > span { white-space: nowrap; }
+#launchConfig .identity-terms { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: end; }
+#launchConfig .identity-terms .sealed-launch-control { min-height: 44px; margin: 0; padding: 0 14px; }

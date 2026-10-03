@@ -898,11 +898,16 @@ if (runtimeControl) app.use(runtimeControl);
 // mutating the launcher API. The frontend gets the token through /api/session;
 // cross-origin pages can make that request, but cannot read the response
 // without CORS, so they cannot attach the required header.
-// Rent per byte as the chain reports it now. The funding estimate scales its
-// rent constants by it. A failed lookup keeps the last known rate.
+// Rent per byte as the chain reports it. The funding estimate scales its rent
+// constants by it. The app asks once at start (GET /api/rent); a lookup is
+// repeated at most every six hours, and a failed one keeps the last rate.
 const RENT_PROBE_BYTES = 10240; // one CLMM tick array
 const RENT_ACCOUNT_OVERHEAD_BYTES = 128;
+const RENT_REFRESH_MS = 6 * 60 * 60 * 1000;
+let rentCheckedAt = 0;
 async function refreshRentRate() {
+  if (Date.now() - rentCheckedAt < RENT_REFRESH_MS) return;
+  rentCheckedAt = Date.now();
   try {
     const response = await fetch(getRpcUrl(), {
       method: 'POST',
@@ -916,18 +921,19 @@ async function refreshRentRate() {
     }
   } catch {}
 }
-if (!process.env.TREBUCHET_SKIP_RENT_PROBE) {
-  void refreshRentRate();
-  setInterval(refreshRentRate, 6 * 60 * 60 * 1000).unref();
-}
 
 app.get('/api/session', (_req, res) => {
   res
     .set('Cache-Control', 'no-store')
-    .json({ success: true, token: API_SESSION_TOKEN, rentLamportsPerByte: currentRentRate });
+    .json({ success: true, token: API_SESSION_TOKEN });
 });
 
 app.use('/api', apiSessionMiddleware);
+
+app.get('/api/rent', async (_req, res) => {
+  await refreshRentRate();
+  res.set('Cache-Control', 'no-store').json({ success: true, rentLamportsPerByte: currentRentRate });
+});
 
 app.use(express.json({ limit: '5mb' }));
 
