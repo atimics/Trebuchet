@@ -112,6 +112,20 @@ export function createLiquidityExecutionRuntime({ owner, getScopeId, recordProgr
   };
   const checkpoint = (walletPublicKey, result) => recordProgress(walletPublicKey, { ...result.event, txId: result.txId || result.signature || null, operationId: result.operationId });
   return {
+    // The liquidity plan saved when this launch first prepared liquidity, if any. A resume follows
+    // it: the screen may have changed since (a toggle, a fix that carries more fields), and the
+    // saved plan is immutable, so rebuilding from the screen can only conflict or diverge.
+    savedPlan(input) {
+      owner.assertActive();
+      const walletPublicKey = Keypair.fromSecretKey(Uint8Array.from(input.tempWalletSecretKey)).publicKey.toBase58();
+      const scopeId = getScopeId(walletPublicKey);
+      if (!scopeId) return null;
+      const db = openRuntimeStore(owner.profile);
+      try {
+        const saved = db.getLaunch(hash({ scopeId, walletPublicKey, network: networkForRequest(), kind: 'liquidity-plan' }));
+        return saved?.config?.plan || null;
+      } finally { db.close(); }
+    },
     forLaunch(input) {
       const wallet = Keypair.fromSecretKey(Uint8Array.from(input.tempWalletSecretKey));
       const walletPublicKey = wallet.publicKey.toBase58(), scopeId = getScopeId(walletPublicKey), plan = liquidityPlan(input);

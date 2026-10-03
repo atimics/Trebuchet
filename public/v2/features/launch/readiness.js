@@ -178,6 +178,7 @@ function fundingEstimateAllocationsForTopology(topology = {}) {
       bootstrap: pool.bootstrap,
       ladder: pool.ladder,
       support: pool.support,
+      ...(pool.venue === 'meteora-damm-v2' ? { venue: pool.venue, damm: pool.damm } : {}),
     };
   });
 }

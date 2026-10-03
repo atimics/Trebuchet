@@ -698,9 +698,18 @@ const prepareAirdrop = (input) => {
 };
 const executeAirdrop = (input) => airdropExecution.execute(input);
 const reconcileAirdrop = (input) => airdropExecution.recover(input);
-const createPoolsAndPositions = (input) => createPoolsWithSdk({ ...input, execution: {
-  ...requireLiquidityExecution().forLaunch(input), transferFeeKey: feeKeyExecution.forLaunch(input),
-} });
+const createPoolsAndPositions = (requested) => {
+  // Resuming a launch whose liquidity plan is already saved builds the remaining steps from that
+  // plan, not from the current screen.
+  const saved = requireLiquidityExecution().savedPlan(requested);
+  const input = saved && saved.tokenMint === requested.tokenMint
+    ? { ...requested, allocations: saved.allocations, targetMarketCapUsd: saved.targetMarketCapUsd, tokenTotalSupply: saved.tokenTotalSupply,
+      tokenDecimals: saved.tokenDecimals, lockPositions: saved.lockPositions }
+    : requested;
+  return createPoolsWithSdk({ ...input, execution: {
+    ...requireLiquidityExecution().forLaunch(input), transferFeeKey: feeKeyExecution.forLaunch(input),
+  } });
+};
 const reconcileBeforeLiquidity = async (input) => {
   await requireLiquidityExecution().recover(input);
   await feeKeyExecution.recover(input);
