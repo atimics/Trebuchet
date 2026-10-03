@@ -136,6 +136,23 @@ function nftItems() {
 
 export const SECRET_STATES = ['readable', 'locked', 'wrong-key', 'missing'];
 
+function dammItems() {
+  const root = path.join(configDir(), 'dammLaunches');
+  let files = [];
+  try { files = fs.readdirSync(root); } catch { return []; }
+  return files.filter((file) => file.endsWith('.json')).flatMap((file) => {
+    const record = readJson(path.join(root, file), null);
+    if (!record) return [];
+    return [
+      { kind: 'token mint key', token: record.tokenMintKey?.secretEnc, publicKey: record.tokenMintKey?.publicKey, spent: record.steps?.token?.complete },
+      { kind: 'position key', token: record.positionNftEnc, publicKey: record.steps?.pool?.positionNft, spent: record.steps?.pool?.complete },
+    ].filter(({ token }) => isToken(token)).map(({ token, kind, publicKey, spent }) => ({
+      store: 'dammLaunches', kind, id: record.id, publicKey: publicKey || null,
+      state: classify({ token }), hasMnemonic: false, wouldBeLostByReset: !spent && pinProtected(token),
+    }));
+  });
+}
+
 /** Everything saved, with a computed state for each item. Public fields only. */
 export function secretInventory() {
   const stores = {
@@ -143,6 +160,7 @@ export function secretInventory() {
     vanityCAs: vanityItems(),
     splitJobs: splitItems(),
     nftKeys: nftItems(),
+    dammKeys: dammItems(),
   };
   const all = Object.values(stores).flat();
   const totals = { total: all.length, wouldBeLostByReset: 0 };

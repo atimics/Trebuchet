@@ -79,8 +79,18 @@ export async function runLaunch({ id, walletSecretKey, deps }) {
   }
   const job = { startedAt: new Date().toISOString(), stage: 'starting' };
   jobs.set(id, job);
+  const poolService = deps.poolService || damm;
   const note = (event) => {
     job.stage = event.stage || job.stage;
+    if (event.tokenMint) {
+      const token = store.get(id).steps.token || {};
+      if (token.mint && token.mint !== event.tokenMint) throw new Error('Resume the saved token mint before continuing.');
+      const fields = {};
+      for (const key of ['metadataUri', 'imageUri', 'metadataHash', 'onChainMetadataUri', 'mintAuthorityRenounced', 'freezeAuthorityDisabled', 'metadataImmutable']) {
+        if (event[key] !== undefined) fields[key] = event[key];
+      }
+      store.update(id, { steps: { token: { ...token, ...fields, mint: event.tokenMint, complete: false } } });
+    }
     try { store.appendEvent(id, compactEvent(event)); } catch { /* the journal is best-effort */ }
   };
 
@@ -93,25 +103,51 @@ export async function runLaunch({ id, walletSecretKey, deps }) {
     if (!record.steps.token?.complete) {
       note({ stage: 'token_starting' });
       const vanityKey = record.config.vanity?.selectedPublicKey || null;
-      const candidate = vanityKey ? deps.getVanityCandidate(vanityKey) : null;
-      if (vanityKey && !candidate) throw httpError(404, 'The selected contract address is not in the saved list.');
-      const created = await deps.createToken({
+      // Older interrupted runs kept the landed mint in their events only.
+      const landed = record.events.find((event) => event.stage === 'mint_created' && event.tokenMint);
+      if (!record.steps.token?.mint && landed) record = store.update(id, { steps: { token: { mint: landed.tokenMint, complete: false } } });
+      let candidate = null;
+      if (!record.steps.token?.mint) {
+        candidate = vanityKey ? deps.getVanityCandidate(vanityKey) : null;
+        if (vanityKey && !candidate) throw httpError(404, 'The selected contract address is not in the saved list.');
+        if (!candidate) {
+          const fresh = Keypair.generate();
+          candidate = { publicKey: fresh.publicKey.toBase58(), secretKey: Array.from(fresh.secretKey) };
+        }
+        store.saveTokenMint(id, candidate);
+        record = store.update(id, { steps: { token: { mint: candidate.publicKey, complete: false } } });
+      }
+      const input = {
         tempWalletSecretKey: Array.from(wallet.secretKey),
         name: record.config.token.name,
         symbol: record.config.token.symbol,
         description: record.config.token.description,
         totalSupply: record.config.token.supply,
         logoBase64: record.logoDataUrl,
-        vanityCAScalar: candidate?.keyType === 'scalar' ? candidate.scalar : null,
-        vanityCAKeypair: candidate && candidate.keyType !== 'scalar' ? candidate.secretKey : null,
         sealedLaunch: false,
         mintFormat: 'token-2022',
         onProgress: note,
-      });
+      };
+      let created;
+      if (await connection.getAccountInfo(new PublicKey(record.steps.token.mint), 'finalized')) {
+        const token = record.steps.token;
+        const finished = await deps.finishToken({ ...input, tokenMint: token.mint,
+          metadataUri: token.onChainMetadataUri || token.metadataUri,
+          metadataHash: token.metadataHash, journalEvents: record.events });
+        created = { ...token, ...finished, tokenMint: token.mint, metadataImmutable: finished.updateAuthorityRevoked === true };
+      } else {
+        candidate = candidate || store.loadTokenMint(id);
+        if (!candidate || candidate.publicKey !== record.steps.token.mint) throw new Error('Restore the saved token mint key before continuing.');
+        created = await deps.createToken({ ...input,
+          vanityCAScalar: candidate.keyType === 'scalar' ? candidate.scalar : null,
+          vanityCAKeypair: candidate.keyType !== 'scalar' ? candidate.secretKey : null });
+      }
+      if (created?.tokenMint !== record.steps.token.mint) throw new Error('Resume the saved token mint before continuing.');
       if (!created?.tokenMint || created.isSafe !== true) throw new Error('The token was not verified as safe, so no pool was created.');
-      if (vanityKey) deps.removeVanityCandidate(vanityKey);
       record = store.update(id, {
+        tokenMintKey: null,
         steps: { token: {
+          ...store.get(id).steps.token,
           complete: true,
           mint: created.tokenMint,
           metadataUri: created.metadataUri || null,
@@ -121,6 +157,7 @@ export async function runLaunch({ id, walletSecretKey, deps }) {
           metadataImmutable: created.metadataImmutable === true,
         } },
       });
+      if (vanityKey) deps.removeVanityCandidate(vanityKey);
     }
     const mint = new PublicKey(record.steps.token.mint);
 
@@ -130,22 +167,23 @@ export async function runLaunch({ id, walletSecretKey, deps }) {
       // The position NFT's key exists before anything is sent. A resume reuses it.
       let secret = store.loadPositionNft(id);
       if (!secret) {
+        if (store.get(id).positionNftEnc) throw new Error('Unlock the Recovery PIN or restore the saved position key.');
         const fresh = Keypair.generate();
         store.savePositionNft(id, fresh.secretKey);
         secret = fresh.secretKey;
       }
       const positionNft = Keypair.fromSecretKey(secret);
-      const existing = await damm.findExistingPool({ connection, mint, positionNft: positionNft.publicKey });
+      const existing = await poolService.findExistingPool({ connection, mint, positionNft: positionNft.publicKey });
       let pool;
       if (existing.poolExists && existing.positionExists) {
         note({ stage: 'damm_pool_adopted', pool: existing.pool.toBase58(), position: existing.position.toBase58() });
-        const verification = await damm.verifyLockedPool({ connection, pool: existing.pool, position: existing.position, mint, supplyRaw: params.supplyRaw });
+        const verification = await poolService.verifyLockedPool({ connection, pool: existing.pool, position: existing.position, mint, ...params, positionNft: positionNft.publicKey, recovery: true });
         if (!verification.passed) throw new Error('A pool for this token already exists but is not the locked single-sided pool this launch makes.');
         pool = { pool: existing.pool.toBase58(), position: existing.position.toBase58(), positionNft: positionNft.publicKey.toBase58(), verification, adopted: true };
       } else if (existing.poolExists) {
         throw new Error('A pool for this token already exists, and it is not this launch\'s position. Nothing was created.');
       } else {
-        const created = await damm.createLockedPool({
+        const created = await poolService.createLockedPool({
           connection, payer: wallet, mint, positionNft, ...params,
           priorityMicroLamports: deps.priorityMicroLamports || 0, onProgress: note,
         });
@@ -172,7 +210,7 @@ export async function runLaunch({ id, walletSecretKey, deps }) {
     const destination = record.config.destination;
     if (destination && destination !== wallet.publicKey.toBase58() && !record.steps.keyTransfer?.complete) {
       note({ stage: 'fee_key_sending' });
-      const sent = await damm.transferPositionNft({ connection, owner: wallet, positionNft: record.steps.pool.positionNft, to: destination });
+      const sent = await poolService.transferPositionNft({ connection, owner: wallet, positionNft: record.steps.pool.positionNft, to: destination });
       record = store.update(id, { steps: { keyTransfer: { complete: true, to: sent.to, signature: sent.signature } } });
       note({ stage: 'fee_key_sent', txId: sent.signature });
     }

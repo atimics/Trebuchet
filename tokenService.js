@@ -813,6 +813,9 @@ export async function createTokenWithMetaplex({
       onChainMetadataUri = metadataUri;
     }
 
+    progress({ stage: 'token_prepared', tokenMint: mintAddress, metadataUri, imageUri,
+      metadataHash, onChainMetadataUri, mintFormat: normalizedMintFormat });
+
     if (normalizedMintFormat === MINT_FORMAT_TOKEN_2022) {
       return await createToken2022WithOnMintMetadata({
         tempWallet,
@@ -1414,6 +1417,7 @@ export async function finishTokenCreation({
     throw new Error(`finish-token: cannot read mint ${tokenMint} on-chain: ${e.message}`);
   }
   status.supplyMinted = mintInfo.supply >= totalTokens;
+  status.freezeAuthorityDisabled = mintInfo.freezeAuthority === null;
   status.mintAuthorityRenounced = mintInfo.mintAuthority === null;
   status.metadataPointerAuthorityRevoked = isToken2022
     ? hasPermanentSelfMetadataPointer(mintInfo, mint)

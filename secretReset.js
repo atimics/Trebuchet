@@ -7,6 +7,7 @@ import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
 import * as splitJobStore from './splitJobStore.js';
 import * as nftCollectionStore from './nftCollectionStore.js';
+import * as dammV2Store from './dammV2Store.js';
 import { archiveSecrets } from './secretArchive.js';
 import { secretInventory } from './secretInventory.js';
 
@@ -38,6 +39,7 @@ export function resetWithArchive({ confirmReset, archive = archiveSecrets } = {}
     vanityCAs: vanityCaStore.removePinEncrypted(),
     splitJobs: splitJobStore.removePinEncrypted(),
     nftKeys: nftCollectionStore.removePinEncrypted(),
+    dammKeys: dammV2Store.removePinEncrypted(),
   };
   const status = secretStore.resetSecretPin();
   return {

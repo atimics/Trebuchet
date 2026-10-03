@@ -76,8 +76,7 @@ const lamports = (key) => connection.getBalance(key, 'confirmed');
 const DECIMALS = 9;
 const SUPPLY_WHOLE = 1_000_000_000n;
 const SUPPLY = SUPPLY_WHOLE * 10n ** BigInt(DECIMALS);
-async function makeToken(owner, supply = SUPPLY) {
-  const mint = Keypair.generate();
+async function makeToken(owner, supply = SUPPLY, mint = Keypair.generate()) {
   const metadata = { mint: mint.publicKey, name: 'Trebuchet', symbol: 'TREB', uri: 'https://example.invalid/t.json', additionalMetadata: [], updateAuthority: owner.publicKey };
   const space = getMintLen([ExtensionType.MetadataPointer]);
   const rent = await connection.getMinimumBalanceForRentExemption(space + 4 + pack(metadata).length);
@@ -230,7 +229,8 @@ const makeDeps = (wallet, overrides = {}) => ({
     assert.equal(args.mintFormat, 'token-2022');
     assert.equal(args.sealedLaunch, false);
     assert.equal(args.totalSupply, '1000000000');
-    return TOKEN_RESULT(await makeToken(Keypair.fromSecretKey(Uint8Array.from(args.tempWalletSecretKey))));
+    return TOKEN_RESULT(await makeToken(Keypair.fromSecretKey(Uint8Array.from(args.tempWalletSecretKey)), SUPPLY,
+      Keypair.fromSecretKey(Uint8Array.from(args.vanityCAKeypair))));
   },
   ...overrides,
 });
@@ -341,7 +341,7 @@ const leanConfig = (extra = {}) => normalizeDammV2Config({ token: { name: 'Trebu
   await assert.rejects(() => runLaunch({ id: record.id, walletSecretKey: Array.from(Keypair.generate().secretKey), deps: makeDeps(owner) }), /different wallet/);
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
-  const first = runLaunch({ id: record.id, walletSecretKey: Array.from(owner.secretKey), deps: makeDeps(owner, { createToken: async (args) => { await gate; return TOKEN_RESULT(await makeToken(Keypair.fromSecretKey(Uint8Array.from(args.tempWalletSecretKey)))); } }) });
+  const first = runLaunch({ id: record.id, walletSecretKey: Array.from(owner.secretKey), deps: makeDeps(owner, { createToken: async (args) => { await gate; return TOKEN_RESULT(await makeToken(Keypair.fromSecretKey(Uint8Array.from(args.tempWalletSecretKey)), SUPPLY, Keypair.fromSecretKey(Uint8Array.from(args.vanityCAKeypair)))); } }) });
   await new Promise((resolve) => setTimeout(resolve, 200));
   await assert.rejects(() => runLaunch({ id: record.id, walletSecretKey: Array.from(owner.secretKey), deps: makeDeps(owner) }), /already running/);
   release();
