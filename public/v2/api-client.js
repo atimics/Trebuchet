@@ -275,6 +275,9 @@
       },
       rpc: {
         activeUrl: rpcConfig.active || null,
+        network: rpcConfig.activeNetwork || null,
+        rpcNetwork: rpcConfig.rpcNetwork || null,
+        networkMismatch: rpcConfig.networkMismatch === true,
         label: rpcLabel(rpcConfig.active, rpcConfig.saved),
         saved: safeArray(rpcConfig.saved),
         savedCount: safeArray(rpcConfig.saved).length,
@@ -1071,6 +1074,11 @@
       return sweepPendingWallet({ walletPublicKey, destinationWallet });
     }
 
+    // Make the app's network and its RPC agree: 'rpc' keeps the RPC, 'network' keeps the network.
+    async function reconcileNetwork(match) {
+      return request('/api/rpc-config/reconcile', { method: 'POST', body: { match } });
+    }
+
     async function selectRpc(url) {
       const data = await request('/api/rpc-config/select', {
         method: 'POST',
@@ -1251,6 +1259,7 @@
       addRpc,
       removeRpc,
       selectRpc,
+      reconcileNetwork,
       setDiscoveryWalletEnabled,
       testRpc,
       setUserPrefs,

@@ -65,7 +65,7 @@ export function createSolanaChain({ connection, network, expectedGenesisHash, be
   }
   const checkNetwork = async () => {
     if (await connection.getGenesisHash() !== expectedGenesisHash) {
-      throw Object.assign(new Error('The RPC must match the approved chain genesis hash'), { code: 'NETWORK_MISMATCH' });
+      throw Object.assign(new Error('The RPC is on a different network from the app. Match them on the Mode bar or in Settings, then try again'), { code: 'NETWORK_MISMATCH' });
     }
   };
   const readStatus = async (signature, minSlot = 0) => {

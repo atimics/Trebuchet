@@ -239,6 +239,9 @@ function applyBootState(boot) {
   state.launchMode = state.demoActive ? 'dry-run' : 'guarded';
   state.environmentReady = true;
   state.rpcActiveUrl = boot.rpc?.activeUrl || null;
+  state.chainNetwork = boot.rpc?.network || null;
+  state.rpcNetwork = boot.rpc?.rpcNetwork || null;
+  state.networkMismatch = boot.rpc?.networkMismatch === true;
   state.rpcSaved = Array.isArray(boot.rpc?.saved) ? boot.rpc.saved : [];
   state.rpcName = boot.rpc?.label || 'Unknown RPC';
   state.rpcHealth = boot.rpc?.health || 'unknown';
