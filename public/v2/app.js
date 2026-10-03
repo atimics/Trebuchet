@@ -8271,7 +8271,7 @@ function renderSupplyEditor() {
     return `
       <li class="supply-row${row.kind === 'pool' && state.supplyOpenRow === row.key ? ' is-open' : ''}">
         <i class="supply-swatch" style="background:${row.color}"></i>
-        <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}${row.kind === 'pool' ? rowSwitchesHtml(row) : ''}</span>
+        <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
         <span class="supply-amount" data-supply-amount="${escapeHtml(row.key)}">${compactAmount(supply * row.percent / 100)}</span>
         ${row.kind === 'pool' ? poolGlyphSvg(planPoolFor(row), row.color) : '<span class="supply-glyph"></span>'}
         <label class="supply-percent"><input type="text" inputmode="decimal" autocomplete="off" value="${escapeHtml(String(row.percent))}" ${input} data-supply-key="${escapeHtml(row.key)}" aria-label="${escapeHtml(row.label)} percent of supply"><span>%</span></label>
@@ -8279,6 +8279,7 @@ function renderSupplyEditor() {
           ? `<button class="supply-gear ${state.supplyOpenRow === row.key ? 'is-open' : ''}" type="button" data-action="supply-toggle-settings" data-supply-row="${escapeHtml(row.key)}" aria-expanded="${state.supplyOpenRow === row.key}" aria-label="${escapeHtml(row.label)} settings"><i class="fa-solid fa-sliders"></i></button>`
           : '<span class="supply-remove-spacer"></span>'}
         ${remove}
+        ${row.kind === 'pool' ? rowSwitchesHtml(row) : ''}
       </li>
       ${row.kind === 'pool' && (wantsOpen(row) || wasOpen(row)) ? `<li class="supply-settings-wrap${wasOpen(row) ? ' is-open' : ''}" data-settings-for="${escapeHtml(row.key)}"><div class="supply-settings">${settingsHtml(row)}</div></li>` : ''}`;
   };
