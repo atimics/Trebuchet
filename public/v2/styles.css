@@ -18143,3 +18143,11 @@ body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }
 .report-publish-switch:focus-visible { outline: none; }
 .report-publish-switch:focus-visible .switch-track { box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 45%, transparent); }
 @media (prefers-reduced-motion: reduce) { .report-publish-switch .switch-track, .report-publish-switch .switch-track span { transition: none; } }
+
+/* Rail: what stops the launch, in full, under the greyed-out Launch button. */
+.launch-next-rail .rail-blockers { display: grid; gap: 8px; padding: 10px 0 0; border-top: 1px solid var(--line); }
+.launch-next-rail .rail-blockers .rail-label { color: var(--amber, #e6b450); }
+.launch-next-rail .rail-blockers ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.launch-next-rail .rail-blockers li { display: grid; gap: 2px; padding-left: 10px; border-left: 2px solid var(--amber, #e6b450); }
+.launch-next-rail .rail-blockers li strong { font-size: 12px; color: var(--ink); }
+.launch-next-rail .rail-blockers li span { font-size: 11px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }

@@ -348,7 +348,13 @@ function classicFundingEstimateRequest(config = currentLaunchConfig()) {
   };
 }
 
+// The server's readiness check decides whether an estimate is current, so the screen asks the same
+// core function: a second copy here normalized support layers differently and every preset launch
+// was blocked as "estimate stale" while the screen called it covered.
 function classicFundingEstimateFingerprint(config = currentLaunchConfig()) {
+  if (typeof TrebuchetCore !== 'undefined' && typeof TrebuchetCore.v2FundingEstimateFingerprint === 'function') {
+    return TrebuchetCore.v2FundingEstimateFingerprint(config);
+  }
   return JSON.stringify(stableFundingFingerprintValue(classicFundingEstimateRequest(config)));
 }
 

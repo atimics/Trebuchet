@@ -436,7 +436,11 @@ function renderLaunchNextRail(facts, next, workspace) {
   const liquidityDone = ['done', 'recorded'].includes(factOf('liquidity')?.state);
   const leftovers = Boolean(walletKey) && !practice && sweepFact?.state !== 'done'
     && ((holds != null && holds > 0.001) || tokens.length > 0);
-  const launchReady = fundFact?.state === 'done' && next && ['mint', 'liquidity'].includes(next.id) && !busy;
+  // A readiness check that found blockers greys Launch out and lists them, rather than offering a
+  // button that only answers with a toast.
+  const readiness = state.executionReadiness;
+  const blockers = !practice && readiness?.status === 'blocked' && Array.isArray(readiness.blockers) ? readiness.blockers : [];
+  const launchReady = fundFact?.state === 'done' && next && ['mint', 'liquidity'].includes(next.id) && !busy && !blockers.length;
   const fundingTodo = !practice && fundFact && fundFact.state !== 'done' && next?.id === 'fund';
   const fundingButton = !fundingTodo ? ''
     : !estimate || estimateStatus.stale
@@ -491,6 +495,11 @@ function renderLaunchNextRail(facts, next, workspace) {
     <section class="rail-next${next?.state === 'running' ? ' is-running' : ''}" aria-live="polite">
       ${action}
       ${launchReady && !practice ? '<p class="rail-warn">Launch cannot be undone.</p>' : ''}
+      ${blockers.length && !beforePlan && !busy ? `<div class="rail-blockers" role="status">
+        <span class="rail-label">Can't launch yet</span>
+        <ul>${blockers.map((item) => `<li><strong>${escapeHtml(item.title || 'Blocked')}</strong>${item.detail ? `<span>${escapeHtml(item.detail)}</span>` : ''}</li>`).join('')}</ul>
+        <button class="rail-link" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}>${state.executionChecking ? 'Checking…' : 'Check again'}</button>
+      </div>` : ''}
     </section>
     ${walletBlock}${fundingBlock}${positionsBlock}`;
 }
