@@ -702,10 +702,9 @@ function normalizeVanity(input = {}) {
   if (selectedPublicKey && suffix && !fold(selectedPublicKey).endsWith(fold(suffix))) {
     throw new Error(`Selected Vanity CA does not end with ${suffix}`);
   }
-  const length = Number.isInteger(input.length) && input.length >= 32 && input.length <= 44 ? input.length : null;
-  if (selectedPublicKey && length && selectedPublicKey.length !== length) {
-    throw new Error(`Selected Vanity CA is not ${length} characters long`);
-  }
+  // The length is a grind filter. A chosen address is already valid, so its own length wins.
+  const requested = Number.isInteger(input.length) && input.length >= 32 && input.length <= 44 ? input.length : null;
+  const length = selectedPublicKey ? (requested ? selectedPublicKey.length : null) : requested;
   return {
     mode: prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : 'random',
     prefix,

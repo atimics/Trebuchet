@@ -4615,7 +4615,8 @@ function currentVanityConfig() {
   const selected = state.vanityCandidates.find((item) => item.publicKey === state.selectedVanityPublicKey) || null;
   // A saved any-case address stays valid even if the toggle is off now.
   const caseInsensitive = $('#vanityCaseInsensitive')?.checked === true || selected?.caseInsensitive === true;
-  const length = Number($('#vanityLength')?.value) || selected?.addressLength || null;
+  // A chosen address keeps its own length; the length field only filters the grind.
+  const length = selected ? (Number($('#vanityLength')?.value) || selected.addressLength ? selected.publicKey.length : null) : Number($('#vanityLength')?.value) || null;
   return {
     mode: prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : 'random',
     prefix,

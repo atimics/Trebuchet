@@ -53,9 +53,10 @@ test('the grinder honors --length', { timeout: 120000 }, async () => {
   assert.ok(result.publicKey.endsWith('a'));
 });
 
-test('a plan with a length rejects an address of another length', () => {
+test('a chosen address of another length is kept: the length only filters the grind', () => {
   const address44 = '5igPsKHquNAYitDfDxwZFbr7iVPfuw3LVzwjX17zpump';
-  assert.throws(() => plan({ suffix: 'pump', length: 43, selectedPublicKey: address44 }), /not 43 characters long/);
+  assert.equal(plan({ suffix: 'pump', length: 41, selectedPublicKey: address44 }).vanity.length, 44);
+  assert.equal(plan({ suffix: 'pump', length: 41 }).vanity.length, 41);
   assert.equal(plan({ suffix: 'pump', length: 44, selectedPublicKey: address44 }).vanity.length, 44);
 });
 
