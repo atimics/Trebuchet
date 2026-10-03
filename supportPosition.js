@@ -62,6 +62,18 @@ export function createSupportPositionRuntime({ owner, createConnection = () => c
         checkHost(job); return view(job);
       } finally { running.delete(walletPublicKey); store.close(); }
     },
+    // Release an approved support that never happened. Reads the chain only; nothing is signed.
+    async cancel({ id, walletPublicKey }) {
+      if (running.has(walletPublicKey)) throw fail('OPERATION_IN_FLIGHT', 'Wait for the active support request');
+      owner.assertActive(); const store = openRuntimeStore(owner.profile); running.add(walletPublicKey);
+      try {
+        const execution = service(store), job = execution.get(id);
+        if (!job || job.plan.walletPublicKey !== walletPublicKey) throw fail('OPERATION_UNKNOWN', 'Use the saved support job and its wallet', 404);
+        checkHost(job);
+        await execution.cancel(id);
+        return view(execution.get(id));
+      } finally { running.delete(walletPublicKey); store.close(); }
+    },
     async execute({ id, ownerKeypair, planDigest, maxSpendLamports }) {
       const walletPublicKey = ownerKeypair.publicKey.toBase58();
       if (running.has(walletPublicKey)) throw fail('OPERATION_IN_FLIGHT', 'Wait for the active support request');

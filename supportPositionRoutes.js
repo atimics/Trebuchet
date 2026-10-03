@@ -78,6 +78,13 @@ export function installSupportPositionRoutes(app, { runtime, isDemoMode, demoCha
     } catch (error) { onError(res, error); }
     finally { if (claimed) release(walletPublicKey); }
   });
+  app.post('/api/v2/support/jobs/:jobId/cancel', async (req, res) => {
+    const walletPublicKey = String(req.body?.walletPublicKey || '').trim();
+    try {
+      if (isDemoMode()) return res.json({ success: true, job: null });
+      res.json({ success: true, job: await requireRuntime().cancel({ id: req.params.jobId, walletPublicKey }) });
+    } catch (error) { onError(res, error); }
+  });
   app.post('/api/v2/support/open', async (req, res) => {
     const body = req.body || {}, walletPublicKey = String(body.walletPublicKey || '').trim(); let claimed = false;
     try {

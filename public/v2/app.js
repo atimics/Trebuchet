@@ -24719,8 +24719,10 @@ function savedSupportHistoryHtml() {
     ${jobs.map((job) => `<div class="pool-support-plan"><strong>${escapeHtml(job.network)} · ${escapeHtml(shortAddress(job.poolId))}</strong>
       <p>${escapeHtml(job.status === 'confirmed' ? `Added ${sol(job.result.depositedRaw)} SOL. Fee paid: ${sol(job.result.feeLamports)} SOL.`
         : job.status === 'failed' ? `Transaction failed. Fee paid: ${sol(job.result.feeLamports)} SOL.`
+        : job.status === 'cancelled' ? 'Cancelled before it was opened. Nothing was spent.'
         : `${sol(job.depositLamports)} SOL deposit. Maximum total: ${sol(job.maxSpendLamports)} SOL.`)}</p>
       ${['review_required', 'paused', 'running'].includes(job.status) ? `<button class="pill-button" type="button" data-action="resume-support-job" data-job-id="${escapeHtml(job.jobId)}">${job.status === 'paused' ? 'Resume support' : job.status === 'running' ? 'Refresh support' : 'Review support'}</button>` : ''}
+      ${job.status === 'paused' ? `<button class="pill-button" type="button" data-action="cancel-support-job" data-job-id="${escapeHtml(job.jobId)}">Cancel support</button>` : ''}
     </div>`).join('')}</section>`;
 }
 
@@ -24921,6 +24923,22 @@ async function detectFundingWallet({ quiet = false } = {}) {
   } finally {
     renderAll();
   }
+}
+
+// A paused support that never opened holds the launch wallet; cancelling checks the chain and frees it.
+async function cancelSavedSupportJob(jobId) {
+  const job = (state.supportJobs?.jobs || []).find((item) => item.jobId === jobId);
+  if (!job || !state.apiClient?.cancelSupportJob) return;
+  const ok = await confirmOperatorAction({ title: 'Cancel buy support',
+    detail: `This checks the chain that the ${formatRawTokenAmount(String(job.depositLamports), 9)} SOL support position was never opened and can no longer be, then frees the launch wallet. Nothing is sent.`,
+    confirmLabel: 'Cancel support' });
+  if (!ok) return;
+  try {
+    await state.apiClient.cancelSupportJob({ jobId, walletPublicKey: job.walletPublicKey });
+    notify('Support cancelled. The launch wallet is free.');
+  } catch (error) {
+    notify(error.message || 'The support could not be cancelled');
+  } finally { await refreshSavedSupportJobs(); renderAll(); }
 }
 
 async function checkExecutionReadiness({ retried = false } = {}) {
@@ -27307,6 +27325,11 @@ function handleClick(event) {
     const walletPublicKey = actionTarget.dataset.wallet;
     selectRecoveryWallet(walletPublicKey, { switchToWallet: true });
     revealWalletSecret(walletPublicKey).catch((error) => notify(error.message || 'Recovery secret reveal failed'));
+    return;
+  }
+
+  if (action === 'cancel-support-job') {
+    cancelSavedSupportJob(actionTarget.dataset.jobId).catch((error) => notify(error.message || 'Support cancel failed'));
     return;
   }
 

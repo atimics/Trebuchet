@@ -775,6 +775,10 @@
       return request(`/api/v2/support/jobs?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
     }
 
+    async function cancelSupportJob({ jobId, walletPublicKey }) {
+      return request(`/api/v2/support/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', body: { walletPublicKey }, timeoutMs: 90_000 });
+    }
+
     async function getSupportJob(jobId) {
       return request(`/api/v2/support/jobs/${encodeURIComponent(jobId)}`);
     }
@@ -1210,6 +1214,7 @@
       prepareSolSupport,
       getSupportJobs,
       getSupportJob,
+      cancelSupportJob,
       openSolSupport,
       listCoins,
       addCoin,

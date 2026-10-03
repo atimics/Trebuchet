@@ -741,7 +741,11 @@ function claimLaunchOp(walletPublicKey, op, workflowId = null) {
   const canResumeQuotes = op === 'acquire-quote-tokens' && workflow?.kind === 'quote-token-acquisition' && workflow.id === workflowId;
   if (workflow && !canResumeQuotes && !canResumeWithdrawal && !canResumeSupport) {
     throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: workflow.id,
-      workflowId: workflow.id, workflowKind: workflow.kind, error: 'Resume the saved wallet workflow before starting another wallet action.' });
+      workflowId: workflow.id, workflowKind: workflow.kind, error: ({
+        'support-position': 'A saved buy-support position holds this launch wallet. Resume or cancel it on the coin page (Saved support), then try again.',
+        'quote-token-acquisition': 'A saved pair-token purchase holds this launch wallet. Resume it on the Fund page, then try again.',
+        'position-withdrawal': 'A saved position withdrawal holds this launch wallet. Resume it on the coin page (Your positions), then try again.',
+      })[workflow.kind] || 'Resume the saved wallet workflow before starting another wallet action.' });
   }
   const pending = walletExecution?.active(walletPublicKey);
   const canResumeMetadata = pending?.kind === 'metadata-update' && pending.payload.makeImmutable
