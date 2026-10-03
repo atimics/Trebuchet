@@ -730,7 +730,7 @@
       <header class="sweep-confirm-head">
         <span class="eyebrow">Recovery operation</span>
         <h2 id="sweepConfirmTitle">Sweep recovery wallet</h2>
-        <p id="sweepConfirmDetail">Choose the destination, then type the full source address to authorize the sweep.</p>
+        <p id="sweepConfirmDetail">Everything left in the launch wallet goes to this wallet.</p>
       </header>
       <div class="sweep-confirm-route" aria-label="Sweep route">
         <span><small>From recovery wallet</small><code id="sweepConfirmSource"></code></span>
@@ -740,10 +740,6 @@
       <label class="sweep-confirm-field" for="sweepConfirmDestination">
         <span>Destination wallet</span>
         <input id="sweepConfirmDestination" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="Solana destination address">
-      </label>
-      <label class="sweep-confirm-field" for="sweepConfirmTypedAddress">
-        <span>Type the full recovery wallet address</span>
-        <input id="sweepConfirmTypedAddress" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="Exact source address required">
       </label>
       <p class="sweep-confirm-message" id="sweepConfirmMessage" role="status" aria-live="assertive">The local recovery entry is removed only after Trebuchet verifies the source wallet is empty.</p>
       <div class="sweep-confirm-actions">
@@ -764,7 +760,7 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=6"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=267"></script>
+  <script src="./app.js?v=268"></script>
   <script src="./nfts.js?v=2"></script>
   <script src="./lean.js?v=2"></script>
 </body>

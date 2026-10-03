@@ -1,4 +1,4 @@
-import { throwIfExecutionPaused } from './chainRetry.js';
+import { throwIfExecutionPaused, isExecutionPaused } from './chainRetry.js';
 import { mergeTransferReceipts } from './sweepOrchestrator.js';
 // Live launch services use ordinary inputs and shared host interfaces.
 // HTTP routes translate the result; the runtime can call these methods directly.
@@ -88,6 +88,13 @@ export function createLaunchExecutionServices({
   vanityAvailability,
   vanityCaStore,
 }) {
+  // A paused airdrop leaves the launch active and writes nothing else, so its reason is kept here.
+  const recordAirdropStop = (walletPublicKey, error) => {
+    if (!isExecutionPaused(error)) return;
+    try { launchJournal.recordEvent(walletPublicKey, { stage: 'airdrop_stopped', code: error.errorDetails?.code || error.code, error: error.message }); }
+    catch { /* the stop itself is what the caller reports */ }
+  };
+
   async function finishToken(input = {}) {
     let walletPublicKey = null;
     let claimedLaunchOp = false;
@@ -1050,7 +1057,7 @@ export function createLaunchExecutionServices({
       const signer = resolveSigner(input);
       walletPublicKey = signer.walletPublicKey;
       claimLaunchOp(walletPublicKey, 'run-airdrop'); claimed = true;
-      prepareAirdrop({ walletPublicKey, airdrop: input });
+      await prepareAirdrop({ walletPublicKey, airdrop: input });
       await reconcileAirdrop({ tempWalletSecretKey: signer.secretKeyArr, tokenMint: input.tokenMint });
       const priorAirdrop = launchJournal.activeForWallet(walletPublicKey)?.airdrop || {};
       const priorDelivered = priorAirdrop.transferred || [], deliveredWallets = new Set(priorDelivered.map((row) => row.wallet));
@@ -1067,7 +1074,10 @@ export function createLaunchExecutionServices({
         stage: 'airdrop_retry', retried: pendingRecipients.length, delivered: result.transferred.length, stillFailed: result.failed.length,
       });
       return { success: true, airdrop: mergedAirdrop };
-    } catch (error) { throw serviceError(error); }
+    } catch (error) {
+      if (claimed) recordAirdropStop(walletPublicKey, error);
+      throw serviceError(error);
+    }
     finally {
       if (tracking) { clearAirdropInFlight(walletPublicKey); airdropProgressEnd(walletPublicKey); }
       if (claimed) clearLaunchOpInFlight(walletPublicKey);
@@ -1150,7 +1160,7 @@ export function createLaunchExecutionServices({
         },
         { stage: 'transfer_started', destinationWallet },
       );
-      input = { ...input, airdrop: prepareAirdrop({ walletPublicKey, airdrop: input.airdrop }) };
+      input = { ...input, airdrop: await prepareAirdrop({ walletPublicKey, airdrop: input.airdrop }) };
       await reconcileWalletOperation({ tempWalletSecretKey: secretKeyArr, destinationWallet });
 
       // 0. Metadata authority handoff (keep-authority launches only). The
@@ -1301,6 +1311,7 @@ export function createLaunchExecutionServices({
               },
             );
           } catch (e) {
+            recordAirdropStop(walletPublicKey, e);
             throwIfExecutionPaused(e);
             // An UNEXPECTED airdrop failure (one that bypassed per-recipient
             // try/catch — likely a bad mint or connection init failure)

@@ -34,13 +34,14 @@ export function createWalletExecutionRuntime({
     const walletPublicKey = wallet.publicKey.toBase58();
     if (method === 'recover' && !active(walletPublicKey)) return null;
     const store = openRuntimeStore(owner.profile);
+    let operationKind = null;
     try {
       const network = networkForRequest();
       const genesisHash = SOLANA_GENESIS_HASHES[network];
       if (!genesisHash) throw new Error('Choose mainnet or devnet for this local runtime');
       const connection = createConnection();
       const pending = store.getActiveOperation(walletPublicKey);
-      const operationKind = method === 'recover' ? pending?.kind : method === 'transfer' ? 'token-transfer' : method === 'update' ? 'metadata-update' : 'sol-sweep';
+      operationKind = method === 'recover' ? pending?.kind : method === 'transfer' ? 'token-transfer' : method === 'update' ? 'metadata-update' : 'sol-sweep';
       if (!['sol-sweep', 'token-transfer', 'metadata-update'].includes(operationKind)) throw new Error('Resume the saved wallet operation with its matching adapter');
       const tokenInput = operationKind === 'token-transfer' ? (method === 'recover' ? pending.payload : {
         mint: new PublicKey(input.mint).toBase58(), programId: new PublicKey(input.programId).toBase58(),
@@ -85,7 +86,13 @@ export function createWalletExecutionRuntime({
       return await service[method]({ ...tokenInput, ...metadataInput, scopeId, walletPublicKey, destinationWallet, action, approval });
     } catch (cause) {
       if (cause.code === 'RECOVERY_STORAGE_UNAVAILABLE') throw cause;
-      throw Object.assign(new Error('Resume the saved wallet operation to verify its result.', { cause }), {
+      // Say what failed and what to press: the same action checks the chain for this transfer first.
+      console.error(`[wallet] ${operationKind} ${cause.code || 'EXECUTION_INTERRUPTED'}: ${cause.message}`);
+      const what = { 'token-transfer': 'A token transfer', 'sol-sweep': 'The SOL transfer', 'metadata-update': 'The metadata update' }[operationKind] || 'A wallet transfer';
+      // A transfer that names the wrong token program is refused before anything is signed.
+      const message = cause.code === 'TOKEN_PROGRAM_MISMATCH' ? `${what} from the launch wallet was not sent. ${cause.message}.`
+        : `${what} from the launch wallet could not be confirmed (${cause.message || 'interrupted'}). Nothing after it was sent.`;
+      throw Object.assign(new Error(message, { cause }), {
         code: 'EXECUTION_RECOVERY_REQUIRED', statusCode: 409,
         operationId: cause.operationId || store.getActiveOperation(walletPublicKey)?.id,
         errorDetails: { code: cause.code || 'EXECUTION_INTERRUPTED', message: cause.message },

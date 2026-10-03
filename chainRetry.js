@@ -119,8 +119,9 @@ function errorText(err) {
 }
 
 // Recovery failures stop every enclosing launch phase and retry path.
+export const isExecutionPaused = (error) => ['RECOVERY_STORAGE_UNAVAILABLE', 'CHAIN_STATE_UNAVAILABLE', 'EXECUTION_RECOVERY_REQUIRED'].includes(error?.code);
 export function throwIfExecutionPaused(error) {
-  if (['RECOVERY_STORAGE_UNAVAILABLE', 'CHAIN_STATE_UNAVAILABLE', 'EXECUTION_RECOVERY_REQUIRED'].includes(error?.code)) throw error;
+  if (isExecutionPaused(error)) throw error;
 }
 
 // Classify a thrown transaction error by recovery state and retry policy.

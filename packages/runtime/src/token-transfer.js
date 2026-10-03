@@ -47,6 +47,8 @@ export function createTokenTransferService({
     if (!Number.isSafeInteger(response?.context?.slot) || response.context.slot < minContextSlot || !Array.isArray(response.value) || response.value.length !== keys.length) throw uncertain('Read complete finalized transfer accounts');
     const [walletInfo, mintInfo, sourceInfo, destinationInfo] = response.value;
     const program = publicKey(payload.programId);
+    // A mint never changes its owner, so the wrong token program is a fixed fact, not a lagging read.
+    if (mintInfo && !mintInfo.owner.equals(program)) throw failure('TOKEN_PROGRAM_MISMATCH', 'The coin belongs to a different token program than this transfer names');
     let mint, source, destination = null;
     try {
       mint = unpackMint(keys[1], mintInfo, program);

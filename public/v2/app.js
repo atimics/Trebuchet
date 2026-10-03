@@ -22959,7 +22959,7 @@ function setSweepConfirmationMessage(message, { error = false, input = null } = 
     messageNode.textContent = message;
     messageNode.classList.toggle('is-error', error);
   }
-  ['#sweepConfirmDestination', '#sweepConfirmTypedAddress'].forEach((selector) => {
+  ['#sweepConfirmDestination'].forEach((selector) => {
     $(selector)?.removeAttribute('aria-invalid');
   });
   if (input) input.setAttribute('aria-invalid', 'true');
@@ -22986,9 +22986,7 @@ function submitSweepConfirmation() {
   if (!gate || gate.hidden) return;
   const publicKey = gate.dataset.publicKey || '';
   const destinationInput = $('#sweepConfirmDestination');
-  const typedInput = $('#sweepConfirmTypedAddress');
   const destinationWallet = String(destinationInput?.value || '').trim();
-  const typedAddress = String(typedInput?.value || '').trim();
 
   if (!destinationWallet) {
     setSweepConfirmationMessage('Enter the destination wallet for recovered assets.', { error: true, input: destinationInput });
@@ -23005,11 +23003,6 @@ function submitSweepConfirmation() {
     destinationInput?.focus();
     return;
   }
-  if (typedAddress !== publicKey) {
-    setSweepConfirmationMessage('Full recovery wallet address does not match.', { error: true, input: typedInput });
-    typedInput?.focus();
-    return;
-  }
 
   closeSweepConfirmation({ destinationWallet });
 }
@@ -23023,7 +23016,6 @@ function openSweepConfirmation({ publicKey, defaultDestination = '' } = {}) {
   sweepConfirmationReturnFocus = document.activeElement;
   $('#sweepConfirmSource').textContent = publicKey;
   $('#sweepConfirmDestination').value = defaultDestination;
-  $('#sweepConfirmTypedAddress').value = '';
   setSweepConfirmationMessage('The local recovery entry is removed only after Trebuchet verifies the source wallet is empty.');
   gate.hidden = false;
   gate.setAttribute('aria-hidden', 'false');
@@ -23032,7 +23024,7 @@ function openSweepConfirmation({ publicKey, defaultDestination = '' } = {}) {
   return new Promise((resolve) => {
     sweepConfirmationResolver = resolve;
     window.requestAnimationFrame(() => {
-      (defaultDestination ? $('#sweepConfirmTypedAddress') : $('#sweepConfirmDestination'))?.focus();
+      (defaultDestination ? $('[data-action="submit-sweep-confirm"]') : $('#sweepConfirmDestination'))?.focus();
     });
   });
 }
@@ -23063,7 +23055,12 @@ async function sweepRecoveryWallet(publicKey) {
     notify('Recovery sweep requires the Trebuchet desktop app');
     return;
   }
-  const defaultDestination = currentLaunchConfig().poolTopology.sweepDestination || '';
+  // The launch already names its return wallet: use it, so nobody copies addresses around.
+  const journal = (state.recovery?.journals || []).find((item) => item.walletPublicKey === publicKey && !['complete', 'completed'].includes(String(item.status || '').toLowerCase()))
+    || (state.coins?.detail?.creation?.walletPublicKey === publicKey ? state.coins.detail.creation.journal : null);
+  const defaultDestination = journal?.transfer?.destinationWallet
+    || recoveryLaunchConfig(journal || {})?.poolTopology?.sweepDestination
+    || currentLaunchConfig().poolTopology.sweepDestination || '';
   const confirmation = await openSweepConfirmation({ publicKey, defaultDestination });
   if (!confirmation) {
     notify('Recovery sweep cancelled');
@@ -24965,8 +24962,7 @@ async function checkExecutionReadiness({ retried = false } = {}) {
       const blockers = state.executionReadiness.blockers || [];
       // The server binds the estimate to more of the plan than the screen does. A stale estimate is
       // fixed by estimating again, which is read-only: do it and check once more, before the token exists.
-      if (!retried && blockers.some((item) => item.id === 'funding-estimate-stale')
-          && state.executionReadiness.nextEndpoint !== '/api/create-lp') {
+      if (!retried && blockers.some((item) => item.id === 'funding-estimate-stale') && !launchTokenExists()) {
         state.executionChecking = false;
         notify('The plan changed since the estimate: estimating again');
         if (state.classicFundingEstimate) state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };
@@ -25439,7 +25435,7 @@ async function runFullLaunch() {
   if (!runEnvelopeId) {
     // A plan edit since the estimate leaves it stale. Re-estimating is read-only, so Launch does it
     // rather than stopping on the blocker; once the token exists the launch keeps its original estimate.
-    if (!classicFundingEstimateStatus(config).matchesConfig && state.executionReadiness?.nextEndpoint !== '/api/create-lp') {
+    if (!classicFundingEstimateStatus(config).matchesConfig && !launchTokenExists()) {
       notify('The plan changed since the estimate: estimating again');
       await estimateClassicFunding();
       state.executionReadiness = null;
@@ -25691,7 +25687,7 @@ async function runLaunchEnvelope() {
   // Once the token exists (next step is liquidity or later), funding is
   // committed: arm with the estimate the launch started from, never send
   // the user back to Fund to re-estimate from half-spent balances.
-  const midLaunch = state.executionReadiness?.nextEndpoint === '/api/create-lp';
+  const midLaunch = launchTokenExists();
   const fundingEstimate = recoveryEndpoint
     ? null
     : currentClassicFundingEstimateForConfig(config) || (midLaunch ? state.classicFundingEstimate : null);
@@ -25746,6 +25742,12 @@ async function runLaunchEnvelope() {
   window.requestAnimationFrame(() => {
     document.querySelector(`[data-classic-workspace="${state.launchWorkspace}"] [data-action="execute-next-run"]`)?.focus();
   });
+}
+
+// Once the token exists, funding is committed: the launch continues on the estimate it started
+// from. Nothing after that point re-estimates or sends you back to Fund.
+function launchTokenExists() {
+  return Boolean(proofTokenMint(currentLaunchProof()));
 }
 
 async function checkForUpdates() {

@@ -334,6 +334,21 @@ test('airdrop plan validation finishes before any sweep starts', async () => {
   assert.ok(!f.calls.includes('nfts')); assert.ok(!f.calls.includes('tokens')); assert.equal(f.state.removed, 0);
 });
 
+test('a paused airdrop keeps its reason in the journal and leaves the tokens in the launch wallet', async () => {
+  const rows = [{ wallet: destination, tokens: 2 }];
+  const stop = () => Object.assign(new Error('A token transfer from the launch wallet was not sent.'), { code: 'EXECUTION_RECOVERY_REQUIRED', errorDetails: { code: 'TOKEN_PROGRAM_MISMATCH', message: 'wrong program' } });
+  const sweep = fixture();
+  sweep.deps.prepareAirdrop = async () => ({ tokenMint: 'mint-a', tokenDecimals: 6, recipients: rows });
+  sweep.deps.executeAirdrop = async () => { throw stop(); };
+  await assert.rejects(sweep.services().transferAssets(input), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  assert.deepEqual(sweep.writes.filter((event) => event.stage === 'airdrop_stopped'), [{ stage: 'airdrop_stopped', code: 'TOKEN_PROGRAM_MISMATCH', error: 'A token transfer from the launch wallet was not sent.' }]);
+  assert.ok(!sweep.calls.includes('tokens')); assert.equal(sweep.state.removed, 0); assert.equal(sweep.operations.size, 0);
+  const direct = fixture();
+  direct.deps.executeAirdrop = async () => { throw stop(); };
+  await assert.rejects(direct.services().runAirdrop({ ...input, recipients: rows }), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  assert.equal(direct.writes.filter((event) => event.stage === 'airdrop_stopped').length, 1);
+});
+
 test('a saved airdrop plan is restored when the final transfer request omits it', async () => {
   const f = fixture(); const rows = [{ wallet: destination, tokens: 2 }];
   f.deps.prepareAirdrop = () => ({ tokenMint: 'mint-a', tokenDecimals: 6, recipients: rows });
