@@ -17678,7 +17678,7 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 /* The Charts bar was the last drawer on a new coin; what it showed lives in the rail and the previews. */
 .launch-toolbar .launch-summary-drawer { display: none !important; }
 
-/* Leftovers: the action tab shows the panel; Record and Recover are their own pages. */
+/* Recovery: the action tab shows the panel; Record and Recover are their own pages. */
 #classicBridge[data-finish-tab="run"] [data-finish-part="record"],
 #classicBridge[data-finish-tab="run"] [data-finish-part="recover"],
 #classicBridge[data-finish-tab="record"] [data-finish-part]:not([data-finish-part="record"]),
@@ -17738,3 +17738,5 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 #launchConfig .token-standard-row label > span { white-space: nowrap; }
 #launchConfig .identity-terms { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: end; }
 #launchConfig .identity-terms .sealed-launch-control { min-height: 44px; margin: 0; padding: 0 14px; }
+
+.plan-strip[hidden] { display: none; }

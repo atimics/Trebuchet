@@ -6756,7 +6756,7 @@ test('v2 terminal recovery collapses into the completed proof panel', () => {
   assert.match(bridgeSource, /state\.restoredLaunchJournalId && !finalSweepComplete/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('has-recovery-notice'/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('is-terminal-launch', finalSweepComplete\)/);
-  // Recovery is its own page of Leftovers, not a fold.
+  // Recovery is its own page of Recovery, not a fold.
   assert.match(bridgeSource, /!finalSweepComplete && !completedJournal \? `<div data-finish-part="recover">/);
   assert.match(css, /#classicBridge\.is-terminal-launch \.classic-workspace-verify\s*\{[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\)/);
   assert.match(css, /\.recovered-plan-notice\s*\{[\s\S]*?max-height: 44px/);
@@ -6880,12 +6880,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=133/);
+  assert.match(html, /styles\.css\?v=134/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=225/);
-  assert.doesNotMatch(html, /app\.js\?v=225" type="module"/);
+  assert.match(html, /app\.js\?v=226/);
+  assert.doesNotMatch(html, /app\.js\?v=226" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11831,7 +11831,7 @@ test('a finished launch is matched to the coin by its mint, never its name', () 
 
 test('a coin being created shows its facts, not a numbered track of phases', () => {
   // One row per fact, with no ordinals and no Continue/back navigation.
-  // Plan is not a phase of its own: its settings live in Token, Liquidity and Leftovers.
+  // Plan is not a phase of its own: its settings live in Launch setup, Liquidity and Recovery.
   for (const fact of ['wallet', 'mint', 'liquidity', 'fund', 'finish']) {
     assert.match(html, new RegExp(`class="coin-fact"[^>]*data-coin-fact="${fact}"`));
   }
