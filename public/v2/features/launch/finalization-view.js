@@ -431,7 +431,7 @@ function renderFinalizationPanel() {
   ].filter(Boolean).join('');
 
   return `
-    <div class="finalize-panel ${finalSweepComplete ? 'is-terminal' : ''}">
+    <div class="finalize-panel ${finalSweepComplete ? 'is-terminal' : ''}" role="group" aria-label="Launch completion">
       <div class="finalize-head">
         <span>
           <h3>${finalSweepComplete ? 'Launch complete' : 'Report, airdrop, and proof'}</h3>
@@ -467,10 +467,10 @@ function renderFinalizationPanel() {
         </span>
       </div>
       <div class="verify-panel-stage">
-      <div class="proof-review-panel" id="proofExplorer">
+      <div class="proof-review-panel" id="proofExplorer" role="group" aria-label="Proof review">
         <div class="proof-review-head">
           <span>
-            <strong>${tokenMint ? 'Proof: explorer bundle ready' : 'Proof: waiting for the launch record'}</strong>
+            <strong>${tokenMint ? 'Explorer bundle ready' : 'Waiting for launch record'}</strong>
           </span>
           <button class="pill-button" type="button" data-action="copy-v2-proof-summary" ${canDownload ? '' : 'disabled'}>Copy summary</button>
         </div>
