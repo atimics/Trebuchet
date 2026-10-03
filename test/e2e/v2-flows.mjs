@@ -208,7 +208,8 @@ try {
       .map((panel) => panel.dataset.classicWorkspace)
   )), [], 'Classic phases leaked into Phase 2');
 
-  await page.click('.coin-fact[data-coin-fact="fund"]');
+  // Funding has no row; the rail's Funding details link opens its panel.
+  await page.evaluate(() => setLaunchWorkspace('fund'));
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'fund');
   assert.match(await page.locator('#fundStepTitle').textContent(), /^Fund$/i);
   // Assets return to the wallet that funds the launch (or one that signs),

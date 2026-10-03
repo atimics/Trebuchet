@@ -361,7 +361,7 @@ function renderLaunchWorkspace() {
     // Until the token is on chain, its row says what is drafted, not only what is missing.
     const draft = facts.find((item) => item.id === 'configure');
     const shown = fact.id === 'mint' && fact.state === 'todo' && draft
-      ? (draft.state === 'draft' ? `${String(draft.value).split(' · ')[0]} · not on-chain` : 'Not named yet')
+      ? (draft.state === 'draft' ? `${String(draft.value).split(' · ')[0]} · draft` : 'Not named yet')
       : fact.id === 'liquidity' && fact.state === 'todo' && fact.value === 'No pools yet' && draft?.state === 'draft'
         ? `${String(draft.value).split(' · ')[1] || ''} · not open`.trim()
         : fact.value;
@@ -428,11 +428,32 @@ function renderLaunchNextRail(facts, next, workspace) {
   const spend = observedExecutionSpendSummary();
   const row = (label, value, tone = '') => `<div class="rail-row${tone ? ` is-${tone}` : ''}"><span>${escapeHtml(label)}</span><b>${value}</b></div>`;
 
-  const action = next
-    ? (canAct
-      ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>`
-      : `<div class="rail-busy" role="status"><span class="rail-spin" aria-hidden="true"></span>${escapeHtml(next.value || 'Working')}</div>`)
-    : '<div class="rail-done"><i class="fa-solid fa-check" aria-hidden="true"></i>Nothing left to do</div>';
+  // Funding has no row of its own: the rail estimates it and says what to send. Once the plan is
+  // set, the rail is two buttons: Launch (red when funded and ready, since it cannot be undone)
+  // and Sweep (amber when the launch wallet still holds something to send back).
+  const factOf = (id) => facts.find((fact) => fact.id === id) || null;
+  const fundFact = factOf('fund');
+  const sweepFact = factOf('finish');
+  const beforePlan = !next || ['wallet', 'configure'].includes(next.id);
+  const busy = next && next.state === 'running';
+  const liquidityDone = ['done', 'recorded'].includes(factOf('liquidity')?.state);
+  const leftovers = Boolean(walletKey) && !practice && sweepFact?.state !== 'done'
+    && ((holds != null && holds > 0.001) || tokens.length > 0);
+  const launchReady = fundFact?.state === 'done' && next && ['mint', 'liquidity'].includes(next.id) && !busy;
+  const fundingTodo = !practice && fundFact && fundFact.state !== 'done' && next?.id === 'fund';
+  const fundingButton = !fundingTodo ? ''
+    : !estimate || estimateStatus.stale
+      ? `<button class="primary-button rail-act" type="button" data-action="estimate-funding" data-stay="1" ${state.fundingEstimating ? 'disabled' : ''}>${state.fundingEstimating ? 'Estimating…' : estimateStatus.stale ? 'Estimate funding again' : 'Estimate funding'}</button>`
+      : `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(fundFact.action || 'Fund the launch wallet')}</button>`;
+  const launchButton = `<button class="rail-act rail-launch${launchReady ? ' is-ready' : ''}" type="button" data-action="${practice ? 'launch-rail-act' : 'run-full-launch'}" ${launchReady ? '' : 'disabled'}>Launch</button>`;
+  const sweepButton = `<button class="rail-act rail-sweep${leftovers ? ' has-leftovers' : ''}" type="button" data-action="${liquidityDone ? 'launch-rail-act' : 'cancel-refund-launch'}" ${leftovers ? '' : 'disabled'}>Sweep</button>`;
+  const action = busy
+    ? `<div class="rail-busy" role="status"><span class="rail-spin" aria-hidden="true"></span>${escapeHtml(next.value || 'Working')}</div>`
+    : beforePlan
+      ? (next && canAct
+        ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>`
+        : '<div class="rail-done"><i class="fa-solid fa-check" aria-hidden="true"></i>Nothing left to do</div>')
+      : `${fundingButton}<div class="rail-pair">${launchButton}${sweepButton}</div>${fundingTodo || estimate ? '<button class="text-button rail-link" type="button" data-launch-workspace="fund">Funding details</button>' : ''}`;
 
   const walletBlock = `
     <section class="rail-block">
@@ -467,7 +488,7 @@ function renderLaunchNextRail(facts, next, workspace) {
   rail.innerHTML = `
     <section class="rail-next${next?.state === 'running' ? ' is-running' : ''}" aria-live="polite">
       ${action}
-      ${irreversible ? '<p class="rail-warn">Cannot be undone.</p>' : ''}
+      ${launchReady && !practice ? '<p class="rail-warn">Launch cannot be undone.</p>' : ''}
     </section>
     ${walletBlock}${fundingBlock}${positionsBlock}`;
 }
@@ -686,6 +707,11 @@ function runLaunchRailAction() {
   if (next.id === 'wallet' && state.secretPin?.locked === true && !selectedLaunchWalletPublicKey()) {
     openRecoveryPinGate({ reason: 'unlock' });
     return;
+  }
+  // Funding has no row: press its panel's own button where it is, without opening the panel.
+  if (next.id === 'fund') {
+    const fundPrimary = $('[data-classic-workspace="fund"] .primary-button:not([data-next-fact]):not(:disabled)');
+    if (fundPrimary) { fundPrimary.click(); return; }
   }
   if (state.launchWorkspace !== next.id) {
     setLaunchWorkspace(next.id, { focus: false });

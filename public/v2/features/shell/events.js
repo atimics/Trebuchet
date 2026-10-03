@@ -367,7 +367,7 @@ function handleClick(event) {
       'cancel-refund-launch': 'finish',
       'resume-journal': 'finish',
     }[action];
-    if (actionWorkspace) {
+    if (actionWorkspace && !actionTarget.dataset.stay) {
       // Each of these acts on the phase's own panel, or on the address settings.
       state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : actionWorkspace === 'fund' ? 'cost' : 'run' };
       setLaunchWorkspace(actionWorkspace);

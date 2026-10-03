@@ -2208,9 +2208,12 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="coinState"/);
   assert.doesNotMatch(html, /launch-workspace-tab|Six launch phases/);
   assert.match(html, /id="launchWorkspaceViewport"/);
-  for (const workspace of ['wallet', 'fund', 'mint', 'liquidity', 'finish']) {
+  for (const workspace of ['wallet', 'mint', 'liquidity', 'finish']) {
     assert.match(html, new RegExp(`data-launch-workspace="${workspace}"`));
   }
+  // Funding has no row: the rail estimates it and links to its details.
+  assert.doesNotMatch(html, /data-coin-fact="fund"/);
+  assert.match(js, /data-launch-workspace="fund">Funding details</);
   assert.match(html, /id="poolEditorPanel"/);
   assert.match(html, /id="airdropCsvText"/);
   assert.match(html, /id="preallocationSupplyPercent"/);
@@ -6880,12 +6883,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=153/);
+  assert.match(html, /styles\.css\?v=156/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=240/);
-  assert.doesNotMatch(html, /app\.js\?v=240" type="module"/);
+  assert.match(html, /app\.js\?v=242/);
+  assert.doesNotMatch(html, /app\.js\?v=242" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11832,7 +11835,7 @@ test('a finished launch is matched to the coin by its mint, never its name', () 
 test('a coin being created shows its facts, not a numbered track of phases', () => {
   // One row per fact, with no ordinals and no Continue/back navigation.
   // Plan is not a phase of its own: its settings live in Launch setup, Token setup, Liquidity and Recovery.
-  for (const fact of ['wallet', 'mint', 'liquidity', 'fund', 'finish']) {
+  for (const fact of ['wallet', 'mint', 'liquidity', 'finish']) {
     assert.match(html, new RegExp(`class="coin-fact"[^>]*data-coin-fact="${fact}"`));
   }
   assert.doesNotMatch(html, /data-coin-fact="configure"/);
@@ -11925,4 +11928,12 @@ test('launch presets and support layers are wired into the Price and Pairs pages
   assert.match(js, /function poolGlyphSvg\(/);
   assert.match(js, /poolGlyphSvg\(planPoolFor\(row\), row\.color\)/);
   assert.match(js, /`bid,\$\{layer\.sharePercent\}/);
+});
+
+test('the rail holds funding, then Launch (red when ready) and Sweep (amber when the wallet holds something)', () => {
+  assert.match(js, /data-action="estimate-funding" data-stay="1"/);
+  assert.match(js, /rail-launch\$\{launchReady \? ' is-ready' : ''\}/);
+  assert.match(js, /rail-sweep\$\{leftovers \? ' has-leftovers' : ''\}/);
+  assert.match(css, /\.rail-launch\.is-ready \{[^}]*var\(--red/);
+  assert.match(css, /\.rail-sweep\.has-leftovers \{[^}]*var\(--amber/);
 });

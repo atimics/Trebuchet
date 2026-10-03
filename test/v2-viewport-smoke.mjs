@@ -171,7 +171,8 @@ async function smokeViewport(browser, viewport) {
     });
 
     const workspaceStates = {};
-    for (const workspace of ['wallet', 'mint', 'liquidity', 'fund', 'finish']) {
+    // Funding has no row of its own; the rail opens it.
+    for (const workspace of ['wallet', 'mint', 'liquidity', 'finish']) {
       await page.click(`.coin-fact[data-coin-fact="${workspace}"]`);
       workspaceStates[workspace] = await page.evaluate((selectedWorkspace) => {
         const selectedTab = document.querySelector(`.coin-fact[data-coin-fact="${selectedWorkspace}"]`);
