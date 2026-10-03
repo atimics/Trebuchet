@@ -88,15 +88,20 @@ export async function reviewSwapBundle({ transactions, lookupTables = [], intent
         trade = assertSwapInstruction(instruction, intent); tradeOrdinal = ordinal; step.trade = true;
         if (trade.provider === 'raydium') {
           // The router creates missing wallet ATAs for its output and route
-          // mints. Include their rent and identity in the approved step.
+          // mints. Include their rent and identity in the approved step, in the
+          // order the instruction lists them: the intent's mint order varies
+          // between a fresh quote and its saved review, the transaction's does not.
+          const routeAccounts = [];
           for (const [mint, tokenProgram] of accounts) {
             if (mint === NATIVE_MINT.toBase58()) continue;
             const target = getAssociatedTokenAddressSync(new PublicKey(mint), wallet, false, new PublicKey(tokenProgram));
-            if (keys.some((value) => value.pubkey.equals(target))) {
+            const at = keys.findIndex((value) => value.pubkey.equals(target));
+            if (at >= 0) {
               if (!keys.some((value) => value.pubkey.equals(target) && value.isWritable)) throw rejected('Use writable route token accounts');
-              associated(mint, tokenProgram, mint !== outputMint);
+              routeAccounts.push({ at, mint, tokenProgram });
             }
           }
+          for (const { mint, tokenProgram } of routeAccounts.sort((a, b) => a.at - b.at)) associated(mint, tokenProgram, mint !== outputMint);
         }
         step.actions.push({ kind: 'trade' });
         for (const action of step.actions.filter((value) => value.kind === 'create' && value.temporary)) {

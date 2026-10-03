@@ -189,3 +189,15 @@ test('Raydium implicit creation keeps an earlier explicit account and rejects a 
   assert.equal(plan.steps[0].actions.filter((action) => action.kind === 'create' && action.address === destination.toBase58()).length, 1);
   await assert.rejects(review([raydiumAccount('wrap'), createAssociatedTokenAccountInstruction(wallet, source, wallet, NATIVE_MINT), raydium(), raydiumAccount('close')]), { code: 'SWAP_INTENT_MISMATCH' });
 });
+
+test('Raydium route creations follow the instruction, so a saved review matches the fresh quote whatever the intent mint order', async () => {
+  const first = key(122), second = key(123), trade = raydium();
+  for (const mintKey of [first, second]) trade.keys.push({ pubkey: getAssociatedTokenAddressSync(mintKey, wallet), isWritable: true, isSigner: false }, { pubkey: mintKey, isWritable: false, isSigner: false });
+  const mints = [first, second].map((item) => ({ mint: item.toBase58(), programId: TOKEN_PROGRAM_ID.toBase58() }));
+  const instructions = [raydiumAccount('wrap'), trade, raydiumAccount('close')];
+  const routeOrder = await review(instructions, { intent: { ...intent, intermediateMints: mints } });
+  const reversed = await review(instructions, { intent: { ...intent, intermediateMints: [...mints].reverse() } });
+  assert.equal(reversed.digest, routeOrder.digest);
+  const saved = await review(instructions, { intent: routeOrder.intent });
+  assert.equal(saved.digest, routeOrder.digest);
+});
