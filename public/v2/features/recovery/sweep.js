@@ -196,7 +196,9 @@ async function sweepRecoveryWallet(publicKey) {
 
   state.sweepingWalletPublicKey = publicKey;
   state.lastRecoverySweep = null;
+  state.sweepAirdropProgress = null;
   renderAll();
+  followSweepAirdropProgress(publicKey);
   try {
     const result = await state.apiClient.sweepPendingWallet({ walletPublicKey: publicKey, destinationWallet });
     const warningCount = recoverySweepWarningCount(result);
@@ -228,7 +230,25 @@ async function sweepRecoveryWallet(publicKey) {
     notify(error.message || 'Recovery sweep failed');
   } finally {
     state.sweepingWalletPublicKey = null;
+    state.sweepAirdropProgress = null;
     renderAll();
+  }
+}
+
+// The sweep is one long request. The server counts each airdrop recipient as it lands; read that
+// count while the sweep runs so the coin page shows how far it has got.
+async function followSweepAirdropProgress(publicKey) {
+  if (!state.apiClient?.getAirdropProgress) return;
+  while (state.sweepingWalletPublicKey === publicKey) {
+    try {
+      const progress = await state.apiClient.getAirdropProgress(publicKey);
+      if (state.sweepingWalletPublicKey !== publicKey) return;
+      if (progress) {
+        state.sweepAirdropProgress = { ...progress, publicKey };
+        if (state.activeView === 'coins') renderCoins();
+      }
+    } catch { /* the next read tries again */ }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
   }
 }
 

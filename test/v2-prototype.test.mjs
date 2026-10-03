@@ -2157,25 +2157,13 @@ test('v2 launch page shows the launch, not an agent panel or custody jargon', ()
   assert.match(combined, /data-action="use-solflare-destination"/);
   assert.match(combined, /lastSecretPinReset/);
   assert.match(combined, /recoverySweepNextSteps/);
-  assert.match(combined, /recoveryGuideModel/);
-  assert.match(combined, /renderRecoveryGuide/);
-  assert.match(combined, /Recovery guide/);
-  assert.match(combined, /recoveryWizardModel/);
-  assert.match(combined, /renderRecoveryWizard/);
-  assert.match(combined, /currentRecoveryWizardModel/);
-  assert.match(combined, /Recovery next action/);
-  assert.match(combined, /Open the Trebuchet desktop app to see recovery/);
-  assert.match(combined, /Unfinished launches and old wallets/);
-  assert.match(combined, /Unlock old launch wallets/);
-  assert.match(combined, /Resume only missing work/);
+  assert.match(combined, /Nothing to recover\./);
+  assert.match(combined, /data-action="open-coin-mint"/);
+  assert.match(combined, /Continue creating the token/);
   assert.match(combined, /Manual recovery required/);
-  assert.match(combined, /Recovery details/);
-  assert.match(combined, /recovery-status-list/);
   assert.doesNotMatch(combined, /data-action="select-recovery-step"/);
   assert.doesNotMatch(combined, /recovery-wizard-prev/);
   assert.doesNotMatch(combined, /recovery-wizard-next/);
-  assert.match(combined, /Retry sweep/);
-  assert.match(combined, /No recovery action needed/);
   assert.match(combined, /renderRecoveryWalletWorkspace/);
   assert.match(combined, /setupSecretPin/);
   assert.match(combined, /unlockSecretPin/);
@@ -11456,8 +11444,8 @@ test('startup routes an interrupted launch to recovery before the tutorial', () 
 test('completed liquidity recovery opens Finish without replaying resume or funding', () => {
   assert.match(js, /function canContinueJournalToFinish\(journal\)/);
   assert.match(js, /completedLpJournal\(journal\)/);
-  assert.match(js, /label: 'Continue to Finish'/);
-  assert.match(js, /action: 'continue-journal-finish'/);
+  // Recovery opens a launch's coin page; Resume on a finished-liquidity journal still lands on Finish.
+  assert.match(js, /if \(canContinueJournalToFinish\(journal\)\) \{\n    openJournalFinish\(journalId\);/);
   assert.match(js, /function openJournalFinish\(journalId\)/);
   assert.match(js, /state\.launchWorkspace = 'finish'/);
   assert.match(js, /function recoveryAuthorizationEndpoint\(\)/);

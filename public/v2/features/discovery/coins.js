@@ -619,7 +619,7 @@ function coinCreationHtml(creation, coin) {
       const sweeping = state.sweepingWalletPublicKey === creation.walletPublicKey;
       const last = !sweeping && state.lastRecoverySweep?.publicKey === creation.walletPublicKey ? state.lastRecoverySweep : null;
       const progress = sweeping
-        ? `<p class="coin-airdrop-note" role="status"><span class="rail-spin" aria-hidden="true"></span> ${pending.length ? 'Airdropping, then sweeping' : 'Sweeping'}: each transfer waits for full confirmation, so this takes a few minutes. Keep the app open.</p>`
+        ? `<p class="coin-airdrop-note" role="status"><span class="rail-spin" aria-hidden="true"></span> ${escapeHtml(coinSweepProgressText(creation.walletPublicKey, plan, delivered))}</p>`
         : last ? `<p class="coin-airdrop-note${last.error ? ' is-error' : ''}" role="status">${escapeHtml(last.message)}</p>` : '';
       action = `${sweeping ? '' : airdropNote}${progress}<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}" ${sweeping ? 'disabled' : ''}><span>${sweeping ? (pending.length ? 'Airdropping and sweeping…' : 'Sweeping…') : pending.length ? 'Airdrop, then sweep' : 'Sweep the launch wallet'}</span><i class="fa-solid ${sweeping ? 'fa-spinner fa-spin' : pending.length ? 'fa-parachute-box' : 'fa-broom'}"></i></button>`;
     } else if (creation.hasPlan && creation.walletManaged) {
@@ -647,6 +647,21 @@ function coinCreationHtml(creation, coin) {
 // Bring up a coin's remaining steps from its launch record, at the step it
 // needs. Checks the record has a plan BEFORE touching the coin being
 // worked on, so a record without one never shows another coin's design.
+// What the running sweep is doing now: each airdrop wallet as it lands, then the rest.
+function coinSweepProgressText(walletPublicKey, plan, delivered) {
+  const live = state.sweepAirdropProgress?.publicKey === walletPublicKey ? state.sweepAirdropProgress : null;
+  const total = plan?.recipients?.length || 0;
+  if (!total) return 'Sweeping every token and SOL to the return wallet. Keep the app open.';
+  if (!live) return delivered.size >= total
+    ? 'Sweeping every token and SOL to the return wallet. Keep the app open.'
+    : `Airdrop: ${delivered.size} of ${total} wallets sent. Starting… Keep the app open.`;
+  const sent = Math.min(total, delivered.size + (live.completed || 0));
+  const failed = live.failedCount ? `, ${live.failedCount} failed` : '';
+  if (live.status === 'done') return `Airdrop: ${sent} of ${total} wallets sent${failed}. Now sweeping every token and SOL to the return wallet.`;
+  const left = Math.max(0, total - sent);
+  return `Airdrop: ${sent} of ${total} wallets sent${failed}. About ${Math.max(1, Math.ceil(left * 15 / 60))} min left; each transfer waits for full confirmation. Keep the app open.`;
+}
+
 function continueCoinStep(mint) {
   const journal = state.coins.detail?.mint === mint ? state.coins.detail?.creation?.journal : null;
   if (!journal || !recoveryLaunchConfig(journal)) {

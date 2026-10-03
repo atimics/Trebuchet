@@ -362,10 +362,6 @@ function handleClick(event) {
     openTokenRecovery(actionTarget.dataset.journalId);
     return;
   }
-  if (action === 'continue-journal-finish') {
-    openJournalFinish(actionTarget.dataset.journalId);
-    return;
-  }
   if (state.activeView === 'launch') {
     const actionWorkspace = {
       'start-vanity': 'mint',
@@ -374,7 +370,6 @@ function handleClick(event) {
       'publish-launch-report': 'finish',
       'download-launch-dossier': 'finish',
       'compare-classic-report': 'finish',
-      'inspect-recovery': 'finish',
       'cancel-refund-launch': 'finish',
       'resume-journal': 'finish',
     }[action];
@@ -795,8 +790,15 @@ function handleClick(event) {
   }
 
   if (action === 'inspect-recovery') {
+    // A launch with a token is recovered on its coin page, which shows what is left and runs it.
+    const mint = proofTokenMint(currentLaunchProof());
+    if (mint && !isDemoLaunchProof(currentLaunchProof())) {
+      openCoinByMint(mint);
+      return;
+    }
+    state.activeHistoryPane = 'recovery';
+    renderHistoryPanes();
     setView('history');
-    notify('Recovery journal opened');
     return;
   }
 

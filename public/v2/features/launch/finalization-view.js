@@ -421,10 +421,10 @@ function renderFinalizationPanel() {
     canPublish || state.reportPublishing
       ? `<button class="pill-button" type="button" data-action="publish-v2-report" ${canPublish ? '' : 'disabled'}>${escapeHtml(reportLabel)}</button>`
       : '',
-    plannedAirdrop > 0
+    plannedAirdrop > 0 && !liveCoinFinishesOnCoinPage()
       ? `<button class="pill-button" type="button" data-action="run-v2-airdrop" ${canRunAirdrop ? '' : 'disabled'}>${escapeHtml(airdropLabel)}</button>`
       : '',
-    failedAirdrop > 0
+    failedAirdrop > 0 && !liveCoinFinishesOnCoinPage()
       ? `<button class="pill-button" type="button" data-action="retry-v2-airdrop" ${canRetryAirdrop ? '' : 'disabled'}>Retry failed</button>`
       : '',
     '<button class="pill-button" type="button" data-action="load-v2-proof">Load proof</button>',
@@ -975,7 +975,11 @@ function renderClassicBridge() {
       ${practiceComplete ? renderPracticeResultPanel() : ''}
       ${completedJournal && !finalSweepComplete ? renderLaunchCompleteCard(completedJournal) : ''}
       ${!completedJournal && !finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
-      ${!finalSweepComplete && finishDestinationReady ? readinessPanel({
+      ${!finalSweepComplete && liveCoinFinishesOnCoinPage() ? `<section class="readiness-panel is-primary" aria-label="Airdrop and sweep">
+        <div><h3>Airdrop and sweep on the coin page</h3><p>The coin page sends the saved airdrop, then everything left in the launch wallet to the return wallet, and shows each step as it lands.</p></div>
+        <button class="primary-button" type="button" data-action="inspect-recovery"><span>Open the coin page</span><i class="fa-solid fa-arrow-right"></i></button>
+      </section>` : ''}
+      ${!finalSweepComplete && finishDestinationReady && !liveCoinFinishesOnCoinPage() ? readinessPanel({
         title: 'Send everything to the return wallet',
         detail: 'Fee Keys, airdrops, leftover tokens and SOL. The return wallet is checked again first.',
         canRun: finishCanRun,
@@ -988,7 +992,7 @@ function renderClassicBridge() {
       </div>
       ${(completedJournal && !finalSweepComplete) || practiceComplete ? '' : `<div data-finish-part="record">${renderFinalizationPanel()}</div>`}
       ${!finalSweepComplete && !completedJournal ? `<div data-finish-part="recover">${renderCancelRefundPanel(config)}
-      <div class="launch-phase-secondary"><button class="text-button" type="button" data-view="history"><i class="fa-solid fa-life-ring"></i> Open full recovery history</button></div></div>` : ''}
+      <div class="launch-phase-secondary"><button class="text-button" type="button" data-action="inspect-recovery"><i class="fa-solid fa-life-ring"></i> ${proofTokenMint(currentLaunchProof()) ? 'Open this coin\'s page' : 'Unfinished launches'}</button></div></div>` : ''}
     </section>
   `;
   // The bridge was just rewritten: which Funding tab shows has to follow it.
@@ -996,4 +1000,13 @@ function renderClassicBridge() {
   // Balance polling and other async refreshes rebuild this bridge directly.
   // Reapply the active workspace immediately so only one launch phase is visible.
   renderLaunchWorkspace();
+}
+
+// A real coin whose pools are done finishes on its coin page: the airdrop, the sweep, and their
+// progress live there, so this page does not offer a second way to run them. A test launch runs
+// everything here.
+function liveCoinFinishesOnCoinPage() {
+  const proof = currentLaunchProof();
+  if (!proofTokenMint(proof) || isDemoLaunchProof(proof) || state.demoActive) return false;
+  return state.executionReadiness?.nextEndpoint === '/api/transfer-assets';
 }
