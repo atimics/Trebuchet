@@ -17785,3 +17785,13 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 .ledger-row b { text-align: right; }
 #view-launch .airdrop-budget-controls .toggle-line { display: flex !important; align-items: center; gap: 8px; white-space: nowrap; }
 #view-launch .airdrop-budget-controls .toggle-line input[type="checkbox"] { width: 16px !important; height: 16px !important; margin: 0; }
+
+/* Airdrop controls: budget, wallets and the Auto-fit switch on one row, the switch styled like the other toggles. */
+#view-launch .airdrop-budget-controls { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 12px; margin: 12px 0; }
+#view-launch .airdrop-budget-controls .toggle-line {
+  display: flex !important; align-items: center; gap: 10px; min-height: 36px; padding: 0 14px;
+  border: 1px solid var(--line); background: color-mix(in srgb, var(--green) 3%, var(--panel));
+  color: var(--ink); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; cursor: pointer;
+}
+#view-launch .airdrop-budget-controls .toggle-line input[type="checkbox"] { width: 16px !important; height: 16px !important; min-height: 0; margin: 0; accent-color: var(--green); }
+@container phase (max-width: 640px) { #view-launch .airdrop-budget-controls { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
