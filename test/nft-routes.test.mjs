@@ -261,16 +261,28 @@ test('localnet: the approved spend cap stops a run, and a new approval resumes i
     await call('POST', `/api/v2/nfts/${id}/grind`);
     await waitForJob(call, id, 'grind');
 
-    // The collection alone costs ~0.002 SOL, so a 0.001 cap halts before any item.
+    // The collection alone costs ~0.002 SOL, so a 0.001 cap stops before its transaction.
+    const balanceBeforeCap = await connection.getBalance(payer.publicKey);
     await call('POST', `/api/v2/nfts/${id}/run`, { walletPublicKey: wallet, maxSpendSol: 0.001 });
     const halted = await waitForJob(call, id, 'run');
     assert.equal(halted.job.status, 'failed');
     assert.match(halted.job.error, /spend cap/);
-    assert.ok(halted.collection.collectionSignature);
+    assert.equal(halted.collection.collectionSignature, null);
     assert.equal(halted.collection.items.filter((it) => it.mintSignature).length, 0);
+    assert.ok(balanceBeforeCap - await connection.getBalance(payer.publicKey) <= 1_000_000);
+
+    // One shared budget allows the collection and one asset, even with four workers.
+    const balanceBeforePartial = await connection.getBalance(payer.publicKey);
+    await call('POST', `/api/v2/nfts/${id}/run`, { walletPublicKey: wallet, maxSpendSol: 0.006 });
+    const partial = await waitForJob(call, id, 'run');
+    assert.equal(partial.job.status, 'failed');
+    assert.match(partial.job.error, /spend cap/);
+    assert.ok(partial.collection.collectionSignature);
+    assert.equal(partial.collection.items.filter((it) => it.mintSignature).length, 1);
+    assert.ok(balanceBeforePartial - await connection.getBalance(payer.publicKey) <= 6_000_000);
 
     const est = await call('POST', `/api/v2/nfts/${id}/estimate`, { walletPublicKey: wallet });
-    assert.equal(est.data.estimate.collectionSol, 0, 'a created collection is not priced again');
+    assert.equal(est.data.estimate.collectionSol, 0, 'the created collection is excluded from the new estimate');
     await call('POST', `/api/v2/nfts/${id}/run`, { walletPublicKey: wallet, maxSpendSol: est.data.estimate.totalSol });
     const done = await waitForJob(call, id, 'run');
     assert.equal(done.job.status, 'done', done.job.error);

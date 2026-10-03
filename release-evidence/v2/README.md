@@ -23,7 +23,7 @@ Both identities must be valid, different GitHub usernames. The reviewer cannot a
 Before spending funds or generating evidence:
 
 1. Freeze the release-candidate commit and record its full 40-character lowercase SHA.
-2. Confirm that commit contains the exact v2 code intended for release and will remain an ancestor of the release tag.
+2. Confirm that commit contains the exact v2 code intended for release and will remain an ancestor of the release tag. Keep the runtime files unchanged through release; repeat the field run after runtime changes.
 3. Use `mainnet-beta`, a dedicated RPC endpoint, a fresh launch wallet, bounded funds, and a controlled destination wallet.
 4. Complete a demo or low-risk rehearsal without reusing its proof as production evidence.
 5. Confirm every planned token, authority, pool, position, lock, Fee Key, airdrop, recovery, report, and sweep field is understood.
@@ -73,7 +73,7 @@ Do not pretty-print, minify, reorder, redact, hand-fill, copy selected fields, o
 release-evidence/v2/field-verification.json
 ```
 
-Commit that exact file on the release pull request. The attested `fieldRunCommit` is the frozen commit used to run the app, not the later evidence-commit SHA; the gate proves it is an ancestor of the release commit.
+Commit that exact file on the release pull request. Set `fieldRunCommit` to the frozen commit used to run the app. The gate checks its ancestry and compares its runtime files with the release commit. Later evidence, documentation and test commits are allowed. The comparison covers every other tracked file, including dependencies, build scripts, C sources, packages and public assets.
 
 ## Compute the digests
 
@@ -105,7 +105,7 @@ The release reviewer should inspect the evidence without relying on the operator
 8. Confirm the local JSON proof-download record is bound to the terminal sweep hash.
 9. Inspect the complete raw Classic input and every comparison row; require zero warnings, missing fields, or mismatches.
 10. Independently recompute the proof fingerprint, sweep-evidence hash, evidence-file digest, and raw-Classic digest using the repository gate.
-11. Confirm the field-run commit is the reviewed candidate and is an ancestor of the release commit.
+11. Confirm the field-run commit is the reviewed candidate, is an ancestor of the release commit, and has the same runtime files. Repeat the field run after any runtime change.
 12. Confirm the export is no more than 30 days old and the timestamps are ordered: field run, proof export, then review.
 
 Only after all checks pass, copy the example to `release-attestation.json` and replace every placeholder:
