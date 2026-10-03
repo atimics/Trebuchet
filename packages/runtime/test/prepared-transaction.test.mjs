@@ -235,3 +235,21 @@ test('several refund accounts retain their complete policy and receipt bound', a
   f.connection.getGenesisHash = () => { throw new Error('offline'); };
   await assert.rejects(changed.execute(f.input), { code: 'OPERATION_CONFLICT' }); assert.equal(f.state.sends.length, 1);
 });
+
+test('an empty fee quote from a lagging node is asked again, and stays a refusal only if it never fills', async (t) => {
+  const f = fixture(t, { feeQuoteDelayMs: 0 });
+  const real = f.connection.getFeeForMessage.bind(f.connection);
+  let quotes = 0;
+  f.connection.getFeeForMessage = async (...args) => (++quotes <= 2 ? { context: { slot: f.state.slot }, value: null } : real(...args));
+  f.state.afterSend = () => { f.state.status = 'finalized'; };
+  const result = await f.service.execute(f.input);
+  assert.ok(result.txId);
+  assert.ok(quotes >= 3);
+
+  const g = fixture(t, { feeQuoteDelayMs: 0, feeQuoteAttempts: 3 });
+  let empty = 0;
+  g.connection.getFeeForMessage = async () => { empty++; return { context: { slot: g.state.slot }, value: null }; };
+  await assert.rejects(g.service.execute(g.input), { code: 'CHAIN_STATE_UNAVAILABLE' });
+  assert.equal(empty, 3);
+  assert.equal(g.state.sends.length, 0);
+});
