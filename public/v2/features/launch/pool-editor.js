@@ -504,7 +504,6 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier = nu
       parts.push(`<rect class="pm-support" x="${x1.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(3, x2 - x1 - 1).toFixed(1)}" height="${h.toFixed(1)}"/>`);
       if (x2 - x1 > 38) parts.push(`<text class="pm-tag" x="${((x1 + x2) / 2).toFixed(1)}" y="${(BASE - h - 4).toFixed(1)}" text-anchor="middle">${fmt(sol)} SOL</text>`);
     });
-    parts.push(`<text class="pm-note" x="${LEFT}" y="14">${supportLayers.length} bid layers · down to −${fmt(depthPct)}%</text>`);
   } else {
     parts.push(supportSol > 0
       ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/><text class="pm-tag" x="${(START - 6).toFixed(1)}" y="${BASE - 66}" text-anchor="end">${supportText}</text>`
