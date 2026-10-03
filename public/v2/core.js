@@ -1373,7 +1373,9 @@ var TrebuchetCore = (() => {
       distribution: pool.distribution,
       bootstrap: pool.bootstrap,
       ladder: pool.ladder,
-      support: pool.support
+      support: pool.support,
+      // The venue must reach the engine: without it every Meteora pool was opened as Raydium CLMM.
+      ...pool.venue === METEORA_VENUE ? { venue: pool.venue, damm: pool.damm } : {}
     }));
   }
   function poolQuoteIdentity(pool = {}) {

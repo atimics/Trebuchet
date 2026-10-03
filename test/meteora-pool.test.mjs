@@ -123,4 +123,9 @@ test('the plan keeps a Meteora SOL pool as one locked position next to Raydium p
   // Any pool can be on Meteora, not only the SOL pool.
   const other = buildV2LaunchPlan({ token: { name: 'N', symbol: 'N', supply: '1000' }, poolTopology: { pools: [{ quoteToken: 'USDC', quoteSymbol: 'USDC', supplyPercent: 50, venue: 'meteora-damm-v2' }] } }, { demoMode: true });
   assert.equal(other.poolTopology.pools[0].venue, 'meteora-damm-v2');
+  // The allocations the engine receives carry the venue: without it a Meteora pool was opened as Raydium CLMM.
+  const [solAllocation, usdcAllocation] = plan.poolTopology.allocations;
+  assert.equal(solAllocation.venue, 'meteora-damm-v2');
+  assert.deepEqual(solAllocation.damm, { feeBps: 100, rangeMultiple: 100 });
+  assert.equal(usdcAllocation.venue, undefined);
 });

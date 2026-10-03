@@ -788,6 +788,8 @@ function classicAllocations(poolTopology) {
     bootstrap: pool.bootstrap,
     ladder: pool.ladder,
     support: pool.support,
+    // The venue must reach the engine: without it every Meteora pool was opened as Raydium CLMM.
+    ...(pool.venue === METEORA_VENUE ? { venue: pool.venue, damm: pool.damm } : {}),
   }));
 }
 
