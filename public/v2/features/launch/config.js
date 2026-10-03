@@ -601,7 +601,7 @@ function renderLaunchBudgetRecommendation() {
   const budgetSol = Math.max(0, parseNumericInput(budgetInput.value, 0));
   const strategy = launchBudgetRecommendation(budgetSol);
   $$('.launch-budget-presets button').forEach((button) => {
-    button.classList.toggle('is-selected', button.dataset.preset ? button.dataset.preset === state.launchPresetId : Number(button.dataset.budget) === budgetSol);
+    button.classList.toggle('is-selected', button.dataset.preset ? button.dataset.preset === launchPresetSelected() : Number(button.dataset.budget) === budgetSol);
   });
   const depth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
   target.innerHTML = '';

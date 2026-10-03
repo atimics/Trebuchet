@@ -6880,12 +6880,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=151/);
+  assert.match(html, /styles\.css\?v=153/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=238/);
-  assert.doesNotMatch(html, /app\.js\?v=238" type="module"/);
+  assert.match(html, /app\.js\?v=240/);
+  assert.doesNotMatch(html, /app\.js\?v=240" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11914,8 +11914,8 @@ test('with the Recovery PIN locked the rail says Unlock and opens the PIN panel,
 });
 
 test('launch presets and support layers are wired into the Price and Pairs pages', () => {
-  assert.equal((html.match(/data-action="apply-launch-preset"/g) || []).length, 4);
-  for (const id of ['spark', 'anchor', 'constellation', 'vortex']) assert.match(html, new RegExp(`data-preset="${id}"`));
+  assert.equal((html.match(/data-action="apply-launch-preset"/g) || []).length, 5);
+  for (const id of ['spark', 'anchor', 'constellation', 'vortex', 'custom']) assert.match(html, new RegExp(`data-preset="${id}"`));
   assert.match(js, /function applyLaunchPreset\(/);
   assert.match(js, /action === 'apply-launch-preset'/);
   // Layers: a field for them, a parser, the plan carries them, and the map and list line draw them.

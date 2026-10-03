@@ -479,7 +479,8 @@ function renderLaunchNextRail(facts, next, workspace) {
 const PHASE_TABS = {
   wallet: [{ id: 'run', label: 'Fund' }, { id: 'return', label: 'Recover' }, { id: 'airdrop', label: 'Airdrop' }],
   mint: [{ id: 'details', label: 'Details' }, { id: 'address', label: 'Address' }, { id: 'run', label: 'Create' }],
-  liquidity: [{ id: 'price', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }, { id: 'run', label: 'Create' }],
+  // Price & pool and Create are one page: the price and preset on top, the picture and the Create button under it.
+  liquidity: [{ id: 'run', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }],
   finish: [{ id: 'run', label: 'Finish' }],
 };
 // Funding's two parts are tabs only when there are pair tokens to acquire; its panel is
@@ -551,6 +552,7 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const hideRunOnly = ['#launchConsole', '#signaturePanel'];
   const dock = $('.setup-dock');
   if (dock) dock.hidden = !tabs;
+  $('#launchWorkspaceViewport')?.classList.remove('is-combined');
   if (!tabs) {
     if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; bridge.dataset.finishTab = ''; }
     return;
@@ -558,6 +560,8 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
   // Funding shows its own panel always; its tabs only choose the part.
   const running = ['run', 'record', 'recover'].includes(current) || workspace === 'fund';
+  // Price & pool shows its settings slide and the phase panel together.
+  const combined = workspace === 'liquidity' && current === 'run';
   // Moving between tabs slides the page in from the side it lies on. The slides share one
   // track that already slides; the action page is a separate panel, so it slides itself.
   const tabIndex = tabs.findIndex((tab) => tab.id === current);
@@ -598,25 +602,28 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     button.classList.toggle('is-selected', selected);
     button.setAttribute('aria-selected', selected ? 'true' : 'false');
     button.tabIndex = selected ? 0 : -1;
-    const value = phaseTabValue(tab.id, fact?.value);
+    const value = phaseTabValue(tab.id === 'run' && workspace === 'liquidity' ? 'price' : tab.id, fact?.value);
     const small = button.querySelector('small');
     if (small.textContent !== value) small.textContent = value;
   });
   // The action tab shows the phase's own panel; every other tab slides a settings page in.
   const frame = $('#planSlides');
-  if (frame) frame.hidden = running;
+  if (frame) frame.hidden = running && !combined;
   if (bridge) bridge.hidden = !running;
-  if (running && (previous == null || previous !== tabIndex)) slideIn(bridge);
-  else if (!running && wasRunning) slideIn(frame);
+  if (running && !combined && (previous == null || previous !== tabIndex)) slideIn(bridge);
+  else if ((!running || combined) && wasRunning) slideIn(frame);
   hideRunOnly.forEach((selector) => { const node = $(selector); if (node && !running) node.hidden = true; });
   if (!running) $$('[data-classic-workspace]').forEach((panel) => { panel.hidden = true; });
-  $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running);
-  if (running) return;
-  const index = Math.max(0, PLAN_SLIDE_ORDER.indexOf(current));
+  $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running && !combined);
+  $('#launchWorkspaceViewport')?.classList.toggle('is-combined', combined);
+  if (running && !combined) return;
+  const slideId = combined ? 'price' : current;
+  track.dataset.active = slideId;
+  const index = Math.max(0, PLAN_SLIDE_ORDER.indexOf(slideId));
   track.style.transform = `translateX(-${index * 100}%)`;
   let active = null;
   $$('#planTrack > [data-plan-slide]').forEach((slide) => {
-    const on = slide.dataset.planSlide === current;
+    const on = slide.dataset.planSlide === slideId;
     slide.toggleAttribute('inert', !on);
     if (on) active = slide;
   });
@@ -633,7 +640,7 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     if (!frame.dataset.watching && window.ResizeObserver) {
       frame.dataset.watching = '1';
       const observer = new ResizeObserver(() => {
-        const live = $(`#planTrack > [data-plan-slide="${(state.phaseSlide || {})[state.launchWorkspace]}"]`);
+        const live = $(`#planTrack > [data-plan-slide="${track.dataset.active || ''}"]`);
         if (live) frame.style.height = `${live.offsetHeight}px`;
       });
       // Each slide is watched itself: a page that grows after it is shown (the Add pair list loads

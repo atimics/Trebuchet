@@ -92,7 +92,28 @@ async function launchPresetPartners(count) {
   }
 }
 
+// What identifies the pools a preset builds, so the picker can tell when they have been edited.
+function launchPoolsSignature() {
+  return JSON.stringify(currentClassicModel().pools.map((pool) => [
+    pool.quoteMint || pool.quoteToken, pool.supplyPercent, pool.ammConfigIndex, pool.distribution, pool.ladder, pool.support,
+  ]));
+}
+
+// The preset the pools still match, or 'custom' once they have been changed (or never came from one).
+function launchPresetSelected() {
+  return state.launchPresetId && state.launchPresetId !== 'custom' && state.launchPresetSignature === launchPoolsSignature()
+    ? state.launchPresetId
+    : 'custom';
+}
+
 async function applyLaunchPreset(id, { announce = true } = {}) {
+  if (id === 'custom') {
+    // Custom keeps the pools as they are and opens the page where they are edited.
+    state.launchPresetId = 'custom';
+    renderLaunchBudgetRecommendation();
+    setPlanSlide('pairs');
+    return;
+  }
   const preset = launchPresetById(id);
   if (!preset) return;
   const partnerMarkets = preset.markets.filter((market) => market.role === 'partner');
@@ -137,6 +158,7 @@ async function applyLaunchPreset(id, { announce = true } = {}) {
   invalidateClassicOutputs();
   refreshClassicPreview({ includePoolEditor: true });
   renderAll();
+  state.launchPresetSignature = launchPoolsSignature();
   scheduleLaunchAutoSave();
   renderLaunchBudgetRecommendation();
   if (!announce) return;

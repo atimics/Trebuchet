@@ -17973,3 +17973,12 @@ body #view-launch .finalize-warning { margin: 0; padding: 0 0 0 10px; border: 0;
 /* Presets: a name and what it builds */
 body #view-launch .launch-budget-presets > button { display: grid; gap: 2px; align-content: center; text-align: left; padding: 8px 14px; min-width: 150px; }
 body #view-launch .launch-budget-presets > button small { color: var(--muted); font-size: 11px; font-weight: 500; }
+
+/* Price & pool: the settings and the phase panel stack, each as tall as its content. */
+#launchWorkspaceViewport.is-combined .setup-dock, #launchWorkspaceViewport.is-combined #classicBridge { min-height: 0; }
+#launchWorkspaceViewport.is-combined .preview-map svg { display: block; max-height: 220px; margin: 0 auto; }
+#launchWorkspaceViewport.is-combined [data-classic-workspace="liquidity"] { gap: 8px; }
+#launchWorkspaceViewport.is-combined .launch-budget-recommender { padding-bottom: 0; }
+#launchWorkspaceViewport.is-combined .preview-map svg { max-height: 175px; }
+#launchWorkspaceViewport.is-combined .plan-preview.is-liquidity .preview-rows { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 18px; }
+#launchWorkspaceViewport.is-combined .plan-preview.is-liquidity { padding: 0; gap: 6px; }

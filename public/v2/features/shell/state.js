@@ -530,6 +530,7 @@ const state = {
   baseSupportDepth: 12,
   baseSupportLayersText: '',
   launchPresetId: null,
+  launchPresetSignature: null,
   customPools: [],
   customPoolCounter: 0,
   airdropCsvText: '',
