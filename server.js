@@ -664,6 +664,7 @@ const walletExecution = runtimeOwner ? createWalletExecutionRuntime({
 const quoteAcquisition = runtimeOwner ? quoteRuntimeFactory({
   owner: runtimeOwner,
   getScopeId: (wallet) => launchJournal.activeForWallet(wallet)?.id,
+  ensureScopeId: (wallet) => launchJournal.activeForWallet(wallet)?.id || launchJournal.start({ walletPublicKey: wallet })?.id,
 }) : null;
 const liquidityExecution = runtimeOwner ? createLiquidityExecutionRuntime({
   owner: runtimeOwner,

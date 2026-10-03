@@ -13,7 +13,7 @@ const namespace = 'local-quote-drafts/v1';
 const whole = (value) => Number.isSafeInteger(value) && value >= 0;
 const runningByOwner = new WeakMap();
 
-export function createQuoteAcquisitionRuntime({ owner, getScopeId, createConnection = () => new Connection(getRpcUrl(), 'finalized'),
+export function createQuoteAcquisitionRuntime({ owner, getScopeId, ensureScopeId = getScopeId, createConnection = () => new Connection(getRpcUrl(), 'finalized'),
   networkForRequest = getNetwork, genesisForNetwork = (network) => SOLANA_GENESIS_HASHES[network], createPlanner = createQuotePlanBuilder, now = Date.now, timeoutMs = 60000 }) {
   if (!owner || typeof getScopeId !== 'function') throw new TypeError('Supply the profile owner and launch journal');
   if (!runningByOwner.has(owner)) runningByOwner.set(owner, { running: new Map(), planning: new Set() });
@@ -130,8 +130,12 @@ export function createQuoteAcquisitionRuntime({ owner, getScopeId, createConnect
       if (running.has(walletPublicKey) || planning.has(walletPublicKey)) throw fail('OPERATION_IN_FLIGHT', 'Wait for the current quote request');
       const existing = active(walletPublicKey); if (existing) return existing;
       if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(requestId)) throw new TypeError('Use a stable quote request identity');
-      const scopeId = getScopeId(walletPublicKey), network = networkForRequest(), genesisHash = genesisForNetwork(network);
-      if (!scopeId || !genesisHash) throw fail('EXECUTION_RECOVERY_REQUIRED', 'Save the launch wallet and choose its network before quoting');
+      // Quotes belong to the wallet's launch record. A saved wallet with no open record (made on
+      // the Wallet page, or reused after a finished launch) gets one here: the route has already
+      // checked the app holds this wallet's key.
+      const scopeId = ensureScopeId(walletPublicKey), network = networkForRequest(), genesisHash = genesisForNetwork(network);
+      if (!scopeId) throw fail('EXECUTION_RECOVERY_REQUIRED', 'Choose a launch wallet this app holds the key for before buying pair tokens');
+      if (!genesisHash) throw fail('EXECUTION_RECOVERY_REQUIRED', `Pair tokens can't be bought on the ${network} network. Switch to mainnet or devnet in Settings.`);
       const normalized = normalizeQuoteRequest(autoSwapPlan), requestDigest = hash(normalized);
       const store = openRuntimeStore(owner.profile); planning.add(walletPublicKey);
       try {

@@ -124,3 +124,24 @@ test('changed stored quote bytes stop before wallet reservation', async (t) => {
   assert.throws(() => f.runtime().get(f.draft.jobId), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
   await assert.rejects(f.runtime().start(f.approve()), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
 });
+
+test('a held wallet with no open launch record gets one when it asks for a quote', async (t) => {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-quote-scope-')), owner = acquireProfileOwner(profile), chain = quoteAcquisitionChain({ combined: true });
+  t.after(() => { owner.release(); fs.rmSync(profile, { recursive: true, force: true }); });
+  const opened = [];
+  const autoSwapPlan = chain.purchases.map((purchase, index) => ({ allocationIndex: index, quoteMint: purchase.intent.outputMint, quoteDecimals: 6,
+    quoteSymbol: `Q${index}`, targetRaw: '1250', minRaw: '1000', maxInputLamports: '50000' }));
+  let scope = null;
+  const runtime = createQuoteAcquisitionRuntime({
+    owner, createConnection: () => chain.connection, networkForRequest: () => 'mainnet', now: () => 1000, timeoutMs: 0,
+    getScopeId: () => scope,
+    ensureScopeId: (walletPublicKey) => { opened.push(walletPublicKey); scope = 'opened-record'; return scope; },
+    createPlanner: () => ({ build: async () => ({ purchases: chain.purchases, rows: autoSwapPlan.map((row) => ({ ...row, allocationIndices: [row.allocationIndex], observedSlot: 200, alreadyHadRaw: '0', state: 'purchase' })) }) }),
+  });
+  const draft = await runtime.prepare({ walletPublicKey: wallet.toBase58(), autoSwapPlan, requestId: 'scope-one' });
+  assert.deepEqual(opened, [wallet.toBase58()]);
+  assert.equal(draft.status, 'review_required');
+  // Without a record and no way to open one, the message says what to do.
+  const none = createQuoteAcquisitionRuntime({ owner, getScopeId: () => null, createConnection: () => chain.connection, networkForRequest: () => 'mainnet' });
+  await assert.rejects(none.prepare({ walletPublicKey: wallet.toBase58(), autoSwapPlan, requestId: 'scope-two' }), /Choose a launch wallet this app holds the key for/);
+});
