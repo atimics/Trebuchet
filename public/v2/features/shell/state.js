@@ -23,7 +23,7 @@ const views = {
 };
 
 const launchWorkspaces = [
-  { id: 'wallet', title: 'Launch wallet', detail: 'Choose the isolated local wallet that signs this launch.' },
+  { id: 'wallet', title: 'Launch setup', detail: 'Choose the isolated local wallet that signs this launch.' },
   { id: 'configure', title: 'Token & pools', detail: 'Define the token, liquidity, distribution, and return wallet.' },
   { id: 'fund', title: 'Fund wallet', detail: 'Estimate the exact requirement, deposit SOL, and acquire quote tokens.' },
   { id: 'mint', title: 'Create token', detail: 'Review the permanent token facts, then mint and revoke authorities.' },

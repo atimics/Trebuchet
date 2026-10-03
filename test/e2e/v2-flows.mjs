@@ -352,7 +352,7 @@ try {
   });
   await page.waitForFunction(() => document.querySelector('#mainPoolPercent').value === '90');
   // Where assets go is its own slide of the Plan row.
-  await page.click('.coin-fact[data-coin-fact="mint"]');
+  await page.click('.coin-fact[data-coin-fact="wallet"]');
   await page.click('[data-plan-tab="return"]');
   assert.match(await page.locator('#returnWalletCard').innerText(), /Funding wallets show here once SOL arrives/);
   await page.evaluate(async () => {

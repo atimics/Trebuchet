@@ -6884,8 +6884,8 @@ test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=226/);
-  assert.doesNotMatch(html, /app\.js\?v=226" type="module"/);
+  assert.match(html, /app\.js\?v=227/);
+  assert.doesNotMatch(html, /app\.js\?v=227" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11831,7 +11831,7 @@ test('a finished launch is matched to the coin by its mint, never its name', () 
 
 test('a coin being created shows its facts, not a numbered track of phases', () => {
   // One row per fact, with no ordinals and no Continue/back navigation.
-  // Plan is not a phase of its own: its settings live in Launch setup, Liquidity and Recovery.
+  // Plan is not a phase of its own: its settings live in Launch setup, Token setup, Liquidity and Recovery.
   for (const fact of ['wallet', 'mint', 'liquidity', 'fund', 'finish']) {
     assert.match(html, new RegExp(`class="coin-fact"[^>]*data-coin-fact="${fact}"`));
   }
