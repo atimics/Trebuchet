@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=146">
+  <link rel="stylesheet" href="./styles.css?v=150">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -333,6 +333,11 @@
 <div class="vanity-details-body grinder grinder-two" aria-label="Optional custom contract address">
                   <div class="grinder-setup">
                     <div class="grinder-preview" id="vanityPreview" aria-live="polite"></div>
+                    <div class="candidate-strip grinder-results" id="vanityCandidates">
+                    <button class="pill-button is-active" type="button" data-action="select-vanity" data-public-key="" aria-pressed="true">Random</button>
+                  </div>
+                  </div>
+                  <div class="grinder-controls">
                     <div class="vanity-inputs grinder-fields">
                     <label class="grinder-field">
                       <span>Starts with</span>
@@ -360,10 +365,7 @@
                     </label>
                   </div>
                     <div class="grinder-statuses-slot" id="vanityStatuses"></div>
-                  </div>
-                  <div class="candidate-strip grinder-results" id="vanityCandidates">
-                    <button class="pill-button is-active" type="button" data-action="select-vanity" data-public-key="" aria-pressed="true">Random</button>
-                    <button class="pill-button" type="button" data-action="start-vanity">Grind</button>
+                    <div class="grinder-grind" id="vanityGrind"></div>
                   </div>
                 </div>
 </section>
@@ -764,7 +766,7 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=3"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=235"></script>
+  <script src="./app.js?v=237"></script>
   <script src="./nfts.js?v=2"></script>
   <script src="./lean.js?v=2"></script>
 </body>

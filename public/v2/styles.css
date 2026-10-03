@@ -17902,3 +17902,65 @@ body #view-launch .hub-picker-result .coin-card-ui__copy { flex: 1; }
 .pool-map .pm-tier-on { fill: var(--green); }
 .pool-map .pm-tier-off { fill: var(--line-strong); }
 @media (max-width: 760px) { .supply-row { grid-template-columns: 10px minmax(0, 1fr) 72px 84px 28px 28px; } .supply-row .supply-amount { display: none; } }
+
+/* The logo shows once: with the stamped preview, that is the picture and the round thumbnail steps aside. */
+#launchConfig .token-logo-preview:has(.token-logo-stamp-preview) {
+  grid-template-columns: 132px minmax(0, 1fr) auto;
+  grid-template-areas: "img info clear" "img cap cap";
+  align-items: start;
+}
+#launchConfig .token-logo-preview:has(.token-logo-stamp-preview) .token-logo-thumb { display: none; }
+#launchConfig .token-logo-preview:has(.token-logo-stamp-preview) > span:nth-child(2) { grid-area: info; }
+#launchConfig .token-logo-preview:has(.token-logo-stamp-preview) > .pill-button { grid-area: clear; }
+#launchConfig .token-logo-preview:has(.token-logo-stamp-preview) .token-logo-stamp-slot,
+#launchConfig .token-logo-preview:has(.token-logo-stamp-preview) .token-logo-stamp-preview { display: contents; }
+#launchConfig .token-logo-preview:has(.token-logo-stamp-preview) .token-logo-stamp-preview img { grid-area: img; width: 132px; border-radius: 4px; }
+#launchConfig .token-logo-preview:has(.token-logo-stamp-preview) .token-logo-stamp-preview figcaption { grid-area: cap; align-self: end; }
+
+/* Address: the selected address and the saved list on the left; every grinder control on the right. */
+#view-launch .grinder-controls { display: grid; gap: 16px; min-width: 0; align-content: start; }
+#view-launch .grinder-grind { display: flex; }
+#view-launch .grinder-grind .primary-button, #view-launch .grinder-grind .secondary-button { min-width: 140px; }
+#view-launch .grinder-controls .grinder-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+#view-launch .grinder-controls .grinder-options { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: end; }
+#view-launch .grinder-controls .grinder-options .vanity-length-select { flex: 0 1 auto; }
+#view-launch .grinder-controls .grinder-options .choice-buttons { flex-wrap: nowrap; }
+#view-launch .grinder-controls .grinder-check { display: flex !important; align-items: center; gap: 10px; min-height: 40px; border: 0; padding-left: 0; background: transparent; }
+
+/* Create token: a bigger logo, and the funding notice under the facts, with its button to the Fund step. */
+body #view-launch [data-classic-workspace="mint"] { display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr); gap: 12px 24px; align-items: start; }
+body #view-launch [data-classic-workspace="mint"] > .launch-step-guide { grid-column: 1 / -1; }
+body #view-launch [data-classic-workspace="mint"] > .plan-preview { display: contents; }
+body #view-launch [data-classic-workspace="mint"] .preview-mark { grid-column: 1; grid-row: 2 / span 2; padding: 0; }
+body #view-launch [data-classic-workspace="mint"] .preview-rows { grid-column: 2; grid-row: 2; }
+body #view-launch [data-classic-workspace="mint"] > .execution-readiness { grid-column: 2; grid-row: 3; }
+body #view-launch [data-classic-workspace="mint"] .preview-mark img, body #view-launch [data-classic-workspace="mint"] .preview-mark > span { width: 100%; max-width: 260px; height: auto; aspect-ratio: 1; }
+body #view-launch .execution-readiness .launch-phase-actions:has(> [data-launch-workspace="fund"]) { display: flex !important; }
+@container phase (max-width: 640px) {
+  body #view-launch [data-classic-workspace="mint"] { grid-template-columns: minmax(0, 1fr); }
+  body #view-launch [data-classic-workspace="mint"] .preview-mark, body #view-launch [data-classic-workspace="mint"] .preview-rows, body #view-launch [data-classic-workspace="mint"] > .execution-readiness { grid-column: 1; grid-row: auto; }
+}
+
+/* Record: a title line, four facts as rows, the proof as rows, and one row of actions. No boxes. */
+body #view-launch .finalize-panel { border: 0; background: transparent; padding: 0; gap: 14px; box-shadow: none; }
+body #view-launch .finalize-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 0 0 8px; border-bottom: 1px solid var(--line); }
+body #view-launch .finalize-head h3 { margin: 0; font-size: 15px; }
+body #view-launch .finalize-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+body #view-launch .finalize-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; border: 0; background: transparent; }
+body #view-launch .finalize-grid > span {
+  display: grid; grid-template-columns: 120px minmax(0, 1fr) minmax(0, 1.2fr); gap: 12px; align-items: baseline;
+  padding: 9px 0; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); background: transparent;
+}
+body #view-launch .finalize-grid small { color: var(--muted); }
+body #view-launch .finalize-grid em { text-align: right; font-style: normal; color: var(--muted); overflow-wrap: anywhere; }
+body #view-launch .verify-panel-stage, body #view-launch .proof-review-panel { border: 0; background: transparent; padding: 0; }
+body #view-launch .proof-review-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 0 0 6px; }
+body #view-launch .proof-link-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
+body #view-launch .proof-link-grid > a, body #view-launch .proof-link-grid > span {
+  display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; align-items: baseline;
+  padding: 8px 0; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); background: transparent;
+}
+body #view-launch .proof-link-grid small { color: var(--muted); }
+body #view-launch .finalize-primary-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+body #view-launch .finalize-notices { display: grid; gap: 6px; }
+body #view-launch .finalize-warning { margin: 0; padding: 0 0 0 10px; border: 0; border-left: 2px solid var(--amber, #e6b450); background: transparent; }
