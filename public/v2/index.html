@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=134">
+  <link rel="stylesheet" href="./styles.css?v=136">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -330,8 +330,10 @@
                 </form>
 </section>
 <section class="plan-slide" data-plan-slide="address" data-phase="mint" role="tabpanel">
-<div class="vanity-details-body grinder" aria-label="Optional custom contract address">
-                  <div class="vanity-inputs grinder-fields">
+<div class="vanity-details-body grinder grinder-two" aria-label="Optional custom contract address">
+                  <div class="grinder-setup">
+                    <div class="grinder-preview" id="vanityPreview" aria-live="polite"></div>
+                    <div class="vanity-inputs grinder-fields">
                     <label class="grinder-field">
                       <span>Starts with</span>
                       <input id="vanityStart" type="text" value="" placeholder="e.g. MKT" autocomplete="off" spellcheck="false" aria-describedby="vanityFeedback">
@@ -344,8 +346,8 @@
                   <div class="grinder-options">
                     <label class="grinder-field vanity-length-select" for="vanityLength">
                       <span>Length</span>
-                      <select id="vanityLength" data-choice="slider">
-                        <option value="">Any</option>
+                      <select id="vanityLength" data-choice="buttons">
+                        <option value="" data-short="Any">Any</option>
                         <option value="44" data-short="44">44 characters</option>
                         <option value="43" data-short="43">43 characters</option>
                         <option value="42" data-short="42">42 characters</option>
@@ -357,11 +359,13 @@
                       <span><strong>Any case</strong></span>
                     </label>
                   </div>
+                    <div class="grinder-statuses-slot" id="vanityStatuses"></div>
+                  </div>
                   <div class="candidate-strip grinder-results" id="vanityCandidates">
                     <button class="pill-button is-active" type="button" data-action="select-vanity" data-public-key="" aria-pressed="true">Random</button>
                     <button class="pill-button" type="button" data-action="start-vanity">Grind</button>
                   </div>
-                  </div>
+                </div>
 </section>
 <section class="plan-slide" data-plan-slide="price" data-phase="liquidity" role="tabpanel">
 <div class="config-grid price-grid">
@@ -759,7 +763,7 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=3"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=227"></script>
+  <script src="./app.js?v=228"></script>
   <script src="./nfts.js?v=2"></script>
   <script src="./lean.js?v=2"></script>
 </body>
