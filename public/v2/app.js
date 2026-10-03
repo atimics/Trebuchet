@@ -7463,6 +7463,12 @@ function renderVanityCandidates() {
   }
   const preview = $('#vanityPreview');
   if (preview) preview.innerHTML = vanityPreviewHtml(vanity, selected);
+  const grind = $('#vanityGrind');
+  if (grind) {
+    grind.innerHTML = `<button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
+      <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>
+    </button>`;
+  }
   const savedCount = state.vanityCandidates.length;
   $('#vanityCandidates').innerHTML = `
     <div class="grinder-results-head"><span>Addresses</span><span class="grinder-count">${savedCount} saved${hiddenCount ? `, ${hiddenCount} not shown` : ''}</span></div>
@@ -7478,9 +7484,6 @@ function renderVanityCandidates() {
       ${candidateButtons}
     </div>
     <div class="grinder-actions">
-      <button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
-        <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>
-      </button>
       <button class="secondary-button compact" type="button" data-action="remove-selected-vanity" ${canRemoveSelected ? '' : 'disabled'}>Remove selected</button>
       ${hiddenCount ? `<button class="text-button" type="button" data-action="prune-hidden-vanity">Delete ${hiddenCount} older</button>` : ''}
     </div>
@@ -15206,10 +15209,9 @@ function renderFinalizationPanel() {
   ].filter(Boolean).join('');
 
   return `
-    <div class="finalize-panel ${finalSweepComplete ? 'is-terminal' : ''}">
+    <div class="finalize-panel ${finalSweepComplete ? 'is-terminal' : ''}" role="group" aria-label="Launch completion">
       <div class="finalize-head">
         <span>
-          <span class="eyebrow">Launch completion</span>
           <h3>${finalSweepComplete ? 'Launch complete' : 'Report, airdrop, and proof'}</h3>
           <p>${finalSweepComplete
             ? `Mint ${tokenMint ? fullAddress(tokenMint) : 'recorded'} · ${poolCount} pool${poolCount === 1 ? '' : 's'} · launch wallet empty.`
@@ -15243,10 +15245,9 @@ function renderFinalizationPanel() {
         </span>
       </div>
       <div class="verify-panel-stage">
-      <div class="proof-review-panel" id="proofExplorer">
+      <div class="proof-review-panel" id="proofExplorer" role="group" aria-label="Proof review">
         <div class="proof-review-head">
           <span>
-            <span class="eyebrow">Proof review</span>
             <strong>${tokenMint ? 'Explorer bundle ready' : 'Waiting for launch record'}</strong>
           </span>
           <button class="pill-button" type="button" data-action="copy-v2-proof-summary" ${canDownload ? '' : 'disabled'}>Copy summary</button>
@@ -15261,9 +15262,8 @@ function renderFinalizationPanel() {
       </div>
       </div>
       <div class="operator-toolbar compact finalize-primary-actions">
-        ${primaryProofActions}
+        ${primaryProofActions}${supplementalProofActions}
       </div>
-      ${supplementalProofActions ? `<div class="operator-toolbar compact">${supplementalProofActions}</div>` : ''}
       ${notices.length ? `<div class="finalize-notices">
         ${notices.map((notice) => `<p class="finalize-warning ${escapeHtml(notice.state)}">${escapeHtml(notice.text)}</p>`).join('')}
       </div>` : ''}
