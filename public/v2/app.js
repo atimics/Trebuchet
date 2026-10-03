@@ -24,7 +24,7 @@ const views = {
 };
 
 const launchWorkspaces = [
-  { id: 'wallet', title: 'Launch wallet', detail: 'Choose the isolated local wallet that signs this launch.' },
+  { id: 'wallet', title: 'Launch setup', detail: 'Choose the isolated local wallet that signs this launch.' },
   { id: 'configure', title: 'Token & pools', detail: 'Define the token, liquidity, distribution, and return wallet.' },
   { id: 'fund', title: 'Fund wallet', detail: 'Estimate the exact requirement, deposit SOL, and acquire quote tokens.' },
   { id: 'mint', title: 'Create token', detail: 'Review the permanent token facts, then mint and revoke authorities.' },
@@ -6066,12 +6066,13 @@ function renderLaunchNextRail(facts, next, workspace) {
     ${walletBlock}${fundingBlock}${positionsBlock}`;
 }
 
-// Each phase owns the settings that belong to it as tabs, the last being the phase's
-// own action: Launch setup (Details, Address, Return & report, Airdrop, Create),
-// Liquidity (Price & pool, Pairs, Create), Recovery (Finish, plus Record and Recover).
+// Each phase owns the settings that belong to it as tabs: Launch setup (Wallet, Return &
+// report, Airdrop), Token setup (Details, Address, Create), Liquidity (Price & pool, Pairs,
+// Create), Recovery (Finish, plus Record and Recover). The 'run' tab shows the phase's own panel.
 // The tab shown is a view: nothing is saved, and nothing counts toward progress.
 const PHASE_TABS = {
-  mint: [{ id: 'details', label: 'Details' }, { id: 'address', label: 'Address' }, { id: 'return', label: 'Return & report' }, { id: 'airdrop', label: 'Airdrop' }, { id: 'run', label: 'Create' }],
+  wallet: [{ id: 'run', label: 'Wallet' }, { id: 'return', label: 'Return & report' }, { id: 'airdrop', label: 'Airdrop' }],
+  mint: [{ id: 'details', label: 'Details' }, { id: 'address', label: 'Address' }, { id: 'run', label: 'Create' }],
   liquidity: [{ id: 'price', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }, { id: 'run', label: 'Create' }],
   finish: [{ id: 'run', label: 'Finish' }],
 };
@@ -23782,7 +23783,7 @@ function renderReturnWalletCard() {
 
 function editReturnWallet() {
   setView('launch');
-  setLaunchWorkspace('mint');
+  setLaunchWorkspace('wallet');
   window.requestAnimationFrame(() => {
     setPlanSlide('return');
   });
