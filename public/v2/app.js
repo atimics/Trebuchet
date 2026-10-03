@@ -6152,6 +6152,22 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
   // Funding shows its own panel always; its tabs only choose the part.
   const running = ['run', 'record', 'recover'].includes(current) || workspace === 'fund';
+  // Moving between tabs slides the page in from the side it lies on. The slides share one
+  // track that already slides; the action page is a separate panel, so it slides itself.
+  const tabIndex = tabs.findIndex((tab) => tab.id === current);
+  const previous = strip.dataset.phase === workspace && strip.dataset.index !== undefined ? Number(strip.dataset.index) : null;
+  const wasRunning = strip.dataset.running === '1';
+  const direction = previous == null ? 0 : Math.sign(tabIndex - previous);
+  strip.dataset.phase = workspace;
+  strip.dataset.index = String(tabIndex);
+  strip.dataset.running = running ? '1' : '0';
+  const slideIn = (node) => {
+    if (!node || !direction) return;
+    node.classList.remove('slide-in-right', 'slide-in-left');
+    void node.offsetWidth;
+    node.classList.add(direction > 0 ? 'slide-in-right' : 'slide-in-left');
+    node.addEventListener('animationend', () => node.classList.remove('slide-in-right', 'slide-in-left'), { once: true });
+  };
   if (bridge) {
     bridge.dataset.fundTab = workspace === 'fund' ? current : '';
     bridge.dataset.finishTab = workspace === 'finish' ? current : '';
@@ -6184,6 +6200,8 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const frame = $('#planSlides');
   if (frame) frame.hidden = running;
   if (bridge) bridge.hidden = !running;
+  if (running && (previous == null || previous !== tabIndex)) slideIn(bridge);
+  else if (!running && wasRunning) slideIn(frame);
   hideRunOnly.forEach((selector) => { const node = $(selector); if (node && !running) node.hidden = true; });
   if (!running) $$('[data-classic-workspace]').forEach((panel) => { panel.hidden = true; });
   $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running);
@@ -7779,7 +7797,14 @@ function renderSupplyEditor() {
 `;
   };
 
-  const rowHtml = (row, withSettings = false) => {
+  // An accordion: the open pool's settings open under its row and every other row stays put.
+  // A panel that is opening starts closed and one that is closing starts open, so the height
+  // eases whichever way it goes, even when the app redraws more than once per click.
+  const shownKey = target.dataset.rendered === '1' ? (target.dataset.shownKey || '') : (state.supplyOpenRow || '');
+  const wantsOpen = (row) => state.supplyOpenRow === row.key;
+  const wasOpen = (row) => shownKey === row.key;
+
+  const rowHtml = (row) => {
     const input = row.poolId
       ? `data-custom-pool-field="supplyPercent" data-pool-id="${escapeHtml(row.poolId)}"`
       : `data-supply-target="${row.target}"`;
@@ -7803,22 +7828,10 @@ function renderSupplyEditor() {
           : '<span class="supply-remove-spacer"></span>'}
         ${remove}
       </li>
-      ${withSettings && row.kind === 'pool' ? `<li class="supply-settings">${settingsHtml(row)}</li>` : ''}`;
+      ${row.kind === 'pool' && (wantsOpen(row) || wasOpen(row)) ? `<li class="supply-settings-wrap${wasOpen(row) ? ' is-open' : ''}" data-settings-for="${escapeHtml(row.key)}"><div class="supply-settings">${settingsHtml(row)}</div></li>` : ''}`;
   };
 
-  // Two panes side by side: the pools, and the settings of the pool that is open.
-  // Opening or closing one slides the track; nothing is hidden or rebuilt around it.
-  const openRow = state.supplyOpenRow ? pools.find((row) => row.key === state.supplyOpenRow) : null;
-  const isOpen = Boolean(openRow);
-  // The pane on screen when this render starts. A render that lands before the slide begins
-  // (the app redraws more than once per click) must not skip the slide.
-  const startOpen = target.dataset.rendered === '1' ? target.dataset.shown === 'settings' : isOpen;
-  const sliding = startOpen !== isOpen;
-  // Sliding back out, the pane keeps showing the pool it is leaving.
-  const shownRow = openRow || (sliding ? pools.find((row) => row.key === target.dataset.lastKey) : null);
   target.innerHTML = `
-    <div class="supply-track${sliding ? ' is-sliding' : ''}" data-pane="${startOpen ? 'settings' : 'list'}">
-      <div class="supply-pane supply-pane-list${isOpen ? '' : ' is-active'}">${`
     <div class="supply-bar" role="img" aria-label="Supply split">${segments}${gap}</div>
     <div class="supply-group-head"><span>Pools</span><span class="pool-config-actions">
       <button class="pill-button" type="button" data-action="export-pool-config" title="Copy the pool config to the clipboard"><i class="fa-regular fa-copy" aria-hidden="true"></i> Export</button>
@@ -7829,23 +7842,21 @@ function renderSupplyEditor() {
     <button class="supply-add" type="button" data-action="add-custom-pool"><i class="fa-solid fa-plus"></i> Add pair</button>
     <div class="supply-group-head"><span>Held back</span></div>
     <ol class="supply-list">${rows.filter((row) => row.kind === 'hold').map((row) => rowHtml(row)).join('')}</ol>
-    ${totalHtml}`}</div>
-      <div class="supply-pane supply-pane-settings${isOpen ? ' is-active' : ''}">
-        ${shownRow ? `<button class="supply-back" type="button" data-action="supply-toggle-settings" data-supply-row="${escapeHtml(shownRow.key)}"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i><span>Pools</span></button>
-        <ol class="supply-list">${rowHtml(shownRow, true)}</ol>` : ''}
-      </div>
-    </div>`;
-  if (openRow) target.dataset.lastKey = openRow.key;
-  const track = target.querySelector('.supply-track');
-  if (sliding) {
+    ${totalHtml}`;
+  const nextKey = state.supplyOpenRow || '';
+  if (shownKey !== nextKey) {
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-      if (!track.isConnected) return;
-      track.dataset.pane = isOpen ? 'settings' : 'list';
-      target.dataset.shown = isOpen ? 'settings' : 'list';
+      if (!target.isConnected) return;
+      target.querySelectorAll('.supply-settings-wrap').forEach((wrap) => {
+        wrap.classList.toggle('is-open', wrap.dataset.settingsFor === nextKey);
+      });
+      target.dataset.shownKey = nextKey;
     }));
-    window.setTimeout(() => { if (track.isConnected) track.classList.remove('is-sliding'); }, 340);
+    window.setTimeout(() => {
+      target.querySelectorAll('.supply-settings-wrap:not(.is-open)').forEach((wrap) => wrap.remove());
+    }, 360);
   } else {
-    target.dataset.shown = isOpen ? 'settings' : 'list';
+    target.dataset.shownKey = nextKey;
   }
 
   target.dataset.rendered = '1';
