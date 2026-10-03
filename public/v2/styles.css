@@ -17841,3 +17841,17 @@ body .view .surface .surface, body .view .surface .personal-discovery-panel, bod
 body .view .surface .discovery-feed-empty, body .view .surface .discovery-overview-stats, body .view .surface .history-pane-stage,
 body #view-wallet .section-heading { border-left: 0; border-right: 0; border-top: 0; background: transparent; box-shadow: none; border-radius: 0; }
 body .view .surface .discovery-feed-empty, body .view .surface .discovery-overview-stats { border-bottom: 0; }
+
+/* Flat, second pass: the phase panel is not a frame of its own; presets are one segmented control. */
+body #view-launch #classicBridge, body #view-launch .classic-workspace-section {
+  border: 0; background: transparent; box-shadow: none; border-radius: 0;
+}
+body #view-launch .launch-step-guide, body #view-launch .launch-step-guide > aside, body #view-launch .launch-step-guide aside {
+  border: 0; background: transparent; box-shadow: none;
+}
+body #view-launch .funding-wallet-hint { border: 0; border-left: 2px solid var(--amber, #e6b450); background: transparent; border-radius: 0; }
+body #view-launch .launch-budget-presets { display: inline-grid; grid-auto-flow: column; gap: 0; border: 1px solid var(--line); width: fit-content; }
+body #view-launch .launch-budget-presets > button { border: 0; border-right: 1px solid var(--line); background: transparent; min-width: 96px; box-shadow: none; }
+body #view-launch .launch-budget-presets > button:last-child { border-right: 0; }
+body #view-launch .launch-budget-presets > button.is-selected { box-shadow: inset 0 -2px 0 var(--green); color: var(--green); }
+body #view-launch .launch-budget-recommender { padding: 4px 0; }
