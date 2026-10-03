@@ -531,6 +531,7 @@ const state = {
   baseSupportDepth: 12,
   baseSupportLayersText: '',
   launchPresetId: null,
+  launchPresetSignature: null,
   customPools: [],
   customPoolCounter: 0,
   airdropCsvText: '',
@@ -5180,7 +5181,7 @@ function renderLaunchBudgetRecommendation() {
   const budgetSol = Math.max(0, parseNumericInput(budgetInput.value, 0));
   const strategy = launchBudgetRecommendation(budgetSol);
   $$('.launch-budget-presets button').forEach((button) => {
-    button.classList.toggle('is-selected', button.dataset.preset ? button.dataset.preset === state.launchPresetId : Number(button.dataset.budget) === budgetSol);
+    button.classList.toggle('is-selected', button.dataset.preset ? button.dataset.preset === launchPresetSelected() : Number(button.dataset.budget) === budgetSol);
   });
   const depth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
   target.innerHTML = '';
@@ -5501,7 +5502,28 @@ async function launchPresetPartners(count) {
   }
 }
 
+// What identifies the pools a preset builds, so the picker can tell when they have been edited.
+function launchPoolsSignature() {
+  return JSON.stringify(currentClassicModel().pools.map((pool) => [
+    pool.quoteMint || pool.quoteToken, pool.supplyPercent, pool.ammConfigIndex, pool.distribution, pool.ladder, pool.support,
+  ]));
+}
+
+// The preset the pools still match, or 'custom' once they have been changed (or never came from one).
+function launchPresetSelected() {
+  return state.launchPresetId && state.launchPresetId !== 'custom' && state.launchPresetSignature === launchPoolsSignature()
+    ? state.launchPresetId
+    : 'custom';
+}
+
 async function applyLaunchPreset(id, { announce = true } = {}) {
+  if (id === 'custom') {
+    // Custom keeps the pools as they are and opens the page where they are edited.
+    state.launchPresetId = 'custom';
+    renderLaunchBudgetRecommendation();
+    setPlanSlide('pairs');
+    return;
+  }
   const preset = launchPresetById(id);
   if (!preset) return;
   const partnerMarkets = preset.markets.filter((market) => market.role === 'partner');
@@ -5546,6 +5568,7 @@ async function applyLaunchPreset(id, { announce = true } = {}) {
   invalidateClassicOutputs();
   refreshClassicPreview({ includePoolEditor: true });
   renderAll();
+  state.launchPresetSignature = launchPoolsSignature();
   scheduleLaunchAutoSave();
   renderLaunchBudgetRecommendation();
   if (!announce) return;
@@ -6272,7 +6295,8 @@ function renderLaunchNextRail(facts, next, workspace) {
 const PHASE_TABS = {
   wallet: [{ id: 'run', label: 'Fund' }, { id: 'return', label: 'Recover' }, { id: 'airdrop', label: 'Airdrop' }],
   mint: [{ id: 'details', label: 'Details' }, { id: 'address', label: 'Address' }, { id: 'run', label: 'Create' }],
-  liquidity: [{ id: 'price', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }, { id: 'run', label: 'Create' }],
+  // Price & pool and Create are one page: the price and preset on top, the picture and the Create button under it.
+  liquidity: [{ id: 'run', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }],
   finish: [{ id: 'run', label: 'Finish' }],
 };
 // Funding's two parts are tabs only when there are pair tokens to acquire; its panel is
@@ -6344,6 +6368,7 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const hideRunOnly = ['#launchConsole', '#signaturePanel'];
   const dock = $('.setup-dock');
   if (dock) dock.hidden = !tabs;
+  $('#launchWorkspaceViewport')?.classList.remove('is-combined');
   if (!tabs) {
     if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; bridge.dataset.finishTab = ''; }
     return;
@@ -6351,6 +6376,8 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
   // Funding shows its own panel always; its tabs only choose the part.
   const running = ['run', 'record', 'recover'].includes(current) || workspace === 'fund';
+  // Price & pool shows its settings slide and the phase panel together.
+  const combined = workspace === 'liquidity' && current === 'run';
   // Moving between tabs slides the page in from the side it lies on. The slides share one
   // track that already slides; the action page is a separate panel, so it slides itself.
   const tabIndex = tabs.findIndex((tab) => tab.id === current);
@@ -6391,25 +6418,28 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     button.classList.toggle('is-selected', selected);
     button.setAttribute('aria-selected', selected ? 'true' : 'false');
     button.tabIndex = selected ? 0 : -1;
-    const value = phaseTabValue(tab.id, fact?.value);
+    const value = phaseTabValue(tab.id === 'run' && workspace === 'liquidity' ? 'price' : tab.id, fact?.value);
     const small = button.querySelector('small');
     if (small.textContent !== value) small.textContent = value;
   });
   // The action tab shows the phase's own panel; every other tab slides a settings page in.
   const frame = $('#planSlides');
-  if (frame) frame.hidden = running;
+  if (frame) frame.hidden = running && !combined;
   if (bridge) bridge.hidden = !running;
-  if (running && (previous == null || previous !== tabIndex)) slideIn(bridge);
-  else if (!running && wasRunning) slideIn(frame);
+  if (running && !combined && (previous == null || previous !== tabIndex)) slideIn(bridge);
+  else if ((!running || combined) && wasRunning) slideIn(frame);
   hideRunOnly.forEach((selector) => { const node = $(selector); if (node && !running) node.hidden = true; });
   if (!running) $$('[data-classic-workspace]').forEach((panel) => { panel.hidden = true; });
-  $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running);
-  if (running) return;
-  const index = Math.max(0, PLAN_SLIDE_ORDER.indexOf(current));
+  $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running && !combined);
+  $('#launchWorkspaceViewport')?.classList.toggle('is-combined', combined);
+  if (running && !combined) return;
+  const slideId = combined ? 'price' : current;
+  track.dataset.active = slideId;
+  const index = Math.max(0, PLAN_SLIDE_ORDER.indexOf(slideId));
   track.style.transform = `translateX(-${index * 100}%)`;
   let active = null;
   $$('#planTrack > [data-plan-slide]').forEach((slide) => {
-    const on = slide.dataset.planSlide === current;
+    const on = slide.dataset.planSlide === slideId;
     slide.toggleAttribute('inert', !on);
     if (on) active = slide;
   });
@@ -6426,7 +6456,7 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     if (!frame.dataset.watching && window.ResizeObserver) {
       frame.dataset.watching = '1';
       const observer = new ResizeObserver(() => {
-        const live = $(`#planTrack > [data-plan-slide="${(state.phaseSlide || {})[state.launchWorkspace]}"]`);
+        const live = $(`#planTrack > [data-plan-slide="${track.dataset.active || ''}"]`);
         if (live) frame.style.height = `${live.offsetHeight}px`;
       });
       // Each slide is watched itself: a page that grows after it is shown (the Add pair list loads
