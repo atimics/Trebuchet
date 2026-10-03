@@ -183,9 +183,12 @@ function coinFacts() {
     || (mint && proofToken.mintAuthorityRenounced === true && proofToken.freezeAuthorityDisabled === true)
   );
   const recordedPools = launchProofPoolIds(proof).length;
+  // Recorded pools are not finished liquidity: when the server says the next step is to create or
+  // resume liquidity (positions or locks still missing), that wins, or only a sweep would be offered.
+  const liquidityPending = ['/api/create-lp', '/api/resume-launch'].includes(readiness?.nextEndpoint || '');
   const liquidityComplete = Boolean(
     isReadinessPhaseComplete('liquidity')
-    || (poolCount > 0 && recordedPools >= poolCount)
+    || (poolCount > 0 && recordedPools >= poolCount && !liquidityPending)
   );
   const revealPending = readiness?.nextEndpoint === '/api/reveal-sealed-metadata'
     || (liquidityComplete && (readiness?.completion?.metadataRevealPending === true || proofToken.sealedMetadataPending === true));
@@ -278,7 +281,9 @@ function coinFacts() {
           ? { state: 'running', value: 'Being opened' }
           : !mint && !tokenComplete
             ? { state: 'todo', value: 'No pools yet', action: 'Open the pools' }
-            : { state: 'todo', value: `${Math.min(recordedPools, poolCount)} of ${pools} open`, action: 'Open the pools' },
+            : recordedPools >= poolCount && poolCount > 0
+              ? { state: 'todo', value: `${pools} open · positions or locks unfinished`, action: 'Finish liquidity' }
+              : { state: 'todo', value: `${Math.min(recordedPools, poolCount)} of ${pools} open`, action: 'Open the pools' },
     'pools', 'locks', 'reveal',
   );
 
