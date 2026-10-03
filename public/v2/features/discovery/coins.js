@@ -616,7 +616,12 @@ function coinCreationHtml(creation, coin) {
       const airdropNote = plan ? `<p class="coin-airdrop-note" role="note"><i class="fa-solid fa-parachute-box" aria-hidden="true"></i> Airdrop: ${pending.length
         ? `${tokens(pending)} tokens to ${pending.length} wallet${pending.length === 1 ? '' : 's'} are sent first${delivered.size ? ` (${delivered.size} already delivered)` : ''}`
         : `all ${plan.recipients.length} wallets delivered`}. Then every token and SOL left in the launch wallet goes to the return wallet.</p>` : '';
-      action = `${airdropNote}<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}"><span>${pending.length ? 'Airdrop, then sweep' : 'Sweep the launch wallet'}</span><i class="fa-solid ${pending.length ? 'fa-parachute-box' : 'fa-broom'}"></i></button>`;
+      const sweeping = state.sweepingWalletPublicKey === creation.walletPublicKey;
+      const last = !sweeping && state.lastRecoverySweep?.publicKey === creation.walletPublicKey ? state.lastRecoverySweep : null;
+      const progress = sweeping
+        ? `<p class="coin-airdrop-note" role="status"><span class="rail-spin" aria-hidden="true"></span> ${pending.length ? 'Airdropping, then sweeping' : 'Sweeping'}: each transfer waits for full confirmation, so this takes a few minutes. Keep the app open.</p>`
+        : last ? `<p class="coin-airdrop-note${last.error ? ' is-error' : ''}" role="status">${escapeHtml(last.message)}</p>` : '';
+      action = `${sweeping ? '' : airdropNote}${progress}<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}" ${sweeping ? 'disabled' : ''}><span>${sweeping ? (pending.length ? 'Airdropping and sweeping…' : 'Sweeping…') : pending.length ? 'Airdrop, then sweep' : 'Sweep the launch wallet'}</span><i class="fa-solid ${sweeping ? 'fa-spinner fa-spin' : pending.length ? 'fa-parachute-box' : 'fa-broom'}"></i></button>`;
     } else if (creation.hasPlan && creation.walletManaged) {
       action = `<button class="primary-button compact" type="button" data-action="continue-coin-step" data-mint="${escapeHtml(coin?.mint || '')}"><span>${escapeHtml(CREATION_STEP_ACTIONS[next.id] || 'Open the coin')}</span><i class="fa-solid fa-arrow-right"></i></button>`;
     } else if (!creation.walletManaged) {

@@ -18118,3 +18118,7 @@ body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }
 /* Coin page: what the sweep does first, said before the button. */
 .coin-actions .coin-airdrop-note { flex-basis: 100%; margin: 0 0 8px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .coin-actions .coin-airdrop-note i { color: var(--green); margin-right: 6px; }
+.coin-actions .coin-airdrop-note.is-error { color: var(--red, #ff5d5d); }
+.coin-actions .coin-airdrop-note .rail-spin { display: inline-block; vertical-align: -2px; margin-right: 6px; }
+.coin-actions .rail-spin { width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rail-spin 800ms linear infinite; }
+@media (prefers-reduced-motion: reduce) { .coin-actions .rail-spin { animation: none; } }

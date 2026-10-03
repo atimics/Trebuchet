@@ -1078,6 +1078,9 @@
       return request(TRANSFER_ASSETS_PATH, {
         method: 'POST',
         body: { walletPublicKey, destinationWallet },
+        // The sweep sends every NFT, the airdrop and each token one finalized transfer at a time:
+        // minutes, not seconds. A short timeout left it running with the page showing nothing.
+        timeoutMs: 30 * 60_000,
       });
     }
 
