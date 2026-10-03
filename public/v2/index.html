@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=125">
+  <link rel="stylesheet" href="./styles.css?v=129">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -555,6 +555,14 @@
                 <i class="fa-solid fa-wallet" aria-hidden="true"></i>
                 <span><strong>Wallets</strong></span>
               </button>
+              <button class="discovery-pane-tab" id="discoveryTabInspect" type="button" role="tab" aria-selected="false" aria-controls="discoveryPanelInspect" data-discovery-pane="inspect">
+                <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                <span><strong>Inspect</strong></span>
+              </button>
+              <button class="discovery-pane-tab" id="discoveryTabSaved" type="button" role="tab" aria-selected="false" aria-controls="discoveryPanelSaved" data-discovery-pane="saved">
+                <i class="fa-solid fa-box-archive" aria-hidden="true"></i>
+                <span><strong>Saved</strong><small class="badge" id="discoveryRegistryCount">0</small></span>
+              </button>
             </nav>
             <section class="discovery-pane is-active" id="discoveryPanelTokens" data-discovery-pane-panel="tokens" role="tabpanel" aria-labelledby="discoveryTabTokens">
             <section class="personal-discovery-panel token-discovery-panel" aria-labelledby="personalDiscoveryTitle">
@@ -577,9 +585,11 @@
               <div class="personal-discovery-status" id="personalDiscoveryStatus" aria-live="polite"></div>
               <div class="personal-token-network" id="personalTokenNetwork"></div>
             </section>
-            <details class="discovery-utility-panel discovery-manual-tools">
-              <summary><i class="fa-solid fa-magnifying-glass"></i><span>Inspect mint</span></summary>
-              <form class="discovery-inspect-bar" id="discoveryInspectForm">
+
+
+            </section>
+            <section class="discovery-pane" id="discoveryPanelInspect" data-discovery-pane-panel="inspect" role="tabpanel" aria-labelledby="discoveryTabInspect" hidden>
+            <form class="discovery-inspect-bar" id="discoveryInspectForm">
                 <label class="visually-hidden" for="discoveryMintInput">Token mint</label>
                 <input id="discoveryMintInput" name="mint" type="text" placeholder="Solana mint" autocomplete="off" spellcheck="false">
                 <button class="primary-button" id="discoveryInspectButton" type="submit">
@@ -587,11 +597,10 @@
                   <span>Inspect</span>
                 </button>
               </form>
-            </details>
             <div class="discovery-error" id="discoveryError" aria-live="polite"></div>
-            <details class="discovery-utility-panel discovery-saved-tools">
-              <summary><i class="fa-solid fa-box-archive"></i><span>Saved</span><span class="badge" id="discoveryRegistryCount">0</span></summary>
-              <div class="discovery-source-banner" id="discoverySourceBanner"></div>
+            </section>
+            <section class="discovery-pane" id="discoveryPanelSaved" data-discovery-pane-panel="saved" role="tabpanel" aria-labelledby="discoveryTabSaved" hidden>
+            <div class="discovery-source-banner" id="discoverySourceBanner"></div>
               <div class="discovery-toolbar">
                 <label>
                   <i class="fa-solid fa-magnifying-glass"></i>
@@ -605,7 +614,7 @@
                 </div>
               </div>
               <div class="discovery-table" id="discoveryTable"></div>
-            </details>
+            
             </section>
             <section class="discovery-pane" id="discoveryPanelWallets" data-discovery-pane-panel="wallets" role="tabpanel" aria-labelledby="discoveryTabWallets" hidden>
             <section class="personal-discovery-panel wallet-tracking-panel" aria-labelledby="walletTrackingTitle">
@@ -626,7 +635,7 @@
             </section>
             </section>
           </section>
-          <aside class="rail" data-discovery-pane-panel="tokens">
+          <aside class="rail" data-discovery-pane-panel="tokens inspect saved">
             <section class="surface">
               <div class="evidence-panel" id="evidencePanel"></div>
             </section>
@@ -746,7 +755,7 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=1"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=218"></script>
+  <script src="./app.js?v=221"></script>
   <script src="./nfts.js?v=2"></script>
   <script src="./lean.js?v=2"></script>
 </body>

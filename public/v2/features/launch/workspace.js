@@ -483,15 +483,24 @@ function fundTabs() {
   const config = currentLaunchConfig();
   const estimate = classicFundingEstimateStatus(config).matchesConfig ? state.classicFundingEstimate : null;
   const pairTokens = (estimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount();
-  if (!estimate || !pairTokens) return null;
+  if (!estimate) return null;
   return [
     { id: 'cost', label: 'Cost' },
-    { id: 'acquire', label: 'Pair tokens' },
+    { id: 'breakdown', label: 'Breakdown' },
+    ...(pairTokens ? [{ id: 'acquire', label: 'Pair tokens' }] : []),
     ...(quoteAcquireManualCount() ? [{ id: 'prefund', label: 'Send yourself' }] : []),
   ];
 }
+// Leftovers gains a Record page, and a Recover page when there is something to recover: each
+// exists only when the panel built it, so the strip never offers an empty page.
+function finishTabs() {
+  const has = (part) => Boolean($(`#classicBridge [data-finish-part="${part}"]`));
+  return [...PHASE_TABS.finish, ...(has('record') ? [{ id: 'record', label: 'Record' }] : []), ...(has('recover') ? [{ id: 'recover', label: 'Recover' }] : [])];
+}
 function phaseTabsFor(workspace) {
-  return workspace === 'fund' ? fundTabs() : PHASE_TABS[workspace] || null;
+  if (workspace === 'fund') return fundTabs();
+  if (workspace === 'finish') return finishTabs();
+  return PHASE_TABS[workspace] || null;
 }
 const PLAN_SLIDE_ORDER = ['details', 'address', 'price', 'pairs', 'return', 'airdrop'];
 
@@ -507,6 +516,9 @@ function phaseTabValue(id, runValue) {
     case 'pairs': return text('#classicSummary') || '—';
     case 'return': return [text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge'), text('#reportSummary')].filter(Boolean).join(' · ') || '—';
     case 'airdrop': return text('#airdropSummary') || 'Off';
+    case 'breakdown': return `${(state.classicFundingEstimate?.solBreakdown || []).length} lines`;
+    case 'record': return state.launchProof ? 'Saved' : 'Not ready';
+    case 'recover': return 'Resume or refund';
     case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
     case 'acquire': return `${state.classicFundingEstimate?.autoSwapPlan?.length || 0} to buy`;
     case 'prefund': return `${quoteAcquireManualCount()} to send`;
@@ -535,13 +547,16 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const dock = $('.setup-dock');
   if (dock) dock.hidden = !tabs;
   if (!tabs) {
-    if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; }
+    if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; bridge.dataset.finishTab = ''; }
     return;
   }
   const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
   // Funding shows its own panel always; its tabs only choose the part.
-  const running = current === 'run' || workspace === 'fund';
-  if (bridge) bridge.dataset.fundTab = workspace === 'fund' ? current : '';
+  const running = ['run', 'record', 'recover'].includes(current) || workspace === 'fund';
+  if (bridge) {
+    bridge.dataset.fundTab = workspace === 'fund' ? current : '';
+    bridge.dataset.finishTab = workspace === 'finish' ? current : '';
+  }
   strip.style.setProperty('--tabs', String(tabs.length));
   // Built once per phase and then updated in place, so the focused tab stays focused.
   const structure = `${workspace}|${tabs.map((tab) => tab.id).join(',')}`;

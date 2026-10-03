@@ -6077,15 +6077,24 @@ function fundTabs() {
   const config = currentLaunchConfig();
   const estimate = classicFundingEstimateStatus(config).matchesConfig ? state.classicFundingEstimate : null;
   const pairTokens = (estimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount();
-  if (!estimate || !pairTokens) return null;
+  if (!estimate) return null;
   return [
     { id: 'cost', label: 'Cost' },
-    { id: 'acquire', label: 'Pair tokens' },
+    { id: 'breakdown', label: 'Breakdown' },
+    ...(pairTokens ? [{ id: 'acquire', label: 'Pair tokens' }] : []),
     ...(quoteAcquireManualCount() ? [{ id: 'prefund', label: 'Send yourself' }] : []),
   ];
 }
+// Leftovers gains a Record page, and a Recover page when there is something to recover: each
+// exists only when the panel built it, so the strip never offers an empty page.
+function finishTabs() {
+  const has = (part) => Boolean($(`#classicBridge [data-finish-part="${part}"]`));
+  return [...PHASE_TABS.finish, ...(has('record') ? [{ id: 'record', label: 'Record' }] : []), ...(has('recover') ? [{ id: 'recover', label: 'Recover' }] : [])];
+}
 function phaseTabsFor(workspace) {
-  return workspace === 'fund' ? fundTabs() : PHASE_TABS[workspace] || null;
+  if (workspace === 'fund') return fundTabs();
+  if (workspace === 'finish') return finishTabs();
+  return PHASE_TABS[workspace] || null;
 }
 const PLAN_SLIDE_ORDER = ['details', 'address', 'price', 'pairs', 'return', 'airdrop'];
 
@@ -6101,6 +6110,9 @@ function phaseTabValue(id, runValue) {
     case 'pairs': return text('#classicSummary') || '—';
     case 'return': return [text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge'), text('#reportSummary')].filter(Boolean).join(' · ') || '—';
     case 'airdrop': return text('#airdropSummary') || 'Off';
+    case 'breakdown': return `${(state.classicFundingEstimate?.solBreakdown || []).length} lines`;
+    case 'record': return state.launchProof ? 'Saved' : 'Not ready';
+    case 'recover': return 'Resume or refund';
     case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
     case 'acquire': return `${state.classicFundingEstimate?.autoSwapPlan?.length || 0} to buy`;
     case 'prefund': return `${quoteAcquireManualCount()} to send`;
@@ -6129,13 +6141,16 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const dock = $('.setup-dock');
   if (dock) dock.hidden = !tabs;
   if (!tabs) {
-    if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; }
+    if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; bridge.dataset.finishTab = ''; }
     return;
   }
   const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
   // Funding shows its own panel always; its tabs only choose the part.
-  const running = current === 'run' || workspace === 'fund';
-  if (bridge) bridge.dataset.fundTab = workspace === 'fund' ? current : '';
+  const running = ['run', 'record', 'recover'].includes(current) || workspace === 'fund';
+  if (bridge) {
+    bridge.dataset.fundTab = workspace === 'fund' ? current : '';
+    bridge.dataset.finishTab = workspace === 'finish' ? current : '';
+  }
   strip.style.setProperty('--tabs', String(tabs.length));
   // Built once per phase and then updated in place, so the focused tab stays focused.
   const structure = `${workspace}|${tabs.map((tab) => tab.id).join(',')}`;
@@ -14357,14 +14372,14 @@ function renderClassicArtifactComparisonPanel() {
         : `${result.passCount}/${result.fieldCount} fields match`
     : 'Paste classic report JSON or HTML';
   return `
-    <details class="classic-compare-panel" ${result || visibleComparisonError ? 'open' : ''}>
-      <summary>
+    <section class="classic-compare-panel">
+      <header class="classic-compare-head">
         <span>
           <small>Classic artifact compare</small>
           <strong>${escapeHtml(resultSummary)}</strong>
         </span>
         <span class="risk-badge ${escapeHtml(badgeClass)}">${escapeHtml(badgeLabel)}</span>
-      </summary>
+      </header>
       <textarea class="classic-artifact-text" rows="4" spellcheck="false" placeholder="Paste a completed classic report JSON export or HTML dossier">${escapeHtml(comparison.input || '')}</textarea>
       <div class="operator-toolbar compact">
         <button class="pill-button" type="button" data-action="load-classic-artifact">Load artifact</button>
@@ -14384,7 +14399,7 @@ function renderClassicArtifactComparisonPanel() {
           </article>
         `).join('')}
       </div>` : ''}
-    </details>
+    </section>
   `;
 }
 
@@ -14682,10 +14697,7 @@ function renderFinalizationPanel() {
       <div class="operator-toolbar compact finalize-primary-actions">
         ${primaryProofActions}
       </div>
-      ${supplementalProofActions ? `<details class="drawer finalize-advanced-tools">
-        <summary><span>More proof tools</span><strong>Load${canPublish ? ' · publish' : ''}${plannedAirdrop > 0 ? ' · airdrop' : ''}</strong></summary>
-        <div class="operator-toolbar compact">${supplementalProofActions}</div>
-      </details>` : ''}
+      ${supplementalProofActions ? `<div class="operator-toolbar compact">${supplementalProofActions}</div>` : ''}
       ${notices.length ? `<div class="finalize-notices">
         ${notices.map((notice) => `<p class="finalize-warning ${escapeHtml(notice.state)}">${escapeHtml(notice.text)}</p>`).join('')}
       </div>` : ''}
@@ -15073,22 +15085,20 @@ function renderClassicBridge() {
         </span>
         ${walletPublicKey || hasManagedWallets ? `<span class="risk-badge ${walletReady ? '' : 'warn'}">${walletReady ? 'Continue' : walletPublicKey ? 'Unlock' : 'Choose'}</span>` : ''}
       </button>
-      <details class="drawer phase-options">
-        <summary><span>Wallet options</span><strong>Copy · lock · manage</strong></summary>
-        <div class="launch-phase-actions">
+      <div class="launch-phase-actions phase-options-row">
           ${walletPublicKey
             ? `<button class="secondary-button" type="button" data-action="copy-wallet-address"><i class="fa-solid fa-copy"></i><span>Copy address</span></button>
                <button class="secondary-button" type="button" data-action="${walletReady ? 'toggle-wallet' : 'unlock-wallet-and-continue'}"><i class="fa-solid ${walletReady ? 'fa-lock' : 'fa-unlock'}"></i><span>${walletReady ? 'Lock wallet' : 'Unlock'}</span></button>`
             : ''}
           <button class="secondary-button" type="button" data-view="wallet"><i class="fa-solid fa-wallet"></i><span>Manage wallets</span></button>
         </div>
-      </details>
     </section>
     <section class="classic-workspace-section classic-workspace-fund" data-classic-workspace="fund">
       <h2 class="visually-hidden" id="fundStepTitle">Fund</h2>
       <div data-fund-part="cost">
         ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
       </div>
+      ${estimate ? `<div data-fund-part="breakdown">${renderFundingBreakdown(estimate)}</div>` : ''}
       ${estimate && (routeCount || manualQuoteCount) ? renderQuoteAcquirePanel() : ''}
       <div class="launch-phase-actions">
         <button class="primary-button" type="button" data-next-fact hidden></button>
@@ -15161,6 +15171,7 @@ function renderClassicBridge() {
       </details>
     </section>
     <section class="classic-workspace-section classic-workspace-verify" data-classic-workspace="finish">
+      <div data-finish-part="main">
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
           <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Leftovers'}</h2>
@@ -15181,15 +15192,10 @@ function renderClassicBridge() {
         primary: true,
         finalizationIssue: executeNextTransferFinalizationIssue(readiness, config),
       }) : ''}
-      ${(completedJournal && !finalSweepComplete) || practiceComplete ? '' : `<details class="drawer launch-proof-details" ${finalSweepComplete ? 'open' : ''}>
-        <summary><span>Launch record</span><strong>${finalSweepComplete ? 'Ready' : 'Not ready'}</strong></summary>
-        ${renderFinalizationPanel()}
-      </details>`}
-      ${!finalSweepComplete && !completedJournal ? `<details class="drawer launch-recovery-details">
-        <summary><span>Interrupted launch or refund</span><strong>Open recovery actions</strong></summary>
-        ${renderCancelRefundPanel(config)}
-      </details>
-      <div class="launch-phase-secondary"><button class="text-button" type="button" data-view="history"><i class="fa-solid fa-life-ring"></i> Open full recovery history</button></div>` : ''}
+      </div>
+      ${(completedJournal && !finalSweepComplete) || practiceComplete ? '' : `<div data-finish-part="record">${renderFinalizationPanel()}</div>`}
+      ${!finalSweepComplete && !completedJournal ? `<div data-finish-part="recover">${renderCancelRefundPanel(config)}
+      <div class="launch-phase-secondary"><button class="text-button" type="button" data-view="history"><i class="fa-solid fa-life-ring"></i> Open full recovery history</button></div></div>` : ''}
     </section>
   `;
   // The bridge was just rewritten: which Funding tab shows has to follow it.
@@ -17645,18 +17651,18 @@ function renderPersonalDiscovery() {
       ` : ''}
     </section>
     ${managedWallets.length ? `
-      <details class="managed-discovery-wallets">
-        <summary>
+      <section class="managed-discovery-wallets">
+        <header class="managed-head">
           <span><i class="fa-solid fa-key"></i> ${managedWallets.length} launch wallet${managedWallets.length === 1 ? '' : 's'}</span>
           <small>Automatic</small>
-        </summary>
+        </header>
         <div class="discovery-wallet-chip-list">${visibleManagedWallets.map(discoveryWalletChip).join('')}</div>
         ${managedWallets.length > visibleManagedWallets.length ? `
           <button class="pill-button discovery-wallet-show-more" type="button" data-action="show-more-discovery-wallets">
             Show ${Math.min(100, managedWallets.length - visibleManagedWallets.length)} more launch wallets
           </button>
         ` : ''}
-      </details>
+      </section>
     ` : ''}
     ${enabledWatchOnlyCount + enabledManagedCount ? `<p class="discovery-scan-budget">Refresh looks through ${enabledWatchOnlyCount + enabledManagedCount} wallet${enabledWatchOnlyCount + enabledManagedCount === 1 ? '' : 's'}, ${scanConcurrency} at a time.</p>` : ''}
   `;
@@ -17735,8 +17741,10 @@ function renderPersonalDiscovery() {
   `;
 }
 
+const DISCOVERY_PANES = ['tokens', 'wallets', 'inspect', 'saved'];
+
 function renderDiscoveryPanes() {
-  const pane = state.discovery.activePane === 'wallets' ? 'wallets' : 'tokens';
+  const pane = DISCOVERY_PANES.includes(state.discovery.activePane) ? state.discovery.activePane : 'tokens';
   state.discovery.activePane = pane;
   $$('.discovery-pane-tab').forEach((button) => {
     const selected = button.dataset.discoveryPane === pane;
@@ -17745,7 +17753,7 @@ function renderDiscoveryPanes() {
     button.tabIndex = selected ? 0 : -1;
   });
   $$('[data-discovery-pane-panel]').forEach((panel) => {
-    const selected = panel.dataset.discoveryPanePanel === pane;
+    const selected = String(panel.dataset.discoveryPanePanel).split(/\s+/).includes(pane);
     panel.hidden = !selected;
     panel.classList.toggle('is-active', selected);
   });
@@ -17976,8 +17984,8 @@ function renderDiscovery() {
         <i class="fa-solid fa-copy"></i><span>Copy</span>
       </button>
     </div>
-    <details class="discovery-more">
-      <summary><span>Details</span>${warningSummaries.length ? `<small>${warningSummaries.length} warning${warningSummaries.length === 1 ? '' : 's'}</small>` : ''}</summary>
+    <section class="discovery-more">
+      <header class="more-head"><span>Details</span>${warningSummaries.length ? `<small>${warningSummaries.length} warning${warningSummaries.length === 1 ? '' : 's'}</small>` : ''}</header>
       <div class="discovery-audit">
       <div class="audit-line">
         <span class="evidence-dot pass"></span>
@@ -17990,26 +17998,25 @@ function renderDiscovery() {
         </div>
       `}
       ${warningSummaries.map((warning) => `
-        <details class="discovery-warning-line">
-          <summary>
+        <div class="discovery-warning-line">
+          <div class="warning-head">
             <i class="fa-solid fa-triangle-exclamation"></i>
             <span><strong>${escapeHtml(warning.title)}</strong><small>${escapeHtml(warning.detail)}</small></span>
-            <i class="fa-solid fa-chevron-down"></i>
-          </summary>
-          <code>${escapeHtml(warning.raw)}</code>
-        </details>
+          </div>
+          <code title="${escapeHtml(warning.raw)}">${escapeHtml(warning.raw)}</code>
+        </div>
       `).join('')}
-      <details class="discovery-notes" ${selected.notes ? 'open' : ''}>
-        <summary><span>Notes</span><small>${selected.notes ? 'Saved' : 'Add'}</small></summary>
+      <div class="discovery-notes">
+        <div class="notes-head"><span>Notes</span><small>${selected.notes ? 'Saved' : 'Add'}</small></div>
         <label class="discovery-notes-editor">
           <textarea id="discoveryNotesInput" rows="2" maxlength="500" placeholder="Questions or verification context…">${escapeHtml(selected.notes || '')}</textarea>
         </label>
-      </details>
+      </div>
       <button class="secondary-button compact danger-button" type="button" data-action="remove-discovery" data-token="${escapeHtml(selected.mint)}">
         <i class="fa-solid fa-trash"></i><span>Remove saved analysis</span>
       </button>
       </div>
-    </details>
+    </section>
   `;
   hydrateDiscoveryTokenPalettes();
 }
@@ -18760,8 +18767,8 @@ function renderRecoveryWizard(model) {
           <p>${escapeHtml(active.detail)}</p>
         </div>
         ${actions ? `<div class="recovery-wizard-actions">${actions}</div>` : ''}
-        <details class="recovery-wizard-details">
-          <summary><span>Recovery details</span><strong>${openCount ? `${openCount} open` : 'All clear'}</strong></summary>
+        <section class="recovery-wizard-details">
+          <header class="recovery-wizard-head"><span>Recovery details</span><strong>${openCount ? `${openCount} open` : 'All clear'}</strong></header>
           <div class="recovery-wizard-stats">
             ${active.stats.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join('')}
           </div>
@@ -18771,7 +18778,7 @@ function renderRecoveryWizard(model) {
               <span role="listitem"><strong>${escapeHtml(screen.label)}</strong><em>${escapeHtml(screen.state === 'pass' ? 'Clear' : screen.state === 'danger' ? 'Manual' : 'Review')}</em></span>
             `).join('')}
           </div>
-        </details>
+        </section>
       </div>
     </section>
   `;
@@ -18998,18 +19005,18 @@ function renderHistory() {
           ${state.demoActive && !isTerminalJournal(item.journal) ? '<button class="pill-button" type="button" data-action="toggle-demo-mode">Switch to live</button>' : ''}
           ${canDismissJournal(item.journal) ? `<button class="pill-button" type="button" data-action="dismiss-journal" data-journal-id="${escapeHtml(item.id)}" ${state.recoveryActionId === item.id ? 'disabled' : ''}>Dismiss</button>` : ''}
         </span>
-        <details class="journal-resume-plan ${stateClass(item.resumePlan?.state)}">
-          <summary>
+        <section class="journal-resume-plan ${stateClass(item.resumePlan?.state)}">
+          <header class="journal-plan-head">
             <span class="risk-badge ${stateClass(item.resumePlan?.state)}">${escapeHtml(item.resumePlan?.badge || 'Plan')}</span>
             <strong>${escapeHtml(item.resumePlan?.title || 'Resume plan')}</strong>
-          </summary>
+          </header>
           <div>
             <p>${escapeHtml(item.resumePlan?.detail || '')}</p>
             <ul>
-              ${(item.resumePlan?.items || []).slice(0, 4).map((row) => `<li>${escapeHtml(row)}</li>`).join('')}
+              ${(item.resumePlan?.items || []).slice(0, 2).map((row) => `<li>${escapeHtml(row)}</li>`).join('')}
             </ul>
           </div>
-        </details>
+        </section>
       ` : ''}
     </article>
   `).join('');
@@ -19255,8 +19262,27 @@ function renderFundingReceipt(estimate) {
       ${split}
       <div class="funding-receipt-total"><span>Total</span><strong>${Number(estimate.totalSol || 0).toFixed(4)} SOL</strong></div>
       ${manualHtml}
-      <details class="funding-receipt-lines"><summary>Breakdown</summary><ul>${perPool.length ? lines.map((line) => row(line.label, line.sol)).join('') : rows}</ul></details>
     </div>`;
+}
+
+// The line-by-line cost: its own tab on the Funding row, not a fold under the total.
+function renderFundingBreakdown(estimate) {
+  const lines = Array.isArray(estimate?.solBreakdown) ? estimate.solBreakdown : [];
+  if (!lines.length) return '';
+  const row = (label, sol, note = '') => `
+    <li><span>${escapeHtml(label)}${note ? `<small>${escapeHtml(note)}</small>` : ''}</span><strong>${Number(sol).toFixed(4)}</strong></li>`;
+  const groups = FUNDING_RECEIPT_GROUPS.map((group) => ({ ...group, sol: 0, count: 0 }));
+  const other = [];
+  lines.forEach((line) => {
+    const group = groups.find((item) => item.test.test(String(line.label || '')));
+    if (group) { group.sol += Number(line.sol || 0); group.count += 1; } else other.push(line);
+  });
+  const perPool = lines.filter((line) => /^Pool \d+/.test(String(line.label || '')));
+  const rows = [
+    ...groups.filter((group) => group.sol > 0).map((group) => row(group.label, group.sol)),
+    ...other.map((line) => row(line.label, line.sol)),
+  ].join('');
+  return `<div class="funding-receipt-lines"><ul>${perPool.length ? lines.map((line) => row(line.label, line.sol)).join('') : rows}</ul></div>`;
 }
 
 function renderFundingWalletHint({ compact = false } = {}) {
@@ -25276,7 +25302,7 @@ function handleClick(event) {
 
   const discoveryPane = event.target.closest('[data-discovery-pane]');
   if (discoveryPane) {
-    state.discovery.activePane = discoveryPane.dataset.discoveryPane === 'wallets' ? 'wallets' : 'tokens';
+    state.discovery.activePane = ['wallets', 'inspect', 'saved'].includes(discoveryPane.dataset.discoveryPane) ? discoveryPane.dataset.discoveryPane : 'tokens';
     renderDiscoveryPanes();
     return;
   }

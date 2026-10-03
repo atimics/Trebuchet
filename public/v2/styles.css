@@ -2841,7 +2841,7 @@ textarea:focus {
   padding-top: 2px;
 }
 
-.classic-compare-panel summary {
+.classic-compare-panel .classic-compare-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -2851,11 +2851,11 @@ textarea:focus {
   list-style: none;
 }
 
-.classic-compare-panel summary::-webkit-details-marker {
+.classic-compare-panel .classic-compare-head::-webkit-details-marker {
   display: none;
 }
 
-.classic-compare-panel summary > span:first-child {
+.classic-compare-panel .classic-compare-head > span:first-child {
   display: grid;
   gap: 2px;
   min-width: 0;
@@ -3424,7 +3424,7 @@ textarea:focus {
   border-color: color-mix(in srgb, var(--red) 36%, var(--line));
 }
 
-.journal-resume-plan > summary {
+.journal-resume-plan > .journal-plan-head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3434,11 +3434,11 @@ textarea:focus {
   list-style: none;
 }
 
-.journal-resume-plan > summary::-webkit-details-marker {
+.journal-resume-plan > .journal-plan-head::-webkit-details-marker {
   display: none;
 }
 
-.journal-resume-plan > summary::after {
+.journal-resume-plan > .journal-plan-head::after {
   content: "+";
   margin-left: auto;
   color: var(--green);
@@ -4604,7 +4604,7 @@ textarea:focus {
   border-bottom: 1px solid var(--line);
 }
 
-.discovery-warning-line > summary {
+.discovery-warning-line > .warning-head {
   display: grid;
   grid-template-columns: 14px minmax(0, 1fr) 10px;
   gap: 7px;
@@ -4614,17 +4614,17 @@ textarea:focus {
   list-style: none;
 }
 
-.discovery-warning-line > summary::-webkit-details-marker {
+.discovery-warning-line > .warning-head::-webkit-details-marker {
   display: none;
 }
 
-.discovery-warning-line > summary > i:first-child {
+.discovery-warning-line > .warning-head > i:first-child {
   margin-top: 2px;
   color: var(--amber);
   font-size: 10px;
 }
 
-.discovery-warning-line > summary > i:last-child {
+.discovery-warning-line > .warning-head > i:last-child {
   margin-top: 3px;
   color: var(--subtle);
   font-size: 8px;
@@ -4635,7 +4635,7 @@ textarea:focus {
   transform: rotate(180deg);
 }
 
-.discovery-warning-line > summary span {
+.discovery-warning-line > .warning-head span {
   display: grid;
   gap: 1px;
 }
@@ -4668,7 +4668,7 @@ textarea:focus {
   border-bottom: 1px solid var(--line);
 }
 
-.discovery-notes > summary {
+.discovery-notes > .notes-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4678,17 +4678,17 @@ textarea:focus {
   list-style: none;
 }
 
-.discovery-notes > summary::-webkit-details-marker {
+.discovery-notes > .notes-head::-webkit-details-marker {
   display: none;
 }
 
-.discovery-notes > summary span {
+.discovery-notes > .notes-head span {
   color: var(--ink);
   font-size: 11px;
   font-weight: 780;
 }
 
-.discovery-notes > summary small {
+.discovery-notes > .notes-head small {
   font-size: 10px;
 }
 
@@ -10372,7 +10372,7 @@ select,
   border-top: 1px solid var(--line);
 }
 
-.recovery-wizard-details > summary {
+.recovery-wizard-details > .recovery-wizard-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -10386,11 +10386,11 @@ select,
   text-transform: uppercase;
 }
 
-.recovery-wizard-details > summary::-webkit-details-marker {
+.recovery-wizard-details > .recovery-wizard-head::-webkit-details-marker {
   display: none;
 }
 
-.recovery-wizard-details > summary::before {
+.recovery-wizard-details > .recovery-wizard-head::before {
   content: "+";
   color: var(--green);
 }
@@ -10399,7 +10399,7 @@ select,
   content: "−";
 }
 
-.recovery-wizard-details > summary strong {
+.recovery-wizard-details > .recovery-wizard-head strong {
   margin-left: auto;
   color: var(--subtle);
   font-size: 8px;
@@ -11317,7 +11317,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .discovery-wallet-group > header,
-.managed-discovery-wallets > summary {
+.managed-discovery-wallets > .managed-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -11328,7 +11328,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .discovery-wallet-group > header small,
-.managed-discovery-wallets > summary small {
+.managed-discovery-wallets > .managed-head small {
   color: var(--muted);
   font-size: 8px;
   font-weight: 700;
@@ -11341,16 +11341,16 @@ input[type="number"]::-webkit-outer-spin-button {
   background: color-mix(in srgb, var(--panel-strong) 94%, transparent);
 }
 
-.managed-discovery-wallets > summary {
+.managed-discovery-wallets > .managed-head {
   cursor: pointer;
   list-style: none;
 }
 
-.managed-discovery-wallets > summary::-webkit-details-marker {
+.managed-discovery-wallets > .managed-head::-webkit-details-marker {
   display: none;
 }
 
-.managed-discovery-wallets > summary::after {
+.managed-discovery-wallets > .managed-head::after {
   content: "+";
   color: var(--green);
 }
@@ -11621,7 +11621,7 @@ button.personal-token-card:hover {
   }
 
   .discovery-wallet-group > header,
-  .managed-discovery-wallets > summary {
+  .managed-discovery-wallets > .managed-head {
     align-items: start;
     flex-direction: column;
   }
@@ -13768,7 +13768,7 @@ body[data-active-view="launch"][data-launch-focus="active"] #view-launch #launch
 }
 
 #view-discovery .discovery-utility-panel > summary,
-#view-discovery .discovery-more > summary {
+#view-discovery .discovery-more > .more-head {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -13784,12 +13784,12 @@ body[data-active-view="launch"][data-launch-focus="active"] #view-launch #launch
 }
 
 #view-discovery .discovery-utility-panel > summary::-webkit-details-marker,
-#view-discovery .discovery-more > summary::-webkit-details-marker {
+#view-discovery .discovery-more > .more-head::-webkit-details-marker {
   display: none;
 }
 
 #view-discovery .discovery-utility-panel > summary::after,
-#view-discovery .discovery-more > summary::after {
+#view-discovery .discovery-more > .more-head::after {
   content: "+";
   margin-left: auto;
   color: var(--green);
@@ -13883,18 +13883,18 @@ body[data-active-view="launch"][data-launch-focus="active"] #view-launch #launch
   border-top: 1px solid var(--line-strong);
 }
 
-#view-discovery .discovery-more > summary {
+#view-discovery .discovery-more > .more-head {
   padding-inline: 0;
 }
 
-#view-discovery .discovery-more > summary small {
+#view-discovery .discovery-more > .more-head small {
   margin-left: auto;
   color: var(--muted);
   font-size: 8px;
   text-transform: none;
 }
 
-#view-discovery .discovery-more > summary::after {
+#view-discovery .discovery-more > .more-head::after {
   margin-left: 0;
 }
 
@@ -17607,6 +17607,7 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
   .coin-state-layout > .launch-next-rail { align-self: start; }
 }
 #classicBridge[data-fund-tab="cost"] [data-fund-part]:not([data-fund-part="cost"]),
+#classicBridge[data-fund-tab="breakdown"] [data-fund-part]:not([data-fund-part="breakdown"]),
 #classicBridge[data-fund-tab="acquire"] [data-fund-part]:not([data-fund-part="acquire"]),
 #classicBridge[data-fund-tab="prefund"] [data-fund-part]:not([data-fund-part="prefund"]) { display: none; }
 
@@ -17676,3 +17677,20 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 
 /* The Charts bar was the last drawer on a new coin; what it showed lives in the rail and the previews. */
 .launch-toolbar .launch-summary-drawer { display: none !important; }
+
+/* Leftovers: the action tab shows the panel; Record and Recover are their own pages. */
+#classicBridge[data-finish-tab="run"] [data-finish-part="record"],
+#classicBridge[data-finish-tab="run"] [data-finish-part="recover"],
+#classicBridge[data-finish-tab="record"] [data-finish-part]:not([data-finish-part="record"]),
+#classicBridge[data-finish-tab="recover"] [data-finish-part]:not([data-finish-part="recover"]) { display: none; }
+.phase-options-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.funding-receipt-lines ul { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+
+/* Evidence and wallet lists are flat: no marker, no fold, no chevron. */
+.discovery-warning-line > .warning-head::after, .discovery-notes > .notes-head::after,
+.managed-discovery-wallets > .managed-head::after, #view-discovery .discovery-more > .more-head::after { content: none !important; }
+.discovery-warning-line code { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.discovery-more, .managed-discovery-wallets { border-top: 1px solid var(--line); }
+.discovery-pane-tab .badge { margin-left: 6px; }
+
+.recovery-wizard-details > .recovery-wizard-head::after, .journal-resume-plan > .journal-plan-head::after { content: none !important; }

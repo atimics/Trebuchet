@@ -2033,8 +2033,10 @@ test('v2 Discovery combines a personal wallet graph with live evidence and no so
   assert.match(combined, /data-action="inspect-personal-token"/);
   assert.match(combined, /data-action="toggle-discovery-wallet"/);
   assert.match(combined, /inspectDiscoveryToken/);
-  assert.match(html, /discovery-utility-panel discovery-manual-tools/);
-  assert.match(html, /discovery-utility-panel discovery-saved-tools/);
+  // Inspect and Saved are tabs of Discovery, not folds under the token list.
+  assert.match(html, /data-discovery-pane="inspect"/);
+  assert.match(html, /data-discovery-pane="saved"/);
+  assert.doesNotMatch(html, /discovery-utility-panel discovery-(manual|saved)-tools/);
   assert.match(combined, /GeckoTerminal/);
   assert.match(combined, /7 days/);
   assert.match(combined, /<small>Volume<\/small>/);
@@ -2230,7 +2232,9 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.doesNotMatch(combined, /Estimate, send, then verify/);
   assert.match(combined, /I funded it · check balance/);
   assert.match(combined, /finishReturn\.kind === 'unverified' \? renderFundingWalletHint\(\{ compact: true \}\) : fundingPanel/);
-  assert.match(combined, /class="drawer phase-options"/);
+  // Wallet options are a plain row of buttons, not a drawer.
+  assert.match(combined, /class="launch-phase-actions phase-options-row"/);
+  assert.doesNotMatch(combined, /class="drawer phase-options"/);
   assert.doesNotMatch(js, /class="launch-guidance-list"/);
   assert.doesNotMatch(js, /Verify funding to continue/);
   assert.match(css, /\.funding-task\s*\{/);
@@ -6752,7 +6756,8 @@ test('v2 terminal recovery collapses into the completed proof panel', () => {
   assert.match(bridgeSource, /state\.restoredLaunchJournalId && !finalSweepComplete/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('has-recovery-notice'/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('is-terminal-launch', finalSweepComplete\)/);
-  assert.match(bridgeSource, /!finalSweepComplete && !completedJournal \? `<details class="drawer launch-recovery-details"/);
+  // Recovery is its own page of Leftovers, not a fold.
+  assert.match(bridgeSource, /!finalSweepComplete && !completedJournal \? `<div data-finish-part="recover">/);
   assert.match(css, /#classicBridge\.is-terminal-launch \.classic-workspace-verify\s*\{[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\)/);
   assert.match(css, /\.recovered-plan-notice\s*\{[\s\S]*?max-height: 44px/);
   assert.doesNotMatch(css, /body\[data-experience-mode="advanced"\]\[data-active-view="launch"\][\s\S]{0,180}?height: auto/);
@@ -6875,12 +6880,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=125/);
+  assert.match(html, /styles\.css\?v=129/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=218/);
-  assert.doesNotMatch(html, /app\.js\?v=218" type="module"/);
+  assert.match(html, /app\.js\?v=221/);
+  assert.doesNotMatch(html, /app\.js\?v=221" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');

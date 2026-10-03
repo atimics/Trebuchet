@@ -486,8 +486,8 @@ function renderRecoveryWizard(model) {
           <p>${escapeHtml(active.detail)}</p>
         </div>
         ${actions ? `<div class="recovery-wizard-actions">${actions}</div>` : ''}
-        <details class="recovery-wizard-details">
-          <summary><span>Recovery details</span><strong>${openCount ? `${openCount} open` : 'All clear'}</strong></summary>
+        <section class="recovery-wizard-details">
+          <header class="recovery-wizard-head"><span>Recovery details</span><strong>${openCount ? `${openCount} open` : 'All clear'}</strong></header>
           <div class="recovery-wizard-stats">
             ${active.stats.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join('')}
           </div>
@@ -497,7 +497,7 @@ function renderRecoveryWizard(model) {
               <span role="listitem"><strong>${escapeHtml(screen.label)}</strong><em>${escapeHtml(screen.state === 'pass' ? 'Clear' : screen.state === 'danger' ? 'Manual' : 'Review')}</em></span>
             `).join('')}
           </div>
-        </details>
+        </section>
       </div>
     </section>
   `;
@@ -724,18 +724,18 @@ function renderHistory() {
           ${state.demoActive && !isTerminalJournal(item.journal) ? '<button class="pill-button" type="button" data-action="toggle-demo-mode">Switch to live</button>' : ''}
           ${canDismissJournal(item.journal) ? `<button class="pill-button" type="button" data-action="dismiss-journal" data-journal-id="${escapeHtml(item.id)}" ${state.recoveryActionId === item.id ? 'disabled' : ''}>Dismiss</button>` : ''}
         </span>
-        <details class="journal-resume-plan ${stateClass(item.resumePlan?.state)}">
-          <summary>
+        <section class="journal-resume-plan ${stateClass(item.resumePlan?.state)}">
+          <header class="journal-plan-head">
             <span class="risk-badge ${stateClass(item.resumePlan?.state)}">${escapeHtml(item.resumePlan?.badge || 'Plan')}</span>
             <strong>${escapeHtml(item.resumePlan?.title || 'Resume plan')}</strong>
-          </summary>
+          </header>
           <div>
             <p>${escapeHtml(item.resumePlan?.detail || '')}</p>
             <ul>
-              ${(item.resumePlan?.items || []).slice(0, 4).map((row) => `<li>${escapeHtml(row)}</li>`).join('')}
+              ${(item.resumePlan?.items || []).slice(0, 2).map((row) => `<li>${escapeHtml(row)}</li>`).join('')}
             </ul>
           </div>
-        </details>
+        </section>
       ` : ''}
     </article>
   `).join('');

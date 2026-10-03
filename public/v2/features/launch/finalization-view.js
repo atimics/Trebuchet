@@ -163,14 +163,14 @@ function renderClassicArtifactComparisonPanel() {
         : `${result.passCount}/${result.fieldCount} fields match`
     : 'Paste classic report JSON or HTML';
   return `
-    <details class="classic-compare-panel" ${result || visibleComparisonError ? 'open' : ''}>
-      <summary>
+    <section class="classic-compare-panel">
+      <header class="classic-compare-head">
         <span>
           <small>Classic artifact compare</small>
           <strong>${escapeHtml(resultSummary)}</strong>
         </span>
         <span class="risk-badge ${escapeHtml(badgeClass)}">${escapeHtml(badgeLabel)}</span>
-      </summary>
+      </header>
       <textarea class="classic-artifact-text" rows="4" spellcheck="false" placeholder="Paste a completed classic report JSON export or HTML dossier">${escapeHtml(comparison.input || '')}</textarea>
       <div class="operator-toolbar compact">
         <button class="pill-button" type="button" data-action="load-classic-artifact">Load artifact</button>
@@ -190,7 +190,7 @@ function renderClassicArtifactComparisonPanel() {
           </article>
         `).join('')}
       </div>` : ''}
-    </details>
+    </section>
   `;
 }
 
@@ -488,10 +488,7 @@ function renderFinalizationPanel() {
       <div class="operator-toolbar compact finalize-primary-actions">
         ${primaryProofActions}
       </div>
-      ${supplementalProofActions ? `<details class="drawer finalize-advanced-tools">
-        <summary><span>More proof tools</span><strong>Load${canPublish ? ' · publish' : ''}${plannedAirdrop > 0 ? ' · airdrop' : ''}</strong></summary>
-        <div class="operator-toolbar compact">${supplementalProofActions}</div>
-      </details>` : ''}
+      ${supplementalProofActions ? `<div class="operator-toolbar compact">${supplementalProofActions}</div>` : ''}
       ${notices.length ? `<div class="finalize-notices">
         ${notices.map((notice) => `<p class="finalize-warning ${escapeHtml(notice.state)}">${escapeHtml(notice.text)}</p>`).join('')}
       </div>` : ''}
@@ -879,22 +876,20 @@ function renderClassicBridge() {
         </span>
         ${walletPublicKey || hasManagedWallets ? `<span class="risk-badge ${walletReady ? '' : 'warn'}">${walletReady ? 'Continue' : walletPublicKey ? 'Unlock' : 'Choose'}</span>` : ''}
       </button>
-      <details class="drawer phase-options">
-        <summary><span>Wallet options</span><strong>Copy · lock · manage</strong></summary>
-        <div class="launch-phase-actions">
+      <div class="launch-phase-actions phase-options-row">
           ${walletPublicKey
             ? `<button class="secondary-button" type="button" data-action="copy-wallet-address"><i class="fa-solid fa-copy"></i><span>Copy address</span></button>
                <button class="secondary-button" type="button" data-action="${walletReady ? 'toggle-wallet' : 'unlock-wallet-and-continue'}"><i class="fa-solid ${walletReady ? 'fa-lock' : 'fa-unlock'}"></i><span>${walletReady ? 'Lock wallet' : 'Unlock'}</span></button>`
             : ''}
           <button class="secondary-button" type="button" data-view="wallet"><i class="fa-solid fa-wallet"></i><span>Manage wallets</span></button>
         </div>
-      </details>
     </section>
     <section class="classic-workspace-section classic-workspace-fund" data-classic-workspace="fund">
       <h2 class="visually-hidden" id="fundStepTitle">Fund</h2>
       <div data-fund-part="cost">
         ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
       </div>
+      ${estimate ? `<div data-fund-part="breakdown">${renderFundingBreakdown(estimate)}</div>` : ''}
       ${estimate && (routeCount || manualQuoteCount) ? renderQuoteAcquirePanel() : ''}
       <div class="launch-phase-actions">
         <button class="primary-button" type="button" data-next-fact hidden></button>
@@ -967,6 +962,7 @@ function renderClassicBridge() {
       </details>
     </section>
     <section class="classic-workspace-section classic-workspace-verify" data-classic-workspace="finish">
+      <div data-finish-part="main">
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
           <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Leftovers'}</h2>
@@ -987,15 +983,10 @@ function renderClassicBridge() {
         primary: true,
         finalizationIssue: executeNextTransferFinalizationIssue(readiness, config),
       }) : ''}
-      ${(completedJournal && !finalSweepComplete) || practiceComplete ? '' : `<details class="drawer launch-proof-details" ${finalSweepComplete ? 'open' : ''}>
-        <summary><span>Launch record</span><strong>${finalSweepComplete ? 'Ready' : 'Not ready'}</strong></summary>
-        ${renderFinalizationPanel()}
-      </details>`}
-      ${!finalSweepComplete && !completedJournal ? `<details class="drawer launch-recovery-details">
-        <summary><span>Interrupted launch or refund</span><strong>Open recovery actions</strong></summary>
-        ${renderCancelRefundPanel(config)}
-      </details>
-      <div class="launch-phase-secondary"><button class="text-button" type="button" data-view="history"><i class="fa-solid fa-life-ring"></i> Open full recovery history</button></div>` : ''}
+      </div>
+      ${(completedJournal && !finalSweepComplete) || practiceComplete ? '' : `<div data-finish-part="record">${renderFinalizationPanel()}</div>`}
+      ${!finalSweepComplete && !completedJournal ? `<div data-finish-part="recover">${renderCancelRefundPanel(config)}
+      <div class="launch-phase-secondary"><button class="text-button" type="button" data-view="history"><i class="fa-solid fa-life-ring"></i> Open full recovery history</button></div></div>` : ''}
     </section>
   `;
   // The bridge was just rewritten: which Funding tab shows has to follow it.

@@ -223,7 +223,7 @@ function handleClick(event) {
 
   const discoveryPane = event.target.closest('[data-discovery-pane]');
   if (discoveryPane) {
-    state.discovery.activePane = discoveryPane.dataset.discoveryPane === 'wallets' ? 'wallets' : 'tokens';
+    state.discovery.activePane = ['wallets', 'inspect', 'saved'].includes(discoveryPane.dataset.discoveryPane) ? discoveryPane.dataset.discoveryPane : 'tokens';
     renderDiscoveryPanes();
     return;
   }

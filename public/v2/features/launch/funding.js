@@ -129,8 +129,27 @@ function renderFundingReceipt(estimate) {
       ${split}
       <div class="funding-receipt-total"><span>Total</span><strong>${Number(estimate.totalSol || 0).toFixed(4)} SOL</strong></div>
       ${manualHtml}
-      <details class="funding-receipt-lines"><summary>Breakdown</summary><ul>${perPool.length ? lines.map((line) => row(line.label, line.sol)).join('') : rows}</ul></details>
     </div>`;
+}
+
+// The line-by-line cost: its own tab on the Funding row, not a fold under the total.
+function renderFundingBreakdown(estimate) {
+  const lines = Array.isArray(estimate?.solBreakdown) ? estimate.solBreakdown : [];
+  if (!lines.length) return '';
+  const row = (label, sol, note = '') => `
+    <li><span>${escapeHtml(label)}${note ? `<small>${escapeHtml(note)}</small>` : ''}</span><strong>${Number(sol).toFixed(4)}</strong></li>`;
+  const groups = FUNDING_RECEIPT_GROUPS.map((group) => ({ ...group, sol: 0, count: 0 }));
+  const other = [];
+  lines.forEach((line) => {
+    const group = groups.find((item) => item.test.test(String(line.label || '')));
+    if (group) { group.sol += Number(line.sol || 0); group.count += 1; } else other.push(line);
+  });
+  const perPool = lines.filter((line) => /^Pool \d+/.test(String(line.label || '')));
+  const rows = [
+    ...groups.filter((group) => group.sol > 0).map((group) => row(group.label, group.sol)),
+    ...other.map((line) => row(line.label, line.sol)),
+  ].join('');
+  return `<div class="funding-receipt-lines"><ul>${perPool.length ? lines.map((line) => row(line.label, line.sol)).join('') : rows}</ul></div>`;
 }
 
 function renderFundingWalletHint({ compact = false } = {}) {
