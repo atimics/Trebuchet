@@ -20603,8 +20603,29 @@ function hubPickerRows(catalog = {}, records = []) {
 
 // The picker is a page of the Pairs slide, not a list inside a scrolling box: the pair list steps
 // aside while it is open, the token CA is the first thing in it, and the tokens are a fixed grid
-// of nine with a pager when there are more.
+// that fit the frame, with a pager when there are more.
 const HUB_PICKER_PAGE_SIZE = 9;
+
+// As many tokens as fit the space left in the frame, in whole rows: a tall window shows them all,
+// a short one pages. Measured after each draw; a change redraws once.
+let hubPickerFitSize = HUB_PICKER_PAGE_SIZE;
+function measureHubPickerFit() {
+  const grid = $('#hubPicker .hub-picker-grid');
+  const frame = $('#launchWorkspaceViewport');
+  if (!grid?.getBoundingClientRect || !frame?.getBoundingClientRect || typeof getComputedStyle !== 'function') return hubPickerFitSize;
+  const tile = grid.firstElementChild;
+  const tileHeight = tile ? tile.getBoundingClientRect().height + 4 : 60;
+  const columns = Math.max(1, getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length);
+  const bottom = Math.min(frame.getBoundingClientRect().bottom, window.innerHeight);
+  const pagerRoom = 56;
+  const rows = Math.max(2, Math.floor((bottom - grid.getBoundingClientRect().top - pagerRoom) / tileHeight));
+  return rows * columns;
+}
+globalThis.window?.addEventListener?.('resize', () => {
+  if (!hubPicker?.open) return;
+  window.clearTimeout(measureHubPickerFit.timer);
+  measureHubPickerFit.timer = window.setTimeout(() => renderHubPicker(), 120);
+});
 
 function renderHubPicker() {
   const host = $('#hubPicker');
@@ -20614,9 +20635,10 @@ function renderHubPicker() {
   if (editor) editor.hidden = hubPicker.open;
   if (!hubPicker.open) return;
   const rows = hubPickerRows(hubPicker.catalog || {}, state.discovery.records);
-  const pages = Math.max(1, Math.ceil(rows.length / HUB_PICKER_PAGE_SIZE));
+  const pageSize = hubPickerFitSize;
+  const pages = Math.max(1, Math.ceil(rows.length / pageSize));
   hubPicker.page = Math.min(Math.max(0, Number(hubPicker.page) || 0), pages - 1);
-  const shown = rows.slice(hubPicker.page * HUB_PICKER_PAGE_SIZE, (hubPicker.page + 1) * HUB_PICKER_PAGE_SIZE);
+  const shown = rows.slice(hubPicker.page * pageSize, (hubPicker.page + 1) * pageSize);
   const result = hubPicker.result;
   const pool = result?.solPool;
   host.innerHTML = `
@@ -20634,6 +20656,11 @@ function renderHubPicker() {
     ${pages > 1 ? `<div class="hub-picker-pager"><button type="button" class="pill-button" data-action="hub-picker-page" data-dir="-1" aria-label="Previous tokens" ${hubPicker.page === 0 ? 'disabled' : ''}><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></button><span>${hubPicker.page + 1} / ${pages}</span><button type="button" class="pill-button" data-action="hub-picker-page" data-dir="1" aria-label="Next tokens" ${hubPicker.page >= pages - 1 ? 'disabled' : ''}><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button></div>` : ''}`;
   hydrateCoinCards();
   requestHubLogos(shown.map((hub) => hub.mint));
+  const fit = measureHubPickerFit();
+  if (fit !== hubPickerFitSize && rows.length > 0) {
+    hubPickerFitSize = fit;
+    renderHubPicker();
+  }
 }
 
 // The standard coin tile, as on Coins and Discovery. Logos are read once per token and kept.
