@@ -491,7 +491,6 @@ const state = {
   realExecutionRunning: false,
   fullRunRunning: false,
   fullRunStep: null,
-  launchDetailsExpanded: false,
   launchAfterArm: false,
   lastFullRun: null,
   lastRealExecution: null,
@@ -6813,7 +6812,6 @@ function renderLiveLaunchMonitor() {
     monitor.hidden = true;
     monitor.innerHTML = '';
     document.body.dataset.launchFocus = 'idle';
-    state.launchDetailsExpanded = false;
     return;
   }
 
@@ -6838,7 +6836,6 @@ function renderLiveLaunchMonitor() {
   // What exists so far, as facts: the same rows the coin shows, not a percentage.
   const chainFacts = coinFacts().filter((fact) => ['mint', 'liquidity', 'finish'].includes(fact.id));
   const factLabels = { mint: 'Token', liquidity: 'Liquidity', finish: 'Launch wallet' };
-  const expanded = state.launchDetailsExpanded === true;
   document.body.dataset.launchFocus = 'active';
   monitor.hidden = false;
   monitor.className = `live-launch-monitor ${blocked ? 'is-blocked' : 'is-running'}`;
@@ -6866,17 +6863,6 @@ function renderLiveLaunchMonitor() {
         <span><small>${escapeHtml(factLabels[fact.id])}</small><strong>${escapeHtml(fact.value || '')}</strong></span>
       </li>`).join('')}
     </ul>
-    <button class="live-launch-details-button" type="button" data-action="toggle-launch-details" aria-expanded="${expanded}">
-      <span>${expanded ? 'Hide launch steps' : 'Show launch steps'}</span>
-      <i class="fa-solid fa-chevron-${expanded ? 'up' : 'down'}" aria-hidden="true"></i>
-    </button>
-    ${expanded ? `<ol class="live-launch-steps" aria-label="Launch steps">
-      ${context.rows.map((row) => {
-        const rowState = row.state === 'signed' ? 'done' : row.state === 'blocked' ? 'blocked' : row.id === activeRow?.id ? 'now' : 'todo';
-        const icon = { done: 'fa-circle-check', blocked: 'fa-triangle-exclamation', now: 'fa-spinner fa-spin', todo: 'fa-circle' }[rowState];
-        return `<li class="is-${rowState}"><i class="fa-solid ${icon}" aria-hidden="true"></i><span>${escapeHtml(row.label || row.id)}</span>${row.effects?.[0] && rowState !== 'todo' ? `<small>${escapeHtml(row.effects[0])}</small>` : ''}</li>`;
-      }).join('')}
-    </ol>` : ''}
   `;
 }
 
@@ -26627,11 +26613,6 @@ function handleClick(event) {
   if (action === 'open-launch-identity') {
     setView('launch');
     renderLaunchIdentity();
-    return;
-  }
-  if (action === 'toggle-launch-details') {
-    state.launchDetailsExpanded = !state.launchDetailsExpanded;
-    renderLiveLaunchMonitor();
     return;
   }
   if (action === 'apply-launch-preset') {
