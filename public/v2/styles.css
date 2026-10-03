@@ -18122,3 +18122,14 @@ body #view-launch .classic-workspace-fund .pair-token-checks > small i { margin-
 body #view-launch .classic-workspace-fund .pair-token-checks.has-problems > small i { color: var(--red, #ff5d5d); }
 body #view-launch .classic-workspace-fund .funding-split-warning { order: 2; }
 body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }
+
+/* Live launch: the details button opens every step of the run, right under the monitor. */
+.live-launch-monitor .live-launch-steps { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 18px; margin: 4px 0 0; padding: 12px 0 0; border-top: 1px solid var(--line); list-style: none; }
+.live-launch-steps li { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 8px; align-items: baseline; font-size: 12px; color: var(--muted); }
+.live-launch-steps li small { grid-column: 2; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-launch-steps li.is-done i { color: var(--green); }
+.live-launch-steps li.is-now { color: var(--ink); font-weight: 700; }
+.live-launch-steps li.is-now i { color: var(--green); }
+.live-launch-steps li.is-blocked { color: var(--ink); }
+.live-launch-steps li.is-blocked i { color: var(--red, #ff5d5d); }
+.live-launch-steps li.is-todo i { font-size: 7px; opacity: .6; }

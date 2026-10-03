@@ -906,7 +906,7 @@ function renderLiveLaunchMonitor() {
   const chainFacts = coinFacts().filter((fact) => ['mint', 'liquidity', 'finish'].includes(fact.id));
   const factLabels = { mint: 'Token', liquidity: 'Liquidity', finish: 'Launch wallet' };
   const expanded = state.launchDetailsExpanded === true;
-  document.body.dataset.launchFocus = expanded ? 'details' : 'active';
+  document.body.dataset.launchFocus = 'active';
   monitor.hidden = false;
   monitor.className = `live-launch-monitor ${blocked ? 'is-blocked' : 'is-running'}`;
   monitor.innerHTML = `
@@ -934,9 +934,16 @@ function renderLiveLaunchMonitor() {
       </li>`).join('')}
     </ul>
     <button class="live-launch-details-button" type="button" data-action="toggle-launch-details" aria-expanded="${expanded}">
-      <span>${expanded ? 'Focus on current action' : 'Show launch details'}</span>
+      <span>${expanded ? 'Hide launch steps' : 'Show launch steps'}</span>
       <i class="fa-solid fa-chevron-${expanded ? 'up' : 'down'}" aria-hidden="true"></i>
     </button>
+    ${expanded ? `<ol class="live-launch-steps" aria-label="Launch steps">
+      ${context.rows.map((row) => {
+        const rowState = row.state === 'signed' ? 'done' : row.state === 'blocked' ? 'blocked' : row.id === activeRow?.id ? 'now' : 'todo';
+        const icon = { done: 'fa-circle-check', blocked: 'fa-triangle-exclamation', now: 'fa-spinner fa-spin', todo: 'fa-circle' }[rowState];
+        return `<li class="is-${rowState}"><i class="fa-solid ${icon}" aria-hidden="true"></i><span>${escapeHtml(row.label || row.id)}</span>${row.effects?.[0] && rowState !== 'todo' ? `<small>${escapeHtml(row.effects[0])}</small>` : ''}</li>`;
+      }).join('')}
+    </ol>` : ''}
   `;
 }
 
