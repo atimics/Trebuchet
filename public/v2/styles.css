@@ -18091,3 +18091,34 @@ body #view-launch .launch-budget-head { align-items: center; }
   body #view-launch .launch-budget-presets > button { padding: 8px 6px; }
   body #view-launch .launch-budget-presets > button strong { font-size: 11px; }
 }
+
+/* Fund, cost view: heading and its action on one line, the wallet on one quiet row, and the cost as a flat list rather than four boxes. */
+body #view-launch .classic-workspace-fund .funding-task { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 0; border: 0; background: transparent; }
+body #view-launch .classic-workspace-fund .funding-task-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px 20px; }
+body #view-launch .classic-workspace-fund .funding-task-main { display: grid; gap: 4px; min-width: 0; flex: 1 1 260px; }
+body #view-launch .classic-workspace-fund .funding-task-main p { margin: 0; color: var(--muted); }
+body #view-launch .classic-workspace-fund .funding-task-action { display: flex; flex: 0 0 auto; margin: 0; padding: 0; border: 0; }
+body #view-launch .classic-workspace-fund .funding-task-action .primary-button { width: auto; min-height: 40px; padding: 0 16px; border-left-width: 1px; box-shadow: none; }
+body #view-launch .classic-workspace-fund .funding-task-address { display: flex; align-items: center; gap: 10px; min-width: 0; margin: 0; padding: 8px 0; border: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+body #view-launch .classic-workspace-fund .funding-task-address small { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+body #view-launch .classic-workspace-fund .funding-task-address code { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+body #view-launch .classic-workspace-fund .funding-task-address .icon-button { flex: 0 0 auto; width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+body #view-launch .classic-workspace-fund .funding-task-address .icon-button:hover { color: var(--ink); border-color: var(--line-strong); }
+body #view-launch .classic-workspace-fund .funding-receipt { display: grid; gap: 0; padding: 0; border: 0; background: transparent; }
+body #view-launch .classic-workspace-fund .funding-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; margin: 0; }
+body #view-launch .classic-workspace-fund .funding-split > span { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label value" "note value"; align-items: center; column-gap: 16px; padding: 8px 0; border: 0; border-bottom: 1px dashed var(--line); background: transparent; }
+body #view-launch .classic-workspace-fund .funding-split small { grid-area: label; color: var(--ink); font-size: 13px; }
+body #view-launch .classic-workspace-fund .funding-split em { grid-area: note; color: var(--muted); font-size: 11px; font-style: normal; }
+body #view-launch .classic-workspace-fund .funding-split strong { grid-area: value; font-size: 14px; font-variant-numeric: tabular-nums; color: var(--ink); }
+body #view-launch .classic-workspace-fund .funding-split strong::after { content: " SOL"; color: var(--muted); font-size: 11px; font-weight: 500; }
+body #view-launch .classic-workspace-fund .funding-split .is-back strong { color: var(--muted); }
+body #view-launch .classic-workspace-fund .funding-split-warning { margin: 8px 0 0; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+body #view-launch .classic-workspace-fund .funding-split-warning i { color: var(--amber, #e6b450); }
+body #view-launch .classic-workspace-fund .funding-receipt-total { display: flex; justify-content: space-between; align-items: baseline; margin: 0; padding: 10px 0 0; border: 0; font-weight: 700; }
+body #view-launch .classic-workspace-fund .funding-receipt-total strong { font-size: 18px; color: var(--green); font-variant-numeric: tabular-nums; }
+body #view-launch .classic-workspace-fund .pair-token-checks { margin: 0; padding: 0; border: 0; background: transparent; color: var(--muted); }
+@media (max-width: 640px) { body #view-launch .classic-workspace-fund .funding-task-action, body #view-launch .classic-workspace-fund .funding-task-action .primary-button { width: 100%; } }
+body #view-launch .classic-workspace-fund .pair-token-checks > small i { margin-right: 6px; color: var(--green); }
+body #view-launch .classic-workspace-fund .pair-token-checks.has-problems > small i { color: var(--red, #ff5d5d); }
+body #view-launch .classic-workspace-fund .funding-split-warning { order: 2; }
+body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }

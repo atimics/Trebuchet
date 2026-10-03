@@ -344,10 +344,10 @@ function renderPairTokenChecks() {
     ? `${problems.length} pair token${problems.length === 1 ? '' : 's'} cannot be used`
     : checking
       ? 'Checking pair tokens…'
-      : `All ${rows.length} pair tokens verified${viaJupiter ? ` (${viaJupiter} will be bought via Jupiter)` : ''}`;
+      : `${rows.length === 1 ? 'The pair token is' : `All ${rows.length} pair tokens are`} real and tradeable${viaJupiter ? ` (${viaJupiter} bought via Jupiter)` : ''}`;
   return `
     <div class="pair-token-checks ${problems.length ? 'has-problems' : ''}">
-      <small>${escapeHtml(summary)}</small>
+      <small><i class="fa-solid ${problems.length ? 'fa-triangle-exclamation' : checking ? 'fa-spinner fa-spin' : 'fa-circle-check'}" aria-hidden="true"></i>${escapeHtml(summary)}</small>
       ${problems.length ? `<ul>${problems.map((row) => `<li><strong>${escapeHtml(row.symbol)}</strong> ${escapeHtml(row.badge.label)}: ${escapeHtml(row.badge.detail)}</li>`).join('')}</ul>` : ''}
     </div>`;
 }
