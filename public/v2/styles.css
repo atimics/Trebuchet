@@ -17699,3 +17699,34 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 .pool-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .pool-legend i { width: 9px; height: 9px; display: inline-block; }
 .pool-legend b { font-weight: 500; color: var(--ink); }
+
+/* Token details: fields on the left, the coin and logo controls on the right. */
+#launchConfig {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px 28px;
+  align-items: start;
+}
+#launchConfig .identity-fields,
+#launchConfig .logo-panel { display: grid; gap: 14px; min-width: 0; align-content: start; }
+#launchConfig .token-logo-preview {
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 12px;
+  align-items: center;
+}
+#launchConfig .token-logo-thumb {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: 2px solid var(--identity-primary, var(--accent, var(--line)));
+  box-shadow: 0 0 24px color-mix(in srgb, var(--identity-primary, var(--accent, #3ddc97)) 26%, transparent);
+}
+#launchConfig .token-logo-thumb img { width: 100%; height: 100%; object-fit: cover; }
+#launchConfig .token-logo-preview strong { white-space: normal; overflow-wrap: anywhere; }
+#launchConfig .token-logo-stamp-preview { grid-template-columns: 120px minmax(0, 1fr); align-items: center; gap: 12px; }
+#launchConfig .token-logo-stamp-preview img { width: 120px; }
+#launchConfig .token-logo-stamp-preview figcaption { grid-column: auto; overflow-wrap: anywhere; word-break: break-all; }
+@container phase (max-width: 640px) {
+  #launchConfig { grid-template-columns: minmax(0, 1fr); }
+}

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=130">
+  <link rel="stylesheet" href="./styles.css?v=131">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -283,7 +283,8 @@
                 <div class="plan-track" id="planTrack">
 <section class="plan-slide" data-plan-slide="details" data-phase="mint" role="tabpanel">
 <form class="config-grid" id="launchConfig" aria-label="Launch configuration">
-                  <label>
+                  <div class="identity-fields">
+<label>
                     <span>Token name</span>
                     <input id="tokenName" type="text" value="" placeholder="Your token name" autocomplete="off">
                   </label>
@@ -295,6 +296,8 @@
                     <span>Description</span>
                     <input id="tokenDescription" type="text" value="" placeholder="What is this token for?" autocomplete="off">
                   </label>
+                  </div>
+                  <div class="logo-panel">
                   <div class="logo-input-row">
                     <span class="logo-input-label">Logo</span>
                     <label class="logo-upload-control" for="tokenLogoFile">
@@ -304,6 +307,7 @@
                     </label>
                   </div>
                   <div class="token-logo-preview" id="tokenLogoPreview"></div>
+                  </div>
                 </form>
 <div class="config-grid launch-more-grid">
                     <label>
