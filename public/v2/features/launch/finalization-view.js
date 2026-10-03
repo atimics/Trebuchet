@@ -883,6 +883,7 @@ function renderClassicBridge() {
             : ''}
           <button class="secondary-button" type="button" data-view="wallet"><i class="fa-solid fa-wallet"></i><span>Manage wallets</span></button>
         </div>
+      ${fundLedgerHtml()}
     </section>
     <section class="classic-workspace-section classic-workspace-fund" data-classic-workspace="fund">
       <h2 class="visually-hidden" id="fundStepTitle">Fund</h2>

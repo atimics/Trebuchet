@@ -472,12 +472,12 @@ function renderLaunchNextRail(facts, next, workspace) {
     ${walletBlock}${fundingBlock}${positionsBlock}`;
 }
 
-// Each phase owns the settings that belong to it as tabs: Launch setup (Wallet, Return &
-// report, Airdrop), Token setup (Details, Address, Create), Liquidity (Price & pool, Pairs,
+// Each phase owns the settings that belong to it as tabs: Launch setup (Fund, Recover,
+// Airdrop), Token setup (Details, Address, Create), Liquidity (Price & pool, Pairs,
 // Create), Recovery (Finish, plus Record and Recover). The 'run' tab shows the phase's own panel.
 // The tab shown is a view: nothing is saved, and nothing counts toward progress.
 const PHASE_TABS = {
-  wallet: [{ id: 'run', label: 'Wallet' }, { id: 'return', label: 'Return & report' }, { id: 'airdrop', label: 'Airdrop' }],
+  wallet: [{ id: 'run', label: 'Fund' }, { id: 'return', label: 'Recover' }, { id: 'airdrop', label: 'Airdrop' }],
   mint: [{ id: 'details', label: 'Details' }, { id: 'address', label: 'Address' }, { id: 'run', label: 'Create' }],
   liquidity: [{ id: 'price', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }, { id: 'run', label: 'Create' }],
   finish: [{ id: 'run', label: 'Finish' }],
@@ -519,7 +519,7 @@ function phaseTabValue(id, runValue) {
     case 'address': return text('#vanitySummary').replace(' · recommended', '') || 'Random address';
     case 'price': return `$${String($('#targetMarketCapUsd')?.value || '').trim() || '—'} · ${Number($('#liquidityBudgetSol')?.value || 0)} SOL`;
     case 'pairs': return text('#classicSummary') || '—';
-    case 'return': return [text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge'), text('#reportSummary')].filter(Boolean).join(' · ') || '—';
+    case 'return': return launchWalletHoldingsSummary();
     case 'airdrop': return text('#airdropSummary') || 'Off';
     case 'breakdown': return `${(state.classicFundingEstimate?.solBreakdown || []).length} lines`;
     case 'record': return state.launchProof ? 'Saved' : 'Not ready';
@@ -563,6 +563,10 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     bridge.dataset.finishTab = workspace === 'finish' ? current : '';
   }
   strip.style.setProperty('--tabs', String(tabs.length));
+  if (workspace === 'wallet' && ['run', 'return'].includes(current)) {
+    ensureLaunchWalletBalance();
+    renderRecoverLedger();
+  }
   // One tab is just the panel itself; a strip with a single button says nothing.
   strip.hidden = tabs.length < 2;
   // Built once per phase and then updated in place, so the focused tab stays focused.

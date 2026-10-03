@@ -336,6 +336,7 @@ async function refreshManualPrefundBalance({ quiet = false } = {}) {
       error: null,
       lastUpdatedAt: new Date().toISOString(),
     };
+    renderRecoverLedger();
     if (!quiet) notify('Launch wallet balance refreshed');
     refreshDestinations({ force: true }).catch(() => null);
     return balance;

@@ -808,9 +808,10 @@ function renderAirdropPanel() {
       <strong>${compactAmount(row.tokens)} tokens</strong>
     </div>
   `).join('');
-  $('#airdropRecipientPreview').innerHTML = hasError
+  const valueRows = hasError ? '' : airdropValueHtml(airdrop);
+  $('#airdropRecipientPreview').innerHTML = valueRows || (hasError
     ? `<div class="mini-row danger"><span>${escapeHtml(state.airdropParseError || state.airdropBudgetError)}</span><strong>Fix</strong></div>`
-    : previewRows || `<div class="mini-row"><span>${airdrop.enabled ? 'Manual count only; attach CSV before real transfer.' : 'No recipients attached.'}</span><strong>${airdrop.source}</strong></div>`;
+    : previewRows || `<div class="mini-row"><span>${airdrop.enabled ? 'Manual count only; attach CSV before real transfer.' : 'No recipients attached.'}</span><strong>${airdrop.source}</strong></div>`);
 }
 
 
