@@ -18018,3 +18018,15 @@ body #toastStack { left: auto; right: 16px; bottom: 16px; transform: none; width
 .supply-name .supply-venue { margin-top: 2px; max-width: 100%; min-height: 24px; padding: 0 4px; border: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: 11px; }
 .supply-name .supply-venue:focus-visible { outline: none; border-color: var(--green); color: var(--ink); }
 .history-pane-tabs .history-lean-link { margin-left: auto; color: var(--muted); }
+
+/* Each pool line: name, then its venue and fee as small button groups. No fee column. */
+.supply-row { grid-template-columns: 10px minmax(0, 1fr) 72px 64px 96px 28px 28px; align-items: center; }
+.supply-name { display: grid; gap: 3px; min-width: 0; }
+.pool-switches { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 3px; }
+.pool-toggle { display: inline-flex; border: 1px solid var(--line); }
+.pool-toggle > button { min-height: 24px; padding: 0 8px; border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.pool-toggle > button:last-child { border-right: 0; }
+.pool-toggle > button:hover { color: var(--ink); }
+.pool-toggle > button.is-on { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); box-shadow: inset 0 -2px 0 var(--green); }
+.pool-toggle > button:focus-visible { outline: 1px solid var(--green); outline-offset: -1px; }
+@media (max-width: 760px) { .supply-row { grid-template-columns: 10px minmax(0, 1fr) 84px 28px 28px; } }

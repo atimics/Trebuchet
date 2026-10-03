@@ -6883,12 +6883,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=157/);
+  assert.match(html, /styles\.css\?v=158/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=243/);
-  assert.doesNotMatch(html, /app\.js\?v=243" type="module"/);
+  assert.match(html, /app\.js\?v=244/);
+  assert.doesNotMatch(html, /app\.js\?v=244" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11938,10 +11938,15 @@ test('the rail holds funding, then Launch (red when ready) and Sweep (amber when
   assert.match(css, /\.rail-sweep\.has-leftovers \{[^}]*var\(--amber/);
 });
 
-test('Meteora is a venue for the SOL pool inside the launch, not a separate Lean launch', () => {
+test('Meteora is a venue for any pool inside the launch, not a separate Lean launch', () => {
   assert.doesNotMatch(html, /<span>Lean launch<\/span>/);
-  assert.match(js, /data-sol-pool-field="venue"/);
-  assert.match(js, /<option value="meteora-damm-v2"/);
+  // Every pool line has the venue and the fee as button groups, not dropdowns.
+  assert.match(js, /function rowSwitchesHtml\(row\)/);
+  assert.match(js, /action: 'set-pool-venue'/);
+  assert.match(js, /action === 'set-pool-venue' \? \{ venue:/);
+  assert.match(js, /function applyPoolSwitch\(action, control\)/);
+  assert.match(js, /\['raydium', 'Raydium'/);
+  assert.match(js, /\['meteora-damm-v2', 'Meteora'/);
   assert.match(js, /venue: 'meteora-damm-v2',\n\s+damm: \{ feeBps:/);
   assert.match(js, /meteora,\$\{pool\.damm\?\.feeBps \|\| 25\}/);
 });

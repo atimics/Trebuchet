@@ -299,6 +299,14 @@ function handleClick(event) {
     customizeQuotePool();
     return;
   }
+  if (action === 'set-pool-venue' || action === 'set-pool-fee') {
+    applyPoolSwitch(action, actionTarget);
+    return;
+  }
+  if (action === 'set-pool-tier' || action === 'set-pool-range') {
+    applyPoolSwitch(action, actionTarget);
+    return;
+  }
   if (action === 'export-pool-config') {
     exportPoolConfig();
     return;

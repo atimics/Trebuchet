@@ -4309,41 +4309,47 @@ export function meteoraPositionSeed(ownerSecretKey, tokenMint) {
     .digest();
 }
 
-export function meteoraPoolParams({ tokenTotalSupply, tokenDecimals, supplyPercent, targetMarketCapUsd, solUsd }) {
+// The pool's tokens and its starting value in the quote's raw units. The service prices a pool as
+// that value over the tokens it holds, so the value is the pool's tokens at the pool's start price
+// (quote per launched token, the same price a Raydium pool on this quote opens at).
+export function meteoraPoolParams({ tokenTotalSupply, tokenDecimals, supplyPercent, startPrice, quoteDecimals }) {
   const totalRaw = BigInt(String(tokenTotalSupply).replace(/[^0-9]/g, '')) * 10n ** BigInt(tokenDecimals);
   const poolRaw = (totalRaw * BigInt(Math.round(Number(supplyPercent) * 100))) / 10000n;
   if (poolRaw <= 0n) throw new Error('The Meteora pool has no supply.');
-  const sol = Number(solUsd);
-  if (!(sol > 0)) throw new Error('A SOL price is needed to price the Meteora pool.');
-  const totalMcapLamports = BigInt(Math.round((Number(targetMarketCapUsd) / sol) * 1e9));
-  // The service prices the pool as its market cap over the tokens it holds. Giving it the pool's
-  // share of the launch market cap makes its price the launch price.
-  const poolMcapLamports = (totalMcapLamports * poolRaw) / totalRaw;
+  const price = new Decimal(String(startPrice));
+  if (!price.isFinite() || !price.gt(0)) throw new Error('The Meteora pool needs a start price.');
+  const value = new Decimal(poolRaw.toString())
+    .mul(price)
+    .mul(new Decimal(10).pow(Number(quoteDecimals)))
+    .div(new Decimal(10).pow(Number(tokenDecimals)))
+    .toFixed(0, Decimal.ROUND_FLOOR);
+  const poolMcapLamports = BigInt(value);
   if (poolMcapLamports <= 0n) throw new Error('The Meteora pool\'s starting value rounds to nothing.');
   return { totalRaw, poolRaw, poolMcapLamports };
 }
 
 async function createMeteoraPoolForAllocation({
-  connection, ownerKeypair, tokenMint, tokenTotalSupply, tokenDecimals, targetMarketCapUsd,
-  alloc, allocIdx, solUsd, progress,
+  connection, ownerKeypair, tokenMint, tokenTotalSupply, tokenDecimals,
+  alloc, allocIdx, quote, startPrice, progress,
 }) {
   const damm = __dammService;
-  const params = meteoraPoolParams({ tokenTotalSupply, tokenDecimals, supplyPercent: alloc.supplyPercent, targetMarketCapUsd, solUsd });
+  const params = meteoraPoolParams({ tokenTotalSupply, tokenDecimals, supplyPercent: alloc.supplyPercent, startPrice, quoteDecimals: quote.decimals });
+  const quoteMint = new PublicKey(quote.address);
   const feeBps = Number(alloc.damm?.feeBps) || DAMM_V2_DEFAULTS.feeBps;
   const rangeMultiple = Number(alloc.damm?.rangeMultiple) || DAMM_V2_DEFAULTS.rangeMultiple;
   const mint = new PublicKey(tokenMint);
   const positionNft = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint));
   progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple });
 
-  const existing = await damm.findExistingPool({ connection, mint, positionNft: positionNft.publicKey });
+  const existing = await damm.findExistingPool({ connection, mint, positionNft: positionNft.publicKey, quoteMint });
   let created;
   if (existing.poolExists && existing.positionExists) {
-    const verification = await damm.verifyLockedPool({ connection, pool: existing.pool, position: existing.position, mint, supplyRaw: params.poolRaw });
+    const verification = await damm.verifyLockedPool({ connection, pool: existing.pool, position: existing.position, mint, supplyRaw: params.poolRaw, quoteMint });
     if (!verification.passed) throw new Error('A Meteora pool for this token exists but is not the locked single-sided pool this launch makes.');
     created = { pool: existing.pool.toBase58(), position: existing.position.toBase58(), positionNft: positionNft.publicKey.toBase58(), signature: null, verification, adopted: true };
     progress({ stage: 'meteora_pool_adopted', allocationIndex: allocIdx, pool: created.pool });
   } else if (existing.poolExists) {
-    throw new Error('A Meteora SOL pool for this token already exists and is not this launch\'s. Nothing was created.');
+    throw new Error(`A Meteora ${quote.symbol || ''} pool for this token already exists and is not this launch's. Nothing was created.`);
   } else {
     created = await damm.createLockedPool({
       connection,
@@ -4354,6 +4360,7 @@ async function createMeteoraPoolForAllocation({
       startingMarketCapLamports: params.poolMcapLamports,
       rangeMultiple,
       feeBps,
+      quoteMint,
       onProgress: (event) => progress({ ...event, allocationIndex: allocIdx }),
     });
     created.adopted = false;
@@ -4362,8 +4369,8 @@ async function createMeteoraPoolForAllocation({
   return {
     allocationIndex: allocIdx,
     venue: DAMM_V2_VENUE,
-    quoteSymbol: 'SOL',
-    quoteAddress: WSOL_MINT,
+    quoteSymbol: quote.symbol || null,
+    quoteAddress: quote.address,
     supplyPercent: alloc.supplyPercent,
     poolId: created.pool,
     damm: { feeBps, rangeMultiple, position: created.position, verification: created.verification || null, adopted: created.adopted },
@@ -4942,9 +4949,24 @@ export async function createPoolsAndPositions({
         continue;
       }
       try {
+        const quoteToken = resolvedAllocs[allocIdx].quoteToken;
+        let quoteUsd;
+        if (quoteToken.address === WSOL_MINT) {
+          quoteUsd = new Decimal(solUsdForSupport.toString());
+        } else {
+          const cached = quoteUsdByMint.get(quoteToken.address);
+          if (cached) quoteUsd = cached.quoteUsd;
+          else {
+            const resolved = await resolveQuoteUsdForCreate({ quoteToken, alloc, solUsd: solUsdForSupport, raydium });
+            quoteUsd = resolved.quoteUsd;
+            quoteUsdByMint.set(quoteToken.address, { quoteUsd, source: resolved.source });
+          }
+        }
         results.push(await createMeteoraPoolForAllocation({
-          connection, ownerKeypair, tokenMint, tokenTotalSupply, tokenDecimals, targetMarketCapUsd,
-          alloc, allocIdx, solUsd: solUsdForSupport?.toString?.() ?? solUsdForSupport,
+          connection, ownerKeypair, tokenMint, tokenTotalSupply, tokenDecimals,
+          alloc, allocIdx,
+          quote: { address: quoteToken.address, decimals: quoteToken.decimals, symbol: quoteToken.symbol },
+          startPrice: allocationStartPrice(launchedTokenUsd, quoteUsd, alloc),
           progress: (event) => onProgress?.(event),
         }));
       } catch (error) {

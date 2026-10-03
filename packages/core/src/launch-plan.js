@@ -610,10 +610,10 @@ function normalizePoolTopology(input = {}) {
       ...(startPricePremiumPct !== undefined ? { startPricePremiumPct } : {}),
       supplyPercent: normalizePercent(pool.supplyPercent, index === 0 ? 70 : 0),
       ammConfigIndex: Math.floor(numeric(pool.ammConfigIndex, quoteSymbol === 'USDC' ? 5 : 8)),
-      // A Meteora DAMM v2 pool (SOL only) is one position, locked when the pool is made: it has no
+      // A Meteora DAMM v2 pool is one position, locked when the pool is made: it has no
       // slices, ladder, support or bootstrap of its own. Only carried when chosen, so Raydium plans
       // keep their fingerprints.
-      ...(pool.venue === METEORA_VENUE && quoteSymbol === 'SOL'
+      ...(pool.venue === METEORA_VENUE
         ? {
           venue: METEORA_VENUE,
           damm: {

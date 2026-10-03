@@ -534,6 +534,8 @@ const state = {
   // The SOL pool's venue: Raydium CLMM, or a Meteora DAMM v2 pool (one locked position).
   solPoolVenue: 'raydium',
   solPoolDamm: { feeBps: 25, rangeMultiple: 1000 },
+  quotePoolVenue: 'raydium',
+  quotePoolDamm: { feeBps: 25, rangeMultiple: 1000 },
   customPools: [],
   customPoolCounter: 0,
   airdropCsvText: '',
