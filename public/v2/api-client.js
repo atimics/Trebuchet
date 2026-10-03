@@ -1037,6 +1037,11 @@
       return data.state || null;
     }
 
+    async function getAirdropPlan(walletPublicKey) {
+      const data = await request(`/api/v2/airdrop-plan?wallet=${encodeURIComponent(walletPublicKey || '')}`, { timeoutMs: 15_000 });
+      return data?.plan || null;
+    }
+
     async function runAirdrop({ walletPublicKey, tokenMint, tokenDecimals, isToken2022 = false, recipients } = {}) {
       const data = await request(RUN_AIRDROP_PATH, {
         method: 'POST',
@@ -1257,6 +1262,7 @@
       getSecretPinInventory,
       retryAirdrop,
       runAirdrop,
+      getAirdropPlan,
       runDemoLaunch,
       addRpc,
       removeRpc,
