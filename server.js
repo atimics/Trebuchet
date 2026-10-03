@@ -7684,6 +7684,14 @@ async function runAirdropHandler(req, res) {
 // share this handler — both are "send to every recipient not yet marked
 // delivered in the journal". The two routes exist so the frontend code
 // reads honestly at each call site.
+// The airdrop plan this launch saved, so the screen confirms and sends exactly those amounts.
+app.get('/api/v2/airdrop-plan', (req, res) => {
+  const wallet = typeof req.query.wallet === 'string' ? req.query.wallet.trim() : '';
+  if (!wallet) return res.status(400).json({ success: false, error: 'wallet query param required' });
+  if (isDemoMode()) return res.json({ success: true, plan: null });
+  try { res.json({ success: true, plan: prepareAirdrop({ walletPublicKey: wallet }) || null }); }
+  catch (error) { sendErrorResponse(res, error); }
+});
 app.post('/api/run-airdrop', runAirdropHandler);
 app.post('/api/retry-airdrop', runAirdropHandler);
 
