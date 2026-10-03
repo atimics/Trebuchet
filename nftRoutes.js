@@ -326,7 +326,7 @@ export function registerNftRoutes(app, deps) {
     const walletPublicKey = String(req.body?.walletPublicKey || '').trim();
     const payerSecretKey = payerFor(walletPublicKey);
     const maxSpendSol = Number(req.body?.maxSpendSol);
-    if (!(maxSpendSol > 0)) throw httpError(400, 'Review the estimate and approve a spend cap first.');
+    if (!Number.isFinite(maxSpendSol) || !(maxSpendSol > 0)) throw httpError(400, 'Review the estimate and approve a valid spend cap first.');
     const job = nftService.startRun(record.id, { rpcUrl: getRpcUrl(), payerSecretKey, maxSpendSol });
     res.json({ success: true, job });
   }));

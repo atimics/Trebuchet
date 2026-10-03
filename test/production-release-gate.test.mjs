@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -8,6 +9,7 @@ import path from 'node:path';
 import {
   DEFAULT_V2_RELEASE_ATTESTATION,
   DEFAULT_V2_RELEASE_EVIDENCE,
+  gitRuntimeMatches,
   parseReleaseTag,
   runProductionReleaseGate,
   validateProductionTrust,
@@ -402,6 +404,7 @@ test('v2 release attestation binds hashes, ancestry, freshness, and two-person r
     exportedAt: evidence.exportedAt,
     now: NOW,
     isAncestor: ancestorCheck,
+    runtimeMatches: async () => true,
   };
   const result = await validateV2ReleaseAttestation(attestation, options);
   assert.equal(result.reviewedBy, 'release-reviewer');
@@ -415,6 +418,11 @@ test('v2 release attestation binds hashes, ancestry, freshness, and two-person r
   await assert.rejects(
     () => validateV2ReleaseAttestation(attestation, { ...options, isAncestor: async () => false }),
     /not an ancestor/,
+  );
+
+  await assert.rejects(
+    () => validateV2ReleaseAttestation(attestation, { ...options, runtimeMatches: async () => false }),
+    /Runtime changed after the field run/,
   );
 
   await assert.rejects(
@@ -474,6 +482,7 @@ test('v2 release gate validates evidence, attestation, ancestry, and trust toget
       releaseCommit: RELEASE_COMMIT,
       now: NOW,
       isAncestor: ancestorCheck,
+      runtimeMatches: async () => true,
     });
     assert.equal(result.skipped, false);
     assert.equal(result.evidencePath, DEFAULT_V2_RELEASE_EVIDENCE);
@@ -483,6 +492,53 @@ test('v2 release gate validates evidence, attestation, ancestry, and trust toget
     assert.equal(result.trust.macOS, 'signed and notarized');
     assert.equal(result.trust.windows, 'signed');
   } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('field evidence permits later documentation and tests, and requires the same runtime', async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), 'trebuchet-field-runtime-'));
+  // Git hooks export repository selectors. Use the fixture's own repository.
+  const selectors = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'];
+  const previous = Object.fromEntries(selectors.map((key) => [key, process.env[key]]));
+  for (const key of selectors) delete process.env[key];
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  const save = async (file, value) => {
+    await mkdir(path.dirname(path.join(cwd, file)), { recursive: true });
+    await writeFile(path.join(cwd, file), value);
+  };
+  const commit = () => { git('add', '.'); git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-m', 'fixture'); return git('rev-parse', 'HEAD'); };
+  try {
+    git('init', '-q');
+    await save('server.js', 'export const version = 1;');
+    const fieldCommit = commit();
+    await save('release-evidence/v2/field-verification.json', '{}');
+    await save('docs/releasing.md', 'Reviewed evidence');
+    await save('test/release.test.mjs', '// Added regression');
+    await save('packages/core/test/release.test.mjs', '// Added package regression');
+    const evidenceCommit = commit();
+    assert.equal(await gitRuntimeMatches(fieldCommit, evidenceCommit, cwd), true);
+    const evidence = completeV2Evidence();
+    const bytes = evidenceBytes(evidence);
+    const attestation = { ...completeAttestation(bytes, evidence), fieldRunCommit: fieldCommit };
+    const options = {
+      releaseTag: 'v2.0.0', releaseCommit: evidenceCommit, cwd, now: NOW,
+      evidenceSha256: digest(bytes),
+      classicArtifactSha256: digest(Buffer.from(evidence.classicReportComparison.input.trim(), 'utf8')),
+      exportedAt: evidence.exportedAt,
+    };
+    await validateV2ReleaseAttestation(attestation, options);
+    for (const file of ['server.js', 'package-lock.json', 'public/app.js', 'c/vanity_keygen/vanity_keygen.c', 'scripts/build-app-js.mjs', 'packages/runtime/src/index.js']) {
+      git('reset', '--hard', evidenceCommit);
+      await save(file, 'changed runtime');
+      const changedCommit = commit();
+      await assert.rejects(validateV2ReleaseAttestation(attestation, { ...options, releaseCommit: changedCommit }), /Runtime changed after the field run/);
+    }
+    await assert.rejects(gitRuntimeMatches('c'.repeat(40), git('rev-parse', 'HEAD'), cwd));
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value !== undefined) process.env[key] = value;
+    }
     await rm(cwd, { recursive: true, force: true });
   }
 });

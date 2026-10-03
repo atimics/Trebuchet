@@ -408,6 +408,26 @@ async function gitAncestor(ancestor, descendant, cwd) {
   }
 }
 
+export async function gitRuntimeMatches(fieldCommit, releaseCommit, cwd) {
+  // Evidence, documentation and tests may be committed after the field run.
+  // Every other tracked file must match the code that produced the proof.
+  const paths = [
+    '.',
+    ':(top,exclude,glob)release-evidence/**',
+    ':(top,exclude,glob)docs/**',
+    ':(top,exclude,glob)test/**',
+    ':(top,exclude,glob)packages/*/test/**',
+    ':(top,exclude,glob)**/*.md',
+  ];
+  try {
+    await execFileAsync('git', ['diff', '--quiet', fieldCommit, releaseCommit, '--', ...paths], { cwd });
+    return true;
+  } catch (error) {
+    if (error?.code === 1) return false;
+    throw error;
+  }
+}
+
 export async function validateV2ReleaseAttestation(attestation, {
   releaseTag,
   releaseCommit,
@@ -417,6 +437,7 @@ export async function validateV2ReleaseAttestation(attestation, {
   cwd = process.cwd(),
   now = Date.now(),
   isAncestor = gitAncestor,
+  runtimeMatches = gitRuntimeMatches,
 } = {}) {
   object(attestation, 'v2 release attestation');
   expect(attestation.schema === 'trebuchet-v2-production-attestation', 'release attestation has the wrong schema');
@@ -433,6 +454,10 @@ export async function validateV2ReleaseAttestation(attestation, {
   expect(
     await isAncestor(attestation.fieldRunCommit, releaseCommit, cwd),
     'field-run commit is not an ancestor of the release commit',
+  );
+  expect(
+    await runtimeMatches(attestation.fieldRunCommit, releaseCommit, cwd),
+    'Runtime changed after the field run. Run field verification again at the release candidate.',
   );
   expect(githubHandle(attestation.operatedBy), 'release attestation operator is invalid');
   expect(githubHandle(attestation.reviewedBy), 'release attestation reviewer is invalid');
@@ -468,6 +493,7 @@ export async function runProductionReleaseGate({
   releaseCommit = process.env.GITHUB_SHA,
   now = Date.now(),
   isAncestor = gitAncestor,
+  runtimeMatches = gitRuntimeMatches,
 } = {}) {
   const release = parseReleaseTag(tag);
   if (!release.requiresProductionGate) {
@@ -520,6 +546,7 @@ export async function runProductionReleaseGate({
     cwd,
     now,
     isAncestor,
+    runtimeMatches,
   });
   return {
     release,
