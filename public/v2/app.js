@@ -7424,11 +7424,22 @@ function renderVanityCandidates() {
         <strong>${escapeHtml(item.label)}</strong>
         <span>${escapeHtml(item.detail)}</span>
       </li>`;
+  // Only what needs saying: a problem, a running grind, or the cost of the pattern.
+  const statusItems = [
+    meta.label === 'Ready to grind' ? null : meta,
+    estimate.label === 'Nothing to grind' ? null : { ...estimate, icon: 'fa-gauge-high' },
+  ].filter(Boolean);
+  const statuses = $('#vanityStatuses');
+  if (statuses) {
+    statuses.innerHTML = statusItems.length
+      ? `<ul class="grinder-statuses" aria-label="Grinder status">${statusItems.map(statusLine).join('')}</ul>`
+      : '';
+  }
+  const preview = $('#vanityPreview');
+  if (preview) preview.innerHTML = vanityPreviewHtml(vanity, selected);
+  const savedCount = state.vanityCandidates.length;
   $('#vanityCandidates').innerHTML = `
-    <ul class="grinder-statuses" aria-label="Grinder status">
-      ${statusLine(meta)}
-      ${statusLine({ ...estimate, icon: 'fa-gauge-high' })}
-    </ul>
+    <div class="grinder-results-head"><span>Addresses</span><span class="grinder-count">${savedCount} saved${hiddenCount ? `, ${hiddenCount} not shown` : ''}</span></div>
     ${state.vanityInputError
       ? `<p class="grinder-note is-error" id="vanityFeedback" role="alert">${escapeHtml(state.vanityInputError)}</p>`
       : '<p class="grinder-note" id="vanityFeedback"></p>'}
@@ -7446,9 +7457,25 @@ function renderVanityCandidates() {
       </button>
       <button class="secondary-button compact" type="button" data-action="remove-selected-vanity" ${canRemoveSelected ? '' : 'disabled'}>Remove selected</button>
       ${hiddenCount ? `<button class="text-button" type="button" data-action="prune-hidden-vanity">Delete ${hiddenCount} older</button>` : ''}
-      <span class="grinder-count">${state.vanityCandidates.length} saved${hiddenCount ? `, ${hiddenCount} not shown` : ''}</span>
     </div>
   `;
+}
+
+// The address as it will read: the chosen start and end bright, the rest as dots.
+// With a ground address selected it shows the real address, matching part marked.
+function vanityPreviewHtml(vanity, selected) {
+  const prefix = String(vanity.prefix || '');
+  const suffix = String(vanity.suffix || '');
+  const length = Number(vanity.length) || 44;
+  if (selected?.publicKey) {
+    const address = selected.publicKey;
+    const head = Math.min(prefix.length, address.length);
+    const tail = Math.min(suffix.length, address.length - head);
+    const middle = address.slice(head, address.length - tail);
+    return `<small>Contract address</small><code class="grinder-mask is-real"><b>${escapeHtml(address.slice(0, head))}</b>${escapeHtml(middle)}<b>${escapeHtml(tail ? address.slice(-tail) : '')}</b></code>`;
+  }
+  const fill = Math.max(0, length - prefix.length - suffix.length);
+  return `<small>${prefix || suffix ? 'Pattern' : 'Random address'}</small><code class="grinder-mask"><b>${escapeHtml(prefix)}</b><span>${'·'.repeat(fill)}</span><b>${escapeHtml(suffix)}</b></code>`;
 }
 
 function poolLadderCount(pool) {
