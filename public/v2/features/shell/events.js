@@ -864,6 +864,7 @@ function handleClick(event) {
 
   if (action === 'close-approval') {
     state.approvalOpen = false;
+    state.launchAfterArm = false;
     renderExtension();
     return;
   }
