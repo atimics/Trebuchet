@@ -17758,3 +17758,30 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 #view-launch .grinder-results-head { display: flex; justify-content: space-between; align-items: baseline; color: var(--muted); font-size: 11px; font-weight: 820; text-transform: uppercase; letter-spacing: .08em; }
 #view-launch .grinder-results-head .grinder-count { margin: 0; font-weight: 500; text-transform: none; letter-spacing: 0; }
 @container phase (max-width: 640px) { #view-launch .grinder-two { grid-template-columns: minmax(0, 1fr); } }
+
+/* Wallet ledger (Fund, Recover) and airdrop worth. */
+.ledger { display: grid; margin-top: 14px; border: 1px solid var(--line); border-radius: var(--radius); background: color-mix(in srgb, var(--panel) 58%, transparent); }
+.ledger-head { padding: 8px 14px; color: var(--muted); font-size: 10px; font-weight: 820; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid var(--line); }
+.ledger-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto minmax(90px, auto); gap: 12px; align-items: baseline; padding: 9px 14px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+.ledger-row:last-child { border-bottom: 0; }
+.ledger-row > span { color: var(--ink); font-weight: 700; }
+.ledger-row b { font-variant-numeric: tabular-nums; }
+.ledger-row small { color: var(--muted); }
+.ledger-row em { font-style: normal; text-align: right; color: var(--muted); font-size: 12px; }
+.ledger-row em.is-ok { color: var(--green, #3ddc97); }
+.ledger-row em.is-short { color: var(--red, #ff6b6b); }
+.ledger-slot:empty { display: none; }
+.ledger-slot .ledger { margin: 0 0 14px; }
+.airdrop-value-head { display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between; padding: 8px 2px; color: var(--muted); font-size: 12px; }
+.airdrop-value-head b { color: var(--ink); }
+.airdrop-value-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 14px; align-items: baseline; padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); overflow: hidden; }
+.airdrop-value-row > * { position: relative; }
+.airdrop-value-bar { position: absolute !important; inset: 0 auto 0 0; background: color-mix(in srgb, var(--green, #3ddc97) 14%, transparent); }
+.airdrop-value-row small { color: var(--muted); min-width: 44px; text-align: right; }
+.airdrop-value-row b { min-width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
+.airdrop-value-row.is-funder code::after { content: ' · funder'; color: var(--muted); }
+.airdrop-value-more { padding: 6px 10px; color: var(--muted); font-size: 12px; }
+
+.ledger-row b { text-align: right; }
+#view-launch .airdrop-budget-controls .toggle-line { display: flex !important; align-items: center; gap: 8px; white-space: nowrap; }
+#view-launch .airdrop-budget-controls .toggle-line input[type="checkbox"] { width: 16px !important; height: 16px !important; margin: 0; }

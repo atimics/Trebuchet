@@ -28,6 +28,7 @@ export const v2FeatureNames = [
   "proof/report-data.js",
   "proof/report-html.js",
   "launch/funding-view.js",
+  "launch/ledger.js",
   "launch/finalization-view.js",
   "launch/activity.js",
   "launch/readiness.js",
