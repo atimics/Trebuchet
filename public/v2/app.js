@@ -16037,7 +16037,9 @@ function renderClassicBridge() {
           ? {
             eyebrow: 'Pair tokens missing',
             title: 'Get the pair tokens',
-            detail: 'Buy or send the pair tokens listed below.',
+            detail: routeCount
+              ? `${routeCount} pair token${routeCount === 1 ? '' : 's'} to buy with SOL from the launch wallet.`
+              : 'Send the pair tokens to the launch wallet, then check the balance.',
             action: routeCount ? 'start-quote-acquire' : 'refresh-manual-prefund',
             actionLabel: routeCount ? 'Acquire tokens' : 'Check token balance',
           }
@@ -16050,23 +16052,25 @@ function renderClassicBridge() {
           };
   const fundingPanel = `
     <section class="funding-task ${fundingReady ? 'is-ready' : ''}" aria-live="polite">
-      <div class="funding-task-main">
-        <span class="eyebrow">${escapeHtml(fundingNeed.eyebrow)}</span>
-        <strong>${escapeHtml(fundingNeed.title)}</strong>
-        <p>${escapeHtml(fundingNeed.detail)}</p>
+      <div class="funding-task-head">
+        <div class="funding-task-main">
+          <span class="eyebrow">${escapeHtml(fundingNeed.eyebrow)}</span>
+          <strong>${escapeHtml(fundingNeed.title)}</strong>
+          ${fundingNeed.detail ? `<p>${escapeHtml(fundingNeed.detail)}</p>` : ''}
+        </div>
+        <div class="funding-task-action">
+          ${fundingNeed.action ? `<button class="primary-button" type="button" data-action="${escapeHtml(fundingNeed.action)}" ${state.manualPrefund.polling || (fundingNeed.action === 'estimate-funding' && state.fundingEstimating) || (fundingNeed.action === 'start-quote-acquire' && state.quoteAcquire.running) ? 'disabled' : ''}><span>${escapeHtml(fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'Estimating…' : fundingNeed.action === 'start-quote-acquire' && state.quoteAcquire.running ? 'Getting quotes…' : fundingNeed.actionLabel)}</span><i class="fa-solid ${(fundingNeed.action === 'estimate-funding' && state.fundingEstimating) || (fundingNeed.action === 'start-quote-acquire' && state.quoteAcquire.running) ? 'fa-spinner fa-spin' : fundingNeed.action === 'start-quote-acquire' ? 'fa-right-left' : estimate ? 'fa-rotate' : 'fa-calculator'}"></i></button>` : '<span class="risk-badge">Ready</span>'}
+        </div>
       </div>
       ${estimate && fundingWallet && !state.demoActive ? `
         <div class="funding-task-address">
           <small>Launch wallet</small>
-          <code>${escapeHtml(fundingWallet)}</code>
-          <button class="secondary-button compact" type="button" data-action="copy-wallet-address"><i class="fa-solid fa-copy"></i><span>Copy address</span></button>
+          <code title="${escapeHtml(fundingWallet)}">${escapeHtml(fundingWallet)}</code>
+          <button class="icon-button" type="button" data-action="copy-wallet-address" title="Copy address" aria-label="Copy address"><i class="fa-solid fa-copy"></i></button>
         </div>
       ` : ''}
       ${estimate ? renderFundingReceipt(estimate) : ''}
       ${renderPairTokenChecks()}
-      <div class="funding-task-action">
-        ${fundingNeed.action ? `<button class="primary-button" type="button" data-action="${escapeHtml(fundingNeed.action)}" ${state.manualPrefund.polling || (fundingNeed.action === 'estimate-funding' && state.fundingEstimating) ? 'disabled' : ''}><span>${escapeHtml(fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'Estimating…' : fundingNeed.actionLabel)}</span><i class="fa-solid ${fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'fa-spinner fa-spin' : estimate ? 'fa-rotate' : 'fa-calculator'}"></i></button>` : '<span class="risk-badge">Ready</span>'}
-      </div>
     </section>
   `;
   const readinessPanel = ({
@@ -23489,10 +23493,10 @@ function renderPairTokenChecks() {
     ? `${problems.length} pair token${problems.length === 1 ? '' : 's'} cannot be used`
     : checking
       ? 'Checking pair tokens…'
-      : `All ${rows.length} pair tokens verified${viaJupiter ? ` (${viaJupiter} will be bought via Jupiter)` : ''}`;
+      : `${rows.length === 1 ? 'The pair token is' : `All ${rows.length} pair tokens are`} real and tradeable${viaJupiter ? ` (${viaJupiter} bought via Jupiter)` : ''}`;
   return `
     <div class="pair-token-checks ${problems.length ? 'has-problems' : ''}">
-      <small>${escapeHtml(summary)}</small>
+      <small><i class="fa-solid ${problems.length ? 'fa-triangle-exclamation' : checking ? 'fa-spinner fa-spin' : 'fa-circle-check'}" aria-hidden="true"></i>${escapeHtml(summary)}</small>
       ${problems.length ? `<ul>${problems.map((row) => `<li><strong>${escapeHtml(row.symbol)}</strong> ${escapeHtml(row.badge.label)}: ${escapeHtml(row.badge.detail)}</li>`).join('')}</ul>` : ''}
     </div>`;
 }

@@ -375,8 +375,8 @@ try {
 
   await page.click('.coin-fact[data-coin-fact="mint"]');
   await page.click('[data-plan-tab="run"]');
-  // The rail's one button runs the whole test launch.
-  assert.match(await page.locator('#launchNextRail .rail-act').innerText(), /test launch/i);
+  // The rail's Launch button, red once ready, runs the whole test launch.
+  assert.equal((await page.locator("#launchNextRail .rail-launch.is-ready").innerText()).trim(), "Launch");
   await page.click('#launchNextRail [data-action="launch-rail-act"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'finish', null, { timeout: 60_000 });
   const finishText = await page.locator('[data-classic-workspace="finish"]').innerText();
