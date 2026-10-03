@@ -25326,6 +25326,14 @@ async function runFullLaunch() {
     ? String(state.lastRunEnvelope.id || '')
     : '';
   if (!runEnvelopeId) {
+    // A plan edit since the estimate leaves it stale. Re-estimating is read-only, so Launch does it
+    // rather than stopping on the blocker; once the token exists the launch keeps its original estimate.
+    if (!classicFundingEstimateStatus(config).matchesConfig && state.executionReadiness?.nextEndpoint !== '/api/create-lp') {
+      notify('The plan changed since the estimate: estimating again');
+      await estimateClassicFunding();
+      state.executionReadiness = null;
+      if (!classicFundingEstimateStatus(currentLaunchConfig()).matchesConfig) return;
+    }
     // Launch reviews first: it opens the operation review, and approving it starts the launch.
     state.launchAfterArm = true;
     await reviewAndArmRun();
