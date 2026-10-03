@@ -268,11 +268,6 @@ function handleClick(event) {
     renderLaunchIdentity();
     return;
   }
-  if (action === 'toggle-launch-details') {
-    state.launchDetailsExpanded = !state.launchDetailsExpanded;
-    renderLiveLaunchMonitor();
-    return;
-  }
   if (action === 'apply-launch-preset') {
     applyLaunchPreset(actionTarget.dataset.preset).catch((error) => notify(error.message || 'Could not apply the preset'));
     return;

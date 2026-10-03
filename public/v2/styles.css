@@ -13415,7 +13415,7 @@ body[data-launch-identity="active"] #view-launch .asset-mark.has-logo {
   top: -1px;
   z-index: 9;
   display: grid;
-  grid-template-columns: minmax(210px, .8fr) minmax(320px, 1.35fr) minmax(170px, .62fr) auto;
+  grid-template-columns: minmax(210px, .8fr) minmax(320px, 1.35fr) minmax(170px, .62fr);
   align-items: center;
   gap: 18px;
   min-width: 0;
@@ -13544,31 +13544,6 @@ body[data-launch-identity="active"] #view-launch .asset-mark.has-logo {
   70%, 100% { box-shadow: 0 0 0 10px rgb(var(--identity-primary-rgb) / 0); }
 }
 
-.live-launch-details-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  min-height: 34px;
-  padding: 7px 10px;
-  border: 1px solid rgb(var(--identity-primary-rgb) / .38);
-  background: rgb(var(--identity-primary-rgb) / .065);
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.live-launch-details-button:hover,
-.live-launch-details-button:focus-visible {
-  border-color: var(--identity-primary);
-  outline: none;
-  background: rgb(var(--identity-primary-rgb) / .12);
-}
-
 @media (min-width: 901px) {
   body[data-active-view="launch"][data-launch-focus="active"] #view-launch .surface-main {
     grid-template-rows: auto auto minmax(0, 1fr) !important;
@@ -13589,7 +13564,7 @@ body[data-active-view="launch"][data-launch-focus="active"] #view-launch #launch
 
 @media (max-width: 1050px) {
   .live-launch-monitor {
-    grid-template-columns: minmax(190px, .75fr) minmax(250px, 1.2fr) minmax(150px, .55fr) auto;
+    grid-template-columns: minmax(190px, .75fr) minmax(250px, 1.2fr) minmax(150px, .55fr);
     gap: 12px;
   }
 
@@ -13597,15 +13572,12 @@ body[data-active-view="launch"][data-launch-focus="active"] #view-launch #launch
     font-size: 12px;
   }
 
-  .live-launch-details-button span {
-    display: none;
-  }
 }
 
 @media (max-width: 900px) {
   .live-launch-monitor {
     position: relative;
-    grid-template-columns: minmax(0, 1fr) minmax(150px, .55fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(150px, .55fr);
     min-height: 0;
   }
 
@@ -13620,7 +13592,7 @@ body[data-active-view="launch"][data-launch-focus="active"] #view-launch #launch
 
 @media (max-width: 620px) {
   .live-launch-monitor {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     padding: 10px;
   }
 
@@ -18123,16 +18095,6 @@ body #view-launch .classic-workspace-fund .pair-token-checks.has-problems > smal
 body #view-launch .classic-workspace-fund .funding-split-warning { order: 2; }
 body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }
 
-/* Live launch: the details button opens every step of the run, right under the monitor. */
-.live-launch-monitor .live-launch-steps { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 18px; margin: 4px 0 0; padding: 12px 0 0; border-top: 1px solid var(--line); list-style: none; }
-.live-launch-steps li { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 8px; align-items: baseline; font-size: 12px; color: var(--muted); }
-.live-launch-steps li small { grid-column: 2; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.live-launch-steps li.is-done i { color: var(--green); }
-.live-launch-steps li.is-now { color: var(--ink); font-weight: 700; }
-.live-launch-steps li.is-now i { color: var(--green); }
-.live-launch-steps li.is-blocked { color: var(--ink); }
-.live-launch-steps li.is-blocked i { color: var(--red, #ff5d5d); }
-.live-launch-steps li.is-todo i { font-size: 7px; opacity: .6; }
 
 /* Report: publishing to Arweave is an on/off switch, not a button that names the other choice. */
 .report-publish-switch { display: inline-flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 4px 0 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-weight: 600; cursor: pointer; }
