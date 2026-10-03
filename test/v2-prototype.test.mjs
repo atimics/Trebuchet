@@ -1882,7 +1882,7 @@ test('v2 navigation and views stay wired together', () => {
 
   // Coins come first. Creating a token is an action on a coin, so the create
   // view (still "launch" internally) is opened from a coin, not the nav.
-  // 'lean' is not a nav item: it is a button on the Coins page, another way to create a coin
+  // 'lean' is not a nav item: earlier Meteora launches open from a link in History
   // (test/damm-v2-ui.test.mjs checks it is not in the nav).
   assert.deepEqual(navViews, ['coins', 'discovery', 'history', 'lean', 'nfts', 'settings', 'wallet']);
   assert.deepEqual(sectionViews, [...navViews, 'launch'].sort());
@@ -6883,12 +6883,12 @@ test('v2 primary views share framed terminal workspaces and tabbed History panes
 
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=156/);
+  assert.match(html, /styles\.css\?v=157/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=42/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=242/);
-  assert.doesNotMatch(html, /app\.js\?v=242" type="module"/);
+  assert.match(html, /app\.js\?v=243/);
+  assert.doesNotMatch(html, /app\.js\?v=243" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11936,4 +11936,12 @@ test('the rail holds funding, then Launch (red when ready) and Sweep (amber when
   assert.match(js, /rail-sweep\$\{leftovers \? ' has-leftovers' : ''\}/);
   assert.match(css, /\.rail-launch\.is-ready \{[^}]*var\(--red/);
   assert.match(css, /\.rail-sweep\.has-leftovers \{[^}]*var\(--amber/);
+});
+
+test('Meteora is a venue for the SOL pool inside the launch, not a separate Lean launch', () => {
+  assert.doesNotMatch(html, /<span>Lean launch<\/span>/);
+  assert.match(js, /data-sol-pool-field="venue"/);
+  assert.match(js, /<option value="meteora-damm-v2"/);
+  assert.match(js, /venue: 'meteora-damm-v2',\n\s+damm: \{ feeBps:/);
+  assert.match(js, /meteora,\$\{pool\.damm\?\.feeBps \|\| 25\}/);
 });

@@ -18013,3 +18013,8 @@ body #view-launch .launch-budget-presets > button { min-width: 0; padding: 8px 1
 body #view-launch .launch-budget-presets > button { padding: 8px 8px; }
 /* Toasts sit in the bottom-right corner, clear of the working area's text. */
 body #toastStack { left: auto; right: 16px; bottom: 16px; transform: none; width: auto; max-width: min(360px, calc(100vw - 32px)); align-items: flex-end; }
+
+/* The SOL pool's venue, chosen on its own line */
+.supply-name .supply-venue { margin-top: 2px; max-width: 100%; min-height: 24px; padding: 0 4px; border: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: 11px; }
+.supply-name .supply-venue:focus-visible { outline: none; border-color: var(--green); color: var(--ink); }
+.history-pane-tabs .history-lean-link { margin-left: auto; color: var(--muted); }

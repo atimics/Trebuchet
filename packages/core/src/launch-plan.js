@@ -263,6 +263,10 @@ function normalizeSupport(input = {}) {
   return support;
 }
 
+const METEORA_VENUE = 'meteora-damm-v2';
+const METEORA_FEE_BPS = [25, 50, 100, 200];
+const METEORA_RANGES = [100, 1000, 10000];
+
 function normalizeAirdropRows(rows = []) {
   if (!Array.isArray(rows)) return [];
   return rows.map((row) => {
@@ -606,10 +610,27 @@ function normalizePoolTopology(input = {}) {
       ...(startPricePremiumPct !== undefined ? { startPricePremiumPct } : {}),
       supplyPercent: normalizePercent(pool.supplyPercent, index === 0 ? 70 : 0),
       ammConfigIndex: Math.floor(numeric(pool.ammConfigIndex, quoteSymbol === 'USDC' ? 5 : 8)),
-      distribution,
-      bootstrap,
-      ladder: normalizeLadder(pool.ladder || {}),
-      support: normalizeSupport(pool.support || {}),
+      // A Meteora DAMM v2 pool (SOL only) is one position, locked when the pool is made: it has no
+      // slices, ladder, support or bootstrap of its own. Only carried when chosen, so Raydium plans
+      // keep their fingerprints.
+      ...(pool.venue === METEORA_VENUE && quoteSymbol === 'SOL'
+        ? {
+          venue: METEORA_VENUE,
+          damm: {
+            feeBps: METEORA_FEE_BPS.includes(Math.round(numeric(pool.damm?.feeBps, 25))) ? Math.round(numeric(pool.damm?.feeBps, 25)) : 25,
+            rangeMultiple: METEORA_RANGES.includes(Math.round(numeric(pool.damm?.rangeMultiple, 1000))) ? Math.round(numeric(pool.damm?.rangeMultiple, 1000)) : 1000,
+          },
+          distribution: [{ sharePercent: 100 }],
+          bootstrap: { mode: 'minimal' },
+          ladder: { mode: 'off' },
+          support: { mode: 'off' },
+        }
+        : {
+          distribution,
+          bootstrap,
+          ladder: normalizeLadder(pool.ladder || {}),
+          support: normalizeSupport(pool.support || {}),
+        }),
     };
   }).filter((pool) => pool.supplyPercent > 0);
   const totalPoolPercent = roundSol(pools.reduce((sum, pool) => sum + pool.supplyPercent, 0));

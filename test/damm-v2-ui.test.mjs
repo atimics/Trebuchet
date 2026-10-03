@@ -8,11 +8,12 @@ test('the lean launch view is wired into the page, the nav and the renderer', ()
   const html = read('public/v2/index.html');
   const entry = html.match(/<button[^>]*data-view="lean"[^>]*>/)?.[0] || '';
   assert.ok(entry, 'a button opens it');
-  assert.doesNotMatch(entry, /nav-item/, 'it is opened from the Coins page, not the nav');
-  assert.ok(html.indexOf(entry) > html.indexOf('id="view-coins"') && html.indexOf(entry) < html.indexOf('id="coinsList"'), 'the button sits in the Coins toolbar');
+  assert.doesNotMatch(entry, /nav-item/, 'it is not in the nav');
+  // Meteora is now a pool option inside the launch; earlier Meteora launches stay reachable from History.
+  assert.ok(html.indexOf(entry) > html.indexOf('id="view-history"') && html.indexOf(entry) < html.indexOf('id="historyPanelRecovery"'), 'the link sits in the History tabs');
   assert.match(html, /id="view-lean"[\s\S]*?id="leanRoot"/, 'it has a view section with a root');
   assert.match(html, /<script src="\.\/lean\.js\?v=\d+"><\/script>/, 'its script is loaded');
-  assert.match(read('public/v2/features/shell/state.js'), /lean: \{ eyebrow: '', title: 'Lean launch' \}/, 'it has a title');
+  assert.match(read('public/v2/features/shell/state.js'), /lean: \{ eyebrow: '', title: 'Meteora launches' \}/, 'it has a title');
   assert.match(read('public/v2/features/launch/workspace.js'), /view === 'lean'\) window\.TrebuchetLean\?\.onShow\(\)/, 'showing the view loads it');
   assert.match(read('public/v2/app.js'), /view === 'lean'\) window\.TrebuchetLean\?\.onShow\(\)/, 'the shipped renderer carries the hook');
 });

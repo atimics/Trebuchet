@@ -129,7 +129,11 @@ function handleDynamicInput(event) {
 
   const solInput = event.target.closest('[data-sol-pool-field]');
   if (solInput) {
-    state.solPoolConfigIndex = Math.floor(parseNumericInput(solInput.value, DEFAULT_POOL_CONFIG_INDEX));
+    const solField = solInput.dataset.solPoolField;
+    if (solField === 'venue') state.solPoolVenue = solInput.value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+    else if (solField === 'dammFeeBps') state.solPoolDamm = { ...state.solPoolDamm, feeBps: Number(solInput.value) || 25 };
+    else if (solField === 'dammRange') state.solPoolDamm = { ...state.solPoolDamm, rangeMultiple: Number(solInput.value) || 1000 };
+    else state.solPoolConfigIndex = Math.floor(parseNumericInput(solInput.value, DEFAULT_POOL_CONFIG_INDEX));
     invalidateClassicOutputs();
     refreshClassicPreview();
     renderSupplyEditorAfterTier(solInput);

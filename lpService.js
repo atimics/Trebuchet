@@ -118,6 +118,15 @@ import { clmmLockPrograms, findClmmPositionLock } from './clmmLockEvidence.js';
 import { transferTokenWithProgram } from './walletHelpers.js';
 import { tokenByKey, tokenByAddress, isAllowedQuote } from './tokenRegistry.js';
 import { discoverSwapRoute, probeRaydiumPriceStrict } from './swapService.js';
+import { createHash } from 'node:crypto';
+import * as dammServiceModule from './dammV2Service.js';
+import {
+  DAMM_V2_VENUE,
+  DAMM_V2_DEFAULTS,
+  DAMM_V2_POOL_RENT_LAMPORTS,
+  DAMM_V2_POOL_TX_FEE_LAMPORTS,
+  DAMM_V2_PRIORITY_FEE_LAMPORTS,
+} from '@trebuchet/core/damm-v2-plan';
 import {
   computeBootstrapTicks,
   computeLadderTicks,
@@ -1045,7 +1054,14 @@ export function setConnectionFactoryForTests(factory) {
  * Clear both test overrides — returns the module to production
  * behavior. Always safe to call (idempotent, no-throw).
  */
+// Meteora DAMM v2 pool creation, replaceable in tests.
+let __dammService = dammServiceModule;
+export function setDammServiceForTests(service) {
+  __dammService = service || dammServiceModule;
+}
+
 export function resetTestFactories() {
+  __dammService = dammServiceModule;
   __sdkFactoryOverride = null;
   __connectionFactoryOverride = null;
   // Estimator seams (declared near estimateRequiredFunding) are cleared here
@@ -4274,6 +4290,100 @@ export async function preflightCreatePoolsAndPositions({
  *   ]  // omitted = single 100% slice, NFT goes to dest wallet via sweep
  * }
  */
+// ---------------------------------------------------------------------------
+// A Meteora DAMM v2 pool as one of the launch's pools
+// ---------------------------------------------------------------------------
+//
+// A pool whose allocation has `venue: 'meteora-damm-v2'` is not a Raydium CLMM pool: it is one
+// single-sided position holding the allocation's share of the supply against SOL, locked for good
+// when the pool is created. It has no slices, ladder, support or bootstrap. It opens at the same
+// price as every other pool (the launch's target market cap over the whole supply).
+//
+// The position NFT's key is derived from the launch wallet and the mint, so a run that stops after
+// sending can find the pool again and adopt it instead of creating a second one.
+export function meteoraPositionSeed(ownerSecretKey, tokenMint) {
+  return createHash('sha256')
+    .update(Buffer.from(ownerSecretKey))
+    .update(String(tokenMint))
+    .update('trebuchet/meteora-damm-v2/position')
+    .digest();
+}
+
+export function meteoraPoolParams({ tokenTotalSupply, tokenDecimals, supplyPercent, targetMarketCapUsd, solUsd }) {
+  const totalRaw = BigInt(String(tokenTotalSupply).replace(/[^0-9]/g, '')) * 10n ** BigInt(tokenDecimals);
+  const poolRaw = (totalRaw * BigInt(Math.round(Number(supplyPercent) * 100))) / 10000n;
+  if (poolRaw <= 0n) throw new Error('The Meteora pool has no supply.');
+  const sol = Number(solUsd);
+  if (!(sol > 0)) throw new Error('A SOL price is needed to price the Meteora pool.');
+  const totalMcapLamports = BigInt(Math.round((Number(targetMarketCapUsd) / sol) * 1e9));
+  // The service prices the pool as its market cap over the tokens it holds. Giving it the pool's
+  // share of the launch market cap makes its price the launch price.
+  const poolMcapLamports = (totalMcapLamports * poolRaw) / totalRaw;
+  if (poolMcapLamports <= 0n) throw new Error('The Meteora pool\'s starting value rounds to nothing.');
+  return { totalRaw, poolRaw, poolMcapLamports };
+}
+
+async function createMeteoraPoolForAllocation({
+  connection, ownerKeypair, tokenMint, tokenTotalSupply, tokenDecimals, targetMarketCapUsd,
+  alloc, allocIdx, solUsd, progress,
+}) {
+  const damm = __dammService;
+  const params = meteoraPoolParams({ tokenTotalSupply, tokenDecimals, supplyPercent: alloc.supplyPercent, targetMarketCapUsd, solUsd });
+  const feeBps = Number(alloc.damm?.feeBps) || DAMM_V2_DEFAULTS.feeBps;
+  const rangeMultiple = Number(alloc.damm?.rangeMultiple) || DAMM_V2_DEFAULTS.rangeMultiple;
+  const mint = new PublicKey(tokenMint);
+  const positionNft = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint));
+  progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple });
+
+  const existing = await damm.findExistingPool({ connection, mint, positionNft: positionNft.publicKey });
+  let created;
+  if (existing.poolExists && existing.positionExists) {
+    const verification = await damm.verifyLockedPool({ connection, pool: existing.pool, position: existing.position, mint, supplyRaw: params.poolRaw });
+    if (!verification.passed) throw new Error('A Meteora pool for this token exists but is not the locked single-sided pool this launch makes.');
+    created = { pool: existing.pool.toBase58(), position: existing.position.toBase58(), positionNft: positionNft.publicKey.toBase58(), signature: null, verification, adopted: true };
+    progress({ stage: 'meteora_pool_adopted', allocationIndex: allocIdx, pool: created.pool });
+  } else if (existing.poolExists) {
+    throw new Error('A Meteora SOL pool for this token already exists and is not this launch\'s. Nothing was created.');
+  } else {
+    created = await damm.createLockedPool({
+      connection,
+      payer: ownerKeypair,
+      mint,
+      positionNft,
+      supplyRaw: params.poolRaw,
+      startingMarketCapLamports: params.poolMcapLamports,
+      rangeMultiple,
+      feeBps,
+      onProgress: (event) => progress({ ...event, allocationIndex: allocIdx }),
+    });
+    created.adopted = false;
+  }
+  progress({ stage: 'meteora_pool_done', allocationIndex: allocIdx, poolId: created.pool, nftMint: created.positionNft, txId: created.signature });
+  return {
+    allocationIndex: allocIdx,
+    venue: DAMM_V2_VENUE,
+    quoteSymbol: 'SOL',
+    quoteAddress: WSOL_MINT,
+    supplyPercent: alloc.supplyPercent,
+    poolId: created.pool,
+    damm: { feeBps, rangeMultiple, position: created.position, verification: created.verification || null, adopted: created.adopted },
+    // One position, locked for good when the pool is made. Its NFT is the Fee Key.
+    mainPositions: [{
+      sliceIndex: 0,
+      sharePercent: 100,
+      nftMint: created.positionNft,
+      locked: true,
+      recipient: null,
+      transferredTo: null,
+      txIds: { open: created.signature, lock: created.signature, transfer: null },
+    }],
+    ladderPositions: [],
+    supportPositions: [],
+    bootstrap: null,
+    txIds: { createPool: created.signature },
+  };
+}
+
 export async function createPoolsAndPositions({
   tempWalletSecretKey,
   tokenMint,
@@ -4822,6 +4932,32 @@ export async function createPoolsAndPositions({
 
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
     const alloc = allocations[allocIdx];
+
+    // A Meteora pool is made by its own program in one step and is never bootstrapped, laddered or
+    // locked afterwards: make it (or adopt it on a resume) and move on.
+    if (alloc.venue === DAMM_V2_VENUE) {
+      const priorMeteora = priorResults.find((p) => p.allocationIndex === allocIdx && p.venue === DAMM_V2_VENUE && p.poolId && p.mainPositions?.[0]?.nftMint);
+      if (priorMeteora) {
+        results.push(priorMeteora);
+        continue;
+      }
+      try {
+        results.push(await createMeteoraPoolForAllocation({
+          connection, ownerKeypair, tokenMint, tokenTotalSupply, tokenDecimals, targetMarketCapUsd,
+          alloc, allocIdx, solUsd: solUsdForSupport?.toString?.() ?? solUsdForSupport,
+          progress: (event) => onProgress?.(event),
+        }));
+      } catch (error) {
+        throwIfExecutionPaused(error);
+        onProgress?.({ stage: 'meteora_pool_failed', allocationIndex: allocIdx, error: error.message });
+        error.failedPhase = error.failedPhase || 'phase1';
+        error.failedAllocationIndex = allocIdx;
+        error.failedAllocation = alloc;
+        error.partialResults = results;
+        throw error;
+      }
+      continue;
+    }
 
     // RESUME CHECK: if this allocation completed Phase 1 in a prior attempt,
     // skip the create flow and just rebuild the bootstrap context from
@@ -6072,6 +6208,16 @@ export async function estimateRequiredFunding({
 
     const poolLabel = `Pool ${poolIdx + 1} (${quoteSymbol})`;
 
+    // A Meteora pool: its pool and position rent, and the transaction. No tick arrays, no bootstrap,
+    // no quote: the position holds only the new token.
+    if (a.venue === DAMM_V2_VENUE) {
+      addSol(
+        `${poolLabel}: Meteora pool, locked (rent + fees)`,
+        (DAMM_V2_POOL_RENT_LAMPORTS + DAMM_V2_POOL_TX_FEE_LAMPORTS + DAMM_V2_PRIORITY_FEE_LAMPORTS) / 1e9,
+      );
+      continue;
+    }
+
     // Pool creation: just the pool state account. (Tick-array rent is the
     // separate line below; the pool-creation rent alone does not cover it.)
     addSol(`${poolLabel}: pool creation`, COST_POOL_RENT_SOL);
@@ -6983,6 +7129,7 @@ export async function listCoinPositions({ tokenMint, owners = [] }) {
 export const __testHooks = {
   bindLiquidityExecutor: (raydium, execution) => liquidityExecutors.set(raydium, execution),
   createSinglePool,
+  createMeteoraPoolForAllocation,
   openBootstrapPosition,
   lockAllPositions,
   transferFeeKeys,
