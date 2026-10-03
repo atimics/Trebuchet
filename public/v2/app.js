@@ -6332,7 +6332,7 @@ function renderLaunchNextRail(facts, next, workspace) {
       ? (next && canAct
         ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>`
         : '<div class="rail-done"><i class="fa-solid fa-check" aria-hidden="true"></i>Nothing left to do</div>')
-      : `${fundingButton}<div class="rail-pair">${launchButton}${sweepButton}</div>${fundingTodo || estimate ? '<button class="text-button rail-link" type="button" data-launch-workspace="fund">Funding details</button>' : ''}`;
+      : `${fundingButton}<div class="rail-pair">${launchButton}${sweepButton}</div>`;
 
   const walletBlock = `
     <section class="rail-block">
@@ -6344,14 +6344,19 @@ function renderLaunchNextRail(facts, next, workspace) {
       ${tokens.map(([tokenMint, token]) => row(String(token.symbol || shortAddress(tokenMint)), escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 })))).join('')}
     </section>`;
 
-  // The Funding row's own panel shows what is needed; the rail repeats it nowhere.
-  const fundingBlock = practice || workspace === 'fund' || (needs == null && !estimateStatus.stale)
-    ? ''
-    : `<section class="rail-block">
-        <div class="rail-head"><span class="rail-label">Funding</span><small>${estimate ? '' : estimateStatus.stale ? 'Out of date' : 'Not estimated'}</small></div>
-        ${needs != null ? `<div class="rail-meter" role="img" aria-label="Wallet holds ${sol(holds)} of ${sol(needs)} SOL"><i style="width:${fill.toFixed(1)}%"></i></div>
-        ${row('Needs', `${sol(needs)} <i>SOL</i>`)}${short != null ? row('Short', short ? `${sol(short)} <i>SOL</i>` : '0', short ? 'warn' : 'ok') : ''}` : ''}
-      </section>`;
+  // What the launch costs, against what the wallet holds. The block opens the cost breakdown.
+  const costStatus = needs == null
+    ? (estimateStatus.stale ? 'out of date' : 'not estimated')
+    : holds == null ? 'balance not checked'
+      : short > 0.0001 ? `short ${sol(short)} SOL` : 'covered';
+  const fundingBlock = practice ? '' : `
+    <section class="rail-block rail-cost">
+      <button class="rail-cost-open" type="button" data-launch-workspace="fund" aria-label="Launch cost: open the breakdown">
+        <span class="rail-head"><span class="rail-label">Launch cost</span><small class="${needs != null && holds != null ? (short > 0.0001 ? 'is-warn' : 'is-ok') : ''}">${escapeHtml(costStatus)}</small></span>
+        <span class="rail-balance${needs != null ? ' is-amount' : ''}"><b>${needs != null ? sol(needs) : '—'}</b>${needs != null ? '<span>SOL</span>' : ''}</span>
+        ${needs != null && holds != null ? `<span class="rail-meter" aria-hidden="true"><i style="width:${fill.toFixed(1)}%"></i></span>` : ''}
+      </button>
+    </section>`;
 
   const lockedCount = results.reduce((count, pool) => count + [
     ...(pool?.mainPositions || []), ...(pool?.ladderPositions || []), ...(pool?.supportPositions || []), ...(pool?.bootstrap ? [pool.bootstrap] : []),

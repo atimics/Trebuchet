@@ -18069,3 +18069,13 @@ body #toastStack { left: auto; right: 16px; bottom: 16px; transform: none; width
 /* Mode bar: the network, and a mismatch between it and the RPC */
 #launchSettingsEnvironment { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 #launchSettingsEnvironment .network-mismatch { color: var(--amber, #e6b450); font-weight: 700; }
+
+/* Launch cost block: the whole block opens the breakdown. */
+.launch-next-rail .rail-cost-open { display: grid; gap: 4px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.launch-next-rail .rail-cost-open .rail-head, .launch-next-rail .rail-cost-open .rail-balance, .launch-next-rail .rail-cost-open .rail-meter { display: flex; }
+.launch-next-rail .rail-cost-open .rail-head { justify-content: space-between; align-items: baseline; }
+.launch-next-rail .rail-cost-open .rail-meter { display: block; }
+.launch-next-rail .rail-cost-open:hover .rail-label, .launch-next-rail .rail-cost-open:focus-visible .rail-label { color: var(--green); text-decoration: underline; }
+.launch-next-rail .rail-cost small.is-warn { color: var(--amber); }
+.launch-next-rail .rail-cost small.is-ok { color: var(--green); }
+@media (max-width: 1199px) and (min-width: 901px) { .launch-next-rail .rail-cost .rail-meter { display: none; } }

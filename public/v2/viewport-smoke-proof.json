@@ -3,8 +3,8 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-10-03T17:25:32.049Z",
-  "durationMs": 2759,
+  "generatedAt": "2026-10-03T18:02:47.230Z",
+  "durationMs": 2224,
   "target": "file:///Users/ratimics/develop/trebuchet/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
@@ -19,10 +19,10 @@
     "keyboardWalkthrough"
   ],
   "assetHashes": {
-    "index.html": "aca63ed8ae484882cffe742f6876840a13d940ad541b07cc5f665059fdaacc79",
-    "styles.css": "f633cbf708d5ca17b272c7632519061ea0ac5f997d8c6030d7299b2d86643631",
+    "index.html": "ded2f8b7876d481427c381720e0608af6adb611be78681df74752a083b2941e3",
+    "styles.css": "f5db475957c66d8c3de963376baf7c15e4993017e6680b6c84bb547003d8f674",
     "api-client.js": "731e9282943ebeec960c82036d2f567e05d2176851fbaf1ea3b146dfcd533cb5",
-    "app.js": "258e9b468ec179c77059918da2598a676b2ce7d7a26052e59f0623275b9085ba"
+    "app.js": "a4f5b7b457afb74756bef489e827ee71752b7201db7e7a76e5f8801a7c37b2dc"
   },
   "viewports": [
     {
