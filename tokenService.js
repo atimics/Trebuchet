@@ -298,7 +298,23 @@ async function ensureAta({ payer, mint, owner, programId = TOKEN_PROGRAM_ID }) {
       ),
     ],
   });
+  // The next step (MintTo) is simulated before it is sent, and a load-balanced RPC can answer that
+  // simulation from a node that has not seen this account yet. An account it cannot see looks owned
+  // by the System program, which Token-2022 reports as "incorrect program id". Wait until it shows.
+  await waitForAccountOwner(address, programId);
   return { address };
+}
+
+async function waitForAccountOwner(address, programId, { timeoutMs = 30_000, intervalMs = 750 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const info = await connection.getAccountInfo(address, 'confirmed').catch(() => null);
+    if (info?.owner?.equals(programId)) return;
+    if (Date.now() >= deadline) {
+      throw new Error(`Token account ${address.toBase58()} was created but the RPC does not show it yet; try again in a moment`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
 }
 
 // Sampled ComputeBudget instructions in umi shape, for prepending to the
