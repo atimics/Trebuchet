@@ -8060,7 +8060,8 @@ app.get('/api/pending-wallets', (req, res) => {
     // another machine, or the OS keychain rotated): one bad entry must not break
     // the whole panel, so we surface a `decryptionFailed` flag.
     const inventory = secretInventory();
-    const wallets = pendingWallets.list().map((w) => {
+    // A retired wallet belongs to a finished launch: its key is kept, but it is not pending.
+    const wallets = pendingWallets.list().filter((w) => !w.retiredAt).map((w) => {
       const hasSecretKey = Array.isArray(w.secretKey);
       const hasMnemonic = typeof w.mnemonic === 'string';
       const out = {
