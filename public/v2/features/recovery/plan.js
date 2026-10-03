@@ -88,6 +88,7 @@ function customPoolFromRecovery(pool = {}, index = 0) {
     ladderText: manualLadderText,
     supportSol: pool?.support?.mode === 'custom' ? Number(pool.support.solValue || 0) : 0,
     supportDepth: pool?.support?.mode === 'custom' ? Number(pool.support.depthPct || 12) : 12,
+    supportLayersText: pool?.support?.mode === 'custom' ? supportLayersText(pool.support.layers) : '',
   };
 }
 
@@ -122,7 +123,12 @@ function restoreLaunchConfigFromJournal(journal = {}) {
     || String(pool.quoteMint || '') === DEFAULT_SOL_MINT
   )) || pools[0] || null;
   const nonSolPools = pools.filter((pool) => pool !== solPool);
-  const builtInPoolIndex = nonSolPools.findIndex((pool) => recoveryVenueForPool(pool));
+  // A pair is the built-in flywheel pair only when it has no ladder, support or extra slices of its own;
+  // one that has any is kept as an ordinary pair so none of those settings are lost.
+  const isPlainPair = (pool) => (!pool.ladder || pool.ladder.mode === 'off')
+    && (!pool.support || pool.support.mode !== 'custom')
+    && (!Array.isArray(pool.distribution) || pool.distribution.length <= 1);
+  const builtInPoolIndex = nonSolPools.findIndex((pool) => recoveryVenueForPool(pool) && isPlainPair(pool));
   const builtInPool = builtInPoolIndex >= 0 ? nonSolPools[builtInPoolIndex] : null;
   const builtInVenue = builtInPool ? recoveryVenueForPool(builtInPool) : null;
   const customPools = nonSolPools.filter((_, index) => index !== builtInPoolIndex);
@@ -165,6 +171,7 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   if ($('#ladderBands')) $('#ladderBands').value = String(solPool?.ladder?.mode === 'simple' ? Number(solPool.ladder.bandCount || 0) : 0);
   state.baseManualLadderText = manualLadderTextFromPool(solPool || {});
   state.baseSupportDepth = String(solPool?.support?.mode === 'custom' ? Number(solPool.support.depthPct || 12) : 12);
+  state.baseSupportLayersText = solPool?.support?.mode === 'custom' ? supportLayersText(solPool.support.layers) : '';
   if ($('#supportSol')) $('#supportSol').value = String(solPool?.support?.mode === 'custom' ? Number(solPool.support.solValue || 0) : 0);
 
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(Number(builtInPool?.supplyPercent || 0));

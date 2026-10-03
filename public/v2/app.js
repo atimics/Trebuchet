@@ -529,6 +529,8 @@ const state = {
   lastClassicDiagnostic: null,
   baseManualLadderText: '',
   baseSupportDepth: 12,
+  baseSupportLayersText: '',
+  launchPresetId: null,
   customPools: [],
   customPoolCounter: 0,
   airdropCsvText: '',
@@ -2026,6 +2028,43 @@ function isProbablySolanaAddress(value) {
 
 function parseManualLadderBands(value) {
   return analyzeManualLadder(value).bands;
+}
+
+// Support layers, one per line: quote share %, low x, high x. The multiples are of the start price
+// and at most 1 (0.8, 1 is from 20% below the start price up to it). Lines it cannot use are listed
+// in `rejected` (1-based). Blank lines, # comments and a header line are skipped.
+function analyzeSupportLayers(value) {
+  const layers = [];
+  const rejected = [];
+  String(value || '').split(/\r?\n/).forEach((rawLine, lineIndex) => {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) return;
+    const parts = line.split(/[,\t ]+/).map((part) => part.replace(/[x×]$/i, '').trim()).filter(Boolean);
+    if (!parts.length || /share|quote|supply/i.test(parts[0])) return;
+    const sharePercent = parseNumericInput(parts[0], NaN);
+    const lowerMultiplier = parseNumericInput(parts[1], NaN);
+    const upperMultiplier = parseNumericInput(parts[2], NaN);
+    if (
+      Number.isFinite(sharePercent) && sharePercent > 0
+      && Number.isFinite(lowerMultiplier) && lowerMultiplier > 0
+      && Number.isFinite(upperMultiplier) && upperMultiplier > lowerMultiplier && upperMultiplier <= 1
+    ) {
+      layers.push({ sharePercent, lowerMultiplier, upperMultiplier });
+    } else {
+      rejected.push({ line: lineIndex + 1, text: line });
+    }
+  });
+  return { layers: layers.slice(0, SUPPORT_LAYERS_MAX), rejected, overflow: Math.max(0, layers.length - SUPPORT_LAYERS_MAX) };
+}
+
+const SUPPORT_LAYERS_MAX = 6;
+
+function parseSupportLayers(value) {
+  return analyzeSupportLayers(value).layers;
+}
+
+function supportLayersText(layers = []) {
+  return (layers || []).map((layer) => `${layer.sharePercent}, ${layer.lowerMultiplier}, ${layer.upperMultiplier}`).join('\n');
 }
 
 // Reads the custom ladder text. Lines it cannot use are listed in `rejected`
@@ -5036,6 +5075,7 @@ async function spinFlywheelVortex() {
     ladderText: '',
     supportSol: 0,
     supportDepth: 12,
+    supportLayersText: '',
   }));
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(quoteShare);
   if ($('#quotePoolVenue')) $('#quotePoolVenue').value = 'meme';
@@ -5140,7 +5180,7 @@ function renderLaunchBudgetRecommendation() {
   const budgetSol = Math.max(0, parseNumericInput(budgetInput.value, 0));
   const strategy = launchBudgetRecommendation(budgetSol);
   $$('.launch-budget-presets button').forEach((button) => {
-    button.classList.toggle('is-selected', Number(button.dataset.budget) === budgetSol);
+    button.classList.toggle('is-selected', button.dataset.preset ? button.dataset.preset === state.launchPresetId : Number(button.dataset.budget) === budgetSol);
   });
   const depth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
   target.innerHTML = '';
@@ -5159,6 +5199,8 @@ function applyLaunchBudgetRecommendation(value, { announce = true } = {}) {
   if ($('#ladderBands')) $('#ladderBands').value = String(strategy.ladderBands);
   if ($('#supportSol')) $('#supportSol').value = String(strategy.supportSol);
   state.baseManualLadderText = '';
+  state.baseSupportLayersText = '';
+  state.launchPresetId = null;
   invalidateClassicOutputs();
   refreshClassicPreview({ includePoolEditor: true });
   renderLaunchBudgetRecommendation();
@@ -5179,6 +5221,7 @@ function currentClassicModel() {
   const targetMarketCapUsd = Math.max(0, parseNumericInput($('#targetMarketCapUsd').value, 25000));
   const manualBands = parseManualLadderBands(state.baseManualLadderText);
   const supportDepth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
+  const supportLayers = parseSupportLayers(state.baseSupportLayersText);
   const airdrop = currentAirdropPlan();
   const preallocation = currentPreallocationPlan();
 
@@ -5200,7 +5243,7 @@ function currentClassicModel() {
       ? classicSimpleLadderConfig(ladderBands)
       : { mode: 'off' },
     support: supportSol > 0
-      ? { mode: 'custom', solValue: supportSol, depthPct: supportDepth }
+      ? { mode: 'custom', solValue: supportSol, depthPct: supportDepth, ...(supportLayers.length ? { layers: supportLayers } : {}) }
       : { mode: 'off' },
   };
   const pools = [solPool];
@@ -5263,6 +5306,7 @@ function currentClassicModel() {
           mode: 'custom',
           solValue: customSupportSol,
           depthPct: clampNumber(parseNumericInput(pool.supportDepth, 12), 1, 50),
+          ...(parseSupportLayers(pool.supportLayersText).length ? { layers: parseSupportLayers(pool.supportLayersText) } : {}),
         }
         : { mode: 'off' },
     });
@@ -5363,6 +5407,154 @@ function currentLaunchConfig() {
   };
 }
 
+// Four starting presets, each a bigger network than the last: Spark (token only), Anchor (one market
+// and a funded bid), Constellation (three markets) and Vortex (five markets). They are starting
+// points, not strategies tuned for return. The budget is the quote deposited into liquidity; setup
+// costs (rent, fees, locking) come on top. 1x is a pair's start price.
+//
+// Per market: `share` is its % of the liquidity supply; `quoteSol` is the quote deposited, in SOL
+// (a partner token's amount is its SOL value); `bands` are NEW-side ranges as [supply % of the
+// market, low x, high x] (the main position takes the rest, from the start price up); `layers` are
+// quote-side bids as [quote share %, low x, high x] below the start price. Every market uses the
+// 0.25% fee tier and opens at the same price (no premium), so the markets agree at the start.
+const LAUNCH_PRESET_TIER_INDEX = 1;
+
+const CONSTELLATION_BANDS = [[35, 1, 3], [25, 2, 10], [10, 8, 40]];
+const CONSTELLATION_LAYERS = [[70, 0.7, 1], [30, 0.25, 0.7]];
+const VORTEX_BANDS = [[30, 1, 2], [25, 1.5, 5], [15, 4, 20], [10, 15, 100]];
+const VORTEX_LAYERS = [[50, 0.8, 1], [30, 0.5, 0.8], [20, 0.2, 0.5]];
+
+const LAUNCH_PRESETS = Object.freeze([
+  {
+    id: 'spark', name: 'Spark', budgetSol: 0, tagline: 'token-only launch',
+    markets: [{ role: 'sol', share: 100, quoteSol: 0, bands: [], layers: [] }],
+  },
+  {
+    id: 'anchor', name: 'Anchor', budgetSol: 1, tagline: 'single market + support',
+    markets: [{ role: 'sol', share: 100, quoteSol: 1, bands: [[40, 1, 3], [20, 2, 10]], layers: [[100, 0.4, 1]] }],
+  },
+  {
+    id: 'constellation', name: 'Constellation', budgetSol: 10, tagline: 'three connected markets',
+    markets: [
+      { role: 'sol', share: 80, quoteSol: 8, bands: CONSTELLATION_BANDS, layers: CONSTELLATION_LAYERS },
+      { role: 'partner', share: 10, quoteSol: 1, bands: CONSTELLATION_BANDS, layers: CONSTELLATION_LAYERS },
+      { role: 'partner', share: 10, quoteSol: 1, bands: CONSTELLATION_BANDS, layers: CONSTELLATION_LAYERS },
+    ],
+  },
+  {
+    id: 'vortex', name: 'Vortex', budgetSol: 100, tagline: 'five markets + layered liquidity',
+    markets: [
+      { role: 'sol', share: 80, quoteSol: 80, bands: VORTEX_BANDS, layers: VORTEX_LAYERS },
+      ...[0, 1, 2, 3].map(() => ({ role: 'partner', share: 5, quoteSol: 5, bands: VORTEX_BANDS, layers: VORTEX_LAYERS })),
+    ],
+  },
+]);
+
+function launchPresetById(id) {
+  return LAUNCH_PRESETS.find((preset) => preset.id === id) || null;
+}
+
+// The preset for a budget the buttons offer, or null for any other amount.
+function launchPresetForBudget(budgetSol) {
+  return LAUNCH_PRESETS.find((preset) => preset.budgetSol === Number(budgetSol)) || null;
+}
+
+// Distinct market-shaping positions: per market, the main position, each NEW-side band and each
+// quote-side layer. (The tiny bootstrap that opens trading is not counted.)
+function launchPresetPositionCount(preset) {
+  return preset.markets.reduce((sum, market) => sum + 1 + market.bands.length + market.layers.length, 0);
+}
+
+function launchPresetBandsText(market) {
+  return market.bands.map(([share, low, high]) => `${share}, ${low}, ${high}`).join('\n');
+}
+
+function launchPresetLayersText(market) {
+  return market.layers.map(([share, low, high]) => `${share}, ${low}, ${high}`).join('\n');
+}
+
+// What each market gets, with its supply share scaled to the supply the pools may use.
+function launchPresetMarketPlan(preset, liquidityPercent) {
+  return preset.markets.map((market) => ({
+    ...market,
+    percent: Math.round(liquidityPercent * market.share) / 100,
+    bandsText: launchPresetBandsText(market),
+    layersText: launchPresetLayersText(market),
+  }));
+}
+
+function launchPresetSummary(preset) {
+  const markets = preset.markets.length;
+  const positions = launchPresetPositionCount(preset);
+  return `${markets} market${markets === 1 ? '' : 's'} · ${positions} position${positions === 1 ? '' : 's'}`;
+}
+
+// Partner tokens come from the hub list: the default hubs, then any token found in Discovery.
+async function launchPresetPartners(count) {
+  if (count <= 0) return [];
+  try {
+    const catalog = await state.apiClient?.listFlywheelHubs?.();
+    const rows = hubPickerRows(catalog || {}, state.discovery?.records || []);
+    return rows.slice(0, count).map((hub) => ({ mint: hub.mint, symbol: String(hub.symbol || hub.name || '').toUpperCase() }));
+  } catch {
+    return [];
+  }
+}
+
+async function applyLaunchPreset(id, { announce = true } = {}) {
+  const preset = launchPresetById(id);
+  if (!preset) return;
+  const partnerMarkets = preset.markets.filter((market) => market.role === 'partner');
+  const partners = await launchPresetPartners(partnerMarkets.length);
+  // Pools may use everything that is not held back for the team or an airdrop.
+  const held = supplyEditorRows().filter((row) => row.kind === 'hold').reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
+  const plan = launchPresetMarketPlan(preset, Math.max(1, 100 - held));
+  const solMarket = plan.find((market) => market.role === 'sol');
+
+  if ($('#liquidityBudgetSol')) $('#liquidityBudgetSol').value = String(preset.budgetSol);
+  if ($('#launchSol')) $('#launchSol').value = '0';
+  if ($('#quotePoolPercent')) $('#quotePoolPercent').value = '0';
+  if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(solMarket.percent);
+  if ($('#sliceShares')) $('#sliceShares').value = '100';
+  if ($('#ladderBands')) $('#ladderBands').value = '0';
+  if ($('#supportSol')) $('#supportSol').value = String(solMarket.quoteSol);
+  state.baseManualLadderText = solMarket.bandsText;
+  state.baseSupportLayersText = solMarket.layersText;
+  state.baseSupportDepth = '12';
+  state.solPoolConfigIndex = LAUNCH_PRESET_TIER_INDEX;
+  state.launchPresetId = preset.id;
+
+  state.customPools = plan.filter((market) => market.role === 'partner').map((market, index) => {
+    const partner = partners[index] || null;
+    return {
+      id: nextCustomPoolId(),
+      quoteSymbol: partner?.symbol || 'QUOTE',
+      quoteMint: partner?.mint || '',
+      supplyPercent: market.percent,
+      ammConfigIndex: LAUNCH_PRESET_TIER_INDEX,
+      startPremiumPct: 0,
+      sliceShares: '100',
+      feeKeyRecipient: '',
+      ladderBands: 0,
+      ladderText: market.bandsText,
+      supportSol: market.quoteSol,
+      supportDepth: 12,
+      supportLayersText: market.layersText,
+    };
+  });
+  state.quoteTokenInfo = {};
+  invalidateClassicOutputs();
+  refreshClassicPreview({ includePoolEditor: true });
+  renderAll();
+  scheduleLaunchAutoSave();
+  renderLaunchBudgetRecommendation();
+  if (!announce) return;
+  const missing = partnerMarkets.length - partners.length;
+  notify(missing > 0
+    ? `${preset.name} applied · pick ${missing} partner token${missing === 1 ? '' : 's'} on Pairs`
+    : `${preset.name} applied · ${launchPresetSummary(preset)}`);
+}
+
 function recoveryLaunchConfig(journal = {}) {
   if (journal.launchConfig && typeof journal.launchConfig === 'object') {
     return journal.launchConfig;
@@ -5453,6 +5645,7 @@ function customPoolFromRecovery(pool = {}, index = 0) {
     ladderText: manualLadderText,
     supportSol: pool?.support?.mode === 'custom' ? Number(pool.support.solValue || 0) : 0,
     supportDepth: pool?.support?.mode === 'custom' ? Number(pool.support.depthPct || 12) : 12,
+    supportLayersText: pool?.support?.mode === 'custom' ? supportLayersText(pool.support.layers) : '',
   };
 }
 
@@ -5487,7 +5680,12 @@ function restoreLaunchConfigFromJournal(journal = {}) {
     || String(pool.quoteMint || '') === DEFAULT_SOL_MINT
   )) || pools[0] || null;
   const nonSolPools = pools.filter((pool) => pool !== solPool);
-  const builtInPoolIndex = nonSolPools.findIndex((pool) => recoveryVenueForPool(pool));
+  // A pair is the built-in flywheel pair only when it has no ladder, support or extra slices of its own;
+  // one that has any is kept as an ordinary pair so none of those settings are lost.
+  const isPlainPair = (pool) => (!pool.ladder || pool.ladder.mode === 'off')
+    && (!pool.support || pool.support.mode !== 'custom')
+    && (!Array.isArray(pool.distribution) || pool.distribution.length <= 1);
+  const builtInPoolIndex = nonSolPools.findIndex((pool) => recoveryVenueForPool(pool) && isPlainPair(pool));
   const builtInPool = builtInPoolIndex >= 0 ? nonSolPools[builtInPoolIndex] : null;
   const builtInVenue = builtInPool ? recoveryVenueForPool(builtInPool) : null;
   const customPools = nonSolPools.filter((_, index) => index !== builtInPoolIndex);
@@ -5530,6 +5728,7 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   if ($('#ladderBands')) $('#ladderBands').value = String(solPool?.ladder?.mode === 'simple' ? Number(solPool.ladder.bandCount || 0) : 0);
   state.baseManualLadderText = manualLadderTextFromPool(solPool || {});
   state.baseSupportDepth = String(solPool?.support?.mode === 'custom' ? Number(solPool.support.depthPct || 12) : 12);
+  state.baseSupportLayersText = solPool?.support?.mode === 'custom' ? supportLayersText(solPool.support.layers) : '';
   if ($('#supportSol')) $('#supportSol').value = String(solPool?.support?.mode === 'custom' ? Number(solPool.support.solValue || 0) : 0);
 
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(Number(builtInPool?.supplyPercent || 0));
@@ -7584,6 +7783,49 @@ const SUPPLY_PAIR_COLORS = ['#78a8ff', '#e07ab0', '#5fc7c7', '#f08a5d', '#8fd06a
 // existing form fields (or custom pool state), so the launch model is unchanged.
 // What a fee tier means for a pool: the swap fee, and how coarse its price steps are
 // (one tick is 0.01%, a tier's spacing is that many ticks).
+// A small picture of a pool's shape, in the pool's colour: its main position, its ladder bands above
+// the start price, and its support (layers or one range) below it. The same drawing as the price map,
+// without the words.
+function poolGlyphSvg(pool, color) {
+  if (!pool) return '<span class="supply-glyph" aria-hidden="true"></span>';
+  const W = 72, H = 28, START = 26, BASE = 23, RIGHT = 70;
+  const tint = (pct) => `color-mix(in srgb, ${color} ${pct}%, transparent)`;
+  const xOf = (mult) => START + (RIGHT - START) * (Math.log(Math.max(1, mult)) / Math.log(1000));
+  const parts = [`<rect x="${START}" y="${BASE - 3}" width="${RIGHT - START}" height="3" style="fill:${tint(45)}"/>`];
+  let bands = [];
+  if (pool.ladder?.mode === 'manual') {
+    bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: band.supplyPercent }));
+  } else if (pool.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
+    const count = pool.ladder.bandCount;
+    const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
+    bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: 1 }));
+  }
+  const top = Math.max(1e-9, ...bands.map((band) => band.weight));
+  bands.forEach((band) => {
+    const h = 4 + 13 * (band.weight / top);
+    const x = xOf(band.lo);
+    parts.push(`<rect x="${x.toFixed(1)}" y="${(BASE - 3 - h).toFixed(1)}" width="${Math.max(1.5, xOf(band.hi) - x).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(60)}"/>`);
+  });
+  const support = pool.support?.mode === 'custom' ? pool.support : null;
+  if (support) {
+    const layers = Array.isArray(support.layers) && support.layers.length
+      ? support.layers
+      : [{ sharePercent: 100, lowerMultiplier: 1 - (Number(support.depthPct) || 12) / 100, upperMultiplier: 1 }];
+    const reach = Math.max(12, ...layers.map((layer) => (1 - layer.lowerMultiplier) * 100)) * 1.05;
+    const xDown = (pct) => START - (START - 2) * (pct / reach);
+    const topShare = Math.max(...layers.map((layer) => layer.sharePercent));
+    layers.forEach((layer) => {
+      const x1 = xDown((1 - layer.lowerMultiplier) * 100);
+      const x2 = xDown((1 - layer.upperMultiplier) * 100);
+      const h = 5 + 14 * (layer.sharePercent / topShare);
+      parts.push(`<rect x="${x1.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(1.5, x2 - x1 - 0.8).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(34)};stroke:${color};stroke-width:.6"/>`);
+    });
+  }
+  parts.push(`<line x1="${START}" x2="${START}" y1="3" y2="${BASE + 2}" style="stroke:${color};stroke-width:1.2"/>`);
+  parts.push(`<line x1="1" x2="${RIGHT}" y1="${BASE}" y2="${BASE}" style="stroke:var(--line-strong);stroke-width:.8"/>`);
+  return `<svg class="supply-glyph" viewBox="0 0 ${W} ${H}" aria-hidden="true" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
+}
+
 function feeTierInfo(index) {
   const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
   const tier = tiers.find((item) => item.index === Math.floor(Number(index)));
@@ -7740,6 +7982,12 @@ function renderSupplyEditor() {
 
   const supply = parseWholeNumber($('#tokenSupply').value) || 1000000000;
   const rows = supplyEditorRows();
+  const planPools = currentClassicModel().pools;
+  const planPoolFor = (row) => (row.key === 'sol'
+    ? planPools.find((pool) => pool.id === 'sol-main')
+    : row.key === 'quote'
+      ? planPools.find((pool) => String(pool.id).endsWith('-flywheel'))
+      : planPools.find((pool) => pool.id === row.poolId));
   const total = Math.round(rows.reduce((sum, row) => sum + row.percent, 0) * 100) / 100;
   const remainder = Math.round((100 - total) * 100) / 100;
   const pools = rows.filter((row) => row.kind === 'pool');
@@ -7815,6 +8063,7 @@ function renderSupplyEditor() {
         ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`, 'ladder')}
         ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`, 'support')}
         ${field('Support depth %', 'How far below the start price support reaches.', `<input type="text" inputmode="numeric" autocomplete="off" data-base-field="baseSupportDepth" data-supply-key="sol:depth" value="${escapeHtml(state.baseSupportDepth)}">`)}
+        ${field('Support layers', '', `<textarea rows="3" spellcheck="false" data-base-field="baseSupportLayersText" data-supply-key="sol:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(state.baseSupportLayersText)}</textarea>`, 'layers', true)}
         ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea>`, 'manual', true)}
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>`;
     }
@@ -7838,6 +8087,7 @@ function renderSupplyEditor() {
       ${field('Position slices', SLICE_HINT, `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`, 'slices')}
       ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`, 'ladder')}
       ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`, 'support')}
+      ${field('Support layers', '', `<textarea rows="3" spellcheck="false" data-custom-pool-field="supportLayersText" data-pool-id="${id}" data-supply-key="${key}:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(pool.supportLayersText || '')}</textarea>`, 'layers', true)}
       ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea>`, 'manual', true)}
       <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
 `;
@@ -7868,6 +8118,7 @@ function renderSupplyEditor() {
         <i class="supply-swatch" style="background:${row.color}"></i>
         <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
         <span class="supply-amount" data-supply-amount="${escapeHtml(row.key)}">${compactAmount(supply * row.percent / 100)}</span>
+        ${row.kind === 'pool' ? poolGlyphSvg(planPoolFor(row), row.color) : '<span class="supply-glyph"></span>'}
         ${row.kind === 'pool' ? rowTierSelectHtml(row) : '<span class="supply-tier-spacer"></span>'}
         <label class="supply-percent"><input type="text" inputmode="decimal" autocomplete="off" value="${escapeHtml(String(row.percent))}" ${input} data-supply-key="${escapeHtml(row.key)}" aria-label="${escapeHtml(row.label)} percent of supply"><span>%</span></label>
         ${row.kind === 'pool'
@@ -7916,7 +8167,7 @@ function renderSupplyEditor() {
 // pair, where the SOL pool's price sits. Right of it, price in multiples of the
 // start (log scale): the main position covers all of it, ladder bands add
 // liquidity at their own ranges. Below: the positions the pool is split into.
-function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier = null }) {
+function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier = null, supportLayers = [] }) {
   const W = 640, START = 196, LEFT = 24, RIGHT = 620, BASE = 150;
   const maxMult = Math.max(1000, ...bands.map((band) => band.hi));
   const xOf = (mult) => START + (RIGHT - START) * (Math.log(mult) / Math.log(maxMult));
@@ -7945,13 +8196,28 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier = nu
     parts.push(`<rect class="pm-band" x="${x.toFixed(1)}" y="${(BASE - 22 - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}"/>`);
     if (band.label && w > 26) parts.push(`<text class="pm-tag" x="${(x + w / 2).toFixed(1)}" y="${(BASE - 22 - h - 5).toFixed(1)}" text-anchor="middle">${band.label}</text>`);
   });
-  // support SOL, just below the start price
+  // support SOL, just below the start price: one range, or a layer per range, each as tall as its
+  // share of the quote
   const xs = xDown(depthPct);
   const supportW = START - xs;
   const supportText = `${fmt(supportSol)} SOL · −${fmt(depthPct)}%`;
-  parts.push(supportSol > 0
-    ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/><text class="pm-tag" x="${(START - 6).toFixed(1)}" y="${BASE - 66}" text-anchor="end">${supportText}</text>`
-    : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/>${supportW > 70 ? `<text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>` : ''}`);
+  if (supportSol > 0 && supportLayers.length) {
+    const totalShare = supportLayers.reduce((sum, layer) => sum + layer.sharePercent, 0) || 100;
+    const topShare = Math.max(...supportLayers.map((layer) => layer.sharePercent));
+    supportLayers.forEach((layer) => {
+      const x1 = xDown((1 - layer.lowerMultiplier) * 100);
+      const x2 = xDown((1 - layer.upperMultiplier) * 100);
+      const h = 14 + 46 * (layer.sharePercent / topShare);
+      const sol = supportSol * (layer.sharePercent / totalShare);
+      parts.push(`<rect class="pm-support" x="${x1.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(3, x2 - x1 - 1).toFixed(1)}" height="${h.toFixed(1)}"/>`);
+      if (x2 - x1 > 38) parts.push(`<text class="pm-tag" x="${((x1 + x2) / 2).toFixed(1)}" y="${(BASE - h - 4).toFixed(1)}" text-anchor="middle">${fmt(sol)} SOL</text>`);
+    });
+    parts.push(`<text class="pm-note" x="${LEFT}" y="14">${supportLayers.length} bid layers · down to −${fmt(depthPct)}%</text>`);
+  } else {
+    parts.push(supportSol > 0
+      ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/><text class="pm-tag" x="${(START - 6).toFixed(1)}" y="${BASE - 66}" text-anchor="end">${supportText}</text>`
+      : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/>${supportW > 70 ? `<text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>` : ''}`);
+  }
   // the SOL pool's price, for a pair
   if (premiumDrop > 0) {
     const xp = xDown(premiumDrop);
@@ -8017,7 +8283,7 @@ function poolsMapForPlan(pools = []) {
       tier: feeTierInfo(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
       color: colorOf(pool),
       share,
-      support: pool.support?.mode === 'custom' ? { sol: Number(pool.support.solValue) || 0, depth: Number(pool.support.depthPct) || 12 } : null,
+      support: pool.support?.mode === 'custom' ? { sol: Number(pool.support.solValue) || 0, depth: Number(pool.support.depthPct) || 12, layers: Array.isArray(pool.support.layers) ? pool.support.layers : [] } : null,
       slices: (slices.length ? slices : [100]).map((value) => (value / sliceTotal) * share),
       bands,
     };
@@ -8054,6 +8320,16 @@ function poolsMapForPlan(pools = []) {
   const maxSol = Math.max(1e-9, ...layers.map((layer) => layer.support?.sol || 0));
   layers.forEach((layer) => {
     if (!layer.support || layer.support.sol <= 0) return;
+    if (layer.support.layers.length) {
+      const total = layer.support.layers.reduce((sum, item) => sum + item.sharePercent, 0) || 100;
+      layer.support.layers.forEach((item) => {
+        const x1 = xDown((1 - item.lowerMultiplier) * 100);
+        const x2 = xDown((1 - item.upperMultiplier) * 100);
+        const h = 8 + 52 * ((layer.support.sol * item.sharePercent / total) / maxSol);
+        parts.push(`<rect x="${x1.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(2, x2 - x1 - 1).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 30)};stroke:${layer.color}" stroke-width="1"/>`);
+      });
+      return;
+    }
     const x = xDown(layer.support.depth);
     const h = 14 + 52 * (layer.support.sol / maxSol);
     parts.push(`<rect x="${x.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(3, START - x).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 30)};stroke:${layer.color}" stroke-width="1"/>`);
@@ -8098,6 +8374,7 @@ function poolMapForPool(pool) {
     depthPct: support ? Number(support.depthPct) || 12 : 12,
     slices: slices.length ? slices : [100],
     bands,
+    supportLayers: support && Array.isArray(support.layers) ? support.layers : [],
     tier: feeTierInfo(pool?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
   });
 }
@@ -8109,7 +8386,10 @@ function renderPoolMap(panel) {
   const number = (text, fallback = 0) => { const n = parseNumericInput(String(text), NaN); return Number.isFinite(n) ? n : fallback; };
   const premiumPct = Math.min(500, Math.max(0, number(value(':premium'), 0)));
   const supportSol = Math.max(0, number(value(':support'), 0));
-  const depthPct = Math.min(50, Math.max(1, number(value(':depth'), 12)));
+  const layerInput = analyzeSupportLayers(value(':layers')).layers;
+  const depthPct = layerInput.length
+    ? Math.min(99, Math.max(1, (1 - Math.min(...layerInput.map((layer) => layer.lowerMultiplier))) * 100))
+    : Math.min(50, Math.max(1, number(value(':depth'), 12)));
   const slices = describeSliceInput(value(':slices')).slices;
   const manual = analyzeManualLadder(value(':manual')).bands;
   const count = Math.floor(Math.min(CLASSIC_LADDER_MAX_BANDS, Math.max(0, number(value(':ladder'), 0))));
@@ -8126,7 +8406,7 @@ function renderPoolMap(panel) {
   parts.push(bands.length ? `${bands.length} ladder band${bands.length === 1 ? '' : 's'}` : 'no ladder');
   if (premiumPct > 0) parts.push(`opens ${premiumPct}% above the SOL price`);
   const tierIndex = panel.querySelector('[data-supply-key$=":tier"]')?.value ?? panel.closest('li')?.previousElementSibling?.querySelector('.supply-tier')?.value;
-  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier: feeTierInfo(tierIndex ?? DEFAULT_POOL_CONFIG_INDEX) })}`;
+  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, supportLayers: layerInput, tier: feeTierInfo(tierIndex ?? DEFAULT_POOL_CONFIG_INDEX) })}`;
   if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
 }
 
@@ -8171,6 +8451,27 @@ function renderPoolControlFeedback(target) {
       say('manual', parts.join(' '), ladder.rejected.length ? 'warn' : 'ok');
       flag(manual, ladder.rejected.length > 0);
     }
+
+    const layersField = input(':layers');
+    const supportLayers = analyzeSupportLayers(layersField?.value);
+    if (layersField) {
+      const parts = [];
+      if (supportLayers.layers.length) {
+        const total = supportLayers.layers.reduce((sum, layer) => sum + layer.sharePercent, 0);
+        const lowest = Math.min(...supportLayers.layers.map((layer) => layer.lowerMultiplier));
+        parts.push(`${supportLayers.layers.length} layer${supportLayers.layers.length === 1 ? '' : 's'} down to ${Number((lowest * 100).toFixed(1))}% of the start price.`);
+        if (Math.abs(total - 100) > 0.01) parts.push(`Shares add up to ${Number(total.toFixed(2))}%; they are scaled to 100%.`);
+      }
+      if (supportLayers.rejected.length) {
+        const shown = supportLayers.rejected.slice(0, 3).map((item) => `line ${item.line} "${item.text.slice(0, 24)}"`).join(', ');
+        parts.push(`Skipped ${shown}${supportLayers.rejected.length > 3 ? ` and ${supportLayers.rejected.length - 3} more` : ''}. Each layer needs share %, low× above 0 and high× up to 1.`);
+      }
+      if (supportLayers.overflow) parts.push(`Only the first ${SUPPORT_LAYERS_MAX} layers are used.`);
+      say('layers', parts.join(' '), supportLayers.rejected.length || supportLayers.overflow ? 'warn' : 'ok');
+      flag(layersField, supportLayers.rejected.length > 0);
+    }
+    const depthField = input(':depth');
+    if (depthField) depthField.disabled = supportLayers.layers.length > 0;
 
     const bands = input(':ladder');
     if (bands) {
@@ -8420,6 +8721,7 @@ function renderAirdropPanel() {
 //   SOL,,85,8,,100,5,0.1,12
 //   RUG,RUGx1zSD…,5,4,25,50|50,0,0,12
 //   ladder,50,2,10
+//   bid,70,0.7,1       (a quote-side support layer: share % of the quote, low x, high x)
 const POOL_CONFIG_FORMAT = 'trebuchet-pool-config';
 const POOL_CONFIG_HEADER = 'symbol,mint,supply%,fee tier,start premium %,slices,ladder bands,support SOL,support depth %';
 
@@ -8463,6 +8765,7 @@ function poolConfigToCsv(data = buildPoolConfigExport()) {
       support ? Number(pool.support.depthPct || 12) : 12,
     ].join(','));
     manual.forEach((band) => lines.push(`ladder,${band.supplyPercent},${band.lowerMultiplier},${band.upperMultiplier}`));
+    (support && Array.isArray(pool.support.layers) ? pool.support.layers : []).forEach((layer) => lines.push(`bid,${layer.sharePercent},${layer.lowerMultiplier},${layer.upperMultiplier}`));
   });
   return `${lines.join('\n')}\n`;
 }
@@ -8488,14 +8791,22 @@ function parsePoolConfigCsv(text) {
   const data = { launchSol: undefined, targetMarketCapUsd: undefined, pools: [] };
   let current = null;
   let ladderText = '';
+  let bidText = '';
   const finish = () => {
     if (!current) return;
     const bands = ladderText ? parseManualLadderBands(ladderText) : [];
     if (ladderText && !bands.length) throw new Error(`The ladder lines under ${current.quoteSymbol} have no usable band`);
     if (bands.length) current.ladder = { mode: 'manual', bands };
+    const layers = bidText ? parseSupportLayers(bidText) : [];
+    if (bidText && !layers.length) throw new Error(`The bid lines under ${current.quoteSymbol} have no usable layer`);
+    if (layers.length) {
+      if (current.support.mode !== 'custom') throw new Error(`${current.quoteSymbol} has bid lines but no support SOL`);
+      current.support = { ...current.support, layers };
+    }
     data.pools.push(current);
     current = null;
     ladderText = '';
+    bidText = '';
   };
   String(text || '').split(/\r?\n/).forEach((raw, index) => {
     const line = raw.trim();
@@ -8508,6 +8819,11 @@ function parsePoolConfigCsv(text) {
     if (key === 'ladder') {
       if (!current) throw new Error(`Line ${index + 1}: a ladder line needs a pool above it`);
       ladderText += `${cells.slice(1).join(', ')}\n`;
+      return;
+    }
+    if (key === 'bid') {
+      if (!current) throw new Error(`Line ${index + 1}: a bid line needs a pool above it`);
+      bidText += `${cells.slice(1).join(', ')}\n`;
       return;
     }
     finish();
@@ -13558,7 +13874,7 @@ function buildV2ReportPoolSections(results, config) {
         ${renderV2ReportFactRow('Initial price', pool.initialPrice ?? '-')}
         ${renderV2ReportFactRow('Launch side', pool.launchedSide || '-')}
         ${renderV2ReportFactRow('Ladder', ladder.mode === 'manual' ? `${(ladder.bands || []).length} manual bands` : ladder.mode === 'simple' ? `${ladder.bandCount || 0} bands` : 'off')}
-        ${renderV2ReportFactRow('Support', support.mode === 'custom' ? `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL at ${reportPercent(support.depthPct)} depth` : 'off')}
+        ${renderV2ReportFactRow('Support', support.mode === 'custom' ? (Array.isArray(support.layers) && support.layers.length ? `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL in ${support.layers.length} layers, down to ${reportPercent(support.depthPct)} depth` : `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL at ${reportPercent(support.depthPct)} depth`) : 'off')}
       </div>
       <div class="slice-strip">${distributionRows}</div>
       <div class="pool-addresses">
@@ -15717,7 +16033,7 @@ function renderClassicBridge() {
           <div><dt>Support</dt><dd>${(() => { const sol = topology.pools.reduce((sum, pool) => sum + (pool.support?.mode === 'custom' ? Number(pool.support.solValue) || 0 : 0), 0); return sol > 0 ? `${Number(sol.toFixed(4))} SOL` : 'Off'; })()}</dd></div>
           <div><dt>Start market cap</dt><dd>$${escapeHtml(Number(topology.targetMarketCapUsd || 0).toLocaleString('en-US'))}</dd></div>
           <div><dt>Fee tier</dt><dd>${escapeHtml(feeTierDisplay(topology.pools[0]?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX))}</dd></div>
-          <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}</dd></div>
+          <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}${(() => { const bids = topology.pools.reduce((sum, pool) => sum + (pool.support?.mode === 'custom' ? (pool.support.layers?.length || 1) : 0), 0); return bids ? ` <i>+ ${bids} support</i>` : ''; })()}</dd></div>
           <div><dt>Locked</dt><dd class="${liquidityComplete ? 'is-ok' : ''}">${liquidityComplete ? 'Yes' : 'At creation'}</dd></div>
         </dl>
       </div>
@@ -20266,6 +20582,7 @@ function customizeQuotePool() {
     ladderText: '',
     supportSol: 0,
     supportDepth: 12,
+    supportLayersText: '',
   });
   $('#quotePoolPercent').value = '0';
   $('#quotePoolPercent').dispatchEvent(new Event('input', { bubbles: true }));
@@ -20289,6 +20606,7 @@ function addCustomPool(hub = null) {
     ladderText: '',
     supportSol: 0,
     supportDepth: 12,
+    supportLayersText: '',
   });
   invalidateClassicOutputs();
   renderAll();
@@ -25840,6 +26158,8 @@ function handleDynamicInput(event) {
       state.baseManualLadderText = baseInput.value;
     } else if (baseInput.dataset.baseField === 'baseSupportDepth') {
       state.baseSupportDepth = baseInput.value;
+    } else if (baseInput.dataset.baseField === 'baseSupportLayersText') {
+      state.baseSupportLayersText = baseInput.value;
     }
     invalidateClassicOutputs();
     refreshClassicPreview();
@@ -25936,6 +26256,10 @@ function handleClick(event) {
   if (action === 'toggle-launch-details') {
     state.launchDetailsExpanded = !state.launchDetailsExpanded;
     renderLiveLaunchMonitor();
+    return;
+  }
+  if (action === 'apply-launch-preset') {
+    applyLaunchPreset(actionTarget.dataset.preset).catch((error) => notify(error.message || 'Could not apply the preset'));
     return;
   }
   if (action === 'select-launch-budget') {

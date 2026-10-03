@@ -566,6 +566,7 @@ function customizeQuotePool() {
     ladderText: '',
     supportSol: 0,
     supportDepth: 12,
+    supportLayersText: '',
   });
   $('#quotePoolPercent').value = '0';
   $('#quotePoolPercent').dispatchEvent(new Event('input', { bubbles: true }));
@@ -589,6 +590,7 @@ function addCustomPool(hub = null) {
     ladderText: '',
     supportSol: 0,
     supportDepth: 12,
+    supportLayersText: '',
   });
   invalidateClassicOutputs();
   renderAll();

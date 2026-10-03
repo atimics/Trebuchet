@@ -169,6 +169,8 @@ function handleDynamicInput(event) {
       state.baseManualLadderText = baseInput.value;
     } else if (baseInput.dataset.baseField === 'baseSupportDepth') {
       state.baseSupportDepth = baseInput.value;
+    } else if (baseInput.dataset.baseField === 'baseSupportLayersText') {
+      state.baseSupportLayersText = baseInput.value;
     }
     invalidateClassicOutputs();
     refreshClassicPreview();
@@ -265,6 +267,10 @@ function handleClick(event) {
   if (action === 'toggle-launch-details') {
     state.launchDetailsExpanded = !state.launchDetailsExpanded;
     renderLiveLaunchMonitor();
+    return;
+  }
+  if (action === 'apply-launch-preset') {
+    applyLaunchPreset(actionTarget.dataset.preset).catch((error) => notify(error.message || 'Could not apply the preset'));
     return;
   }
   if (action === 'select-launch-budget') {

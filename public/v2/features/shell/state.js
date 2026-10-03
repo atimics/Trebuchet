@@ -528,6 +528,8 @@ const state = {
   lastClassicDiagnostic: null,
   baseManualLadderText: '',
   baseSupportDepth: 12,
+  baseSupportLayersText: '',
+  launchPresetId: null,
   customPools: [],
   customPoolCounter: 0,
   airdropCsvText: '',

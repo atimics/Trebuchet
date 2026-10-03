@@ -496,6 +496,7 @@ async function spinFlywheelVortex() {
     ladderText: '',
     supportSol: 0,
     supportDepth: 12,
+    supportLayersText: '',
   }));
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(quoteShare);
   if ($('#quotePoolVenue')) $('#quotePoolVenue').value = 'meme';
@@ -600,7 +601,7 @@ function renderLaunchBudgetRecommendation() {
   const budgetSol = Math.max(0, parseNumericInput(budgetInput.value, 0));
   const strategy = launchBudgetRecommendation(budgetSol);
   $$('.launch-budget-presets button').forEach((button) => {
-    button.classList.toggle('is-selected', Number(button.dataset.budget) === budgetSol);
+    button.classList.toggle('is-selected', button.dataset.preset ? button.dataset.preset === state.launchPresetId : Number(button.dataset.budget) === budgetSol);
   });
   const depth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
   target.innerHTML = '';
@@ -619,6 +620,8 @@ function applyLaunchBudgetRecommendation(value, { announce = true } = {}) {
   if ($('#ladderBands')) $('#ladderBands').value = String(strategy.ladderBands);
   if ($('#supportSol')) $('#supportSol').value = String(strategy.supportSol);
   state.baseManualLadderText = '';
+  state.baseSupportLayersText = '';
+  state.launchPresetId = null;
   invalidateClassicOutputs();
   refreshClassicPreview({ includePoolEditor: true });
   renderLaunchBudgetRecommendation();
@@ -639,6 +642,7 @@ function currentClassicModel() {
   const targetMarketCapUsd = Math.max(0, parseNumericInput($('#targetMarketCapUsd').value, 25000));
   const manualBands = parseManualLadderBands(state.baseManualLadderText);
   const supportDepth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
+  const supportLayers = parseSupportLayers(state.baseSupportLayersText);
   const airdrop = currentAirdropPlan();
   const preallocation = currentPreallocationPlan();
 
@@ -660,7 +664,7 @@ function currentClassicModel() {
       ? classicSimpleLadderConfig(ladderBands)
       : { mode: 'off' },
     support: supportSol > 0
-      ? { mode: 'custom', solValue: supportSol, depthPct: supportDepth }
+      ? { mode: 'custom', solValue: supportSol, depthPct: supportDepth, ...(supportLayers.length ? { layers: supportLayers } : {}) }
       : { mode: 'off' },
   };
   const pools = [solPool];
@@ -723,6 +727,7 @@ function currentClassicModel() {
           mode: 'custom',
           solValue: customSupportSol,
           depthPct: clampNumber(parseNumericInput(pool.supportDepth, 12), 1, 50),
+          ...(parseSupportLayers(pool.supportLayersText).length ? { layers: parseSupportLayers(pool.supportLayersText) } : {}),
         }
         : { mode: 'off' },
     });

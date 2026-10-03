@@ -85,6 +85,43 @@ function parseManualLadderBands(value) {
   return analyzeManualLadder(value).bands;
 }
 
+// Support layers, one per line: quote share %, low x, high x. The multiples are of the start price
+// and at most 1 (0.8, 1 is from 20% below the start price up to it). Lines it cannot use are listed
+// in `rejected` (1-based). Blank lines, # comments and a header line are skipped.
+function analyzeSupportLayers(value) {
+  const layers = [];
+  const rejected = [];
+  String(value || '').split(/\r?\n/).forEach((rawLine, lineIndex) => {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) return;
+    const parts = line.split(/[,\t ]+/).map((part) => part.replace(/[x×]$/i, '').trim()).filter(Boolean);
+    if (!parts.length || /share|quote|supply/i.test(parts[0])) return;
+    const sharePercent = parseNumericInput(parts[0], NaN);
+    const lowerMultiplier = parseNumericInput(parts[1], NaN);
+    const upperMultiplier = parseNumericInput(parts[2], NaN);
+    if (
+      Number.isFinite(sharePercent) && sharePercent > 0
+      && Number.isFinite(lowerMultiplier) && lowerMultiplier > 0
+      && Number.isFinite(upperMultiplier) && upperMultiplier > lowerMultiplier && upperMultiplier <= 1
+    ) {
+      layers.push({ sharePercent, lowerMultiplier, upperMultiplier });
+    } else {
+      rejected.push({ line: lineIndex + 1, text: line });
+    }
+  });
+  return { layers: layers.slice(0, SUPPORT_LAYERS_MAX), rejected, overflow: Math.max(0, layers.length - SUPPORT_LAYERS_MAX) };
+}
+
+const SUPPORT_LAYERS_MAX = 6;
+
+function parseSupportLayers(value) {
+  return analyzeSupportLayers(value).layers;
+}
+
+function supportLayersText(layers = []) {
+  return (layers || []).map((layer) => `${layer.sharePercent}, ${layer.lowerMultiplier}, ${layer.upperMultiplier}`).join('\n');
+}
+
 // Reads the custom ladder text. Lines it cannot use are listed in `rejected`
 // (1-based line numbers) so the panel can say which ones were skipped.
 // Blank lines, # comments and a header line are skipped on purpose.
