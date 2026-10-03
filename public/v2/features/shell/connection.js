@@ -369,6 +369,7 @@ async function bootLocalApi() {
   }
   if (state.discovery.scanning) schedulePersonalDiscoveryPoll();
   if (boot.api?.available) {
+    client.syncRentRate?.().then(() => { state.classicFundingEstimate = null; renderAll(); }).catch(() => null);
     refreshDestinations({ force: true });
     autoVerifyQuoteTokens();
     // The one-step card is the static web host's launcher. On the desktop it

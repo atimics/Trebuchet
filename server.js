@@ -1,4 +1,5 @@
 import { listFlywheelHubs, resolveFlywheelHub } from './hubPoolService.js';
+import { setRentLamportsPerByte, rentLamportsPerByte as currentRentRate } from './lpConstants.js';
 import { createSupportPositionRuntime } from './supportPosition.js';
 import { installSupportPositionRoutes } from './supportPositionRoutes.js';
 import { createPositionWithdrawalRuntime } from './positionWithdrawal.js';
@@ -897,6 +898,30 @@ if (runtimeControl) app.use(runtimeControl);
 // mutating the launcher API. The frontend gets the token through /api/session;
 // cross-origin pages can make that request, but cannot read the response
 // without CORS, so they cannot attach the required header.
+// Rent per byte as the chain reports it. The funding estimate scales its rent
+// constants by it. The app asks once at start (GET /api/rent); a lookup is
+// repeated at most every six hours, and a failed one keeps the last rate.
+const RENT_PROBE_BYTES = 10240; // one CLMM tick array
+const RENT_ACCOUNT_OVERHEAD_BYTES = 128;
+const RENT_REFRESH_MS = 6 * 60 * 60 * 1000;
+let rentCheckedAt = 0;
+async function refreshRentRate() {
+  if (Date.now() - rentCheckedAt < RENT_REFRESH_MS) return;
+  rentCheckedAt = Date.now();
+  try {
+    const response = await fetch(getRpcUrl(), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getMinimumBalanceForRentExemption', params: [RENT_PROBE_BYTES] }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const lamports = Number((await response.json())?.result);
+    if (Number.isFinite(lamports) && lamports > 0) {
+      setRentLamportsPerByte(lamports / (RENT_PROBE_BYTES + RENT_ACCOUNT_OVERHEAD_BYTES));
+    }
+  } catch {}
+}
+
 app.get('/api/session', (_req, res) => {
   res
     .set('Cache-Control', 'no-store')
@@ -904,6 +929,11 @@ app.get('/api/session', (_req, res) => {
 });
 
 app.use('/api', apiSessionMiddleware);
+
+app.get('/api/rent', async (_req, res) => {
+  await refreshRentRate();
+  res.set('Cache-Control', 'no-store').json({ success: true, rentLamportsPerByte: currentRentRate });
+});
 
 app.use(express.json({ limit: '5mb' }));
 

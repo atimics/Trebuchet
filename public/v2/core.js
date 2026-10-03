@@ -69,6 +69,7 @@ var TrebuchetCore = (() => {
     NFT_ROYALTY_WARN_BPS: () => NFT_ROYALTY_WARN_BPS,
     NFT_STANDARD_CORE: () => NFT_STANDARD_CORE,
     NFT_SYMBOL_MAX: () => NFT_SYMBOL_MAX,
+    RENT_BASELINE_LAMPORTS_PER_BYTE: () => RENT_BASELINE_LAMPORTS_PER_BYTE,
     SAFETY_BUFFER_PCT: () => SAFETY_BUFFER_PCT,
     STREAMLINED_CLASSIC_REFERENCE_POOLS: () => STREAMLINED_CLASSIC_REFERENCE_POOLS,
     STREAMLINED_COMPRESSED_AIRDROP_SOL: () => STREAMLINED_COMPRESSED_AIRDROP_SOL,
@@ -149,7 +150,9 @@ var TrebuchetCore = (() => {
     priorResultsFromJournal: () => priorResultsFromJournal,
     readImageDimensions: () => readImageDimensions,
     reconstructPartialResultsFromEvents: () => reconstructPartialResultsFromEvents,
+    rentLamportsPerByte: () => rentLamportsPerByte,
     requiredClassicComparisonRowIds: () => requiredClassicComparisonRowIds,
+    setRentLamportsPerByte: () => setRentLamportsPerByte,
     streamlinedIntegrityDigest: () => streamlinedIntegrityDigest,
     tokenCreationComplete: () => tokenCreationComplete,
     tokenProgramAddressForMintFormat: () => tokenProgramAddressForMintFormat,
@@ -360,9 +363,18 @@ var TrebuchetCore = (() => {
   }
 
   // packages/core/src/lp-constants.js
-  var COST_POOL_RENT_SOL = 0.062;
-  var COST_TICK_ARRAY_SOL = 0.0722;
-  var COST_POSITION_SOL = 0.022;
+  var RENT_BASELINE_LAMPORTS_PER_BYTE = 6960;
+  var BASE_RENT_SOL = {
+    pool: 0.062,
+    tickArray: 0.0722,
+    position: 0.022,
+    cpmmPool: 0.062,
+    cpmmLpMint: 2e-3,
+    cpmmVaultAta: 1e-3
+  };
+  var COST_POOL_RENT_SOL = BASE_RENT_SOL.pool;
+  var COST_TICK_ARRAY_SOL = BASE_RENT_SOL.tickArray;
+  var COST_POSITION_SOL = BASE_RENT_SOL.position;
   var COST_LOCK_SOL = 5e-3;
   var COST_TRANSFER_SOL = 5e-3;
   var COST_BS_QUOTE_SOL = 1e-3;
@@ -376,9 +388,23 @@ var TrebuchetCore = (() => {
     if (!count) return 0;
     return count * AIRDROP_ATA_RENT_SOL + Math.ceil(count / AIRDROP_RECIPIENTS_PER_TX) * AIRDROP_TX_FEE_SOL;
   }
-  var CPMM_POOL_RENT_SOL = 0.062;
-  var CPMM_LP_MINT_RENT_SOL = 2e-3;
-  var CPMM_VAULT_ATA_RENT_SOL = 1e-3;
+  var CPMM_POOL_RENT_SOL = BASE_RENT_SOL.cpmmPool;
+  var CPMM_LP_MINT_RENT_SOL = BASE_RENT_SOL.cpmmLpMint;
+  var CPMM_VAULT_ATA_RENT_SOL = BASE_RENT_SOL.cpmmVaultAta;
+  var rentLamportsPerByte = RENT_BASELINE_LAMPORTS_PER_BYTE;
+  function setRentLamportsPerByte(rate) {
+    const value = Number(rate);
+    if (!Number.isFinite(value) || value < 500 || value > 5e4) return rentLamportsPerByte;
+    const scale = value / RENT_BASELINE_LAMPORTS_PER_BYTE;
+    rentLamportsPerByte = value;
+    COST_POOL_RENT_SOL = BASE_RENT_SOL.pool * scale;
+    COST_TICK_ARRAY_SOL = BASE_RENT_SOL.tickArray * scale;
+    COST_POSITION_SOL = BASE_RENT_SOL.position * scale;
+    CPMM_POOL_RENT_SOL = BASE_RENT_SOL.cpmmPool * scale;
+    CPMM_LP_MINT_RENT_SOL = BASE_RENT_SOL.cpmmLpMint * scale;
+    CPMM_VAULT_ATA_RENT_SOL = BASE_RENT_SOL.cpmmVaultAta * scale;
+    return rentLamportsPerByte;
+  }
   var CPMM_LOCK_TRANSFER_SOL = 1e-3;
   var LAUNCH_REPORT_EST_BYTES = 131072;
   var ARWEAVE_LAMPORTS_PER_BYTE = 0.06;

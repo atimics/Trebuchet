@@ -518,6 +518,13 @@
       return request(V2_PERSONAL_DISCOVERY_PATH);
     }
 
+    // Rent changes the funding estimate; the server reads it from the chain.
+    async function syncRentRate() {
+      const data = await request('/api/rent');
+      globalThis.TrebuchetCore?.setRentLamportsPerByte?.(data?.rentLamportsPerByte);
+      return data?.rentLamportsPerByte;
+    }
+
     async function previewLogoStamp({ logo, mint } = {}) {
       return request('/api/v2/logo-stamp-preview', {
         method: 'POST',
@@ -1214,6 +1221,7 @@
       addDiscoveryWallet,
       inspectDiscoveryToken,
       previewLogoStamp,
+      syncRentRate,
       listLaunchJournals,
       listVanityCandidates,
       listManagedWallets,
