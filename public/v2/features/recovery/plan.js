@@ -163,6 +163,10 @@ function restoreLaunchConfigFromJournal(journal = {}) {
       animated: token.logo.animated === true,
     };
     state.launchIdentity = null;
+    // Only while the logo has yet to be uploaded: once the metadata exists, the logo is not resent.
+    if (!journal?.token?.metadataUri) {
+      fitRestoredTokenLogo().catch((error) => { state.tokenLogoError = error.message || 'Token logo failed validation'; renderAll(); });
+    }
   }
   if ($('#mintFormat')) $('#mintFormat').value = token.mintFormat === 'classic-spl'
     ? 'classic-spl'
