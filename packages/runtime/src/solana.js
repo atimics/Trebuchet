@@ -12,6 +12,21 @@ const invalid = (message) => Object.assign(new Error(message), { code: 'TRANSACT
 const unavailable = () => Object.assign(new Error('A complete chain response is required for recovery'), { code: 'CHAIN_STATE_UNAVAILABLE' });
 const ed25519Prefix = Buffer.from('302a300506032b6570032100', 'hex');
 
+// The status read that sets minContextSlot reports the newest slot, while this asks at 'finalized',
+// which trails it by ~32 slots: asking at once is refused with "Minimum context slot has not been
+// reached" (-32016). That is a wait, not a failure, so wait for finality to catch up and ask again.
+async function finalizedBlockhashValidity(connection, blockhash, minContextSlot, { attempts = 60, delayMs = 1000 } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await connection.isBlockhashValid(blockhash, { commitment: 'finalized', minContextSlot });
+    } catch (error) {
+      const notYet = error?.code === -32016 || /minimum context slot has not been reached/i.test(String(error?.message || ''));
+      if (!notYet || attempt >= attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 export function inspectSolanaTransaction(input) {
   let bytes;
   if (typeof input === 'string') {
@@ -97,7 +112,7 @@ export function createSolanaChain({ connection, network, expectedGenesisHash, be
       const height = await connection.getBlockHeight('finalized');
       if (!Number.isSafeInteger(height) || height < 0) throw unavailable();
       if (height <= transaction.lastValidBlockHeight) return { state: 'rebroadcast', evidence: { slot: first.slot, finalizedBlockHeight: height } };
-      const validity = await connection.isBlockhashValid(transaction.blockhash, { commitment: 'finalized', minContextSlot: first.slot });
+      const validity = await finalizedBlockhashValidity(connection, transaction.blockhash, first.slot);
       if (typeof validity?.value !== 'boolean' || !Number.isSafeInteger(validity?.context?.slot) || validity.context.slot < first.slot) throw unavailable();
       // Re-read after expiry checks so a transaction that landed at the end of
       // its valid window is adopted before a replacement can be built.
