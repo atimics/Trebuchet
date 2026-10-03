@@ -395,6 +395,94 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
   return `<svg viewBox="0 0 ${W} ${BASE + 56}" role="img" aria-label="${title}" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
 }
 
+// Every pool of the plan on one price axis, one colour per pool (the supply bar's colours).
+// Each pool's main position is a stripe, support sits left of the start price, ladder bands stand
+// above, and the bar below is every position, its width that position's share of the supply.
+function poolsMapForPlan(pools = []) {
+  const rows = supplyEditorRows();
+  const colorOf = (pool) => {
+    const key = pool.id === 'sol-main' ? 'sol' : pool.id.endsWith('-flywheel') ? 'quote' : `custom:${pool.id}`;
+    return rows.find((row) => row.key === key)?.color || 'var(--green)';
+  };
+  const layers = pools.map((pool) => {
+    const share = Math.max(0, Number(pool.supplyPercent) || 0);
+    const slices = (pool.distribution || []).map((slice) => Number(slice.sharePercent) || 0).filter((value) => value > 0);
+    const sliceTotal = slices.reduce((sum, value) => sum + value, 0) || 100;
+    let bands = [];
+    if (pool.ladder?.mode === 'manual') {
+      bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: share * (Number(band.supplyPercent) || 0) / 100 }));
+    } else if (pool.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
+      const count = pool.ladder.bandCount;
+      const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
+      bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: share / count }));
+    }
+    return {
+      symbol: String(pool.quoteSymbol || pool.quoteToken || 'SOL').toUpperCase(),
+      color: colorOf(pool),
+      share,
+      support: pool.support?.mode === 'custom' ? { sol: Number(pool.support.solValue) || 0, depth: Number(pool.support.depthPct) || 12 } : null,
+      slices: (slices.length ? slices : [100]).map((value) => (value / sliceTotal) * share),
+      bands,
+    };
+  }).filter((layer) => layer.share > 0);
+  if (!layers.length) return '';
+  const W = 640, START = 196, LEFT = 24, RIGHT = 620, BASE = 168;
+  const maxMult = Math.max(1000, ...layers.flatMap((layer) => layer.bands.map((band) => band.hi)));
+  const xOf = (mult) => START + (RIGHT - START) * (Math.log(Math.max(1, mult)) / Math.log(maxMult));
+  const maxDepth = Math.max(12, ...layers.map((layer) => layer.support?.depth || 0)) * 1.1;
+  const xDown = (pct) => START - (START - LEFT) * (pct / maxDepth);
+  const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n.toFixed(2)).toString());
+  const tint = (color, pct) => `color-mix(in srgb, ${color} ${pct}%, transparent)`;
+  const totalShare = layers.reduce((sum, layer) => sum + layer.share, 0) || 100;
+  const parts = [];
+  // main positions: one stripe per pool, thickness by share, stacked on the axis
+  let stackTop = BASE;
+  layers.forEach((layer) => {
+    const h = Math.max(3, 30 * (layer.share / totalShare));
+    stackTop -= h;
+    parts.push(`<rect x="${START}" y="${stackTop.toFixed(1)}" width="${RIGHT - START}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 38)};stroke:${layer.color}" stroke-width="1"/>`);
+  });
+  parts.push(`<text class="pm-note" x="${START + 8}" y="${(BASE - 4).toFixed(1)}">Main positions</text>`);
+  // ladder bands, tallest = the largest share of supply
+  const maxWeight = Math.max(1e-9, ...layers.flatMap((layer) => layer.bands.map((band) => band.weight)));
+  layers.forEach((layer) => {
+    layer.bands.forEach((band) => {
+      const h = 12 + 70 * (band.weight / maxWeight);
+      const x = xOf(band.lo);
+      const w = Math.max(3, xOf(band.hi) - x);
+      parts.push(`<rect x="${x.toFixed(1)}" y="${(stackTop - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 45)};stroke:${layer.color}" stroke-width="1"/>`);
+    });
+  });
+  // support SOL, left of the start price
+  const maxSol = Math.max(1e-9, ...layers.map((layer) => layer.support?.sol || 0));
+  layers.forEach((layer) => {
+    if (!layer.support || layer.support.sol <= 0) return;
+    const x = xDown(layer.support.depth);
+    const h = 14 + 52 * (layer.support.sol / maxSol);
+    parts.push(`<rect x="${x.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(3, START - x).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 30)};stroke:${layer.color}" stroke-width="1"/>`);
+  });
+  const supportSol = layers.reduce((sum, layer) => sum + (layer.support?.sol || 0), 0);
+  if (supportSol > 0) parts.push(`<text class="pm-tag" x="${START - 6}" y="${BASE + 30}" text-anchor="end">${fmt(supportSol)} SOL support</text>`);
+  parts.push(`<line class="pm-start" x1="${START}" x2="${START}" y1="22" y2="${BASE + 6}"/><text class="pm-tag pm-strong" x="${START}" y="14" text-anchor="middle">Start price</text>`);
+  parts.push(`<line class="pm-axis" x1="${LEFT}" x2="${RIGHT}" y1="${BASE}" y2="${BASE}"/>`);
+  for (let m = 1; m <= maxMult; m *= 10) {
+    parts.push(`<line class="pm-axis" x1="${xOf(m).toFixed(1)}" x2="${xOf(m).toFixed(1)}" y1="${BASE}" y2="${BASE + 4}"/><text class="pm-note" x="${xOf(m).toFixed(1)}" y="${BASE + 17}" text-anchor="middle">${m === 1 ? 'start' : `${m}×`}</text>`);
+  }
+  // every position, its width its share of the supply
+  let at = LEFT;
+  const barY = BASE + 40;
+  layers.forEach((layer) => {
+    layer.slices.forEach((share) => {
+      const w = (RIGHT - LEFT) * (share / totalShare);
+      parts.push(`<rect x="${at.toFixed(1)}" y="${barY}" width="${Math.max(1, w - 2).toFixed(1)}" height="18" style="fill:${tint(layer.color, 45)};stroke:${layer.color}" stroke-width="1"/>`);
+      if (w > 40) parts.push(`<text class="pm-tag" x="${(at + w / 2).toFixed(1)}" y="${barY + 13}" text-anchor="middle">${fmt(share)}%</text>`);
+      at += w;
+    });
+  });
+  const legend = layers.map((layer) => `<span><i style="background:${layer.color}"></i>${escapeHtml(layer.symbol)} <b>${fmt(layer.share)}%</b></span>`).join('');
+  return `<svg viewBox="0 0 ${W} ${barY + 28}" role="img" aria-label="Where every pool's liquidity sits" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg><div class="pool-legend">${legend}</div>`;
+}
+
 // The same picture for a pool as the launch will build it (Create liquidity tab).
 function poolMapForPool(pool) {
   const support = pool?.support?.mode === 'custom' ? pool.support : null;

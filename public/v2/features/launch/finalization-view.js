@@ -940,10 +940,10 @@ function renderClassicBridge() {
         ${state.demoActive || liquidityComplete ? '' : `<aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>`}
       </section>
       <div class="plan-preview is-liquidity">
-        <div class="preview-map pool-map" role="group" aria-label="Where this launch puts its liquidity">${poolMapForPool(topology.pools[0])}</div>
+        <div class="preview-map pool-map" role="group" aria-label="Where this launch puts its liquidity">${poolsMapForPlan(topology.pools)}</div>
         <dl class="preview-rows">
-          <div><dt>Pair</dt><dd>${escapeHtml(String(topology.pools[0]?.quoteSymbol || topology.pools[0]?.quoteToken || 'SOL'))}${poolCount > 1 ? ` <i>+${poolCount - 1}</i>` : ''}</dd></div>
-          <div><dt>Support</dt><dd>${topology.pools[0]?.support?.mode === 'custom' ? `${Number(topology.pools[0].support.solValue || 0)} SOL <i>to −${Number(topology.pools[0].support.depthPct || 12)}%</i>` : 'Off'}</dd></div>
+          <div><dt>Pools</dt><dd>${poolCount}</dd></div>
+          <div><dt>Support</dt><dd>${(() => { const sol = topology.pools.reduce((sum, pool) => sum + (pool.support?.mode === 'custom' ? Number(pool.support.solValue) || 0 : 0), 0); return sol > 0 ? `${Number(sol.toFixed(4))} SOL` : 'Off'; })()}</dd></div>
           <div><dt>Start market cap</dt><dd>$${escapeHtml(Number(topology.targetMarketCapUsd || 0).toLocaleString('en-US'))}</dd></div>
           <div><dt>Fee tier</dt><dd>${escapeHtml(feeTierDisplay(topology.pools[0]?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX))}</dd></div>
           <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}</dd></div>

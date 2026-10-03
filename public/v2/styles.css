@@ -17676,3 +17676,7 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 
 /* The Charts bar was the last drawer on a new coin; what it showed lives in the rail and the previews. */
 .launch-toolbar .launch-summary-drawer { display: none !important; }
+.pool-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding-top: 6px; font-size: 12px; color: var(--muted); }
+.pool-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.pool-legend i { width: 9px; height: 9px; display: inline-block; }
+.pool-legend b { font-weight: 500; color: var(--ink); }
