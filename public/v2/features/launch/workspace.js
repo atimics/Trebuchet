@@ -472,14 +472,14 @@ function renderLaunchNextRail(facts, next, workspace) {
     ${walletBlock}${fundingBlock}${positionsBlock}`;
 }
 
-// Each phase owns the settings that belong to it, as at most three tabs, the last
-// being the phase's own action: Token (Details, Address, Create), Liquidity
-// (Price & pool, Pairs, Create), Leftovers (Return & report, Airdrop, Finish).
+// Each phase owns the settings that belong to it as tabs, the last being the phase's
+// own action: Launch setup (Details, Address, Return & report, Airdrop, Create),
+// Liquidity (Price & pool, Pairs, Create), Recovery (Finish, plus Record and Recover).
 // The tab shown is a view: nothing is saved, and nothing counts toward progress.
 const PHASE_TABS = {
-  mint: [{ id: 'details', label: 'Details' }, { id: 'address', label: 'Address' }, { id: 'run', label: 'Create' }],
+  mint: [{ id: 'details', label: 'Details' }, { id: 'address', label: 'Address' }, { id: 'return', label: 'Return & report' }, { id: 'airdrop', label: 'Airdrop' }, { id: 'run', label: 'Create' }],
   liquidity: [{ id: 'price', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }, { id: 'run', label: 'Create' }],
-  finish: [{ id: 'return', label: 'Return & report' }, { id: 'airdrop', label: 'Airdrop' }, { id: 'run', label: 'Finish' }],
+  finish: [{ id: 'run', label: 'Finish' }],
 };
 // Funding's two parts are tabs only when there are pair tokens to acquire; its panel is
 // built by the bridge, so these tabs just choose which part shows.
@@ -495,7 +495,7 @@ function fundTabs() {
     ...(quoteAcquireManualCount() ? [{ id: 'prefund', label: 'Send yourself' }] : []),
   ];
 }
-// Leftovers gains a Record page, and a Recover page when there is something to recover: each
+// Recovery gains a Record page, and a Recover page when there is something to recover: each
 // exists only when the panel built it, so the strip never offers an empty page.
 function finishTabs() {
   const has = (part) => Boolean($(`#classicBridge [data-finish-part="${part}"]`));
@@ -562,6 +562,8 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     bridge.dataset.finishTab = workspace === 'finish' ? current : '';
   }
   strip.style.setProperty('--tabs', String(tabs.length));
+  // One tab is just the panel itself; a strip with a single button says nothing.
+  strip.hidden = tabs.length < 2;
   // Built once per phase and then updated in place, so the focused tab stays focused.
   const structure = `${workspace}|${tabs.map((tab) => tab.id).join(',')}`;
   if (strip.dataset.structure !== structure) {

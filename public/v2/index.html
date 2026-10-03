@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=133">
+  <link rel="stylesheet" href="./styles.css?v=134">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -246,7 +246,7 @@
               </button>
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="mint" data-coin-fact="mint">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Token</strong><small data-coin-fact-value="mint"></small></span>
+                <span><strong>Launch setup</strong><small data-coin-fact-value="mint"></small></span>
               </button>
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="liquidity" data-coin-fact="liquidity">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
@@ -258,7 +258,7 @@
               </button>
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="finish" data-coin-fact="finish">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Leftovers</strong><small data-coin-fact-value="finish"></small></span>
+                <span><strong>Recovery</strong><small data-coin-fact-value="finish"></small></span>
               </button>
             </nav>
 
@@ -415,7 +415,7 @@
                     </div>
                   </form>
 </section>
-<section class="plan-slide" data-plan-slide="return" data-phase="finish" role="tabpanel">
+<section class="plan-slide" data-plan-slide="return" data-phase="mint" role="tabpanel">
 <section class="return-wallet asset-destinations" id="returnWalletCard" aria-label="Where assets go"></section>
 <div class="mini-table" id="reportPreview"></div>
                     <div class="operator-toolbar compact">
@@ -423,7 +423,7 @@
                       <button class="pill-button" type="button" data-action="download-report-preview">Download preview</button>
                     </div>
 </section>
-<section class="plan-slide" data-plan-slide="airdrop" data-phase="finish" role="tabpanel">
+<section class="plan-slide" data-plan-slide="airdrop" data-phase="mint" role="tabpanel">
 <label class="supply-field" for="airdropCsvText"><span>CSV recipients</span></label>
                     <textarea id="airdropCsvText" rows="4" spellcheck="false" placeholder="wallet,tokens&#10;Recipient111...,1000"></textarea>
                     <div class="airdrop-budget-controls">
@@ -759,7 +759,7 @@
   <script src="../gif-optimizer.js?v=3"></script>
   <script src="./core.js?v=3"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=225"></script>
+  <script src="./app.js?v=226"></script>
   <script src="./nfts.js?v=2"></script>
   <script src="./lean.js?v=2"></script>
 </body>

@@ -235,7 +235,7 @@ function renderReturnWalletCard() {
 
 function editReturnWallet() {
   setView('launch');
-  setLaunchWorkspace('finish');
+  setLaunchWorkspace('mint');
   window.requestAnimationFrame(() => {
     setPlanSlide('return');
   });
