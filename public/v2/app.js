@@ -404,6 +404,7 @@ const state = {
   revealingWalletPublicKey: null,
   discardingWalletPublicKey: null,
   sweepingWalletPublicKey: null,
+  sweepAirdropProgress: null,
   lastRecoverySweep: null,
   lastSecretPinReset: null,
   lastRunEnvelope: null,
@@ -15796,10 +15797,10 @@ function renderFinalizationPanel() {
     canPublish || state.reportPublishing
       ? `<button class="pill-button" type="button" data-action="publish-v2-report" ${canPublish ? '' : 'disabled'}>${escapeHtml(reportLabel)}</button>`
       : '',
-    plannedAirdrop > 0
+    plannedAirdrop > 0 && !liveCoinFinishesOnCoinPage()
       ? `<button class="pill-button" type="button" data-action="run-v2-airdrop" ${canRunAirdrop ? '' : 'disabled'}>${escapeHtml(airdropLabel)}</button>`
       : '',
-    failedAirdrop > 0
+    failedAirdrop > 0 && !liveCoinFinishesOnCoinPage()
       ? `<button class="pill-button" type="button" data-action="retry-v2-airdrop" ${canRetryAirdrop ? '' : 'disabled'}>Retry failed</button>`
       : '',
     '<button class="pill-button" type="button" data-action="load-v2-proof">Load proof</button>',
@@ -16350,7 +16351,11 @@ function renderClassicBridge() {
       ${practiceComplete ? renderPracticeResultPanel() : ''}
       ${completedJournal && !finalSweepComplete ? renderLaunchCompleteCard(completedJournal) : ''}
       ${!completedJournal && !finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
-      ${!finalSweepComplete && finishDestinationReady ? readinessPanel({
+      ${!finalSweepComplete && liveCoinFinishesOnCoinPage() ? `<section class="readiness-panel is-primary" aria-label="Airdrop and sweep">
+        <div><h3>Airdrop and sweep on the coin page</h3><p>The coin page sends the saved airdrop, then everything left in the launch wallet to the return wallet, and shows each step as it lands.</p></div>
+        <button class="primary-button" type="button" data-action="inspect-recovery"><span>Open the coin page</span><i class="fa-solid fa-arrow-right"></i></button>
+      </section>` : ''}
+      ${!finalSweepComplete && finishDestinationReady && !liveCoinFinishesOnCoinPage() ? readinessPanel({
         title: 'Send everything to the return wallet',
         detail: 'Fee Keys, airdrops, leftover tokens and SOL. The return wallet is checked again first.',
         canRun: finishCanRun,
@@ -16363,7 +16368,7 @@ function renderClassicBridge() {
       </div>
       ${(completedJournal && !finalSweepComplete) || practiceComplete ? '' : `<div data-finish-part="record">${renderFinalizationPanel()}</div>`}
       ${!finalSweepComplete && !completedJournal ? `<div data-finish-part="recover">${renderCancelRefundPanel(config)}
-      <div class="launch-phase-secondary"><button class="text-button" type="button" data-view="history"><i class="fa-solid fa-life-ring"></i> Open full recovery history</button></div></div>` : ''}
+      <div class="launch-phase-secondary"><button class="text-button" type="button" data-action="inspect-recovery"><i class="fa-solid fa-life-ring"></i> ${proofTokenMint(currentLaunchProof()) ? 'Open this coin\'s page' : 'Unfinished launches'}</button></div></div>` : ''}
     </section>
   `;
   // The bridge was just rewritten: which Funding tab shows has to follow it.
@@ -16371,6 +16376,15 @@ function renderClassicBridge() {
   // Balance polling and other async refreshes rebuild this bridge directly.
   // Reapply the active workspace immediately so only one launch phase is visible.
   renderLaunchWorkspace();
+}
+
+// A real coin whose pools are done finishes on its coin page: the airdrop, the sweep, and their
+// progress live there, so this page does not offer a second way to run them. A test launch runs
+// everything here.
+function liveCoinFinishesOnCoinPage() {
+  const proof = currentLaunchProof();
+  if (!proofTokenMint(proof) || isDemoLaunchProof(proof) || state.demoActive) return false;
+  return state.executionReadiness?.nextEndpoint === '/api/transfer-assets';
 }
 
 function activityLogEntries() {
@@ -19454,511 +19468,6 @@ function renderSettings() {
     ${renderRpcSettingsPanel()}`;
 }
 
-function recoveryGuideModel({
-  wallets = [],
-  selectedPublicKey = null,
-  selectedPending = false,
-  recoverableCount = 0,
-  secretLocked = false,
-  lastSweep = null,
-  busy = false,
-} = {}) {
-  const selectedWallet = wallets.find((wallet) => wallet.publicKey === selectedPublicKey) || null;
-  const firstRecoverable = wallets.find((wallet) => !wallet.decryptionFailed) || null;
-  if (state.apiStatus !== 'connected') {
-    return {
-      state: 'warn',
-      badge: 'Local app',
-      title: 'Open Trebuchet locally',
-      detail: 'Recovery inventory, secret reveal, and abandoned-wallet sweep need the authenticated local app.',
-      items: ['Open the OS X app, then return to History.', 'Do not discard local recovery files manually.'],
-      actions: [],
-    };
-  }
-  if (lastSweep?.error) {
-    return {
-      state: 'danger',
-      badge: 'Retry',
-      title: 'Sweep failed',
-      detail: 'The recovery wallet was not cleared. Retry after checking PIN, destination, and RPC health.',
-      items: recoverySweepNextSteps(lastSweep),
-      actions: lastSweep.publicKey && !busy
-        ? [{ label: 'Retry sweep', action: 'sweep-recovery-wallet', wallet: lastSweep.publicKey, danger: true }]
-        : [],
-    };
-  }
-  if (lastSweep?.partial || lastSweep?.stillPending) {
-    return {
-      state: 'warn',
-      badge: 'Partial',
-      title: 'Recovery still active',
-      detail: 'Trebuchet kept the local recovery entry so you can retry instead of losing track of assets.',
-      items: recoverySweepNextSteps(lastSweep),
-      actions: lastSweep.publicKey && !busy
-        ? [
-          { label: 'Retry sweep', action: 'sweep-recovery-wallet', wallet: lastSweep.publicKey, danger: true },
-          { label: 'Select wallet', action: 'select-recovery-wallet', wallet: lastSweep.publicKey },
-        ]
-        : [],
-    };
-  }
-  if (secretLocked && recoverableCount > 0) {
-    return {
-      state: 'warn',
-      badge: 'PIN',
-      title: 'Unlock before recovery',
-      detail: `${recoverableCount} recoverable launch wallet${recoverableCount === 1 ? '' : 's'} need the Recovery PIN before reveal or sweep.`,
-      items: ['Unlock the Recovery PIN.', 'Select the wallet that matches the failed launch journal.', 'Sweep assets only after verifying the destination wallet.'],
-      actions: [{ label: 'Unlock PIN', action: 'unlock-secret-pin' }],
-    };
-  }
-  if (selectedWallet && selectedPending) {
-    return {
-      state: '',
-      badge: 'Selected',
-      title: 'Recover selected wallet',
-      detail: 'Inspect, reveal for manual recovery, sweep stranded assets, or reuse this launch wallet for the next run.',
-      items: ['Copy the address and compare it with the failed launch journal.', 'Use for launch makes it the launch wallet.', 'Reveal only if manual recovery is needed.', 'Sweep moves assets and clears the entry only after empty-wallet verification.'],
-      actions: [
-        { label: 'Use for launch', action: 'use-recovery-wallet-for-launch', wallet: selectedWallet.publicKey },
-        { label: 'Reveal secret', action: selectedWallet.secretPinLocked ? 'unlock-secret-pin' : 'reveal-recovery-wallet', wallet: selectedWallet.publicKey },
-        { label: 'Sweep wallet', action: selectedWallet.secretPinLocked ? 'unlock-secret-pin' : 'sweep-recovery-wallet', wallet: selectedWallet.publicKey, danger: true },
-      ],
-    };
-  }
-  if (firstRecoverable) {
-    return {
-      state: 'warn',
-      badge: 'Select',
-      title: 'Choose a recovery wallet',
-      detail: `${wallets.length} pending launch wallet${wallets.length === 1 ? '' : 's'} are available. Select one to align it with a journal or manual cleanup path.`,
-      items: ['Start with the wallet shown in the failed journal.', 'Use QR/copy for inspection before sweeping.', 'Discard only after assets are empty or backed up.'],
-      actions: [{ label: 'Select first wallet', action: 'select-recovery-wallet', wallet: firstRecoverable.publicKey }],
-    };
-  }
-  if (lastSweep && !lastSweep.error) {
-    return {
-      state: '',
-      badge: 'Clean',
-      title: 'Recovery cleanup recorded',
-      detail: 'The last sweep cleared its local recovery entry.',
-      items: recoverySweepNextSteps(lastSweep),
-      actions: [],
-    };
-  }
-  if (state.recovery.failedJournalCount > 0 || state.recovery.activeJournalCount > 0) {
-    return {
-      state: 'warn',
-      badge: 'Journal',
-      title: 'Review launch journals',
-      detail: 'No pending wallet is selected, but recovery journals still need review.',
-      items: ['Use the timeline resume plan below.', 'Unsafe partial pool states stay manual to avoid duplicate on-chain work.'],
-      actions: [],
-    };
-  }
-  return {
-    state: '',
-    badge: 'Clear',
-    title: 'No recovery action needed',
-    detail: 'No abandoned launch wallets are waiting for recovery or cleanup.',
-    items: ['Keep reports and proof bundles with the launch notes.'],
-    actions: [],
-  };
-}
-
-function renderRecoveryGuide(model) {
-  const actions = model.actions.map((action) => `
-    <button class="pill-button ${action.danger ? 'danger' : ''}" type="button" data-action="${escapeHtml(action.action)}" ${action.wallet ? `data-wallet="${escapeHtml(action.wallet)}"` : ''}>
-      ${escapeHtml(action.label)}
-    </button>
-  `).join('');
-  return `
-    <div class="recovery-guide ${escapeHtml(model.state)}">
-      <div class="recovery-guide-head">
-        <span>
-          <span class="eyebrow">Recovery guide</span>
-          <strong>${escapeHtml(model.title)}</strong>
-          <em>${escapeHtml(model.detail)}</em>
-        </span>
-        <span class="risk-badge ${escapeHtml(model.state)}">${escapeHtml(model.badge)}</span>
-      </div>
-      <ul>${model.items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
-      ${actions ? `<div class="operator-toolbar compact">${actions}</div>` : ''}
-    </div>
-  `;
-}
-
-function recoveryWizardActionButton(action) {
-  const attrs = [
-    `data-action="${escapeHtml(action.action)}"`,
-    action.wallet ? `data-wallet="${escapeHtml(action.wallet)}"` : '',
-    action.journalId ? `data-journal-id="${escapeHtml(action.journalId)}"` : '',
-    action.step ? `data-step="${escapeHtml(action.step)}"` : '',
-  ].filter(Boolean).join(' ');
-  return `
-    <button class="pill-button ${action.danger ? 'danger' : ''}" type="button" ${attrs} ${action.disabled ? 'disabled' : ''}>
-      ${action.icon ? `<i class="fa-solid ${escapeHtml(action.icon)}"></i>` : ''}
-      <span>${escapeHtml(action.label)}</span>
-    </button>
-  `;
-}
-
-function recoveryWizardModel({
-  wallets = [],
-  selectedPublicKey = null,
-  selectedPending = false,
-  recoverableCount = 0,
-  secretLocked = false,
-  lastSweep = null,
-  busy = false,
-} = {}) {
-  const journals = state.apiStatus === 'connected' ? state.recovery.journals : [];
-  const activeJournals = journals.filter((journal) => !isTerminalJournal(journal));
-  const journalModels = activeJournals.map((journal) => ({
-    journal,
-    plan: journalResumePlan(journal),
-    matchingWallet: wallets.find((wallet) => wallet.publicKey === journal.walletPublicKey) || null,
-  }));
-  const tokenFinishModels = journalModels.filter((item) => journalNeedsTokenFinish(item.journal));
-  const manualModels = journalModels.filter((item) => item.plan.manualRecoveryRequired);
-  const finishModels = journalModels.filter((item) => canContinueJournalToFinish(item.journal));
-  const resumableModels = journalModels.filter((item) => canResumeJournal(item.journal));
-  const selectedWallet = wallets.find((wallet) => wallet.publicKey === selectedPublicKey) || null;
-  const selectedJournalModel = journalModels.find((item) => item.journal.walletPublicKey === selectedPublicKey)
-    || tokenFinishModels[0]
-    || finishModels[0]
-    || manualModels[0]
-    || resumableModels[0]
-    || journalModels[0]
-    || null;
-  const firstRecoverable = wallets.find((wallet) => !wallet.decryptionFailed) || null;
-  const hasDecryptionFailures = wallets.some((wallet) => wallet.decryptionFailed);
-
-  const inventoryState = state.apiStatus !== 'connected'
-    ? 'warn'
-    : manualModels.length
-      ? 'danger'
-      : (activeJournals.length || wallets.length || lastSweep?.partial || lastSweep?.error)
-        ? 'warn'
-        : 'pass';
-  const unlockState = state.apiStatus !== 'connected'
-    ? 'warn'
-    : recoverableCount === 0 && !hasDecryptionFailures
-      ? 'pass'
-      : hasDecryptionFailures
-        ? 'danger'
-        : !state.secretPin.configured
-          ? 'danger'
-          : secretLocked
-            ? 'warn'
-            : 'pass';
-  const pathState = state.apiStatus !== 'connected'
-    ? 'warn'
-    : manualModels.length
-      ? 'danger'
-      : finishModels.length || resumableModels.length || selectedPending || wallets.length
-        ? 'warn'
-        : 'pass';
-  const verifyState = lastSweep?.error
-    ? 'danger'
-    : lastSweep?.partial || lastSweep?.stillPending
-      ? 'warn'
-      : activeJournals.length || wallets.length
-        ? 'warn'
-        : 'pass';
-
-  const inventoryActions = [];
-  if (selectedJournalModel?.matchingWallet) {
-    inventoryActions.push({
-      label: 'Select matching wallet',
-      action: 'select-recovery-wallet',
-      wallet: selectedJournalModel.matchingWallet.publicKey,
-      icon: 'fa-wallet',
-    });
-  }
-  if (selectedJournalModel?.journal?.id && journalNeedsTokenFinish(selectedJournalModel.journal)) {
-    inventoryActions.push({
-      label: 'Open token recovery',
-      action: 'open-token-recovery',
-      journalId: selectedJournalModel.journal.id,
-      icon: 'fa-rotate-right',
-    });
-  } else if (selectedJournalModel?.journal?.id && canContinueJournalToFinish(selectedJournalModel.journal)) {
-    inventoryActions.push({
-      label: 'Continue to Finish',
-      action: 'continue-journal-finish',
-      journalId: selectedJournalModel.journal.id,
-      icon: 'fa-flag-checkered',
-    });
-  } else if (selectedJournalModel?.journal?.id && canResumeJournal(selectedJournalModel.journal)) {
-    inventoryActions.push({
-      label: 'Resume journal',
-      action: 'resume-journal',
-      journalId: selectedJournalModel.journal.id,
-      icon: 'fa-rotate-right',
-    });
-  }
-
-  const unlockActions = [];
-  if (state.apiStatus !== 'connected') {
-    unlockActions.push({ label: 'Retry local API', action: 'retry-local-api', icon: 'fa-rotate-right' });
-  } else if (!state.secretPin.configured) {
-    unlockActions.push({ label: 'Set Recovery PIN', action: 'setup-secret-pin', icon: 'fa-key' });
-  } else if (secretLocked && recoverableCount > 0) {
-    unlockActions.push({ label: 'Unlock PIN', action: 'unlock-secret-pin', icon: 'fa-lock-open' });
-  } else if (selectedWallet && selectedPending) {
-    unlockActions.push({
-      label: 'Reveal selected wallet',
-      action: selectedWallet.secretPinLocked ? 'unlock-secret-pin' : 'reveal-recovery-wallet',
-      wallet: selectedWallet.publicKey,
-      icon: 'fa-eye',
-    });
-  }
-
-  const pathActions = [];
-  if (tokenFinishModels[0]?.journal?.id) {
-    pathActions.push({
-      label: 'Continue token recovery',
-      action: 'open-token-recovery',
-      journalId: tokenFinishModels[0].journal.id,
-      icon: 'fa-rotate-right',
-    });
-  } else if (finishModels[0]?.journal?.id) {
-    pathActions.push({
-      label: 'Continue to Finish',
-      action: 'continue-journal-finish',
-      journalId: finishModels[0].journal.id,
-      icon: 'fa-flag-checkered',
-    });
-  } else if (manualModels[0]?.matchingWallet) {
-    pathActions.push({
-      label: 'Reveal for manual recovery',
-      action: manualModels[0].matchingWallet.secretPinLocked || secretLocked ? 'unlock-secret-pin' : 'reveal-recovery-wallet',
-      wallet: manualModels[0].matchingWallet.publicKey,
-      danger: true,
-      icon: 'fa-key',
-    });
-  } else if (resumableModels[0]?.journal?.id) {
-    pathActions.push({
-      label: 'Resume missing work',
-      action: 'resume-journal',
-      journalId: resumableModels[0].journal.id,
-      icon: 'fa-rotate-right',
-    });
-  } else if (selectedWallet && selectedPending) {
-    pathActions.push(
-      { label: 'Use for launch', action: 'use-recovery-wallet-for-launch', wallet: selectedWallet.publicKey, icon: 'fa-check' },
-      {
-        label: 'Sweep wallet',
-        action: selectedWallet.secretPinLocked || secretLocked ? 'unlock-secret-pin' : 'sweep-recovery-wallet',
-        wallet: selectedWallet.publicKey,
-        danger: true,
-        icon: 'fa-broom',
-      },
-    );
-  } else if (firstRecoverable) {
-    pathActions.push({
-      label: 'Select wallet',
-      action: 'select-recovery-wallet',
-      wallet: firstRecoverable.publicKey,
-      icon: 'fa-wallet',
-    });
-  }
-
-  const verifyActions = [];
-  if ((lastSweep?.error || lastSweep?.partial || lastSweep?.stillPending) && lastSweep.publicKey && !busy) {
-    verifyActions.push({
-      label: 'Retry sweep',
-      action: 'sweep-recovery-wallet',
-      wallet: lastSweep.publicKey,
-      danger: true,
-      icon: 'fa-rotate-right',
-    });
-  }
-  if (selectedJournalModel?.journal?.id && canDismissJournal(selectedJournalModel.journal)) {
-    verifyActions.push({
-      label: 'Dismiss journal',
-      action: 'dismiss-journal',
-      journalId: selectedJournalModel.journal.id,
-      danger: true,
-      icon: 'fa-box-archive',
-    });
-  }
-
-  const screens = [
-    {
-      id: 'inventory',
-      label: 'Find',
-      title: inventoryState === 'pass' ? 'Nothing to recover' : 'Unfinished launches and old wallets',
-      detail: state.apiStatus !== 'connected'
-        ? 'History needs the desktop app to load journals and pending wallets.'
-        : `${activeJournals.length} unfinished launch${activeJournals.length === 1 ? '' : 'es'} · ${wallets.length} old launch wallet${wallets.length === 1 ? '' : 's'}.`,
-      state: inventoryState,
-      stats: [
-        ['Journals', activeJournals.length],
-        ['Pending wallets', wallets.length],
-        ['Manual blockers', manualModels.length],
-      ],
-      items: state.apiStatus !== 'connected'
-        ? ['Open through the Trebuchet desktop app.', 'Keep recovery files in place until inventory loads.']
-        : [
-          selectedJournalModel ? `${selectedJournalModel.plan.title}: ${selectedJournalModel.plan.detail}` : 'No failed launch journal selected.',
-          manualModels.length ? 'Manual recovery blockers are shown before automatic resume actions.' : 'Automatic resume is allowed only when prior checkpoints are safe.',
-        ],
-      actions: inventoryActions,
-    },
-    {
-      id: 'unlock',
-      label: 'Unlock',
-      title: unlockState === 'pass' ? 'Wallets unlocked' : 'Unlock old launch wallets',
-      detail: recoverableCount
-        ? `${recoverableCount} old launch wallet${recoverableCount === 1 ? '' : 's'} can be swept or revealed with the Recovery PIN.`
-        : hasDecryptionFailures
-          ? (wallets.some((wallet) => wallet.secretState === 'missing')
-            ? 'The saved key is gone from this computer for some wallets. Unlocking will not help. Restore it from a backup, or create a new wallet.'
-            : wallets.some((wallet) => wallet.secretState === 'wrong-key')
-              ? 'Some keys were saved under a different PIN and cannot be opened with this one.'
-              : 'Some local wallet metadata exists but the saved key cannot be read on this computer.')
-          : 'No pending wallet secrets are waiting.',
-      state: unlockState,
-      stats: [
-        ['PIN', state.secretPin.configured ? secretLocked ? 'Locked' : 'Ready' : 'Unset'],
-        ['Recoverable', recoverableCount],
-        ['Secret errors', wallets.filter((wallet) => wallet.decryptionFailed).length],
-      ],
-      items: [
-        state.secretPin.configured ? 'Recovery PIN gates reveal, sweep, and manual recovery actions.' : 'Set a Recovery PIN before storing new launch secrets.',
-        hasDecryptionFailures ? 'Use an external backup for wallets whose saved key cannot be read here.' : 'Reveal secrets only for manual recovery; prefer resume or sweep when available.',
-      ],
-      actions: unlockActions,
-    },
-    {
-      id: 'path',
-      label: 'Act',
-      title: tokenFinishModels.length ? 'Finish the existing token' : manualModels.length ? 'Manual recovery required' : finishModels.length ? 'Continue to final sweep' : resumableModels.length ? 'Resume only missing work' : selectedPending ? 'Recover selected wallet' : 'Choose recovery path',
-      detail: tokenFinishModels.length
-        ? tokenFinishModels[0].plan.detail
-        : manualModels.length
-        ? manualModels[0].plan.detail
-        : finishModels.length
-          ? 'Liquidity is already recorded. Open Finish directly for report, airdrop, return wallet, and final sweep.'
-        : resumableModels.length
-          ? resumableModels[0].plan.detail
-          : selectedPending
-            ? 'Use, reveal, or sweep the selected pending launch wallet.'
-            : 'Select a pending wallet or journal before acting.',
-      state: pathState,
-      stats: [
-        ['Token finish', tokenFinishModels.length],
-        ['Ready to finish', finishModels.length],
-        ['Needs liquidity', resumableModels.length],
-        ['Manual', manualModels.length],
-      ],
-      items: tokenFinishModels[0]?.plan.items || manualModels[0]?.plan.items || finishModels[0]?.plan.items || resumableModels[0]?.plan.items || [
-        'Resume skips recorded on-chain work when journal checkpoints prove it is safe.',
-        'Sweep stranded assets only after verifying the destination wallet.',
-      ],
-      actions: pathActions,
-    },
-    {
-      id: 'verify',
-      label: 'Verify',
-      title: verifyState === 'pass' ? 'Recovery cleanup verified' : 'Verify cleanup state',
-      detail: lastSweep
-        ? lastSweep.error
-          ? 'The last sweep failed and the wallet remains tracked.'
-          : lastSweep.partial || lastSweep.stillPending
-            ? 'The last sweep left assets or warnings; keep the recovery entry.'
-            : 'The last sweep cleared its local recovery entry.'
-        : activeJournals.length || wallets.length
-          ? 'Recovery inventory still needs review before dismissal.'
-          : 'No abandoned wallet or active launch journal remains.',
-      state: verifyState,
-      stats: [
-        ['Last sweep', lastSweep ? lastSweep.error ? 'Failed' : lastSweep.partial || lastSweep.stillPending ? 'Partial' : 'Clean' : 'None'],
-        ['Open journals', activeJournals.length],
-        ['Wallet entries', wallets.length],
-      ],
-      items: lastSweep ? recoverySweepNextSteps(lastSweep) : [
-        'Confirm destination balances externally after any sweep.',
-        'Dismiss journals only after reports, proof, and assets are accounted for.',
-      ],
-      actions: verifyActions,
-    },
-  ];
-
-  const active = screens.find((screen) => screen.state === 'danger' && screen.actions.length)
-    || screens.find((screen) => screen.state === 'warn' && screen.actions.length)
-    || screens.find((screen) => screen.state === 'danger')
-    || screens.find((screen) => screen.state === 'warn')
-    || screens[0];
-
-  return {
-    screens,
-    active,
-    headline: state.apiStatus !== 'connected'
-      ? 'Open the Trebuchet desktop app to see recovery'
-      : manualModels.length
-      ? 'A launch needs manual recovery'
-      : tokenFinishModels.length
-        ? 'A token was left unfinished'
-      : finishModels.length
-        ? 'A launch is ready to finish'
-      : resumableModels.length
-        ? 'A launch can resume'
-        : activeJournals.length || wallets.length
-          ? 'Old launch wallets to check'
-          : 'Nothing to recover',
-  };
-}
-
-function renderRecoveryWizard(model) {
-  if (!model?.screens?.length) return '';
-  const active = model.active;
-  const actions = active.actions.map(recoveryWizardActionButton).join('');
-  const openCount = model.screens.filter((screen) => screen.state !== 'pass').length;
-  if (active.state === 'pass' && openCount === 0 && !actions) {
-    return `
-      <section class="recovery-wizard-panel pass" aria-label="Recovery next action">
-        <div class="recovery-wizard-head">
-          <strong>Nothing to recover.</strong>
-        </div>
-      </section>
-    `;
-  }
-  return `
-    <section class="recovery-wizard-panel ${escapeHtml(active.state)}" aria-label="Recovery next action">
-      <div class="recovery-wizard-head">
-        <span>
-          <span class="eyebrow">Recovery</span>
-          <strong>${escapeHtml(model.headline)}</strong>
-        </span>
-        <span class="risk-badge ${escapeHtml(active.state === 'pass' ? '' : active.state)}">${escapeHtml(active.state === 'danger' ? 'Manual' : active.state === 'warn' ? 'Review' : 'Clear')}</span>
-      </div>
-      <div class="recovery-wizard-screen">
-        <div class="recovery-next-action">
-          <span class="eyebrow">Next action</span>
-          <h3>${escapeHtml(active.title)}</h3>
-          <p>${escapeHtml(active.detail)}</p>
-        </div>
-        ${actions ? `<div class="recovery-wizard-actions">${actions}</div>` : ''}
-        <section class="recovery-wizard-details">
-          <header class="recovery-wizard-head"><span>Recovery details</span><strong>${openCount ? `${openCount} open` : 'All clear'}</strong></header>
-          <div class="recovery-wizard-stats">
-            ${active.stats.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join('')}
-          </div>
-          <ul>${active.items.slice(0, 4).map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
-          <div class="recovery-status-list" role="list" aria-label="Recovery status">
-            ${model.screens.map((screen) => `
-              <span role="listitem"><strong>${escapeHtml(screen.label)}</strong><em>${escapeHtml(screen.state === 'pass' ? 'Clear' : screen.state === 'danger' ? 'Manual' : 'Review')}</em></span>
-            `).join('')}
-          </div>
-        </section>
-      </div>
-    </section>
-  `;
-}
-
 function renderSecretPinResetAudit(reset) {
   if (!reset) return '';
   const removed = reset.removed || {};
@@ -19994,18 +19503,7 @@ function renderRecoveryWalletWorkspace() {
   const selectedPublicKey = selectedLaunchWalletPublicKey();
   const secretLocked = state.secretPin.locked;
   const busy = Boolean(state.fullRunRunning || state.realExecutionRunning);
-  const recoverableCount = wallets.filter((wallet) => !wallet.decryptionFailed).length;
-  const selectedPending = wallets.some((wallet) => wallet.publicKey === selectedPublicKey);
   const lastSweep = state.lastRecoverySweep;
-  const guide = recoveryGuideModel({
-    wallets,
-    selectedPublicKey,
-    selectedPending,
-    recoverableCount,
-    secretLocked,
-    lastSweep,
-    busy,
-  });
 
   $('#recoveryWalletWorkspace').innerHTML = `
     <div class="recovery-wallet-head">
@@ -20019,7 +19517,6 @@ function renderRecoveryWalletWorkspace() {
             : 'The launch wallet in use is on the Wallet page.'}</p>
       </span>
     </div>
-    ${wallets.length ? renderRecoveryGuide(guide) : ''}
     ${wallets.length ? `
       <div class="recovery-wallet-list">
         ${wallets.map((wallet) => {
@@ -20029,6 +19526,7 @@ function renderRecoveryWalletWorkspace() {
           const revealLabel = secretLocked || wallet.secretPinLocked ? 'Unlock PIN' : 'Reveal';
           const discardBusy = state.discardingWalletPublicKey === wallet.publicKey;
           const sweepBusy = state.sweepingWalletPublicKey === wallet.publicKey;
+          const coinMint = recoveryCoinMint((state.recovery.journals || []).find((journal) => journal.walletPublicKey === wallet.publicKey && !isTerminalJournal(journal)));
           const sweepAction = secretLocked || wallet.secretPinLocked ? 'unlock-secret-pin' : 'sweep-recovery-wallet';
           const sweepLabel = secretLocked || wallet.secretPinLocked ? 'Unlock PIN' : sweepBusy ? 'Sweeping' : 'Sweep';
           return `
@@ -20048,9 +19546,13 @@ function renderRecoveryWalletWorkspace() {
                 <button class="pill-button" type="button" data-action="${escapeHtml(revealAction)}" data-wallet="${escapeHtml(wallet.publicKey)}" ${wallet.decryptionFailed ? 'disabled' : ''}>
                   <i class="fa-solid fa-key"></i><span>${escapeHtml(revealLabel)}</span>
                 </button>
-                <button class="pill-button danger" type="button" data-action="${escapeHtml(sweepAction)}" data-wallet="${escapeHtml(wallet.publicKey)}" ${wallet.decryptionFailed || busy || sweepBusy ? 'disabled' : ''}>
+                ${coinMint ? `<button class="pill-button" type="button" data-action="open-coin-mint" data-mint="${escapeHtml(coinMint)}">
+                  <i class="fa-solid fa-arrow-right"></i><span>Open coin</span>
+                </button>` : `<button class="pill-button" type="button" data-action="use-recovery-wallet-for-launch" data-wallet="${escapeHtml(wallet.publicKey)}" ${wallet.decryptionFailed || busy ? 'disabled' : ''}>
+                  <i class="fa-solid fa-check"></i><span>Use for launch</span>
+                </button><button class="pill-button danger" type="button" data-action="${escapeHtml(sweepAction)}" data-wallet="${escapeHtml(wallet.publicKey)}" ${wallet.decryptionFailed || busy || sweepBusy ? 'disabled' : ''}>
                   <i class="fa-solid fa-broom"></i><span>${escapeHtml(sweepLabel)}</span>
-                </button>
+                </button>`}
                 <button class="pill-button danger" type="button" data-action="discard-recovery-wallet" data-wallet="${escapeHtml(wallet.publicKey)}" ${busy || discardBusy ? 'disabled' : ''}>
                   <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
                 </button>
@@ -20129,18 +19631,64 @@ function recoveryWalletsNeedingAttention() {
     .filter((wallet) => wallet.publicKey !== selectedPublicKey || selectedHasOpenJournal);
 }
 
-function currentRecoveryWizardModel() {
-  const selectedPublicKey = selectedLaunchWalletPublicKey();
-  const wallets = recoveryWalletsNeedingAttention();
-  return recoveryWizardModel({
-    wallets,
-    selectedPublicKey,
-    selectedPending: wallets.some((wallet) => wallet.publicKey === selectedPublicKey),
-    recoverableCount: wallets.filter((wallet) => !wallet.decryptionFailed).length,
-    secretLocked: state.secretPin.locked,
-    lastSweep: state.lastRecoverySweep,
-    busy: Boolean(state.fullRunRunning || state.realExecutionRunning),
-  });
+// A launch lives on its coin page: that page shows what is left and runs it. Recovery only lists
+// the launches that still need something and opens each one there. A launch whose token was never
+// created has no coin yet, so it continues on the create page; a wallet with no launch record is
+// handled on the Wallets tab.
+function recoveryCoinMint(journal) {
+  return journal?.token?.mint || journal?.poolPlan?.tokenMint || null;
+}
+
+function recoveryListModel() {
+  const journals = (state.recovery.journals || []).filter((journal) => !isTerminalJournal(journal));
+  const journalWallets = new Set(journals.map((journal) => journal.walletPublicKey));
+  const looseWallets = recoveryWalletsNeedingAttention().filter((wallet) => !journalWallets.has(wallet.publicKey));
+  return {
+    launches: journals.map((journal) => ({ journal, mint: recoveryCoinMint(journal) })),
+    looseWallets,
+  };
+}
+
+function renderRecoveryList() {
+  if (state.apiStatus !== 'connected') {
+    return '<section class="recovery-wizard-panel warn" aria-label="Unfinished launches"><div class="recovery-wizard-head"><strong>Open the Trebuchet desktop app to see unfinished launches.</strong></div></section>';
+  }
+  const { launches, looseWallets } = recoveryListModel();
+  if (!launches.length && !looseWallets.length) {
+    return '<section class="recovery-wizard-panel pass" aria-label="Unfinished launches"><div class="recovery-wizard-head"><strong>Nothing to recover.</strong></div></section>';
+  }
+  const rows = launches.map(({ journal, mint }) => {
+    const symbol = journal.token?.symbol || journal.launchConfig?.token?.symbol || shortAddress(journal.walletPublicKey);
+    const button = mint
+      ? `<button class="primary-button compact" type="button" data-action="open-coin-mint" data-mint="${escapeHtml(mint)}"><span>Open ${escapeHtml(symbol)}</span><i class="fa-solid fa-arrow-right"></i></button>`
+      : canResumeJournal(journal)
+        ? `<button class="primary-button compact" type="button" data-action="resume-journal" data-journal-id="${escapeHtml(journal.id)}" ${state.recoveryActionId === journal.id ? 'disabled' : ''}><span>Continue creating the token</span><i class="fa-solid fa-arrow-right"></i></button>`
+        : '<span class="risk-badge danger">Manual recovery</span>';
+    return `
+      <article class="timeline-row ${stateClass(journal.status)}">
+        <span>
+          <span class="eyebrow">${escapeHtml(formatDate(journal.updatedAt || journal.createdAt))}</span>
+          <h3>${escapeHtml(symbol)}</h3>
+          <p>${escapeHtml(mint ? `Stopped at: ${humanizeStage(journal.stage)}.` : 'The token was not created yet.')}</p>
+        </span>
+        <span class="timeline-actions">${button}</span>
+      </article>`;
+  }).join('');
+  const wallets = looseWallets.length ? `
+      <article class="timeline-row">
+        <span>
+          <h3>${looseWallets.length} old launch wallet${looseWallets.length === 1 ? '' : 's'} with no launch record</h3>
+          <p>${looseWallets.length === 1 ? 'It' : 'They'} may still hold assets.</p>
+        </span>
+        <span class="timeline-actions"><button class="pill-button" type="button" data-action="select-history-pane" data-history-pane="wallets">Open wallets</button></span>
+      </article>` : '';
+  return `
+    <section class="recovery-wizard-panel warn" aria-label="Unfinished launches">
+      <div class="recovery-wizard-head">
+        <span><span class="eyebrow">Recovery</span><strong>${launches.length} unfinished launch${launches.length === 1 ? '' : 'es'}</strong></span>
+      </div>
+      <div class="recovery-list">${rows}${wallets}</div>
+    </section>`;
 }
 
 function renderHistory() {
@@ -20154,8 +19702,7 @@ function renderHistory() {
     journal,
     resumePlan: journalResumePlan(journal),
   }));
-  const wizard = currentRecoveryWizardModel();
-  $('#recoveryWizard').innerHTML = renderRecoveryWizard(wizard);
+  $('#recoveryWizard').innerHTML = renderRecoveryList();
   renderRecoveryWalletWorkspace();
   $('#historyExecutionAudit').innerHTML = renderHistoryExecutionAudit();
   // Launches only: the app's own connection state is not a launch.
@@ -20175,7 +19722,9 @@ function renderHistory() {
       ${item.kind === 'journal' ? `
         <span class="timeline-actions">
           <span class="risk-badge ${stateClass(item.status)}">${escapeHtml(item.status)}</span>
-          ${canResumeJournal(item.journal) ? `<button class="pill-button" type="button" data-action="resume-journal" data-journal-id="${escapeHtml(item.id)}" ${state.recoveryActionId === item.id ? 'disabled' : ''}>${state.recoveryActionId === item.id ? 'Resuming' : 'Resume'}</button>` : ''}
+          ${!isTerminalJournal(item.journal) && recoveryCoinMint(item.journal)
+            ? `<button class="pill-button" type="button" data-action="open-coin-mint" data-mint="${escapeHtml(recoveryCoinMint(item.journal))}">Open coin</button>`
+            : canResumeJournal(item.journal) ? `<button class="pill-button" type="button" data-action="resume-journal" data-journal-id="${escapeHtml(item.id)}" ${state.recoveryActionId === item.id ? 'disabled' : ''}>${state.recoveryActionId === item.id ? 'Resuming' : 'Resume'}</button>` : ''}
           ${item.resumePlan?.manualRecoveryRequired ? '<span class="risk-badge danger">Manual recovery</span>' : ''}
           ${state.demoActive && !isTerminalJournal(item.journal) ? '<button class="pill-button" type="button" data-action="toggle-demo-mode">Switch to live</button>' : ''}
           ${canDismissJournal(item.journal) ? `<button class="pill-button" type="button" data-action="dismiss-journal" data-journal-id="${escapeHtml(item.id)}" ${state.recoveryActionId === item.id ? 'disabled' : ''}>Dismiss</button>` : ''}
@@ -23070,7 +22619,9 @@ async function sweepRecoveryWallet(publicKey) {
 
   state.sweepingWalletPublicKey = publicKey;
   state.lastRecoverySweep = null;
+  state.sweepAirdropProgress = null;
   renderAll();
+  followSweepAirdropProgress(publicKey);
   try {
     const result = await state.apiClient.sweepPendingWallet({ walletPublicKey: publicKey, destinationWallet });
     const warningCount = recoverySweepWarningCount(result);
@@ -23102,7 +22653,25 @@ async function sweepRecoveryWallet(publicKey) {
     notify(error.message || 'Recovery sweep failed');
   } finally {
     state.sweepingWalletPublicKey = null;
+    state.sweepAirdropProgress = null;
     renderAll();
+  }
+}
+
+// The sweep is one long request. The server counts each airdrop recipient as it lands; read that
+// count while the sweep runs so the coin page shows how far it has got.
+async function followSweepAirdropProgress(publicKey) {
+  if (!state.apiClient?.getAirdropProgress) return;
+  while (state.sweepingWalletPublicKey === publicKey) {
+    try {
+      const progress = await state.apiClient.getAirdropProgress(publicKey);
+      if (state.sweepingWalletPublicKey !== publicKey) return;
+      if (progress) {
+        state.sweepAirdropProgress = { ...progress, publicKey };
+        if (state.activeView === 'coins') renderCoins();
+      }
+    } catch { /* the next read tries again */ }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
   }
 }
 
@@ -24417,7 +23986,7 @@ function coinCreationHtml(creation, coin) {
       const sweeping = state.sweepingWalletPublicKey === creation.walletPublicKey;
       const last = !sweeping && state.lastRecoverySweep?.publicKey === creation.walletPublicKey ? state.lastRecoverySweep : null;
       const progress = sweeping
-        ? `<p class="coin-airdrop-note" role="status"><span class="rail-spin" aria-hidden="true"></span> ${pending.length ? 'Airdropping, then sweeping' : 'Sweeping'}: each transfer waits for full confirmation, so this takes a few minutes. Keep the app open.</p>`
+        ? `<p class="coin-airdrop-note" role="status"><span class="rail-spin" aria-hidden="true"></span> ${escapeHtml(coinSweepProgressText(creation.walletPublicKey, plan, delivered))}</p>`
         : last ? `<p class="coin-airdrop-note${last.error ? ' is-error' : ''}" role="status">${escapeHtml(last.message)}</p>` : '';
       action = `${sweeping ? '' : airdropNote}${progress}<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}" ${sweeping ? 'disabled' : ''}><span>${sweeping ? (pending.length ? 'Airdropping and sweeping…' : 'Sweeping…') : pending.length ? 'Airdrop, then sweep' : 'Sweep the launch wallet'}</span><i class="fa-solid ${sweeping ? 'fa-spinner fa-spin' : pending.length ? 'fa-parachute-box' : 'fa-broom'}"></i></button>`;
     } else if (creation.hasPlan && creation.walletManaged) {
@@ -24445,6 +24014,21 @@ function coinCreationHtml(creation, coin) {
 // Bring up a coin's remaining steps from its launch record, at the step it
 // needs. Checks the record has a plan BEFORE touching the coin being
 // worked on, so a record without one never shows another coin's design.
+// What the running sweep is doing now: each airdrop wallet as it lands, then the rest.
+function coinSweepProgressText(walletPublicKey, plan, delivered) {
+  const live = state.sweepAirdropProgress?.publicKey === walletPublicKey ? state.sweepAirdropProgress : null;
+  const total = plan?.recipients?.length || 0;
+  if (!total) return 'Sweeping every token and SOL to the return wallet. Keep the app open.';
+  if (!live) return delivered.size >= total
+    ? 'Sweeping every token and SOL to the return wallet. Keep the app open.'
+    : `Airdrop: ${delivered.size} of ${total} wallets sent. Starting… Keep the app open.`;
+  const sent = Math.min(total, delivered.size + (live.completed || 0));
+  const failed = live.failedCount ? `, ${live.failedCount} failed` : '';
+  if (live.status === 'done') return `Airdrop: ${sent} of ${total} wallets sent${failed}. Now sweeping every token and SOL to the return wallet.`;
+  const left = Math.max(0, total - sent);
+  return `Airdrop: ${sent} of ${total} wallets sent${failed}. About ${Math.max(1, Math.ceil(left * 15 / 60))} min left; each transfer waits for full confirmation. Keep the app open.`;
+}
+
 function continueCoinStep(mint) {
   const journal = state.coins.detail?.mint === mint ? state.coins.detail?.creation?.journal : null;
   if (!journal || !recoveryLaunchConfig(journal)) {
@@ -26761,10 +26345,6 @@ function handleClick(event) {
     openTokenRecovery(actionTarget.dataset.journalId);
     return;
   }
-  if (action === 'continue-journal-finish') {
-    openJournalFinish(actionTarget.dataset.journalId);
-    return;
-  }
   if (state.activeView === 'launch') {
     const actionWorkspace = {
       'start-vanity': 'mint',
@@ -26773,7 +26353,6 @@ function handleClick(event) {
       'publish-launch-report': 'finish',
       'download-launch-dossier': 'finish',
       'compare-classic-report': 'finish',
-      'inspect-recovery': 'finish',
       'cancel-refund-launch': 'finish',
       'resume-journal': 'finish',
     }[action];
@@ -27194,8 +26773,15 @@ function handleClick(event) {
   }
 
   if (action === 'inspect-recovery') {
+    // A launch with a token is recovered on its coin page, which shows what is left and runs it.
+    const mint = proofTokenMint(currentLaunchProof());
+    if (mint && !isDemoLaunchProof(currentLaunchProof())) {
+      openCoinByMint(mint);
+      return;
+    }
+    state.activeHistoryPane = 'recovery';
+    renderHistoryPanes();
     setView('history');
-    notify('Recovery journal opened');
     return;
   }
 

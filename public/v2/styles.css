@@ -18122,3 +18122,10 @@ body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }
 .coin-actions .coin-airdrop-note .rail-spin { display: inline-block; vertical-align: -2px; margin-right: 6px; }
 .coin-actions .rail-spin { width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rail-spin 800ms linear infinite; }
 @media (prefers-reduced-motion: reduce) { .coin-actions .rail-spin { animation: none; } }
+
+/* Recovery: one row per unfinished launch, each opening its coin page. */
+.recovery-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}

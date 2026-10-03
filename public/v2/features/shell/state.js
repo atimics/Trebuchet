@@ -403,6 +403,7 @@ const state = {
   revealingWalletPublicKey: null,
   discardingWalletPublicKey: null,
   sweepingWalletPublicKey: null,
+  sweepAirdropProgress: null,
   lastRecoverySweep: null,
   lastSecretPinReset: null,
   lastRunEnvelope: null,
