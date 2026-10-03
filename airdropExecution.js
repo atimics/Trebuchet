@@ -7,6 +7,7 @@ import { SOLANA_GENESIS_HASHES } from '@trebuchet/runtime/solana';
 import { getNetwork, getRpcUrl } from './rpcConfig.js';
 import { readObservedAirdrop } from '@trebuchet/runtime/observed-airdrop';
 import { throwIfExecutionPaused } from './chainRetry.js';
+import { createExecutionConnection } from './rpcConnection.js';
 
 const purpose = 'airdrop';
 const hash = (value) => createHash('sha256').update(publicJson(value)).digest('hex');
@@ -37,7 +38,7 @@ export function normalizeAirdropPlan(input, walletPublicKey) {
 }
 
 export function createAirdropExecutionRuntime({ owner, walletExecution, getJournal, updateJournal,
-  createConnection = () => new Connection(getRpcUrl(), 'finalized'), networkForRequest = getNetwork, paceMs = 350, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  createConnection = () => createExecutionConnection(), networkForRequest = getNetwork, paceMs = 350, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
   const withStore = (run) => {
     owner.assertActive();

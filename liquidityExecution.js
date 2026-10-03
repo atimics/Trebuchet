@@ -6,6 +6,7 @@ import { openRuntimeStore, publicJson } from '@trebuchet/runtime/store';
 import { createPreparedTransactionService } from '@trebuchet/runtime/prepared-transaction';
 import { createSolanaSigner, SOLANA_GENESIS_HASHES } from '@trebuchet/runtime/solana';
 import { getNetwork, getRpcUrl } from './rpcConfig.js';
+import { createExecutionConnection } from './rpcConnection.js';
 
 export const LIQUIDITY_OPERATION_KIND = 'liquidity-transaction';
 const hash = (value) => createHash('sha256').update(publicJson(value)).digest('hex');
@@ -70,7 +71,7 @@ export async function checkLiquidityResult(connection, network, { operation, lau
 }
 
 export function createLiquidityExecutionRuntime({ owner, getScopeId, recordProgress,
-  createConnection = () => new Connection(getRpcUrl(), 'finalized'), networkForRequest = getNetwork,
+  createConnection = () => createExecutionConnection(), networkForRequest = getNetwork,
   now = Date.now, timeoutMs = 60_000,
 }) {
   if (!owner || typeof getScopeId !== 'function' || typeof recordProgress !== 'function') throw new TypeError('Liquidity execution requires the profile owner and journal interfaces');

@@ -5,6 +5,7 @@ import { createQuoteAcquisitionService } from '@trebuchet/runtime/quote-acquisit
 import { createQuotePlanBuilder, normalizeQuoteRequest } from '@trebuchet/runtime/quote-plan';
 import { createSolanaSigner, SOLANA_GENESIS_HASHES } from '@trebuchet/runtime/solana';
 import { getNetwork, getRpcUrl } from './rpcConfig.js';
+import { createExecutionConnection } from './rpcConnection.js';
 
 const hash = (value) => createHash('sha256').update(publicJson(value)).digest('hex');
 const copy = (value) => JSON.parse(publicJson(value));
@@ -13,7 +14,7 @@ const namespace = 'local-quote-drafts/v1';
 const whole = (value) => Number.isSafeInteger(value) && value >= 0;
 const runningByOwner = new WeakMap();
 
-export function createQuoteAcquisitionRuntime({ owner, getScopeId, ensureScopeId = getScopeId, createConnection = () => new Connection(getRpcUrl(), 'finalized'),
+export function createQuoteAcquisitionRuntime({ owner, getScopeId, ensureScopeId = getScopeId, createConnection = () => createExecutionConnection(),
   networkForRequest = getNetwork, genesisForNetwork = (network) => SOLANA_GENESIS_HASHES[network], createPlanner = createQuotePlanBuilder, now = Date.now, timeoutMs = 60000 }) {
   if (!owner || typeof getScopeId !== 'function') throw new TypeError('Supply the profile owner and launch journal');
   if (!runningByOwner.has(owner)) runningByOwner.set(owner, { running: new Map(), planning: new Set() });

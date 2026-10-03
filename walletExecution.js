@@ -8,13 +8,14 @@ import { createMetadataUpdateService } from '@trebuchet/runtime/metadata-update'
 import { getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { getNetwork, getRpcUrl } from './rpcConfig.js';
 import { samplePriorityFeeMicroLamports, priorityFeeLamports, CU_SOL_TRANSFER, CU_TOKEN_TRANSFER, CU_METADATA_OPS, SWEEP_FEE_PAD_LAMPORTS } from './priorityFees.js';
+import { createExecutionConnection } from './rpcConnection.js';
 
 // Called after the launch service verifies the transfer request and return
 // wallet. The local API session authorizes this bounded sweep. The shared
 // service records that approval and every signed transaction before sending.
 export function createWalletExecutionRuntime({
   owner, getScopeId,
-  createConnection = () => new Connection(getRpcUrl(), 'finalized'),
+  createConnection = () => createExecutionConnection(),
   networkForRequest = getNetwork,
   now = Date.now,
   timeoutMs = 60_000,
