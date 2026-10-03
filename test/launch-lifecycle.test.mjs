@@ -96,6 +96,28 @@ test('lock phase happy path: all positions + bootstrap lock, txIds recorded, zer
 });
 
 // ---------------------------------------------------------------------------
+// Phase 3 (lock) — layered support: every layer's position locks
+// ---------------------------------------------------------------------------
+test('lock phase locks every support layer, not just the first', async () => {
+  const raydium = makeMockRaydium();
+  const entry = makeResultEntry({ mainCount: 1, withBootstrap: true });
+  entry.supportPositions = [0, 1, 2].map((index) => ({
+    tickLower: -1000 * (index + 2), tickUpper: -1000 * (index + 1),
+    nftMint: deterministicKeypair(900 + index).publicKey.toBase58(),
+    locked: false, txIds: { open: `support-open-${index}`, lock: null },
+  }));
+  const stages = [];
+  const { lockFailures } = await hooks.lockAllPositions({ raydium, results: [entry], onProgress: (e) => stages.push(e) });
+  assert.equal(lockFailures.length, 0);
+  entry.supportPositions.forEach((position) => {
+    assert.equal(position.locked, true);
+    assert.ok(position.txIds.lock, 'each layer records its own lock tx');
+  });
+  const lockEvents = stages.filter((event) => event.stage === 'support_lock_done');
+  assert.deepEqual(lockEvents.map((event) => event.supportIndex).sort(), [0, 1, 2]);
+});
+
+// ---------------------------------------------------------------------------
 // Phase 3 (lock) — partial failure leaves RECOVERABLE state
 // ---------------------------------------------------------------------------
 test('lock phase partial failure: one lock fails, recoverable state recorded (what locked vs not)', async () => {
@@ -260,6 +282,57 @@ test('createSinglePool create-step mintB path: launched-as-mintB detected and ba
     `expected zero base:'MintA' opens (launched is mintB, not mintA), got ${mintAOpens.length}; ` +
     `all bases: ${JSON.stringify(opens.map((c) => c.base))}`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 1 (createSinglePool) — layered support opens one quote-side position per layer
+// ---------------------------------------------------------------------------
+test('createSinglePool opens one quote-side position per support layer with its own range and share', async () => {
+  const raydium = makeMockRaydium();
+  const launchedToken = { address: '__LAUNCHED__', decimals: 9, programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' };
+  const quoteToken = { address: 'So11111111111111111111111111111111111111112', decimals: 9, programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' };
+  const events = [];
+  let result = null;
+  let failure = null;
+  try {
+    result = await hooks.createSinglePool({
+      raydium,
+      connection: makeFakeConnection({}),
+      ownerKeypair: deterministicKeypair(3),
+      ammConfig: { id: 'mock-config', tickSpacing: 60 },
+      launchedToken,
+      quoteToken,
+      initialPrice: 0.0001,
+      wideBaseRaw: new BN('2000000000'),
+      bootstrapBaseRaw: 1n,
+      bootstrapMode: 'minimal',
+      distribution: [{ sharePercent: 100 }],
+      ladderMode: 'off',
+      ladderBands: [],
+      ladderCeiling: 1,
+      supportEnabled: true,
+      supportQuoteRaw: new BN('9000000000'),
+      supportDepthPct: 80,
+      supportLayers: [
+        { sharePercent: 50, lowerMultiplier: 0.8, upperMultiplier: 1 },
+        { sharePercent: 30, lowerMultiplier: 0.5, upperMultiplier: 0.8 },
+        { sharePercent: 20, lowerMultiplier: 0.2, upperMultiplier: 0.5 },
+      ],
+      onProgress: (e) => events.push(e),
+    });
+  } catch (e) {
+    failure = e;
+  }
+  const opened = events.filter((e) => e.stage === 'support_open_done');
+  assert.equal(opened.length, 3, `three support layers opened (failure: ${failure && failure.message})`);
+  assert.deepEqual(opened.map((e) => e.supportIndex), [0, 1, 2]);
+  assert.deepEqual(opened.map((e) => e.quoteAmountRaw), ['4500000000', '2700000000', '1800000000']);
+  // Each layer a distinct range, descending from the launch price.
+  assert.ok(opened[0].tickLower > opened[1].tickLower && opened[1].tickLower > opened[2].tickLower);
+  // Support is all quote: the SDK opens with the quote side as base (mintB here).
+  const supportOpens = raydium.recordedCalls.openPositionFromBase.filter((c) => c.base === 'MintB');
+  assert.equal(supportOpens.length, 3);
+  if (result) assert.equal(result.supportPositions.length, 3);
 });
 
 // ---------------------------------------------------------------------------

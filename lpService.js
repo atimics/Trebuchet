@@ -124,6 +124,7 @@ import {
   computeLadderTicksManual,
   computeMainTicks,
   computeSupportTicks,
+  computeSupportLayerTicks,
   computeCappedSupportTicks,
   tickForTokenPrice,
   tokenPriceAtTick,
@@ -181,6 +182,7 @@ import {
   COST_TX_BUFFER_SOL,
   COST_TOKEN_CREATE_SOL,
   COST_LAUNCH_REPORT_SOL,
+  supportLayersProblem,
   SAFETY_BUFFER_PCT,
   BS_BOOTSTRAP_USD,
   AUTOSWAP_TARGET_USD,
@@ -340,12 +342,14 @@ function normalizeRecoveredLadderPositions(existingPool, bandTicks) {
   return byIndex;
 }
 
-function normalizeRecoveredSupportPositions(existingPool, supportTicks, depthPct) {
+// Support is one position, or one per layer. A journal that recorded more positions than the plan has
+// layers belongs to a different plan and is refused rather than resumed.
+function normalizeRecoveredSupportPositions(existingPool, layers, layerCount) {
   const positions = clonePositionArray(existingPool?.supportPositions);
-  if (positions.length > 1) {
+  if (positions.length > layerCount) {
     throw new Error(
       `Cannot resume partial pool ${existingPool.poolId}: recorded ${positions.length} ` +
-        `support positions, but the current plan supports at most one.`,
+        `support positions, but the current plan has ${layerCount}.`,
     );
   }
   return positions.map((position, index) => {
@@ -355,10 +359,12 @@ function normalizeRecoveredSupportPositions(existingPool, supportTicks, depthPct
           `${index + 1} is missing its position NFT mint.`,
       );
     }
+    const layer = layers[index] || {};
     return {
-      tickLower: finiteNumberOr(position.tickLower, supportTicks.tickLower),
-      tickUpper: finiteNumberOr(position.tickUpper, supportTicks.tickUpper),
-      depthPct: finiteNumberOr(position.depthPct, depthPct),
+      tickLower: finiteNumberOr(position.tickLower, layer.tickLower),
+      tickUpper: finiteNumberOr(position.tickUpper, layer.tickUpper),
+      depthPct: finiteNumberOr(position.depthPct, layer.depthPct),
+      ...(position.lowerMultiplier != null ? { lowerMultiplier: position.lowerMultiplier, upperMultiplier: position.upperMultiplier } : {}),
       quoteRaw: position.quoteRaw || position.quoteAmountRaw || null,
       nftMint: position.nftMint,
       locked: position.locked === true,
@@ -367,6 +373,35 @@ function normalizeRecoveredSupportPositions(existingPool, supportTicks, depthPct
         open: position?.txIds?.open || position?.txId || null,
         lock: position?.txIds?.lock || null,
       },
+    };
+  });
+}
+
+// What the support block opens: the quote deposit cut into layers, each with its tick range. With no
+// layers it is the single range from `depthPct` below the launch price. A layer's quote is its share
+// of the total; the last layer takes the rounding remainder so the total is deposited exactly.
+export function buildSupportLayerPlan({ currentTick, tickSpacing, launchedIsMintA, depthPct, quoteRaw, layers }) {
+  if (!Array.isArray(layers) || layers.length === 0) {
+    const ticks = computeSupportTicks({ currentTick, tickSpacing, launchedIsMintA, depthPct });
+    return [{ ...ticks, depthPct, quoteRaw, label: `depth=-${depthPct}%`, lowerMultiplier: null, upperMultiplier: null }];
+  }
+  let remaining = quoteRaw;
+  return layers.map((layer, index) => {
+    const isLast = index === layers.length - 1;
+    const share = isLast
+      ? remaining
+      : quoteRaw.mul(new BN(Math.round(Number(layer.sharePercent) * 100))).div(new BN(10000));
+    remaining = remaining.sub(share);
+    const lowerMultiplier = Number(layer.lowerMultiplier);
+    const upperMultiplier = Number(layer.upperMultiplier);
+    const ticks = computeSupportLayerTicks({ currentTick, tickSpacing, launchedIsMintA, lowerMultiplier, upperMultiplier });
+    return {
+      ...ticks,
+      depthPct: Number(((1 - lowerMultiplier) * 100).toFixed(2)),
+      quoteRaw: share,
+      label: `${lowerMultiplier}x-${upperMultiplier}x, ${layer.sharePercent}% of the quote`,
+      lowerMultiplier,
+      upperMultiplier,
     };
   });
 }
@@ -1556,6 +1591,12 @@ async function createSinglePool({
   supportEnabled,
   supportQuoteRaw,
   supportDepthPct,
+  //   supportLayers: optional [{ sharePercent, lowerMultiplier, upperMultiplier }].
+  //                  When present the support is that many quote-side positions,
+  //                  each holding its share of supportQuoteRaw over its own range
+  //                  (multiples of the launch price, at most 1x). Absent: one
+  //                  position from supportDepthPct below the launch price.
+  supportLayers,
   // Recovery path for a pool that was created and partially opened before
   // the old journal format had a completed allocation result. The pool and
   // recorded position NFTs are verified before any missing work is attempted.
@@ -2392,80 +2433,76 @@ async function createSinglePool({
     const depthPct = Number.isFinite(Number(supportDepthPct))
       ? Number(supportDepthPct)
       : SUPPORT_DEPTH_PCT_DEFAULT;
-    const supportTicks = computeSupportTicks({
+    const layers = buildSupportLayerPlan({
       currentTick,
       tickSpacing,
       launchedIsMintA,
       depthPct,
+      quoteRaw: supportQuoteRaw,
+      layers: supportLayers,
     });
-    console.log(
-      `  support: ticks=[${supportTicks.tickLower}, ${supportTicks.tickUpper}] ` +
-        `(depth=-${depthPct}%, quoteRaw=${supportQuoteRaw.toString()})`,
-    );
-    // Sanity-check the range is on the correct side of currentTick to
-    // be single-sided in quote. mintA: quote = mintB, position must be
-    // below currentTick. mintB: quote = mintA, position must be above.
-    if (launchedIsMintA && currentTick < supportTicks.tickUpper) {
-      throw new Error(
-        `Support range mispositioned for launched=mintA: tickUpper ` +
-          `(${supportTicks.tickUpper}) must be <= currentTick (${currentTick}) ` +
-          `so the position is single-sided in the quote (mintB).`,
+    layers.forEach((layer, layerIndex) => {
+      // Sanity-check the range is on the correct side of currentTick to
+      // be single-sided in quote. mintA: quote = mintB, position must be
+      // below currentTick. mintB: quote = mintA, position must be above.
+      if (launchedIsMintA && currentTick < layer.tickUpper) {
+        throw new Error(
+          `Support range ${layerIndex + 1} mispositioned for launched=mintA: tickUpper ` +
+            `(${layer.tickUpper}) must be <= currentTick (${currentTick}) ` +
+            `so the position is single-sided in the quote (mintB).`,
+        );
+      }
+      if (!launchedIsMintA && currentTick >= layer.tickLower) {
+        throw new Error(
+          `Support range ${layerIndex + 1} mispositioned for launched=mintB: tickLower ` +
+            `(${layer.tickLower}) must be > currentTick (${currentTick}) ` +
+            `so the position is single-sided in the quote (mintA).`,
+        );
+      }
+      console.log(
+        `  support ${layerIndex + 1}/${layers.length}: ticks=[${layer.tickLower}, ${layer.tickUpper}] ` +
+          `(${layer.label}, quoteRaw=${layer.quoteRaw.toString()})`,
       );
-    }
-    if (!launchedIsMintA && currentTick >= supportTicks.tickLower) {
-      throw new Error(
-        `Support range mispositioned for launched=mintB: tickLower ` +
-          `(${supportTicks.tickLower}) must be > currentTick (${currentTick}) ` +
-          `so the position is single-sided in the quote (mintA).`,
-      );
-    }
-    progress({
-      stage: 'support_open_start',
-      poolId,
-      quoteAmountRaw: supportQuoteRaw.toString(),
-      tickLower: supportTicks.tickLower,
-      tickUpper: supportTicks.tickUpper,
-      base: launchedIsMintA ? 'MintB' : 'MintA',
-      depthPct,
     });
 
-    // On-chain reconciliation for the support position (single range). Adopt it
-    // if it landed on-chain but is missing from the journal. See the main note.
-    if (
-      recoveringPhase1 &&
-      onChainPoolPositions.length > 0 &&
-      clonePositionArray(existingPool?.supportPositions).length === 0
-    ) {
-      const allKnownNfts = new Set(
+    // Positions already recorded by an earlier attempt, in layer order.
+    const recoveredSupportPositions = recoveringPhase1
+      ? normalizeRecoveredSupportPositions(existingPool, layers, layers.length)
+      : [];
+    const resolved = layers.map((_, layerIndex) => recoveredSupportPositions[layerIndex] || null);
+
+    // On-chain reconciliation: a layer may have landed on-chain without reaching the journal.
+    // Adopt it by its exact range. See the main note.
+    if (recoveringPhase1 && onChainPoolPositions.length > 0) {
+      const taken = new Set(
         [
           ...clonePositionArray(existingPool?.mainPositions),
           ...clonePositionArray(existingPool?.ladderPositions),
+          ...recoveredSupportPositions,
         ]
           .map((p) => p && p.nftMint)
           .filter(Boolean),
       );
-      const matches = unrecordedPositionsAtRange(
-        onChainPoolPositions,
-        supportTicks.tickLower,
-        supportTicks.tickUpper,
-        allKnownNfts,
-      );
-      if (matches.length > 0) {
+      layers.forEach((layer, layerIndex) => {
+        if (resolved[layerIndex]) return;
+        const matches = unrecordedPositionsAtRange(onChainPoolPositions, layer.tickLower, layer.tickUpper, taken);
+        if (!matches.length) return;
         const pos = matches[0];
-        existingPool = {
-          ...existingPool,
-          supportPositions: [
-            {
-              tickLower: pos.tickLower,
-              tickUpper: pos.tickUpper,
-              depthPct,
-              nftMint: pos.nftMint,
-              locked: false,
-            },
-          ],
+        taken.add(pos.nftMint);
+        resolved[layerIndex] = {
+          tickLower: pos.tickLower,
+          tickUpper: pos.tickUpper,
+          depthPct: layer.depthPct,
+          lowerMultiplier: layer.lowerMultiplier,
+          upperMultiplier: layer.upperMultiplier,
+          quoteRaw: layer.quoteRaw.toString(),
+          nftMint: pos.nftMint,
+          locked: false,
+          txIds: { open: null, lock: null },
+          adopted: true,
         };
         console.log(
-          `  on-chain reconciliation: adopted 1 support position that landed on-chain ` +
+          `  on-chain reconciliation: adopted support position ${layerIndex + 1} that landed on-chain ` +
             `but was absent from the journal`,
         );
         progress({
@@ -2475,120 +2512,135 @@ async function createSinglePool({
           adopted: 1,
           nftMints: [pos.nftMint],
         });
-      }
+      });
     }
-
-    const recoveredSupportPositions = recoveringPhase1
-      ? normalizeRecoveredSupportPositions(existingPool, supportTicks, depthPct)
-      : [];
     await assertRecoveredPositionNftsOwned({
       connection,
       ownerPublicKey: ownerKeypair.publicKey,
       poolId,
-      positions: recoveredSupportPositions,
+      positions: resolved.filter(Boolean),
     });
-    if (recoveredSupportPositions.length > 0) {
-      const recovered = recoveredSupportPositions[0];
-      console.log(`  recovered support position: nft=${recovered.nftMint}`);
+
+    for (let layerIndex = 0; layerIndex < layers.length; layerIndex += 1) {
+      const layer = layers[layerIndex];
+      const recovered = resolved[layerIndex];
+      if (recovered) {
+        console.log(`  recovered support position ${layerIndex + 1}: nft=${recovered.nftMint}`);
+        progress({
+          stage: 'support_open_recovered',
+          poolId,
+          supportIndex: layerIndex,
+          nftMint: recovered.nftMint,
+          txId: recovered.txIds?.open || null,
+          tickLower: recovered.tickLower,
+          tickUpper: recovered.tickUpper,
+          depthPct: recovered.depthPct,
+        });
+        supportPositions.push(recovered);
+        continue;
+      }
+      const supportTicks = { tickLower: layer.tickLower, tickUpper: layer.tickUpper };
       progress({
-        stage: 'support_open_recovered',
+        stage: 'support_open_start',
         poolId,
-        nftMint: recovered.nftMint,
-        txId: recovered.txIds.open || null,
-        tickLower: recovered.tickLower,
-        tickUpper: recovered.tickUpper,
-        depthPct: recovered.depthPct,
-      });
-      supportPositions.push(recovered);
-    } else {
-    // Base side for the support position is the QUOTE side (opposite of
-    // launched). For launchedIsMintA: launched is MintA, so quote is
-    // MintB → base = 'MintB'. For launchedIsMintB: launched is MintB,
-    // so quote is MintA → base = 'MintA'.
-    //
-    // The position is fully single-sided in quote, so otherAmountMax = 0
-    // is exact (same pattern as ladder bands, just in the opposite
-    // direction). useSOLBalance:true lets the SDK auto-wrap native SOL
-    // for SOL-pool support positions without us having to pre-fund the
-    // wSOL ATA manually.
-    let supportTx;
-    let supportNftMint;
-    try {
-      const recordedSupport = new Set(
-        [...mainPositions, ...ladderPositions, ...supportPositions].map((p) => p.nftMint).filter(Boolean),
-      );
-      const supportR = await executeSdkTx({
-        raydium, key: `position/${allocationIndex}/support/0`,
-        action: { type: 'position', poolId, ...supportTicks, event: { stage: 'support_open_done', allocationIndex, supportIndex: 0, quoteAmountRaw: supportQuoteRaw.toString() } },
-        label: 'support position',
-        build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
-          ...signerOptions,
-          poolInfo,
-          poolKeys,
-          tickLower: supportTicks.tickLower,
-          tickUpper: supportTicks.tickUpper,
-          base: launchedIsMintA ? 'MintB' : 'MintA',
-          baseAmount: supportQuoteRaw,
-          otherAmountMax: new BN(0),
-          ownerInfo: { useSOLBalance: true },
-          txVersion: TxVersion.V0,
-          computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
-        }),
-        alreadyDone: () => findUnrecordedPositionAt(
-          raydium, poolId, supportTicks.tickLower, supportTicks.tickUpper, recordedSupport,
-        ),
-        onAlreadyDone: (pos) => ({ tx: { txId: null }, nftMint: pos.nftMint, adopted: true }),
-      });
-      if (supportR.value.saved) Object.assign(supportTicks, { tickLower: supportR.value.saved.tickLower, tickUpper: supportR.value.saved.tickUpper });
-      supportTx = supportR.value.tx;
-      supportNftMint = supportR.skipped
-        ? supportR.value.nftMint
-        : supportR.value.res.extInfo?.nftMint?.toBase58();
-      if (supportR.skipped) console.log(`    support already landed (nft=${supportNftMint}); adopting`);
-    } catch (err) {
-      throwIfExecutionPaused(err);
-      progress({
-        stage: 'support_open_failed',
-        poolId,
-        quoteAmountRaw: supportQuoteRaw.toString(),
+        supportIndex: layerIndex,
+        quoteAmountRaw: layer.quoteRaw.toString(),
         tickLower: supportTicks.tickLower,
         tickUpper: supportTicks.tickUpper,
         base: launchedIsMintA ? 'MintB' : 'MintA',
-        depthPct,
-        ...lpErrorProgressFields(err),
+        depthPct: layer.depthPct,
       });
-      err.phase1PartialResult = phase1Snapshot();
-      throw err;
-    }
-    console.log(`  support opened: nft=${supportNftMint}, tx=${supportTx.txId}`);
-    progress({
-      stage: 'support_open_done',
-      poolId,
-      nftMint: supportNftMint,
-      txId: supportTx.txId,
-      quoteAmountRaw: supportQuoteRaw.toString(),
-      tickLower: supportTicks.tickLower,
-      tickUpper: supportTicks.tickUpper,
-      depthPct,
-    });
+      // Base side for the support position is the QUOTE side (opposite of
+      // launched). For launchedIsMintA: launched is MintA, so quote is
+      // MintB → base = 'MintB'. For launchedIsMintB: launched is MintB,
+      // so quote is MintA → base = 'MintA'.
+      //
+      // The position is fully single-sided in quote, so otherAmountMax = 0
+      // is exact (same pattern as ladder bands, just in the opposite
+      // direction). useSOLBalance:true lets the SDK auto-wrap native SOL
+      // for SOL-pool support positions without us having to pre-fund the
+      // wSOL ATA manually.
+      let supportTx;
+      let supportNftMint;
+      try {
+        const recordedSupport = new Set(
+          [...mainPositions, ...ladderPositions, ...supportPositions].map((p) => p.nftMint).filter(Boolean),
+        );
+        const supportR = await executeSdkTx({
+          raydium, key: `position/${allocationIndex}/support/${layerIndex}`,
+          action: { type: 'position', poolId, ...supportTicks, event: { stage: 'support_open_done', allocationIndex, supportIndex: layerIndex, quoteAmountRaw: layer.quoteRaw.toString() } },
+          label: layers.length > 1 ? `support position ${layerIndex + 1}/${layers.length}` : 'support position',
+          build: async (signerOptions = {}) => raydium.clmm.openPositionFromBase({
+            ...signerOptions,
+            poolInfo,
+            poolKeys,
+            tickLower: supportTicks.tickLower,
+            tickUpper: supportTicks.tickUpper,
+            base: launchedIsMintA ? 'MintB' : 'MintA',
+            baseAmount: layer.quoteRaw,
+            otherAmountMax: new BN(0),
+            ownerInfo: { useSOLBalance: true },
+            txVersion: TxVersion.V0,
+            computeBudgetConfig: await lpComputeBudgetConfig(raydium, poolInfo.id),
+          }),
+          alreadyDone: () => findUnrecordedPositionAt(
+            raydium, poolId, supportTicks.tickLower, supportTicks.tickUpper, recordedSupport,
+          ),
+          onAlreadyDone: (pos) => ({ tx: { txId: null }, nftMint: pos.nftMint, adopted: true }),
+        });
+        if (supportR.value.saved) Object.assign(supportTicks, { tickLower: supportR.value.saved.tickLower, tickUpper: supportR.value.saved.tickUpper });
+        supportTx = supportR.value.tx;
+        supportNftMint = supportR.skipped
+          ? supportR.value.nftMint
+          : supportR.value.res.extInfo?.nftMint?.toBase58();
+        if (supportR.skipped) console.log(`    support already landed (nft=${supportNftMint}); adopting`);
+      } catch (err) {
+        throwIfExecutionPaused(err);
+        progress({
+          stage: 'support_open_failed',
+          poolId,
+          supportIndex: layerIndex,
+          quoteAmountRaw: layer.quoteRaw.toString(),
+          tickLower: supportTicks.tickLower,
+          tickUpper: supportTicks.tickUpper,
+          base: launchedIsMintA ? 'MintB' : 'MintA',
+          depthPct: layer.depthPct,
+          ...lpErrorProgressFields(err),
+        });
+        err.phase1PartialResult = phase1Snapshot();
+        throw err;
+      }
+      console.log(`  support ${layerIndex + 1} opened: nft=${supportNftMint}, tx=${supportTx.txId}`);
+      progress({
+        stage: 'support_open_done',
+        poolId,
+        supportIndex: layerIndex,
+        nftMint: supportNftMint,
+        txId: supportTx.txId,
+        quoteAmountRaw: layer.quoteRaw.toString(),
+        tickLower: supportTicks.tickLower,
+        tickUpper: supportTicks.tickUpper,
+        depthPct: layer.depthPct,
+      });
 
-    supportPositions.push({
-      tickLower: supportTicks.tickLower,
-      tickUpper: supportTicks.tickUpper,
-      depthPct,
-      // Raw quote amount deposited. Useful for the journal and the user-
-      // facing summary at the end of the launch.
-      quoteRaw: supportQuoteRaw.toString(),
-      nftMint: supportNftMint,
-      // Phase 3 will flip this to true. Support positions never have
-      // recipients (Fee Keys stay with the launch wallet and sweep
-      // back) — same lifecycle as ladder bands and the bootstrap.
-      locked: false,
-      txIds: {
-        open: supportTx.txId,
-        lock: null,
-      },
-    });
+      supportPositions.push({
+        tickLower: supportTicks.tickLower,
+        tickUpper: supportTicks.tickUpper,
+        depthPct: layer.depthPct,
+        ...(layer.lowerMultiplier != null ? { lowerMultiplier: layer.lowerMultiplier, upperMultiplier: layer.upperMultiplier } : {}),
+        // Raw quote amount deposited. Useful for the journal and the user-
+        // facing summary at the end of the launch.
+        quoteRaw: layer.quoteRaw.toString(),
+        nftMint: supportNftMint,
+        // Phase 3 will flip this to true. Support positions never have
+        // recipients (Fee Keys stay with the launch wallet and sweep
+        // back) — same lifecycle as ladder bands and the bootstrap.
+        locked: false,
+        txIds: {
+          open: supportTx.txId,
+          lock: null,
+        },
+      });
     }
   }
 
@@ -4614,6 +4666,19 @@ export async function createPoolsAndPositions({
         throw err;
       }
     }
+    // Layers (optional): the support is several quote-side positions, each with a share of the
+    // quote and a range of launch-price multiples at most 1x. Shares must add up to 100%.
+    if (sp.layers !== undefined && sp.layers !== null) {
+      const problem = supportLayersProblem(sp.layers);
+      if (problem) {
+        const err = new Error(`Allocation ${i + 1}: support.layers ${problem}`);
+        err.failedPhase = 'pre_flight';
+        err.failedAllocationIndex = i;
+        err.failedAllocation = a;
+        err.partialResults = priorResults;
+        throw err;
+      }
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -5187,6 +5252,9 @@ export async function createPoolsAndPositions({
         supportDepthPct: supportEnabled && Number.isFinite(Number(supportCfg.depthPct))
           ? Number(supportCfg.depthPct)
           : SUPPORT_DEPTH_PCT_DEFAULT,
+        supportLayers: supportEnabled && Array.isArray(supportCfg.layers) && supportCfg.layers.length
+          ? supportCfg.layers
+          : null,
         existingPool: phase1Recovery,
         onProgress: (event) =>
           onProgress && onProgress({ allocationIndex: allocIdx, ...event }),
@@ -5772,6 +5840,7 @@ function estimateTickArrayAndPositionCounts(alloc, tickSpacing) {
   const ladder = alloc.ladder || { mode: 'off' };
   const support = alloc.support || { mode: 'off' };
   const supportEnabled = support.mode === 'custom' && Number(support.solValue) > 0;
+  const supportLayerList = supportEnabled && Array.isArray(support.layers) && support.layers.length ? support.layers : null;
   const bootstrapMode = (alloc.bootstrap && alloc.bootstrap.mode === 'custom')
     ? 'custom'
     : 'minimal';
@@ -5783,7 +5852,7 @@ function estimateTickArrayAndPositionCounts(alloc, tickSpacing) {
   // main slices + one bootstrap + ladder bands + optional support. Note the
   // slices all share the wide-main range (and therefore its tick arrays), so
   // they add no distinct arrays — only the position TYPES contribute bounds.
-  const positionCount = slices.length + 1 + ladderBandCount + (supportEnabled ? 1 : 0);
+  const positionCount = slices.length + 1 + ladderBandCount + (supportEnabled ? (supportLayerList ? supportLayerList.length : 1) : 0);
   // A position can never initialize more than the two arrays its [lower, upper]
   // bounds fall in, so 2 x positions is a hard ceiling the real count cannot
   // exceed. Used as the malformed-config fallback and as a final defensive clamp.
@@ -5820,7 +5889,18 @@ function estimateTickArrayAndPositionCounts(alloc, tickSpacing) {
       }).forEach((b) => bounds.push(b.tickLower, b.tickUpper));
     }
 
-    if (supportEnabled) {
+    if (supportEnabled && supportLayerList) {
+      supportLayerList.forEach((layer) => {
+        const sup = computeSupportLayerTicks({
+          currentTick,
+          tickSpacing,
+          launchedIsMintA,
+          lowerMultiplier: Number(layer.lowerMultiplier),
+          upperMultiplier: Number(layer.upperMultiplier),
+        });
+        bounds.push(sup.tickLower, sup.tickUpper);
+      });
+    } else if (supportEnabled) {
       const sup = computeSupportTicks({
         currentTick,
         tickSpacing,
