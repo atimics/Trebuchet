@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ExtensionType } from '@solana/spl-token';
+import { ExtensionType, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { Keypair } from '@solana/web3.js';
 import { acquireProfileOwner } from '../src/owner.js';
 import { openRuntimeStore, RecoveryStorageError } from '../src/store.js';
@@ -51,6 +51,15 @@ for (const [name, config, expectedSize] of [
     assert.equal(f.store.getOperation(result.operationId).state, 'confirmed');
   });
 }
+
+test('a transfer that names the wrong token program is refused before anything is saved', async (t) => {
+  const f = fixture(t, { token2022: true, associatedSource: true });
+  const programId = TOKEN_PROGRAM_ID.toBase58(), sourceTokenAccount = getAssociatedTokenAddressSync(f.mint, sweepWallet.publicKey, false, TOKEN_PROGRAM_ID).toBase58();
+  const input = { ...f.input, programId, sourceTokenAccount, approval: { ...f.input.approval, token: { ...f.input.approval.token, programId, sourceTokenAccount } } };
+  await assert.rejects(f.service().transfer(input), { code: 'TOKEN_PROGRAM_MISMATCH' });
+  assert.equal(f.active(), null); assert.equal(f.state.sends.length, 0);
+  assert.equal((await f.service().transfer(f.input)).amountRaw, f.input.amountRaw);
+});
 
 test('an existing destination account needs only its transfer fee budget', async (t) => {
   const f = fixture(t, { destinationExists: true });

@@ -12,6 +12,7 @@ import { createQuoteAcquisitionRuntime } from './quoteAcquisition.js';
 import { installQuoteAcquisitionRoutes } from './quoteAcquisitionRoutes.js';
 import { classifyChainError } from './chainRetry.js';
 import { createLaunchExecutionServices, claimLaunchOperation, LaunchRejection } from './launchExecution.js';
+import { autoResumingLaunchServices } from './autoResume.js';
 import express from 'express';
 import { acquireProfileOwner } from '@trebuchet/runtime/owner';
 import { createRuntimeControl } from '@trebuchet/runtime/control';
@@ -692,8 +693,10 @@ const airdropExecution = runtimeOwner ? createAirdropExecutionRuntime({
   getJournal: (wallet) => launchJournal.activeForWallet(wallet),
   updateJournal: (wallet, patch, event) => launchJournal.upsertForWallet(wallet, patch, event),
 }) : null;
-const prepareAirdrop = (input) => {
+const prepareAirdrop = async (input) => {
   if (!airdropExecution) throw Object.assign(new Error('Start the owned runtime before airdrop execution.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  // The plan is saved under the coin's own token program, so that is known before the plan is read.
+  await airdropExecution.resolveTokenProgram(input);
   return airdropExecution.prepare(input);
 };
 const executeAirdrop = (input) => airdropExecution.execute(input);
@@ -754,7 +757,7 @@ function claimLaunchOp(walletPublicKey, op, workflowId = null) {
   const canResumeFeeKey = pending?.kind === 'token-transfer' && ['create-lp', 'resume-launch'].includes(op) && feeKeyExecution?.canRecover(walletPublicKey);
   const canResumeAirdrop = ['token-transfer', 'airdrop-observed-delivery'].includes(pending?.kind) && op === 'run-airdrop' && airdropExecution?.canRecover(walletPublicKey);
   if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity && !canResumeFeeKey && !canResumeAirdrop && !canResumeQuotes && !canResumeWithdrawal && !canResumeSupport) {
-    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: 'Resume the saved wallet operation before starting another wallet action.' });
+    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: `An earlier ${({ 'token-transfer': 'token transfer', 'sol-sweep': 'SOL transfer', 'metadata-update': 'metadata update', [LIQUIDITY_OPERATION_KIND]: 'pool step' })[pending.kind] || 'wallet step'} from this launch wallet is not confirmed yet, so this action did not start.` });
   }
   claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
 }
@@ -5261,7 +5264,7 @@ async function runV2ClassicLpPreflight(payload = {}) {
   }
 }
 
-const launchServices = createLaunchExecutionServices({
+const launchServices = autoResumingLaunchServices(createLaunchExecutionServices({
   PublicKey,
   airdropInFlight,
   airdropProgressBegin,
@@ -5317,7 +5320,7 @@ const launchServices = createLaunchExecutionServices({
   validateTransferAirdropPayload,
   vanityAvailability,
   vanityCaStore,
-});
+}));
 
 async function serveLaunchOperation(res, execute) {
   try { return res.json(await execute()); }
@@ -7689,11 +7692,11 @@ async function runAirdropHandler(req, res) {
 // delivered in the journal". The two routes exist so the frontend code
 // reads honestly at each call site.
 // The airdrop plan this launch saved, so the screen confirms and sends exactly those amounts.
-app.get('/api/v2/airdrop-plan', (req, res) => {
+app.get('/api/v2/airdrop-plan', async (req, res) => {
   const wallet = typeof req.query.wallet === 'string' ? req.query.wallet.trim() : '';
   if (!wallet) return res.status(400).json({ success: false, error: 'wallet query param required' });
   if (isDemoMode()) return res.json({ success: true, plan: null });
-  try { res.json({ success: true, plan: prepareAirdrop({ walletPublicKey: wallet }) || null }); }
+  try { res.json({ success: true, plan: await prepareAirdrop({ walletPublicKey: wallet }) || null }); }
   catch (error) { sendErrorResponse(res, error); }
 });
 app.post('/api/run-airdrop', runAirdropHandler);

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Keypair } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { acquireProfileOwner } from '../packages/runtime/src/owner.js';
 import { openRuntimeStore } from '../packages/runtime/src/store.js';
 import { airdropChain, airdropContext, airdropInput, recipients, sweepWallet } from './fixtures/airdrop-chain.mjs';
@@ -69,7 +70,7 @@ test('a recipient balance from an earlier transfer keeps its own exact airdrop r
 
 for (const [label, change] of Object.entries({ amount: { recipients: [{ wallet: recipients[0], tokens: '3' }] },
   recipient: { recipients: [{ wallet: Keypair.generate().publicKey.toBase58(), tokens: '2.5' }] },
-  mint: { tokenMint: Keypair.generate().publicKey.toBase58() }, program: { isToken2022: true }, decimals: { tokenDecimals: 9 } })) {
+  mint: { tokenMint: Keypair.generate().publicKey.toBase58() }, decimals: { tokenDecimals: 9 } })) {
   test(`the saved airdrop ${label} remains fixed across retries`, async (t) => {
     const f = fixture(t);
     f.runtime.prepare({ walletPublicKey, airdrop: airdropInput });
@@ -79,12 +80,81 @@ for (const [label, change] of Object.entries({ amount: { recipients: [{ wallet: 
   });
 }
 
+// The plan the app sends and journals names the coin, its decimals and the recipients, and no token program.
+const token2022 = TOKEN_2022_PROGRAM_ID.toBase58(), classic = TOKEN_PROGRAM_ID.toBase58();
+const airdropPlans = (profile) => {
+  const db = new DatabaseSync(path.join(profile, 'execution.sqlite'), { readOnly: true });
+  try { return db.prepare("SELECT body FROM launches WHERE json_extract(body, '$.purpose') = 'airdrop' ORDER BY created_at, rowid").all().map((row) => JSON.parse(row.body).plan); }
+  finally { db.close(); }
+};
+
+test('a Token-2022 launch airdrops with the token program saved with its coin', async (t) => {
+  const f = fixture(t, { chain: { token2022: true } });
+  f.journal.upsertForWallet(walletPublicKey, { token: { tokenProgram: token2022 } });
+  f.connection.getAccountInfo = async () => { throw new Error('the saved program needs no chain read'); };
+  assert.equal(f.runtime.prepare({ walletPublicKey }).programId, token2022);
+  const result = await f.runtime.execute(airdropInput);
+  assert.equal(result.transferred.length, 2); assert.equal(f.state.sends.length, 2);
+  assert.deepEqual(airdropPlans(f.profile).map((plan) => plan.programId), [token2022]);
+});
+
+test('a launch without a saved token program reads it from the mint once', async (t) => {
+  const f = fixture(t, { chain: { token2022: true } });
+  let reads = 0; const read = f.connection.getAccountInfo;
+  f.connection.getAccountInfo = async (...args) => { reads += 1; return read(...args); };
+  assert.equal((await f.runtime.execute(airdropInput)).transferred.length, 2);
+  const journal = f.journal.activeForWallet(walletPublicKey);
+  assert.equal(journal.token.tokenProgram, token2022);
+  assert.equal(journal.events.filter((event) => event.stage === 'token_program_read').length, 1);
+  await f.runtime.execute(airdropInput);
+  assert.equal(reads, 1); assert.equal(f.state.sends.length, 2);
+});
+
+test('a plan saved under the wrong token program is replaced before any payment', async (t) => {
+  const f = fixture(t, { chain: { token2022: true } });
+  assert.equal(f.runtime.prepare({ walletPublicKey }).programId, classic);
+  const result = await f.runtime.execute(airdropInput);
+  assert.equal(result.transferred.length, 2); assert.equal(f.state.sends.length, 2);
+  assert.deepEqual(airdropPlans(f.profile).map((plan) => plan.programId), [classic, token2022]);
+  const restored = f.runtime.prepare({ walletPublicKey });
+  assert.equal(restored.programId, token2022); assert.equal(restored.isToken2022, true); assert.equal(restored.recipients.length, 2);
+  assert.deepEqual(await f.runtime.execute(airdropInput), result);
+  assert.equal(f.state.sends.length, 2);
+});
+
+test('a plan that already delivered keeps its token program', async (t) => {
+  const f = fixture(t);
+  f.runtime.prepare({ walletPublicKey });
+  f.connection.getAccountInfo = async () => null;
+  assert.equal((await f.runtime.execute({ ...airdropInput, recipients: airdropInput.recipients.slice(0, 1) })).transferred.length, 1);
+  f.journal.upsertForWallet(walletPublicKey, { token: { tokenProgram: token2022 } });
+  assert.equal(f.runtime.prepare({ walletPublicKey }).programId, classic);
+  assert.equal((await f.runtime.execute(airdropInput)).transferred.length, 2);
+  assert.deepEqual(airdropPlans(f.profile).map((plan) => plan.programId), [classic]);
+});
+
+test('a request cannot choose the token program', async (t) => {
+  const f = fixture(t);
+  f.runtime.prepare({ walletPublicKey, airdrop: airdropInput });
+  const result = await f.runtime.execute({ ...airdropInput, isToken2022: true });
+  assert.equal(result.transferred.length, 2); assert.equal(f.state.sends.length, 2);
+  assert.deepEqual(airdropPlans(f.profile).map((plan) => plan.programId), [classic]);
+});
+
+test('an unreadable mint pauses the airdrop before a plan is saved', async (t) => {
+  const f = fixture(t, { chain: { token2022: true } });
+  f.connection.getAccountInfo = async () => { throw new Error('fetch failed'); };
+  await assert.rejects(f.runtime.execute(airdropInput), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  assert.equal(f.state.sends.length, 0); assert.deepEqual(airdropPlans(f.profile), []);
+});
+
 test('a failed recipient checkpoint stops the next payment and replay restores it', async (t) => {
   let fail = true, f;
   f = fixture(t, { updateJournal: (...args) => {
     if (fail) throw Object.assign(new Error('journal commit failed'), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
     return f.journal.upsertForWallet(...args);
   } });
+  f.journal.upsertForWallet(walletPublicKey, { token: { tokenProgram: classic } });
   await assert.rejects(f.runtime.execute(airdropInput), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
   assert.equal(f.state.sends.length, 1); assert.equal(f.walletExecution.active(walletPublicKey), null);
   fail = false;

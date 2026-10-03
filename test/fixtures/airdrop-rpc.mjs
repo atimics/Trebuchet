@@ -16,6 +16,10 @@ export async function startAirdropRpc(ledger, { afterSend, beforeStatus } = {}) 
           result = await ledger.connection.getMultipleAccountsInfoAndContext(body.params[0].map((key) => new PublicKey(key)), body.params[1]);
           result.value = result.value.map((value) => value && ({ ...value, owner: value.owner.toBase58(), data: [value.data.toString('base64'), 'base64'] })); break;
         }
+        case 'getAccountInfo': {
+          const value = await ledger.connection.getAccountInfo(new PublicKey(body.params[0]));
+          result = { context: { slot: ledger.state.slot }, value: value && ({ ...value, owner: value.owner.toBase58(), data: [value.data.toString('base64'), 'base64'] }) }; break;
+        }
         case 'getLatestBlockhash': result = { context: { slot: ledger.state.slot }, value: await ledger.connection.getLatestBlockhash() }; break;
         case 'getFeeForMessage': result = await ledger.connection.getFeeForMessage(); break;
         case 'getSignatureStatuses': await beforeStatus?.(); result = await ledger.connection.getSignatureStatuses(...body.params); break;

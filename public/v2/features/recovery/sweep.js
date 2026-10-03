@@ -85,7 +85,7 @@ function setSweepConfirmationMessage(message, { error = false, input = null } = 
     messageNode.textContent = message;
     messageNode.classList.toggle('is-error', error);
   }
-  ['#sweepConfirmDestination', '#sweepConfirmTypedAddress'].forEach((selector) => {
+  ['#sweepConfirmDestination'].forEach((selector) => {
     $(selector)?.removeAttribute('aria-invalid');
   });
   if (input) input.setAttribute('aria-invalid', 'true');
@@ -112,9 +112,7 @@ function submitSweepConfirmation() {
   if (!gate || gate.hidden) return;
   const publicKey = gate.dataset.publicKey || '';
   const destinationInput = $('#sweepConfirmDestination');
-  const typedInput = $('#sweepConfirmTypedAddress');
   const destinationWallet = String(destinationInput?.value || '').trim();
-  const typedAddress = String(typedInput?.value || '').trim();
 
   if (!destinationWallet) {
     setSweepConfirmationMessage('Enter the destination wallet for recovered assets.', { error: true, input: destinationInput });
@@ -131,11 +129,6 @@ function submitSweepConfirmation() {
     destinationInput?.focus();
     return;
   }
-  if (typedAddress !== publicKey) {
-    setSweepConfirmationMessage('Full recovery wallet address does not match.', { error: true, input: typedInput });
-    typedInput?.focus();
-    return;
-  }
 
   closeSweepConfirmation({ destinationWallet });
 }
@@ -149,7 +142,6 @@ function openSweepConfirmation({ publicKey, defaultDestination = '' } = {}) {
   sweepConfirmationReturnFocus = document.activeElement;
   $('#sweepConfirmSource').textContent = publicKey;
   $('#sweepConfirmDestination').value = defaultDestination;
-  $('#sweepConfirmTypedAddress').value = '';
   setSweepConfirmationMessage('The launch wallet\'s key stays saved in this app after the sweep.');
   gate.hidden = false;
   gate.setAttribute('aria-hidden', 'false');
@@ -158,7 +150,7 @@ function openSweepConfirmation({ publicKey, defaultDestination = '' } = {}) {
   return new Promise((resolve) => {
     sweepConfirmationResolver = resolve;
     window.requestAnimationFrame(() => {
-      (defaultDestination ? $('#sweepConfirmTypedAddress') : $('#sweepConfirmDestination'))?.focus();
+      (defaultDestination ? $('[data-action="submit-sweep-confirm"]') : $('#sweepConfirmDestination'))?.focus();
     });
   });
 }
@@ -189,7 +181,12 @@ async function sweepRecoveryWallet(publicKey) {
     notify('Recovery sweep requires the Trebuchet desktop app');
     return;
   }
-  const defaultDestination = currentLaunchConfig().poolTopology.sweepDestination || '';
+  // The launch already names its return wallet: use it, so nobody copies addresses around.
+  const journal = (state.recovery?.journals || []).find((item) => item.walletPublicKey === publicKey && !['complete', 'completed'].includes(String(item.status || '').toLowerCase()))
+    || (state.coins?.detail?.creation?.walletPublicKey === publicKey ? state.coins.detail.creation.journal : null);
+  const defaultDestination = journal?.transfer?.destinationWallet
+    || recoveryLaunchConfig(journal || {})?.poolTopology?.sweepDestination
+    || currentLaunchConfig().poolTopology.sweepDestination || '';
   const confirmation = await openSweepConfirmation({ publicKey, defaultDestination });
   if (!confirmation) {
     notify('Recovery sweep cancelled');

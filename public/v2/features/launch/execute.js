@@ -17,8 +17,7 @@ async function checkExecutionReadiness({ retried = false } = {}) {
       const blockers = state.executionReadiness.blockers || [];
       // The server binds the estimate to more of the plan than the screen does. A stale estimate is
       // fixed by estimating again, which is read-only: do it and check once more, before the token exists.
-      if (!retried && blockers.some((item) => item.id === 'funding-estimate-stale')
-          && state.executionReadiness.nextEndpoint !== '/api/create-lp') {
+      if (!retried && blockers.some((item) => item.id === 'funding-estimate-stale') && !launchTokenExists()) {
         state.executionChecking = false;
         notify('The plan changed since the estimate: estimating again');
         if (state.classicFundingEstimate) state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };
@@ -491,7 +490,7 @@ async function runFullLaunch() {
   if (!runEnvelopeId) {
     // A plan edit since the estimate leaves it stale. Re-estimating is read-only, so Launch does it
     // rather than stopping on the blocker; once the token exists the launch keeps its original estimate.
-    if (!classicFundingEstimateStatus(config).matchesConfig && state.executionReadiness?.nextEndpoint !== '/api/create-lp') {
+    if (!classicFundingEstimateStatus(config).matchesConfig && !launchTokenExists()) {
       notify('The plan changed since the estimate: estimating again');
       await estimateClassicFunding();
       state.executionReadiness = null;
@@ -743,7 +742,7 @@ async function runLaunchEnvelope() {
   // Once the token exists (next step is liquidity or later), funding is
   // committed: arm with the estimate the launch started from, never send
   // the user back to Fund to re-estimate from half-spent balances.
-  const midLaunch = state.executionReadiness?.nextEndpoint === '/api/create-lp';
+  const midLaunch = launchTokenExists();
   const fundingEstimate = recoveryEndpoint
     ? null
     : currentClassicFundingEstimateForConfig(config) || (midLaunch ? state.classicFundingEstimate : null);
@@ -798,4 +797,10 @@ async function runLaunchEnvelope() {
   window.requestAnimationFrame(() => {
     document.querySelector(`[data-classic-workspace="${state.launchWorkspace}"] [data-action="execute-next-run"]`)?.focus();
   });
+}
+
+// Once the token exists, funding is committed: the launch continues on the estimate it started
+// from. Nothing after that point re-estimates or sends you back to Fund.
+function launchTokenExists() {
+  return Boolean(proofTokenMint(currentLaunchProof()));
 }

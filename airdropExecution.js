@@ -13,6 +13,10 @@ const purpose = 'airdrop';
 const hash = (value) => createHash('sha256').update(publicJson(value)).digest('hex');
 const paused = (message, operationId) => Object.assign(new Error(message), { code: 'EXECUTION_RECOVERY_REQUIRED', statusCode: 409, operationId });
 const address = (value) => new PublicKey(value).toBase58();
+const programs = [TOKEN_PROGRAM_ID.toBase58(), TOKEN_2022_PROGRAM_ID.toBase58()];
+// The token program is a fact of the coin, kept with the launch. A request cannot choose it.
+const launchProgram = (journal, tokenMint) => journal?.token?.mint && journal.token.mint === tokenMint && programs.includes(journal.token.tokenProgram) ? journal.token.tokenProgram : null;
+const withProgram = (input, programId) => programId ? { ...input, isToken2022: programId === programs[1], programId } : input;
 
 export function normalizeAirdropPlan(input, walletPublicKey) {
   const tokenMint = address(input.tokenMint), tokenDecimals = Number(input.tokenDecimals);
@@ -60,9 +64,34 @@ export function createAirdropExecutionRuntime({ owner, walletExecution, getJourn
         || request.recipients.some((row) => !plan.recipients.some((saved) => saved.wallet === row.wallet && saved.amountRaw === row.amountRaw))) throw paused('Use the saved airdrop token and recipient amounts');
   };
   const external = (plan) => ({ ...plan, recipients: plan.recipients.map((row) => ({ ...row, tokens: formatTokenAmountRaw(row.amountRaw, plan.tokenDecimals) })) });
+  // A plan saved under the wrong token program cannot have prepared a transfer: the chain refuses it
+  // first. Saved plans are never rewritten, so the plan for the coin's own program is saved beside it.
+  const savedFor = (store, ctx, tokenMint) => {
+    const first = store.getLaunch(ctx.id), programId = launchProgram(ctx.journal, first?.config.plan.tokenMint || tokenMint);
+    if (!first || !programId || first.config.plan.programId === programId) return { launch: first, id: ctx.id, programId: first?.config.plan.programId || programId };
+    const id = hash({ purpose, scopeId: ctx.scopeId, network: ctx.network, walletPublicKey: ctx.walletPublicKey, programId });
+    const corrected = store.getLaunch(id);
+    if (corrected) return { launch: corrected, id, programId };
+    const used = ctx.journal.airdrop?.transferred?.length || store.listWalletOperations(ctx.walletPublicKey).some((op) => {
+      const config = store.getLaunch(op.launchId)?.config;
+      return (config?.action?.context?.planDigest || config?.planDigest) === first.planDigest;
+    });
+    return used ? { launch: first, id: ctx.id, programId: first.config.plan.programId } : { launch: null, id, programId };
+  };
   const savedPlan = (walletPublicKey) => {
-    const ctx = context(walletPublicKey), launch = withStore((store) => store.getLaunch(ctx.id));
+    const ctx = context(walletPublicKey), { launch } = withStore((store) => savedFor(store, ctx));
     return launch ? { ...ctx, launch, plan: launch.config.plan } : null;
+  };
+  // A launch on a coin it did not create has no saved token program: read the mint's owner once.
+  const resolveTokenProgram = async ({ walletPublicKey, airdrop }) => {
+    const ctx = context(walletPublicKey), tokenMint = ctx.journal.token?.mint;
+    if (!tokenMint || launchProgram(ctx.journal, tokenMint)) return;
+    if (!airdrop?.recipients?.length && !ctx.journal.poolPlan?.airdropPlan?.recipients?.length && !withStore((store) => store.getLaunch(ctx.id))) return;
+    let info;
+    try { info = await createConnection().getAccountInfo(new PublicKey(tokenMint), 'finalized'); }
+    catch (cause) { throw Object.assign(paused('Read the coin\'s token program before the airdrop'), { cause, errorDetails: { code: 'CHAIN_STATE_UNAVAILABLE', message: cause.message } }); }
+    const tokenProgram = info?.owner?.toBase58();
+    if (programs.includes(tokenProgram)) updateJournal(walletPublicKey, { token: { tokenProgram } }, { stage: 'token_program_read', tokenMint, tokenProgram });
   };
   const validateAction = (walletPublicKey, action, operationId) => {
     const saved = savedPlan(walletPublicKey), value = action?.context;
@@ -116,12 +145,13 @@ export function createAirdropExecutionRuntime({ owner, walletExecution, getJourn
   };
   const prepare = ({ walletPublicKey, airdrop }) => {
     const ctx = context(walletPublicKey);
-    const saved = withStore((store) => store.getLaunch(ctx.id));
     const journalPlan = ctx.journal.poolPlan?.airdropPlan;
+    const { launch: saved, id, programId } = withStore((store) => savedFor(store, ctx, journalPlan?.tokenMint || airdrop?.tokenMint));
     if (!saved && !journalPlan?.recipients?.length && !airdrop?.recipients?.length) return null;
     try {
-      const request = airdrop?.recipients?.length ? normalizeAirdropPlan(airdrop, walletPublicKey) : null;
-      let plan = saved?.config.plan || (journalPlan?.recipients?.length ? normalizeAirdropPlan(journalPlan, walletPublicKey) : request);
+      const normalize = (input) => normalizeAirdropPlan(withProgram(input, programId), walletPublicKey);
+      const request = airdrop?.recipients?.length ? normalize(airdrop) : null;
+      let plan = saved?.config.plan || (journalPlan?.recipients?.length ? normalize(journalPlan) : request);
       if (!saved && !journalPlan?.recipients?.length && request) {
         const rows = new Map(request.recipients.map((row) => [row.wallet, row]));
         for (const row of [...(ctx.journal.airdrop?.transferred || []), ...(ctx.journal.airdrop?.failed || [])]) {
@@ -133,14 +163,14 @@ export function createAirdropExecutionRuntime({ owner, walletExecution, getJourn
       }
       if (request) matches(request, plan);
       if (journalPlan?.recipients?.length) {
-        const original = normalizeAirdropPlan(journalPlan, walletPublicKey);
+        const original = normalize(journalPlan);
         if (publicJson(original) !== publicJson(plan)) throw paused('Restore the complete approved airdrop plan');
       }
       for (const row of ctx.journal.airdrop?.transferred || []) {
         matches(normalizeAirdropPlan({ ...external(plan), recipients: [row] }, walletPublicKey), plan);
         if (!row.txId) throw paused('Verify each saved airdrop delivery signature before continuing');
       }
-      withStore((store) => store.saveLaunch({ id: ctx.id, walletPublicKey, network: ctx.network, planDigest: hash(plan),
+      withStore((store) => store.saveLaunch({ id, walletPublicKey, network: ctx.network, planDigest: hash(plan),
         config: { scopeId: ctx.scopeId, purpose, genesisHash: SOLANA_GENESIS_HASHES[ctx.network], plan } }));
       replay(walletPublicKey);
       return external(plan);
@@ -198,13 +228,14 @@ export function createAirdropExecutionRuntime({ owner, walletExecution, getJourn
     return result;
   };
   return {
-    prepare, recover,
+    prepare, recover, resolveTokenProgram,
     canRecover: (walletPublicKey) => !!pending(walletPublicKey),
     async execute(input) {
       const wallet = Keypair.fromSecretKey(Uint8Array.from(input.tempWalletSecretKey)), walletPublicKey = wallet.publicKey.toBase58();
+      await resolveTokenProgram({ walletPublicKey, airdrop: input });
       prepare({ walletPublicKey, airdrop: input });
       await recover(input);
-      const saved = savedPlan(walletPublicKey), request = normalizeAirdropPlan(input, walletPublicKey);
+      const saved = savedPlan(walletPublicKey), request = normalizeAirdropPlan(withProgram(input, saved?.plan.programId), walletPublicKey);
       matches(request, saved.plan);
       const transferred = [];
       for (const row of request.recipients) {
