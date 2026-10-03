@@ -17795,3 +17795,49 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 }
 #view-launch .airdrop-budget-controls .toggle-line input[type="checkbox"] { width: 16px !important; height: 16px !important; min-height: 0; margin: 0; accent-color: var(--green); }
 @container phase (max-width: 640px) { #view-launch .airdrop-budget-controls { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+
+/* Flat: one frame, no cards inside it. Sections are told apart by space and a hairline,
+   lists are rows, and facts are plain text. Controls keep their own border. */
+body #view-launch .launch-mode { border: 0; background: transparent; padding-left: 0; padding-right: 0; }
+body #view-launch .plan-strip { border: 0; border-bottom: 1px solid var(--line); background: transparent; }
+body #view-launch .plan-strip > button { border: 0; background: transparent; }
+body #view-launch .plan-strip > button.is-selected { background: transparent; }
+body #view-launch .launch-workspace-viewport { background: transparent; }
+body #view-launch .plan-slide, body #view-launch #classicBridge { padding-top: 6px; }
+
+/* Rows instead of boxed items */
+body #view-launch .supply-list { border: 0; background: transparent; }
+body #view-launch .supply-list > li, body #view-launch .supply-row, body #view-launch .grinder-row,
+body #view-launch .mini-row, body #view-launch .ledger-row, body #view-launch .airdrop-value-row {
+  border: 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); background: transparent;
+}
+body #view-launch .ledger, body #view-launch .grinder-list, body #view-launch .mini-table, body #view-launch .grinder-preview,
+body #view-launch .return-wallet, body #view-launch .asset-destinations, body #view-launch .token-logo-preview,
+body #view-launch .launch-step-guide, body #view-launch .funding-task, body #view-launch .launch-budget-recommender,
+body #view-launch .preview-mark, body #view-launch .preview-map {
+  border: 0; background: transparent; box-shadow: none; border-radius: 0;
+}
+body #view-launch .ledger-head { border-bottom: 1px solid var(--line); padding-left: 0; padding-right: 0; }
+body #view-launch .ledger-row { padding-left: 0; padding-right: 0; }
+body #view-launch .grinder-preview { padding: 0 0 4px; }
+body #view-launch .token-logo-preview { padding: 0; }
+/* Toggles read as a line of text with a check, not a box */
+body #view-launch .sealed-launch-control, body #view-launch .grinder-check, body #view-launch .airdrop-budget-controls .toggle-line {
+  border: 0; background: transparent; padding-left: 0;
+}
+/* The airdrop budget figures are a line of facts, not four cells */
+body #view-launch .airdrop-budget-grid { display: flex; flex-wrap: wrap; gap: 6px 28px; }
+body #view-launch .airdrop-budget-grid > span { border: 0; background: transparent; padding: 0; }
+body #view-launch .plan-strip > button { color: var(--muted); }
+body #view-launch .plan-strip > button.is-selected { color: var(--ink); box-shadow: inset 0 -2px 0 var(--green); }
+body #view-launch .plan-strip > button.is-selected strong { color: var(--ink); }
+body #view-launch .grinder-setup .grinder-check { border: 0; padding-left: 0; background: transparent; }
+body .topbar .coin-card-ui--title { border: 0; background: transparent; padding-left: 0; }
+body #view-launch .launch-wallet-choice { border: 0; background: transparent; padding-left: 0; }
+body #view-launch .launch-wallet-choice-icon { border: 0; background: transparent; }
+
+/* Other screens: panels inside panels lose their frame; the outer surface is the one frame. */
+body .view .surface .surface, body .view .surface .personal-discovery-panel, body .view .surface .token-discovery-panel,
+body .view .surface .discovery-feed-empty, body .view .surface .discovery-overview-stats, body .view .surface .history-pane-stage,
+body #view-wallet .section-heading { border-left: 0; border-right: 0; border-top: 0; background: transparent; box-shadow: none; border-radius: 0; }
+body .view .surface .discovery-feed-empty, body .view .surface .discovery-overview-stats { border-bottom: 0; }
