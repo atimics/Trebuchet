@@ -7,7 +7,9 @@ function vanityCandidateTarget(candidate) {
 }
 
 const VANITY_BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-const VANITY_PLANNING_RATE = 50000;
+// The live rate is measured over this window: the grinder reports in per-thread bursts.
+const VANITY_RATE_WINDOW_MS = 10000;
+const VANITY_RATE_STORAGE_KEY = 'trebuchet:v2:vanity-rate';
 const VANITY_VISIBLE_CANDIDATE_LIMIT = 4;
 
 function vanityRarityGrade(rarity) {
@@ -61,6 +63,21 @@ function vanityExpectedAttempts(start, end, caseInsensitive, length = null) {
   return TrebuchetCore.expectedVanityAttempts(start, end, { caseInsensitive, length });
 }
 
+// The speed to plan with: what this computer measured (Calibrate, or its last grind). Machines
+// differ too much to guess, so until then there is none.
+function vanityPlanningRate() {
+  try {
+    const saved = Number(window.localStorage?.getItem(VANITY_RATE_STORAGE_KEY));
+    if (Number.isFinite(saved) && saved > 0) return saved;
+  } catch { /* storage is optional */ }
+  return null;
+}
+
+function rememberVanityRate(rate) {
+  if (!(Number(rate) > 0)) return;
+  try { window.localStorage?.setItem(VANITY_RATE_STORAGE_KEY, String(Math.round(rate))); } catch { /* storage is optional */ }
+}
+
 function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats) {
   const start = String(prefix || '').trim();
   const end = String(suffix || '').trim();
@@ -73,7 +90,8 @@ function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats
   const p95 = expectedAttempts * -Math.log(0.05);
   const liveRate = Number(stats?.rate);
   const attempts = Number(stats?.attempts || 0);
-  const planningSeconds = expectedAttempts > 0 ? expectedAttempts / VANITY_PLANNING_RATE : 0;
+  const planningRate = vanityPlanningRate();
+  const planningSeconds = expectedAttempts > 0 && planningRate ? expectedAttempts / planningRate : null;
   const liveEtaSeconds = liveRate > 0 && expectedAttempts > attempts
     ? (expectedAttempts - attempts) / liveRate
     : null;
@@ -87,6 +105,7 @@ function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats
     p95,
     attempts: Number.isFinite(attempts) ? attempts : 0,
     rate: Number.isFinite(liveRate) ? liveRate : null,
+    planningRate,
     planningSeconds,
     liveEtaSeconds,
     difficulty: invalid.length ? 'invalid' : vanityPatternDifficulty(expectedAttempts),
@@ -94,7 +113,7 @@ function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats
 }
 
 function vanityEstimateSummary(prefix, suffix) {
-  const estimate = vanityPatternEstimate(prefix, suffix);
+  const estimate = vanityPatternEstimate(prefix, suffix, null);
   if (estimate.invalid.length) {
     return {
       label: 'Not allowed',
@@ -122,7 +141,7 @@ function vanityEstimateSummary(prefix, suffix) {
   }
   const live = estimate.rate
     ? `Live ${formatVanityRate(estimate.rate)}/s, ETA ${formatVanityDuration(estimate.liveEtaSeconds)}`
-    : `At ${formatVanityAttempts(VANITY_PLANNING_RATE)}/s: ~${formatVanityDuration(estimate.planningSeconds)}`;
+    : estimate.planningRate ? `~${formatVanityDuration(estimate.planningSeconds)} at ${formatVanityRate(estimate.planningRate)}/s` : 'Speed not measured';
   return {
     label: { easy: 'Quick', moderate: 'Takes a while', hard: 'Slow', extreme: 'Very slow' }[estimate.difficulty] || 'Estimate',
     detail: `About ${formatVanityAttempts(estimate.expectedAttempts)} tries (95% by ${formatVanityAttempts(estimate.p95)}). ${live}.`,
@@ -131,9 +150,6 @@ function vanityEstimateSummary(prefix, suffix) {
 }
 
 function vanityAvailabilityMeta() {
-  if (state.vanityRunning) {
-    return { label: 'Grinding', detail: state.vanityProgress || 'Searching…', className: 'warn', icon: 'fa-spinner fa-spin' };
-  }
   if (state.apiStatus === 'connected' && !state.vanityAvailable) {
     return {
       label: 'Grinder unavailable',
@@ -267,11 +283,6 @@ function renderSavedLaunchList() {
 function switchActiveLaunch(id) {
   if (launchIsInProgress()) return;
   rememberActiveLaunchId(id || NO_ACTIVE_LAUNCH);
-  try {
-    v2LocalStorage()?.removeItem(GUIDED_DRAFT_STORAGE_KEY);
-  } catch {
-    // A stale draft only matters when storage works, and then removeItem works too.
-  }
   window.location.reload();
 }
 
@@ -334,30 +345,66 @@ function scheduleLaunchAutoSave() {
   }, 900);
 }
 
+// The grind area: this computer's speed, what the typed pattern would take, and the jobs:
+// the one running, the ones queued after it, and the ones that ended, with their stats.
+function grindJobHtml(job) {
+  const tries = (value) => `${formatVanityAttempts(value)} tries`;
+  const elapsed = ((job.endedAt || Date.now()) - (job.startedAt || Date.now())) / 1000;
+  const average = elapsed > 0 && job.attempts ? job.attempts / elapsed : null;
+  const pct = job.expected ? Math.round((job.attempts / job.expected) * 100) : null;
+  const target = `<code>${escapeHtml(job.target)}</code>${job.caseInsensitive ? ' <small>any case</small>' : ''}${job.length ? ` <small>${escapeHtml(String(job.length))} chars</small>` : ''}`;
+  const button = (action, label, inner) => `<button class="icon-button grind-job-close" type="button" data-action="${action}" data-job="${escapeHtml(job.id)}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${inner}</button>`;
+  const dismiss = button('dismiss-grind-job', 'Dismiss', '<i class="fa-solid fa-xmark" aria-hidden="true"></i>');
+  if (job.status === 'running') {
+    const left = job.rate && job.attempts < job.expected
+      ? `~${formatVanityDuration((job.expected - job.attempts) / job.rate)} to expected`
+      : job.rate ? 'past expected' : 'measuring speed';
+    return `<li class="grind-job is-running"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i><span>${target}<small>${tries(job.attempts)} · ${pct ?? 0}% of expected · ${job.rate ? `${formatVanityRate(job.rate)}/s` : '—'} · ${escapeHtml(left)} · ${formatVanityDuration(elapsed)} so far</small></span>${button('stop-grind-job', 'Stop this grind', '<i class="fa-solid fa-stop" aria-hidden="true"></i> Stop')}</li>`;
+  }
+  if (job.status === 'queued') {
+    const rate = vanityPlanningRate();
+    return `<li class="grind-job is-queued"><i class="fa-regular fa-clock" aria-hidden="true"></i><span>${target}<small>Queued · about ${tries(job.expected)}${rate ? ` · ~${formatVanityDuration(job.expected / rate)}` : ''}</small></span>${button('stop-grind-job', 'Remove from the queue', '<i class="fa-solid fa-xmark" aria-hidden="true"></i>')}</li>`;
+  }
+  const stats = `${tries(job.attempts)} in ${formatVanityDuration(elapsed)}${average ? ` · ${formatVanityRate(average)}/s` : ''}${pct != null ? ` · ${pct}% of expected` : ''}`;
+  if (job.status === 'found') {
+    return `<li class="grind-job is-found"><i class="fa-solid fa-check" aria-hidden="true"></i><span>${target}<small>Found <code>${escapeHtml(fullAddress(job.publicKey))}</code> · ${stats}</small></span>${dismiss}</li>`;
+  }
+  if (job.status === 'stopped') {
+    return `<li class="grind-job is-stopped"><i class="fa-solid fa-stop" aria-hidden="true"></i><span>${target}<small>Stopped · ${stats}</small></span>${dismiss}</li>`;
+  }
+  return `<li class="grind-job is-failed"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span>${target}<small>${escapeHtml(job.error || 'Failed')} · ${stats}</small></span>${dismiss}</li>`;
+}
+
+function grindAreaHtml({ canGrind, estimate }) {
+  const running = runningGrindJob();
+  const rate = vanityPlanningRate();
+  const pattern = estimate.prefix && estimate.suffix ? `${estimate.prefix}...${estimate.suffix}` : estimate.prefix || estimate.suffix;
+  const typed = estimate.targetLength && !estimate.invalid.length && Number.isFinite(estimate.expectedAttempts) && estimate.expectedAttempts > 0
+    ? `<p class="grind-estimate"><code>${escapeHtml(pattern)}</code> about ${formatVanityAttempts(estimate.expectedAttempts)} tries${rate ? ` · ~${formatVanityDuration(estimate.expectedAttempts / rate)}, 95% by ~${formatVanityDuration(estimate.p95 / rate)}` : ''}</p>`
+    : '';
+  const jobs = state.grindJobs || [];
+  return `
+    <div class="grind-area">
+      <div class="grind-head">
+        <button class="primary-button compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}><i class="fa-solid ${running ? 'fa-plus' : 'fa-hammer'}" aria-hidden="true"></i><span>${running ? 'Add to queue' : 'Grind'}</span></button>
+        <span class="grind-speed">${state.vanityCalibrating ? 'Measuring this computer…' : rate ? `This computer: ${formatVanityRate(rate)}/s` : 'Speed not measured'}</span>
+        <button class="secondary-button compact" type="button" data-action="calibrate-vanity" ${state.vanityCalibrating || running ? 'disabled' : ''}><i class="fa-solid fa-gauge-high" aria-hidden="true"></i><span>${state.vanityCalibrating ? 'Calibrating…' : 'Calibrate'}</span></button>
+      </div>
+      ${state.vanityCalibrationError ? `<p class="grind-estimate is-error">${escapeHtml(state.vanityCalibrationError)}</p>` : ''}
+      ${typed}
+      ${jobs.length ? `<ul class="grind-jobs" aria-label="Grinds">${jobs.map(grindJobHtml).join('')}</ul>` : ''}
+    </div>`;
+}
+
 function renderVanityCandidates() {
-  // A running grind cannot change mode: lock the toggle to what is running.
-  const caseToggle = $('#vanityCaseInsensitive');
-  const lengthSelect = $('#vanityLength');
-  if (lengthSelect) {
-    lengthSelect.disabled = state.vanityRunning === true;
-    if (state.vanityRunning && state.vanityProgressStats) {
-      lengthSelect.value = state.vanityProgressStats.length ? String(state.vanityProgressStats.length) : '';
-    }
-  }
-  if (caseToggle) {
-    caseToggle.disabled = state.vanityRunning === true;
-    if (state.vanityRunning && state.vanityProgressStats) {
-      caseToggle.checked = state.vanityProgressStats.caseInsensitive === true;
-    }
-  }
   const selected = state.vanityCandidates.find((item) => item.publicKey === state.selectedVanityPublicKey) || null;
   const meta = vanityAvailabilityMeta();
   const vanity = currentVanityConfig();
-  const rawEstimate = vanityPatternEstimate(vanity.prefix, vanity.suffix);
+  const rawEstimate = vanityPatternEstimate(vanity.prefix, vanity.suffix, null);
   const estimate = vanityEstimateSummary(vanity.prefix, vanity.suffix);
   const candidates = state.vanityCandidates.slice(-VANITY_VISIBLE_CANDIDATE_LIMIT).reverse();
   const hiddenCount = Math.max(0, state.vanityCandidates.length - candidates.length);
-  const canGrind = state.vanityRunning || (!rawEstimate.invalid.length && (state.apiStatus !== 'connected' || state.vanityAvailable));
+  const canGrind = !rawEstimate.invalid.length && rawEstimate.difficulty !== 'impossible' && (state.apiStatus !== 'connected' || state.vanityAvailable);
   const canRemoveSelected = Boolean(selected?.publicKey);
   const candidateButtons = candidates.map((candidate) => {
     const isActive = candidate.publicKey === state.selectedVanityPublicKey;
@@ -388,10 +435,10 @@ function renderVanityCandidates() {
         <strong>${escapeHtml(item.label)}</strong>
         <span>${escapeHtml(item.detail)}</span>
       </li>`;
-  // Only what needs saying: a problem, a running grind, or the cost of the pattern.
+  // Only what needs saying: a problem with the grinder or the pattern. The grind area says the rest.
   const statusItems = [
     meta.label === 'Ready to grind' ? null : meta,
-    estimate.label === 'Nothing to grind' ? null : { ...estimate, icon: 'fa-gauge-high' },
+    ['Not allowed', 'Impossible'].includes(estimate.label) ? { ...estimate, icon: 'fa-triangle-exclamation' } : null,
   ].filter(Boolean);
   const statuses = $('#vanityStatuses');
   if (statuses) {
@@ -403,9 +450,7 @@ function renderVanityCandidates() {
   if (preview) preview.innerHTML = vanityPreviewHtml(vanity, selected);
   const grind = $('#vanityGrind');
   if (grind) {
-    grind.innerHTML = `<button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
-      <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>
-    </button>`;
+    grind.innerHTML = grindAreaHtml({ canGrind, estimate: rawEstimate });
   }
   const savedCount = state.vanityCandidates.length;
   $('#vanityCandidates').innerHTML = `

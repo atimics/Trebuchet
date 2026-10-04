@@ -84,6 +84,7 @@ const ACTION_GUARDS = {
     if (state.selectedVanityPublicKey) visible.add(state.selectedVanityPublicKey);
     return state.vanityCandidates.some((candidate) => !visible.has(candidate.publicKey)) ? null : 'No hidden addresses';
   },
+  'calibrate-vanity': () => firstReason(noDesktopApp, () => (runningGrindJob() ? 'A grind is running' : null), () => (state.vanityAvailable ? null : 'No grinder in this build')),
   'select-vanity': (element) => vanityAddressUsedReason(element.dataset.publicKey),
   'remove-selected-vanity': () => (state.vanityCandidates.some((item) => item.publicKey === state.selectedVanityPublicKey) ? null : 'No saved address selected'),
   'toggle-held-share': () => (heldShareLocked() ? 'Locked once the token exists' : null),

@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -326,4 +327,40 @@ export function generateVanityKeypair({ prefix, suffix, threads, caseInsensitive
       reject(new Error(`Spawn failed: ${err.message}`));
     });
   });
+}
+
+const CALIBRATION_SUFFIX = 'zzzzzzzzz';
+
+/**
+ * How fast this computer grinds, measured: the split-key grinder runs for `seconds` against
+ * a pattern it won't match in that time (one in 58^9 per try), then stops. Nothing is saved;
+ * the split point is a throwaway public key. Rejects while another grind runs.
+ */
+export async function calibrateVanityRate({ seconds = 3, generate = generateVanityKeypair, cancel = cancelVanityGrind, now = Date.now } = {}) {
+  const { publicKey } = crypto.generateKeyPairSync('ed25519');
+  const point = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
+  const samples = [];
+  const startedAt = now();
+  const run = generate({
+    suffix: CALIBRATION_SUFFIX,
+    splitPoint: point,
+    onProgress: ({ attempts }) => samples.push({ at: now(), attempts }),
+  });
+  const timer = setTimeout(() => cancel(), seconds * 1000);
+  try {
+    await run;
+  } catch (error) {
+    if (error.code !== 'CANCELLED') throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  const endedAt = now();
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  // First burst to last burst: the grinder reports in per-thread bursts, so this is steadier
+  // than counting from the moment it started.
+  const rate = first && last && last.at > first.at
+    ? (last.attempts - first.attempts) / ((last.at - first.at) / 1000)
+    : last ? last.attempts / Math.max(0.001, (endedAt - startedAt) / 1000) : 0;
+  return { rate: Math.round(rate), attempts: last?.attempts || 0, seconds: (endedAt - startedAt) / 1000 };
 }

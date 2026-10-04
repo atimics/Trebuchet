@@ -2393,7 +2393,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /vanityPatternEstimate/);
   assert.match(js, /vanityEstimateSummary/);
   assert.match(js, /VANITY_BASE58_ALPHABET/);
-  assert.match(js, /VANITY_PLANNING_RATE/);
+  assert.match(js, /function vanityPlanningRate\(\)/);
   assert.match(js, /Not allowed/);
   assert.match(js, /Expected/);
   assert.match(js, /95% by/);
