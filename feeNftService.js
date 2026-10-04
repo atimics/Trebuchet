@@ -290,6 +290,7 @@ export async function importProof(proof, rpcUrl) {
   if (!p || p.schema !== 'trebuchet.fee-nfts.v1' || p.programId !== programId()) throw codeError('Choose a fee proof for the configured program');
   const { digest, ...body } = p;
   if (createHash('sha256').update(JSON.stringify(body)).digest('hex') !== digest) throw codeError('Choose the original fee proof');
+  if (p.totalWeight !== String(p.count) || !Array.isArray(p.shares) || p.shares.length !== p.count || p.shares.some((s) => s.weight !== '1')) throw codeError('Choose a proof with one equal share per NFT');
   const c = connectionFor(rpcUrl); await requireProgram(c, p.programId);
   if (await c.getGenesisHash() !== p.network) throw codeError('Select the fee proof’s network');
   const verifiedSource = await sourceFor(c, p.source.venue === 'meteora' ? 'meteora' : 'raydium', p.source.nativeNftMint, p.source.venue === 'raydium-devnet' ? 'devnet' : 'mainnet');

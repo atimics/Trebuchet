@@ -6,6 +6,7 @@
   const request = (url, body) => api().request(url, body ? { method: 'POST', body, timeoutMs: 90_000 } : { timeoutMs: 30_000 });
   const sol = (v) => (Number(v || 0) / 1e9).toFixed(6);
   const short = (v) => `${String(v).slice(0, 5)}…${String(v).slice(-5)}`;
+  const holderText = (s, active) => s.owner ? short(s.owner) : active ? 'Unavailable' : short(s.recipient);
   const control = (label, input) => `<label class="nft-field"><span class="nft-label">${label}</span>${input}</label>`;
   const browserWallets = [];
   const discovery = Object.freeze({ register: (...wallets) => {
@@ -57,7 +58,7 @@
       ${active ? `<p>Fee rights are active. Collect pool fees into the vault, then claim your NFT’s share. SOL fees arrive as wrapped SOL in your wallet.</p>
         ${control('Transaction spend cap in SOL', '<input id="feeActionCap" type="number" min="0.001" step="0.001" value="0.01">')}
         <button class="secondary-button" data-fee-action="harvest" ${ui.busy ? 'disabled' : ''}>Collect pool fees</button>` : ''}
-      <div class="fee-nft-table"><table><thead><tr><th>NFT</th><th>Holder</th><th>Claimable</th><th></th></tr></thead><tbody>${shares.map((s) => `<tr><td>${esc(s.name)}<br><small>${esc(short(s.asset))}</small></td><td data-label="Holder" title="${esc(s.owner || s.recipient)}">${esc(short(s.owner || s.recipient))}</td><td data-label="Claimable">${s.claimable ? s.claimable.map((raw, i) => `${esc(formatUnits(raw, p.source.decimals[i]))} ${esc(short(p.source.mints[i]))}`).join('<br>') : 'After activation'}</td><td>${active && s.owner === ui.wallet ? `<button class="secondary-button compact" data-fee-action="claim" data-index="${s.index}" ${ui.busy ? 'disabled' : ''}>Claim</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
+      <div class="fee-nft-table"><table><thead><tr><th>NFT</th><th>Holder</th><th>Claimable</th><th></th></tr></thead><tbody>${shares.map((s) => `<tr><td>${esc(s.name)}<br><small>${esc(short(s.asset))}</small></td><td data-label="Holder" title="${esc(s.owner || s.recipient)}">${esc(holderText(s, active))}</td><td data-label="Claimable">${s.claimable ? s.claimable.map((raw, i) => `${esc(formatUnits(raw, p.source.decimals[i]))} ${esc(short(p.source.mints[i]))}`).join('<br>') : 'After activation'}</td><td>${active && s.owner === ui.wallet ? `<button class="secondary-button compact" data-fee-action="claim" data-index="${s.index}" ${ui.busy ? 'disabled' : ''}>Claim</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
       <button class="secondary-button compact" data-fee-action="proof">Download fee proof</button></div>`;
   }
   function formatUnits(raw, decimals) {
