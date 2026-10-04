@@ -2656,10 +2656,12 @@ app.post('/api/check-balance-detailed', async (req, res) => {
 // app holds the address's key. Reads are kept 15 seconds.
 const TOKEN_PROGRAM_ADDRESSES = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'];
 const walletContentsCache = new Map();
+// Read from the stored records only: decrypting every saved key to answer this, once per
+// wallet read, logged a failure per key while the PIN was locked.
 function heldKeyKind(address) {
-  const launch = pendingWallets.get(address);
+  const launch = pendingWallets.keyRecord(address);
   if (launch) return launch.retiredAt ? 'retired' : 'launch';
-  return vanityCaStore.listMetadata().some((entry) => entry.publicKey === address) ? 'vanity' : null;
+  return vanityCaStore.hasAddress(address) ? 'vanity' : null;
 }
 async function readWalletContents(address) {
   const key = new PublicKey(address).toBase58();
@@ -3390,7 +3392,7 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
     // The page shows the wallet itself (its chip lists what it holds), not a sentence about it.
     detail: launchWalletLamports === null ? 'Not checked on-chain.' : null,
   });
-  const walletEntry = journal?.walletPublicKey ? pendingWallets.get(journal.walletPublicKey) : null;
+  const walletEntry = journal?.walletPublicKey ? pendingWallets.keyRecord(journal.walletPublicKey) : null;
   const { events: _events, ...journalWithoutEvents } = journal || {};
   return {
     journalId: journal?.id || null,
@@ -3531,7 +3533,15 @@ app.get('/api/v2/coins/:mint/positions', async (req, res) => {
       return res.json({ success: true, positions: demoChainService.listDemoPositions(mint) });
     }
     if (!validMint(mint)) return res.status(400).json({ success: false, error: 'Invalid mint' });
-    const owners = pendingWallets.list().map((wallet) => wallet.publicKey).filter(Boolean);
+    // Positions sit with wallets still in use, or with this coin's own launch wallets. A swept,
+    // retired wallet holds none, and reading every saved wallet cut off the list at 25.
+    const launchWallets = launchJournal.list({ includeCompleted: true, includeArchived: true })
+      .filter((journal) => String(journal?.token?.mint || '') === mint)
+      .map((journal) => journal.walletPublicKey);
+    const owners = [...new Set([
+      ...launchWallets,
+      ...pendingWallets.records().filter((wallet) => !wallet.retiredAt).map((wallet) => wallet.publicKey),
+    ].filter(Boolean))];
     const positions = await listCoinPositions({ tokenMint: mint, owners });
     res.json({ success: true, positions });
   } catch (error) {

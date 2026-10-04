@@ -9,7 +9,7 @@ const source = server.slice(server.indexOf('function coinCreationSteps('), serve
 const steps = (journal, launchWalletLamports) => {
   const context = vm.createContext({ SOL_DUST_THRESHOLD, Math, Set, Boolean, String,
     sealedMetadataRevealReadiness: () => ({ positionCount: 0, lockedPositionCount: 0 }), v2JournalLiquidityResults: () => [],
-    v2TrimmedText: (value) => String(value || '').trim(), pendingWallets: { get: () => null } });
+    v2TrimmedText: (value) => String(value || '').trim(), pendingWallets: { keyRecord: () => null } });
   vm.runInContext(source, context);
   return context.coinCreationSteps(journal, { launchWalletLamports }).steps.find((step) => step.id === 'return');
 };

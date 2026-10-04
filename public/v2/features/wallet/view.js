@@ -266,7 +266,7 @@ function renderWallet() {
 }
 
 const HELD_WALLET_READERS = 2;
-const HELD_WALLET_BACKGROUND_PAUSE_MS = 300;
+const HELD_WALLET_BACKGROUND_PAUSE_MS = 1000;
 
 // Every key Trebuchet holds, read from the chain: the ones holding anything are listed, and
 // Sweep all sends each launch wallet's tokens and SOL to the return wallet, one at a time.

@@ -40,5 +40,5 @@ test('the Wallet page reads two at a time, never the four that hit the RPC rate 
   const { peak, reads } = await run({ background: false });
   assert.equal(peak, 2);
   assert.equal(reads, 12);
-  assert.match(source, /const HELD_WALLET_BACKGROUND_PAUSE_MS = 300;/);
+  assert.match(source, /const HELD_WALLET_BACKGROUND_PAUSE_MS = 1000;/);
 });

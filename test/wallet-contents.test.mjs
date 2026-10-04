@@ -125,7 +125,7 @@ test('the server reads SOL, token balances, and open token accounts with their r
   class Connection { async getAccountInfo() { reads += 1; return { lamports: 660241, owner: new PublicKey(SYSTEM) }; }
     async getParsedTokenAccountsByOwner(_owner, { programId }) { return { value: accounts[programId.toBase58()] }; } }
   const context = vm.createContext({ PublicKey, Connection, getRpcUrl: () => 'rpc', Map, BigInt, Date, Promise,
-    pendingWallets: { get: (address) => (address === 'wallet-a' ? { retiredAt: '2026-10-03' } : null) }, vanityCaStore: { listMetadata: () => [] } });
+    pendingWallets: { keyRecord: (address) => (address === 'wallet-a' ? { retiredAt: '2026-10-03' } : null), get: () => { throw new Error('a lookup must not decrypt keys'); } }, vanityCaStore: { hasAddress: () => false, listMetadata: () => { throw new Error('a lookup must not decrypt keys'); } } });
   vm.runInContext(`${source}\nthis.readWalletContents = readWalletContents;`, context);
   const result = await context.readWalletContents('wallet-a');
   assert.equal(result.lamports, 660241); assert.equal(result.key, 'retired');
