@@ -18623,7 +18623,7 @@ function renderWallet() {
           <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked || pinLockedForUnlock ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
         </button>
         <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
-          <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
+          <i class="fa-solid fa-eye-slash"></i><span>${discardBusy ? 'Hiding' : 'Hide'}</span>
         </button>
       </span>
     </header>
@@ -19553,8 +19553,8 @@ function renderRecoveryWalletWorkspace() {
                 </button><button class="pill-button danger" type="button" data-action="${escapeHtml(sweepAction)}" data-wallet="${escapeHtml(wallet.publicKey)}" ${wallet.decryptionFailed || busy || sweepBusy ? 'disabled' : ''}>
                   <i class="fa-solid fa-broom"></i><span>${escapeHtml(sweepLabel)}</span>
                 </button>`}
-                <button class="pill-button danger" type="button" data-action="discard-recovery-wallet" data-wallet="${escapeHtml(wallet.publicKey)}" ${busy || discardBusy ? 'disabled' : ''}>
-                  <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
+                <button class="pill-button" type="button" data-action="discard-recovery-wallet" data-wallet="${escapeHtml(wallet.publicKey)}" ${busy || discardBusy ? 'disabled' : ''}>
+                  <i class="fa-solid fa-eye-slash"></i><span>${discardBusy ? 'Hiding' : 'Hide'}</span>
                 </button>
               </span>
             </article>
@@ -22374,25 +22374,19 @@ async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()
     return;
   }
   if (state.fullRunRunning || state.realExecutionRunning) {
-    notify('Wait for the launch operation to finish before discarding a wallet');
+    notify('Wait for the launch operation to finish before hiding a wallet');
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.dismissPendingWallet) {
-    notify('Wallet discard requires the Trebuchet desktop app');
+    notify('Hiding a wallet requires the Trebuchet desktop app');
     return;
   }
-  const typed = await openOperatorPrompt({
-    eyebrow: 'Destructive wallet operation',
-    title: 'Discard local recovery entry',
-    detail: `This deletes Trebuchet's local secret for ${fullAddress(publicKey)}. Continue only if the wallet is empty, intentionally abandoned, or backed up elsewhere.`,
-    label: 'Type the full wallet address',
-    placeholder: publicKey,
-    confirmLabel: 'Discard local secret',
-    danger: true,
-    message: 'The wallet address must match exactly. This deletion cannot be undone.',
-    validate: (value) => value === publicKey ? null : 'Full wallet address does not match.',
+  const ok = await confirmOperatorAction({
+    title: 'Hide this wallet',
+    detail: `${fullAddress(publicKey)} leaves this list. Trebuchet keeps its key.`,
+    confirmLabel: 'Hide',
   });
-  if (!typed) return;
+  if (!ok) return;
 
   state.discardingWalletPublicKey = publicKey;
   renderAll();
@@ -22412,7 +22406,7 @@ async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()
     state.selectedWalletPublicKey = nextWallet?.publicKey || null;
     state.accountId = nextWallet?.publicKey || 'launch';
     await refreshLocalApiState();
-    notify('Local wallet recovery entry discarded');
+    notify('Wallet hidden; its key is kept');
   } catch (error) {
     notify(error.message || 'Wallet discard failed');
   } finally {

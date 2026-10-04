@@ -79,7 +79,7 @@ async function loadPendingWallets() {
 }
 
 // Construct one row in the recovery panel. Truncated public key, age,
-// "Copy secret key" button, "Discard" button.
+// "Copy secret key" button, "Hide" button.
 function buildPendingWalletRow(wallet) {
   const wrap = document.createElement('div');
   wrap.className = 'box p-3 mb-2 is-size-7';
@@ -115,7 +115,7 @@ function buildPendingWalletRow(wallet) {
         <div class="control">
           <button class="button is-small is-danger is-light" data-action="dismiss">
             <span class="icon is-small"><i class="fas fa-trash"></i></span>
-            <span>Discard</span>
+            <span>Hide</span>
           </button>
         </div>
       </div>
@@ -153,7 +153,7 @@ function buildPendingWalletRow(wallet) {
         <div class="control">
           <button class="button is-small is-danger is-light" data-action="dismiss">
             <span class="icon is-small"><i class="fas fa-trash"></i></span>
-            <span>Discard</span>
+            <span>Hide</span>
           </button>
         </div>
       </div>
@@ -191,7 +191,7 @@ function buildPendingWalletRow(wallet) {
       <div class="control">
         <button class="button is-small is-danger is-light" data-action="dismiss">
           <span class="icon is-small"><i class="fas fa-trash"></i></span>
-          <span>Discard</span>
+          <span>Hide</span>
         </button>
       </div>
     </div>
@@ -254,51 +254,11 @@ function wireRowButtons(wrap, wallet, pubShort, { hasMnemonic = false } = {}) {
   });
 
   wrap.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
-    // Check the live balance before letting the user discard the only
-    // stored copy of this wallet's key. Dismissing a wallet that still
-    // holds funds is irreversible money loss (unless the user saved the
-    // phrase elsewhere), so a generic "are you sure" isn't enough — say
-    // exactly what's in it. Best effort: if the balance lookup fails
-    // (offline, RPC down) fall back to the generic warning rather than
-    // blocking the dismissal.
-    let balanceLine = '';
-    try {
-      const resp = await fetch('/api/check-balance-detailed', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ publicKey: wallet.publicKey }),
-      });
-      const data = await resp.json();
-      if (data.success && data.balance) {
-        const sol = Number(data.balance.sol || 0);
-        const tokenCount = Object.values(data.balance.tokens || {})
-          .filter((t) => { try { return BigInt(t.amountRaw) > 0n; } catch (_) { return false; } })
-          .length;
-        // Mirror the server's dust rule (walletRecovery.js): under
-        // 0.001 SOL with no token balances is unsweepable dust, not funds.
-        if (sol >= 0.001 || tokenCount > 0) {
-          const parts = [];
-          if (sol > 0) parts.push(`<strong>${sol.toFixed(6)} SOL</strong>`);
-          if (tokenCount > 0) parts.push(`<strong>${tokenCount} token balance${tokenCount === 1 ? '' : 's'}</strong>`);
-          balanceLine =
-            `<p class="has-text-danger">This wallet still holds ${parts.join(' and ')}. ` +
-            `Discarding the recovery entry makes those funds unrecoverable unless ` +
-            `you have saved the recovery phrase somewhere else.</p>`;
-        } else {
-          balanceLine = '<p>On-chain check: this wallet is empty (dust only).</p>';
-        }
-      }
-    } catch (_) { /* offline / RPC error — keep the generic warning */ }
-
+    // Hiding keeps the wallet's key in Trebuchet; it only leaves this list.
     const ok = await confirmDialog({
-      title: 'Discard recovery entry?',
-      body:
-        `<p>Discard recovery entry for <strong>${escapeHtml(pubShort)}</strong>?</p>` +
-        balanceLine +
-        `<p>Only do this if you've already moved any funds out of this wallet, ` +
-        `or you're sure none were ever sent there. This action cannot be undone.</p>`,
-      confirmLabel: 'Discard',
-      danger: true,
+      title: 'Hide this wallet?',
+      body: `<p><strong>${escapeHtml(pubShort)}</strong> leaves this list. Trebuchet keeps its key.</p>`,
+      confirmLabel: 'Hide',
     });
     if (!ok) return;
     try {

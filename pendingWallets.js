@@ -11,8 +11,10 @@
 //   3. /api/transfer-assets   → on success AND after verifying the
 //                                wallet is on-chain empty, retire(pk).
 //      The key is kept, marked retired: "empty" can still mean open token
-//      accounts holding rent, and only this key can close them. A key is
-//      deleted only when the person discards it (remove).
+//      accounts holding rent, and only this key can close them.
+//
+// Keys are never deleted. Hiding a wallet retires it too. The only other
+// change is the Recovery PIN reset, which archives the encrypted file first.
 //
 //   retiredAt:    "ISO timestamp"   (optional; set by retire)
 //
@@ -305,13 +307,6 @@ export function retire(publicKey, retiredAt = new Date().toISOString()) {
   const saved = verifyPersistedWallet(publicKey);
   if (saved.retiredAt !== retiredAt) throw storageError(new Error('Verify the retired wallet record before continuing.'));
   return saved;
-}
-
-// Delete a wallet's key. Only the person does this, by discarding the entry.
-export function remove(publicKey) {
-  const list = load();
-  const filtered = list.filter((w) => w.publicKey !== publicKey);
-  if (filtered.length !== list.length) persist(filtered);
 }
 
 export function removePinEncrypted() {

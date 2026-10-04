@@ -83,8 +83,8 @@ function renderRecoveryWalletWorkspace() {
                 </button><button class="pill-button danger" type="button" data-action="${escapeHtml(sweepAction)}" data-wallet="${escapeHtml(wallet.publicKey)}" ${wallet.decryptionFailed || busy || sweepBusy ? 'disabled' : ''}>
                   <i class="fa-solid fa-broom"></i><span>${escapeHtml(sweepLabel)}</span>
                 </button>`}
-                <button class="pill-button danger" type="button" data-action="discard-recovery-wallet" data-wallet="${escapeHtml(wallet.publicKey)}" ${busy || discardBusy ? 'disabled' : ''}>
-                  <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
+                <button class="pill-button" type="button" data-action="discard-recovery-wallet" data-wallet="${escapeHtml(wallet.publicKey)}" ${busy || discardBusy ? 'disabled' : ''}>
+                  <i class="fa-solid fa-eye-slash"></i><span>${discardBusy ? 'Hiding' : 'Hide'}</span>
                 </button>
               </span>
             </article>
