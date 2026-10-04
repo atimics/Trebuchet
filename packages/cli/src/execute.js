@@ -119,10 +119,6 @@ export async function runDemoExecute({
     path.join(configDir, 'userPrefs.json'),
     JSON.stringify({
       demoMode: true,
-      playIntroVideo: false,
-      playSoundEffects: false,
-      playBackgroundMusic: false,
-      coinPreview: false,
     }, null, 2),
   );
 

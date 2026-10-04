@@ -280,11 +280,6 @@ function executeNextTransferFinalizationIssue(readiness, config = currentLaunchC
   return null;
 }
 
-function fullRunPendingAirdropCount(proof) {
-  const config = proofConfigForFingerprint(proof, currentLaunchConfig());
-  return airdropCompletionStatus(proof, config.poolTopology).pending;
-}
-
 function fullRunCompletionAudit(proof = currentLaunchProof(), config = currentLaunchConfig()) {
   const blockers = [];
   const safeConfig = proofConfigForFingerprint(proof, config && typeof config === 'object' ? config : { poolTopology: {} });

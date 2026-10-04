@@ -37,10 +37,6 @@ const baseUrl = `http://127.0.0.1:${port}`;
 
 writeFileSync(path.join(configDir, 'userPrefs.json'), JSON.stringify({
   demoMode: true,
-  playIntroVideo: false,
-  playSoundEffects: false,
-  playBackgroundMusic: false,
-  coinPreview: false,
 }, null, 2));
 
 const server = spawn(process.execPath, ['server.js'], {

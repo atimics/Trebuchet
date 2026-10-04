@@ -23,7 +23,7 @@ const port = await new Promise((resolve, reject) => {
   socket.listen(0, '127.0.0.1', () => { const { port: free } = socket.address(); socket.close(() => resolve(free)); });
 });
 const base = `http://127.0.0.1:${port}`;
-writeFileSync(path.join(configDir, 'userPrefs.json'), JSON.stringify({ demoMode: false, playIntroVideo: false, playSoundEffects: false, playBackgroundMusic: false, coinPreview: false }));
+writeFileSync(path.join(configDir, 'userPrefs.json'), JSON.stringify({ demoMode: false }));
 
 const server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, PORT: String(port), TREBUCHET_CONFIG_DIR: configDir }, stdio: ['ignore', 'pipe', 'pipe'] });
 let log = '';

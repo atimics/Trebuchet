@@ -45,11 +45,6 @@ function launchPresetById(id) {
   return LAUNCH_PRESETS.find((preset) => preset.id === id) || null;
 }
 
-// The preset for a budget the buttons offer, or null for any other amount.
-function launchPresetForBudget(budgetSol) {
-  return LAUNCH_PRESETS.find((preset) => preset.budgetSol === Number(budgetSol)) || null;
-}
-
 // Distinct market-shaping positions: per market, the main position, each NEW-side band and each
 // quote-side layer. (The tiny bootstrap that opens trading is not counted.)
 function launchPresetPositionCount(preset) {

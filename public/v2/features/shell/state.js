@@ -197,9 +197,6 @@ const CLASSIC_QUOTE_VENUES = Object.freeze({
 const CLASSIC_LADDER_DEFAULT_SUPPLY_PERCENT = 50;
 const CLASSIC_LADDER_DEFAULT_CEILING_MULTIPLIER = 1000;
 const CLASSIC_LADDER_MAX_BANDS = 20;
-const CLASSIC_TOKEN_NAME_MAX_BYTES = 32;
-const CLASSIC_TOKEN_SYMBOL_MAX_BYTES = 10;
-const CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES = 1000;
 const CLASSIC_MAX_WHOLE_TOKEN_SUPPLY = 10_000_000_000n;
 const CLASSIC_LOGO_MAX_BYTES = 100 * 1024;
 // No chain limits pixels: the metadata holds a link, and the image is uploaded free under ~100 KB.
@@ -227,13 +224,7 @@ const LAUNCH_PROOF_STORAGE_LIMIT = 1000000;
 const LAUNCH_PROOF_IMPORT_LIMIT = 2000000;
 const WALLET_BALANCE_REFRESH_INTERVAL_MS = 8000;
 const WALLET_BALANCE_FRESH_MS = 60 * 1000;
-const CLASSIC_REPORT_COMPARISON_STORAGE_KEY = 'trebuchet:v2:classic-report-comparison:v1';
-const CLASSIC_REPORT_COMPARISON_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-const CLASSIC_REPORT_COMPARISON_INPUT_LIMIT = 50000;
-const CLASSIC_REPORT_COMPARISON_ROW_LIMIT = 80;
-const CLASSIC_ARTIFACT_IMPORT_LIMIT = 1000000;
 const V2_HTML_PROOF_AIRDROP_SAMPLE_LIMIT = 100;
-const V2_VIEWPORT_SMOKE_REQUIRED_ASSETS = Object.freeze(['index.html', 'styles.css', 'api-client.js', 'app.js']);
 // Mirror of ../../viewportSmokeContract.js. This file is a classic browser
 // script and cannot import it, so test/viewport-smoke-contract.test.mjs
 // asserts the two stay identical.

@@ -1,13 +1,8 @@
 // userPrefs.js
 //
 // Manages a small JSON file (userPrefs.json) of user-toggleable
-// preferences. Currently just one knob:
-//
-//   checkForUpdatesOnStartup (default: true)
-//     Controls whether the app automatically checks for a newer
-//     release a couple of seconds after the window appears. The
-//     manual "Help → Check for Updates" menu item always works
-//     regardless of this setting.
+// preferences: update checks, test mode, network, and launch report
+// publishing.
 //
 // Modelled on rpcConfig.js — same TREBUCHET_CONFIG_DIR convention,
 // same lazy-load pattern, same defensive error handling.
@@ -48,28 +43,6 @@ function configFile() {
 // disk is filled in from here on get().
 const DEFAULTS = Object.freeze({
   checkForUpdatesOnStartup: true,
-  // Medieval gauntlet cursor theme. Off by default — covers every
-  // cursor state (idle, pointer, active, text, wait, resize, etc.)
-  // with hand-and-quill artwork. ON by default (product decision,
-  // September 2026) — it is part of the app's look. Can be turned off in
-  // settings for users who rely on OS cursor-size / high-contrast
-  // accessibility overrides, since custom cursors bypass those.
-  medievalCursor: true,
-  // Paired opt-in flag. Historically a migration guard: older builds
-  // persisted the full default-shaped prefs object on any change, leaving
-  // medievalCursor:true on disk for users who never chose it, so the
-  // renderer requires BOTH fields true and the settings checkbox writes
-  // both together. With the theme now on by default the pair defaults to
-  // true as well. Note the guard's other property still holds: a user who
-  // has EXPLICITLY turned the cursor off has both fields persisted false
-  // on disk, and persisted values always win over defaults — so this
-  // change affects fresh installs and never overrides a saved choice.
-  medievalCursorOptIn: true,
-  // 3D spinning coin in the token preview card. On by default; can be
-  // turned off (falls back to the flat logo) for weak hardware or
-  // personal preference.
-  coinPreview: true,
-  coinPreviewParked: false,
   // Demo mode. When true, every chain-touching API simulates its result —
   // no transactions are sent and no SOL is spent. Intended for testing UI
   // changes, capturing tutorial screenshots, and demonstrating the app
@@ -79,26 +52,6 @@ const DEFAULTS = Object.freeze({
   // Network selector: 'mainnet' or 'devnet'. Controls RPC endpoints, Raydium
   // program IDs, and devnet-only features. Default is mainnet.
   network: 'mainnet',
-  // First-launch welcome card (demo-mode champion + RPC-setup explainer at
-  // the top of the page). Shown until the user dismisses it via "Don't show
-  // this again"; the renderer's setupWelcomeCard() reads this on load and
-  // the dismiss link writes false.
-  showWelcomeCard: true,
-  // Intro splash video. The short animation that plays on startup. On by
-  // default; can be turned off in settings so the app opens straight to the
-  // UI (handy once the novelty wears off, or on slow hardware). Read by the
-  // renderer's setupSplashScreen() on load — disabled means the splash is
-  // dismissed immediately and never plays.
-  playIntroVideo: true,
-  // Click sound effect. A short tick played when the user activates a button
-  // or other clickable control. On by default; toggled in settings. Handled
-  // entirely in the renderer — the server only
-  // stores the flag.
-  playSoundEffects: true,
-  // Looping background music. Starts once the intro splash is gone and the
-  // user has interacted with the page. Off by default; toggled in settings.
-  // Like the sound effect, this is renderer-side only.
-  playBackgroundMusic: false,
   // Publish a permanent launch report to Arweave (a machine-readable JSON
   // plus the rendered HTML) after a launch completes, tagged so anyone can
   // find it from the token mint — without writing anything onto the token's

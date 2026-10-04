@@ -6,18 +6,6 @@ function vanityCandidateTarget(candidate) {
   return prefix || suffix || candidate?.mode || 'vanity';
 }
 
-function vanityCandidateDetail(candidate) {
-  if (!candidate) return 'Fresh random mint keypair';
-  const parts = [];
-  const rarity = String(candidate.rarity || '').trim();
-  const attempts = Number(candidate.attempts);
-  parts.push(vanityCandidateTarget(candidate));
-  if (rarity) parts.push(`local grind grade: ${rarity}`);
-  if (Number.isFinite(attempts) && attempts > 0) parts.push(`${attempts.toLocaleString()} local tries`);
-  if (candidate.persisted) parts.push('saved');
-  return parts.join(' / ');
-}
-
 const VANITY_BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const VANITY_PLANNING_RATE = 50000;
 const VANITY_VISIBLE_CANDIDATE_LIMIT = 4;

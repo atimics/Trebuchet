@@ -198,9 +198,6 @@ const CLASSIC_QUOTE_VENUES = Object.freeze({
 const CLASSIC_LADDER_DEFAULT_SUPPLY_PERCENT = 50;
 const CLASSIC_LADDER_DEFAULT_CEILING_MULTIPLIER = 1000;
 const CLASSIC_LADDER_MAX_BANDS = 20;
-const CLASSIC_TOKEN_NAME_MAX_BYTES = 32;
-const CLASSIC_TOKEN_SYMBOL_MAX_BYTES = 10;
-const CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES = 1000;
 const CLASSIC_MAX_WHOLE_TOKEN_SUPPLY = 10_000_000_000n;
 const CLASSIC_LOGO_MAX_BYTES = 100 * 1024;
 // No chain limits pixels: the metadata holds a link, and the image is uploaded free under ~100 KB.
@@ -228,13 +225,7 @@ const LAUNCH_PROOF_STORAGE_LIMIT = 1000000;
 const LAUNCH_PROOF_IMPORT_LIMIT = 2000000;
 const WALLET_BALANCE_REFRESH_INTERVAL_MS = 8000;
 const WALLET_BALANCE_FRESH_MS = 60 * 1000;
-const CLASSIC_REPORT_COMPARISON_STORAGE_KEY = 'trebuchet:v2:classic-report-comparison:v1';
-const CLASSIC_REPORT_COMPARISON_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-const CLASSIC_REPORT_COMPARISON_INPUT_LIMIT = 50000;
-const CLASSIC_REPORT_COMPARISON_ROW_LIMIT = 80;
-const CLASSIC_ARTIFACT_IMPORT_LIMIT = 1000000;
 const V2_HTML_PROOF_AIRDROP_SAMPLE_LIMIT = 100;
-const V2_VIEWPORT_SMOKE_REQUIRED_ASSETS = Object.freeze(['index.html', 'styles.css', 'api-client.js', 'app.js']);
 // Mirror of ../../viewportSmokeContract.js. This file is a classic browser
 // script and cannot import it, so test/viewport-smoke-contract.test.mjs
 // asserts the two stay identical.
@@ -1269,42 +1260,6 @@ function selectedManagedWallet() {
 
 function pendingRecoveryWallet(publicKey) {
   return state.recovery.pendingWallets.find((wallet) => wallet.publicKey === publicKey) || null;
-}
-
-function recoveryWalletState(wallet) {
-  const reason = walletLockInfo(wallet);
-  if (reason.state === 'missing') {
-    return { label: 'Key missing', className: 'danger', detail: reason.detail };
-  }
-  if (reason.state === 'wrong-key') {
-    return { label: 'Different PIN', className: 'danger', detail: reason.detail };
-  }
-  if (wallet?.decryptionFailed && !(state.secretPin.locked || wallet?.secretPinLocked)) {
-    return {
-      label: 'Secret missing',
-      className: 'danger',
-      detail: 'Local metadata exists, but Trebuchet cannot read the saved secret here.',
-    };
-  }
-  if (state.secretPin.locked || wallet?.secretPinLocked) {
-    return {
-      label: 'PIN locked',
-      className: 'warn',
-      detail: 'Unlock the Recovery PIN before revealing this launch wallet.',
-    };
-  }
-  if (wallet?.publicKey && wallet.publicKey === selectedLaunchWalletPublicKey()) {
-    return {
-      label: 'Selected',
-      className: '',
-      detail: 'This wallet is active for funding, recovery, and guarded launch execution.',
-    };
-  }
-  return {
-    label: 'Recoverable',
-    className: 'warn',
-    detail: 'Saved launch wallet secret is available through the guarded reveal flow.',
-  };
 }
 
 function fmtSol(value) {
@@ -2969,12 +2924,6 @@ function applyNavMode(mode) {
 function setNavMode(mode) {
   applyNavMode(mode);
   try { window.localStorage?.setItem('trebuchet-nav', mode); } catch { /* the choice just is not remembered */ }
-}
-
-function riskClass(value) {
-  if (['High', 'Watch', 'Low confidence'].includes(value)) return 'danger';
-  if (['Medium', 'Warn', 'Medium confidence'].includes(value)) return 'warn';
-  return '';
 }
 
 function defaultSignatureRows() {
@@ -4870,63 +4819,6 @@ function selectedClassicQuoteVenue() {
 // neighbouring bands. It reads and writes the same percentage fields the plan
 // builder already consumes, so nothing downstream changes.
 
-function vortexAllocationModel() {
-  const pools = [];
-  (state.customPools || []).forEach((pool, index) => {
-    pools.push({
-      id: `custom-${index}`,
-      symbol: String(pool.quoteSymbol || `Q${index + 1}`).toUpperCase(),
-      mint: String(pool.quoteMint || ''),
-      percent: Number(pool.supplyPercent || 0),
-      minPercent: 0,
-      feeTier: Number(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
-    });
-  });
-  const venue = selectedClassicQuoteVenue();
-  const isFlywheel = venue.key === 'meme' || venue.key === 'reserve';
-  pools.push({
-    id: 'sol',
-    symbol: 'SOL',
-    mint: 'So11111111111111111111111111111111111111112',
-    percent: Number($('#mainPoolPercent')?.value || 0),
-    minPercent: 10,
-    feeTier: state.solPoolConfigIndex,
-  });
-  const quotePercent = Number($('#quotePoolPercent')?.value || 0);
-  // Always present: a pool at 0% still needs a boundary to drag open.
-  if (isFlywheel || quotePercent > 0) {
-    pools.push({
-      id: 'quote',
-      symbol: isFlywheel ? (venue.key === 'meme' ? 'FLY' : 'RESERVE') : 'USDC',
-      mint: isFlywheel ? (venue.quoteMint || '') : '',
-      percent: quotePercent,
-      minPercent: isFlywheel ? 10 : 0,
-      maxPercent: isFlywheel ? 30 : 100,
-      feeTier: state.pairPoolConfigIndex,
-    });
-  }
-  return {
-    pools,
-    depositSol: Number($('#liquidityBudgetSol')?.value || $('#launchSol')?.value || 0),
-    sweepDestination: $('#sweepDestination')?.value || '',
-  };
-}
-
-function applyVortexAllocation(pools = []) {
-  for (const pool of pools) {
-    if (pool.id === 'sol') {
-      if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(pool.percent);
-    } else if (pool.id === 'quote') {
-      if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(pool.percent);
-    } else if (String(pool.id).startsWith('custom-')) {
-      const index = Number(String(pool.id).slice('custom-'.length));
-      if (state.customPools?.[index]) state.customPools[index].supplyPercent = pool.percent;
-    }
-  }
-  renderFlywheelPick();
-  scheduleLaunchAutoSave();
-}
-
 // The flywheel vortex has been removed from the shell (no mount point and
 // no vortex script). Kept as a documented no-op so renderer call sites and
 // the full-input audit stay intact.
@@ -4942,55 +4834,6 @@ function renderFlywheelPick() {
   host.hidden = venueKey !== 'meme';
   mintEl.textContent = state.memeFlywheelMint ? shortAddress(state.memeFlywheelMint) : '—';
   mintEl.title = state.memeFlywheelMint || '';
-}
-
-// Draw a fresh memecoin from the flywheel pool (never repeating the current
-// pairing when the pool has alternatives).
-// Build a four-token vortex in one action: the flywheel pairing becomes the
-// hub and two more memecoins join SOL as circulating rings, 10% each.
-async function spinFlywheelVortex() {
-  const own = ownTokenMint();
-  const candidates = (state.flywheelPools?.meme || []).filter((mint) => !own || mint !== own);
-  if (candidates.length < 3) {
-    notify('The meme flywheel pool needs at least three mints for a four-token vortex');
-    return;
-  }
-  const drawn = [];
-  const rest = candidates.slice();
-  while (drawn.length < 3) {
-    drawn.push(rest.splice(Math.floor(Math.random() * rest.length), 1)[0]);
-  }
-  const quoteShare = 10;
-  const solShare = 100 - quoteShare * drawn.length;
-  if (solShare < 10) {
-    notify('Not enough supply for that many flywheel pools');
-    return;
-  }
-
-  state.memeFlywheelMint = drawn[0];
-  state.customPools = drawn.slice(1).map((mint, index) => ({
-    id: `flywheel-ring-${index + 2}`,
-    quoteSymbol: `MEME${index + 2}`,
-    quoteMint: mint,
-    supplyPercent: quoteShare,
-    ammConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
-    sliceShares: '100',
-    feeKeyRecipient: '',
-    ladderBands: 0,
-    ladderText: '',
-    supportSol: 0,
-    supportDepth: 12,
-    supportLayersText: '',
-  }));
-  if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(quoteShare);
-  if ($('#quotePoolVenue')) $('#quotePoolVenue').value = 'meme';
-  // SOL takes the rest, after any held-back or airdrop share.
-  if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(mainPoolRemainderPercent());
-
-  renderFlywheelPick();
-  renderVortexControl();
-  scheduleLaunchAutoSave();
-  notify(`Four-token vortex: SOL ${solShare}% + ${drawn.length} memecoins at ${quoteShare}%`);
 }
 
 // The token being launched cannot be its own flywheel pairing: a pool with the
@@ -5376,11 +5219,6 @@ const LAUNCH_PRESETS = Object.freeze([
 
 function launchPresetById(id) {
   return LAUNCH_PRESETS.find((preset) => preset.id === id) || null;
-}
-
-// The preset for a budget the buttons offer, or null for any other amount.
-function launchPresetForBudget(budgetSol) {
-  return LAUNCH_PRESETS.find((preset) => preset.budgetSol === Number(budgetSol)) || null;
 }
 
 // Distinct market-shaping positions: per market, the main position, each NEW-side band and each
@@ -7293,18 +7131,6 @@ function vanityCandidateTarget(candidate) {
   return prefix || suffix || candidate?.mode || 'vanity';
 }
 
-function vanityCandidateDetail(candidate) {
-  if (!candidate) return 'Fresh random mint keypair';
-  const parts = [];
-  const rarity = String(candidate.rarity || '').trim();
-  const attempts = Number(candidate.attempts);
-  parts.push(vanityCandidateTarget(candidate));
-  if (rarity) parts.push(`local grind grade: ${rarity}`);
-  if (Number.isFinite(attempts) && attempts > 0) parts.push(`${attempts.toLocaleString()} local tries`);
-  if (candidate.persisted) parts.push('saved');
-  return parts.join(' / ');
-}
-
 const VANITY_BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const VANITY_PLANNING_RATE = 50000;
 const VANITY_VISIBLE_CANDIDATE_LIMIT = 4;
@@ -8440,29 +8266,6 @@ function poolsMapForPlan(pools = []) {
   });
   const legend = layers.map((layer) => `<span><i style="background:${layer.color}"></i>${escapeHtml(layer.symbol)} <b>${fmt(layer.share)}%</b>${layer.tier ? ` · ${fmt(layer.tier.fee)}% fee` : ''}</span>`).join('');
   return `<svg viewBox="0 0 ${W} ${barY + 28}" role="img" aria-label="Where every pool's liquidity sits" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg><div class="pool-legend">${legend}</div>`;
-}
-
-// The same picture for a pool as the launch will build it (Create liquidity tab).
-function poolMapForPool(pool) {
-  const support = pool?.support?.mode === 'custom' ? pool.support : null;
-  const slices = (pool?.distribution || []).map((slice) => Number(slice.sharePercent) || 0).filter((share) => share > 0);
-  let bands = [];
-  if (pool?.ladder?.mode === 'manual') {
-    bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: band.supplyPercent, label: `${Number(Number(band.supplyPercent).toFixed(1))}%` }));
-  } else if (pool?.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
-    const count = pool.ladder.bandCount;
-    const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
-    bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: 1, label: '' }));
-  }
-  return poolMapSvg({
-    premiumPct: 0,
-    supportSol: support ? Number(support.solValue) || 0 : 0,
-    depthPct: support ? Number(support.depthPct) || 12 : 12,
-    slices: slices.length ? slices : [100],
-    bands,
-    supportLayers: support && Array.isArray(support.layers) ? support.layers : [],
-    tier: feeTierInfo(pool?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
-  });
 }
 
 function renderPoolMap(panel) {
@@ -10485,14 +10288,6 @@ function proofCanCreateLocalDossier(proof = {}, config = currentLaunchConfig()) 
   const plannedPoolCount = Math.max(1, Number(config?.poolTopology?.pools?.length || 0));
   return launchProofPoolIds(proof).length >= plannedPoolCount;
 }
-
-const COMPARISON_POSITION_SHAPE_FIELDS = [
-  ['sharePercent', 'slice share'],
-  ['supplyPercent', 'supply share'],
-  ['lowerMultiplier', 'lower multiplier'],
-  ['upperMultiplier', 'upper multiplier'],
-  ['depthPct', 'support depth'],
-];
 
 
 function currentClassicComparisonFields(proof = currentLaunchProof(), config = currentLaunchConfig()) {
@@ -15619,22 +15414,6 @@ function localApiLaunchPlanStatus(plan = state.launchPlan, config = currentLaunc
   };
 }
 
-function localApiLaunchPlanStaleReason(planStatus = localApiLaunchPlanStatus()) {
-  const reasons = [];
-  if (!planStatus.matchesConfig) reasons.push('current token/pool model');
-  if (!planStatus.matchesWallet) reasons.push('selected launch wallet');
-  return reasons.join(' or ') || 'current token/pool model or selected launch wallet';
-}
-
-function localApiLaunchPlanIncompleteReason(planStatus = localApiLaunchPlanStatus()) {
-  if (!planStatus.decodedOperationEvidence) return 'its local-wallet operation rows are not fully decoded';
-  if (Array.isArray(planStatus.missingOperationIds) && planStatus.missingOperationIds.length) {
-    return `it is missing required operation ${planStatus.missingOperationIds[0]}${planStatus.missingOperationIds.length === 1 ? '' : ` and ${planStatus.missingOperationIds.length - 1} more`}`;
-  }
-  if (planStatus.operationSequenceOrdered === false) return 'its operations are not in the required Classic launch order';
-  return 'it is missing the complete ordered run envelope';
-}
-
 function classicFundingEstimateRequest(config = currentLaunchConfig()) {
   const topology = config?.poolTopology || {};
   const token = config?.token || {};
@@ -15790,80 +15569,6 @@ function proofLaunchConfigSnapshotState(proof = currentLaunchProof()) {
     complete: missing.length === 0 && mismatches.length === 0,
     missing,
     mismatches,
-  };
-}
-
-function utf8ByteLength(value) {
-  const text = String(value ?? '');
-  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(text).length;
-  try {
-    return unescape(encodeURIComponent(text)).length;
-  } catch (_) {
-    return text.length;
-  }
-}
-
-function tokenConfigStatus(config = currentLaunchConfig()) {
-  const token = config?.token || {};
-  const name = String(token.name || '').trim();
-  const symbol = String(token.symbol || '').trim();
-  const supplyRaw = String(token.supply ?? '').trim().replace(/,/g, '');
-  const description = String(token.description || '').trim();
-  const logo = token.logo && typeof token.logo === 'object' ? token.logo : null;
-  const issues = [];
-  if (!name) {
-    issues.push('Token name is required.');
-  } else if (utf8ByteLength(name) > CLASSIC_TOKEN_NAME_MAX_BYTES) {
-    issues.push(`Token name must be ${CLASSIC_TOKEN_NAME_MAX_BYTES} UTF-8 bytes or fewer.`);
-  }
-  if (!symbol) {
-    issues.push('Token symbol is required.');
-  } else if (utf8ByteLength(symbol) > CLASSIC_TOKEN_SYMBOL_MAX_BYTES) {
-    issues.push(`Token symbol must be ${CLASSIC_TOKEN_SYMBOL_MAX_BYTES} UTF-8 bytes or fewer.`);
-  }
-  if (utf8ByteLength(description) > CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES) {
-    issues.push(`Token description must be ${CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES} UTF-8 bytes or fewer.`);
-  }
-  if (!/^[1-9]\d*$/.test(supplyRaw)) {
-    issues.push('Total supply must be a positive whole number.');
-  } else {
-    try {
-      if (BigInt(supplyRaw) > CLASSIC_MAX_WHOLE_TOKEN_SUPPLY) {
-        issues.push('Total supply must not exceed 10,000,000,000.');
-      }
-    } catch (_) {
-      issues.push('Total supply must be a positive whole number.');
-    }
-  }
-  if (state.tokenLogoError) {
-    issues.push(`Token logo failed validation: ${state.tokenLogoError}`);
-  } else if (logo) {
-    const mime = String(logo.type || logo.mime || logo.mimeType || '').toLowerCase();
-    const sizeBytes = Number(logo.sizeBytes ?? logo.size);
-    const width = Number(logo.width);
-    const height = Number(logo.height);
-    if (mime && !['image/png', 'image/jpeg', 'image/gif'].includes(mime)) {
-      issues.push('Token logo must be a PNG, JPG, or GIF image.');
-    }
-    if (Number.isFinite(sizeBytes) && (sizeBytes <= 0 || sizeBytes > CLASSIC_LOGO_MAX_BYTES)) {
-      issues.push('Token logo must be 100KB or smaller.');
-    }
-    if (Number.isFinite(width) && Number.isFinite(height)) {
-      if (width > CLASSIC_LOGO_MAX_DIMENSION || height > CLASSIC_LOGO_MAX_DIMENSION) {
-        issues.push(`Token logo must be at most ${CLASSIC_LOGO_MAX_DIMENSION}x${CLASSIC_LOGO_MAX_DIMENSION}px.`);
-      }
-      if (width < CLASSIC_LOGO_MIN_DIMENSION || height < CLASSIC_LOGO_MIN_DIMENSION) {
-        issues.push(`Token logo must be at least ${CLASSIC_LOGO_MIN_DIMENSION}x${CLASSIC_LOGO_MIN_DIMENSION}px.`);
-      }
-    }
-  }
-  return {
-    ready: issues.length === 0,
-    issues,
-    name,
-    symbol,
-    supply: supplyRaw,
-    hasLogo: Boolean(logo),
   };
 }
 
@@ -20959,10 +20664,6 @@ async function removeAddedCoin(mint) {
   }
 }
 
-function coinTitle(coin) {
-  return coin?.name || coin?.symbol || (coin?.mint ? shortAddress(coin.mint) : 'Untitled coin');
-}
-
 // ---------------------------------------------------------------------------
 // Coin cards: one way to show a coin, everywhere
 // ---------------------------------------------------------------------------
@@ -21314,23 +21015,6 @@ function coinActivityHtml(events = []) {
       <span><strong>${escapeHtml(label[event.type] || event.type)}</strong><small>${escapeHtml(formatDate(event.at))}${event.sol ? ` · ${Number(event.sol).toFixed(4)} SOL` : ''}${event.practice ? ' · test' : ''}</small></span>
       <em>${escapeHtml(event.outcome || '')}${event.txId && !String(event.txId).startsWith('Demo') ? ` · <a href="${escapeHtml(solscanTxUrl(event.txId))}" target="_blank" rel="noopener">tx</a>` : ''}</em>
     </li>`).join('')}</ul>`;
-}
-
-function draftPlanHtml(entry) {
-  const config = entry?.config || {};
-  const topology = config.poolTopology || {};
-  const pools = Array.isArray(topology.pools) ? topology.pools : [];
-  const supportSol = pools.reduce((sum, pool) => sum + (pool?.support?.mode === 'custom' ? Number(pool.support.solValue || 0) : 0), 0);
-  const held = Number(topology.preallocation?.supplyPercent || 0);
-  const facts = [
-    ['Supply', compactAmount(parseWholeNumber(String(config.token?.supply || '1000000000')) || 1e9)],
-    ['Target market cap', `$${compactAmount(Number(topology.targetMarketCapUsd || 0))}`],
-    ['Pools', pools.length ? pools.map((pool) => `${pool.quoteSymbol || pool.quoteToken || 'pair'} ${Number(pool.supplyPercent || 0)}%`).join(' · ') : 'None yet'],
-    ['SOL in the pool', supportSol > 0 ? fmtSol(supportSol) : 'None'],
-    ['Held back', held > 0 ? `${held}%` : 'None'],
-    ['Address', config.vanity?.selectedPublicKey ? `${fullAddress(config.vanity.selectedPublicKey)} (reserved)` : 'Chosen when the token is created'],
-  ];
-  return `<dl class="pool-support-facts">${facts.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>`;
 }
 
 // The coin page header: the coin's card, with its explorer links.
@@ -22054,11 +21738,6 @@ function executeNextTransferFinalizationIssue(readiness, config = currentLaunchC
       : 'Publish or download the launch report before final sweep.';
   }
   return null;
-}
-
-function fullRunPendingAirdropCount(proof) {
-  const config = proofConfigForFingerprint(proof, currentLaunchConfig());
-  return airdropCompletionStatus(proof, config.poolTopology).pending;
 }
 
 function fullRunCompletionAudit(proof = currentLaunchProof(), config = currentLaunchConfig()) {

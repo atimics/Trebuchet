@@ -615,11 +615,3 @@ function proofCanCreateLocalDossier(proof = {}, config = currentLaunchConfig()) 
   return launchProofPoolIds(proof).length >= plannedPoolCount;
 }
 
-const COMPARISON_POSITION_SHAPE_FIELDS = [
-  ['sharePercent', 'slice share'],
-  ['supplyPercent', 'supply share'],
-  ['lowerMultiplier', 'lower multiplier'],
-  ['upperMultiplier', 'upper multiplier'],
-  ['depthPct', 'support depth'],
-];
-

@@ -344,10 +344,6 @@ async function removeAddedCoin(mint) {
   }
 }
 
-function coinTitle(coin) {
-  return coin?.name || coin?.symbol || (coin?.mint ? shortAddress(coin.mint) : 'Untitled coin');
-}
-
 // ---------------------------------------------------------------------------
 // Coin cards: one way to show a coin, everywhere
 // ---------------------------------------------------------------------------
@@ -699,23 +695,6 @@ function coinActivityHtml(events = []) {
       <span><strong>${escapeHtml(label[event.type] || event.type)}</strong><small>${escapeHtml(formatDate(event.at))}${event.sol ? ` · ${Number(event.sol).toFixed(4)} SOL` : ''}${event.practice ? ' · test' : ''}</small></span>
       <em>${escapeHtml(event.outcome || '')}${event.txId && !String(event.txId).startsWith('Demo') ? ` · <a href="${escapeHtml(solscanTxUrl(event.txId))}" target="_blank" rel="noopener">tx</a>` : ''}</em>
     </li>`).join('')}</ul>`;
-}
-
-function draftPlanHtml(entry) {
-  const config = entry?.config || {};
-  const topology = config.poolTopology || {};
-  const pools = Array.isArray(topology.pools) ? topology.pools : [];
-  const supportSol = pools.reduce((sum, pool) => sum + (pool?.support?.mode === 'custom' ? Number(pool.support.solValue || 0) : 0), 0);
-  const held = Number(topology.preallocation?.supplyPercent || 0);
-  const facts = [
-    ['Supply', compactAmount(parseWholeNumber(String(config.token?.supply || '1000000000')) || 1e9)],
-    ['Target market cap', `$${compactAmount(Number(topology.targetMarketCapUsd || 0))}`],
-    ['Pools', pools.length ? pools.map((pool) => `${pool.quoteSymbol || pool.quoteToken || 'pair'} ${Number(pool.supplyPercent || 0)}%`).join(' · ') : 'None yet'],
-    ['SOL in the pool', supportSol > 0 ? fmtSol(supportSol) : 'None'],
-    ['Held back', held > 0 ? `${held}%` : 'None'],
-    ['Address', config.vanity?.selectedPublicKey ? `${fullAddress(config.vanity.selectedPublicKey)} (reserved)` : 'Chosen when the token is created'],
-  ];
-  return `<dl class="pool-support-facts">${facts.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>`;
 }
 
 // The coin page header: the coin's card, with its explorer links.

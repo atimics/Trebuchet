@@ -74,10 +74,6 @@ const port = await new Promise((resolve, reject) => {
 
 await writeFile(path.join(configDir, 'userPrefs.json'), `${JSON.stringify({
   demoMode: true,
-  playIntroVideo: false,
-  playSoundEffects: false,
-  playBackgroundMusic: false,
-  coinPreview: false,
 }, null, 2)}\n`);
 
 const server = spawn(process.execPath, ['server.js'], {
