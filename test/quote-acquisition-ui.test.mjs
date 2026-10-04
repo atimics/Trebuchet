@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-const classic = fs.readFileSync(new URL('../public/modules/funding.js', import.meta.url), 'utf8');
 const v2 = fs.readFileSync(new URL('../public/v2/features/launch/actions.js', import.meta.url), 'utf8');
 const fundingView = fs.readFileSync(new URL('../public/v2/features/launch/funding-view.js', import.meta.url), 'utf8');
 const amounts = fundingView.slice(fundingView.indexOf('function parseRawTokenAmount'), fundingView.indexOf('function manualPrefundBalanceSnapshotStatus'));
@@ -10,7 +9,7 @@ const draft = { jobId: 'quotes-one', walletPublicKey: 'fixture-wallet', network:
   maxSpendLamports: 10100, inputLamports: 8000, feeCeilingLamports: 100, rentCeilingLamports: 2000, grossDebitLamports: 0,
   rows: [{ state: 'purchase', quoteSymbol: 'TEST', quoteDecimals: 6, minimumOutputRaw: '1250000' }], expiresAtMs: Date.now() + 60000 };
 
-for (const ui of ['classic', 'v2']) {
+for (const ui of ['v2']) {
   const harness = ({ confirm = true, cleanup = false, changedWallet = false } = {}) => {
     const requests = [], dialogs = [], job = { ...draft, ...(cleanup ? { status: 'recovery_required' } : {}) };
     let wallet = job.walletPublicKey;
@@ -27,10 +26,9 @@ for (const ui of ['classic', 'v2']) {
       formatRawTokenAmount: (amount, decimals) => String(Number(amount) / 10 ** decimals), shortAddress: (value) => value,
       confirmOperatorAction: review, quoteAcquireSafetyCheck: () => true, startQuoteAcquirePolling: () => {}, renderClassicBridge: () => {},
     });
-    const source = ui === 'classic' ? classic.slice(classic.indexOf('let isAcquireFlowRunning = false;'), classic.indexOf("bind('acquireQuoteTokensBtn'"))
-      : v2.slice(v2.indexOf('async function reviewQuoteAcquireJob'), v2.indexOf('async function startQuoteAcquire'));
+    const source = v2.slice(v2.indexOf('async function reviewQuoteAcquireJob'), v2.indexOf('async function startQuoteAcquire'));
     vm.runInContext(amounts + source, context);
-    return { requests, dialogs, job, run: () => context[ui === 'classic' ? 'approveAcquireJob' : 'reviewQuoteAcquireJob'](job) };
+    return { requests, dialogs, job, run: () => context.reviewQuoteAcquireJob(job) };
   };
   test(`${ui} review shows saved costs and posts their exact approval`, async () => {
     const h = harness(); await h.run(); const text = h.dialogs[0].body || h.dialogs[0].detail;

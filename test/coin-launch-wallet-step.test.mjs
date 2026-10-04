@@ -29,6 +29,6 @@ test('SOL above the dust line is still shown as not swept', () => {
 });
 
 test('no screen text says a key was deleted', () => {
-  const page = ['public/v2/app.js', 'public/app.js', 'server.js'].map((name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), 'utf8')).join('\n');
+  const page = ['public/v2/app.js', 'server.js'].map((name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), 'utf8')).join('\n');
   assert.doesNotMatch(page, /key (was )?deleted|deletes Trebuchet's local secret|Discard local secret|permanently deletes the recovery phrase/i);
 });

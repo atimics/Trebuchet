@@ -3,8 +3,7 @@
 ## Purpose
 
 Trebuchet is an Electron desktop application around a local Express execution
-service. The v2 terminal is the default renderer; Classic remains a compatibility
-and execution-parity surface.
+service. The renderer is the page at `/v2/`.
 
 The central engineering rule is:
 
@@ -18,10 +17,10 @@ Electron main process
   ├─ selects a free 127.0.0.1 port
   ├─ configures Electron safeStorage and user-data paths
   ├─ constructs and starts the Local API explicitly
-  └─ opens /v2/ by default (or / for Classic)
+  └─ opens /v2/
 
 Loopback Express service
-  ├─ static v2 and Classic assets
+  ├─ static page assets
   ├─ process-lifetime API session
   ├─ launch planning/readiness boundary
   ├─ Solana/Raydium/Metaplex execution
@@ -29,8 +28,7 @@ Loopback Express service
   └─ progress, proof, recovery, and report APIs
 
 Renderer
-  ├─ v2: public/v2/index.html + app.js + styles.css
-  └─ Classic: public/index.html + generated public/app.js
+  └─ public/v2/index.html + app.js + styles.css
 ```
 
 `main.js` binds only to `127.0.0.1`. `serverMiddleware.js` rejects unapproved
@@ -41,11 +39,9 @@ process-random `x-trebuchet-session` header for protected `/api/*` calls.
 
 | Command | UI |
 | --- | --- |
-| `npm start` | v2 terminal |
-| `npm run start:v2` | v2 terminal |
-| `npm run start:classic` | Classic parchment UI |
-| `TREBUCHET_UI=classic npm start` | Classic via environment override |
-| `npm run web` | local Express service; `/v2/` is the v2 route |
+| `npm start` | the app |
+| `npm run start:v2` | the app |
+| `npm run web` | local Express service; the app is at `/v2/` (`/` redirects there) |
 
 Electron waits for the local service before loading the renderer. External
 links are opened by `main.js` only after URL parsing and an HTTPS-scheme check.
@@ -77,16 +73,6 @@ links are opened by `main.js` only after URL parsing and an HTTPS-scheme check.
 - `public/v2/styles.css` — v2 terminal design system and responsive behavior.
 - `public/v2/viewport-smoke-proof.json` — generated proof contract consumed by
   the replacement criteria; do not hand-edit pass flags.
-
-### Classic renderer
-
-- `public/index.html` — Classic shell.
-- `public/modules/` — Classic source modules.
-- `public/app.js` — generated concatenated bundle.
-- `scripts/build-app-js.mjs` — deterministic bundle builder.
-
-Edit `public/modules/`, run `npm run build:js`, and commit the resulting
-`public/app.js`. CI rebuilds and diffs it.
 
 ### Launch domain
 
@@ -267,11 +253,9 @@ npm test
 ### UI/runtime
 
 ```bash
-npm run test:e2e
 npm run test:e2e:v2
 npm run test:v2:viewport
 npm run test:electron:v2
-npm run test:visual
 ```
 
 The packaged Linux smoke runs:
