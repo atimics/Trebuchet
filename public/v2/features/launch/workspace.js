@@ -336,18 +336,27 @@ function refreshLaunchChainCheck(facts) {
 }
 
 function renderLaunchWorkspace() {
-  const facts = coinFacts();
+  const stale = launchedCoinForWorkspaceDraft();
+  if (stale) {
+    openCoin(stale.key);
+    return;
+  }
+  const chainCoin = chainCoinOnPage();
+  document.body.dataset.coinMode = chainCoin ? 'onchain' : 'create';
+  const facts = chainCoin ? onchainCoinFacts(chainCoin) : coinFacts();
   const next = nextCoinFact(facts);
-  const open = launchWorkspaces.some((item) => item.id === state.launchWorkspace) ? state.launchWorkspace : null;
+  const rows = chainCoin ? ['wallet', 'mint', 'liquidity', 'finish'] : launchWorkspaces.map((item) => item.id);
+  const open = rows.includes(state.launchWorkspace) ? state.launchWorkspace : null;
   // The open row stays open while you look at it, even once it is done: the
   // rail says what is next, and moving the screen out from under you is not.
-  let workspace = open || next?.id || 'finish';
+  let workspace = open || (chainCoin && next?.state === 'running' ? null : next?.id) || (chainCoin ? 'liquidity' : 'finish');
   // Naming the token is the first thing the Token phase asks: Plan is not a phase of its own.
   if (workspace === 'configure') {
     workspace = 'mint';
     state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
   }
-  state.launchWorkspace = workspace;
+  // While an on-chain coin is still being read, no row is chosen for it yet.
+  if (!chainCoin || chainCoinDetail(chainCoin)) state.launchWorkspace = workspace;
   state.launchFactStates = Object.fromEntries(facts.map((fact) => [fact.id, fact.state]));
   document.body.dataset.launchWorkspace = workspace;
 
@@ -360,9 +369,14 @@ function renderLaunchWorkspace() {
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
     const icon = button.querySelector('.coin-fact-mark');
     if (icon) icon.className = `fa-solid ${mark.icon} coin-fact-mark`;
+    const label = button.querySelector('strong');
+    if (label) {
+      label.dataset.createLabel ||= label.textContent;
+      label.textContent = chainCoin ? CHAIN_FACT_LABELS[fact.id] || label.dataset.createLabel : label.dataset.createLabel;
+    }
     const value = button.querySelector('[data-coin-fact-value]');
     // Until the token is on chain, its row says what is drafted, not only what is missing.
-    const draft = facts.find((item) => item.id === 'configure');
+    const draft = chainCoin ? null : facts.find((item) => item.id === 'configure');
     const shown = fact.id === 'mint' && fact.state === 'todo' && draft
       ? (draft.state === 'draft' ? `${String(draft.value).split(' · ')[0]} · draft` : 'Not named yet')
       : fact.id === 'liquidity' && fact.state === 'todo' && fact.value === 'No pools yet' && draft?.state === 'draft'
@@ -373,7 +387,7 @@ function renderLaunchWorkspace() {
   }
   // The one action the coin's state asks for, offered wherever it isn't already open.
   $$('[data-next-fact]').forEach((button) => {
-    const show = Boolean(next && next.action && next.id !== workspace && next.state !== 'running');
+    const show = Boolean(!chainCoin && next && next.action && next.id !== workspace && next.state !== 'running');
     button.hidden = !show;
     if (!show) return;
     button.dataset.launchWorkspace = next.id;
@@ -381,13 +395,15 @@ function renderLaunchWorkspace() {
   });
   $$('[data-launch-pane]').forEach((panel) => {
     const workspaces = String(panel.dataset.launchPane || '').split(/\s+/).filter(Boolean);
-    const active = workspaces.includes(workspace);
+    const active = !chainCoin && workspaces.includes(workspace);
     panel.hidden = !active;
     panel.classList.toggle('is-active-launch-pane', active);
   });
   $$('[data-classic-workspace]').forEach((panel) => {
-    panel.hidden = panel.dataset.classicWorkspace !== workspace;
+    panel.hidden = Boolean(chainCoin) || panel.dataset.classicWorkspace !== workspace;
   });
+  renderChainCoinPane(chainCoin, workspace);
+  if (chainCoin) return;
 
   renderVortexControl();
   const selectedWorkspace = launchWorkspaces.find((item) => item.id === workspace);

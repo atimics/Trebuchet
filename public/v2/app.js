@@ -5932,18 +5932,27 @@ function refreshLaunchChainCheck(facts) {
 }
 
 function renderLaunchWorkspace() {
-  const facts = coinFacts();
+  const stale = launchedCoinForWorkspaceDraft();
+  if (stale) {
+    openCoin(stale.key);
+    return;
+  }
+  const chainCoin = chainCoinOnPage();
+  document.body.dataset.coinMode = chainCoin ? 'onchain' : 'create';
+  const facts = chainCoin ? onchainCoinFacts(chainCoin) : coinFacts();
   const next = nextCoinFact(facts);
-  const open = launchWorkspaces.some((item) => item.id === state.launchWorkspace) ? state.launchWorkspace : null;
+  const rows = chainCoin ? ['wallet', 'mint', 'liquidity', 'finish'] : launchWorkspaces.map((item) => item.id);
+  const open = rows.includes(state.launchWorkspace) ? state.launchWorkspace : null;
   // The open row stays open while you look at it, even once it is done: the
   // rail says what is next, and moving the screen out from under you is not.
-  let workspace = open || next?.id || 'finish';
+  let workspace = open || (chainCoin && next?.state === 'running' ? null : next?.id) || (chainCoin ? 'liquidity' : 'finish');
   // Naming the token is the first thing the Token phase asks: Plan is not a phase of its own.
   if (workspace === 'configure') {
     workspace = 'mint';
     state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
   }
-  state.launchWorkspace = workspace;
+  // While an on-chain coin is still being read, no row is chosen for it yet.
+  if (!chainCoin || chainCoinDetail(chainCoin)) state.launchWorkspace = workspace;
   state.launchFactStates = Object.fromEntries(facts.map((fact) => [fact.id, fact.state]));
   document.body.dataset.launchWorkspace = workspace;
 
@@ -5956,9 +5965,14 @@ function renderLaunchWorkspace() {
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
     const icon = button.querySelector('.coin-fact-mark');
     if (icon) icon.className = `fa-solid ${mark.icon} coin-fact-mark`;
+    const label = button.querySelector('strong');
+    if (label) {
+      label.dataset.createLabel ||= label.textContent;
+      label.textContent = chainCoin ? CHAIN_FACT_LABELS[fact.id] || label.dataset.createLabel : label.dataset.createLabel;
+    }
     const value = button.querySelector('[data-coin-fact-value]');
     // Until the token is on chain, its row says what is drafted, not only what is missing.
-    const draft = facts.find((item) => item.id === 'configure');
+    const draft = chainCoin ? null : facts.find((item) => item.id === 'configure');
     const shown = fact.id === 'mint' && fact.state === 'todo' && draft
       ? (draft.state === 'draft' ? `${String(draft.value).split(' · ')[0]} · draft` : 'Not named yet')
       : fact.id === 'liquidity' && fact.state === 'todo' && fact.value === 'No pools yet' && draft?.state === 'draft'
@@ -5969,7 +5983,7 @@ function renderLaunchWorkspace() {
   }
   // The one action the coin's state asks for, offered wherever it isn't already open.
   $$('[data-next-fact]').forEach((button) => {
-    const show = Boolean(next && next.action && next.id !== workspace && next.state !== 'running');
+    const show = Boolean(!chainCoin && next && next.action && next.id !== workspace && next.state !== 'running');
     button.hidden = !show;
     if (!show) return;
     button.dataset.launchWorkspace = next.id;
@@ -5977,13 +5991,15 @@ function renderLaunchWorkspace() {
   });
   $$('[data-launch-pane]').forEach((panel) => {
     const workspaces = String(panel.dataset.launchPane || '').split(/\s+/).filter(Boolean);
-    const active = workspaces.includes(workspace);
+    const active = !chainCoin && workspaces.includes(workspace);
     panel.hidden = !active;
     panel.classList.toggle('is-active-launch-pane', active);
   });
   $$('[data-classic-workspace]').forEach((panel) => {
-    panel.hidden = panel.dataset.classicWorkspace !== workspace;
+    panel.hidden = Boolean(chainCoin) || panel.dataset.classicWorkspace !== workspace;
   });
+  renderChainCoinPane(chainCoin, workspace);
+  if (chainCoin) return;
 
   renderVortexControl();
   const selectedWorkspace = launchWorkspaces.find((item) => item.id === workspace);
@@ -20401,27 +20417,55 @@ async function openDraftForCreation(draftId) {
     state.loadedSavedLaunchId = entry.id;
     rememberActiveLaunchId(entry.id);
   }
+  state.coins = { ...state.coins, key: null };
   setView('launch');
   setLaunchWorkspace('configure');
   renderAll();
 }
 
+// Every coin has one page: its steps. A draft's steps create it; an on-chain
+// coin's steps say what the chain and its launch record show.
 function openCoin(key) {
   const target = coinByKey(key);
-  // A draft is created on its own page: its steps.
   if (target?.kind === 'draft') {
     openDraftForCreation(target.draftId).catch((error) => notify(error?.message || 'Could not open that draft'));
     return;
   }
-  state.coins = { ...state.coins, key, detail: null, detailError: null };
-  resetPoolSupport();
-  setView('coins');
-  const coin = coinByKey(key);
-  if (coin?.kind === 'onchain') {
-    loadCoinDetail(coin.mint).catch(() => null);
-    loadCoinPositions(coin.mint).catch(() => null);
+  // The launch running in the workspace stays on screen as it runs.
+  if (target?.mint && target.mint === proofTokenMint(state.launchProof) && liveLaunchInProgress()) {
+    state.coins = { ...state.coins, key: null };
+    setView('launch');
+    renderAll();
+    return;
   }
-  renderCoins();
+  state.coins = { ...state.coins, key, detail: null, detailError: null };
+  state.launchWorkspace = null;
+  resetPoolSupport();
+  setView('launch');
+  if (target?.kind === 'onchain') {
+    loadCoinDetail(target.mint).catch(() => null);
+    loadCoinPositions(target.mint).catch(() => null);
+  }
+  renderAll();
+}
+
+// The on-chain coin the page shows, or null while it shows a coin being created.
+function chainCoinOnPage() {
+  const coin = state.coins.key ? coinByKey(state.coins.key) : null;
+  return coin?.kind === 'onchain' ? coin : null;
+}
+
+function chainCoinDetail(coin) {
+  return coin && state.coins.detail && state.coins.detail.mint === coin.mint ? state.coins.detail : null;
+}
+
+// A saved draft whose reserved address has since launched is that coin now: show the coin.
+function launchedCoinForWorkspaceDraft() {
+  if (state.activeView !== 'launch' || chainCoinOnPage() || liveLaunchInProgress()) return null;
+  if (proofTokenMint(currentLaunchProof())) return null;
+  const reserved = String(state.selectedVanityPublicKey || '').trim();
+  if (!reserved) return null;
+  return (state.coins.list || []).find((coin) => coin.kind === 'onchain' && coin.launchedHere && coin.mint === reserved) || null;
 }
 
 async function loadCoinPositions(mint) {
@@ -20744,16 +20788,9 @@ function hydrateCoinCards() {
 }
 
 function renderCoins() {
-  const listView = $('#coinsListView');
-  const page = $('#coinPage');
-  if (!listView || !page) return;
-  const { key } = state.coins;
-  const coin = key ? coinByKey(key) : null;
-  listView.hidden = Boolean(coin);
-  page.hidden = !coin;
-  if (coin) {
-    renderCoinPage(coin);
-    return;
+  if (state.activeView === 'launch' && (chainCoinOnPage() || launchedCoinForWorkspaceDraft())) {
+    renderLaunchWorkspace();
+    renderCoinContext();
   }
   const target = $('#coinsList');
   if (!target) return;
@@ -20871,9 +20908,9 @@ const CREATION_STEP_ACTIONS = {
   return: 'Sweep the launch wallet',
 };
 
-function coinCreationHtml(creation, coin) {
+// The one thing left to do for a coin launched here, or '' when nothing is.
+function coinNextStepAction(creation, coin) {
   if (!creation) return '';
-  const mismatches = creation.steps.filter((step) => step.state === 'mismatch');
   // A step neither recorded nor checkable on-chain has not been done as far as anyone can tell:
   // it is still the next step. Skipping it offered a sweep before the liquidity was locked.
   const next = creation.steps.find((step) => ['todo', 'mismatch', 'unrecorded'].includes(step.state)) || null;
@@ -20896,23 +20933,12 @@ function coinCreationHtml(creation, coin) {
       action = `${sweeping ? '' : airdropNote}${progress}<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}" ${sweeping ? 'disabled' : ''}><span>${sweeping ? (pending.length ? 'Airdropping and sweeping…' : 'Sweeping…') : pending.length ? 'Airdrop, then sweep' : 'Sweep the launch wallet'}</span><i class="fa-solid ${sweeping ? 'fa-spinner fa-spin' : pending.length ? 'fa-parachute-box' : 'fa-broom'}"></i></button>`;
     } else if (creation.hasPlan && creation.walletManaged) {
       action = `<button class="primary-button compact" type="button" data-action="continue-coin-step" data-mint="${escapeHtml(coin?.mint || '')}"><span>${escapeHtml(CREATION_STEP_ACTIONS[next.id] || 'Open the coin')}</span><i class="fa-solid fa-arrow-right"></i></button>`;
-    } else if (!creation.walletManaged) {
-      action = '<p class="pool-support-intro">The launch wallet is not in this app, so what is left can\'t be done from here.</p>';
     } else {
-      action = '<p class="pool-support-intro">This launch was recorded before Trebuchet saved launch plans, so what is left can\'t be done from here.</p>';
+      const reason = !creation.walletManaged ? 'Launch key not in Trebuchet' : 'Launch plan not saved';
+      action = `<button class="primary-button compact" type="button" disabled aria-disabled="true" data-blocked-reason="${reason}" title="${reason}"><span>${escapeHtml(CREATION_STEP_ACTIONS[next.id] || 'Open the coin')}</span></button>`;
     }
   }
-  return `
-    <ul class="coin-creation">
-      ${creation.steps.map((step) => {
-        const meta = COIN_FACT_MARKS[step.state] || COIN_FACT_MARKS.todo;
-        return `<li class="is-${escapeHtml(step.state)}" title="${escapeHtml(meta.label)}">
-          <i class="fa-solid ${meta.icon}" aria-hidden="true"></i>
-          <span><strong>${escapeHtml(step.label)}</strong><small><span class="visually-hidden">${escapeHtml(meta.label)}: </span>${step.id === 'return' && creation.walletPublicKey ? walletChipHtml(creation.walletPublicKey) : escapeHtml(step.detail || '')}</small></span>
-        </li>`;
-      }).join('')}
-    </ul>
-    ${action ? `<div class="coin-actions">${action}</div>` : ''}`;
+  return action ? `<div class="coin-actions">${action}</div>` : '';
 }
 
 // Bring up a coin's remaining steps from its launch record, at the step it
@@ -20952,6 +20978,7 @@ function continueCoinStep(mint) {
     state.selectedWalletPublicKey = journal.walletPublicKey;
     state.accountId = journal.walletPublicKey;
   }
+  state.coins = { ...state.coins, key: null };
   setView('launch');
   setLaunchWorkspace(recoveryWorkspaceForJournal(journal));
   renderAll();
@@ -20973,71 +21000,115 @@ function coinActivityHtml(events = []) {
     </li>`).join('')}</ul>`;
 }
 
-// The coin page header: the coin's card, with its explorer links.
-function coinHeaderHtml({ name, symbol, image = null, status = '', address = null, links = false }) {
-  const trailing = links && address
-    ? `<span class="coin-links"><a class="pill-button link-button" href="https://solscan.io/token/${escapeHtml(address)}" target="_blank" rel="noopener">Solscan</a><a class="pill-button link-button" href="https://raydium.io/swap/?inputMint=sol&outputMint=${escapeHtml(address)}" target="_blank" rel="noopener">Raydium</a></span>`
-    : '';
-  return coinCardHtml({ name, symbol, address, image }, { variant: 'header', tag: 'header', status, trailing });
+const CHAIN_FACT_LABELS = { wallet: 'Launch', mint: 'Token', liquidity: 'Liquidity', finish: 'Launch wallet' };
+
+// The rail for an on-chain coin: the same four rows as creating one, each from the chain
+// and the launch record (see coinCreationSteps on the server).
+function onchainCoinFacts(coin) {
+  const detail = chainCoinDetail(coin);
+  const creation = detail?.creation || null;
+  const step = (id) => creation?.steps?.find((item) => item.id === id) || null;
+  const account = detail?.account && !detail.account.error ? detail.account : null;
+  if (!detail) {
+    const value = state.coins.detailError ? 'Not read' : 'Reading the chain';
+    const fact = { state: state.coins.detailError ? 'unrecorded' : 'running', value };
+    return [{ id: 'wallet', ...fact }, { id: 'mint', ...fact }, { id: 'liquidity', ...fact }, { id: 'finish', ...fact }];
+  }
+  const worst = (...steps) => {
+    const states = steps.filter(Boolean).map((item) => item.state);
+    return ['mismatch', 'todo', 'unrecorded', 'recorded'].find((item) => states.includes(item)) || 'done';
+  };
+  const poolCount = (detail.markets?.pools || []).length;
+  const pools = `${poolCount} pool${poolCount === 1 ? '' : 's'}`;
+  const wallet = creation?.walletPublicKey
+    ? { state: 'done', value: `From ${shortAddress(creation.walletPublicKey)}` }
+    : { state: 'done', value: coin.practice ? 'Test coin' : 'Added by address' };
+  const token = account
+    ? { state: step('token')?.state || 'done', value: `${formatTokenAmount(account.supply, account.decimals)} · mint authority ${account.mintAuthority ? 'kept' : 'revoked'}` }
+    : { state: 'unrecorded', value: 'Not a readable mint' };
+  const locks = step('locks')?.detail?.match(/(\d+)\/(\d+)/);
+  const liquidity = creation
+    ? { state: worst(step('pools'), step('locks'), step('reveal')), value: `${pools} open${locks ? ` · ${locks[1]}/${locks[2]} locked` : ''}` }
+    : { state: 'done', value: detail.markets ? pools : 'Not read' };
+  const swept = step('return');
+  const finish = !creation
+    ? { state: 'done', value: 'Not launched here' }
+    : swept?.state === 'done'
+      ? { state: 'done', value: 'Empty' }
+      : swept?.state === 'recorded'
+        ? { state: 'recorded', value: 'Recorded empty' }
+        : swept?.state === 'unrecorded'
+          ? { state: 'unrecorded', value: 'Not read' }
+          : { state: swept?.state || 'todo', value: 'Holds funds', action: 'Sweep the launch wallet' };
+  return [{ id: 'wallet', ...wallet }, { id: 'mint', ...token }, { id: 'liquidity', ...liquidity }, { id: 'finish', ...finish }];
 }
 
-function renderCoinPage(coin) {
-  if ($('#coinPageFooter')) $('#coinPageFooter').innerHTML = '';
-  const body = $('#coinPageBody');
-  const supportPanel = $('#poolSupportPanel');
-  if (!body) return;
-  const detail = state.coins.detail && state.coins.detail.mint === coin.mint ? state.coins.detail : null;
-  const account = detail?.account && !detail.account.error ? detail.account : null;
-  const name = account?.metadata?.name || detail?.info?.name || coin.name;
-  const symbol = account?.metadata?.symbol || detail?.info?.symbol || coin.symbol;
-  const header = coinHeaderHtml({
-    name,
-    symbol,
-    image: detail?.image || coin.image || coin.logoDataUrl || null,
-    status: coinStatus(coin),
-    address: coin.mint || coin.reservedAddress || null,
-    links: Boolean(coin.mint && !coin.practice),
-  });
+function chainCoinSection(eyebrow, title, body, trailing = '') {
+  return `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">${escapeHtml(eyebrow)}</span><h2>${escapeHtml(title)}</h2></div>${trailing}</div>${body}</section>`;
+}
 
-  if (coin.kind === 'draft') {
-    // A draft's page is its creation steps (see openCoin).
-    body.innerHTML = header;
+// The open row of an on-chain coin's page: what the chain and the launch record show for it.
+function renderChainCoinPane(coin, workspace) {
+  const pane = $('#coinChainPane');
+  const supportPanel = $('#poolSupportPanel');
+  if (!pane) return;
+  if (!coin) {
+    pane.hidden = true;
+    pane.innerHTML = '';
     if (supportPanel) supportPanel.hidden = true;
     return;
   }
-
-  const identity = account ? [
-    ['Supply', escapeHtml(formatTokenAmount(account.supply, account.decimals))],
-    ['Mint authority', account.mintAuthority ? walletChipHtml(account.mintAuthority) : 'Revoked'],
-    ['Freeze authority', account.freezeAuthority ? walletChipHtml(account.freezeAuthority) : 'Revoked'],
-    ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${walletChipHtml(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
-  ] : [];
-  body.innerHTML = `${header}
-    ${state.coins.detailLoading ? '<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading the coin from the chain…</p>' : ''}
-    ${state.coins.detailError ? `<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>` : ''}
-
-    ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${v}</dd></div>`).join('')}</dl></section>` : ''}
-    ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Unfinished' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation, coin)}</section>` : ''}
-    ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
-    ${coinMarketEvidenceHtml(coin.mint)}
-    <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Positions</span><h2>Your positions</h2></div><button class="pill-button" type="button" data-action="refresh-coin-positions">Refresh</button></div>${coinPositionsHtml()}</section>
-    <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>`;
-  // Removing a coin is the page's last, least-used action: it sits after
-  // buy support, not between the coin's activity and its actions.
-  const footer = $('#coinPageFooter');
-  if (footer) {
-    footer.innerHTML = coin.status === 'Added'
-      ? `<button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button>`
-      : '';
+  const detail = chainCoinDetail(coin);
+  const account = detail?.account && !detail.account.error ? detail.account : null;
+  const creation = detail?.creation || null;
+  const facts = (rows) => `<dl class="pool-support-facts">${rows.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
+  const parts = [];
+  if (state.coins.detailLoading && !detail) parts.push('<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading the coin from the chain…</p>');
+  if (state.coins.detailError) parts.push(`<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>`);
+  // Each row lists its own launch steps only when one is wrong or not done, and the next
+  // step's action on the row it belongs to.
+  const ROW_STEPS = { mint: ['token'], liquidity: ['pools', 'locks', 'reveal'], finish: ['return'] };
+  const rowSteps = (creation?.steps || []).filter((step) => (ROW_STEPS[workspace] || []).includes(step.id) && !['done', 'recorded'].includes(step.state) && step.detail);
+  if (rowSteps.length) {
+    parts.push(`<ul class="coin-creation">${rowSteps.map((step) => {
+      const meta = COIN_FACT_MARKS[step.state] || COIN_FACT_MARKS.todo;
+      return `<li class="is-${escapeHtml(step.state)}" title="${escapeHtml(meta.label)}"><i class="fa-solid ${meta.icon}" aria-hidden="true"></i><span><strong>${escapeHtml(step.label)}</strong><small><span class="visually-hidden">${escapeHtml(meta.label)}: </span>${escapeHtml(step.detail)}</small></span></li>`;
+    }).join('')}</ul>`);
   }
-  if (supportPanel) {
-    supportPanel.hidden = false;
-    // A test coin has no real pool: buy support is simulated against a
-    // sample pool, and the panel says so.
-    const intro = supportPanel.querySelector('.pool-support-intro');
-    if (intro) {
-      intro.textContent = coin.practice ? 'Test: nothing is sent.' : '';
+  const nextStep = (creation?.steps || []).find((step) => ['todo', 'mismatch', 'unrecorded'].includes(step.state));
+  if (nextStep && (ROW_STEPS[workspace] || []).includes(nextStep.id)) parts.push(coinNextStepAction(creation, coin));
+  const journal = creation?.journal || null;
+  if (workspace === 'wallet') {
+    if (journal?.createdAt) parts.push(chainCoinSection('Launch', 'Launched', facts([['Date', escapeHtml(formatDate(journal.createdAt))]])));
+    parts.push(chainCoinSection('Activity', 'What has happened', coinActivityHtml(detail?.events || [])));
+    if (coin.status === 'Added') parts.push(`<div class="coin-page-footer"><button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button></div>`);
+  } else if (workspace === 'mint') {
+    if (account) {
+      parts.push(chainCoinSection('On-chain', 'Token', facts([
+        ['Supply', escapeHtml(formatTokenAmount(account.supply, account.decimals))],
+        ['Mint authority', account.mintAuthority ? walletChipHtml(account.mintAuthority) : 'Revoked'],
+        ['Freeze authority', account.freezeAuthority ? walletChipHtml(account.freezeAuthority) : 'Revoked'],
+        ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${walletChipHtml(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
+      ]), coin.practice ? '' : `<span class="coin-links"><a class="pill-button link-button" href="https://solscan.io/token/${escapeHtml(coin.mint)}" target="_blank" rel="noopener">Solscan</a><a class="pill-button link-button" href="https://raydium.io/swap/?inputMint=sol&outputMint=${escapeHtml(coin.mint)}" target="_blank" rel="noopener">Raydium</a></span>`));
     }
+  } else if (workspace === 'liquidity') {
+    if (detail?.markets) parts.push(chainCoinSection('Markets', 'Pools', coinMarketsHtml(detail.markets), '<button class="pill-button" type="button" data-action="refresh-coin">Refresh</button>'));
+    parts.push(coinMarketEvidenceHtml(coin.mint));
+    parts.push(chainCoinSection('Positions', 'Your positions', coinPositionsHtml(), '<button class="pill-button" type="button" data-action="refresh-coin-positions">Refresh</button>'));
+  } else if (workspace === 'finish') {
+    const returnWallet = journal?.transfer?.destinationWallet || journal?.launchConfig?.poolTopology?.sweepDestination || null;
+    const rows = [];
+    if (creation?.walletPublicKey) rows.push(['Launch wallet', walletChipHtml(creation.walletPublicKey)]);
+    if (returnWallet) rows.push(['Return wallet', walletChipHtml(returnWallet)]);
+    parts.push(rows.length ? chainCoinSection('Wallets', 'Launch and return', facts(rows)) : '<p class="coins-empty">Not launched with Trebuchet.</p>');
+  }
+  pane.hidden = false;
+  pane.innerHTML = parts.join('');
+  if (supportPanel) {
+    supportPanel.hidden = workspace !== 'liquidity';
+    // A test coin has no real pool: buy support is simulated against a sample pool.
+    const intro = supportPanel.querySelector('.pool-support-intro');
+    if (intro) intro.textContent = coin.practice ? 'Test: nothing is sent.' : '';
     const target = $('#poolSupportTarget');
     if (target && target.value !== coin.mint) {
       target.value = coin.mint;
@@ -21066,6 +21137,28 @@ function renderCoinContext() {
     bar.innerHTML = '';
   }
   if (state.activeView !== 'launch') return;
+  const eyebrow = $('#viewEyebrow');
+  const title = $('#viewTitle');
+  // Written once: redrawing it on every change would replace the button
+  // under a click that is still in progress (a blur fires "change").
+  if (eyebrow && !eyebrow.querySelector('[data-action="coins-back"]')) {
+    eyebrow.innerHTML = `<button class="text-button coin-back-inline" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> Coins</button>`;
+  }
+  const chainCoin = chainCoinOnPage();
+  if (chainCoin) {
+    const detail = chainCoinDetail(chainCoin);
+    const account = detail?.account && !detail.account.error ? detail.account : null;
+    if (title) {
+      title.innerHTML = coinCardHtml({
+        name: account?.metadata?.name || detail?.info?.name || chainCoin.name,
+        symbol: account?.metadata?.symbol || detail?.info?.symbol || chainCoin.symbol,
+        address: chainCoin.mint,
+        image: detail?.image || chainCoin.image || null,
+      }, { variant: 'title', tag: 'span', status: coinStatus(chainCoin) });
+      hydrateCoinCards();
+    }
+    return;
+  }
   const name = String($('#tokenName')?.value || '').trim();
   const symbol = String($('#tokenSymbol')?.value || '').trim();
   const proof = currentLaunchProof();
@@ -21076,13 +21169,6 @@ function renderCoinContext() {
     ? practice ? 'Test coin' : launchViewChainStatus()
     : reserved ? 'Address reserved' : 'Draft';
   const address = mint || reserved;
-  const eyebrow = $('#viewEyebrow');
-  const title = $('#viewTitle');
-  // Written once: redrawing it on every change would replace the button
-  // under a click that is still in progress (a blur fires "change").
-  if (eyebrow && !eyebrow.querySelector('[data-action="coins-back"]')) {
-    eyebrow.innerHTML = `<button class="text-button coin-back-inline" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> Coins</button>`;
-  }
   if (title) {
     title.innerHTML = coinCardHtml(
       { name, symbol, address, image: state.tokenLogo?.dataUrl ? launchIdentityImageSrc(state.tokenLogo, { animate: false }) : null },

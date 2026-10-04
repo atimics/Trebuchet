@@ -2728,7 +2728,7 @@ test('v2 funding labels separate pool deposits, pair buys, setup, and buffer', (
 });
 
 test('coin page shows the launch as facts checked against the chain', () => {
-  assert.match(js, /function coinCreationHtml\(creation, coin\)/);
+  assert.match(js, /function coinNextStepAction\(creation, coin\)/);
   assert.match(js, /mismatch: \{ icon: 'fa-triangle-exclamation', label: 'Recorded, but the chain disagrees' \}/);
   assert.match(js, /unrecorded: \{ icon: 'fa-circle-question', label: 'Not recorded; not checked on-chain' \}/);
   assert.match(js, /function continueCoinStep\(mint\)/);
