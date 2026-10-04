@@ -17253,3 +17253,12 @@ body[data-coin-mode="onchain"] #view-launch #launchNextRail {
 .coin-airdrop-row.is-none > span:last-child { color: var(--red, #ff6b6b); }
 .coin-airdrop-row.is-part > span:last-child { color: var(--amber); }
 .coin-airdrop-row.is-all > span:last-child { color: var(--green); }
+/* Branded fee collections share the NFT view's form and card styles. */
+.fee-nft-form { display: grid; gap: 16px; }
+.fee-nft-form select, .fee-nft-form input, .fee-nft-form textarea { width: 100%; min-width: 0; }
+.fee-nft-form input[type="checkbox"] { width: auto; }
+.fee-nft-facts { display: grid; gap: 14px; min-width: 0; }
+.fee-nft-facts dd { margin-left: 0; overflow-wrap: anywhere; }
+.fee-nft-table { overflow-x: auto; }
+.fee-nft-table table { width: 100%; text-align: left; border-collapse: collapse; }
+.fee-nft-table td, .fee-nft-table th { padding: 10px; border-bottom: 1px solid var(--line, #34343c); }

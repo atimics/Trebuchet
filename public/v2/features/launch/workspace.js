@@ -147,6 +147,7 @@ function setView(view) {
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
   if (view === 'nfts') window.TrebuchetNfts?.onShow();
+  if (view === 'fee-nfts') window.TrebuchetFeeNfts?.onShow();
   if (view === 'wallet') refreshHeldWallets();
   if (view === 'lean') window.TrebuchetLean?.onShow();
   renderCoinContext();

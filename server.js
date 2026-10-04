@@ -130,6 +130,7 @@ import * as destinationProofStore from './destinationProofStore.js';
 import * as splitJobStore from './splitJobStore.js';
 import * as nftCollectionStore from './nftCollectionStore.js';
 import { registerNftRoutes } from './nftRoutes.js';
+import { registerFeeNftRoutes } from './feeNftRoutes.js';
 import { registerDammV2Routes } from './dammV2Routes.js';
 import { combineSplitKey, createSplitSecret, matchesVanityPattern, scalarPublicKey } from '@trebuchet/core/split-key';
 import { normalizeDistribution } from './lpDistribution.js';
@@ -2049,6 +2050,10 @@ function demoAllocationsForV2(allocations = []) {
 // ---------------------------------------------------------------------------
 
 // NFT collections (v2 NFTs view). See nftRoutes.js.
+registerFeeNftRoutes(app, {
+  isDemoMode, rejectIfSecretPinLocked, sendErrorResponse, getRpcUrl,
+  getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
+});
 registerNftRoutes(app, {
   isDemoMode,
   rejectIfSecretPinLocked,

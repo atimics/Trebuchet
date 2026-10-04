@@ -72,7 +72,10 @@
     "test:e2e:runtime-swap:localnet": "node test/e2e/runtime-swap-localnet.mjs",
     "test:e2e:runtime-withdrawal:localnet": "node test/e2e/runtime-withdrawal-localnet.mjs",
     "test:e2e:runtime-support:localnet": "node test/e2e/runtime-support-localnet.mjs",
-    "test:e2e:runtime-close:localnet": "node test/e2e/runtime-account-close-localnet.mjs"
+    "test:e2e:runtime-close:localnet": "node test/e2e/runtime-account-close-localnet.mjs",
+    "test:fee-vault": "cargo test --locked --manifest-path programs/fee-vault/Cargo.toml",
+    "build:fee-vault": "cargo build-sbf --manifest-path programs/fee-vault/Cargo.toml --sbf-out-dir programs/fee-vault/target/deploy",
+    "test:e2e:fee-nfts:localnet": "node test/e2e/fee-nfts-localnet.mjs"
   },
   "files": [
     "build/**/*",
@@ -166,7 +169,12 @@
     "README.md",
     "public/**/*",
     "c/build/**/*",
-    "packages/runtime/**/*"
+    "packages/runtime/**/*",
+    "feeVaultClient.js",
+    "feeNftPlan.js",
+    "feeNftStore.js",
+    "feeNftService.js",
+    "feeNftRoutes.js"
   ],
   "dependencies": {
     "@metaplex-foundation/mpl-core": "^1.10.0",
@@ -329,7 +337,13 @@
       "public/**/*",
       "c/build/**/*",
       "package.json",
-      "packages/runtime/**/*"
+      "packages/runtime/**/*",
+      "feeVaultClient.js",
+      "feeNftPlan.js",
+      "feeNftStore.js",
+      "feeNftService.js",
+      "feeNftRoutes.js",
+      "docs/airdrop-lists/**/*"
     ],
     "asarUnpack": [
       "public/**/*",
