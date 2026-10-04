@@ -3,7 +3,8 @@
 // rent. It also says whether Trebuchet holds the wallet's key.
 
 const WALLET_CONTENTS_MAX_AGE_MS = 15_000;
-const SWEEP_DUST_LAMPORTS = 1_000_000;
+// The sweep drains to zero, so anything above a few transaction fees is worth sending on.
+const SWEEP_DUST_LAMPORTS = 20_000;
 const walletContentsCache = new Map();
 
 function walletChipHtml(address, { label = '' } = {}) {

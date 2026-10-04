@@ -82,7 +82,8 @@ export function createWalletExecutionRuntime({
           const computeUnitLimit = operationKind === 'token-transfer' ? CU_TOKEN_TRANSFER : operationKind === 'metadata-update' ? CU_METADATA_OPS
             : operationKind === 'token-account-close' ? CU_SOL_TRANSFER + CU_TOKEN_ACCOUNT_CLOSE * accountCount : CU_SOL_TRANSFER;
           return {
-            reserveLamports: operationKind === 'sol-sweep' ? await connection.getMinimumBalanceForRentExemption(0, 'finalized') : 0,
+            // The sweep drains the launch wallet to zero: nothing is left behind as a rent reserve.
+            reserveLamports: 0,
             feeCeilingLamports: 5000 + priorityFeeLamports(computeUnitLimit, microLamports) + SWEEP_FEE_PAD_LAMPORTS,
             computeUnitLimit, microLamports,
           };

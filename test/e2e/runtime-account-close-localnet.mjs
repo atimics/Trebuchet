@@ -18,6 +18,7 @@ import { acquireProfileOwner } from '../../packages/runtime/src/owner.js';
 import { openRuntimeStore } from '../../packages/runtime/src/store.js';
 import { createSolanaSigner } from '../../packages/runtime/src/solana.js';
 import { createTokenAccountCloseService, closableTokenAccount } from '../../packages/runtime/src/token-account-close.js';
+import { createSolSweepService } from '../../packages/runtime/src/sol-sweep.js';
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-validator-close-'));
 const log = fs.openSync(path.join(profile, 'validator.log'), 'a', 0o600);
@@ -99,8 +100,22 @@ try {
   for (const address of accounts) assert.equal(await connection.getAccountInfo(new PublicKey(address), 'finalized'), null, `${address} is closed`);
   assert.ok(await connection.getAccountInfo(held.address, 'finalized'), 'the account holding tokens stays');
   assert.deepEqual(await service.close({ scopeId: 'localnet-journal', walletPublicKey, accounts, approval }), result, 'a finished close is not sent again');
-  store.close();
   process.stdout.write(`Closed ${accounts.length} empty token accounts on a local validator: ${rent} lamports of rent returned, fee ${fee}.\n`);
+
+  // The SOL sweep then drains the launch wallet to exactly zero: nothing is reserved.
+  const destination = Keypair.generate().publicKey.toBase58();
+  const sweep = createSolSweepService({ owner, store, connection, network: 'localnet', expectedGenesisHash: genesisHash,
+    signer: createSolanaSigner({ getSigners: async () => [wallet] }), authorize: async () => true,
+    feePolicy: async () => ({ reserveLamports: 0, feeCeilingLamports: 50_000, microLamports: 1000, computeUnitLimit: 20_000 }), timeoutMs: 90_000 });
+  const beforeSweep = await connection.getBalance(wallet.publicKey, 'finalized');
+  const swept = await sweep.sweep({ scopeId: 'localnet-journal', walletPublicKey, destinationWallet: destination,
+    approval: { id: 'localnet-sweep', walletPublicKey, destinationWallet: destination, network: 'localnet', genesisHash, expiresAtMs: Date.now() + 300_000, maxSpendLamports: beforeSweep } });
+  const sweepFee = store.getOperation(swept.operationId).evidence.chain.feeLamports;
+  assert.equal(await connection.getBalance(wallet.publicKey, 'finalized'), 0, 'the launch wallet is drained to zero');
+  assert.equal(await connection.getAccountInfo(wallet.publicKey, 'finalized'), null, 'its system account is gone');
+  assert.equal(await connection.getBalance(new PublicKey(destination), 'finalized'), beforeSweep - sweepFee);
+  store.close();
+  process.stdout.write(`Drained the launch wallet: ${beforeSweep - sweepFee} lamports sent, fee ${sweepFee}, 0 left.\n`);
 } finally {
   owner?.release();
   if (validator && validator.exitCode === null) { const closed = once(validator, 'close'); validator.kill('SIGTERM'); const force = setTimeout(() => validator.kill('SIGKILL'), 5000); await closed; clearTimeout(force); }

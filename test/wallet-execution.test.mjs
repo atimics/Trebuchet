@@ -35,7 +35,8 @@ test('the local wallet host records its request approval and returns the verifie
   const f = fixture(t);
   assert.equal(await f.runtime.recover(input), null);
   const result = await f.runtime.sweepSolToDestination(input);
-  assert.equal(result.solTransferred, 0.00909312);
+  // The sweep drains the wallet: everything but the exact fee.
+  assert.equal(result.solTransferred, 0.009994);
   assert.equal(f.runtime.active(walletPublicKey), null);
   const store = openRuntimeStore(f.profile);
   try {
@@ -158,7 +159,7 @@ test(`the production ${mode} adapter recovers after its process dies between cha
   assert.equal(firstExit, null, first.output().err);
   assert.equal(signal, 'SIGKILL');
   assert.equal(ledger.state.sends.length, 1);
-  if (mode === 'SOL') assert.equal(ledger.state.balance, 900880);
+  if (mode === 'SOL') assert.equal(ledger.state.balance, 0);
   else if (mode.startsWith('metadata-')) assert.equal(ledger.state.authority, mode === 'metadata-reveal' ? SystemProgram.programId.toBase58() : sweepDestination);
   else assert.equal(ledger.state.sourceAmount, 0n);
   const second = run();
@@ -167,7 +168,7 @@ test(`the production ${mode} adapter recovers after its process dies between cha
   assert.deepEqual(rpcErrors, []);
   const recovered = JSON.parse(second.output().out.split('RESULT:')[1]);
   assert.equal(recovered.txId, ledger.state.sends[0].signature);
-  if (mode === 'SOL') assert.equal(recovered.solTransferred, 0.00909312);
+  if (mode === 'SOL') assert.equal(recovered.solTransferred, 0.009994);
   else {
     if (mode.startsWith('metadata-')) assert.equal(recovered.newAuthority, ledger.state.authority);
     else assert.equal(recovered.amountRaw, ['nft', 'fee-key'].includes(mode) ? '1' : '5000000');
