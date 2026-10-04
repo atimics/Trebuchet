@@ -146,7 +146,9 @@ function openCoin(key) {
     renderAll();
     return;
   }
-  state.coins = { ...state.coins, key, detail: null, detailError: null };
+  // The last read of this coin shows at once; the chain is read again behind it.
+  const seen = target?.mint ? coinPageCache.get(target.mint) : null;
+  state.coins = { ...state.coins, key, detail: seen?.detail || null, detailError: null, airdrop: seen?.airdrop || null };
   state.launchWorkspace = null;
   resetPoolSupport();
   setView('launch');
@@ -158,16 +160,23 @@ function openCoin(key) {
   renderAll();
 }
 
+// Each on-chain coin's last read in this session, by mint: its page and its airdrop.
+const coinPageCache = new Map();
+function rememberCoinPage(mint, patch) {
+  coinPageCache.set(mint, { ...(coinPageCache.get(mint) || {}), ...patch });
+}
+
 // The coin's airdrop: what each wallet received, and what the chain says it holds now.
 async function loadCoinAirdrop(mint) {
   if (!state.apiClient?.getCoinAirdrop) return;
-  const previous = state.coins.airdrop?.mint === mint ? state.coins.airdrop : null;
+  const previous = state.coins.airdrop?.mint === mint ? state.coins.airdrop : coinPageCache.get(mint)?.airdrop || null;
   state.coins = { ...state.coins, airdrop: { mint, recipients: previous?.recipients || null, decimals: previous?.decimals ?? null, loading: true, error: null } };
   renderCoins();
   try {
     const response = await state.apiClient.getCoinAirdrop(mint);
     if (state.coins.key !== `mint:${mint}`) return;
     state.coins = { ...state.coins, airdrop: { mint, ...response.airdrop, loading: false, error: null } };
+    rememberCoinPage(mint, { airdrop: state.coins.airdrop });
   } catch (error) {
     if (state.coins.key !== `mint:${mint}`) return;
     state.coins = { ...state.coins, airdrop: { ...state.coins.airdrop, loading: false, error: error.message || 'Could not read the balances' } };
@@ -402,6 +411,7 @@ async function loadCoinDetail(mint) {
     const response = await state.apiClient.getCoin(mint);
     if (state.coins.key !== `mint:${mint}`) return;
     const checkedStatus = coinChainStatus(response.coin?.creation);
+    rememberCoinPage(mint, { detail: response.coin });
     state.coins = {
       ...state.coins,
       detail: response.coin,
