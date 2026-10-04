@@ -326,6 +326,18 @@ export function removePinEncrypted() {
 // give me the recoverable secret" lookup (resume, and the server-side signer
 // resolution that F5 moves toward — letting the client send a pubkey instead
 // of round-tripping the secret key through the renderer).
+// Every saved wallet's public record (address, created, retired), without decrypting anything.
+export function records() {
+  return readRaw().map((entry) => ({ publicKey: entry.publicKey, retiredAt: entry.retiredAt || null, createdAt: entry.createdAt || null }));
+}
+
+// Whether a wallet is saved, and whether it is retired, from the stored record alone:
+// nothing is decrypted, so this is cheap and works while the Recovery PIN is locked.
+export function keyRecord(publicKey) {
+  const entry = readRaw().find((item) => item.publicKey === publicKey);
+  return entry ? { publicKey: entry.publicKey, retiredAt: entry.retiredAt || null, createdAt: entry.createdAt || null } : null;
+}
+
 export function get(publicKey) {
   return load().find((w) => w.publicKey === publicKey) || null;
 }

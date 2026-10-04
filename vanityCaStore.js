@@ -211,6 +211,11 @@ export function removePinEncrypted() {
   return raw.length - filteredRaw.length;
 }
 
+// Whether an address is saved, from the stored record alone: nothing is decrypted.
+export function hasAddress(publicKey) {
+  return readRaw().some((entry) => isValidRecord(entry) && entry.publicKey === publicKey);
+}
+
 export function get(publicKey) {
   return load().find((entry) => entry.publicKey === publicKey) || null;
 }
