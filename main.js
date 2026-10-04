@@ -864,15 +864,9 @@ function createWindow() {
       buttons: ['Stay', 'Leave anyway'],
       defaultId: 0,
       cancelId: 0,
-      title: 'Launch in progress',
-      message: 'A launch is in progress.',
-      detail:
-        'Anything created on-chain so far (token mint, pools) is permanent. ' +
-        'If you close now, you\'ll need to recover the ephemeral wallet from ' +
-        'the Pending Wallets panel next time you open the app — its secret ' +
-        'key is saved in your OS keychain, so the funds remain accessible.\n\n' +
-        'In-progress UI state (current step, pool config you\'ve typed) will ' +
-        'be lost.',
+      title: 'Wallet work in progress',
+      message: 'Transactions are being sent.',
+      detail: 'Saved steps continue the next time Trebuchet opens. Keys stay in Trebuchet.',
     });
     if (choice === 1) {
       // User chose "Leave anyway". preventDefault on the will-prevent-unload

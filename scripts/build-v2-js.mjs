@@ -52,6 +52,7 @@ export const v2FeatureNames = [
   "launch/execute.js",
   "shell/connection.js",
   "shell/action-guards.js",
+  "shell/close-guard.js",
   "shell/events.js",
   "launch/quick.js",
   "shell/startup.js"

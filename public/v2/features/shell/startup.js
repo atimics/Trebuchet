@@ -242,6 +242,7 @@ restoreDiscoveryRegistry();
 bindEvents();
 bindWalletChips();
 bindActionGuards();
+bindCloseGuard();
 initializeSolflareWallet();
 setView('coins');
 renderAll();
