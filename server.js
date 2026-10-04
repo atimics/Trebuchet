@@ -2080,9 +2080,16 @@ registerDammV2Routes(app, {
 app.get('/api/vanity-ca-candidates', (req, res) => {
   try {
     const secretPinLocked = secretStore.isSecretPinLocked();
+    // An address a launch has minted is used. Its key stays saved; it can't be chosen again.
+    const usedBy = new Map();
+    for (const journal of launchJournal.list({ includeCompleted: true, includeArchived: true })) {
+      const mint = String(journal?.token?.mint || journal?.token?.tokenMint || '').trim();
+      if (mint && !usedBy.has(mint)) usedBy.set(mint, { symbol: journal.token?.symbol || null, walletPublicKey: journal.walletPublicKey || null });
+    }
     const candidates = vanityCaStore.listMetadata().map((candidate) => ({
       ...candidate,
       ...(candidate.decryptionFailed && secretPinLocked ? { secretPinLocked: true } : {}),
+      ...(usedBy.has(candidate.publicKey) ? { usedBy: usedBy.get(candidate.publicKey) } : {}),
     }));
     res.json({ success: true, candidates, secretPinLocked });
   } catch (error) {

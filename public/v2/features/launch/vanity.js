@@ -161,6 +161,24 @@ const ACTIVE_LAUNCH_KEY = 'trebuchet-v2-active-launch';
 // the next load starts blank instead of re-opening the first saved launch.
 const NO_ACTIVE_LAUNCH = '__none__';
 
+// A saved address a launch has already minted can't be a new coin's address. Its key stays saved.
+function vanityAddressUsedReason(publicKey) {
+  const address = String(publicKey || '').trim();
+  if (!address) return null;
+  const candidate = (state.vanityCandidates || []).find((item) => item.publicKey === address);
+  const launched = (state.coins?.list || []).find((coin) => coin.kind === 'onchain' && coin.launchedHere && coin.mint === address);
+  if (!candidate?.usedBy && !launched) return null;
+  // The launch wallet's own interrupted mint is still this launch's address.
+  const owner = candidate?.usedBy?.walletPublicKey || launched?.walletPublicKey || null;
+  if (owner && owner === selectedLaunchWalletPublicKey()) return null;
+  const symbol = candidate?.usedBy?.symbol || launched?.symbol || '';
+  return symbol ? `Used by $${symbol}` : 'Already used';
+}
+
+function freeVanityCandidates() {
+  return (state.vanityCandidates || []).filter((candidate) => !vanityAddressUsedReason(candidate.publicKey));
+}
+
 function rememberActiveLaunchId(id) {
   try {
     if (id) window.localStorage?.setItem(ACTIVE_LAUNCH_KEY, id);

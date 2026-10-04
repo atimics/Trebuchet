@@ -90,6 +90,16 @@ export function createLaunchExecutionServices({
   vanityCaStore,
 }) {
   // A paused airdrop leaves the launch active and writes nothing else, so its reason is kept here.
+  // The launch (from another wallet) whose token is this address, or null.
+  const vanityAddressUsedBy = (address, walletPublicKey) => {
+    const mint = String(address || '').trim();
+    if (!mint) return null;
+    return launchJournal.list({ includeCompleted: true, includeArchived: true }).find((journal) => (
+      String(journal?.token?.mint || journal?.token?.tokenMint || '').trim() === mint
+      && journal.walletPublicKey !== walletPublicKey
+    )) || null;
+  };
+
   const recordAirdropStop = (walletPublicKey, error) => {
     if (!isExecutionPaused(error)) return;
     try { launchJournal.recordEvent(walletPublicKey, { stage: 'airdrop_stopped', code: error.errorDetails?.code || error.code, error: error.message }); }
@@ -277,6 +287,15 @@ export function createLaunchExecutionServices({
       const normalizedMintFormat = normalizeMintFormat(mintFormat);
 
       if (input.walletPublicKey || vanityCAPublicKey) requireSecretPinUnlocked('creating a token with saved recovery secrets');
+      // A saved address another launch already minted is used: refuse it before anything is signed.
+      const usedBy = vanityAddressUsedBy(vanityCAPublicKey, input.walletPublicKey);
+      if (usedBy) {
+        throw new LaunchRejection(409, {
+          success: false,
+          code: 'VANITY_ADDRESS_USED',
+          error: `Address already used by ${usedBy.token?.symbol ? `$${usedBy.token.symbol}` : 'another launch'}`,
+        });
+      }
 
       let normalizedVanityPrefix = String(vanityPrefix ?? '').trim();
       let normalizedVanitySuffix = String(vanitySuffix ?? '').trim();
@@ -491,7 +510,8 @@ export function createLaunchExecutionServices({
         // so readiness routes to finish-token-creation instead.
         const existingMint = String(error?.tokenMint || input.vanityCAPublicKey || '').trim();
         const accountAlreadyInUse = /already in use|custom program error: 0x0/i.test(error?.message || '');
-        if (existingMint && accountAlreadyInUse) {
+        // Only this wallet's own interrupted mint is adopted, never a coin another launch made.
+        if (existingMint && accountAlreadyInUse && !vanityAddressUsedBy(existingMint, walletPublicKey)) {
           launchJournal.upsertForWallet(
             walletPublicKey,
             {

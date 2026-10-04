@@ -173,7 +173,22 @@ function launchedCoinForWorkspaceDraft() {
   if (proofTokenMint(currentLaunchProof())) return null;
   const reserved = String(state.selectedVanityPublicKey || '').trim();
   if (!reserved) return null;
-  return (state.coins.list || []).find((coin) => coin.kind === 'onchain' && coin.launchedHere && coin.mint === reserved) || null;
+  const coin = (state.coins.list || []).find((item) => item.kind === 'onchain' && item.launchedHere && item.mint === reserved);
+  if (!coin) return null;
+  // Only the draft that made this coin is that coin. A new coin that picked its address is not.
+  const token = currentLaunchConfig().token || {};
+  const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+  return same(token.symbol, coin.symbol) && same(token.name, coin.name) ? coin : null;
+}
+
+// A new coin holding an address another launch has minted drops it for a fresh random one.
+function dropUsedVanitySelection() {
+  if (chainCoinOnPage() || liveLaunchInProgress() || state.fullRunRunning || state.realExecutionRunning) return false;
+  if (proofTokenMint(currentLaunchProof())) return false;
+  if (!vanityAddressUsedReason(state.selectedVanityPublicKey) || launchedCoinForWorkspaceDraft()) return false;
+  state.selectedVanityPublicKey = null;
+  invalidateClassicOutputs();
+  return true;
 }
 
 async function loadCoinPositions(mint) {

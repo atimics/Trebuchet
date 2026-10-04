@@ -24,6 +24,7 @@ function load(overrides = {}) {
     liveLaunchInProgress: () => Boolean(overrides.live),
     proofTokenMint: (proof) => proof?.token?.mint || '',
     currentLaunchProof: () => overrides.proof || null,
+    currentLaunchConfig: () => ({ token: overrides.token || {} }),
   });
   vm.runInContext([
     slice(coins, 'function coinByKey(key)', '\n// A real launch that has a mint'),
@@ -81,12 +82,16 @@ test('while the chain is read, every row says so', () => {
 });
 
 test('a saved draft whose reserved address has launched opens as that coin', () => {
-  const list = [{ key: 'mint:8fFf', kind: 'onchain', mint: '8fFf', launchedHere: true }];
-  const draft = load({ state: { coins: { key: null, list }, selectedVanityPublicKey: '8fFf' } });
+  const list = [{ key: 'mint:8fFf', kind: 'onchain', mint: '8fFf', launchedHere: true, name: 'TREBUCHET', symbol: 'TREBUCHET' }];
+  const token = { name: 'TREBUCHET', symbol: 'TREBUCHET' };
+  const draft = load({ token, state: { coins: { key: null, list }, selectedVanityPublicKey: '8fFf' } });
   assert.equal(draft.context.launchedCoinForWorkspaceDraft()?.key, 'mint:8fFf');
-  const running = load({ live: true, state: { coins: { key: null, list }, selectedVanityPublicKey: '8fFf' } });
+  // A new coin that picked that address is not that coin: it stays on its own page.
+  const fresh = load({ token: { name: 'Other', symbol: 'OTH' }, state: { coins: { key: null, list }, selectedVanityPublicKey: '8fFf' } });
+  assert.equal(fresh.context.launchedCoinForWorkspaceDraft(), null);
+  const running = load({ live: true, token, state: { coins: { key: null, list }, selectedVanityPublicKey: '8fFf' } });
   assert.equal(running.context.launchedCoinForWorkspaceDraft(), null, 'a running launch is never swapped out');
-  const unlaunched = load({ state: { coins: { key: null, list }, selectedVanityPublicKey: 'Other' } });
+  const unlaunched = load({ token, state: { coins: { key: null, list }, selectedVanityPublicKey: 'Other' } });
   assert.equal(unlaunched.context.launchedCoinForWorkspaceDraft(), null);
 });
 
@@ -100,4 +105,39 @@ test('one page per coin: on-chain coins open on the steps page, and the old coin
 
 test('a recorded lock is not an unfinished step', () => {
   assert.match(server, /nextStep: steps\.find\(\(step\) => !\['done', 'recorded'\]\.includes\(step\.state\)\)\?\.id \|\| null/);
+});
+
+test('a used address is greyed out in the grinder, never auto-picked, and dropped from a new coin', () => {
+  const vanity = read('public/v2/features/launch/vanity.js');
+  const list = [{ key: 'mint:8fFf', kind: 'onchain', mint: '8fFf', launchedHere: true, name: 'TREBUCHET', symbol: 'TREBUCHET', walletPublicKey: 'JCTX' }];
+  const state = {
+    coins: { key: null, list }, activeView: 'launch', selectedVanityPublicKey: '8fFf',
+    vanityCandidates: [{ publicKey: 'free1' }, { publicKey: 'used1', usedBy: { symbol: 'RUG', walletPublicKey: 'W2' } }, { publicKey: '8fFf' }],
+  };
+  let wallet = 'NEW';
+  let invalidated = 0;
+  const context = vm.createContext({
+    state, selectedLaunchWalletPublicKey: () => wallet, liveLaunchInProgress: () => false,
+    proofTokenMint: () => '', currentLaunchProof: () => null, currentLaunchConfig: () => ({ token: { name: 'Fresh', symbol: 'FRSH' } }),
+    invalidateClassicOutputs: () => { invalidated += 1; },
+  });
+  vm.runInContext([
+    slice(vanity, '// A saved address a launch has already minted', '\nfunction rememberActiveLaunchId'),
+    slice(coins, 'function coinByKey(key)', '\n// A real launch that has a mint'),
+    slice(coins, '// The on-chain coin the page shows', '\nasync function loadCoinPositions'),
+  ].join('\n'), context);
+  assert.equal(context.vanityAddressUsedReason('used1'), 'Used by $RUG');
+  assert.equal(context.vanityAddressUsedReason('8fFf'), 'Used by $TREBUCHET');
+  assert.equal(context.vanityAddressUsedReason('free1'), null);
+  assert.equal(context.vanityAddressUsedReason(''), null, 'a random address is always free');
+  assert.deepEqual(context.freeVanityCandidates().map((item) => item.publicKey), ['free1']);
+  wallet = 'JCTX';
+  assert.equal(context.vanityAddressUsedReason('8fFf'), null, 'the launch wallet\'s own interrupted mint is still its address');
+  wallet = 'NEW';
+  assert.equal(context.dropUsedVanitySelection(), true);
+  assert.equal(state.selectedVanityPublicKey, null);
+  assert.equal(invalidated, 1);
+  const guards = read('public/v2/features/shell/action-guards.js');
+  assert.match(guards, /'select-vanity': \(element\) => vanityAddressUsedReason\(element\.dataset\.publicKey\)/);
+  assert.match(read('public/v2/features/shell/connection.js'), /freeVanityCandidates\(\)\.at\(-1\)/);
 });
