@@ -17227,3 +17227,12 @@ body[data-coin-mode="onchain"] #view-launch #launchNextRail {
   body[data-coin-mode="onchain"] .coin-state-layout > .coin-state { grid-column: 1; grid-row: 1; }
   body[data-coin-mode="onchain"] .coin-state-layout > .launch-workspace-viewport { grid-column: 2; grid-row: 1; }
 }
+
+/* The steps rail sits against the sidebar: no empty band between two borders. */
+@media (min-width: 901px) {
+  body[data-active-view="launch"] .workspace { padding-inline: 0; }
+  body[data-active-view="launch"] .topbar,
+  body[data-active-view="launch"] #view-launch .launch-toolbar { padding-inline: clamp(18px, 2.5vw, 34px); }
+  body[data-active-view="launch"] .coin-state-layout { border-left: 0; border-right: 0; border-radius: 0; }
+  body[data-active-view="launch"] .coin-state { border-left: 0; border-radius: 0; }
+}
