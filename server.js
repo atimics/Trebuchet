@@ -82,6 +82,7 @@ import {
 
 import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
+import { airdropDeliveries, readAirdropHistory, readAirdropHolders } from './coinAirdrop.js';
 import * as secretStore from './secretStore.js';
 import { secretInventory, walletSecretState } from './secretInventory.js';
 import { resetWithArchive } from './secretReset.js';
@@ -3470,6 +3471,31 @@ app.post('/api/v2/coins/:mint/sell-quote', async (req, res) => {
     const quote = await fetchSellQuote({ mint, decimals: account.decimals, amount: req.body?.amount });
     res.json({ success: true, quote });
   } catch (error) { sendErrorResponse(res, error, 400); }
+});
+
+// The coin's airdrop: each wallet it reached, what it received, and what it holds now.
+app.get('/api/v2/coins/:mint/airdrop', async (req, res) => {
+  try {
+    const mint = String(req.params.mint || '').trim();
+    const journals = launchJournal.list({ includeCompleted: true, includeArchived: true });
+    const deliveries = airdropDeliveries(journals, mint);
+    if (/^Demo/.test(mint) || !deliveries.length) {
+      return res.json({ success: true, airdrop: { mint, decimals: null, recipients: deliveries.map((row) => ({ wallet: row.wallet, receivedRaw: row.receivedRaw.toString(), nowRaw: null, txIds: row.txIds })) } });
+    }
+    if (!validMint(mint)) return res.status(400).json({ success: false, error: 'Invalid mint' });
+    const connection = new Connection(getRpcUrl(), 'confirmed');
+    const account = await readMintAccount(connection, mint);
+    if (!account) return res.status(404).json({ success: false, error: 'Not a readable mint' });
+    const recipients = await readAirdropHolders(connection, { mint, tokenProgram: account.program, deliveries });
+    // History only for wallets whose balance moved: those are the ones that burned, sold, bought, or sent.
+    const moved = recipients.filter((row) => row.nowRaw != null && row.nowRaw !== row.receivedRaw);
+    const history = moved.length ? await readAirdropHistory(connection, { mint, tokenProgram: account.program, recipients: moved }) : [];
+    const byWallet = new Map(history.map((row) => [row.wallet, row]));
+    const rows = recipients.map((row) => (byWallet.has(row.wallet) ? { ...row, history: byWallet.get(row.wallet) } : row));
+    res.json({ success: true, airdrop: { mint, decimals: account.decimals, recipients: rows, readAt: new Date().toISOString() } });
+  } catch (error) {
+    sendErrorResponse(res, error, 502);
+  }
 });
 
 // Positions held by this app's wallets. Withdrawal re-reads each position.

@@ -509,6 +509,11 @@ function handleClick(event) {
     withdrawCoinPosition(actionTarget.dataset.nft).catch((error) => notify(error.message || 'Withdrawing failed'));
     return;
   }
+  if (action === 'refresh-coin-airdrop') {
+    const coin = coinByKey(state.coins.key);
+    if (coin?.mint) loadCoinAirdrop(coin.mint).catch(() => null);
+    return;
+  }
   if (action === 'refresh-coin-positions') {
     if (state.coinPositions.mint) loadCoinPositions(state.coinPositions.mint).catch(() => null);
     return;
