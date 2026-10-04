@@ -378,7 +378,7 @@ function fieldRunbookActionControl(action = '', stage = {}) {
     return { dataAction: walletPublicKey ? 'import-wallet' : 'generate-wallet', label: walletPublicKey ? 'Import wallet' : 'Generate wallet' };
   }
   if (action === 'grind-or-select-vanity-ca') {
-    return { dataAction: 'start-vanity', label: state.vanityRunning ? 'Cancel grind' : 'Grind CA', disabled: false };
+    return { dataAction: 'start-vanity', label: state.vanityRunning ? 'Add grind' : 'Grind CA', disabled: false };
   }
   if (['stage-launch-plan', 'fix-pool-topology'].includes(action)) {
     return { dataAction: 'review-plan', label: 'Stage plan' };

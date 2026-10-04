@@ -748,6 +748,10 @@
       return request(`/api/v2/coins/${encodeURIComponent(mint)}`, { timeoutMs: 90_000 });
     }
 
+    async function calibrateVanity() {
+      return request('/api/v2/vanity/calibrate', { method: 'POST', body: {}, timeoutMs: 20_000 });
+    }
+
     async function getCoinAirdrop(mint) {
       return request(`/api/v2/coins/${encodeURIComponent(mint)}/airdrop`, { timeoutMs: 90_000 });
     }
@@ -1238,6 +1242,7 @@
       removeCoin,
       getCoin,
       getCoinAirdrop,
+      calibrateVanity,
       getCoinEvidence,
       getSellQuote,
       listCoinPositions,

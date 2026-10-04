@@ -2529,6 +2529,18 @@ app.post('/api/cancel-vanity-grind', async (req, res) => {
   }
 });
 
+// Measure this computer's grind speed: a 3-second split-key run that saves nothing.
+app.post('/api/v2/vanity/calibrate', async (_req, res) => {
+  try {
+    if (!(await vanityAvailability()).available) return res.status(503).json({ success: false, error: 'This build has no grinder.' });
+    const mod = await import('./vanityKeygen.js');
+    res.json({ success: true, calibration: await mod.calibrateVanityRate({ seconds: 3 }) });
+  } catch (error) {
+    const busy = /already in progress/i.test(error.message || '');
+    res.status(busy ? 409 : 500).json({ success: false, error: busy ? 'A grind is running' : error.message });
+  }
+});
+
 app.post('/api/generate-vanity-wallet', async (req, res) => {
   try {
     const demoMode = isDemoMode();

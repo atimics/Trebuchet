@@ -408,6 +408,9 @@ const state = {
   vanityAvailable: false,
   vanityReason: null,
   vanityRunning: false,
+  grindJobs: [],
+  vanityCalibrating: false,
+  vanityCalibrationError: null,
   vanityProgress: null,
   vanityProgressStats: null,
   vanitySource: null,
@@ -7152,7 +7155,9 @@ function vanityCandidateTarget(candidate) {
 }
 
 const VANITY_BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-const VANITY_PLANNING_RATE = 50000;
+// The live rate is measured over this window: the grinder reports in per-thread bursts.
+const VANITY_RATE_WINDOW_MS = 10000;
+const VANITY_RATE_STORAGE_KEY = 'trebuchet:v2:vanity-rate';
 const VANITY_VISIBLE_CANDIDATE_LIMIT = 4;
 
 function vanityRarityGrade(rarity) {
@@ -7206,6 +7211,21 @@ function vanityExpectedAttempts(start, end, caseInsensitive, length = null) {
   return TrebuchetCore.expectedVanityAttempts(start, end, { caseInsensitive, length });
 }
 
+// The speed to plan with: what this computer measured (Calibrate, or its last grind). Machines
+// differ too much to guess, so until then there is none.
+function vanityPlanningRate() {
+  try {
+    const saved = Number(window.localStorage?.getItem(VANITY_RATE_STORAGE_KEY));
+    if (Number.isFinite(saved) && saved > 0) return saved;
+  } catch { /* storage is optional */ }
+  return null;
+}
+
+function rememberVanityRate(rate) {
+  if (!(Number(rate) > 0)) return;
+  try { window.localStorage?.setItem(VANITY_RATE_STORAGE_KEY, String(Math.round(rate))); } catch { /* storage is optional */ }
+}
+
 function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats) {
   const start = String(prefix || '').trim();
   const end = String(suffix || '').trim();
@@ -7218,7 +7238,8 @@ function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats
   const p95 = expectedAttempts * -Math.log(0.05);
   const liveRate = Number(stats?.rate);
   const attempts = Number(stats?.attempts || 0);
-  const planningSeconds = expectedAttempts > 0 ? expectedAttempts / VANITY_PLANNING_RATE : 0;
+  const planningRate = vanityPlanningRate();
+  const planningSeconds = expectedAttempts > 0 && planningRate ? expectedAttempts / planningRate : null;
   const liveEtaSeconds = liveRate > 0 && expectedAttempts > attempts
     ? (expectedAttempts - attempts) / liveRate
     : null;
@@ -7232,6 +7253,7 @@ function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats
     p95,
     attempts: Number.isFinite(attempts) ? attempts : 0,
     rate: Number.isFinite(liveRate) ? liveRate : null,
+    planningRate,
     planningSeconds,
     liveEtaSeconds,
     difficulty: invalid.length ? 'invalid' : vanityPatternDifficulty(expectedAttempts),
@@ -7239,7 +7261,7 @@ function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats
 }
 
 function vanityEstimateSummary(prefix, suffix) {
-  const estimate = vanityPatternEstimate(prefix, suffix);
+  const estimate = vanityPatternEstimate(prefix, suffix, null);
   if (estimate.invalid.length) {
     return {
       label: 'Not allowed',
@@ -7267,7 +7289,7 @@ function vanityEstimateSummary(prefix, suffix) {
   }
   const live = estimate.rate
     ? `Live ${formatVanityRate(estimate.rate)}/s, ETA ${formatVanityDuration(estimate.liveEtaSeconds)}`
-    : `At ${formatVanityAttempts(VANITY_PLANNING_RATE)}/s: ~${formatVanityDuration(estimate.planningSeconds)}`;
+    : estimate.planningRate ? `~${formatVanityDuration(estimate.planningSeconds)} at ${formatVanityRate(estimate.planningRate)}/s` : 'Speed not measured';
   return {
     label: { easy: 'Quick', moderate: 'Takes a while', hard: 'Slow', extreme: 'Very slow' }[estimate.difficulty] || 'Estimate',
     detail: `About ${formatVanityAttempts(estimate.expectedAttempts)} tries (95% by ${formatVanityAttempts(estimate.p95)}). ${live}.`,
@@ -7276,9 +7298,6 @@ function vanityEstimateSummary(prefix, suffix) {
 }
 
 function vanityAvailabilityMeta() {
-  if (state.vanityRunning) {
-    return { label: 'Grinding', detail: state.vanityProgress || 'Searching…', className: 'warn', icon: 'fa-spinner fa-spin' };
-  }
   if (state.apiStatus === 'connected' && !state.vanityAvailable) {
     return {
       label: 'Grinder unavailable',
@@ -7412,11 +7431,6 @@ function renderSavedLaunchList() {
 function switchActiveLaunch(id) {
   if (launchIsInProgress()) return;
   rememberActiveLaunchId(id || NO_ACTIVE_LAUNCH);
-  try {
-    v2LocalStorage()?.removeItem(GUIDED_DRAFT_STORAGE_KEY);
-  } catch {
-    // A stale draft only matters when storage works, and then removeItem works too.
-  }
   window.location.reload();
 }
 
@@ -7479,30 +7493,66 @@ function scheduleLaunchAutoSave() {
   }, 900);
 }
 
+// The grind area: this computer's speed, what the typed pattern would take, and the jobs:
+// the one running, the ones queued after it, and the ones that ended, with their stats.
+function grindJobHtml(job) {
+  const tries = (value) => `${formatVanityAttempts(value)} tries`;
+  const elapsed = ((job.endedAt || Date.now()) - (job.startedAt || Date.now())) / 1000;
+  const average = elapsed > 0 && job.attempts ? job.attempts / elapsed : null;
+  const pct = job.expected ? Math.round((job.attempts / job.expected) * 100) : null;
+  const target = `<code>${escapeHtml(job.target)}</code>${job.caseInsensitive ? ' <small>any case</small>' : ''}${job.length ? ` <small>${escapeHtml(String(job.length))} chars</small>` : ''}`;
+  const button = (action, label, inner) => `<button class="icon-button grind-job-close" type="button" data-action="${action}" data-job="${escapeHtml(job.id)}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${inner}</button>`;
+  const dismiss = button('dismiss-grind-job', 'Dismiss', '<i class="fa-solid fa-xmark" aria-hidden="true"></i>');
+  if (job.status === 'running') {
+    const left = job.rate && job.attempts < job.expected
+      ? `~${formatVanityDuration((job.expected - job.attempts) / job.rate)} to expected`
+      : job.rate ? 'past expected' : 'measuring speed';
+    return `<li class="grind-job is-running"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i><span>${target}<small>${tries(job.attempts)} · ${pct ?? 0}% of expected · ${job.rate ? `${formatVanityRate(job.rate)}/s` : '—'} · ${escapeHtml(left)} · ${formatVanityDuration(elapsed)} so far</small></span>${button('stop-grind-job', 'Stop this grind', '<i class="fa-solid fa-stop" aria-hidden="true"></i> Stop')}</li>`;
+  }
+  if (job.status === 'queued') {
+    const rate = vanityPlanningRate();
+    return `<li class="grind-job is-queued"><i class="fa-regular fa-clock" aria-hidden="true"></i><span>${target}<small>Queued · about ${tries(job.expected)}${rate ? ` · ~${formatVanityDuration(job.expected / rate)}` : ''}</small></span>${button('stop-grind-job', 'Remove from the queue', '<i class="fa-solid fa-xmark" aria-hidden="true"></i>')}</li>`;
+  }
+  const stats = `${tries(job.attempts)} in ${formatVanityDuration(elapsed)}${average ? ` · ${formatVanityRate(average)}/s` : ''}${pct != null ? ` · ${pct}% of expected` : ''}`;
+  if (job.status === 'found') {
+    return `<li class="grind-job is-found"><i class="fa-solid fa-check" aria-hidden="true"></i><span>${target}<small>Found <code>${escapeHtml(fullAddress(job.publicKey))}</code> · ${stats}</small></span>${dismiss}</li>`;
+  }
+  if (job.status === 'stopped') {
+    return `<li class="grind-job is-stopped"><i class="fa-solid fa-stop" aria-hidden="true"></i><span>${target}<small>Stopped · ${stats}</small></span>${dismiss}</li>`;
+  }
+  return `<li class="grind-job is-failed"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span>${target}<small>${escapeHtml(job.error || 'Failed')} · ${stats}</small></span>${dismiss}</li>`;
+}
+
+function grindAreaHtml({ canGrind, estimate }) {
+  const running = runningGrindJob();
+  const rate = vanityPlanningRate();
+  const pattern = estimate.prefix && estimate.suffix ? `${estimate.prefix}...${estimate.suffix}` : estimate.prefix || estimate.suffix;
+  const typed = estimate.targetLength && !estimate.invalid.length && Number.isFinite(estimate.expectedAttempts) && estimate.expectedAttempts > 0
+    ? `<p class="grind-estimate"><code>${escapeHtml(pattern)}</code> about ${formatVanityAttempts(estimate.expectedAttempts)} tries${rate ? ` · ~${formatVanityDuration(estimate.expectedAttempts / rate)}, 95% by ~${formatVanityDuration(estimate.p95 / rate)}` : ''}</p>`
+    : '';
+  const jobs = state.grindJobs || [];
+  return `
+    <div class="grind-area">
+      <div class="grind-head">
+        <button class="primary-button compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}><i class="fa-solid ${running ? 'fa-plus' : 'fa-hammer'}" aria-hidden="true"></i><span>${running ? 'Add to queue' : 'Grind'}</span></button>
+        <span class="grind-speed">${state.vanityCalibrating ? 'Measuring this computer…' : rate ? `This computer: ${formatVanityRate(rate)}/s` : 'Speed not measured'}</span>
+        <button class="secondary-button compact" type="button" data-action="calibrate-vanity" ${state.vanityCalibrating || running ? 'disabled' : ''}><i class="fa-solid fa-gauge-high" aria-hidden="true"></i><span>${state.vanityCalibrating ? 'Calibrating…' : 'Calibrate'}</span></button>
+      </div>
+      ${state.vanityCalibrationError ? `<p class="grind-estimate is-error">${escapeHtml(state.vanityCalibrationError)}</p>` : ''}
+      ${typed}
+      ${jobs.length ? `<ul class="grind-jobs" aria-label="Grinds">${jobs.map(grindJobHtml).join('')}</ul>` : ''}
+    </div>`;
+}
+
 function renderVanityCandidates() {
-  // A running grind cannot change mode: lock the toggle to what is running.
-  const caseToggle = $('#vanityCaseInsensitive');
-  const lengthSelect = $('#vanityLength');
-  if (lengthSelect) {
-    lengthSelect.disabled = state.vanityRunning === true;
-    if (state.vanityRunning && state.vanityProgressStats) {
-      lengthSelect.value = state.vanityProgressStats.length ? String(state.vanityProgressStats.length) : '';
-    }
-  }
-  if (caseToggle) {
-    caseToggle.disabled = state.vanityRunning === true;
-    if (state.vanityRunning && state.vanityProgressStats) {
-      caseToggle.checked = state.vanityProgressStats.caseInsensitive === true;
-    }
-  }
   const selected = state.vanityCandidates.find((item) => item.publicKey === state.selectedVanityPublicKey) || null;
   const meta = vanityAvailabilityMeta();
   const vanity = currentVanityConfig();
-  const rawEstimate = vanityPatternEstimate(vanity.prefix, vanity.suffix);
+  const rawEstimate = vanityPatternEstimate(vanity.prefix, vanity.suffix, null);
   const estimate = vanityEstimateSummary(vanity.prefix, vanity.suffix);
   const candidates = state.vanityCandidates.slice(-VANITY_VISIBLE_CANDIDATE_LIMIT).reverse();
   const hiddenCount = Math.max(0, state.vanityCandidates.length - candidates.length);
-  const canGrind = state.vanityRunning || (!rawEstimate.invalid.length && (state.apiStatus !== 'connected' || state.vanityAvailable));
+  const canGrind = !rawEstimate.invalid.length && rawEstimate.difficulty !== 'impossible' && (state.apiStatus !== 'connected' || state.vanityAvailable);
   const canRemoveSelected = Boolean(selected?.publicKey);
   const candidateButtons = candidates.map((candidate) => {
     const isActive = candidate.publicKey === state.selectedVanityPublicKey;
@@ -7533,10 +7583,10 @@ function renderVanityCandidates() {
         <strong>${escapeHtml(item.label)}</strong>
         <span>${escapeHtml(item.detail)}</span>
       </li>`;
-  // Only what needs saying: a problem, a running grind, or the cost of the pattern.
+  // Only what needs saying: a problem with the grinder or the pattern. The grind area says the rest.
   const statusItems = [
     meta.label === 'Ready to grind' ? null : meta,
-    estimate.label === 'Nothing to grind' ? null : { ...estimate, icon: 'fa-gauge-high' },
+    ['Not allowed', 'Impossible'].includes(estimate.label) ? { ...estimate, icon: 'fa-triangle-exclamation' } : null,
   ].filter(Boolean);
   const statuses = $('#vanityStatuses');
   if (statuses) {
@@ -7548,9 +7598,7 @@ function renderVanityCandidates() {
   if (preview) preview.innerHTML = vanityPreviewHtml(vanity, selected);
   const grind = $('#vanityGrind');
   if (grind) {
-    grind.innerHTML = `<button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
-      <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>
-    </button>`;
+    grind.innerHTML = grindAreaHtml({ canGrind, estimate: rawEstimate });
   }
   const savedCount = state.vanityCandidates.length;
   $('#vanityCandidates').innerHTML = `
@@ -14927,7 +14975,7 @@ function fieldRunbookActionControl(action = '', stage = {}) {
     return { dataAction: walletPublicKey ? 'import-wallet' : 'generate-wallet', label: walletPublicKey ? 'Import wallet' : 'Generate wallet' };
   }
   if (action === 'grind-or-select-vanity-ca') {
-    return { dataAction: 'start-vanity', label: state.vanityRunning ? 'Cancel grind' : 'Grind CA', disabled: false };
+    return { dataAction: 'start-vanity', label: state.vanityRunning ? 'Add grind' : 'Grind CA', disabled: false };
   }
   if (['stage-launch-plan', 'fix-pool-topology'].includes(action)) {
     return { dataAction: 'review-plan', label: 'Stage plan' };
@@ -19796,20 +19844,20 @@ async function pruneHiddenVanityCandidates() {
   notify(`Pruned ${hidden.length} hidden Vanity CA option${hidden.length === 1 ? '' : 's'}`);
 }
 
-async function startVanityGrind() {
-  if (state.vanityRunning) {
-    if (state.vanitySource) state.vanitySource.close();
-    state.vanityRunning = false;
-    state.vanityProgress = null;
-    state.vanityProgressStats = null;
-    if (state.apiStatus === 'connected' && state.apiClient?.cancelVanityGrind) {
-      await state.apiClient.cancelVanityGrind().catch(() => null);
-    }
-    renderAll();
-    notify('Vanity grind cancelled');
-    return;
-  }
+// Grinds are jobs: the one running, the ones queued behind it, and the ones that ended with
+// their stats until dismissed. One runs at a time; each takes every core.
+let grindJobSeq = 0;
 
+function grindJobTarget(job) {
+  return job.prefix && job.suffix ? `${job.prefix}...${job.suffix}` : job.prefix || job.suffix || `${job.length}-character`;
+}
+
+function runningGrindJob() {
+  return (state.grindJobs || []).find((job) => job.status === 'running') || null;
+}
+
+// The Grind button: queue the typed pattern, and start it when nothing is running.
+async function startVanityGrind() {
   const vanity = currentVanityConfig();
   if (!vanity.prefix && !vanity.suffix) {
     setLaunchWorkspace('configure');
@@ -19818,21 +19866,18 @@ async function startVanityGrind() {
     const input = $('#vanityStart');
     input?.setAttribute('aria-invalid', 'true');
     window.requestAnimationFrame?.(() => input?.focus());
-    notify(state.vanityInputError);
     return;
   }
   state.vanityInputError = null;
   $('#vanityStart')?.removeAttribute('aria-invalid');
   $('#vanityEnd')?.removeAttribute('aria-invalid');
-  const estimate = vanityPatternEstimate(vanity.prefix, vanity.suffix);
-  if (estimate.invalid.length) {
-    notify(`Vanity target contains invalid Base58 character${estimate.invalid.length === 1 ? '' : 's'}: ${estimate.invalid.join(', ')}`);
+  const estimate = vanityPatternEstimate(vanity.prefix, vanity.suffix, null);
+  if (estimate.invalid.length || estimate.difficulty === 'impossible') {
     renderVanityCandidates();
     return;
   }
 
   if (state.apiStatus === 'connected' && state.secretPin.locked) {
-    notify('Unlock the Recovery PIN to save this Vanity CA');
     const unlocked = await unlockSecretPin({ reason: 'vanity' });
     if (!unlocked) return;
   }
@@ -19854,138 +19899,165 @@ async function startVanityGrind() {
     return;
   }
 
+  grindJobSeq += 1;
+  const job = {
+    id: `grind-${Date.now()}-${grindJobSeq}`,
+    prefix: vanity.prefix || '',
+    suffix: vanity.suffix || '',
+    caseInsensitive: vanity.caseInsensitive === true,
+    length: vanity.length || null,
+    expected: estimate.expectedAttempts,
+    status: 'queued',
+    attempts: 0,
+    rate: null,
+  };
+  job.target = grindJobTarget(job);
+  state.grindJobs = [...(state.grindJobs || []), job];
+  if (!runningGrindJob()) runNextGrindJob();
+  renderAll();
+}
+
+function runNextGrindJob() {
+  const next = (state.grindJobs || []).find((job) => job.status === 'queued');
+  if (next) runVanityGrind(next).catch((error) => finishGrindJob(next, 'failed', { error: error.message || 'Grind failed' }));
+}
+
+function finishGrindJob(job, status, extra = {}) {
+  if (job.status !== 'running' && job.status !== 'queued') return;
+  if (state.vanitySource) { state.vanitySource.close(); state.vanitySource = null; }
+  Object.assign(job, { status, endedAt: Date.now(), ...extra });
+  state.vanityRunning = false;
+  state.vanityProgress = null;
+  state.vanityProgressStats = null;
+  runNextGrindJob();
+  renderAll();
+}
+
+// Stop the running job (its stats stay), or take a queued one out of the queue.
+async function stopGrindJob(id) {
+  const job = (state.grindJobs || []).find((item) => item.id === id);
+  if (!job) return;
+  if (job.status === 'queued') {
+    state.grindJobs = state.grindJobs.filter((item) => item !== job);
+    renderAll();
+    return;
+  }
+  if (job.status !== 'running') return;
+  finishGrindJob(job, 'stopped');
+  if (state.apiStatus === 'connected' && state.apiClient?.cancelVanityGrind) {
+    await state.apiClient.cancelVanityGrind().catch(() => null);
+  }
+}
+
+function dismissGrindJob(id) {
+  state.grindJobs = (state.grindJobs || []).filter((job) => job.id !== id || ['queued', 'running'].includes(job.status));
+  renderAll();
+}
+
+// Measure this computer's speed: 3 seconds of the real grinder, nothing saved.
+async function calibrateVanity() {
+  if (state.vanityCalibrating || runningGrindJob() || !state.apiClient?.calibrateVanity) return;
+  state.vanityCalibrating = true;
+  state.vanityCalibrationError = null;
+  renderVanityCandidates();
+  try {
+    const { calibration } = await state.apiClient.calibrateVanity();
+    rememberVanityRate(calibration.rate);
+  } catch (error) {
+    state.vanityCalibrationError = error.message || 'Calibration failed';
+  } finally {
+    state.vanityCalibrating = false;
+    renderVanityCandidates();
+  }
+}
+
+async function runVanityGrind(job) {
+  job.status = 'running';
+  job.startedAt = Date.now();
   state.vanityRunning = true;
   state.vanityProgress = 'Starting';
   state.vanityProgressStats = {
-    expectedAttempts: estimate.expectedAttempts,
+    expectedAttempts: job.expected,
     startedAt: Date.now(),
     attempts: 0,
     rate: null,
     samples: [],
-    caseInsensitive: vanity.caseInsensitive === true,
-    length: vanity.length || null,
+    caseInsensitive: job.caseInsensitive,
+    length: job.length,
   };
   renderAll();
 
-  try {
-    const token = await state.apiClient.getSessionToken();
-    const params = new URLSearchParams({ token, client: 'v2' });
-    if (vanity.prefix) params.set('prefix', vanity.prefix);
-    if (vanity.caseInsensitive) params.set('caseInsensitive', '1');
-    if (vanity.length) params.set('length', String(vanity.length));
-    // Split-key: the grinder only sees a public point; ~30x faster too.
-    params.set('split', '1');
-    if (vanity.suffix) params.set('suffix', vanity.suffix);
-    const source = new EventSource(`/api/generate-vanity-wallet-stream?${params.toString()}`);
-    state.vanitySource = source;
-    source.addEventListener('message', (event) => {
-      let data;
-      try { data = JSON.parse(event.data); } catch { return; }
-      if (data.type === 'start') {
-        state.vanityProgress = `Target ${data.target}`;
-        state.vanityProgressStats = {
-          expectedAttempts: Number(data.expected || estimate.expectedAttempts),
-          startedAt: Date.now(),
-          attempts: 0,
-          rate: null,
-          samples: [],
-          caseInsensitive: data.caseInsensitive === true,
-          length: data.length || null,
-        };
-        // An older server ignores the flag and grinds exact case. Say so
-        // instead of silently running the slower grind.
-        if (vanity.caseInsensitive && data.caseInsensitive !== true) {
-          notify('This grind is exact case: the app server predates Any case. Quit and reopen Trebuchet, then grind again.');
-        }
-      } else if (data.type === 'progress') {
-        const attempts = Number(data.attempts || 0).toLocaleString();
-        const pct = clampPercent(Number(data.epoch || 0) * 100);
-        state.vanityProgress = `${attempts} tries / ${pct}% expected`;
-        // The grinder reports in per-thread bursts (every 16,384 tries), so
-        // burst-to-burst rates swing wildly. Rate over a rolling window.
-        const now = Date.now();
-        const prior = state.vanityProgressStats || {};
-        // Sample only when the count moves, and measure first burst to
-        // latest burst: measuring to "now" dips between bursts.
-        const attemptsNow = Number(data.attempts || prior.attempts || 0);
-        const priorSamples = prior.samples || [];
-        const moved = attemptsNow > Number(priorSamples[priorSamples.length - 1]?.attempts ?? -1);
-        const samples = (moved ? [...priorSamples, { at: now, attempts: attemptsNow }] : priorSamples)
-          .filter((sample) => now - sample.at <= VANITY_RATE_WINDOW_MS);
-        const oldest = samples[0];
-        const newest = samples[samples.length - 1];
-        const windowSeconds = oldest && newest ? (newest.at - oldest.at) / 1000 : 0;
-        const rate = windowSeconds >= 2
-          ? (newest.attempts - oldest.attempts) / windowSeconds
-          : Number(prior.rate || 0) || null;
-        state.vanityProgressStats = {
-          expectedAttempts: Number(prior.expectedAttempts || estimate.expectedAttempts),
-          startedAt: Number(prior.startedAt || now),
-          updatedAt: now,
-          attempts: attemptsNow,
-          rate,
-          samples,
-          caseInsensitive: prior.caseInsensitive === true,
-          length: prior.length || null,
-        };
-      } else if (data.type === 'done') {
-        source.close();
-        state.vanityRunning = false;
-        state.vanitySource = null;
-        state.vanityProgress = null;
-        state.vanityProgressStats = null;
-        addVanityCandidate({
-          publicKey: data.wallet.publicKey,
-          target: data.wallet.target || null,
-          prefix: data.wallet.prefix || vanity.prefix || null,
-          suffix: data.wallet.suffix || vanity.suffix || null,
-          mode: data.wallet.mode || vanity.mode,
-          caseInsensitive: data.wallet.caseInsensitive === true,
-          addressLength: data.wallet.addressLength || null,
-          keyType: data.wallet.keyType || 'seed',
-          rarity: data.wallet.rarity || null,
-          attempts: data.wallet.attempts || null,
-          persisted: data.wallet.persisted === true,
-        });
-        renderAll();
-      } else if (data.type === 'cancelled') {
-        source.close();
-        state.vanityRunning = false;
-        state.vanitySource = null;
-        state.vanityProgress = null;
-        state.vanityProgressStats = null;
-        renderAll();
-        notify('Vanity grind cancelled');
-      } else if (data.type === 'error') {
-        source.close();
-        state.vanityRunning = false;
-        state.vanitySource = null;
-        state.vanityProgress = null;
-        state.vanityProgressStats = null;
-        renderAll();
-        notify(data.error || 'Vanity grind failed');
-        return;
-      }
-      renderVanityCandidates();
-      renderClassicBridge();
-    });
-    source.addEventListener('error', () => {
-      source.close();
-      state.vanityRunning = false;
-      state.vanitySource = null;
-      state.vanityProgress = null;
-      state.vanityProgressStats = null;
-      renderAll();
-      notify('Vanity stream disconnected');
-    });
-  } catch (error) {
-    state.vanityRunning = false;
-    state.vanitySource = null;
-    state.vanityProgress = null;
-    state.vanityProgressStats = null;
-    renderAll();
-    notify(error.message || 'Vanity grind failed');
-  }
+  const token = await state.apiClient.getSessionToken();
+  if (job.status !== 'running') return;
+  const params = new URLSearchParams({ token, client: 'v2' });
+  if (job.prefix) params.set('prefix', job.prefix);
+  if (job.caseInsensitive) params.set('caseInsensitive', '1');
+  if (job.length) params.set('length', String(job.length));
+  // Split-key: the grinder only sees a public point; ~30x faster too.
+  params.set('split', '1');
+  if (job.suffix) params.set('suffix', job.suffix);
+  const source = new EventSource(`/api/generate-vanity-wallet-stream?${params.toString()}`);
+  state.vanitySource = source;
+  source.addEventListener('message', (event) => {
+    if (job.status !== 'running') return;
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (data.type === 'start') {
+      job.expected = Number(data.expected || job.expected);
+      state.vanityProgressStats = { ...state.vanityProgressStats, expectedAttempts: job.expected };
+      // An older server ignores the flag and grinds exact case.
+      if (job.caseInsensitive && data.caseInsensitive !== true) job.caseInsensitive = false;
+    } else if (data.type === 'progress') {
+      // The grinder reports in per-thread bursts (every 16,384 tries), so
+      // burst-to-burst rates swing wildly. Rate over a rolling window.
+      const now = Date.now();
+      const prior = state.vanityProgressStats || {};
+      // Sample only when the count moves, and measure first burst to
+      // latest burst: measuring to "now" dips between bursts.
+      const attemptsNow = Number(data.attempts || prior.attempts || 0);
+      const priorSamples = prior.samples || [];
+      const moved = attemptsNow > Number(priorSamples[priorSamples.length - 1]?.attempts ?? -1);
+      const samples = (moved ? [...priorSamples, { at: now, attempts: attemptsNow }] : priorSamples)
+        .filter((sample) => now - sample.at <= VANITY_RATE_WINDOW_MS);
+      const oldest = samples[0];
+      const newest = samples[samples.length - 1];
+      const windowSeconds = oldest && newest ? (newest.at - oldest.at) / 1000 : 0;
+      const rate = windowSeconds >= 2
+        ? (newest.attempts - oldest.attempts) / windowSeconds
+        : Number(prior.rate || 0) || null;
+      if (windowSeconds >= 2) rememberVanityRate(rate);
+      state.vanityProgressStats = { ...prior, updatedAt: now, attempts: attemptsNow, rate, samples };
+      job.attempts = attemptsNow;
+      job.rate = rate;
+    } else if (data.type === 'done') {
+      addVanityCandidate({
+        publicKey: data.wallet.publicKey,
+        target: data.wallet.target || null,
+        prefix: data.wallet.prefix || job.prefix || null,
+        suffix: data.wallet.suffix || job.suffix || null,
+        mode: data.wallet.mode || (job.prefix && job.suffix ? 'both' : job.prefix ? 'prefix' : 'suffix'),
+        caseInsensitive: data.wallet.caseInsensitive === true,
+        addressLength: data.wallet.addressLength || null,
+        keyType: data.wallet.keyType || 'seed',
+        rarity: data.wallet.rarity || null,
+        attempts: data.wallet.attempts || null,
+        persisted: data.wallet.persisted === true,
+      });
+      finishGrindJob(job, 'found', { attempts: Number(data.wallet.attempts) || job.attempts, publicKey: data.wallet.publicKey });
+      return;
+    } else if (data.type === 'cancelled') {
+      finishGrindJob(job, 'stopped');
+      return;
+    } else if (data.type === 'error') {
+      finishGrindJob(job, 'failed', { error: data.error || 'Grind failed' });
+      return;
+    }
+    renderVanityCandidates();
+    renderClassicBridge();
+  });
+  source.addEventListener('error', () => {
+    finishGrindJob(job, 'failed', { error: 'The grind stream closed' });
+  });
 }
 
 // One estimate at a time: repeat clicks join the running request instead of
@@ -23047,6 +23119,7 @@ const ACTION_GUARDS = {
     if (state.selectedVanityPublicKey) visible.add(state.selectedVanityPublicKey);
     return state.vanityCandidates.some((candidate) => !visible.has(candidate.publicKey)) ? null : 'No hidden addresses';
   },
+  'calibrate-vanity': () => firstReason(noDesktopApp, () => (runningGrindJob() ? 'A grind is running' : null), () => (state.vanityAvailable ? null : 'No grinder in this build')),
   'select-vanity': (element) => vanityAddressUsedReason(element.dataset.publicKey),
   'remove-selected-vanity': () => (state.vanityCandidates.some((item) => item.publicKey === state.selectedVanityPublicKey) ? null : 'No saved address selected'),
   'toggle-held-share': () => (heldShareLocked() ? 'Locked once the token exists' : null),
@@ -23503,6 +23576,21 @@ function handleClick(event) {
 
   if (action === 'start-vanity') {
     startVanityGrind().catch((error) => notify(error.message || 'Vanity grind failed'));
+    return;
+  }
+
+  if (action === 'stop-grind-job') {
+    stopGrindJob(actionTarget.dataset.job).catch(() => null);
+    return;
+  }
+
+  if (action === 'dismiss-grind-job') {
+    dismissGrindJob(actionTarget.dataset.job);
+    return;
+  }
+
+  if (action === 'calibrate-vanity') {
+    calibrateVanity().catch(() => null);
     return;
   }
 
