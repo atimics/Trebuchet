@@ -247,17 +247,6 @@ function renderWallet() {
 
   // Old launch wallets and unfinished launches live in History; here they
   // only get a pointer, and only when there is something to look at.
-  const oldWallets = recoveryWalletsNeedingAttention().length;
-  const openJournals = state.recovery.activeJournalCount || 0;
-  $('#walletRecoveryInventory').innerHTML = oldWallets || openJournals ? `
-    <p class="wallet-recovery-pointer">
-      <span>${escapeHtml([
-        openJournals ? `${openJournals} unfinished launch${openJournals === 1 ? '' : 'es'}` : null,
-        oldWallets ? `${oldWallets} old launch wallet${oldWallets === 1 ? '' : 's'} holding SOL or tokens` : null,
-      ].filter(Boolean).join(' · '))}.</span>
-      <button class="text-button" type="button" data-action="inspect-recovery">Open in History</button>
-    </p>
-  ` : '';
 
   $('#assetTable').innerHTML = proofAssets.length ? `
     <div class="wallet-proof-heading">

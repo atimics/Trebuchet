@@ -434,7 +434,7 @@ function fieldRunbookActionControl(action = '', stage = {}) {
     return { dataAction: 'compare-classic-artifact', label: 'Compare' };
   }
   if (action === 'load-or-resume-journal') {
-    return { dataAction: 'inspect-recovery', label: 'Recovery' };
+    return { dataAction: 'inspect-recovery', label: 'Open coin' };
   }
   if (action === 'resolve-proof-audit') {
     return fallback('Audit', 'Open Diagnostics and resolve the missing proof-audit rows before retiring Classic.');

@@ -794,12 +794,8 @@ function renderGlobalStrip() {
   const metrics = [
     state.realExecutionRunning ? ['Launch', `${signed} of ${total} steps done`] : null,
     state.apiStatus === 'connected' ? null : ['App', apiLabel],
-    state.recovery.activeJournalCount + recoveryWallets > 0
-      ? ['Recovery', [
-        state.recovery.activeJournalCount ? `${state.recovery.activeJournalCount} unfinished launch${state.recovery.activeJournalCount === 1 ? '' : 'es'}` : null,
-        recoveryWallets ? `${recoveryWallets} old launch wallet${recoveryWallets === 1 ? '' : 's'}` : null,
-      ].filter(Boolean).join(' · ')]
-      : null,
+    state.recovery.activeJournalCount ? ['Unfinished', `${state.recovery.activeJournalCount} launch${state.recovery.activeJournalCount === 1 ? '' : 'es'}`] : null,
+    recoveryWallets ? ['To sweep', `${recoveryWallets} wallet${recoveryWallets === 1 ? '' : 's'}`] : null,
   ].filter(Boolean);
   const strip = $('#globalStrip');
   strip.hidden = metrics.length === 0;

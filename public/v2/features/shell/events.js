@@ -350,18 +350,6 @@ function handleClick(event) {
     stepNumberInput(input, Number(actionTarget.dataset.direction));
     return;
   }
-  if (action === 'select-history-pane') {
-    const pane = actionTarget.dataset.historyPane;
-    if (['recovery', 'wallets', 'audit', 'journal'].includes(pane)) {
-      state.activeHistoryPane = pane;
-      renderHistoryPanes();
-    }
-    return;
-  }
-  if (action === 'open-token-recovery') {
-    openTokenRecovery(actionTarget.dataset.journalId);
-    return;
-  }
   if (state.activeView === 'launch') {
     const actionWorkspace = {
       'start-vanity': 'mint',
@@ -371,7 +359,6 @@ function handleClick(event) {
       'download-launch-dossier': 'finish',
       'compare-classic-report': 'finish',
       'cancel-refund-launch': 'finish',
-      'resume-journal': 'finish',
     }[action];
     if (actionWorkspace && !actionTarget.dataset.stay) {
       // Each of these acts on the phase's own panel, or on the address settings.
@@ -644,10 +631,6 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'clear-execution-audit') {
-    clearExecutionAudit();
-    return;
-  }
 
   if (action === 'cancel-refund-launch') {
     cancelRefundLaunch();
@@ -796,27 +779,8 @@ function handleClick(event) {
       openCoinByMint(mint);
       return;
     }
-    state.activeHistoryPane = 'recovery';
-    renderHistoryPanes();
-    setView('history');
-    return;
-  }
-
-  if (action === 'inspect-recovery-record') {
-    state.activeHistoryPane = actionTarget.dataset.recoveryPane === 'journal' ? 'journal' : 'wallets';
-    renderHistoryPanes();
-    setView('history');
-    notify(state.activeHistoryPane === 'journal' ? 'Launch journal opened' : 'Recovery wallet inventory opened');
-    return;
-  }
-
-  if (action === 'resume-journal') {
-    resumeJournal(actionTarget.dataset.journalId);
-    return;
-  }
-
-  if (action === 'dismiss-journal') {
-    dismissJournal(actionTarget.dataset.journalId);
+    state.coins = { ...state.coins, key: null };
+    setView('coins');
     return;
   }
 
@@ -912,31 +876,9 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'select-recovery-wallet') {
-    selectRecoveryWallet(actionTarget.dataset.wallet);
-    return;
-  }
 
-  if (action === 'use-recovery-wallet-for-launch') {
-    const wallet = selectRecoveryWallet(actionTarget.dataset.wallet, { switchToWallet: false });
-    if (wallet) {
-      setView('launch');
-      notify('Recovery wallet selected for the next launch run');
-    }
-    return;
-  }
 
-  if (action === 'copy-recovery-wallet') {
-    copyText(actionTarget.dataset.wallet, 'Recovery wallet address');
-    return;
-  }
 
-  if (action === 'reveal-recovery-wallet') {
-    const walletPublicKey = actionTarget.dataset.wallet;
-    selectRecoveryWallet(walletPublicKey, { switchToWallet: true });
-    revealWalletSecret(walletPublicKey).catch((error) => notify(error.message || 'Recovery secret reveal failed'));
-    return;
-  }
 
   if (action === 'cancel-support-job') {
     cancelSavedSupportJob(actionTarget.dataset.jobId).catch((error) => notify(error.message || 'Support cancel failed'));
@@ -948,10 +890,6 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'discard-recovery-wallet') {
-    discardSelectedWallet(actionTarget.dataset.wallet).catch((error) => notify(error.message || 'Wallet discard failed'));
-    return;
-  }
 
   if (action === 'copy-wallet-address') {
     copyText(selectedLaunchWalletPublicKey(), 'Funding address');

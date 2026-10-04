@@ -441,7 +441,7 @@ function renderFinalizationPanel() {
         </span>
         <span class="finalize-head-status">
           <span class="risk-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
-          ${finalSweepComplete ? '<button class="text-button" type="button" data-view="history">Launch record</button>' : ''}
+          ${finalSweepComplete ? '<button class="text-button" type="button" data-action="inspect-recovery">Open coin</button>' : ''}
         </span>
       </div>
       <div class="finalize-grid">
@@ -561,7 +561,7 @@ function renderCancelRefundPanel(config = currentLaunchConfig()) {
         <button class="pill-button danger" type="button" data-action="cancel-refund-launch" ${canCancel ? '' : 'disabled'}>
           ${state.cancelRefund.running ? 'Refunding' : 'Cancel & refund'}
         </button>
-        <button class="pill-button" type="button" data-action="inspect-recovery">Recovery</button>
+        <button class="pill-button" type="button" data-action="inspect-recovery">Open coin</button>
       </div>
     </div>
   `;
@@ -654,7 +654,7 @@ function renderClassicBridge() {
     <aside class="recovered-plan-notice" role="status">
       <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
       <span><strong>Recovery loaded</strong><small>Journal ${escapeHtml(fullAddress(state.restoredLaunchJournalId))} restored this launch. Only unfinished work remains.</small></span>
-      <button class="text-button" type="button" data-view="history">View record</button>
+      <button class="text-button" type="button" data-action="inspect-recovery">Open coin</button>
     </aside>
   ` : '';
   const classicBridge = $('#classicBridge');
@@ -967,7 +967,7 @@ function renderClassicBridge() {
       <div data-finish-part="main">
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
-          <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Recovery'}</h2>
+          <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Finish'}</h2>
           <p>${practiceComplete ? 'Nothing was sent.' : ''}</p>
         </div>
         ${practiceComplete ? '' : `<aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Launch record ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for the final sweep.' : 'Fix the item below.'}</span></aside>`}
@@ -977,7 +977,7 @@ function renderClassicBridge() {
       ${!completedJournal && !finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
       ${!finalSweepComplete && liveCoinFinishesOnCoinPage() ? `<section class="readiness-panel is-primary" aria-label="Airdrop and sweep">
         <div><h3>Airdrop and sweep on the coin page</h3><p>The coin page sends the saved airdrop, then everything left in the launch wallet to the return wallet, and shows each step as it lands.</p></div>
-        <button class="primary-button" type="button" data-action="inspect-recovery"><span>Open the coin page</span><i class="fa-solid fa-arrow-right"></i></button>
+        <button class="primary-button" type="button" data-action="inspect-recovery"><span>Open coin</span><i class="fa-solid fa-arrow-right"></i></button>
       </section>` : ''}
       ${!finalSweepComplete && finishDestinationReady && !liveCoinFinishesOnCoinPage() ? readinessPanel({
         title: 'Send everything to the return wallet',
@@ -992,7 +992,7 @@ function renderClassicBridge() {
       </div>
       ${(completedJournal && !finalSweepComplete) || practiceComplete ? '' : `<div data-finish-part="record">${renderFinalizationPanel()}</div>`}
       ${!finalSweepComplete && !completedJournal ? `<div data-finish-part="recover">${renderCancelRefundPanel(config)}
-      <div class="launch-phase-secondary"><button class="text-button" type="button" data-action="inspect-recovery"><i class="fa-solid fa-life-ring"></i> ${proofTokenMint(currentLaunchProof()) ? 'Open this coin\'s page' : 'Unfinished launches'}</button></div></div>` : ''}
+      <div class="launch-phase-secondary"><button class="text-button" type="button" data-action="inspect-recovery"><i class="fa-solid fa-life-ring"></i> ${proofTokenMint(currentLaunchProof()) ? 'Open coin' : 'All coins'}</button></div></div>` : ''}
     </section>
   `;
   // The bridge was just rewritten: which Funding tab shows has to follow it.

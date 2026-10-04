@@ -26,7 +26,7 @@ test('coins merge drafts, launches, and coins added by address', () => {
   const byKey = Object.fromEntries(coins.map((coin) => [coin.key, coin]));
   assert.deepEqual(Object.keys(byKey).sort(), ['draft:draft-1', 'draft:draft-3', `mint:${OTHER}`, `mint:${RUG}`].sort());
   // A record is a claim: the list says what it claims until the chain is read.
-  assert.equal(byKey[`mint:${RUG}`].status, 'Launch recorded');
+  assert.equal(byKey[`mint:${RUG}`].status, 'Launched');
   assert.equal(byKey[`mint:${RUG}`].launchedHere, true);
   assert.equal(byKey[`mint:${RUG}`].eventCount, 1);
   assert.equal(byKey[`mint:${OTHER}`].status, 'Added');

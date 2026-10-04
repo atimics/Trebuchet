@@ -174,8 +174,8 @@ try {
   await page.waitForSelector('#view-discovery.is-active');
   await page.waitForSelector('#discoveryTable .discovery-row');
   await hold(2200);
-  await page.click('[data-view="history"]');
-  await page.waitForSelector('#view-history.is-active');
+  await page.click('[data-view="wallet"]');
+  await page.waitForSelector('#view-wallet.is-active');
   await hold(1800);
 
   await context.close();

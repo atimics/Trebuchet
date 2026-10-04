@@ -1882,9 +1882,9 @@ test('v2 navigation and views stay wired together', () => {
 
   // Coins come first. Creating a token is an action on a coin, so the create
   // view (still "launch" internally) is opened from a coin, not the nav.
-  // 'lean' is not a nav item: earlier Meteora launches open from a link in History
+  // 'lean' is not a nav item: earlier Meteora launches open from a link on Coins
   // (test/damm-v2-ui.test.mjs checks it is not in the nav).
-  assert.deepEqual(navViews, ['coins', 'discovery', 'history', 'lean', 'nfts', 'settings', 'wallet']);
+  assert.deepEqual(navViews, ['coins', 'discovery', 'lean', 'nfts', 'settings', 'wallet']);
   assert.deepEqual(sectionViews, [...navViews, 'launch'].sort());
   assert.deepEqual(viewKeys, [...navViews, 'launch'].sort());
 });
@@ -2117,23 +2117,16 @@ test('v2 launch page shows the launch, not an agent panel or custody jargon', ()
   assert.doesNotMatch(combined, /App-managed wallets/);
   assert.match(html, /<h2>Launch wallets<\/h2>/);
   assert.match(html, /Launch wallet in use/);
-  assert.match(html, /id="walletRecoveryInventory"/);
   assert.match(js, /function recoveryWalletsNeedingAttention\(\)/);
-  assert.match(js, /Open in History/);
   assert.match(combined, /Solflare/);
   assert.match(js, /Use as return wallet/);
   assert.match(html, /id="tokenLogoFile"/);
   assert.match(html, /id="tokenLogoPreview"/);
   assert.match(html, /accept="image\/png,image\/jpeg,image\/gif"/);
   assert.match(combined, /wallet-detail-panel/);
-  assert.match(combined, /recoveryWizard/);
-  assert.match(combined, /recoveryWalletWorkspace/);
   assert.match(combined, /Recovery PIN/);
   assert.match(combined, /data-action="import-wallet"/);
-  assert.match(combined, /data-action="select-recovery-wallet"/);
-  assert.match(combined, /reveal-recovery-wallet/);
   assert.match(combined, /sweep-recovery-wallet/);
-  assert.match(combined, /data-action="discard-recovery-wallet"/);
   assert.match(combined, /setup-secret-pin/);
   assert.match(combined, /unlock-secret-pin/);
   assert.match(combined, /change-secret-pin/);
@@ -2142,26 +2135,15 @@ test('v2 launch page shows the launch, not an agent panel or custody jargon', ()
   assert.match(combined, /loadWalletQr/);
   assert.match(combined, /revealWalletSecret/);
   assert.match(combined, /discardSelectedWallet/);
-  assert.match(combined, /selectRecoveryWallet/);
   assert.match(combined, /sweepRecoveryWallet/);
-  assert.match(combined, /renderRecoverySweepResult/);
-  assert.match(combined, /renderSecretPinResetAudit/);
-  assert.match(combined, /Recovery PIN reset audit/);
-  assert.match(combined, /use-recovery-wallet-for-launch/);
-  assert.match(combined, /Use for launch/);
   assert.match(combined, /data-action="connect-solflare"/);
   assert.match(combined, /data-action="disconnect-solflare"/);
   assert.match(combined, /data-action="use-solflare-destination"/);
   assert.match(combined, /lastSecretPinReset/);
-  assert.match(combined, /recoverySweepNextSteps/);
-  assert.match(combined, /Nothing to recover\./);
-  assert.match(combined, /data-action="open-coin-mint"/);
-  assert.match(combined, /Continue creating the token/);
   assert.match(combined, /Manual recovery required/);
   assert.doesNotMatch(combined, /data-action="select-recovery-step"/);
   assert.doesNotMatch(combined, /recovery-wizard-prev/);
   assert.doesNotMatch(combined, /recovery-wizard-next/);
-  assert.match(combined, /renderRecoveryWalletWorkspace/);
   assert.match(combined, /setupSecretPin/);
   assert.match(combined, /unlockSecretPin/);
   assert.match(combined, /changeSecretPin/);
@@ -2257,7 +2239,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(css, /launch-workspace-viewport[\s\S]*overflow: hidden auto/);
   assert.match(css, /\.coin-fact\.is-selected/);
   assert.doesNotMatch(css, /launch-workspace-tab/);
-  assert.match(css, /journal-resume-plan/);
   assert.match(css, /token-logo-preview/);
   assert.match(css, /asset-mark\.has-logo/);
   assert.match(css, /manual-prefund-panel/);
@@ -2302,8 +2283,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(css, /signature-panel:not\(.is-staged\)/);
   assert.match(css, /signature-panel\.is-live/);
   assert.match(css, /execution-ledger/);
-  assert.match(css, /history-audit-panel/);
-  assert.match(css, /history-audit-actions/);
   assert.match(js, /renderChartDeck/);
   assert.match(js, /chartEvidenceBadge/);
   assert.match(js, /setChartBadge/);
@@ -2519,14 +2498,12 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /localStorage/);
   assert.match(js, /Interrupted before completion/);
   assert.match(js, /executionLedgerAttemptLabel/);
-  assert.match(js, /renderHistoryExecutionAudit/);
   assert.match(js, /Execution ledger/);
   assert.match(js, /Latest steps/);
   assert.match(js, /Nothing sent yet/);
   assert.match(js, /No launch steps sent yet/);
   assert.match(js, /Launch steps sent/);
   assert.match(js, /Observed SOL/);
-  assert.match(js, /clear-execution-audit/);
   assert.match(js, /Live launch progress/);
   assert.match(js, /In the wallet/);
   assert.match(js, /'Budget'/);
@@ -2667,14 +2644,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /Report publish failed:/);
   assert.match(js, /Click Publish report to retry/);
   assert.match(js, /Download a fresh final launch record so the artifact carries the final sweep hash/);
-  assert.match(css, /recovery-sweep-result/);
-  assert.match(css, /recovery-sweep-grid/);
-  assert.match(css, /recovery-wizard-panel/);
-  assert.match(css, /recovery-wizard-steps/);
-  assert.match(css, /recovery-wizard-screen/);
-  assert.match(css, /recovery-wizard-actions/);
-  assert.match(css, /recovery-guide/);
-  assert.match(css, /recovery-guide-head/);
   assert.match(css, /report-parity-audit/);
   assert.match(css, /report-parity-list/);
   assert.match(css, /classic-compare-panel/);
@@ -3365,12 +3334,9 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /resume-journal/);
   assert.match(js, /Manual recovery required/);
   assert.match(js, /Next run skips recorded pools/);
-  assert.match(js, /dismiss-journal/);
   assert.match(js, /open-activity-log/);
   assert.match(js, /filter-activity-log/);
   assert.match(js, /close-activity-log/);
-  assert.match(js, /resumeLaunchJournal/);
-  assert.match(js, /dismissLaunchJournal/);
   assert.match(js, /run-demo-launch/);
   assert.match(js, /runDemoLaunch/);
   assert.match(js, /execute-next-run/);
@@ -6683,8 +6649,6 @@ test('v2 launch mechanism stages one Trebuchet-managed local wallet run', () => 
   assert.doesNotMatch(js, /Next checkpoint|'Next step'|Run every step|Step 6 as reviewable/);
   assert.match(combined, /Execution ledger/);
   assert.match(combined, /Latest steps/);
-  assert.match(combined, /historyExecutionAudit/);
-  assert.match(combined, /Retries/);
   assert.match(combined, /attempt/);
   assert.match(combined, /variable/);
   assert.match(combined, /Review run plan first/);
@@ -6841,37 +6805,14 @@ test('v2 locked launch wallet opens the Recovery PIN gate directly', () => {
   assert.match(js, /walletButton\.setAttribute\('aria-label', walletButtonLabel\)/);
 });
 
-test('v2 primary views share framed terminal workspaces and tabbed History panes', () => {
-  for (const pane of ['recovery', 'wallets', 'audit', 'journal']) {
-    assert.match(html, new RegExp(`data-history-pane="${pane}"`));
-    assert.match(html, new RegExp(`data-history-pane-panel="${pane}"`));
-  }
-  assert.match(html, /id="historyPaneTabs" role="tablist"/);
-  assert.match(js, /activeHistoryPane: 'recovery'/);
-  assert.match(js, /function renderHistoryPanes/);
-  assert.match(js, /action === 'select-history-pane'/);
-  assert.match(js, /panel\.hidden = !selected/);
-  assert.match(js, /button\.tabIndex = selected \? 0 : -1/);
-  assert.match(js, /activeTab = event\.target\.closest\?\.\('\[role="tab"\]'\)/);
-  assert.match(html, /id="historyTabRecovery"[\s\S]*?aria-controls="historyPanelRecovery"/);
-  assert.match(html, /id="historyPanelRecovery"[\s\S]*?aria-labelledby="historyTabRecovery"/);
-  assert.doesNotMatch(html, /<small>01<\/small><strong>Recovery<\/strong><span>Safe resume<\/span>/);
-  assert.match(css, /\.history-pane-tabs\s*\{[\s\S]*?display: flex;/);
-  assert.match(css, /\.history-pane-stage\s*\{[\s\S]*?overflow: hidden;/);
-  assert.match(css, /#view-history \.surface-main\s*\{[\s\S]*?grid-template-rows: auto auto minmax\(0, 1fr\)/);
-  assert.match(css, /#view-wallet \.surface,[\s\S]*?#view-settings \.surface[\s\S]*?border: 1px solid var\(--line-strong\)/);
-  assert.match(css, /#view-settings \.release-panel \.secret-pin-actions\s*\{[\s\S]*?grid-column: 1 \/ -1/);
-  assert.match(css, /body:not\(\[data-active-view="launch"\]\) \.view\.is-active,[\s\S]*?overflow: hidden/);
-});
-
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=173/);
+  assert.match(html, /styles\.css\?v=174/);
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=47/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=269/);
-  assert.doesNotMatch(html, /app\.js\?v=269" type="module"/);
+  assert.match(html, /app\.js\?v=270/);
+  assert.doesNotMatch(html, /app\.js\?v=270" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -11430,19 +11371,14 @@ test('startup routes an interrupted launch to recovery before the tutorial', () 
   assert.match(js, /const workspace = recoveryWorkspaceForJournal\(journal\)/);
   assert.match(js, /view: 'launch'/);
   assert.match(js, /workspace,/);
-  assert.match(js, /if \(journalNeedsTokenFinish\(journal\)\) return false/);
-  assert.match(js, /action === 'open-token-recovery'[\s\S]*?openTokenRecovery/);
   assert.match(js, /restoreLaunchConfigFromJournal\(journal\)/);
   assert.match(js, /state\.launchWorkspace = workspace/);
 });
 
 test('completed liquidity recovery opens Finish without replaying resume or funding', () => {
-  assert.match(js, /function canContinueJournalToFinish\(journal\)/);
-  assert.match(js, /completedLpJournal\(journal\)/);
-  // Recovery opens a launch's coin page; Resume on a finished-liquidity journal still lands on Finish.
-  assert.match(js, /if \(canContinueJournalToFinish\(journal\)\) \{\n    openJournalFinish\(journalId\);/);
-  assert.match(js, /function openJournalFinish\(journalId\)/);
-  assert.match(js, /state\.launchWorkspace = 'finish'/);
+  // A coin's Continue restores the launch at the step it needs: Finish once its pools are done.
+  assert.match(js, /return liquidityComplete \? 'finish' : 'liquidity';/);
+  assert.match(js, /setLaunchWorkspace\(recoveryWorkspaceForJournal\(journal\)\);/);
   assert.match(js, /function recoveryAuthorizationEndpoint\(\)/);
   assert.match(js, /function stageRecoveryAuthorization/);
   assert.match(js, /const fundingEstimate = recoveryEndpoint\s*\?\s*null/);
@@ -11938,4 +11874,10 @@ test('v2 quote acquisition requests allow for live quotes instead of the short U
   assert.match(apiClientJs, /autoSwapPlan: safeArray\(autoSwapPlan\), .*\n.*\n\s*timeoutMs: 90_000/);
   assert.match(apiClientJs, /recoveryDigest \? \{ recoveryDigest \} : \{\}\) \}, timeoutMs: 60_000/);
   assert.match(apiClientJs, /cleanup\/prepare`, \{ method: 'POST', body: \{ walletPublicKey \}, timeoutMs: 90_000 \}/);
+});
+
+test('v2 primary views share framed workspaces', () => {
+  assert.match(css, /#view-wallet \.surface,[\s\S]*?#view-settings \.surface[\s\S]*?border: 1px solid var\(--line-strong\)/);
+  assert.match(css, /#view-settings \.release-panel \.secret-pin-actions\s*\{[\s\S]*?grid-column: 1 \/ -1/);
+  assert.match(css, /body:not\(\[data-active-view="launch"\]\) \.view\.is-active,[\s\S]*?overflow: hidden/);
 });

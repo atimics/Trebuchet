@@ -18,7 +18,6 @@ const views = {
   lean: { eyebrow: '', title: 'Meteora launches' },
   wallet: { eyebrow: '', title: 'Wallet' },
   discovery: { eyebrow: '', title: 'Discovery' },
-  history: { eyebrow: '', title: 'History' },
   settings: { eyebrow: '', title: 'Settings' },
 };
 
@@ -28,7 +27,7 @@ const launchWorkspaces = [
   { id: 'fund', title: 'Fund wallet', detail: 'Estimate the exact requirement, deposit SOL, and acquire quote tokens.' },
   { id: 'mint', title: 'Create token', detail: 'Review the permanent token facts, then mint and revoke authorities.' },
   { id: 'liquidity', title: 'Create liquidity', detail: 'Create pools and positions, lock liquidity, and deliver Fee Keys.' },
-  { id: 'finish', title: 'Recovery', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
+  { id: 'finish', title: 'Finish', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
 ];
 
 
@@ -278,7 +277,6 @@ try {
 
 const state = {
   activeView: 'launch',
-  activeHistoryPane: 'recovery',
   // The open row of the coin's facts; null opens the row that needs doing.
   launchWorkspace: null,
   launchFactStates: null,
@@ -512,7 +510,6 @@ const state = {
   lastLocalDossier: null,
   recoveryActionId: null,
   lastRecoveryResult: null,
-  recoveryWizardStep: null,
   liveOps: {
     lp: null,
     lpCursor: 0,

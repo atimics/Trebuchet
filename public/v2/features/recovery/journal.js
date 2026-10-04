@@ -90,26 +90,6 @@ function routeStartupRecoveryFirst() {
   };
 }
 
-function canResumeJournal(journal) {
-  if (!journal || state.demoActive || isTerminalJournal(journal)) return false;
-  if (journalNeedsTokenFinish(journal)) return false;
-  if (completedLpJournal(journal)) return false;
-  if (!journalHasResumeMaterial(journal)) return false;
-  return !journalResumePlan(journal).manualRecoveryRequired;
-}
-
-function canContinueJournalToFinish(journal) {
-  return Boolean(
-    journal
-    && !isTerminalJournal(journal)
-    && completedLpJournal(journal),
-  );
-}
-
-function canDismissJournal(journal) {
-  return Boolean(journal?.id) && !isTerminalJournal(journal);
-}
-
 function journalHasResumeMaterial(journal) {
   return Boolean(journal?.poolPlan || journal?.lp || journal?.token || journal?.stage);
 }

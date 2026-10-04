@@ -273,10 +273,3 @@ function restoreClassicReportComparison() {
   }
 }
 
-function clearExecutionAudit() {
-  state.executionLedger = [];
-  persistExecutionLedger();
-  renderSignaturePanel();
-  renderHistory();
-  notify('Execution audit cleared');
-}

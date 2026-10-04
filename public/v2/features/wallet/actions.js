@@ -11,27 +11,6 @@ function addManagedWallet(wallet, { select = true } = {}) {
   }
 }
 
-function selectRecoveryWallet(publicKey, { switchToWallet = true } = {}) {
-  const wallet = pendingRecoveryWallet(publicKey);
-  if (!wallet) {
-    notify('Recovery wallet not found');
-    return null;
-  }
-  addManagedWallet({
-    ...wallet,
-    label: 'Recovery Wallet',
-    source: wallet.source || 'pending-recovery',
-    hasSecretKey: wallet.hasSecretKey === true,
-    hasMnemonic: wallet.hasMnemonic === true,
-  });
-  state.revealedWallet = null;
-  state.revealError = null;
-  if (switchToWallet) setView('wallet');
-  renderAll();
-  notify('Recovery wallet selected');
-  return wallet;
-}
-
 // A locked PIN asks for the PIN first, then carries on with what was asked.
 async function ensureRecoveryPinUnlocked() {
   if (!(state.secretPin?.configured && state.secretPin?.locked)) return true;

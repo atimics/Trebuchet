@@ -82,7 +82,6 @@ function renderAll() {
   renderDiscovery();
   renderExtension();
   renderSettings();
-  renderHistory();
   renderActivityLogDrawer();
   renderRecoveryPinGate();
   renderLaunchWorkspace();
