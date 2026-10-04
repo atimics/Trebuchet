@@ -2052,6 +2052,7 @@ function demoAllocationsForV2(allocations = []) {
 // NFT collections (v2 NFTs view). See nftRoutes.js.
 registerFeeNftRoutes(app, {
   isDemoMode, rejectIfSecretPinLocked, sendErrorResponse, getRpcUrl,
+  claim: claimLaunchOp, release: clearLaunchOpInFlight,
   getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
 });
 registerNftRoutes(app, {

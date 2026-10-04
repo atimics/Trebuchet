@@ -1848,7 +1848,7 @@ test('v2 navigation and views stay wired together', () => {
   // view (still "launch" internally) is opened from a coin, not the nav.
   // 'lean' is not a nav item: earlier Meteora launches open from a link on Coins
   // (test/damm-v2-ui.test.mjs checks it is not in the nav).
-  assert.deepEqual(navViews, ['coins', 'discovery', 'lean', 'nfts', 'settings', 'wallet']);
+  assert.deepEqual(navViews, ['coins', 'discovery', 'fee-nfts', 'lean', 'nfts', 'settings', 'wallet']);
   assert.deepEqual(sectionViews, [...navViews, 'launch'].sort());
   assert.deepEqual(viewKeys, [...navViews, 'launch'].sort());
 });

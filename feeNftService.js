@@ -162,7 +162,7 @@ export function startRun(id, options) {
   if ([...jobs.values()].some((job) => job.status === 'running' && job.walletPublicKey === options.walletPublicKey)) throw codeError('This wallet has a fee setup running');
   const job = { status: 'running', step: 'Checking backing', done: 0, walletPublicKey: options.walletPublicKey };
   jobs.set(id, job);
-  run(id, options, job).then(() => { job.status = 'complete'; }).catch((error) => { job.status = 'attention'; job.error = error.message; job.code = error.code; });
+  run(id, options, job).then(() => { job.status = 'complete'; }).catch((error) => { job.status = 'attention'; job.error = error.message; job.code = error.code; }).finally(() => options.onFinish?.());
   return job;
 }
 async function run(id, { rpcUrl, walletPublicKey, secretKey, approvedDigest, confirmNativeNftMint, maxSpendLamports }, job) {

@@ -4,7 +4,7 @@ import * as service from './feeNftService.js';
 import * as collections from './nftCollectionStore.js';
 
 export function registerFeeNftRoutes(app, deps) {
-  const { isDemoMode, rejectIfSecretPinLocked, getRpcUrl, getManagedWallet, sendErrorResponse } = deps;
+  const { isDemoMode, rejectIfSecretPinLocked, getRpcUrl, getManagedWallet, sendErrorResponse, claim = () => {}, release = () => {} } = deps;
   const route = (handler) => async (req, res) => { try { await handler(req, res); } catch (e) { sendErrorResponse(res, e, e.statusCode || 400); } };
   const wallet = (address) => {
     const saved = getManagedWallet(String(address));
@@ -36,11 +36,18 @@ export function registerFeeNftRoutes(app, deps) {
     const record = store.get(req.params.id);
     const input = req.body || {};
     if (input.approvedDigest !== record.plan.digest || input.confirmNativeNftMint !== record.plan.source.nativeNftMint || input.walletPublicKey !== record.plan.creator || !Number.isSafeInteger(input.maxSpendLamports) || input.maxSpendLamports <= 0) throw new Error('Review the backing NFT, plan and spend cap');
-    const job = service.startRun(record.id, { ...input, rpcUrl: getRpcUrl(), secretKey: wallet(input.walletPublicKey) });
-    res.json({ success: true, job });
+    const secretKey = wallet(input.walletPublicKey);
+    claim(input.walletPublicKey, 'fee-nfts');
+    try {
+      const job = service.startRun(record.id, { ...input, rpcUrl: getRpcUrl(), secretKey, onFinish: () => release(input.walletPublicKey) });
+      res.json({ success: true, job });
+    } catch (e) { release(input.walletPublicKey); throw e; }
   }));
   app.post('/api/v2/fee-nfts/:id/:action(harvest|claim)', route(async (req, res) => {
     if (!live(res)) return;
-    res.json({ success: true, ...await service.transact(req.params.id, { ...req.body, rpcUrl: getRpcUrl(), action: req.params.action, secretKey: wallet(req.body?.walletPublicKey) }) });
+    const secretKey = wallet(req.body?.walletPublicKey);
+    claim(req.body.walletPublicKey, 'fee-nfts');
+    try { res.json({ success: true, ...await service.transact(req.params.id, { ...req.body, rpcUrl: getRpcUrl(), action: req.params.action, secretKey }) }); }
+    finally { release(req.body.walletPublicKey); }
   }));
 }
