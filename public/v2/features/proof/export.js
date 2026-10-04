@@ -860,7 +860,7 @@ async function publishV2LaunchReport({ quiet = false, refreshReadiness = true, l
 
   const airdropStatus = airdropCompletionStatus(proof, config.poolTopology);
   if (airdropStatus.retryRequired) {
-    const reason = `Airdrop has ${airdropStatus.failed} failed recipient${airdropStatus.failed === 1 ? '' : 's'}; retry before publishing the launch report.`;
+    const reason = `${airdropStatus.failed} airdrop recipient${airdropStatus.failed === 1 ? '' : 's'} not paid.`;
     if (!quiet) notify(reason);
     return { skipped: true, reason, airdropIncomplete: true };
   }
@@ -870,7 +870,7 @@ async function publishV2LaunchReport({ quiet = false, refreshReadiness = true, l
     return { skipped: true, reason, airdropIncomplete: true };
   }
   if (!airdropStatus.complete) {
-    const reason = airdropCompletionIssue(airdropStatus) || 'Airdrop proof is incomplete; refresh or rerun airdrop before publishing the launch report.';
+    const reason = airdropCompletionIssue(airdropStatus) || 'Airdrop record incomplete.';
     if (!quiet) notify(reason);
     return { skipped: true, reason, airdropIncomplete: true };
   }

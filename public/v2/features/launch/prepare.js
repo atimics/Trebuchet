@@ -32,7 +32,6 @@ async function removeVanityCandidateByPublicKey(publicKey, { confirm = true } = 
   }
   invalidateClassicOutputs();
   renderAll();
-  notify('Saved Vanity CA removed');
   return true;
 }
 
@@ -119,7 +118,6 @@ async function startVanityGrind() {
       persisted: false,
     });
     renderAll();
-    notify('Static Vanity CA option added');
     return;
   }
 
@@ -217,7 +215,6 @@ async function startVanityGrind() {
           persisted: data.wallet.persisted === true,
         });
         renderAll();
-        notify('Vanity CA saved as an option');
       } else if (data.type === 'cancelled') {
         source.close();
         state.vanityRunning = false;

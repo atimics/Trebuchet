@@ -73,18 +73,18 @@ function airdropCompletionStatus(proof = currentLaunchProof(), topology = curren
   };
 }
 
-function airdropCompletionIssue(status = {}, actionLabel = 'final sweep') {
+function airdropCompletionIssue(status = {}) {
   if (!status?.configured || status.complete) return null;
   if (status.retryRequired) {
-    return `Airdrop has ${status.failed} failed recipient${status.failed === 1 ? '' : 's'}; retry before ${actionLabel}.`;
+    return `${status.failed} airdrop recipient${status.failed === 1 ? '' : 's'} not paid.`;
   }
   if (status.pending > 0) {
-    return `${status.pending} airdrop recipient${status.pending === 1 ? '' : 's'} still pending; run airdrop before ${actionLabel}.`;
+    return `${status.pending} airdrop recipient${status.pending === 1 ? '' : 's'} not paid yet.`;
   }
   const missing = Array.isArray(status.missing) && status.missing.length
     ? status.missing.join(', ')
     : 'recipient and transaction evidence';
-  return `Airdrop proof is incomplete (${missing}); refresh or rerun airdrop before ${actionLabel}.`;
+  return `Airdrop record incomplete: ${missing}.`;
 }
 
 function liveAirdropComplete(topology, proof) {
@@ -273,12 +273,12 @@ function liveRunProgressContext() {
               ? 'Funding estimate is stale for the current token, pools, market cap, or airdrop model.'
             : !fundingBalanceKnown
               ? funding.walletBalanceStale
-                ? 'Selected launch-wallet balance is stale; wait for the desktop app refresh or click Check balance.'
+                ? 'Launch wallet balance is out of date.'
                 : 'Selected launch-wallet balance has not been verified yet.'
               : !fundingSolReady
                 ? `Launch wallet is short ${funding.missingSol.toFixed(3)} SOL.`
                 : quoteStatus.stale
-                  ? 'Quote acquire is stale for the selected wallet or launch model; run it again.'
+                  ? 'The pair-token purchase was for another wallet or plan.'
                 : !quoteAcquireReady
                   ? `${quoteRoutes.length} quote acquire route${quoteRoutes.length === 1 ? '' : 's'} still need successful completion.`
                   : !manualReady

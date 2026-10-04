@@ -3147,18 +3147,18 @@ function airdropCompletionStatus(proof = currentLaunchProof(), topology = curren
   };
 }
 
-function airdropCompletionIssue(status = {}, actionLabel = 'final sweep') {
+function airdropCompletionIssue(status = {}) {
   if (!status?.configured || status.complete) return null;
   if (status.retryRequired) {
-    return `Airdrop has ${status.failed} failed recipient${status.failed === 1 ? '' : 's'}; retry before ${actionLabel}.`;
+    return `${status.failed} airdrop recipient${status.failed === 1 ? '' : 's'} not paid.`;
   }
   if (status.pending > 0) {
-    return `${status.pending} airdrop recipient${status.pending === 1 ? '' : 's'} still pending; run airdrop before ${actionLabel}.`;
+    return `${status.pending} airdrop recipient${status.pending === 1 ? '' : 's'} not paid yet.`;
   }
   const missing = Array.isArray(status.missing) && status.missing.length
     ? status.missing.join(', ')
     : 'recipient and transaction evidence';
-  return `Airdrop proof is incomplete (${missing}); refresh or rerun airdrop before ${actionLabel}.`;
+  return `Airdrop record incomplete: ${missing}.`;
 }
 
 function liveAirdropComplete(topology, proof) {
@@ -3347,12 +3347,12 @@ function liveRunProgressContext() {
               ? 'Funding estimate is stale for the current token, pools, market cap, or airdrop model.'
             : !fundingBalanceKnown
               ? funding.walletBalanceStale
-                ? 'Selected launch-wallet balance is stale; wait for the desktop app refresh or click Check balance.'
+                ? 'Launch wallet balance is out of date.'
                 : 'Selected launch-wallet balance has not been verified yet.'
               : !fundingSolReady
                 ? `Launch wallet is short ${funding.missingSol.toFixed(3)} SOL.`
                 : quoteStatus.stale
-                  ? 'Quote acquire is stale for the selected wallet or launch model; run it again.'
+                  ? 'The pair-token purchase was for another wallet or plan.'
                 : !quoteAcquireReady
                   ? `${quoteRoutes.length} quote acquire route${quoteRoutes.length === 1 ? '' : 's'} still need successful completion.`
                   : !manualReady
@@ -14749,14 +14749,14 @@ function manualPrefundStatus(item) {
     return {
       label: state.manualPrefund.polling ? 'Checking' : 'Not checked',
       className: 'warn',
-      detail: state.manualPrefund.polling ? 'Reading the selected wallet balance.' : 'Click Check balance or wait for the live poll.',
+      detail: state.manualPrefund.polling ? 'Reading the balance.' : 'Not checked yet.',
     };
   }
   if (!snapshot.fresh) {
     return {
       label: state.manualPrefund.polling ? 'Checking' : 'Recheck',
       className: 'warn',
-      detail: 'Balance snapshot is stale; wait for the live poll or click Check balance.',
+      detail: 'Out of date.',
     };
   }
 
@@ -15018,7 +15018,7 @@ function renderQuotePoolGuidance() {
           ? { label: `${autoCount} auto`, className: '' }
           : { label: 'Covered', className: '' };
   const detail = fundingEstimateStatus.stale
-    ? 'Funding estimate is stale for this launch model; rerun it before acquiring quote tokens.'
+    ? 'Funding estimate is out of date.'
     : fundingEstimateStatus.matchesConfig
       ? 'Every non-SOL pool is classified by the current funding estimate.'
       : 'Run the estimate before launch so flywheel quote-token funding is explicit.';
@@ -15149,11 +15149,11 @@ function renderQuoteAcquirePanel() {
   const savedAction = ['review_required', 'paused', 'recovery_required'].includes(job?.status) && job.walletPublicKey === selectedLaunchWalletPublicKey();
   const detail = savedAction ? (job.status === 'recovery_required' ? 'Review cleanup for the saved quote purchase.' : job.status === 'paused' ? 'Resume the saved purchase and verify its original receipts.' : 'Review the saved quote and its complete spending ceiling.')
     : fundingEstimateStatus.stale
-    ? 'Funding estimate is stale for this launch model; rerun it before acquiring quote tokens.'
+    ? 'Funding estimate is out of date.'
     : blocked.length
       ? `Resolve ${blocked.map(({ pool }) => pool.quoteSymbol || shortAddress(pool.quoteMint)).join(', ')} on Token & pools before buying pair tokens.`
     : acquireStatus.stale
-      ? 'Previous quote acquire belongs to another wallet or launch model; run it again for the selected launch wallet.'
+      ? 'The last pair-token purchase was for another wallet or plan.'
       : hasCurrentEstimate
       ? (routes.length
         ? `${routes.length} route${routes.length === 1 ? '' : 's'} can be auto-acquired from the launch wallet.`
@@ -15592,12 +15592,12 @@ function finalizationNoticeRows({
   if (report?.status === 'failed' || report?.failed) {
     rows.push({
       state: 'danger',
-      text: `Report publish failed: ${report.error || 'retry after checking RPC, Arweave, and Recovery PIN state'}. Click Publish report to retry.`,
+      text: `Report not published: ${report.error || 'no reason given'}.`,
     });
   } else if (report?.status === 'skipped') {
     rows.push({
       state: 'warn',
-      text: `Report publish skipped: ${report.reason || 'server did not return a permanent report URI'}. Click Publish report to retry when proof is ready.`,
+      text: `Report not published: ${report.reason || 'no permanent address came back'}.`,
     });
   }
   if (staleReport) {
@@ -15618,7 +15618,7 @@ function finalizationNoticeRows({
       text: 'Report publishing is off. Download the saved launch record before treating the launch as reviewable.',
     });
   }
-  const airdropIssue = airdropCompletionIssue(airdropStatus, 'publishing the report or sweeping');
+  const airdropIssue = airdropCompletionIssue(airdropStatus);
   if (airdropIssue) {
     rows.push({
       state: airdropStatus?.retryRequired ? 'danger' : 'warn',
@@ -15882,7 +15882,7 @@ function renderCancelRefundPanel(config = currentLaunchConfig()) {
   const detail = state.cancelRefund.error
     || (result
       ? result.message
-      : 'Sweep the selected launch wallet back to your destination. Already-created token or pools remain on-chain.');
+      : '');
   return `
     <div class="cancel-refund-panel ${escapeHtml(badge.className)}">
       <div class="cancel-refund-head">
@@ -15939,17 +15939,9 @@ function renderClassicBridge() {
       ? { label: readinessMeta.label === 'Ready' ? 'Review' : readinessMeta.label, className: 'warn' }
       : readinessMeta;
   const blockers = Array.isArray(readiness?.blockers) ? readiness.blockers : [];
-  const readinessNextDetail = {
-    '/api/create-token': 'Funding is verified. The next irreversible operation creates the mint, attaches metadata, and revokes token authorities.',
-    '/api/finish-token-creation': 'An on-chain mint exists, but metadata, supply, or authority safety is incomplete. Finish this mint before creating liquidity.',
-    '/api/create-lp': 'The token is complete. The next operation creates the planned markets, positions, and liquidity locks.',
-    '/api/resume-launch': 'Trebuchet found an incomplete liquidity operation and can resume only the missing work.',
-    '/api/reveal-sealed-metadata': 'Liquidity is locked. The next operation reveals the committed identity and makes metadata immutable.',
-    '/api/transfer-assets': 'Liquidity proof is complete. The next operation distributes assets, sweeps the launch wallet, and records final evidence.',
-  }[readiness?.nextEndpoint];
+  // Only why a step can't run: the panel's title and button already say what it does.
   const readinessDetail = quoteSafety.blockers[0]?.detail
     || blockers[0]?.detail
-    || readinessNextDetail
     || (state.apiStatus === 'connected' ? '' : 'Open the Trebuchet desktop app to continue.');
   const demoRunLabel = state.demoLaunchRunning
     ? 'Running test launch'
@@ -16159,11 +16151,7 @@ function renderClassicBridge() {
         : finalizationIssue
           ? String(finalizationIssue)
         : needsRunEnvelope
-          ? finalSweepAction
-            ? 'Confirm the return wallet, then approve the final sweep.'
-            : recoveringToken
-            ? 'Review the recovery once. Trebuchet will finish the existing mint, not create another.'
-            : 'Check what will be sent and the most it can spend.'
+          ? ''
         : readinessDetail;
     const panelBadge = state.demoActive && !complete ? '' : complete ? 'Done' : needsFunding || finalizationIssue ? 'Required' : needsRunEnvelope ? 'Review' : effectiveReadinessMeta.label;
     const panelClass = complete ? '' : needsFunding || finalizationIssue || needsRunEnvelope ? 'warn' : effectiveReadinessMeta.className;
@@ -16265,7 +16253,7 @@ function renderClassicBridge() {
       </div>
       ${readinessPanel({
         title: tokenComplete ? 'Token created' : mintEndpoint === '/api/finish-token-creation' ? 'Finish interrupted token' : 'Create token',
-        detail: tokenComplete ? 'Mint and freeze control are removed.' : mintEndpoint === '/api/finish-token-creation' ? 'The token was started but not finished. This finishes the same token; it does not make a new one.' : 'Checks the wallet, funding and token details first.',
+        detail: tokenComplete ? 'Mint and freeze control are removed.' : mintEndpoint === '/api/finish-token-creation' ? 'Started, not finished.' : '',
         canRun: mintCanRun,
         runLabel: mintEndpoint === '/api/finish-token-creation' ? 'Finish token safely' : 'Create token',
         complete: tokenComplete,
@@ -16294,8 +16282,8 @@ function renderClassicBridge() {
       ${readinessPanel({
         title: metadataRevealPending ? 'Reveal the name and logo' : liquidityComplete ? 'Liquidity created and locked' : 'Create and lock liquidity',
         detail: metadataRevealPending
-          ? 'Liquidity is locked. Publish the name, symbol and logo, then lock them for good.'
-          : liquidityComplete ? 'Pools are open and positions are locked.' : 'Takes a few minutes. Keep Trebuchet open.',
+          ? ''
+          : liquidityComplete ? '' : 'Takes a few minutes. Keep Trebuchet open.',
         canRun: metadataRevealPending ? revealCanRun : liquidityCanRun,
         runLabel: metadataRevealPending ? 'Reveal & lock identity' : readiness?.nextEndpoint === '/api/resume-launch' ? 'Resume missing work' : 'Create liquidity',
         complete: liquidityComplete && !metadataRevealPending,
@@ -16320,12 +16308,12 @@ function renderClassicBridge() {
       ${completedJournal && !finalSweepComplete ? renderLaunchCompleteCard(completedJournal) : ''}
       ${!completedJournal && !finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
       ${!finalSweepComplete && liveCoinFinishesOnCoinPage() ? `<section class="readiness-panel is-primary" aria-label="Airdrop and sweep">
-        <div><h3>Airdrop and sweep on the coin page</h3><p>The coin page sends the saved airdrop, then everything left in the launch wallet to the return wallet, and shows each step as it lands.</p></div>
+        <div><h3>Airdrop and sweep</h3></div>
         <button class="primary-button" type="button" data-action="inspect-recovery"><span>Open coin</span><i class="fa-solid fa-arrow-right"></i></button>
       </section>` : ''}
       ${!finalSweepComplete && finishDestinationReady && !liveCoinFinishesOnCoinPage() ? readinessPanel({
         title: 'Send everything to the return wallet',
-        detail: 'Fee Keys, airdrops, leftover tokens and SOL. The return wallet is checked again first.',
+        detail: '',
         canRun: finishCanRun,
         runLabel: 'Run final sweep',
         complete: false,
@@ -21316,7 +21304,7 @@ async function publishV2LaunchReport({ quiet = false, refreshReadiness = true, l
 
   const airdropStatus = airdropCompletionStatus(proof, config.poolTopology);
   if (airdropStatus.retryRequired) {
-    const reason = `Airdrop has ${airdropStatus.failed} failed recipient${airdropStatus.failed === 1 ? '' : 's'}; retry before publishing the launch report.`;
+    const reason = `${airdropStatus.failed} airdrop recipient${airdropStatus.failed === 1 ? '' : 's'} not paid.`;
     if (!quiet) notify(reason);
     return { skipped: true, reason, airdropIncomplete: true };
   }
@@ -21326,7 +21314,7 @@ async function publishV2LaunchReport({ quiet = false, refreshReadiness = true, l
     return { skipped: true, reason, airdropIncomplete: true };
   }
   if (!airdropStatus.complete) {
-    const reason = airdropCompletionIssue(airdropStatus) || 'Airdrop proof is incomplete; refresh or rerun airdrop before publishing the launch report.';
+    const reason = airdropCompletionIssue(airdropStatus) || 'Airdrop record incomplete.';
     if (!quiet) notify(reason);
     return { skipped: true, reason, airdropIncomplete: true };
   }
@@ -21674,7 +21662,7 @@ async function startQuoteAcquire() {
       resetQuoteAcquireState({ keepRunning: false });
     }
     const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig()), routes = quoteAcquireRoutes();
-    if (!fundingEstimateStatus.matchesConfig) { notify(fundingEstimateStatus.stale ? 'Rerun funding estimate first' : 'Run funding estimate first'); return; }
+    if (!fundingEstimateStatus.matchesConfig) { notify(fundingEstimateStatus.stale ? 'Funding estimate is out of date' : 'No funding estimate yet'); return; }
     if (!routes.length) { notify(quoteAcquireManualCount() ? 'This estimate needs manual quote-token prefund' : 'No quote acquire needed'); return; }
     if (!state.demoActive && !walletIsUnlocked()) {
       const unlocked = await unlockSecretPin({ reason: 'unlock' }); if (!unlocked || !walletIsUnlocked()) return;
@@ -21706,7 +21694,6 @@ async function clearQuoteAcquire() {
   resetQuoteAcquireState({ keepRunning: false });
   renderChartDeck();
   renderClassicBridge();
-  notify('Quote acquire job cleared');
 }
 
 async function reviewAndArmRun() {
@@ -21727,13 +21714,11 @@ async function reviewAndArmRun() {
   }
   if (state.lastRunEnvelope?.status === 'armed') {
     renderClassicBridge();
-    notify('Approved. It can run now.');
     return;
   }
   const recoveryEndpoint = recoveryAuthorizationEndpoint();
   if (recoveryEndpoint && stageRecoveryAuthorization(recoveryEndpoint)) {
     renderAll();
-    notify('Review the one remaining recovery action, then arm it');
     return;
   }
   if (!state.transactions.length) {
@@ -21805,7 +21790,6 @@ async function simulateLaunch() {
     state.launchMode = 'dry-run';
     await stageTransactions();
     setLaunchWorkspace('mint', { focus: true });
-    notify('Test mode on');
   } catch (error) {
     notify(error.message || 'Could not enable Test mode');
   }
@@ -21836,7 +21820,6 @@ async function generateManagedWallet() {
     const wallet = await state.apiClient.generateManagedWallet();
     addManagedWallet(wallet);
     renderAll();
-    notify('Launch wallet created');
     return wallet;
   }
 
@@ -21865,7 +21848,6 @@ async function importManagedWallet() {
   const wallet = await state.apiClient.importManagedWallet(secret);
   addManagedWallet(wallet);
   renderAll();
-  notify('Wallet imported into Trebuchet');
 }
 
 async function refreshSecretPinStatus({ reloadBoot = false } = {}) {
@@ -21946,7 +21928,6 @@ async function unlockSecretPin({ reason = 'unlock' } = {}) {
     if (selectedLaunchWalletPublicKey() && !walletIsUnlocked()) {
       await refreshLocalApiState();
       if (walletIsUnlocked()) {
-        notify('Launch wallet ready');
         return true;
       }
       if (walletLockReason() === 'unreadable') {
@@ -21981,7 +21962,6 @@ async function unlockLaunchWalletAndContinue() {
   state.launchWorkspace = 'configure';
   renderAll();
   setLaunchWorkspace('configure');
-  notify('Launch wallet ready. Continue with token and pools.');
   return true;
 }
 
@@ -22205,7 +22185,6 @@ async function loadWalletQr(publicKey = selectedLaunchWalletPublicKey()) {
     state.managedWallets = state.managedWallets.map((item) => (
       item.publicKey === publicKey ? { ...item, qrCode: result.qrCode } : item
     ));
-    notify('Funding QR loaded');
   } catch (error) {
     state.walletQr = {
       publicKey,
@@ -22241,7 +22220,6 @@ async function revealWalletSecret(publicKey = selectedLaunchWalletPublicKey()) {
   renderAll();
   try {
     state.revealedWallet = await state.apiClient.revealPendingWallet(publicKey);
-    notify('Recovery secret revealed');
   } catch (error) {
     state.revealedWallet = null;
     state.revealError = error.message || 'Recovery secret reveal failed';
@@ -22257,7 +22235,6 @@ function clearRevealedWalletSecret(publicKey = selectedLaunchWalletPublicKey()) 
   state.revealedWallet = null;
   state.revealError = null;
   renderWallet();
-  notify('Recovery secret hidden');
 }
 
 async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()) {
@@ -22646,7 +22623,6 @@ async function removeVanityCandidateByPublicKey(publicKey, { confirm = true } = 
   }
   invalidateClassicOutputs();
   renderAll();
-  notify('Saved Vanity CA removed');
   return true;
 }
 
@@ -22733,7 +22709,6 @@ async function startVanityGrind() {
       persisted: false,
     });
     renderAll();
-    notify('Static Vanity CA option added');
     return;
   }
 
@@ -22831,7 +22806,6 @@ async function startVanityGrind() {
           persisted: data.wallet.persisted === true,
         });
         renderAll();
-        notify('Vanity CA saved as an option');
       } else if (data.type === 'cancelled') {
         source.close();
         state.vanityRunning = false;
@@ -24620,7 +24594,7 @@ function executeNextTransferFinalizationIssue(readiness, config = currentLaunchC
   const airdropStatus = airdropCompletionStatus(proof, safeConfig.poolTopology);
   const airdropIssue = airdropCompletionIssue(airdropStatus);
   if (airdropIssue) return airdropIssue;
-  if (!proof) return 'Refresh readiness so Trebuchet can verify the launch record before final sweep.';
+  if (!proof) return 'The launch record is not loaded.';
 
   const staleReport = staleReportPublishForProof(proof, safeConfig);
   if (staleReport) return 'Launch report is stale for this proof; republish before final sweep.';
@@ -24952,7 +24926,7 @@ async function runFullLaunch() {
           const failed = Array.isArray(finalization.airdrop?.failed) ? finalization.airdrop.failed.length : 0;
           if (!finalization.airdrop || failed > 0) {
             throw new Error(failed > 0
-              ? `Airdrop has ${failed} failed recipient${failed === 1 ? '' : 's'}; retry before final sweep.`
+              ? `${failed} airdrop recipient${failed === 1 ? '' : 's'} not paid.`
               : 'Airdrop did not complete; final sweep stopped.');
           }
         }
@@ -24960,7 +24934,7 @@ async function runFullLaunch() {
         proofConfig = proofConfigForFingerprint(proof, config);
         airdropStatus = airdropCompletionStatus(proof, proofConfig.poolTopology);
         if (airdropStatus.failed > 0) {
-          throw new Error(`Airdrop has ${airdropStatus.failed} failed recipient${airdropStatus.failed === 1 ? '' : 's'}; retry before final sweep.`);
+          throw new Error(`${airdropStatus.failed} airdrop recipient${airdropStatus.failed === 1 ? '' : 's'} not paid.`);
         }
         if (!airdropStatus.complete) {
           throw new Error(airdropCompletionIssue(airdropStatus) || 'Airdrop is not complete; final sweep stopped.');
@@ -26391,7 +26365,6 @@ function handleClick(event) {
       '11111111111111111111111111111111,1000',
       'So11111111111111111111111111111111111111112,2500',
     ].join('\n'));
-    notify('Sample airdrop CSV loaded');
     return;
   }
 
@@ -26402,7 +26375,6 @@ function handleClick(event) {
 
   if (action === 'clear-airdrop') {
     setAirdropText('');
-    notify('Airdrop CSV cleared');
     return;
   }
 
@@ -26688,7 +26660,6 @@ function handleClick(event) {
     refreshSecretPinStatus({ reloadBoot: true })
       .then(() => {
         renderAll();
-        notify('Recovery PIN status refreshed');
       })
       .catch((error) => notify(error.message || 'Recovery PIN refresh failed'));
     return;
