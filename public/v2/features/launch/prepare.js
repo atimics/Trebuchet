@@ -26,9 +26,7 @@ async function removeVanityCandidateByPublicKey(publicKey, { confirm = true } = 
   }
   state.vanityCandidates = state.vanityCandidates.filter((item) => item.publicKey !== publicKey);
   if (state.selectedVanityPublicKey === publicKey) {
-    state.selectedVanityPublicKey = state.vanityCandidates.length
-      ? state.vanityCandidates[state.vanityCandidates.length - 1].publicKey
-      : null;
+    state.selectedVanityPublicKey = freeVanityCandidates().at(-1)?.publicKey || null;
   }
   invalidateClassicOutputs();
   renderAll();

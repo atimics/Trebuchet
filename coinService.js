@@ -58,6 +58,7 @@ export function mergeCoins({ launches = [], journals = [], added = [], practice 
       symbol: token.symbol || null,
       status: journalStatus(journal),
       journalId: journal.id || null,
+      walletPublicKey: journal.walletPublicKey || null,
       image: realImageUrl(token.imageUri),
       launchedHere: true,
       practice: isPractice,

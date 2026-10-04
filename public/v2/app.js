@@ -5932,6 +5932,7 @@ function refreshLaunchChainCheck(facts) {
 }
 
 function renderLaunchWorkspace() {
+  dropUsedVanitySelection();
   const stale = launchedCoinForWorkspaceDraft();
   if (stale) {
     openCoin(stale.key);
@@ -7301,6 +7302,24 @@ const ACTIVE_LAUNCH_KEY = 'trebuchet-v2-active-launch';
 // Stored in place of a launch id when the operator closes the open launch, so
 // the next load starts blank instead of re-opening the first saved launch.
 const NO_ACTIVE_LAUNCH = '__none__';
+
+// A saved address a launch has already minted can't be a new coin's address. Its key stays saved.
+function vanityAddressUsedReason(publicKey) {
+  const address = String(publicKey || '').trim();
+  if (!address) return null;
+  const candidate = (state.vanityCandidates || []).find((item) => item.publicKey === address);
+  const launched = (state.coins?.list || []).find((coin) => coin.kind === 'onchain' && coin.launchedHere && coin.mint === address);
+  if (!candidate?.usedBy && !launched) return null;
+  // The launch wallet's own interrupted mint is still this launch's address.
+  const owner = candidate?.usedBy?.walletPublicKey || launched?.walletPublicKey || null;
+  if (owner && owner === selectedLaunchWalletPublicKey()) return null;
+  const symbol = candidate?.usedBy?.symbol || launched?.symbol || '';
+  return symbol ? `Used by $${symbol}` : 'Already used';
+}
+
+function freeVanityCandidates() {
+  return (state.vanityCandidates || []).filter((candidate) => !vanityAddressUsedReason(candidate.publicKey));
+}
 
 function rememberActiveLaunchId(id) {
   try {
@@ -19732,9 +19751,7 @@ async function removeVanityCandidateByPublicKey(publicKey, { confirm = true } = 
   }
   state.vanityCandidates = state.vanityCandidates.filter((item) => item.publicKey !== publicKey);
   if (state.selectedVanityPublicKey === publicKey) {
-    state.selectedVanityPublicKey = state.vanityCandidates.length
-      ? state.vanityCandidates[state.vanityCandidates.length - 1].publicKey
-      : null;
+    state.selectedVanityPublicKey = freeVanityCandidates().at(-1)?.publicKey || null;
   }
   invalidateClassicOutputs();
   renderAll();
@@ -20465,7 +20482,22 @@ function launchedCoinForWorkspaceDraft() {
   if (proofTokenMint(currentLaunchProof())) return null;
   const reserved = String(state.selectedVanityPublicKey || '').trim();
   if (!reserved) return null;
-  return (state.coins.list || []).find((coin) => coin.kind === 'onchain' && coin.launchedHere && coin.mint === reserved) || null;
+  const coin = (state.coins.list || []).find((item) => item.kind === 'onchain' && item.launchedHere && item.mint === reserved);
+  if (!coin) return null;
+  // Only the draft that made this coin is that coin. A new coin that picked its address is not.
+  const token = currentLaunchConfig().token || {};
+  const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+  return same(token.symbol, coin.symbol) && same(token.name, coin.name) ? coin : null;
+}
+
+// A new coin holding an address another launch has minted drops it for a fresh random one.
+function dropUsedVanitySelection() {
+  if (chainCoinOnPage() || liveLaunchInProgress() || state.fullRunRunning || state.realExecutionRunning) return false;
+  if (proofTokenMint(currentLaunchProof())) return false;
+  if (!vanityAddressUsedReason(state.selectedVanityPublicKey) || launchedCoinForWorkspaceDraft()) return false;
+  state.selectedVanityPublicKey = null;
+  invalidateClassicOutputs();
+  return true;
 }
 
 async function loadCoinPositions(mint) {
@@ -22603,8 +22635,8 @@ function applyBootState(boot) {
   state.clmmFeeTiers = normalizeClmmFeeTiers(boot.feeTiers?.tiers);
   state.clmmFeeTiersSource = boot.feeTiers?.available ? 'local-api' : 'fallback';
   state.clmmFeeTiersError = boot.feeTiers?.error || null;
-  if (state.vanityCandidates.length && !state.selectedVanityPublicKey) {
-    state.selectedVanityPublicKey = state.vanityCandidates[state.vanityCandidates.length - 1].publicKey;
+  if (!state.selectedVanityPublicKey) {
+    state.selectedVanityPublicKey = freeVanityCandidates().at(-1)?.publicKey || null;
   }
   // Prefer a wallet whose key still exists (readable, then locked) over one whose saved key is gone
   // from this computer. A key-gone wallet can never sign, and selecting one made the screen say
@@ -22916,6 +22948,7 @@ const ACTION_GUARDS = {
     if (state.selectedVanityPublicKey) visible.add(state.selectedVanityPublicKey);
     return state.vanityCandidates.some((candidate) => !visible.has(candidate.publicKey)) ? null : 'No hidden addresses';
   },
+  'select-vanity': (element) => vanityAddressUsedReason(element.dataset.publicKey),
   'remove-selected-vanity': () => (state.vanityCandidates.some((item) => item.publicKey === state.selectedVanityPublicKey) ? null : 'No saved address selected'),
   'toggle-held-share': () => (heldShareLocked() ? 'Locked once the token exists' : null),
 };
@@ -23397,6 +23430,7 @@ function handleClick(event) {
   }
 
   if (action === 'select-vanity') {
+    if (vanityAddressUsedReason(actionTarget.dataset.publicKey)) return;
     state.selectedVanityPublicKey = actionTarget.dataset.publicKey || null;
     renderAll();
     notify(state.selectedVanityPublicKey ? 'Vanity CA selected' : 'Random CA selected');

@@ -412,6 +412,7 @@ function handleClick(event) {
   }
 
   if (action === 'select-vanity') {
+    if (vanityAddressUsedReason(actionTarget.dataset.publicKey)) return;
     state.selectedVanityPublicKey = actionTarget.dataset.publicKey || null;
     renderAll();
     notify(state.selectedVanityPublicKey ? 'Vanity CA selected' : 'Random CA selected');

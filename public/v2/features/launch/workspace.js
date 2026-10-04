@@ -336,6 +336,7 @@ function refreshLaunchChainCheck(facts) {
 }
 
 function renderLaunchWorkspace() {
+  dropUsedVanitySelection();
   const stale = launchedCoinForWorkspaceDraft();
   if (stale) {
     openCoin(stale.key);

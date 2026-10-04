@@ -14,6 +14,7 @@ function fixture() {
     journal: { id: 'journal-a', token: { mint: 'mint-a', name: 'Unit Token', symbol: 'UNIT', totalSupply: '1000', metadataUri: 'uri-a', metadataAuthorityKept: true }, events: [] } };
   const launchJournal = {
     activeForWallet: () => state.journal,
+    list: () => state.otherJournals || [],
     errorMessage: (error) => error.message,
     recordEvent: (_wallet, event) => { writes.push(event); },
     upsertForWallet: (_wallet, patch, event) => {
@@ -147,6 +148,33 @@ test('an existing vanity mint is adopted through the service failure path', asyn
   assert.equal(f.state.journal.stage, 'token_account_exists');
   assert.equal(f.calls.includes('candidate-remove'), false);
   assert.equal(f.operations.size, 0);
+});
+
+test('an address another launch already minted is refused before anything is signed', async () => {
+  const f = fixture();
+  f.state.otherJournals = [{ walletPublicKey: 'other-wallet', token: { mint: 'mint-used', symbol: 'TREBUCHET' } }];
+  let created = false;
+  f.deps.createTokenWithMetaplex = async () => { created = true; return { tokenMint: 'mint-used' }; };
+  await assert.rejects(f.services().createToken({ ...input, vanityCAPublicKey: 'mint-used' }), (error) => {
+    assert.equal(error.statusCode, 409);
+    assert.equal(error.payload.code, 'VANITY_ADDRESS_USED');
+    assert.equal(error.payload.error, 'Address already used by $TREBUCHET');
+    return true;
+  });
+  assert.equal(created, false);
+  assert.equal(f.calls.includes('signer'), false);
+});
+
+test('another launch\'s mint is never adopted as this launch\'s token', async () => {
+  const f = fixture();
+  f.deps.createTokenWithMetaplex = async () => {
+    // The address became another launch's coin while this one was creating.
+    f.state.otherJournals = [{ walletPublicKey: 'other-wallet', token: { mint: 'mint-raced' } }];
+    throw new Error('account already in use');
+  };
+  await assert.rejects(f.services().createToken({ ...input, vanityCAPublicKey: 'mint-raced' }));
+  assert.notEqual(f.state.journal.token.mint, 'mint-raced');
+  assert.notEqual(f.state.journal.stage, 'token_account_exists');
 });
 
 test('liquidity failures retain public recovery details for every caller', async () => {

@@ -299,8 +299,8 @@ function applyBootState(boot) {
   state.clmmFeeTiers = normalizeClmmFeeTiers(boot.feeTiers?.tiers);
   state.clmmFeeTiersSource = boot.feeTiers?.available ? 'local-api' : 'fallback';
   state.clmmFeeTiersError = boot.feeTiers?.error || null;
-  if (state.vanityCandidates.length && !state.selectedVanityPublicKey) {
-    state.selectedVanityPublicKey = state.vanityCandidates[state.vanityCandidates.length - 1].publicKey;
+  if (!state.selectedVanityPublicKey) {
+    state.selectedVanityPublicKey = freeVanityCandidates().at(-1)?.publicKey || null;
   }
   // Prefer a wallet whose key still exists (readable, then locked) over one whose saved key is gone
   // from this computer. A key-gone wallet can never sign, and selecting one made the screen say
