@@ -550,8 +550,8 @@ function renderCancelRefundPanel(config = currentLaunchConfig()) {
         <span class="risk-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
       </div>
       <div class="cancel-refund-grid">
-        <span><small>Launch wallet</small><strong>${walletPublicKey ? escapeHtml(fullAddress(walletPublicKey)) : 'Select'}</strong></span>
-        <span><small>Destination</small><strong>${destinationWallet ? escapeHtml(fullAddress(destinationWallet)) : 'Set sweep'}</strong></span>
+        <span><small>Launch wallet</small><strong>${walletPublicKey ? walletChipHtml(walletPublicKey) : 'Select'}</strong></span>
+        <span><small>Destination</small><strong>${destinationWallet ? walletChipHtml(destinationWallet) : 'Set sweep'}</strong></span>
         <span><small>Tokens</small><strong>${metrics ? metrics.tokens : '-'}</strong></span>
         <span><small>NFTs</small><strong>${metrics ? metrics.nfts : '-'}</strong></span>
         <span><small>SOL</small><strong>${metrics ? metrics.sol.toFixed(4) : '-'}</strong></span>

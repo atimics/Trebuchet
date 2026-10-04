@@ -242,7 +242,7 @@ function coinPositionsHtml() {
   const rows = (list || []).map((position) => `
     <li>
       <span>
-        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${escapeHtml(fullAddress(position.owner))}</strong>
+        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${walletChipHtml(position.owner)}</strong>
         <small>${escapeHtml(fmtQuotePrice(position.priceLow, position))} to ${escapeHtml(fmtQuotePrice(position.priceHigh, position))} per coin · ${position.inRange ? 'the price is inside this range' : 'the price is outside this range'}</small>
       </span>
       <span class="coin-position-holds">${Number(position.quoteAmount).toFixed(4)} ${escapeHtml(position.quoteSymbol || '')} + ${escapeHtml(compactAmount(position.tokenAmount))} ${escapeHtml(coinSymbol)}</span>
@@ -636,11 +636,10 @@ function coinCreationHtml(creation, coin) {
         const meta = COIN_FACT_MARKS[step.state] || COIN_FACT_MARKS.todo;
         return `<li class="is-${escapeHtml(step.state)}" title="${escapeHtml(meta.label)}">
           <i class="fa-solid ${meta.icon}" aria-hidden="true"></i>
-          <span><strong>${escapeHtml(step.label)}</strong><small><span class="visually-hidden">${escapeHtml(meta.label)}: </span>${escapeHtml(step.detail || '')}</small></span>
+          <span><strong>${escapeHtml(step.label)}</strong><small><span class="visually-hidden">${escapeHtml(meta.label)}: </span>${step.id === 'return' && creation.walletPublicKey ? walletChipHtml(creation.walletPublicKey) : escapeHtml(step.detail || '')}</small></span>
         </li>`;
       }).join('')}
     </ul>
-    ${mismatches.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> The launch record and the chain disagree on ${mismatches.length === 1 ? 'one fact' : `${mismatches.length} facts`}. The chain is what counts.</p>` : ''}
     ${action ? `<div class="coin-actions">${action}</div>` : ''}`;
 }
 
@@ -753,16 +752,16 @@ function renderCoinPage(coin) {
   }
 
   const identity = account ? [
-    ['Supply', formatTokenAmount(account.supply, account.decimals)],
-    ['Mint authority', account.mintAuthority ? fullAddress(account.mintAuthority) : 'Revoked'],
-    ['Freeze authority', account.freezeAuthority ? fullAddress(account.freezeAuthority) : 'Revoked'],
-    ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${fullAddress(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
+    ['Supply', escapeHtml(formatTokenAmount(account.supply, account.decimals))],
+    ['Mint authority', account.mintAuthority ? walletChipHtml(account.mintAuthority) : 'Revoked'],
+    ['Freeze authority', account.freezeAuthority ? walletChipHtml(account.freezeAuthority) : 'Revoked'],
+    ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${walletChipHtml(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
   ] : [];
   body.innerHTML = `${header}
     ${state.coins.detailLoading ? '<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading the coin from the chain…</p>' : ''}
     ${state.coins.detailError ? `<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>` : ''}
 
-    ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl></section>` : ''}
+    ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${v}</dd></div>`).join('')}</dl></section>` : ''}
     ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Unfinished' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation, coin)}</section>` : ''}
     ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
     ${coinMarketEvidenceHtml(coin.mint)}

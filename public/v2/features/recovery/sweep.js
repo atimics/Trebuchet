@@ -58,7 +58,7 @@ function renderRecoverySweepResult(sweep) {
       <div class="recovery-sweep-head">
         <span>
           <span class="eyebrow">Post-sweep cleanup</span>
-          <strong>${escapeHtml(fullAddress(sweep.publicKey))} to ${escapeHtml(fullAddress(sweep.destinationWallet))}</strong>
+          <strong>${walletChipHtml(sweep.publicKey)} to ${walletChipHtml(sweep.destinationWallet)}</strong>
         </span>
         <span class="risk-badge ${state}">${escapeHtml(badge)}</span>
       </div>

@@ -18129,3 +18129,62 @@ body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }
   gap: 8px;
   margin-top: 12px;
 }
+
+/* Wallet chip: an address anywhere on the page; hover or focus shows what it holds. */
+.wallet-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
+  color: var(--ink);
+  cursor: default;
+  white-space: nowrap;
+}
+.wallet-chip:hover,
+.wallet-chip:focus-visible {
+  border-color: var(--line-strong);
+  outline: none;
+}
+.wallet-chip code { font-size: 0.92em; }
+.wallet-chip small { color: var(--muted); }
+
+.wallet-chip-card {
+  position: fixed;
+  z-index: 1000;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
+  color: var(--ink);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+}
+.wallet-chip-card header {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.wallet-chip-card header code { overflow-wrap: anywhere; font-size: 12px; }
+.wallet-chip-card header span { color: var(--muted); font-size: 12px; }
+.wallet-chip-card dl { display: grid; gap: 4px; margin: 0 0 8px; }
+.wallet-chip-card dl div { display: flex; justify-content: space-between; gap: 12px; }
+.wallet-chip-card dt { color: var(--muted); }
+.wallet-chip-card dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+.wallet-chip-card .is-error { color: var(--red); margin: 0 0 8px; }
+.wallet-chip-card a { color: var(--blue); font-size: 12px; }
+
+/* Wallet page: every key Trebuchet holds, and Sweep all. */
+.held-wallets { margin-bottom: 12px; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+.held-wallets:empty { display: none; }
+.held-wallets-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.held-wallets-head > span:first-child { display: grid; gap: 2px; }
+.held-wallets-head small { color: var(--muted); }
+.held-wallets-action { display: inline-flex; align-items: center; gap: 8px; }
+.held-wallets-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.held-wallets-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.held-wallets-list li > span:not(.wallet-chip) { color: var(--muted); font-variant-numeric: tabular-nums; }
+.held-wallets-result { margin: 10px 0 0; color: var(--muted); }

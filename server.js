@@ -2629,6 +2629,66 @@ app.post('/api/check-balance-detailed', async (req, res) => {
   }
 });
 
+// What an address holds now, for the wallet chip's hover card and the Wallet page: SOL, each
+// token balance, and every open token account with the rent it locks. Also says whether this
+// app holds the address's key. Reads are kept 15 seconds.
+const TOKEN_PROGRAM_ADDRESSES = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'];
+const walletContentsCache = new Map();
+function heldKeyKind(address) {
+  const launch = pendingWallets.get(address);
+  if (launch) return launch.retiredAt ? 'retired' : 'launch';
+  return vanityCaStore.listMetadata().some((entry) => entry.publicKey === address) ? 'vanity' : null;
+}
+async function readWalletContents(address) {
+  const key = new PublicKey(address).toBase58();
+  const cached = walletContentsCache.get(key);
+  if (cached && Date.now() - cached.at < 15_000) return { ...cached.value, key: heldKeyKind(key) };
+  const connection = new Connection(getRpcUrl(), 'confirmed');
+  const owner = new PublicKey(key);
+  const [info, ...programs] = await Promise.all([
+    connection.getAccountInfo(owner),
+    ...TOKEN_PROGRAM_ADDRESSES.map((programId) => connection.getParsedTokenAccountsByOwner(owner, { programId: new PublicKey(programId) })),
+  ]);
+  const tokens = new Map();
+  let openAccounts = 0, accountRentLamports = 0;
+  programs.forEach((response, index) => {
+    for (const { account } of response.value) {
+      const parsed = account.data.parsed.info;
+      openAccounts += 1; accountRentLamports += account.lamports;
+      if (parsed.tokenAmount.amount === '0') continue;
+      const prior = tokens.get(parsed.mint);
+      tokens.set(parsed.mint, { mint: parsed.mint, programId: TOKEN_PROGRAM_ADDRESSES[index], decimals: parsed.tokenAmount.decimals,
+        amountRaw: (BigInt(prior?.amountRaw || 0) + BigInt(parsed.tokenAmount.amount)).toString() });
+    }
+  });
+  const value = { address: key, lamports: info?.lamports || 0, ownerProgram: info?.owner?.toBase58() || null,
+    tokens: [...tokens.values()], openAccounts, accountRentLamports };
+  walletContentsCache.set(key, { at: Date.now(), value });
+  return { ...value, key: heldKeyKind(key) };
+}
+app.get('/api/v2/wallets/contents', async (req, res) => {
+  try {
+    const address = String(req.query.address || '').trim();
+    try { new PublicKey(address); } catch { return res.status(400).json({ success: false, error: 'Use a Solana address.' }); }
+    if (isDemoMode()) return res.json({ success: true, contents: { address, lamports: 0, ownerProgram: null, tokens: [], openAccounts: 0, accountRentLamports: 0, key: heldKeyKind(address), demo: true } });
+    if (req.query.fresh === '1') walletContentsCache.delete(address);
+    res.json({ success: true, contents: await readWalletContents(address) });
+  } catch (error) {
+    sendErrorResponse(res, error);
+  }
+});
+// Every key this app holds: launch wallets (in use or finished) and vanity addresses. No secrets.
+app.get('/api/v2/wallets/held', (_req, res) => {
+  try {
+    const launch = pendingWallets.list().map((wallet) => ({ address: wallet.publicKey, kind: wallet.retiredAt ? 'retired' : 'launch', createdAt: wallet.createdAt || null,
+      readable: Array.isArray(wallet.secretKey) }));
+    const vanity = vanityCaStore.listMetadata().map((entry) => ({ address: entry.publicKey, kind: 'vanity', createdAt: entry.createdAt || null }));
+    res.json({ success: true, wallets: [...launch, ...vanity], secretPinLocked: secretStore.isSecretPinLocked() });
+  } catch (error) {
+    sendErrorResponse(res, error);
+  }
+});
+
 // Return the launch journal state for a wallet.  The client uses this
 // to resume a launch after a crash or close — it reads the token mint,
 // decimals, supply, LP pool info, and current stage, then jumps to the
@@ -3305,13 +3365,8 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
     id: 'return',
     label: 'Launch wallet',
     state: combine(journal?.transfer?.walletEmpty === true, walletEmptyOnChain),
-    detail: launchWalletLamports === null
-      ? 'Not checked on-chain.'
-      : launchWalletLamports === 0
-        ? 'Swept. The launch wallet is empty.'
-        : launchWalletLamports < sweptLamports
-          ? `Swept. ${(launchWalletLamports / 1e9).toFixed(5)} SOL stays as the wallet's rent reserve.`
-          : `${(launchWalletLamports / 1e9).toFixed(4)} SOL is still in the launch wallet.`,
+    // The page shows the wallet itself (its chip lists what it holds), not a sentence about it.
+    detail: launchWalletLamports === null ? 'Not checked on-chain.' : null,
   });
   const walletEntry = journal?.walletPublicKey ? pendingWallets.get(journal.walletPublicKey) : null;
   const { events: _events, ...journalWithoutEvents } = journal || {};
