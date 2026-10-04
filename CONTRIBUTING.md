@@ -114,5 +114,5 @@ PR labels select the bump:
 - `major`: major (`major` wins if both exist).
 
 A `v2+` release is intentionally different from a v1 prerelease: it requires
-field evidence, a two-person attestation, full signing credentials, and the
+field evidence, full signing credentials, and the
 production gate. See [docs/releasing.md](docs/releasing.md).

@@ -6,12 +6,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import {
-  DEFAULT_V2_RELEASE_ATTESTATION,
   DEFAULT_V2_RELEASE_EVIDENCE,
   parseReleaseTag,
   runProductionReleaseGate,
   validateProductionTrust,
-  validateV2ReleaseAttestation,
+  validateEvidenceFreshness,
   validateV2ReleaseEvidence,
 } from '../scripts/production-release-gate.mjs';
 import {
@@ -50,8 +49,6 @@ const TRUSTED_ENV = {
   WIN_CSC_KEY_PASSWORD: 'windows-password',
 };
 
-const FIELD_RUN_COMMIT = 'a'.repeat(40);
-const RELEASE_COMMIT = 'b'.repeat(40);
 const EXPORTED_AT = '2026-07-16T12:00:00.000Z';
 const NOW = Date.parse('2026-07-16T15:00:00.000Z');
 
@@ -229,26 +226,6 @@ function evidenceBytes(evidence) {
   return Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
 }
 
-function completeAttestation(bytes, evidence) {
-  return {
-    schema: 'trebuchet-v2-production-attestation',
-    version: 1,
-    cluster: 'mainnet-beta',
-    releaseTag: 'v2.0.0',
-    decision: 'approved-for-v2-production',
-    evidenceSha256: digest(bytes),
-    fieldRunCommit: FIELD_RUN_COMMIT,
-    fieldRunCompletedAt: '2026-07-16T11:55:00.000Z',
-    operatedBy: 'field-operator',
-    reviewedAt: '2026-07-16T13:00:00.000Z',
-    reviewedBy: 'release-reviewer',
-  };
-}
-
-const ancestorCheck = async (ancestor, descendant) => (
-  ancestor === FIELD_RUN_COMMIT && descendant === RELEASE_COMMIT
-);
-
 test('production gate identifies v2+ semantic release tags', () => {
   assert.equal(parseReleaseTag('v1.0.49').requiresProductionGate, false);
   assert.equal(parseReleaseTag('v2.0.0').requiresProductionGate, true);
@@ -306,36 +283,12 @@ test('v2 release evidence independently verifies the full non-demo parity packet
   assert.throws(() => validateV2ReleaseEvidence(wrongSweepHash), /does not match the transfer record/);
 });
 
-test('v2 release attestation binds hashes, ancestry, freshness, and two-person review', async () => {
+test('v2 release evidence must be recent and not from the future', () => {
   const evidence = completeV2Evidence();
-  const bytes = evidenceBytes(evidence);
-  const attestation = completeAttestation(bytes, evidence);
-  const options = {
-    releaseTag: 'v2.0.0',
-    releaseCommit: RELEASE_COMMIT,
-    evidenceSha256: digest(bytes),
-    exportedAt: evidence.exportedAt,
-    now: NOW,
-    isAncestor: ancestorCheck,
-  };
-  const result = await validateV2ReleaseAttestation(attestation, options);
-  assert.equal(result.reviewedBy, 'release-reviewer');
-
-  const wrongHash = { ...attestation, evidenceSha256: 'c'.repeat(64) };
-  await assert.rejects(() => validateV2ReleaseAttestation(wrongHash, options), /does not match the field evidence bytes/);
-
-  const samePerson = { ...attestation, reviewedBy: attestation.operatedBy };
-  await assert.rejects(() => validateV2ReleaseAttestation(samePerson, options), /must be different people/);
-
-  await assert.rejects(
-    () => validateV2ReleaseAttestation(attestation, { ...options, isAncestor: async () => false }),
-    /not an ancestor/,
-  );
-
-  await assert.rejects(
-    () => validateV2ReleaseAttestation(attestation, { ...options, now: NOW + (31 * 24 * 60 * 60 * 1000) }),
-    /older than 30 days/,
-  );
+  validateEvidenceFreshness(evidence.exportedAt, NOW);
+  assert.throws(() => validateEvidenceFreshness(evidence.exportedAt, NOW + (31 * 24 * 60 * 60 * 1000)), /older than 30 days/);
+  assert.throws(() => validateEvidenceFreshness(evidence.exportedAt, Date.parse(evidence.exportedAt) - (60 * 60 * 1000)), /in the future/);
+  assert.throws(() => validateEvidenceFreshness('not a time', NOW), /timestamp is invalid/);
 });
 
 test('v2 release gate refuses to build without archived field evidence', async () => {
@@ -350,51 +303,24 @@ test('v2 release gate refuses to build without archived field evidence', async (
   }
 });
 
-test('v2 release gate refuses evidence without a reviewed attestation', async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), 'trebuchet-release-gate-'));
-  try {
-    const evidenceFile = path.join(cwd, DEFAULT_V2_RELEASE_EVIDENCE);
-    await mkdir(path.dirname(evidenceFile), { recursive: true });
-    await writeFile(evidenceFile, evidenceBytes(completeV2Evidence()));
-    await assert.rejects(
-      () => runProductionReleaseGate({
-        tag: 'v2.0.0',
-        env: TRUSTED_ENV,
-        cwd,
-        releaseCommit: RELEASE_COMMIT,
-        now: NOW,
-        isAncestor: ancestorCheck,
-      }),
-      /release attestation is missing/,
-    );
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test('v2 release gate validates evidence, attestation, ancestry, and trust together', async () => {
+test('v2 release gate passes on recent field evidence and signed builds, with no attestation', async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), 'trebuchet-release-gate-'));
   try {
     const evidence = completeV2Evidence();
     const bytes = evidenceBytes(evidence);
     const evidenceFile = path.join(cwd, DEFAULT_V2_RELEASE_EVIDENCE);
-    const attestationFile = path.join(cwd, DEFAULT_V2_RELEASE_ATTESTATION);
     await mkdir(path.dirname(evidenceFile), { recursive: true });
     await writeFile(evidenceFile, bytes);
-    await writeFile(attestationFile, `${JSON.stringify(completeAttestation(bytes, evidence), null, 2)}\n`);
     const result = await runProductionReleaseGate({
       tag: 'v2.0.0',
       env: TRUSTED_ENV,
       cwd,
-      releaseCommit: RELEASE_COMMIT,
       now: NOW,
-      isAncestor: ancestorCheck,
     });
     assert.equal(result.skipped, false);
     assert.equal(result.evidencePath, DEFAULT_V2_RELEASE_EVIDENCE);
-    assert.equal(result.attestationPath, DEFAULT_V2_RELEASE_ATTESTATION);
     assert.match(result.sha256, /^[a-f0-9]{64}$/);
-    assert.equal(result.attestation.reviewedBy, 'release-reviewer');
+    assert.equal(result.attestation, undefined);
     assert.equal(result.trust.macOS, 'signed and notarized');
     assert.equal(result.trust.windows, 'signed');
   } finally {

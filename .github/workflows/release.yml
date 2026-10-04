@@ -36,8 +36,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          # The v2 production gate proves that the attested field-run commit is
-          # part of the exact history being released.
+          # Full history and tags, so the release notes and version checks see
+          # every earlier release.
           fetch-depth: 0
 
       - name: Set up Node

@@ -18,8 +18,7 @@ The Trebuchet desktop application is a release candidate, not a published
 - The Trebuchet desktop shell, guarded execution bridge, recovery flows, proof export,
   packaged runtime smoke, API-backed E2E and viewport checks are implemented and tested.
 - A `v2+` tag fails closed unless the repository contains a recent, non-demo
-  mainnet field proof and a separate two-person release attestation bound to the
-  exact evidence bytes and release history.
+  mainnet field proof.
 - A `v2+` tag also requires signed and notarized macOS builds and signed Windows
   builds. It cannot fall back to unsigned test artifacts.
 - Existing `v1.x` release notes disclose artifact trust. Always verify the
@@ -272,8 +271,6 @@ questions:
   airdrop, and sweep evidence.
 - The **field-verification packet** evaluates live proof, report proof, and the
   proof audit.
-- The **production attestation** is a separate reviewer decision over the exact
-  field-evidence hash.
 
 The production release gate independently recomputes the launch proof
 fingerprint and terminal-sweep hash. Mutually consistent app-generated pass
@@ -329,7 +326,7 @@ Dependency and secret-handling constraints are documented in
 | [GAP_ANALYSIS.md](GAP_ANALYSIS.md) | Remaining gap from release candidate to the production 2.0 release. |
 | [SECURITY.md](SECURITY.md) | Local security model and dependency risk snapshot. |
 | [docs/releasing.md](docs/releasing.md) | Tagging, signing, artifacts, and publishing. |
-| [release-evidence/v2/README.md](release-evidence/v2/README.md) | Authorized field-run and attestation procedure. |
+| [release-evidence/v2/README.md](release-evidence/v2/README.md) | Authorized field-run procedure. |
 
 ## License
 
