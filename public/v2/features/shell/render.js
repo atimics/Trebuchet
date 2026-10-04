@@ -77,7 +77,6 @@ function renderAll() {
   renderStages();
   renderQueue();
   renderGuardrails();
-  renderParityPanel();
   renderWallet();
   renderDiscovery();
   renderExtension();

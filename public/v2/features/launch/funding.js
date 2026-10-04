@@ -378,7 +378,6 @@ function refreshClassicPreview({ includePoolEditor = false } = {}) {
   renderAirdropPanel();
   renderReportPanel();
   renderClassicBridge();
-  renderParityPanel();
   renderQueue();
   drawLaunchCanvas();
 }

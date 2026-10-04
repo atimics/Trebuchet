@@ -65,13 +65,7 @@ async function smokeViewport(browser, viewport) {
     await page.waitForSelector('#view-coins.is-active', { timeout: 10_000 });
     await page.click('[data-action="new-coin"]');
     await page.waitForSelector('#view-launch.is-active', { timeout: 10_000 });
-    await page.waitForFunction(
-      () => document.querySelector('#tokenomicsChart svg')
-        && (document.querySelector('#parityPanel article')
-          || document.querySelector('#parityPanel .parity-summary')),
-      null,
-      { timeout: 10_000 },
-    );
+    await page.waitForFunction(() => document.querySelector('#tokenomicsChart svg'), null, { timeout: 10_000 });
 
     // One launch flow: it opens on Token & pools with the app chrome visible.
     const firstOpen = await page.evaluate(() => ({
@@ -151,8 +145,6 @@ async function smokeViewport(browser, viewport) {
         chartSvgCount: document.querySelectorAll('#chartDeck svg').length,
         depthNodeCount: document.querySelectorAll('#liquidityChart *').length,
         fundingRowCount: document.querySelectorAll('#fundingMeter .funding-row').length,
-        parityRowCount: document.querySelectorAll('#parityPanel article').length,
-        parityDeferred: Boolean(document.querySelector('#parityPanel .launch-audit-deferred')),
         chartDeckClientWidth: document.querySelector('#chartDeck')?.clientWidth ?? 0,
         chartDeckScrollWidth: document.querySelector('#chartDeck')?.scrollWidth ?? 0,
         rects: {
@@ -208,8 +200,6 @@ async function smokeViewport(browser, viewport) {
     assert.ok(metrics.fundingRowCount >= 3, `${viewport.name}: funding meter did not render`);
     // Before a launch exists the panel correctly renders its deferred summary;
     // afterwards it renders parity rows. Either is a render, neither is empty.
-    const parityPanel = metrics.parityRowCount >= 3 || metrics.parityDeferred;
-    assert.ok(parityPanel, `${viewport.name}: parity panel rendered neither rows nor its deferred summary`);
     for (const [workspace, workspaceState] of Object.entries(workspaceStates)) {
       assert.equal(workspaceState.bodyWorkspace, workspace, `${viewport.name}: ${workspace} did not become active`);
       assert.equal(workspaceState.selected, true, `${viewport.name}: ${workspace} tab is not selected`);
@@ -411,7 +401,6 @@ async function smokeViewport(browser, viewport) {
         tokenomicsChart: metrics.chartSvgCount >= 1,
         liquidityChart: metrics.depthNodeCount > 0,
         fundingMeter: metrics.fundingRowCount >= 3,
-        parityPanel,
         firstViewportFit,
         terminalPanelFit,
         discoveryTokenViewport,

@@ -238,7 +238,6 @@ window.addEventListener?.('solana#initialized', () => {
 
 restoreExecutionLedger();
 restoreLaunchProof();
-restoreClassicReportComparison();
 restoreDiscoveryRegistry();
 bindEvents();
 bindWalletChips();

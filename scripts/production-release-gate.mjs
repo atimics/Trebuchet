@@ -7,8 +7,6 @@ import path from 'node:path';
 
 import { resolveReleaseBuild } from './release-lib.mjs';
 import {
-  classicArtifactRequiredValues,
-  requiredClassicComparisonRowIds,
   v2LaunchProofFingerprint,
   v2TransferEvidenceHash,
 } from './v2-proof-integrity.mjs';
@@ -20,27 +18,11 @@ const execFileAsync = promisify(execFile);
 const MAX_EVIDENCE_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
 
+// A release needs a real, recent, non-test launch, its report, and a passing proof audit.
 const FIELD_REQUIREMENT_IDS = [
   'live-proof',
   'report-proof',
-  'classic-comparison',
   'audit',
-  'replacement-criteria',
-];
-
-const REPLACEMENT_CRITERION_IDS = [
-  'demo-end-to-end',
-  'wallet-lifecycle',
-  'vanity-options',
-  'token-config-parity',
-  'charts-and-viewport',
-  'pool-config-parity',
-  'funding-and-quote',
-  'held-reserve-backing',
-  'run-and-resume',
-  'sweep-report-proof',
-  'classic-artifact-comparison',
-  'proof-audit',
 ];
 
 const PARITY_AUDIT_IDS = [
@@ -56,7 +38,6 @@ const PARITY_AUDIT_IDS = [
   'terminal-journal-proof',
   'report-proof',
   'sweep-proof',
-  'classic-comparison',
 ];
 
 const TOKEN_AUTHORITY_FIELDS = [
@@ -257,21 +238,6 @@ function validateParityAudit(audit, fingerprint) {
   });
 }
 
-function validateRetirementGate(gate, fingerprint) {
-  object(gate, 'Classic retirement gate');
-  expect(gate.source === 'trebuchet-v2-classic-retirement-gate', 'Classic retirement gate has the wrong source');
-  expect(gate.proofFingerprint === fingerprint, 'Classic retirement gate fingerprint does not match the field packet');
-  expect(gate.auditFingerprint === fingerprint, 'Classic retirement gate is not bound to the report audit');
-  expect(gate.state === 'pass', 'Classic retirement gate is not passing');
-  expect(gate.badge === 'Ready', 'Classic retirement gate is not marked ready');
-  expect(Number(gate.passCount) === FIELD_REQUIREMENT_IDS.length, 'Classic retirement requirement count is incomplete');
-  expect(Number(gate.itemCount) === FIELD_REQUIREMENT_IDS.length, 'Classic retirement item count is incomplete');
-  expect(Number(gate.criteriaPassCount) === REPLACEMENT_CRITERION_IDS.length, 'Classic replacement criteria are incomplete');
-  expect(Number(gate.criteriaItemCount) === REPLACEMENT_CRITERION_IDS.length, 'Classic replacement criteria count is incomplete');
-  exactPassingRows(gate.requirements, FIELD_REQUIREMENT_IDS, 'Classic retirement requirement');
-  exactPassingRows(gate.replacementCriteria, REPLACEMENT_CRITERION_IDS, 'Classic replacement criterion');
-}
-
 function validateFieldPacket(packet) {
   object(packet, 'field verification packet');
   expect(packet.source === 'trebuchet-v2-field-verification', 'field verification packet has the wrong source');
@@ -283,48 +249,10 @@ function validateFieldPacket(packet) {
   expect(packet.nextAction === 'none', 'field verification packet still has an operator action');
   expect(Number(packet.passCount) === FIELD_REQUIREMENT_IDS.length, 'field verification requirement count is incomplete');
   expect(Number(packet.itemCount) === FIELD_REQUIREMENT_IDS.length, 'field verification item count is incomplete');
-  expect(Number(packet.criteriaPassCount) === REPLACEMENT_CRITERION_IDS.length, 'field verification criteria are incomplete');
-  expect(Number(packet.criteriaItemCount) === REPLACEMENT_CRITERION_IDS.length, 'field verification criteria count is incomplete');
   expect(Number(packet.blockerCount) === 0, 'field verification packet contains blockers');
-  expect(Number(packet.criteriaBlockerCount) === 0, 'field verification packet contains replacement blockers');
   expect(Array.isArray(packet.blockers) && packet.blockers.length === 0, 'field verification blocker rows are not empty');
-  expect(Array.isArray(packet.criteriaBlockers) && packet.criteriaBlockers.length === 0, 'field verification criterion blocker rows are not empty');
   exactPassingRows(packet.requirements, FIELD_REQUIREMENT_IDS, 'field verification requirement', { requireAction: true });
-  exactPassingRows(packet.replacementCriteria, REPLACEMENT_CRITERION_IDS, 'field verification criterion', { requireAction: true });
   return packet.proofFingerprint;
-}
-
-function validateClassicComparison(wrapper, fingerprint, proof) {
-  const comparisonWrapper = object(wrapper, 'Classic comparison export');
-  const rawArtifact = String(comparisonWrapper.input || '').trim();
-  expect(rawArtifact.length >= 256, 'Classic comparison must retain the full raw Classic artifact');
-  const result = object(comparisonWrapper.result, 'Classic comparison result');
-  expect(result.status === 'pass', 'Classic comparison is not passing');
-  expect(
-    ['classic', 'classic-or-external'].includes(result.artifactSource),
-    'comparison did not use a Classic artifact',
-  );
-  expect(result.structuredEvidence === true, 'Classic comparison lacks structured evidence');
-  expect(result.proofFingerprint === fingerprint, 'Classic comparison fingerprint does not match the field packet');
-  expect(Number(result.warnCount) === 0, 'Classic comparison contains warnings');
-  expect(Number(result.missingCount) === 0, 'Classic comparison contains missing rows');
-  expect(Number(result.mismatchCount) === 0, 'Classic comparison contains mismatches');
-  expect(Number(result.fieldCount) > 0, 'Classic comparison contains no fields');
-  expect(Number(result.passCount) === Number(result.fieldCount), 'Classic comparison does not pass every field');
-  expect(Array.isArray(result.rows) && result.rows.length > 0, 'Classic comparison contains no evidence rows');
-  expect(result.rows.every((row) => row?.state === 'pass' && nonEmpty(row?.id)), 'Classic comparison contains a non-passing evidence row');
-  expect(Number(result.fieldCount) === result.rows.length, 'Classic comparison field count does not match its evidence rows');
-  const rowIds = result.rows.map((row) => row.id);
-  expect(new Set(rowIds).size === rowIds.length, 'Classic comparison contains duplicate evidence rows');
-  const requiredRows = requiredClassicComparisonRowIds(proof);
-  const missingRows = requiredRows.filter((id) => !rowIds.includes(id));
-  expect(missingRows.length === 0, `Classic comparison is missing required rows: ${missingRows.join(', ')}`);
-  expect(result.classicMint === proof.token.mint, 'Classic comparison mint does not match the live proof');
-  const expectedPoolCount = new Set((proof.liquidity.results || []).map((pool) => pool.poolId || pool.id).filter(Boolean)).size;
-  expect(Number(result.classicPoolCount) === expectedPoolCount, 'Classic comparison pool count does not match the live proof');
-  const missingValues = classicArtifactRequiredValues(proof).filter((value) => !rawArtifact.includes(value));
-  expect(missingValues.length === 0, `raw Classic artifact is missing ${missingValues.length} proof value(s)`);
-  return { classicArtifactSha256: sha256(Buffer.from(rawArtifact, 'utf8')) };
 }
 
 export function parseReleaseTag(tag) {
@@ -371,10 +299,8 @@ export function validateV2ReleaseEvidence(payload) {
     'field verification fingerprint does not match independently derived proof evidence',
   );
   validateParityAudit(payload.reportParityAudit, fingerprint);
-  validateRetirementGate(payload.classicRetirementGate, fingerprint);
-  const classic = validateClassicComparison(payload.classicReportComparison, fingerprint, proof);
 
-  for (const key of ['reportParityAudit', 'classicRetirementGate', 'fieldVerification']) {
+  for (const key of ['reportParityAudit', 'fieldVerification']) {
     expect(isDeepStrictEqual(launchData[key], payload[key]), `${key} differs between the export envelope and launch report data`);
   }
 
@@ -389,7 +315,6 @@ export function validateV2ReleaseEvidence(payload) {
     exportedAt: payload.exportedAt,
     poolCount: live.poolCount,
     positionCount: live.positionCount,
-    classicArtifactSha256: classic.classicArtifactSha256,
   };
 }
 
@@ -412,7 +337,6 @@ export async function validateV2ReleaseAttestation(attestation, {
   releaseTag,
   releaseCommit,
   evidenceSha256,
-  classicArtifactSha256,
   exportedAt,
   cwd = process.cwd(),
   now = Date.now(),
@@ -426,8 +350,6 @@ export async function validateV2ReleaseAttestation(attestation, {
   expect(attestation.decision === 'approved-for-v2-production', 'release attestation is not approved for production');
   expect(exactSha256(attestation.evidenceSha256), 'release attestation evidence digest is invalid');
   expect(attestation.evidenceSha256 === evidenceSha256, 'release attestation does not match the field evidence bytes');
-  expect(exactSha256(attestation.classicArtifactSha256), 'release attestation Classic artifact digest is invalid');
-  expect(attestation.classicArtifactSha256 === classicArtifactSha256, 'release attestation does not match the raw Classic artifact');
   expect(exactCommit(attestation.fieldRunCommit), 'release attestation field-run commit is invalid');
   expect(exactCommit(releaseCommit), 'release commit is unavailable or invalid');
   expect(
@@ -515,7 +437,6 @@ export async function runProductionReleaseGate({
     releaseTag: release.tag,
     releaseCommit: effectiveReleaseCommit,
     evidenceSha256,
-    classicArtifactSha256: evidence.classicArtifactSha256,
     exportedAt: evidence.exportedAt,
     cwd,
     now,

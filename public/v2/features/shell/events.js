@@ -195,11 +195,6 @@ function handleDynamicInput(event) {
     renderVanityCandidates();
   }
 
-  if (event.target.classList?.contains('classic-artifact-text')) {
-    state.classicReportComparison.input = event.target.value;
-    state.classicReportComparison.error = null;
-    persistClassicReportComparison();
-  }
 }
 
 function handleClick(event) {
@@ -357,7 +352,6 @@ function handleClick(event) {
       'start-quote-acquire': 'fund',
       'publish-launch-report': 'finish',
       'download-launch-dossier': 'finish',
-      'compare-classic-report': 'finish',
       'cancel-refund-launch': 'finish',
     }[action];
     if (actionWorkspace && !actionTarget.dataset.stay) {
@@ -755,20 +749,8 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'compare-classic-artifact') {
-    runClassicArtifactComparison();
-    return;
-  }
 
-  if (action === 'load-classic-artifact') {
-    requestClassicArtifactImport();
-    return;
-  }
 
-  if (action === 'clear-classic-artifact') {
-    clearClassicArtifactComparison();
-    return;
-  }
 
   if (action === 'inspect-recovery') {
     // A launch with a token is recovered on its coin page, which shows what is left and runs it.

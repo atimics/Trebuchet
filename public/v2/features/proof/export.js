@@ -268,23 +268,10 @@ function proofExportParityBundle(proof = currentLaunchProof(), config = currentL
   };
 }
 
-function classicReportComparisonForProofExport(proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  const normalized = normalizeClassicReportComparison(state.classicReportComparison);
-  if (!normalized.result) return null;
-  if (!classicComparisonIsRetirementGrade(normalized.result, proof, config)) return null;
-  return normalized;
-}
-
 function pruneLaunchDataEvidenceArtifactsForExport(data = null, proof = currentLaunchProof(), config = currentLaunchConfig()) {
   if (!data || typeof data !== 'object') return data;
   const cleaned = { ...data };
-  const comparison = classicComparisonResultObject(cleaned.classicReportComparison?.result || cleaned.classicReportComparison);
-  if (
-    Object.prototype.hasOwnProperty.call(cleaned, 'classicReportComparison')
-    && !classicComparisonIsRetirementGrade(comparison, proof, config)
-  ) {
-    delete cleaned.classicReportComparison;
-  }
+  delete cleaned.classicReportComparison;
   if (cleaned.proof && typeof cleaned.proof === 'object') {
     delete cleaned.proof;
   }
@@ -321,7 +308,6 @@ function buildV2ProofExportPayload({
     reportParityAudit: parityBundle.reportParityAudit,
     classicRetirementGate: parityBundle.classicRetirementGate,
     fieldVerification: parityBundle.fieldVerification,
-    classicReportComparison: classicReportComparisonForProofExport(proofForPayload, proofConfig),
   };
   return compactForHtml ? compactV2ProofPayloadForHtml(payload) : payload;
 }
@@ -621,77 +607,6 @@ function importedLocalDossierEvidence(payload = {}, proof = null) {
   return null;
 }
 
-function restoreImportedProofComparison(payload, proof) {
-  const comparisonWrapper = payload?.classicReportComparison || payload?.launchData?.classicReportComparison || null;
-  const comparisonFrom = (candidate = null) => {
-    if (!candidate || typeof candidate !== 'object') return null;
-    if (
-      candidate.status
-      || candidate.proofFingerprint
-      || Array.isArray(candidate.rows)
-      || Number(candidate.fieldCount || 0) > 0
-    ) {
-      return candidate;
-    }
-    return null;
-  };
-  const importedComparison =
-    comparisonFrom(comparisonWrapper?.result)
-    || comparisonFrom(comparisonWrapper)
-    || comparisonFrom(payload?.proof?.reportParity?.comparison)
-    || comparisonFrom(payload?.proof?.reportParity?.classicComparison)
-    || comparisonFrom(payload?.launchData?.proof?.reportParity?.comparison)
-    || comparisonFrom(payload?.launchData?.proof?.reportParity?.classicComparison)
-    || null;
-  if (!importedComparison || typeof importedComparison !== 'object') return;
-  const importedInput = String(
-    comparisonWrapper?.input
-    || payload?.classicArtifactInput
-    || payload?.launchData?.classicArtifactInput
-    || '',
-  ).trim();
-  if (!importedInput) {
-    state.classicReportComparison = {
-      input: '',
-      result: null,
-      comparedAt: null,
-      error: 'Imported proof comparison needs the original Classic artifact text; paste or load it to compare locally.',
-    };
-    persistClassicReportComparison();
-    return;
-  }
-  try {
-    const result = compareClassicReportArtifact(importedInput, proof, importedProofComparisonConfig(payload));
-    state.classicReportComparison = {
-      input: importedInput,
-      result,
-      comparedAt: result.comparedAt,
-      error: null,
-    };
-    persistClassicReportComparison();
-    const retirementGradeComparison = classicComparisonIsRetirementGrade(result, proof, importedProofComparisonConfig(payload));
-    if (retirementGradeComparison) {
-      rememberLaunchProof({
-        ...proof,
-        reportParity: {
-          ...(proof.reportParity || {}),
-          classicArtifactCompared: true,
-          comparedAt: result.comparedAt,
-          comparison: result,
-        },
-      });
-    }
-  } catch (error) {
-    state.classicReportComparison = {
-      input: importedInput,
-      result: null,
-      comparedAt: null,
-      error: error.message || 'Imported Classic artifact comparison failed',
-    };
-    persistClassicReportComparison();
-  }
-}
-
 async function loadV2ProofFile(file) {
   try {
     const safeFile = validateProofFile(file);
@@ -707,7 +622,6 @@ async function loadV2ProofFile(file) {
     state.lastLocalDossier = localDossierIsProofCurrent(mergedProof?.localDossier, mergedProof, mergedConfig)
       ? mergedProof.localDossier
       : null;
-    restoreImportedProofComparison(payload, mergedProof);
     renderAll();
     notify('Launch record loaded');
   } catch (error) {
@@ -725,111 +639,6 @@ function requestV2ProofImport() {
     });
   }, { once: true });
   input.click();
-}
-
-async function loadClassicArtifactFile(file) {
-  try {
-    const safeFile = validateClassicArtifactFile(file);
-    if (!safeFile) return;
-    const text = await readFileAsText(safeFile, 'Classic artifact');
-    state.classicReportComparison = {
-      input: text,
-      result: null,
-      comparedAt: null,
-      error: null,
-    };
-    persistClassicReportComparison();
-    renderAll();
-    notify('Classic artifact loaded');
-  } catch (error) {
-    state.classicReportComparison = {
-      ...state.classicReportComparison,
-      result: null,
-      comparedAt: null,
-      error: error.message || 'Classic artifact import failed',
-    };
-    persistClassicReportComparison();
-    renderAll();
-    notify(state.classicReportComparison.error);
-  }
-}
-
-function requestClassicArtifactImport() {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'application/json,text/html,text/plain,.json,.html,.htm,.txt';
-  input.addEventListener('change', () => {
-    loadClassicArtifactFile(input.files?.[0] || null).finally(() => {
-      input.value = '';
-    });
-  }, { once: true });
-  input.click();
-}
-
-function runClassicArtifactComparison() {
-  try {
-    const input = state.classicReportComparison.input || document.querySelector('.classic-artifact-text')?.value || '';
-    const proof = currentLaunchProof();
-    const config = proofConfigForFingerprint(proof, currentLaunchConfig());
-    const result = compareClassicReportArtifact(input, proof, config);
-    state.classicReportComparison = {
-      input,
-      result,
-      comparedAt: result.comparedAt,
-      error: null,
-    };
-    persistClassicReportComparison();
-    if (proof && typeof proof === 'object') {
-      const retirementGradeComparison = classicComparisonIsRetirementGrade(result, proof, config);
-      rememberLaunchProof({
-        ...proof,
-        reportParity: {
-          ...(proof.reportParity || {}),
-          classicArtifactCompared: retirementGradeComparison,
-          comparedAt: result.comparedAt,
-          comparison: result,
-        },
-      });
-    }
-    renderAll();
-    notify(result.status === 'pass' ? 'Classic artifact matches the Trebuchet proof' : 'Classic artifact needs review');
-  } catch (error) {
-    state.classicReportComparison = {
-      ...state.classicReportComparison,
-      input: state.classicReportComparison.input || document.querySelector('.classic-artifact-text')?.value || '',
-      result: null,
-      comparedAt: null,
-      error: error.message || 'Classic artifact comparison failed',
-    };
-    persistClassicReportComparison();
-    renderAll();
-    notify(state.classicReportComparison.error);
-  }
-}
-
-function clearClassicArtifactComparison() {
-  state.classicReportComparison = {
-    input: '',
-    result: null,
-    comparedAt: null,
-    error: null,
-  };
-  persistClassicReportComparison();
-  const proof = currentLaunchProof();
-  if (proof?.reportParity) {
-    rememberLaunchProof({
-      ...proof,
-      reportParity: {
-        ...proof.reportParity,
-        classicArtifactCompared: false,
-        comparison: null,
-        classicComparison: null,
-        comparedAt: null,
-      },
-    });
-  }
-  renderAll();
-  notify('Classic artifact comparison cleared');
 }
 
 async function publishV2LaunchReport({ quiet = false, refreshReadiness = true, ledger = true } = {}) {

@@ -424,15 +424,6 @@ function fieldRunbookActionControl(action = '', stage = {}) {
       disabled: !airdropStatus.complete || !proofCanCreateLocalDossier(proof, config),
     };
   }
-  if (action === 'compare-classic-artifact') {
-    const comparisonInput = String(
-      state.classicReportComparison?.input
-      || document.querySelector('.classic-artifact-text')?.value
-      || '',
-    ).trim();
-    if (!comparisonInput) return { dataAction: 'load-classic-artifact', label: 'Load artifact' };
-    return { dataAction: 'compare-classic-artifact', label: 'Compare' };
-  }
   if (action === 'load-or-resume-journal') {
     return { dataAction: 'inspect-recovery', label: 'Open coin' };
   }
