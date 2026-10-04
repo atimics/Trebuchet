@@ -74,8 +74,9 @@
     "test:e2e:runtime-support:localnet": "node test/e2e/runtime-support-localnet.mjs",
     "test:e2e:runtime-close:localnet": "node test/e2e/runtime-account-close-localnet.mjs",
     "test:fee-vault": "cargo test --locked --manifest-path programs/fee-vault/Cargo.toml",
-    "build:fee-vault": "cargo build-sbf --manifest-path programs/fee-vault/Cargo.toml --sbf-out-dir programs/fee-vault/target/deploy",
-    "test:e2e:fee-nfts:localnet": "node test/e2e/fee-nfts-localnet.mjs"
+    "build:fee-vault": "cargo build-sbf --manifest-path programs/fee-vault/Cargo.toml --sbf-out-dir programs/fee-vault/target/deploy -- --locked",
+    "test:e2e:fee-nfts:localnet": "node test/e2e/fee-nfts-localnet.mjs",
+    "test:e2e:fee-nfts:ui": "node test/e2e/fee-nfts-ui.mjs"
   },
   "files": [
     "build/**/*",

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 
 export function recipientList(input) {
   const lines = Array.isArray(input) ? input : String(input || '').split(/[\s,]+/).filter(Boolean);
-  if (!lines.length || lines.length > 512) throw new Error('Choose between 1 and 512 recipients');
+  if (!lines.length || lines.length > 128) throw new Error('Choose between 1 and 128 recipients');
   const recipients = lines.map((v) => new PublicKey(String(v).trim()).toBase58());
   if (new Set(recipients).size !== recipients.length || recipients.some((v) => !PublicKey.isOnCurve(new PublicKey(v).toBytes()))) throw new Error('Use a unique wallet address for each recipient');
   return recipients;

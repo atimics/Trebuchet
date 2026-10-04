@@ -1840,7 +1840,7 @@ test('v2 navigation and views stay wired together', () => {
     .filter((id) => id.startsWith('view-'))
     .map((id) => id.replace(/^view-/, ''))
     .sort();
-  const viewKeys = [...js.matchAll(/^\s{2}([a-z-]+): \{ eyebrow:/gm)]
+  const viewKeys = [...js.matchAll(/^\s{2}['"]?([a-z-]+)['"]?: \{ eyebrow:/gm)]
     .map((match) => match[1])
     .sort();
 

@@ -8,7 +8,10 @@ import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { feeNftPlan, recipientList } from '../feeNftPlan.js';
 import { initializeFeeVault, feeVaultAddress, decodeFeeVault, feeEntitlement, FEE_VAULT_HEADER, FEE_VAULT_ENTRY } from '../feeVaultClient.js';
 import * as store from '../feeNftStore.js';
-import { sendStep } from '../feeNftService.js';
+import { sendStep, activeWallet } from '../feeNftService.js';
+import { registerFeeNftRoutes } from '../feeNftRoutes.js';
+import { ClmmInstrument } from '@raydium-io/raydium-sdk-v2';
+import { harvestFeeVault, feeVaultTokenAccounts } from '../feeVaultClient.js';
 
 const address = () => Keypair.generate().publicKey.toBase58();
 const source = { venue: 'meteora', pool: address(), position: address(), nativeNftMint: address(), mints: [address(), address()], tokenPrograms: [TOKEN_PROGRAM_ID.toBase58(), TOKEN_PROGRAM_ID.toBase58()] };
@@ -53,13 +56,14 @@ test('uncertain sends keep bytes and reservations; resume broadcasts the same si
     let broadcasts = []; let statuses = null;
     const connection = {
       getLatestBlockhash: async () => ({ blockhash: address(), lastValidBlockHeight: 100 }), getFeeForMessage: async () => ({ value: 5000 }),
-      simulateTransaction: async () => ({ value: { err: null } }), sendRawTransaction: async (bytes) => { broadcasts.push(Buffer.from(bytes)); throw new Error('reply lost'); },
+      getBalance: async () => 10000, simulateTransaction: async () => ({ value: { err: null, accounts: [{ lamports: 5000 }] } }), sendRawTransaction: async (bytes) => { broadcasts.push(Buffer.from(bytes)); throw new Error('reply lost'); },
       getSignatureStatuses: async () => ({ value: [statuses] }), getBlockHeight: async () => 50,
       getTransaction: async () => ({ meta: { preBalances: [10000], postBalances: [5000] } }),
     };
     await assert.rejects(() => sendStep(record, connection, signer, 'one', []), /reply lost/);
     assert.equal(record.operations.one.reservedLamports, 5000);
     const saved = store.get(record.id); assert.equal(saved.operations.one.bytes, broadcasts[0].toString('base64'));
+    assert.equal(activeWallet(signer.publicKey.toBase58()), record.id);
     await assert.rejects(() => sendStep(saved, connection, signer, 'one', []), /reply lost/);
     assert.ok(broadcasts[0].equals(broadcasts[1]));
     await assert.rejects(() => sendStep(saved, connection, signer, 'two', []), /spend cap/);
@@ -67,5 +71,40 @@ test('uncertain sends keep bytes and reservations; resume broadcasts the same si
     await sendStep(saved, connection, signer, 'one', []);
     assert.equal(saved.operations.one.status, 'confirmed'); assert.equal(saved.operations.one.spentLamports, 5000);
     assert.equal(broadcasts.length, 2);
+    assert.equal(activeWallet(signer.publicKey.toBase58()), null);
   } finally { process.env.TREBUCHET_CONFIG_DIR = before; if (before === undefined) delete process.env.TREBUCHET_CONFIG_DIR; fs.rmSync(dir, { recursive: true, force: true }); }
+});
+test('failed attempt fees stay inside the approved cap on every retry', async () => {
+  const before = process.env.TREBUCHET_CONFIG_DIR; const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fee-cap-')); process.env.TREBUCHET_CONFIG_DIR = dir;
+  try {
+    const signer = Keypair.generate(); const record = store.create({}); record.maxSpendLamports = 5000;
+    record.operations.one = { status: 'failed', spentLamports: 5000, scope: 'setup' };
+    const c = { getLatestBlockhash: async () => ({ blockhash: address(), lastValidBlockHeight: 100 }), getFeeForMessage: async () => ({ value: 5000 }), getBalance: async () => 10000, simulateTransaction: async () => ({ value: { err: null, accounts: [{ lamports: 5000 }] } }), sendRawTransaction: async () => { throw new Error('lost reply'); } };
+    await assert.rejects(() => sendStep(record, c, signer, 'one', []), /spend cap/);
+    record.maxSpendLamports = 10_000;
+    await assert.rejects(() => sendStep(record, c, signer, 'one', []), /lost reply/);
+    assert.equal(record.operations.one.attemptsSpentLamports, 5000);
+    await assert.rejects(() => sendStep(record, c, signer, 'two', []), /spend cap/);
+  } finally { if (before === undefined) delete process.env.TREBUCHET_CONFIG_DIR; else process.env.TREBUCHET_CONFIG_DIR = before; fs.rmSync(dir, { recursive: true, force: true }); }
+});
+test('fee routes check live mode and PIN before accessing managed keys', async () => {
+  const handlers = new Map(); let demo = true; let locked = false; let keyReads = 0;
+  registerFeeNftRoutes({ get: (p, h) => handlers.set(`GET ${p}`, h), post: (p, h) => handlers.set(`POST ${p}`, h) }, {
+    isDemoMode: () => demo, rejectIfSecretPinLocked: (res) => { if (locked) res.status(423).json({ code: 'PIN_REQUIRED' }); return locked; }, getRpcUrl: () => 'http://127.0.0.1:1', getNetwork: () => 'devnet', getManagedWallet: () => { keyReads++; return null; }, sendErrorResponse: (res, e, status) => res.status(status).json({ error: e.message }),
+  });
+  const res = { statusCode: 200, status(n) { this.statusCode = n; return this; }, json(v) { this.body = v; } };
+  const h = handlers.get('POST /api/v2/fee-nfts/prepare');
+  await h({ body: {} }, res); assert.equal(res.statusCode, 409); assert.equal(keyReads, 0);
+  demo = false; locked = true; await h({ body: {} }, res); assert.equal(res.statusCode, 423); assert.equal(keyReads, 0);
+  locked = false; await h({ body: {} }, res); assert.equal(res.statusCode, 404); assert.equal(keyReads, 1);
+});
+test('Raydium harvest wrapper binds the native SDK account order and fee discriminator', () => {
+  const fields = Object.fromEntries(['programId', 'auth', 'lockPositionId', 'clmmProgram', 'lockOwner', 'lockNftMint', 'lockNftAccount', 'positionNftAccount', 'positionId', 'poolId', 'protocolPosition', 'vaultA', 'vaultB', 'tickArrayLower', 'tickArrayUpper', 'userVaultA', 'userVaultB', 'mintA', 'mintB'].map((k) => [k, new PublicKey(address())]));
+  const ix = ClmmInstrument.harvestLockPositionInstructionV2({ ...fields, rewardAccounts: [] });
+  assert.deepEqual([...ix.data], [16, 72, 250, 198, 14, 162, 212, 19]);
+  for (const [i, k] of [[1, 'lockOwner'], [2, 'lockNftAccount'], [3, 'lockPositionId'], [7, 'poolId'], [13, 'userVaultA'], [14, 'userVaultB']]) assert.equal(ix.keys[i].pubkey.toBase58(), fields[k].toBase58());
+  const vault = fields.lockOwner;
+  const wrapped = harvestFeeVault({ programId: address(), vault, source, instruction: ix });
+  assert.ok(wrapped.keys.every((k) => !k.isSigner));
+  assert.deepEqual(wrapped.keys.slice(1, 3).map((k) => k.pubkey.toBase58()), feeVaultTokenAccounts(vault, source).map((k) => k.toBase58()));
 });

@@ -43,11 +43,16 @@ export function claimFeeShare({ programId, vault, source, owner, asset, index })
   return new TransactionInstruction({ programId: pk(programId), keys: [meta(owner, true, true), meta(vault, true), meta(asset),
     ...inputs.map((v) => meta(v, true)), ...outputs.map((v) => meta(v, true)), ...source.mints.map((v) => meta(v)), ...source.tokenPrograms.map((v) => meta(v))], data: Buffer.concat([Buffer.from([4]), u16(index)]) });
 }
+export function recoverFeeBacking({ programId, vault, source, creator }) {
+  const mint = pk(source.nativeNftMint); const tokenProgram = pk(source.nativeTokenProgram);
+  return new TransactionInstruction({ programId: pk(programId), keys: [meta(creator, false, true), meta(vault, true), meta(mint),
+    meta(getAssociatedTokenAddressSync(mint, pk(vault), true, tokenProgram), true), meta(getAssociatedTokenAddressSync(mint, pk(creator), false, tokenProgram), true), meta(tokenProgram)], data: Buffer.from([5]) });
+}
 export function decodeFeeVault(raw) {
   const d = Buffer.from(raw);
   if (d.length < FEE_VAULT_HEADER || d.subarray(0, 8).toString() !== 'TFEEV001') throw new Error('Unknown fee vault account');
   const count = d.readUInt16LE(329);
-  if (!count || count > 512 || d.length !== FEE_VAULT_HEADER + count * FEE_VAULT_ENTRY) throw new Error('Invalid fee vault size');
+  if (!count || count > 128 || d.length !== FEE_VAULT_HEADER + count * FEE_VAULT_ENTRY) throw new Error('Invalid fee vault size');
   return {
     creator: addr(d, 8), seed: [...d.subarray(40, 72)], collection: addr(d, 72),
     source: { venue: ['meteora', 'raydium', 'raydium-devnet'][d[104]], pool: addr(d, 105), position: addr(d, 137), nativeNftMint: addr(d, 169), mints: [addr(d, 201), addr(d, 233)], tokenPrograms: [addr(d, 265), addr(d, 297)] },

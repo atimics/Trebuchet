@@ -65,6 +65,9 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Fee NFT holder screens
+        run: npm run test:e2e:fee-nfts:ui
+
       - name: Core and runner contracts
         run: npm run test:architecture
 
@@ -214,4 +217,3 @@ jobs:
 
       - name: Run v2 desktop and mobile viewport smoke
         run: npm run test:v2:viewport
-

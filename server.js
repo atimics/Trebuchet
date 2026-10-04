@@ -131,6 +131,7 @@ import * as splitJobStore from './splitJobStore.js';
 import * as nftCollectionStore from './nftCollectionStore.js';
 import { registerNftRoutes } from './nftRoutes.js';
 import { registerFeeNftRoutes } from './feeNftRoutes.js';
+import { activeWallet as activeFeeNftWallet } from './feeNftService.js';
 import { registerDammV2Routes } from './dammV2Routes.js';
 import { combineSplitKey, createSplitSecret, matchesVanityPattern, scalarPublicKey } from '@trebuchet/core/split-key';
 import { normalizeDistribution } from './lpDistribution.js';
@@ -741,6 +742,10 @@ const sweepAllTokensToDestination = (input) => sweepTokensWithSigner({ ...input,
 
 // Live services and HTTP jobs share wallet admission and durable recovery state.
 function claimLaunchOp(walletPublicKey, op, workflowId = null) {
+  const feeId = activeFeeNftWallet(walletPublicKey);
+  if (feeId && (op !== 'fee-nfts' || workflowId !== feeId)) {
+    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', error: 'Resume the saved fee NFT action in Fee NFTs.', workflowId: feeId });
+  }
   const workflow = walletExecution?.activeWorkflow(walletPublicKey);
   const canResumeSupport = op === 'support-position' && workflow?.kind === 'support-position' && workflow.id === workflowId;
   const canResumeWithdrawal = op === 'withdraw-position' && workflow?.kind === 'position-withdrawal' && workflow.id === workflowId;
@@ -2051,7 +2056,7 @@ function demoAllocationsForV2(allocations = []) {
 
 // NFT collections (v2 NFTs view). See nftRoutes.js.
 registerFeeNftRoutes(app, {
-  isDemoMode, rejectIfSecretPinLocked, sendErrorResponse, getRpcUrl,
+  isDemoMode, rejectIfSecretPinLocked, sendErrorResponse, getRpcUrl, getNetwork,
   claim: claimLaunchOp, release: clearLaunchOpInFlight,
   getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
 });
