@@ -16151,6 +16151,9 @@ function renderWallet() {
   ` : '';
 }
 
+const HELD_WALLET_READERS = 2;
+const HELD_WALLET_BACKGROUND_PAUSE_MS = 300;
+
 // Every key Trebuchet holds, read from the chain: the ones holding anything are listed, and
 // Sweep all sends each launch wallet's tokens and SOL to the return wallet, one at a time.
 // Read in the background too (every 5 minutes at most), so counts elsewhere come from the chain.
@@ -16164,15 +16167,19 @@ function refreshHeldWallets({ force = false, background = false } = {}) {
       state.heldWallets = { ...state.heldWallets, list: wallets.map((wallet) => ({ ...wallet, contents: null, error: null })), at: Date.now() };
       renderHeldWallets();
       const queue = [...state.heldWallets.list];
+      // Each read is three RPC calls. A background read goes one wallet at a time with a pause,
+      // and the Wallet page two at a time, so a list of dozens of keys stays under the RPC's rate limit.
+      const pauseMs = background ? HELD_WALLET_BACKGROUND_PAUSE_MS : 0;
       const worker = async () => {
         for (let row = queue.shift(); row; row = queue.shift()) {
           try { row.contents = await walletContents(row.address, { fresh: force }); } catch (error) { row.error = error.message || 'Could not read'; }
           renderHeldWallets();
+          if (pauseMs && queue.length) await new Promise((resolve) => setTimeout(resolve, pauseMs));
         }
       };
       // The strip and Recovery count wallets from these reads.
       const settle = () => { if (state.activeView !== 'wallet') renderAll(); };
-      await Promise.all([worker(), worker(), worker(), worker()]);
+      await Promise.all(Array.from({ length: background ? 1 : HELD_WALLET_READERS }, worker));
       settle();
     })
     .catch((error) => { state.heldWallets = { ...state.heldWallets, error: error.message || 'Could not list the keys' }; })
