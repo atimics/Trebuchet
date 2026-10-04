@@ -18,14 +18,12 @@ const swept = { walletPublicKey: 'wallet', token: { mint: 'mint' }, transfer: { 
 test('a swept launch wallet keeping its rent reserve counts as swept, not as a disagreement', () => {
   const step = steps(swept, 660241);
   assert.equal(step.state, 'done');
-  assert.equal(step.detail, "Swept. 0.00066 SOL stays as the wallet's rent reserve.");
-  assert.equal(steps(swept, 0).detail, 'Swept. The launch wallet is empty.');
+  assert.equal(step.detail, null, 'no sentence: the page shows the wallet chip');
 });
 
 test('SOL above the dust line is still shown as not swept', () => {
   assert.equal(steps(swept, 5_000_000).state, 'mismatch');
   assert.equal(steps({ ...swept, transfer: {} }, 5_000_000).state, 'todo');
-  assert.equal(steps(swept, 5_000_000).detail, '0.0050 SOL is still in the launch wallet.');
 });
 
 test('no screen text says a key was deleted', () => {

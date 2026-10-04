@@ -147,6 +147,7 @@ function setView(view) {
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
   if (view === 'nfts') window.TrebuchetNfts?.onShow();
+  if (view === 'wallet') refreshHeldWallets();
   if (view === 'lean') window.TrebuchetLean?.onShow();
   renderCoinContext();
   renderLaunchWorkspace();
@@ -467,7 +468,7 @@ function renderLaunchNextRail(facts, next, workspace) {
 
   const walletBlock = `
     <section class="rail-block">
-      <div class="rail-head"><span class="rail-label">Wallet</span><code title="${escapeHtml(walletKey)}">${walletKey ? escapeHtml(shortAddress(walletKey)) : 'none'}</code></div>
+      <div class="rail-head"><span class="rail-label">Wallet</span>${walletKey ? walletChipHtml(walletKey) : '<code>none</code>'}</div>
       ${practice ? '<div class="rail-balance"><b>Test</b><span>no SOL used</span></div>'
         : !walletKey ? '<div class="rail-balance"><b>No wallet</b></div>'
           : holds != null ? `<div class="rail-balance is-amount"><b>${sol(holds)}</b><span>SOL</span></div>`

@@ -1046,6 +1046,16 @@
       return data?.plan || null;
     }
 
+    async function getWalletContents(address, { fresh = false } = {}) {
+      const data = await request(`/api/v2/wallets/contents?address=${encodeURIComponent(address || '')}${fresh ? '&fresh=1' : ''}`, { timeoutMs: 20_000 });
+      return data?.contents || null;
+    }
+
+    async function listHeldWallets() {
+      const data = await request('/api/v2/wallets/held', { timeoutMs: 15_000 });
+      return { wallets: Array.isArray(data?.wallets) ? data.wallets : [], secretPinLocked: data?.secretPinLocked === true };
+    }
+
     async function runAirdrop({ walletPublicKey, tokenMint, tokenDecimals, isToken2022 = false, recipients } = {}) {
       const data = await request(RUN_AIRDROP_PATH, {
         method: 'POST',
@@ -1271,6 +1281,8 @@
       retryAirdrop,
       runAirdrop,
       getAirdropPlan,
+      getWalletContents,
+      listHeldWallets,
       runDemoLaunch,
       addRpc,
       removeRpc,

@@ -121,7 +121,7 @@ function airdropValueHtml(airdrop) {
     const share = total > 0 ? (tokens / total) * 100 : 0;
     return `<div class="airdrop-value-row${row.source === 'funder' ? ' is-funder' : ''}" title="${escapeHtml(row.wallet || '')}">
       <span class="airdrop-value-bar" style="width:${Math.max(2, (tokens / biggest) * 100)}%"></span>
-      <code>${escapeHtml(shortAddress(row.wallet))}</code>
+      ${walletChipHtml(row.wallet)}
       <span>${escapeHtml(compactAmount(tokens))}</span>
       <small>${escapeHtml(formatPercent(share))}%</small>
       <b>${escapeHtml(money(usd(tokens)))}</b>

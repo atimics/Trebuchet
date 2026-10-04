@@ -64,7 +64,7 @@ function renderRecoveryWalletWorkspace() {
               <span class="ident" aria-hidden="true">${escapeHtml(shortAddress(wallet.publicKey).slice(0, 2))}</span>
               <span class="recovery-wallet-copy">
                 <span class="eyebrow">${escapeHtml(formatDate(wallet.createdAt))}</span>
-                <h3>${escapeHtml(fullAddress(wallet.publicKey))}</h3>
+                <h3>${walletChipHtml(wallet.publicKey)}</h3>
                 <p>${escapeHtml(walletState.detail)}</p>
               </span>
               <span class="timeline-actions">
@@ -157,8 +157,10 @@ function recoveryWalletsNeedingAttention() {
   const selectedPublicKey = selectedLaunchWalletPublicKey();
   const selectedHasOpenJournal = (state.recovery.journals || [])
     .some((journal) => !isTerminalJournal(journal) && journal.walletPublicKey === selectedPublicKey);
+  // Counted only once the chain shows something to sweep: an unread wallet is not called a problem.
   return (state.recovery.pendingWallets || [])
-    .filter((wallet) => wallet.publicKey !== selectedPublicKey || selectedHasOpenJournal);
+    .filter((wallet) => wallet.publicKey !== selectedPublicKey || selectedHasOpenJournal)
+    .filter((wallet) => walletSweepable(cachedWalletContents(wallet.publicKey)));
 }
 
 // A launch lives on its coin page: that page shows what is left and runs it. Recovery only lists

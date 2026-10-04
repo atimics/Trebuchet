@@ -1065,7 +1065,7 @@ function renderAirdropPanel() {
   }
   const previewRows = airdrop.recipients.slice(0, 4).map((row) => `
     <div class="mini-row">
-      <span>${escapeHtml(shortAddress(row.wallet))}</span>
+      <span>${walletChipHtml(row.wallet)}</span>
       <strong>${compactAmount(row.tokens)} tokens</strong>
     </div>
   `).join('');

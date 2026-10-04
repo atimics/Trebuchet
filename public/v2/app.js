@@ -405,6 +405,7 @@ const state = {
   discardingWalletPublicKey: null,
   sweepingWalletPublicKey: null,
   sweepAirdropProgress: null,
+  heldWallets: { list: null, loading: false, at: 0, error: null, sweep: null },
   lastRecoverySweep: null,
   lastSecretPinReset: null,
   lastRunEnvelope: null,
@@ -6054,6 +6055,7 @@ function setView(view) {
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
   if (view === 'nfts') window.TrebuchetNfts?.onShow();
+  if (view === 'wallet') refreshHeldWallets();
   if (view === 'lean') window.TrebuchetLean?.onShow();
   renderCoinContext();
   renderLaunchWorkspace();
@@ -6374,7 +6376,7 @@ function renderLaunchNextRail(facts, next, workspace) {
 
   const walletBlock = `
     <section class="rail-block">
-      <div class="rail-head"><span class="rail-label">Wallet</span><code title="${escapeHtml(walletKey)}">${walletKey ? escapeHtml(shortAddress(walletKey)) : 'none'}</code></div>
+      <div class="rail-head"><span class="rail-label">Wallet</span>${walletKey ? walletChipHtml(walletKey) : '<code>none</code>'}</div>
       ${practice ? '<div class="rail-balance"><b>Test</b><span>no SOL used</span></div>'
         : !walletKey ? '<div class="rail-balance"><b>No wallet</b></div>'
           : holds != null ? `<div class="rail-balance is-amount"><b>${sol(holds)}</b><span>SOL</span></div>`
@@ -8945,7 +8947,7 @@ function renderAirdropPanel() {
   }
   const previewRows = airdrop.recipients.slice(0, 4).map((row) => `
     <div class="mini-row">
-      <span>${escapeHtml(shortAddress(row.wallet))}</span>
+      <span>${walletChipHtml(row.wallet)}</span>
       <strong>${compactAmount(row.tokens)} tokens</strong>
     </div>
   `).join('');
@@ -15364,7 +15366,7 @@ function airdropValueHtml(airdrop) {
     const share = total > 0 ? (tokens / total) * 100 : 0;
     return `<div class="airdrop-value-row${row.source === 'funder' ? ' is-funder' : ''}" title="${escapeHtml(row.wallet || '')}">
       <span class="airdrop-value-bar" style="width:${Math.max(2, (tokens / biggest) * 100)}%"></span>
-      <code>${escapeHtml(shortAddress(row.wallet))}</code>
+      ${walletChipHtml(row.wallet)}
       <span>${escapeHtml(compactAmount(tokens))}</span>
       <small>${escapeHtml(formatPercent(share))}%</small>
       <b>${escapeHtml(money(usd(tokens)))}</b>
@@ -15926,8 +15928,8 @@ function renderCancelRefundPanel(config = currentLaunchConfig()) {
         <span class="risk-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
       </div>
       <div class="cancel-refund-grid">
-        <span><small>Launch wallet</small><strong>${walletPublicKey ? escapeHtml(fullAddress(walletPublicKey)) : 'Select'}</strong></span>
-        <span><small>Destination</small><strong>${destinationWallet ? escapeHtml(fullAddress(destinationWallet)) : 'Set sweep'}</strong></span>
+        <span><small>Launch wallet</small><strong>${walletPublicKey ? walletChipHtml(walletPublicKey) : 'Select'}</strong></span>
+        <span><small>Destination</small><strong>${destinationWallet ? walletChipHtml(destinationWallet) : 'Set sweep'}</strong></span>
         <span><small>Tokens</small><strong>${metrics ? metrics.tokens : '-'}</strong></span>
         <span><small>NFTs</small><strong>${metrics ? metrics.nfts : '-'}</strong></span>
         <span><small>SOL</small><strong>${metrics ? metrics.sol.toFixed(4) : '-'}</strong></span>
@@ -18459,6 +18461,147 @@ function renderParityPanel() {
     </details>`;
 }
 
+// A wallet address anywhere on the page is one chip. Hovering or focusing it shows what the
+// wallet holds now, read from the chain: SOL, each token, and open token accounts with their
+// rent. It also says whether Trebuchet holds the wallet's key.
+
+const WALLET_CONTENTS_MAX_AGE_MS = 15_000;
+const SWEEP_DUST_LAMPORTS = 1_000_000;
+const walletContentsCache = new Map();
+
+function walletChipHtml(address, { label = '' } = {}) {
+  const value = String(address || '').trim();
+  if (!value) return '';
+  return `<span class="wallet-chip" tabindex="0" data-wallet-chip="${escapeHtml(value)}" title="${escapeHtml(value)}">`
+    + `<code>${escapeHtml(shortAddress(value))}</code>${label ? `<small>${escapeHtml(label)}</small>` : ''}</span>`;
+}
+
+function walletContents(address, { fresh = false } = {}) {
+  const cached = walletContentsCache.get(address);
+  if (!fresh && cached && (cached.pending || Date.now() - cached.at < WALLET_CONTENTS_MAX_AGE_MS)) return cached.pending || Promise.resolve(cached.value);
+  if (state.apiStatus !== 'connected' || !state.apiClient?.getWalletContents) return Promise.resolve(null);
+  const pending = state.apiClient.getWalletContents(address, { fresh })
+    .then((value) => { walletContentsCache.set(address, { at: Date.now(), value }); return value; })
+    .catch((error) => { walletContentsCache.delete(address); throw error; });
+  walletContentsCache.set(address, { ...(cached || {}), pending });
+  return pending;
+}
+
+function cachedWalletContents(address) {
+  return walletContentsCache.get(address)?.value || null;
+}
+
+function walletTokenSymbol(mint) {
+  return (state.coins?.list || []).find((coin) => coin.mint === mint)?.symbol || shortAddress(mint);
+}
+
+function formatSol(lamports) {
+  return Number((Number(lamports || 0) / 1e9).toFixed(6)).toString();
+}
+
+function walletSweepable(contents) {
+  return Boolean(contents && contents.ownerProgram === '11111111111111111111111111111111'
+    && (contents.tokens.length > 0 || contents.lamports >= SWEEP_DUST_LAMPORTS));
+}
+
+function walletContentsSummary(contents) {
+  if (!contents) return '';
+  return [
+    `${formatSol(contents.lamports)} SOL`,
+    contents.tokens.length ? `${contents.tokens.length} token${contents.tokens.length === 1 ? '' : 's'}` : null,
+    contents.openAccounts ? `${contents.openAccounts} open account${contents.openAccounts === 1 ? '' : 's'}` : null,
+  ].filter(Boolean).join(' · ');
+}
+
+const WALLET_KEY_LABELS = { launch: 'Launch wallet', retired: 'Finished launch wallet', vanity: 'Vanity address' };
+
+function walletCardHtml(address, contents, error) {
+  const rows = contents ? [
+    ['SOL', formatSol(contents.lamports)],
+    ...contents.tokens.map((token) => [walletTokenSymbol(token.mint), formatTokenAmount(token.amountRaw, token.decimals)]),
+    contents.openAccounts ? ['Open token accounts', `${contents.openAccounts} · ${formatSol(contents.accountRentLamports)} SOL rent`] : null,
+  ].filter(Boolean) : [];
+  const kind = contents?.ownerProgram && contents.ownerProgram !== '11111111111111111111111111111111' && contents.lamports
+    ? 'Program account'
+    : contents?.key ? `${WALLET_KEY_LABELS[contents.key]} · key in Trebuchet` : contents ? 'Key not in Trebuchet' : '';
+  return `
+    <header><code>${escapeHtml(address)}</code>${kind ? `<span>${escapeHtml(kind)}</span>` : ''}</header>
+    ${error ? `<p class="is-error">${escapeHtml(error)}</p>` : contents ? `<dl>${rows.map(([name, value]) => `<div><dt>${escapeHtml(name)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>` : '<p><span class="rail-spin" aria-hidden="true"></span></p>'}
+    <a href="${escapeHtml(solscanAccountUrl(address))}" target="_blank" rel="noopener">Solscan</a>`;
+}
+
+function walletChipCard() {
+  let card = document.getElementById('walletChipCard');
+  if (!card) {
+    card = document.createElement('div');
+    card.id = 'walletChipCard';
+    card.className = 'wallet-chip-card';
+    card.setAttribute('role', 'tooltip');
+    card.hidden = true;
+    card.addEventListener('mouseleave', () => hideWalletChipCard());
+    document.body.appendChild(card);
+  }
+  return card;
+}
+
+let walletChipTarget = null;
+let walletChipHideTimer = null;
+
+function placeWalletChipCard(card, chip) {
+  const box = chip.getBoundingClientRect();
+  const width = Math.min(340, window.innerWidth - 32);
+  card.style.width = `${width}px`;
+  card.style.left = `${Math.max(16, Math.min(box.left, window.innerWidth - width - 16))}px`;
+  const below = box.bottom + 6;
+  card.style.top = `${below + card.offsetHeight > window.innerHeight - 8 ? Math.max(8, box.top - card.offsetHeight - 6) : below}px`;
+}
+
+function showWalletChipCard(chip) {
+  clearTimeout(walletChipHideTimer);
+  const address = chip.dataset.walletChip;
+  const card = walletChipCard();
+  walletChipTarget = chip;
+  chip.setAttribute('aria-describedby', 'walletChipCard');
+  card.innerHTML = walletCardHtml(address, cachedWalletContents(address), null);
+  card.hidden = false;
+  placeWalletChipCard(card, chip);
+  walletContents(address)
+    .then((contents) => { if (walletChipTarget === chip) { card.innerHTML = walletCardHtml(address, contents, null); placeWalletChipCard(card, chip); } })
+    .catch((error) => { if (walletChipTarget === chip) card.innerHTML = walletCardHtml(address, null, error.message || 'Could not read this wallet'); });
+}
+
+function hideWalletChipCard({ now = false } = {}) {
+  clearTimeout(walletChipHideTimer);
+  const hide = () => {
+    const card = document.getElementById('walletChipCard');
+    if (card && !card.matches(':hover')) card.hidden = true;
+    walletChipTarget?.removeAttribute('aria-describedby');
+    walletChipTarget = null;
+  };
+  if (now) hide(); else walletChipHideTimer = setTimeout(hide, 150);
+}
+
+function bindWalletChips() {
+  document.addEventListener('mouseover', (event) => {
+    const chip = event.target.closest?.('[data-wallet-chip]');
+    if (chip && chip !== walletChipTarget) showWalletChipCard(chip);
+  });
+  document.addEventListener('mouseout', (event) => {
+    const chip = event.target.closest?.('[data-wallet-chip]');
+    if (chip && !chip.contains(event.relatedTarget) && !event.relatedTarget?.closest?.('#walletChipCard')) hideWalletChipCard();
+  });
+  document.addEventListener('focusin', (event) => {
+    const chip = event.target.closest?.('[data-wallet-chip]');
+    if (chip) showWalletChipCard(chip);
+  });
+  document.addEventListener('focusout', (event) => {
+    if (event.target.closest?.('[data-wallet-chip]')) hideWalletChipCard();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && walletChipTarget) hideWalletChipCard({ now: true });
+  });
+}
+
 // "Locked" only when unlocking the PIN would help. A wallet whose key cannot be
 // read with the PIN already unlocked says so instead of pretending to be locked.
 function walletLabelState(secretBlocked, unlocked, publicKey) {
@@ -18587,6 +18730,8 @@ function renderWallet() {
       state: proofAssetState,
     } : null,
   ].filter(Boolean) : [];
+  refreshHeldWallets();
+  renderHeldWallets();
   $('#accountList').innerHTML = walletRows.map((item) => {
     const isActive = item.publicKey === selectedPublicKey;
     return `
@@ -18594,7 +18739,7 @@ function renderWallet() {
         <span class="ident">${escapeHtml(item.name.slice(0, 1))}</span>
         <span class="account-copy">
           <h3>${escapeHtml(item.name)}</h3>
-          <p>${escapeHtml(item.address)}</p>
+          <p>${item.publicKey ? walletChipHtml(item.publicKey) : escapeHtml(item.address)}</p>
         </span>
         <span class="balance">
           <strong>${Number(item.balance || 0).toFixed(2)} SOL</strong>
@@ -18712,7 +18857,7 @@ function renderWallet() {
     <p class="wallet-recovery-pointer">
       <span>${escapeHtml([
         openJournals ? `${openJournals} unfinished launch${openJournals === 1 ? '' : 'es'}` : null,
-        oldWallets ? `${oldWallets} old launch wallet${oldWallets === 1 ? '' : 's'} may still hold assets` : null,
+        oldWallets ? `${oldWallets} old launch wallet${oldWallets === 1 ? '' : 's'} holding SOL or tokens` : null,
       ].filter(Boolean).join(' · '))}.</span>
       <button class="text-button" type="button" data-action="inspect-recovery">Open in History</button>
     </p>
@@ -18733,6 +18878,102 @@ function renderWallet() {
       </article>
     `).join('')}
   ` : '';
+}
+
+// Every key Trebuchet holds, read from the chain: the ones holding anything are listed, and
+// Sweep all sends each launch wallet's tokens and SOL to the return wallet, one at a time.
+// Read in the background too (every 5 minutes at most), so counts elsewhere come from the chain.
+function refreshHeldWallets({ force = false, background = false } = {}) {
+  const held = state.heldWallets;
+  if ((!background && state.activeView !== 'wallet') || state.apiStatus !== 'connected' || !state.apiClient?.listHeldWallets) return;
+  if (held.loading || (!force && held.list && Date.now() - held.at < (background ? 300_000 : 30_000))) return;
+  state.heldWallets = { ...held, loading: true, error: null };
+  state.apiClient.listHeldWallets()
+    .then(async ({ wallets }) => {
+      state.heldWallets = { ...state.heldWallets, list: wallets.map((wallet) => ({ ...wallet, contents: null, error: null })), at: Date.now() };
+      renderHeldWallets();
+      const queue = [...state.heldWallets.list];
+      const worker = async () => {
+        for (let row = queue.shift(); row; row = queue.shift()) {
+          try { row.contents = await walletContents(row.address, { fresh: force }); } catch (error) { row.error = error.message || 'Could not read'; }
+          renderHeldWallets();
+        }
+      };
+      // The strip and Recovery count wallets from these reads.
+      const settle = () => { if (state.activeView !== 'wallet') renderAll(); };
+      await Promise.all([worker(), worker(), worker(), worker()]);
+      settle();
+    })
+    .catch((error) => { state.heldWallets = { ...state.heldWallets, error: error.message || 'Could not list the keys' }; })
+    .finally(() => { state.heldWallets = { ...state.heldWallets, loading: false }; renderHeldWallets(); });
+}
+
+function heldWalletHoldsAnything(row) {
+  return Boolean(row.contents && (row.contents.lamports > 0 || row.contents.tokens.length || row.contents.openAccounts));
+}
+
+function sweepAllTargets() {
+  return (state.heldWallets.list || [])
+    .filter((row) => (row.kind === 'launch' || row.kind === 'retired') && row.readable !== false && walletSweepable(row.contents))
+    .map((row) => row.address);
+}
+
+function renderHeldWallets() {
+  const target = $('#heldWallets');
+  if (!target) return;
+  const { list, sweep, error } = state.heldWallets;
+  if (!list) { target.innerHTML = error ? `<p class="is-error">${escapeHtml(error)}</p>` : ''; return; }
+  const read = list.filter((row) => row.contents || row.error).length;
+  const holding = list.filter(heldWalletHoldsAnything);
+  const targets = sweepAllTargets();
+  const running = sweep && !sweep.finished;
+  const locked = state.secretPin.locked;
+  const button = running
+    ? `<button class="primary-button compact" type="button" disabled><span class="rail-spin" aria-hidden="true"></span><span>Sweeping ${sweep.done + 1} of ${sweep.total}</span></button>`
+    : locked && targets.length
+      ? '<button class="primary-button compact" type="button" data-action="unlock-secret-pin"><i class="fa-solid fa-lock-open"></i><span>Unlock PIN to sweep</span></button>'
+      : `<button class="primary-button compact" type="button" data-action="sweep-all-wallets" ${targets.length ? '' : 'disabled'}><i class="fa-solid fa-broom"></i><span>Sweep all${targets.length ? ` (${targets.length})` : ''}</span></button>`;
+  const status = (row) => {
+    if (sweep?.current === row.address) return '<span class="risk-badge">Sweeping</span>';
+    const failure = sweep?.failed.find((item) => item.address === row.address);
+    if (failure) return `<span class="risk-badge danger" title="${escapeHtml(failure.error)}">Not swept</span>`;
+    return '';
+  };
+  target.innerHTML = `
+    <div class="held-wallets-head">
+      <span><strong>Keys in Trebuchet</strong><small>${list.length} keys · ${read < list.length ? `${read} read · ` : ''}${holding.length} holding anything</small></span>
+      <span class="held-wallets-action">${button}${!running && !targets.length && read === list.length ? '<small>Nothing to sweep</small>' : ''}</span>
+    </div>
+    ${holding.length ? `<ul class="held-wallets-list">${holding.map((row) => `
+      <li>${walletChipHtml(row.address, { label: WALLET_KEY_LABELS[row.kind] || '' })}<span>${escapeHtml(walletContentsSummary(row.contents))}</span>${status(row)}</li>`).join('')}</ul>` : ''}
+    ${sweep?.finished ? `<p class="held-wallets-result" role="status">Swept ${sweep.total - sweep.failed.length} of ${sweep.total}${sweep.failed.length ? `; ${sweep.failed.length} not swept` : ''}.</p>` : ''}`;
+}
+
+async function sweepAllWallets() {
+  const targets = sweepAllTargets();
+  if (!targets.length || state.heldWallets.sweep?.finished === false) return;
+  if (state.fullRunRunning || state.realExecutionRunning) return;
+  const defaultDestination = state.destinations?.signed?.[0] || state.destinations?.funder || '';
+  const confirmation = await openSweepConfirmation({ publicKey: `${targets.length} launch wallet${targets.length === 1 ? '' : 's'}`, defaultDestination });
+  if (!confirmation) return;
+  const sweep = { total: targets.length, done: 0, current: null, failed: [], finished: false };
+  state.heldWallets = { ...state.heldWallets, sweep };
+  for (const address of targets) {
+    sweep.current = address;
+    renderHeldWallets();
+    try {
+      await state.apiClient.sweepPendingWallet({ walletPublicKey: address, destinationWallet: confirmation.destinationWallet });
+    } catch (error) {
+      sweep.failed.push({ address, error: error.message || 'Sweep failed' });
+    }
+    const row = (state.heldWallets.list || []).find((item) => item.address === address);
+    if (row) row.contents = await walletContents(address, { fresh: true }).catch(() => row.contents);
+    sweep.done += 1;
+  }
+  sweep.current = null;
+  sweep.finished = true;
+  renderHeldWallets();
+  refreshLocalApiState().catch(() => null);
 }
 
 function personalTokenName(token) {
@@ -19534,7 +19775,7 @@ function renderRecoveryWalletWorkspace() {
               <span class="ident" aria-hidden="true">${escapeHtml(shortAddress(wallet.publicKey).slice(0, 2))}</span>
               <span class="recovery-wallet-copy">
                 <span class="eyebrow">${escapeHtml(formatDate(wallet.createdAt))}</span>
-                <h3>${escapeHtml(fullAddress(wallet.publicKey))}</h3>
+                <h3>${walletChipHtml(wallet.publicKey)}</h3>
                 <p>${escapeHtml(walletState.detail)}</p>
               </span>
               <span class="timeline-actions">
@@ -19627,8 +19868,10 @@ function recoveryWalletsNeedingAttention() {
   const selectedPublicKey = selectedLaunchWalletPublicKey();
   const selectedHasOpenJournal = (state.recovery.journals || [])
     .some((journal) => !isTerminalJournal(journal) && journal.walletPublicKey === selectedPublicKey);
+  // Counted only once the chain shows something to sweep: an unread wallet is not called a problem.
   return (state.recovery.pendingWallets || [])
-    .filter((wallet) => wallet.publicKey !== selectedPublicKey || selectedHasOpenJournal);
+    .filter((wallet) => wallet.publicKey !== selectedPublicKey || selectedHasOpenJournal)
+    .filter((wallet) => walletSweepable(cachedWalletContents(wallet.publicKey)));
 }
 
 // A launch lives on its coin page: that page shows what is left and runs it. Recovery only lists
@@ -22475,7 +22718,7 @@ function renderRecoverySweepResult(sweep) {
       <div class="recovery-sweep-head">
         <span>
           <span class="eyebrow">Post-sweep cleanup</span>
-          <strong>${escapeHtml(fullAddress(sweep.publicKey))} to ${escapeHtml(fullAddress(sweep.destinationWallet))}</strong>
+          <strong>${walletChipHtml(sweep.publicKey)} to ${walletChipHtml(sweep.destinationWallet)}</strong>
         </span>
         <span class="risk-badge ${state}">${escapeHtml(badge)}</span>
       </div>
@@ -23603,7 +23846,7 @@ function coinPositionsHtml() {
   const rows = (list || []).map((position) => `
     <li>
       <span>
-        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${escapeHtml(fullAddress(position.owner))}</strong>
+        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${walletChipHtml(position.owner)}</strong>
         <small>${escapeHtml(fmtQuotePrice(position.priceLow, position))} to ${escapeHtml(fmtQuotePrice(position.priceHigh, position))} per coin · ${position.inRange ? 'the price is inside this range' : 'the price is outside this range'}</small>
       </span>
       <span class="coin-position-holds">${Number(position.quoteAmount).toFixed(4)} ${escapeHtml(position.quoteSymbol || '')} + ${escapeHtml(compactAmount(position.tokenAmount))} ${escapeHtml(coinSymbol)}</span>
@@ -23997,11 +24240,10 @@ function coinCreationHtml(creation, coin) {
         const meta = COIN_FACT_MARKS[step.state] || COIN_FACT_MARKS.todo;
         return `<li class="is-${escapeHtml(step.state)}" title="${escapeHtml(meta.label)}">
           <i class="fa-solid ${meta.icon}" aria-hidden="true"></i>
-          <span><strong>${escapeHtml(step.label)}</strong><small><span class="visually-hidden">${escapeHtml(meta.label)}: </span>${escapeHtml(step.detail || '')}</small></span>
+          <span><strong>${escapeHtml(step.label)}</strong><small><span class="visually-hidden">${escapeHtml(meta.label)}: </span>${step.id === 'return' && creation.walletPublicKey ? walletChipHtml(creation.walletPublicKey) : escapeHtml(step.detail || '')}</small></span>
         </li>`;
       }).join('')}
     </ul>
-    ${mismatches.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> The launch record and the chain disagree on ${mismatches.length === 1 ? 'one fact' : `${mismatches.length} facts`}. The chain is what counts.</p>` : ''}
     ${action ? `<div class="coin-actions">${action}</div>` : ''}`;
 }
 
@@ -24114,16 +24356,16 @@ function renderCoinPage(coin) {
   }
 
   const identity = account ? [
-    ['Supply', formatTokenAmount(account.supply, account.decimals)],
-    ['Mint authority', account.mintAuthority ? fullAddress(account.mintAuthority) : 'Revoked'],
-    ['Freeze authority', account.freezeAuthority ? fullAddress(account.freezeAuthority) : 'Revoked'],
-    ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${fullAddress(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
+    ['Supply', escapeHtml(formatTokenAmount(account.supply, account.decimals))],
+    ['Mint authority', account.mintAuthority ? walletChipHtml(account.mintAuthority) : 'Revoked'],
+    ['Freeze authority', account.freezeAuthority ? walletChipHtml(account.freezeAuthority) : 'Revoked'],
+    ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${walletChipHtml(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
   ] : [];
   body.innerHTML = `${header}
     ${state.coins.detailLoading ? '<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading the coin from the chain…</p>' : ''}
     ${state.coins.detailError ? `<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>` : ''}
 
-    ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl></section>` : ''}
+    ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${v}</dd></div>`).join('')}</dl></section>` : ''}
     ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Unfinished' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation, coin)}</section>` : ''}
     ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
     ${coinMarketEvidenceHtml(coin.mint)}
@@ -25597,6 +25839,7 @@ function applyBootState(boot) {
     failedJournalCount: boot.recovery?.failedJournalCount || 0,
     pendingWalletCount: boot.recovery?.pendingWalletCount || 0,
   };
+  refreshHeldWallets({ background: true });
   applyPersonalDiscoveryState(boot.discovery || {});
   state.managedWallets = Array.isArray(boot.wallets?.managed)
     ? boot.wallets.managed
@@ -27000,6 +27243,10 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'sweep-all-wallets') {
+    sweepAllWallets().catch((error) => notify(error.message || 'Sweep all failed'));
+    return;
+  }
   if (action === 'unlock-secret-pin') {
     unlockSecretPin().catch((error) => notify(error.message || 'Recovery PIN unlock failed'));
     return;
@@ -27482,6 +27729,7 @@ restoreLaunchProof();
 restoreClassicReportComparison();
 restoreDiscoveryRegistry();
 bindEvents();
+bindWalletChips();
 initializeSolflareWallet();
 setView('coins');
 renderAll();

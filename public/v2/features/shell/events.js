@@ -1023,6 +1023,10 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'sweep-all-wallets') {
+    sweepAllWallets().catch((error) => notify(error.message || 'Sweep all failed'));
+    return;
+  }
   if (action === 'unlock-secret-pin') {
     unlockSecretPin().catch((error) => notify(error.message || 'Recovery PIN unlock failed'));
     return;

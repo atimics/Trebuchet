@@ -267,6 +267,7 @@ function applyBootState(boot) {
     failedJournalCount: boot.recovery?.failedJournalCount || 0,
     pendingWalletCount: boot.recovery?.pendingWalletCount || 0,
   };
+  refreshHeldWallets({ background: true });
   applyPersonalDiscoveryState(boot.discovery || {});
   state.managedWallets = Array.isArray(boot.wallets?.managed)
     ? boot.wallets.managed
