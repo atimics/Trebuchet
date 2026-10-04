@@ -5505,7 +5505,20 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(Number(builtInPool?.supplyPercent || 0));
   if ($('#quotePoolVenue') && builtInVenue) $('#quotePoolVenue').value = builtInVenue.key;
   state.customPools = customPools.map(customPoolFromRecovery);
-  state.customPoolCounter = Math.max(state.customPoolCounter, state.customPools.length);
+  // Keep the id counter past every restored id (pairs may be numbered 2 and 3 after one was
+  // removed), and give a pair that was saved with a repeated id its own, so each pair edits itself.
+  state.customPoolCounter = Math.max(
+    state.customPoolCounter,
+    state.customPools.length,
+    ...state.customPools.map((pool) => Number(/^custom-pool-(\d+)$/.exec(pool.id)?.[1] || 0)),
+  );
+  const seenPoolIds = new Set();
+  state.customPools.forEach((pool) => {
+    if (seenPoolIds.has(pool.id)) {
+      do { state.customPoolCounter += 1; pool.id = `custom-pool-${state.customPoolCounter}`; } while (seenPoolIds.has(pool.id));
+    }
+    seenPoolIds.add(pool.id);
+  });
 
   const feeKeyRecipient = String(
     topology.feeKeyRecipient
@@ -19557,10 +19570,20 @@ function useHubToken() {
   resolveCustomQuoteToken(poolId, { quiet: true }).catch(() => {});
 }
 
+// Every pair has its own id: its settings are looked up by it, so two pairs sharing
+// one would edit the same pair and show the same values.
+function nextCustomPoolId() {
+  let id;
+  do {
+    state.customPoolCounter += 1;
+    id = `custom-pool-${state.customPoolCounter}`;
+  } while (state.customPools.some((pool) => pool.id === id));
+  return id;
+}
+
 function addCustomPool(hub = null) {
-  state.customPoolCounter += 1;
   state.customPools.push({
-    id: `custom-pool-${state.customPoolCounter}`,
+    id: nextCustomPoolId(),
     quoteSymbol: hub?.symbol || 'QUOTE',
     quoteMint: hub?.mint || '',
     supplyPercent: 5,

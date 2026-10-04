@@ -170,7 +170,20 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(Number(builtInPool?.supplyPercent || 0));
   if ($('#quotePoolVenue') && builtInVenue) $('#quotePoolVenue').value = builtInVenue.key;
   state.customPools = customPools.map(customPoolFromRecovery);
-  state.customPoolCounter = Math.max(state.customPoolCounter, state.customPools.length);
+  // Keep the id counter past every restored id (pairs may be numbered 2 and 3 after one was
+  // removed), and give a pair that was saved with a repeated id its own, so each pair edits itself.
+  state.customPoolCounter = Math.max(
+    state.customPoolCounter,
+    state.customPools.length,
+    ...state.customPools.map((pool) => Number(/^custom-pool-(\d+)$/.exec(pool.id)?.[1] || 0)),
+  );
+  const seenPoolIds = new Set();
+  state.customPools.forEach((pool) => {
+    if (seenPoolIds.has(pool.id)) {
+      do { state.customPoolCounter += 1; pool.id = `custom-pool-${state.customPoolCounter}`; } while (seenPoolIds.has(pool.id));
+    }
+    seenPoolIds.add(pool.id);
+  });
 
   const feeKeyRecipient = String(
     topology.feeKeyRecipient
