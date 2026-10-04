@@ -1172,50 +1172,6 @@ function buildV2ReportRecoverySection(data) {
     </table>`;
 }
 
-function buildV2ReportFieldVerificationSection(fieldVerification = null) {
-  if (!fieldVerification || typeof fieldVerification !== 'object') return '';
-  const requirements = Array.isArray(fieldVerification.requirements) ? fieldVerification.requirements : [];
-  const criteriaBlockers = Array.isArray(fieldVerification.criteriaBlockers) ? fieldVerification.criteriaBlockers : [];
-  const rows = requirements.length
-    ? requirements.map((item) => `<tr>
-      <td>${escapeHtml(item.label || item.id || '-')}</td>
-      <td>${escapeHtml(item.pass ? 'pass' : 'blocked')}</td>
-      <td>${escapeHtml(item.action || (item.pass ? 'none' : 'review-blocker'))}</td>
-      <td>${escapeHtml(item.detail || '-')}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="4">No field verification rows were generated.</td></tr>';
-  const criteriaRows = criteriaBlockers.length
-    ? `<h3 class="subsection">Replacement blockers</h3>
-      <table class="report-table">
-        <thead><tr><th>Criterion</th><th>Action</th><th>Evidence</th></tr></thead>
-        <tbody>${criteriaBlockers.map((item) => `<tr>
-          <td>${escapeHtml(item.label || item.id || '-')}</td>
-          <td>${escapeHtml(item.action || 'review-replacement-criterion')}</td>
-          <td>${escapeHtml(item.detail || '-')}</td>
-        </tr>`).join('')}</tbody>
-      </table>`
-    : '';
-  const criteriaBlockerCount = Number(fieldVerification.criteriaBlockerCount || criteriaBlockers.length || 0);
-  const state = fieldVerification.ready ? 'ok' : 'warn';
-  return `<h3 class="subsection">Field verification packet</h3>
-    <div class="banner banner-${state}">
-      <strong>${escapeHtml(fieldVerification.ready ? 'Field parity packet complete.' : 'Field parity packet blocked.')}</strong>
-      ${escapeHtml(`${fieldVerification.passCount || 0}/${fieldVerification.itemCount || requirements.length || 0} field checks passing · ${criteriaBlockerCount} criterion blocker${criteriaBlockerCount === 1 ? '' : 's'} · next action: ${fieldVerification.nextAction || 'none'}.`)}
-    </div>
-    <div class="pool-facts">
-      ${renderV2ReportFactRow('Packet version', fieldVerification.version || 1)}
-      ${renderV2ReportFactRow('Proof fingerprint', fieldVerification.proofFingerprint || '-')}
-      ${renderV2ReportFactRow('Replacement criteria', `${fieldVerification.criteriaPassCount || 0}/${fieldVerification.criteriaItemCount || 0}`)}
-      ${renderV2ReportFactRow('Criterion blockers', criteriaBlockerCount)}
-      ${renderV2ReportFactRow('Next detail', fieldVerification.nextDetail || '-')}
-    </div>
-    <table class="report-table">
-      <thead><tr><th>Field check</th><th>State</th><th>Action</th><th>Evidence</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    ${criteriaRows}`;
-}
-
 function buildV2LaunchReportHtml({ proof = currentLaunchProof(), config = currentLaunchConfig(), launchData = null } = {}) {
   config = proofConfigForFingerprint(proof, config);
   const rawData = launchData || buildV2LaunchReportData(proof, config);
