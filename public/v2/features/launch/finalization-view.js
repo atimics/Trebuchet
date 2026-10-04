@@ -248,12 +248,12 @@ function finalizationNoticeRows({
   if (report?.status === 'failed' || report?.failed) {
     rows.push({
       state: 'danger',
-      text: `Report publish failed: ${report.error || 'retry after checking RPC, Arweave, and Recovery PIN state'}. Click Publish report to retry.`,
+      text: `Report not published: ${report.error || 'no reason given'}.`,
     });
   } else if (report?.status === 'skipped') {
     rows.push({
       state: 'warn',
-      text: `Report publish skipped: ${report.reason || 'server did not return a permanent report URI'}. Click Publish report to retry when proof is ready.`,
+      text: `Report not published: ${report.reason || 'no permanent address came back'}.`,
     });
   }
   if (staleReport) {
@@ -274,7 +274,7 @@ function finalizationNoticeRows({
       text: 'Report publishing is off. Download the saved launch record before treating the launch as reviewable.',
     });
   }
-  const airdropIssue = airdropCompletionIssue(airdropStatus, 'publishing the report or sweeping');
+  const airdropIssue = airdropCompletionIssue(airdropStatus);
   if (airdropIssue) {
     rows.push({
       state: airdropStatus?.retryRequired ? 'danger' : 'warn',
@@ -538,7 +538,7 @@ function renderCancelRefundPanel(config = currentLaunchConfig()) {
   const detail = state.cancelRefund.error
     || (result
       ? result.message
-      : 'Sweep the selected launch wallet back to your destination. Already-created token or pools remain on-chain.');
+      : '');
   return `
     <div class="cancel-refund-panel ${escapeHtml(badge.className)}">
       <div class="cancel-refund-head">
@@ -595,17 +595,9 @@ function renderClassicBridge() {
       ? { label: readinessMeta.label === 'Ready' ? 'Review' : readinessMeta.label, className: 'warn' }
       : readinessMeta;
   const blockers = Array.isArray(readiness?.blockers) ? readiness.blockers : [];
-  const readinessNextDetail = {
-    '/api/create-token': 'Funding is verified. The next irreversible operation creates the mint, attaches metadata, and revokes token authorities.',
-    '/api/finish-token-creation': 'An on-chain mint exists, but metadata, supply, or authority safety is incomplete. Finish this mint before creating liquidity.',
-    '/api/create-lp': 'The token is complete. The next operation creates the planned markets, positions, and liquidity locks.',
-    '/api/resume-launch': 'Trebuchet found an incomplete liquidity operation and can resume only the missing work.',
-    '/api/reveal-sealed-metadata': 'Liquidity is locked. The next operation reveals the committed identity and makes metadata immutable.',
-    '/api/transfer-assets': 'Liquidity proof is complete. The next operation distributes assets, sweeps the launch wallet, and records final evidence.',
-  }[readiness?.nextEndpoint];
+  // Only why a step can't run: the panel's title and button already say what it does.
   const readinessDetail = quoteSafety.blockers[0]?.detail
     || blockers[0]?.detail
-    || readinessNextDetail
     || (state.apiStatus === 'connected' ? '' : 'Open the Trebuchet desktop app to continue.');
   const demoRunLabel = state.demoLaunchRunning
     ? 'Running test launch'
@@ -815,11 +807,7 @@ function renderClassicBridge() {
         : finalizationIssue
           ? String(finalizationIssue)
         : needsRunEnvelope
-          ? finalSweepAction
-            ? 'Confirm the return wallet, then approve the final sweep.'
-            : recoveringToken
-            ? 'Review the recovery once. Trebuchet will finish the existing mint, not create another.'
-            : 'Check what will be sent and the most it can spend.'
+          ? ''
         : readinessDetail;
     const panelBadge = state.demoActive && !complete ? '' : complete ? 'Done' : needsFunding || finalizationIssue ? 'Required' : needsRunEnvelope ? 'Review' : effectiveReadinessMeta.label;
     const panelClass = complete ? '' : needsFunding || finalizationIssue || needsRunEnvelope ? 'warn' : effectiveReadinessMeta.className;
@@ -921,7 +909,7 @@ function renderClassicBridge() {
       </div>
       ${readinessPanel({
         title: tokenComplete ? 'Token created' : mintEndpoint === '/api/finish-token-creation' ? 'Finish interrupted token' : 'Create token',
-        detail: tokenComplete ? 'Mint and freeze control are removed.' : mintEndpoint === '/api/finish-token-creation' ? 'The token was started but not finished. This finishes the same token; it does not make a new one.' : 'Checks the wallet, funding and token details first.',
+        detail: tokenComplete ? 'Mint and freeze control are removed.' : mintEndpoint === '/api/finish-token-creation' ? 'Started, not finished.' : '',
         canRun: mintCanRun,
         runLabel: mintEndpoint === '/api/finish-token-creation' ? 'Finish token safely' : 'Create token',
         complete: tokenComplete,
@@ -950,8 +938,8 @@ function renderClassicBridge() {
       ${readinessPanel({
         title: metadataRevealPending ? 'Reveal the name and logo' : liquidityComplete ? 'Liquidity created and locked' : 'Create and lock liquidity',
         detail: metadataRevealPending
-          ? 'Liquidity is locked. Publish the name, symbol and logo, then lock them for good.'
-          : liquidityComplete ? 'Pools are open and positions are locked.' : 'Takes a few minutes. Keep Trebuchet open.',
+          ? ''
+          : liquidityComplete ? '' : 'Takes a few minutes. Keep Trebuchet open.',
         canRun: metadataRevealPending ? revealCanRun : liquidityCanRun,
         runLabel: metadataRevealPending ? 'Reveal & lock identity' : readiness?.nextEndpoint === '/api/resume-launch' ? 'Resume missing work' : 'Create liquidity',
         complete: liquidityComplete && !metadataRevealPending,
@@ -976,12 +964,12 @@ function renderClassicBridge() {
       ${completedJournal && !finalSweepComplete ? renderLaunchCompleteCard(completedJournal) : ''}
       ${!completedJournal && !finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
       ${!finalSweepComplete && liveCoinFinishesOnCoinPage() ? `<section class="readiness-panel is-primary" aria-label="Airdrop and sweep">
-        <div><h3>Airdrop and sweep on the coin page</h3><p>The coin page sends the saved airdrop, then everything left in the launch wallet to the return wallet, and shows each step as it lands.</p></div>
+        <div><h3>Airdrop and sweep</h3></div>
         <button class="primary-button" type="button" data-action="inspect-recovery"><span>Open coin</span><i class="fa-solid fa-arrow-right"></i></button>
       </section>` : ''}
       ${!finalSweepComplete && finishDestinationReady && !liveCoinFinishesOnCoinPage() ? readinessPanel({
         title: 'Send everything to the return wallet',
-        detail: 'Fee Keys, airdrops, leftover tokens and SOL. The return wallet is checked again first.',
+        detail: '',
         canRun: finishCanRun,
         runLabel: 'Run final sweep',
         complete: false,

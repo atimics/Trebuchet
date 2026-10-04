@@ -2448,7 +2448,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /quote acquire route\$\{quoteRoutes\.length === 1 \? '' : 's'\} still need successful completion/);
   assert.match(js, /const fundingSolReady = Number\(funding\.missingSol \|\| 0\) <= 0\.001/);
   assert.match(js, /if \(phase\.id === 'pools'\) return topologyAllocationIssues\(config\.poolTopology\)\.length \? 'danger' : 'pass'/);
-  assert.match(js, /Selected launch-wallet balance is stale; wait for the desktop app refresh or click Check balance/);
+  assert.match(js, /Launch wallet balance is out of date\./);
   assert.match(js, /Selected launch-wallet balance has not been verified yet/);
   assert.match(js, /Launch wallet is short \$\{funding\.missingSol\.toFixed\(3\)\} SOL/);
   assert.match(js, /liveRunProgressContext/);
@@ -2625,9 +2625,9 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /manualPrefundStatus/);
   assert.match(js, /refreshManualPrefundBalance/);
   assert.match(js, /startQuoteAcquire/);
-  assert.match(js, /Funding estimate is stale for this launch model; rerun it before acquiring quote tokens/);
+  assert.match(js, /Funding estimate is out of date\./);
   assert.match(js, /data-action="\$\{hasCurrentEstimate \|\| savedAction \? 'start-quote-acquire' : 'estimate-funding'\}"/);
-  assert.match(js, /notify\(fundingEstimateStatus\.stale \? 'Rerun funding estimate first' : 'Run funding estimate first'\)/);
+  assert.match(js, /notify\(fundingEstimateStatus\.stale \? 'Funding estimate is out of date' : 'No funding estimate yet'\)/);
   assert.match(js, /if \(!classicFundingEstimateStatus\(currentLaunchConfig\(\)\)\.matchesConfig \|\| !items\.length\) return ''/);
   assert.match(js, /pollQuoteAcquire/);
   assert.match(js, /quotePoolGuidanceItems/);
@@ -2641,8 +2641,8 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /renderFinalizationPanel/);
   assert.match(js, /finalizationNoticeRows/);
   assert.doesNotMatch(js.match(/function renderFinalizationPanel\(\) \{[\s\S]*?\n\}/)?.[0] || '', /Classic artifact|replacement criteria|fieldHandoffRows/);
-  assert.match(js, /Report publish failed:/);
-  assert.match(js, /Click Publish report to retry/);
+  assert.match(js, /Report not published: /);
+  assert.doesNotMatch(js, /Click Publish report to retry|rerun it before|wait for the live poll/);
   assert.match(js, /Download a fresh final launch record so the artifact carries the final sweep hash/);
   assert.match(css, /report-parity-audit/);
   assert.match(css, /report-parity-list/);
@@ -3215,9 +3215,9 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /const plannedAirdropCount = Math\.max\(/);
   assert.match(js, /config\?\.poolTopology\?\.airdrop\?\.recipientCount/);
   assert.match(js, /plannedRecipientCount: plannedAirdropCount/);
-  assert.match(js, /retry before publishing the launch report/);
+  assert.match(js, /airdrop recipient\$\{airdropStatus\.failed === 1 \? '' : 's'\} not paid\./);
   assert.match(js, /run airdrop before publishing the launch report/);
-  assert.match(js, /airdropCompletionIssue\(airdropStatus\) \|\| 'Airdrop proof is incomplete; refresh or rerun airdrop before publishing the launch report\.'/);
+  assert.match(js, /airdropCompletionIssue\(airdropStatus\) \|\| 'Airdrop record incomplete\.'/);
   assert.match(js, /airdropIncomplete: true/);
   assert.match(js, /Existing launch report is not bound to the current proof/);
   assert.match(js, /Launch report publisher returned no permanent URI/);
@@ -3353,11 +3353,11 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /state\.fullRunStep = 'Retrying airdrop'/);
   assert.match(js, /runV2Airdrop\(\{ retry: true, skipConfirm: true, quiet: true, refreshReadiness: false \}\)/);
   assert.match(js, /Airdrop still has/);
-  assert.match(js, /Airdrop has \$\{airdropStatus\.failed\} failed recipient/);
+  assert.match(js, /\$\{airdropStatus\.failed\} airdrop recipient/);
   assert.match(js, /const airdropNeedsEvidenceRepair = Boolean\(/);
   assert.match(js, /&& \(airdropStatus\.pending > 0 \|\| airdropNeedsEvidenceRepair\)/);
   assert.match(js, /airdropNeedsEvidenceRepair \? 'Repair proof'/);
-  assert.match(js, /airdropCompletionIssue\(airdropStatus, 'publishing the report or sweeping'\)/);
+  assert.match(js, /const airdropIssue = airdropCompletionIssue\(airdropStatus\);/);
   assert.match(js, /const airdropIssue = airdropCompletionIssue\(airdropStatus\)/);
   assert.match(js, /airdropIssue\s*\|\| \(airdropComplete && airdropStatus\.configured/);
   assert.match(js, /fullRunCompletionAudit/);
@@ -3604,7 +3604,7 @@ test('v2 manual prefund evidence is bound to the selected wallet', () => {
 
   assert.equal(oldStatus.label, 'Recheck');
   assert.equal(oldStatus.className, 'warn');
-  assert.match(oldStatus.detail, /snapshot is stale/);
+  assert.match(oldStatus.detail, /^Out of date\.$/);
   assert.equal(oldSummary.className, 'warn');
 });
 
@@ -6680,7 +6680,7 @@ test('v2 Phase 4 exposes the missing arm step before Create token', () => {
   assert.match(bridgeSource, /executeNextTransferFinalizationIssue\(readiness, config\)/);
   assert.match(bridgeSource, /is-primary-action/);
   assert.match(bridgeSource, /data-action="review-and-arm-run"/);
-  assert.match(bridgeSource, /Check what will be sent and the most it can spend/);
+  assert.doesNotMatch(bridgeSource, /Check what will be sent and the most it can spend/);
   assert.match(bridgeSource, /data-action="execute-next-run"[\s\S]*?runLabel/);
   assert.doesNotMatch(bridgeSource, /\|\| readiness\?\.nextEndpoint\s*\|\|/);
   assert.match(reviewSource, /stageTransactions\(\{ openApproval: true, announce: false \}\)/);
@@ -6811,8 +6811,8 @@ test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /runtime-state\.js\?v=2/);
   assert.match(html, /api-client\.js\?v=47/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=270/);
-  assert.doesNotMatch(html, /app\.js\?v=270" type="module"/);
+  assert.match(html, /app\.js\?v=271/);
+  assert.doesNotMatch(html, /app\.js\?v=271" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -6988,8 +6988,8 @@ test('v2 retirement gate requires terminal final sweep evidence', () => {
   assert.match(js, /function airdropCompletionStatus\(proof = currentLaunchProof\(\), topology = currentClassicModel\(\)\)/);
   assert.match(js, /const evidence = comparisonAirdropDeliveryEvidenceState\(\{/);
   assert.match(js, /complete: evidence\.complete/);
-  assert.match(js, /function airdropCompletionIssue\(status = \{\}, actionLabel = 'final sweep'\)/);
-  assert.match(js, /Airdrop proof is incomplete \(\$\{missing\}\); refresh or rerun airdrop before \$\{actionLabel\}/);
+  assert.match(js, /function airdropCompletionIssue\(status = \{\}\)/);
+  assert.match(js, /Airdrop record incomplete: \$\{missing\}\./);
   assert.match(js, /function liveAirdropComplete\(topology, proof\) \{\s*const status = airdropCompletionStatus\(proof, topology\);\s*return status\.complete;\s*\}/);
   assert.doesNotMatch(js, /liveDone >= liveTotal && liveFailed === 0/);
   assert.match(js, /function proofHasReportablePoolIdentity\(proof = \{\}, config = currentLaunchConfig\(\)\)/);

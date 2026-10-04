@@ -23,7 +23,6 @@ async function generateManagedWallet() {
     const wallet = await state.apiClient.generateManagedWallet();
     addManagedWallet(wallet);
     renderAll();
-    notify('Launch wallet created');
     return wallet;
   }
 
@@ -52,7 +51,6 @@ async function importManagedWallet() {
   const wallet = await state.apiClient.importManagedWallet(secret);
   addManagedWallet(wallet);
   renderAll();
-  notify('Wallet imported into Trebuchet');
 }
 
 async function refreshSecretPinStatus({ reloadBoot = false } = {}) {
@@ -133,7 +131,6 @@ async function unlockSecretPin({ reason = 'unlock' } = {}) {
     if (selectedLaunchWalletPublicKey() && !walletIsUnlocked()) {
       await refreshLocalApiState();
       if (walletIsUnlocked()) {
-        notify('Launch wallet ready');
         return true;
       }
       if (walletLockReason() === 'unreadable') {
@@ -168,7 +165,6 @@ async function unlockLaunchWalletAndContinue() {
   state.launchWorkspace = 'configure';
   renderAll();
   setLaunchWorkspace('configure');
-  notify('Launch wallet ready. Continue with token and pools.');
   return true;
 }
 
@@ -392,7 +388,6 @@ async function loadWalletQr(publicKey = selectedLaunchWalletPublicKey()) {
     state.managedWallets = state.managedWallets.map((item) => (
       item.publicKey === publicKey ? { ...item, qrCode: result.qrCode } : item
     ));
-    notify('Funding QR loaded');
   } catch (error) {
     state.walletQr = {
       publicKey,
@@ -428,7 +423,6 @@ async function revealWalletSecret(publicKey = selectedLaunchWalletPublicKey()) {
   renderAll();
   try {
     state.revealedWallet = await state.apiClient.revealPendingWallet(publicKey);
-    notify('Recovery secret revealed');
   } catch (error) {
     state.revealedWallet = null;
     state.revealError = error.message || 'Recovery secret reveal failed';
@@ -444,7 +438,6 @@ function clearRevealedWalletSecret(publicKey = selectedLaunchWalletPublicKey()) 
   state.revealedWallet = null;
   state.revealError = null;
   renderWallet();
-  notify('Recovery secret hidden');
 }
 
 async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()) {

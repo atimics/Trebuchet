@@ -198,7 +198,7 @@ async function startQuoteAcquire() {
       resetQuoteAcquireState({ keepRunning: false });
     }
     const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig()), routes = quoteAcquireRoutes();
-    if (!fundingEstimateStatus.matchesConfig) { notify(fundingEstimateStatus.stale ? 'Rerun funding estimate first' : 'Run funding estimate first'); return; }
+    if (!fundingEstimateStatus.matchesConfig) { notify(fundingEstimateStatus.stale ? 'Funding estimate is out of date' : 'No funding estimate yet'); return; }
     if (!routes.length) { notify(quoteAcquireManualCount() ? 'This estimate needs manual quote-token prefund' : 'No quote acquire needed'); return; }
     if (!state.demoActive && !walletIsUnlocked()) {
       const unlocked = await unlockSecretPin({ reason: 'unlock' }); if (!unlocked || !walletIsUnlocked()) return;
@@ -230,7 +230,6 @@ async function clearQuoteAcquire() {
   resetQuoteAcquireState({ keepRunning: false });
   renderChartDeck();
   renderClassicBridge();
-  notify('Quote acquire job cleared');
 }
 
 async function reviewAndArmRun() {
@@ -251,13 +250,11 @@ async function reviewAndArmRun() {
   }
   if (state.lastRunEnvelope?.status === 'armed') {
     renderClassicBridge();
-    notify('Approved. It can run now.');
     return;
   }
   const recoveryEndpoint = recoveryAuthorizationEndpoint();
   if (recoveryEndpoint && stageRecoveryAuthorization(recoveryEndpoint)) {
     renderAll();
-    notify('Review the one remaining recovery action, then arm it');
     return;
   }
   if (!state.transactions.length) {
@@ -329,7 +326,6 @@ async function simulateLaunch() {
     state.launchMode = 'dry-run';
     await stageTransactions();
     setLaunchWorkspace('mint', { focus: true });
-    notify('Test mode on');
   } catch (error) {
     notify(error.message || 'Could not enable Test mode');
   }

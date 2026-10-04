@@ -692,7 +692,6 @@ function handleClick(event) {
       '11111111111111111111111111111111,1000',
       'So11111111111111111111111111111111111111112,2500',
     ].join('\n'));
-    notify('Sample airdrop CSV loaded');
     return;
   }
 
@@ -703,7 +702,6 @@ function handleClick(event) {
 
   if (action === 'clear-airdrop') {
     setAirdropText('');
-    notify('Airdrop CSV cleared');
     return;
   }
 
@@ -989,7 +987,6 @@ function handleClick(event) {
     refreshSecretPinStatus({ reloadBoot: true })
       .then(() => {
         renderAll();
-        notify('Recovery PIN status refreshed');
       })
       .catch((error) => notify(error.message || 'Recovery PIN refresh failed'));
     return;

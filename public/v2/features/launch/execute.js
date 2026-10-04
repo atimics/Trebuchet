@@ -256,7 +256,7 @@ function executeNextTransferFinalizationIssue(readiness, config = currentLaunchC
   const airdropStatus = airdropCompletionStatus(proof, safeConfig.poolTopology);
   const airdropIssue = airdropCompletionIssue(airdropStatus);
   if (airdropIssue) return airdropIssue;
-  if (!proof) return 'Refresh readiness so Trebuchet can verify the launch record before final sweep.';
+  if (!proof) return 'The launch record is not loaded.';
 
   const staleReport = staleReportPublishForProof(proof, safeConfig);
   if (staleReport) return 'Launch report is stale for this proof; republish before final sweep.';
@@ -588,7 +588,7 @@ async function runFullLaunch() {
           const failed = Array.isArray(finalization.airdrop?.failed) ? finalization.airdrop.failed.length : 0;
           if (!finalization.airdrop || failed > 0) {
             throw new Error(failed > 0
-              ? `Airdrop has ${failed} failed recipient${failed === 1 ? '' : 's'}; retry before final sweep.`
+              ? `${failed} airdrop recipient${failed === 1 ? '' : 's'} not paid.`
               : 'Airdrop did not complete; final sweep stopped.');
           }
         }
@@ -596,7 +596,7 @@ async function runFullLaunch() {
         proofConfig = proofConfigForFingerprint(proof, config);
         airdropStatus = airdropCompletionStatus(proof, proofConfig.poolTopology);
         if (airdropStatus.failed > 0) {
-          throw new Error(`Airdrop has ${airdropStatus.failed} failed recipient${airdropStatus.failed === 1 ? '' : 's'}; retry before final sweep.`);
+          throw new Error(`${airdropStatus.failed} airdrop recipient${airdropStatus.failed === 1 ? '' : 's'} not paid.`);
         }
         if (!airdropStatus.complete) {
           throw new Error(airdropCompletionIssue(airdropStatus) || 'Airdrop is not complete; final sweep stopped.');
