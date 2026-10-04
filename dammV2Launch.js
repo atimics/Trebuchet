@@ -142,8 +142,8 @@ export async function runLaunch({ id, walletSecretKey, deps }) {
           vanityCAScalar: candidate.keyType === 'scalar' ? candidate.scalar : null,
           vanityCAKeypair: candidate.keyType !== 'scalar' ? candidate.secretKey : null });
       }
-      if (created?.tokenMint !== record.steps.token.mint) throw new Error('Resume the saved token mint before continuing.');
       if (!created?.tokenMint || created.isSafe !== true) throw new Error('The token was not verified as safe, so no pool was created.');
+      if (created.tokenMint !== record.steps.token.mint) throw new Error('Resume the saved token mint before continuing.');
       record = store.update(id, {
         tokenMintKey: null,
         steps: { token: {

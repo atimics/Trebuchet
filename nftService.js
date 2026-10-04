@@ -54,6 +54,7 @@ import {
   priorityFeeLamports,
 } from './priorityFees.js';
 import { DEFAULT_IRYS_ADDRESS, DEVNET_IRYS_ADDRESS, networkImageUri } from './metadataUploadService.js';
+import { createNftSpendBudget, installNftUploadBudget, sendNftTransaction, spendCapLamports } from './nftSpendBudget.js';
 
 export const CORE_CREATE_COMPUTE_UNITS = 60_000;
 const MINT_CONCURRENCY = 4;
@@ -392,10 +393,11 @@ async function accountExists(connection, address) {
 }
 
 function withTimeout(promise, ms, label) {
+  let timer;
   return Promise.race([
     promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out`)), ms)),
-  ]);
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms); }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 async function uploadMetadata(id, umi, job, rpcUrl) {
@@ -482,7 +484,7 @@ function royaltiesPlugin(config) {
   };
 }
 
-async function createCollectionStep(id, umi, connection, job, computeIxs) {
+async function createCollectionStep(id, umi, connection, job, computeIxs, budget) {
   const record = store.get(id);
   if (record.collectionSignature) return;
   job.step = 'collection';
@@ -495,19 +497,20 @@ async function createCollectionStep(id, umi, connection, job, computeIxs) {
     store.update(id, (r) => { r.collectionSignature = 'confirmed-before-record'; });
     return;
   }
-  const result = await createCollection(umi, {
+  const builder = createCollection(umi, {
     collection: scalarUmiSigner(scalar),
     name: record.config.name,
     uri: record.collectionMetadataUri,
     plugins: record.config.creators.length ? [royaltiesPlugin(record.config)] : [],
-  }).prepend(computeIxs).sendAndConfirm(umi, { confirm: { commitment: 'confirmed' } });
+  }).prepend(computeIxs);
+  const result = await sendNftTransaction(builder, umi, connection, budget);
   store.update(id, (r) => {
     r.collectionSignature = sigString(result);
     r.collectionCreatedAt = new Date().toISOString();
   });
 }
 
-async function mintItems(id, umi, connection, job, computeIxs, { minBalanceLamports }) {
+async function mintItems(id, umi, connection, job, computeIxs, budget) {
   const record = store.get(id);
   const collectionAddress = umiPublicKey(record.collectionKey.address);
   const collection = await fetchCollectionV1(umi, collectionAddress);
@@ -518,7 +521,6 @@ async function mintItems(id, umi, connection, job, computeIxs, { minBalanceLampo
   job.total = record.items.length;
   job.done = record.items.length - queue.length;
   job.failed = 0;
-  const payer = new PublicKey(umi.identity.publicKey.toString());
   const writer = batchedWriter(id, { every: 20 });
   let halt = null;
 
@@ -540,13 +542,14 @@ async function mintItems(id, umi, connection, job, computeIxs, { minBalanceLampo
     }
     const scalar = store.keyScalar(item.key);
     if (!scalar) throw new Error(`Item #${index} key is locked or missing`);
-    const result = await createAsset(umi, {
+    const builder = createAsset(umi, {
       asset: scalarUmiSigner(scalar),
       collection,
       name: item.name,
       uri: item.metadataUri,
       ...(owner ? { owner } : {}),
-    }).prepend(computeIxs).sendAndConfirm(umi, { confirm: { commitment: 'confirmed' } });
+    }).prepend(computeIxs);
+    const result = await sendNftTransaction(builder, umi, connection, budget);
     recordMint(index, sigString(result));
   };
 
@@ -555,14 +558,11 @@ async function mintItems(id, umi, connection, job, computeIxs, { minBalanceLampo
     while (cursor < queue.length && !job.cancelled && !halt) {
       const index = queue[cursor++];
       job.detail = `Item #${index}`;
-      if (minBalanceLamports > 0 && (await connection.getBalance(payer)) < minBalanceLamports) {
-        halt = new Error('The run reached its approved spend cap. Estimate again and approve a new cap to continue.');
-        return;
-      }
       try {
         await mintOne(index);
         job.done += 1;
       } catch (error) {
+        if (error?.code === 'NFT_SPEND_CAP') halt = error;
         job.failed += 1;
         writer.apply((r) => {
           const it = r.items.find((x) => x.index === index);
@@ -582,6 +582,7 @@ async function mintItems(id, umi, connection, job, computeIxs, { minBalanceLampo
 }
 
 export function startRun(id, { rpcUrl, payerSecretKey, maxSpendSol }) {
+  spendCapLamports(maxSpendSol);
   return startJob(id, 'run', async (job) => {
     const umi = createNftUmi({ rpcUrl, payerSecretKey });
     const connection = new Connection(rpcUrl, 'confirmed');
@@ -601,18 +602,21 @@ export function startRun(id, { rpcUrl, payerSecretKey, maxSpendSol }) {
     });
 
     const balanceAtStart = await connection.getBalance(new PublicKey(walletPublicKey));
-    const minBalanceLamports = Number.isFinite(maxSpendSol) && maxSpendSol > 0
-      ? Math.max(0, balanceAtStart - Math.round(maxSpendSol * LAMPORTS_PER_SOL))
-      : 0;
+    const budget = createNftSpendBudget({ maxSpendSol, balanceLamports: balanceAtStart });
+    if (pendingUploadBytes(record) > 0) {
+      await installNftUploadBudget(umi, connection, budget, {
+        allowLocal: isLocalRpc(rpcUrl) && process.env.TREBUCHET_NFT_LOCAL_UPLOADER === '1',
+      });
+    }
 
     const microLamports = await samplePriorityFeeMicroLamports(connection);
     const computeIxs = umiComputeBudgetIxs({ units: CORE_CREATE_COMPUTE_UNITS, microLamports });
 
     await uploadMetadata(id, umi, job, rpcUrl);
     if (job.cancelled) return;
-    await createCollectionStep(id, umi, connection, job, computeIxs);
+    await createCollectionStep(id, umi, connection, job, computeIxs, budget);
     if (job.cancelled) return;
-    await mintItems(id, umi, connection, job, computeIxs, { minBalanceLamports });
+    await mintItems(id, umi, connection, job, computeIxs, budget);
     const spent = (balanceAtStart - (await connection.getBalance(new PublicKey(walletPublicKey)))) / LAMPORTS_PER_SOL;
     store.update(id, (r) => {
       r.run = { ...r.run, finishedAt: new Date().toISOString(), spentSol: spent + Number(r.run?.priorSpentSol || 0) };
