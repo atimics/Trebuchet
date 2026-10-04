@@ -27,56 +27,6 @@ function recoverySweepMetrics(sweep = {}) {
   };
 }
 
-function recoverySweepNextSteps(sweep = {}) {
-  if (sweep.error) {
-    return [
-      'Check the Recovery PIN, RPC health, and destination address, then retry Sweep.',
-      'Reveal the recovery secret only if you need to recover the wallet manually.',
-    ];
-  }
-  if (sweep.partial || sweep.stillPending) {
-    return [
-      'Recovery entry is still kept locally. Retry Sweep after RPC or token-account state settles.',
-      'Inspect the destination wallet and Activity log before deciding anything is clean.',
-      'Only Discard after confirming the wallet is empty or the secret is backed up elsewhere.',
-    ];
-  }
-  return [
-    'Assets moved to the destination and the local recovery entry was cleared.',
-    'Keep the report/proof bundle with the launch notes if this was final cleanup.',
-  ];
-}
-
-function renderRecoverySweepResult(sweep) {
-  if (!sweep) return '';
-  const metrics = recoverySweepMetrics(sweep);
-  const steps = recoverySweepNextSteps(sweep);
-  const state = sweep.error ? 'danger' : (sweep.partial || sweep.stillPending) ? 'warn' : '';
-  const badge = sweep.error ? 'Failed' : (sweep.partial || sweep.stillPending) ? 'Review' : 'Clean';
-  return `
-    <div class="recovery-sweep-result ${state}">
-      <div class="recovery-sweep-head">
-        <span>
-          <span class="eyebrow">Post-sweep cleanup</span>
-          <strong>${walletChipHtml(sweep.publicKey)} to ${walletChipHtml(sweep.destinationWallet)}</strong>
-        </span>
-        <span class="risk-badge ${state}">${escapeHtml(badge)}</span>
-      </div>
-      <p>${escapeHtml(sweep.message)}</p>
-      <div class="recovery-sweep-grid">
-        <span><small>Tokens</small><strong>${metrics.tokens}</strong></span>
-        <span><small>NFTs</small><strong>${metrics.nfts}</strong></span>
-        <span><small>SOL</small><strong>${metrics.sol.toFixed(4)}</strong></span>
-        <span><small>Warnings</small><strong>${metrics.warnings}</strong></span>
-        <span><small>Recovery entry</small><strong>${escapeHtml(metrics.entryState)}</strong></span>
-      </div>
-      <ul class="recovery-sweep-steps">
-        ${steps.map((step) => `<li>${escapeHtml(step)}</li>`).join('')}
-      </ul>
-    </div>
-  `;
-}
-
 let sweepConfirmationResolver = null;
 
 function setSweepConfirmationMessage(message, { error = false, input = null } = {}) {

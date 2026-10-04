@@ -172,16 +172,11 @@ try {
   assert.equal(await page.inputValue('#operatorPromptInput'), '');
   assert.doesNotMatch(await page.locator('body').innerText(), new RegExp(sentinelSecret));
 
-  await page.click('.nav-item[data-view="history"]');
-  await page.waitForSelector('#view-history.is-active');
-  await page.focus('#historyTabRecovery');
-  await page.keyboard.press('ArrowRight');
-  await page.waitForSelector('#historyPanelWallets:not([hidden])');
-  assert.equal(await page.getAttribute('#historyTabWallets', 'aria-selected'), 'true');
-  assert.equal(await page.getAttribute('#historyTabRecovery', 'tabindex'), '-1');
-  await page.keyboard.press('End');
-  await page.waitForSelector('#historyPanelJournal:not([hidden])');
-  assert.equal(await page.getAttribute('#historyTabJournal', 'aria-selected'), 'true');
+  // Every key lives on the Wallet page; there is no separate History or Recovery page.
+  assert.equal(await page.locator('.nav-item[data-view="history"]').count(), 0);
+  await page.click('.nav-item[data-view="wallet"]');
+  await page.waitForSelector('#view-wallet.is-active');
+  await page.waitForFunction(() => /Keys in Trebuchet/.test(document.querySelector('#heldWallets')?.textContent || ''));
 
   await page.click('.nav-item[data-view="coins"]');
   await page.click('[data-action="new-coin"]');
