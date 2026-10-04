@@ -270,10 +270,10 @@ questions:
 - The **execution ledger** explains what the guarded runner attempted.
 - The **launch dossier/report** presents token, pool, position, lock, Fee Key,
   airdrop, and sweep evidence.
-- The **field-verification packet** evaluates live proof, report proof, Classic
-  comparison, proof audit, and replacement criteria.
+- The **field-verification packet** evaluates live proof, report proof, and the
+  proof audit.
 - The **production attestation** is a separate reviewer decision over the exact
-  field-evidence and raw Classic artifact hashes.
+  field-evidence hash.
 
 The production release gate independently recomputes the launch proof
 fingerprint and terminal-sweep hash. Mutually consistent app-generated pass

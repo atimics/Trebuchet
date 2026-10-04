@@ -109,7 +109,6 @@ var TrebuchetCore = (() => {
     buildV2ExecutionReadiness: () => buildV2ExecutionReadiness,
     buildV2LaunchPlan: () => buildV2LaunchPlan,
     buildV2RecoveryAuthorizationPlan: () => buildV2RecoveryAuthorizationPlan,
-    classicArtifactRequiredValues: () => classicArtifactRequiredValues,
     collectionConfigIssues: () => collectionConfigIssues,
     compareStreamlinedLedger: () => compareStreamlinedLedger,
     createTrebuchetCore: () => createTrebuchetCore,
@@ -152,7 +151,6 @@ var TrebuchetCore = (() => {
     readImageDimensions: () => readImageDimensions,
     reconstructPartialResultsFromEvents: () => reconstructPartialResultsFromEvents,
     rentLamportsPerByte: () => rentLamportsPerByte,
-    requiredClassicComparisonRowIds: () => requiredClassicComparisonRowIds,
     setRentLamportsPerByte: () => setRentLamportsPerByte,
     streamlinedIntegrityDigest: () => streamlinedIntegrityDigest,
     supportLayersProblem: () => supportLayersProblem,
@@ -3500,68 +3498,6 @@ var TrebuchetCore = (() => {
         ...airdropFingerprint(proof?.airdrop || {})
       }
     });
-  }
-  function requiredClassicComparisonRowIds(proof = {}) {
-    const results = Array.isArray(proof?.liquidity?.results) ? proof.liquidity.results : [];
-    const positions = positionRecords(results);
-    const pools = poolFingerprint(results);
-    const poolIds = [.../* @__PURE__ */ new Set([
-      ...Array.isArray(proof?.liquidity?.poolIds) ? proof.liquidity.poolIds : [],
-      ...results.map((pool) => pool?.poolId || pool?.id).filter(Boolean)
-    ])];
-    const airdropRequired = Number(proof?.airdrop?.plannedRecipientCount || 0) > 0 || Number(proof?.airdrop?.deliveredCount || 0) > 0 || Number(proof?.airdrop?.failedCount || 0) > 0;
-    const rows = [];
-    const add = (id, required) => {
-      if (required) rows.push(id);
-    };
-    add("mint", proof?.token?.mint);
-    add("launch-wallet", proof?.walletPublicKey);
-    add("pools", poolIds.length > 0);
-    add("pool-quote-mints", pools.some((pool) => pool.quoteMint));
-    add("pool-parameters", pools.some((pool) => pool.supplyPercent != null || pool.tickSpacing != null || pool.initialPrice != null || pool.launchedSide));
-    add("pool-create-transactions", pools.some((pool) => pool.createPoolTx));
-    add("authority-posture", AUTHORITY_FIELDS.some((field) => optionalBoolean(proof?.token?.[field]) !== null));
-    add("positionCount", positions.length > 0 || Number(proof?.liquidity?.positionCount || 0) > 0);
-    add("lockedPositionCount", positions.some((position) => position?.locked === true) || Number(proof?.liquidity?.lockedPositionCount || 0) > 0);
-    add("feeKeyCount", positions.some((position) => position?.feeKeyNftMint || position?.feeKeyMint) || Number(proof?.liquidity?.feeKeyCount || 0) > 0);
-    add("position-nfts", positions.some((position) => position?.positionNftMint || position?.nftMint || position?.positionMint));
-    add("fee-key-nfts", positions.some((position) => position?.feeKeyNftMint || position?.feeKeyMint));
-    add("fee-key-recipients", positions.some((position) => position?.recipient || position?.transferredTo));
-    add("position-transactions", positions.some((position) => position?.openTx || position?.lockTx || position?.transferTx || position?.txIds?.open || position?.txIds?.lock || position?.txIds?.transfer));
-    add("position-liquidity-shape", positions.some((position) => position?.sharePercent != null || position?.supplyPercent != null || position?.lowerMultiplier != null || position?.upperMultiplier != null || position?.depthPct != null));
-    add("destination", terminalTransfer(proof?.transfer) ? proof.transfer.destinationWallet : proof?.destinationWallet || proof?.launchConfig?.poolTopology?.sweepDestination);
-    add("airdrop-delivery", airdropRequired);
-    add("airdrop-recipients", airdropRequired);
-    add("airdrop-transactions", airdropRequired);
-    return rows;
-  }
-  function classicArtifactRequiredValues(proof = {}) {
-    const results = Array.isArray(proof?.liquidity?.results) ? proof.liquidity.results : [];
-    const positions = positionRecords(results);
-    return [...new Set([
-      proof?.token?.mint,
-      proof?.walletPublicKey,
-      terminalTransfer(proof?.transfer) ? proof.transfer.destinationWallet : proof?.destinationWallet,
-      ...results.flatMap((pool) => [
-        pool?.poolId || pool?.id,
-        pool?.quoteMint || pool?.quoteAddress,
-        pool?.createPoolTx || pool?.txIds?.createPool
-      ]),
-      ...positions.flatMap((position) => [
-        position?.positionNftMint || position?.nftMint || position?.positionMint,
-        position?.feeKeyNftMint || position?.feeKeyMint,
-        position?.openTx || position?.txIds?.open,
-        position?.lockTx || position?.txIds?.lock,
-        position?.recipient,
-        position?.transferredTo,
-        position?.transferTx || position?.txIds?.transfer
-      ]),
-      ...Array.isArray(proof?.airdrop?.recipients) ? proof.airdrop.recipients.map((row) => row?.wallet || row?.recipient || row?.address) : [],
-      ...Array.isArray(proof?.airdrop?.transferred) ? proof.airdrop.transferred.flatMap((row) => [
-        row?.wallet || row?.recipient || row?.address,
-        row?.txId || row?.signature || row?.tx
-      ]) : []
-    ].filter((value) => typeof value === "string" && value.trim()))];
   }
 
   // packages/core/src/proof-verification.js

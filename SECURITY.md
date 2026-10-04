@@ -141,8 +141,7 @@ For a `v2+` release, the production gate:
 - recomputes the terminal-sweep evidence hash;
 - validates exact token, authority, pool, position, lock, Fee Key, recipient,
   airdrop, report, and sweep records;
-- requires the full retained Classic comparison input and proof-derived rows;
-- hashes the exact evidence file bytes and trimmed Classic input;
+- hashes the exact evidence file bytes;
 - verifies a recent, separate, two-person release attestation;
 - requires the field-run commit to be an ancestor of the release commit;
 - requires signed/notarized macOS and signed Windows build plans.

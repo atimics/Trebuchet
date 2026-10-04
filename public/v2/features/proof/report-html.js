@@ -1216,65 +1216,6 @@ function buildV2ReportFieldVerificationSection(fieldVerification = null) {
     ${criteriaRows}`;
 }
 
-function buildV2ReportParityAuditSection(audit = buildV2ReportParityAudit(), retirementGate = null, fieldVerification = null) {
-  const items = Array.isArray(audit?.items) ? audit.items : [];
-  const rows = items.length
-    ? items.map((item) => `<tr>
-      <td>${escapeHtml(item.label)}</td>
-      <td>${escapeHtml(item.state)}</td>
-      <td>${escapeHtml(item.detail)}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="3">No parity audit rows were generated.</td></tr>';
-  const gate = retirementGate || buildClassicRetirementGate(currentLaunchProof(), audit);
-  const gateRows = Array.isArray(gate?.requirements)
-    ? gate.requirements.map((item) => `<tr>
-      <td>${escapeHtml(item.id || '-')}</td>
-      <td>${escapeHtml(item.pass ? 'pass' : 'blocked')}</td>
-      <td>${escapeHtml(item.detail || '-')}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="3">No Classic retirement gate rows were generated.</td></tr>';
-  const criteria = Array.isArray(gate?.replacementCriteria) ? gate.replacementCriteria : [];
-  const criteriaRows = criteria.length
-    ? criteria.map((item) => `<tr>
-      <td>${escapeHtml(item.label || item.id || '-')}</td>
-      <td>${escapeHtml(item.pass ? 'pass' : 'needs proof')}</td>
-      <td>${escapeHtml(`${item.evidence || '-'} ${item.detail || ''}`.trim())}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="3">No replacement criteria audit rows were generated.</td></tr>';
-  return `<hr class="section-rule">
-    <div class="enum-badge">[ 07 ] &nbsp; Classic Parity</div>
-    <h2 class="section-title">Classic report parity audit</h2>
-    <div class="banner banner-${gate?.state === 'pass' ? 'ok' : 'warn'}">
-      <strong>${escapeHtml(gate?.state === 'pass' ? 'Classic retirement ready.' : 'Classic retirement blocked.')}</strong>
-      ${escapeHtml(`${gate?.passCount || 0}/${gate?.itemCount || 0} retirement checks passing · ${gate?.detail || 'Review live proof before replacing Classic.'}`)}
-    </div>
-    <h3 class="subsection">Classic retirement gate</h3>
-    <table class="report-table">
-      <thead><tr><th>Requirement</th><th>State</th><th>Evidence</th></tr></thead>
-      <tbody>${gateRows}</tbody>
-    </table>
-    ${buildV2ReportFieldVerificationSection(fieldVerification)}
-    <h3 class="subsection">Replacement criteria</h3>
-    <table class="report-table">
-      <thead><tr><th>Criterion</th><th>State</th><th>Evidence</th></tr></thead>
-      <tbody>${criteriaRows}</tbody>
-    </table>
-    <div class="banner banner-${audit?.status === 'pass' ? 'ok' : 'warn'}">
-      <strong>${escapeHtml(audit?.status === 'pass' ? 'Classic evidence complete.' : 'Review before retiring Classic.')}</strong>
-      ${escapeHtml(`${audit?.passCount || 0} of ${audit?.itemCount || items.length || 0} checks pass · ${audit?.missingCount || 0} missing · ${audit?.warnCount || 0} warning${Number(audit?.warnCount || 0) === 1 ? '' : 's'}.`)}
-    </div>
-    <div class="token-summary-grid">
-      <div class="token-stat"><div class="token-stat-label">Pass</div><div class="token-stat-value">${Number(audit?.passCount || 0)}</div></div>
-      <div class="token-stat"><div class="token-stat-label">Warnings</div><div class="token-stat-value">${Number(audit?.warnCount || 0)}</div></div>
-      <div class="token-stat"><div class="token-stat-label">Missing</div><div class="token-stat-value">${Number(audit?.missingCount || 0)}</div></div>
-    </div>
-    <h3 class="subsection">Evidence checklist</h3>
-    <table class="report-table">
-      <thead><tr><th>Classic field</th><th>State</th><th>Evidence</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
-}
-
 function buildV2LaunchReportHtml({ proof = currentLaunchProof(), config = currentLaunchConfig(), launchData = null } = {}) {
   config = proofConfigForFingerprint(proof, config);
   const rawData = launchData || buildV2LaunchReportData(proof, config);

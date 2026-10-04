@@ -497,12 +497,6 @@ const state = {
   launchProof: null,
   reportPublishing: false,
   lastReportPublish: null,
-  classicReportComparison: {
-    input: '',
-    result: null,
-    comparedAt: null,
-    error: null,
-  },
   airdropRunning: false,
   lastAirdropResult: null,
   demoLaunchRunning: false,

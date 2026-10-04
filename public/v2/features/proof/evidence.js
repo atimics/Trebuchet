@@ -509,70 +509,15 @@ function mergeLaunchConfigSnapshot(existing = null, incoming = null, existingPro
   return merged;
 }
 
-function classicComparisonResultObject(comparison = null) {
-  if (!comparison || typeof comparison !== 'object') return null;
-  if (
-    comparison.status
-    || comparison.proofFingerprint
-    || Array.isArray(comparison.rows)
-    || Number(comparison.fieldCount || 0) > 0
-  ) {
-    return comparison;
-  }
-  return null;
-}
-
-function reportParityClassicComparison(reportParity = null) {
+// Classic comparisons are no longer made or used; a saved proof's copy is dropped.
+function pruneLaunchProofReportParity(reportParity = null) {
   if (!reportParity || typeof reportParity !== 'object') return null;
-  const comparison = classicComparisonResultObject(reportParity.comparison);
-  if (comparison) return comparison;
-  const classicComparison = classicComparisonResultObject(reportParity.classicComparison);
-  if (classicComparison) return classicComparison;
-  return null;
-}
-
-function currentClassicComparisonForProof(proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  const normalizedComparison = normalizeClassicReportComparison(state.classicReportComparison).result;
-  const proofComparison = reportParityClassicComparison(proof?.reportParity);
-  if (normalizedComparison && classicComparisonMatchesProof(normalizedComparison, proof, config)) {
-    return normalizedComparison;
-  }
-  if (proofComparison && classicComparisonMatchesProof(proofComparison, proof, config)) {
-    return proofComparison;
-  }
-  return normalizedComparison || proofComparison || null;
-}
-
-function pruneLaunchProofReportParity(reportParity = null, proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  if (!reportParity || typeof reportParity !== 'object') return null;
-  const cleaned = { ...reportParity };
-  const comparison = classicComparisonResultObject(cleaned.comparison);
-  const classicComparison = classicComparisonResultObject(cleaned.classicComparison);
-  if (Object.prototype.hasOwnProperty.call(cleaned, 'comparison') && !comparison) delete cleaned.comparison;
-  else if (comparison && !classicComparisonMatchesProof(comparison, proof, config)) delete cleaned.comparison;
-  if (Object.prototype.hasOwnProperty.call(cleaned, 'classicComparison') && !classicComparison) delete cleaned.classicComparison;
-  else if (classicComparison && !classicComparisonMatchesProof(classicComparison, proof, config)) delete cleaned.classicComparison;
-  if (!cleaned.comparison && cleaned.classicComparison) cleaned.comparison = cleaned.classicComparison;
-  if (!reportParityClassicComparison(cleaned) && cleaned.classicArtifactCompared) {
-    cleaned.classicArtifactCompared = false;
-    cleaned.comparedAt = null;
-  }
+  const { comparison: _comparison, classicComparison: _classic, classicArtifactCompared: _compared, comparedAt: _comparedAt, ...cleaned } = reportParity;
   return Object.keys(cleaned).length ? cleaned : null;
 }
 
 function pruneLaunchProofReportParityForExport(reportParity = null, proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  const cleaned = pruneLaunchProofReportParity(reportParity, proof, config);
-  if (!cleaned || typeof cleaned !== 'object') return cleaned;
-  const comparison = classicComparisonResultObject(cleaned.comparison);
-  const classicComparison = classicComparisonResultObject(cleaned.classicComparison);
-  if (comparison && !classicComparisonIsRetirementGrade(comparison, proof, config)) delete cleaned.comparison;
-  if (classicComparison && !classicComparisonIsRetirementGrade(classicComparison, proof, config)) delete cleaned.classicComparison;
-  if (!cleaned.comparison && cleaned.classicComparison) cleaned.comparison = cleaned.classicComparison;
-  if (!reportParityClassicComparison(cleaned) && cleaned.classicArtifactCompared) {
-    cleaned.classicArtifactCompared = false;
-    cleaned.comparedAt = null;
-  }
-  return Object.keys(cleaned).length ? cleaned : null;
+  return pruneLaunchProofReportParity(reportParity, proof, config);
 }
 
 function pruneLaunchProofEvidenceArtifacts(proof = null, config = currentLaunchConfig()) {
@@ -648,12 +593,7 @@ function mergeLaunchProofEvidence(existing, incoming) {
   ) {
     delete merged.localDossier;
   }
-  if (!incoming.reportParity && existing.reportParity) {
-    const comparison = reportParityClassicComparison(existing.reportParity);
-    if (!comparison || classicComparisonMatchesProof(comparison, merged, mergedConfig)) {
-      merged.reportParity = existing.reportParity;
-    }
-  }
+  if (!incoming.reportParity && existing.reportParity) merged.reportParity = existing.reportParity;
   if (!incoming.transfer && existing.transfer) merged.transfer = existing.transfer;
   if (!incoming.destinationWallet && existing.destinationWallet) merged.destinationWallet = existing.destinationWallet;
   return pruneLaunchProofEvidenceArtifacts(merged, mergedConfig);

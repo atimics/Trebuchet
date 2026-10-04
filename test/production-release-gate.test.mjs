@@ -15,7 +15,6 @@ import {
   validateV2ReleaseEvidence,
 } from '../scripts/production-release-gate.mjs';
 import {
-  requiredClassicComparisonRowIds,
   v2LaunchProofFingerprint,
   v2TransferEvidenceHash,
 } from '../scripts/v2-proof-integrity.mjs';
@@ -23,24 +22,7 @@ import {
 const REQUIREMENT_IDS = [
   'live-proof',
   'report-proof',
-  'classic-comparison',
   'audit',
-  'replacement-criteria',
-];
-
-const CRITERION_IDS = [
-  'demo-end-to-end',
-  'wallet-lifecycle',
-  'vanity-options',
-  'token-config-parity',
-  'charts-and-viewport',
-  'pool-config-parity',
-  'funding-and-quote',
-  'held-reserve-backing',
-  'run-and-resume',
-  'sweep-report-proof',
-  'classic-artifact-comparison',
-  'proof-audit',
 ];
 
 const AUDIT_IDS = [
@@ -56,7 +38,6 @@ const AUDIT_IDS = [
   'terminal-journal-proof',
   'report-proof',
   'sweep-proof',
-  'classic-comparison',
 ];
 
 const TRUSTED_ENV = {
@@ -201,21 +182,6 @@ function completeV2Evidence() {
     itemCount: AUDIT_IDS.length,
     items: AUDIT_IDS.map((id) => ({ id, label: id, state: 'pass', detail: 'Proof attached.' })),
   };
-  const classicRetirementGate = {
-    id: 'classic-retirement',
-    source: 'trebuchet-v2-classic-retirement-gate',
-    proofFingerprint: fingerprint,
-    auditFingerprint: fingerprint,
-    title: 'Classic can be retired',
-    state: 'pass',
-    badge: 'Ready',
-    passCount: REQUIREMENT_IDS.length,
-    itemCount: REQUIREMENT_IDS.length,
-    requirements: passingRows(REQUIREMENT_IDS),
-    replacementCriteria: passingRows(CRITERION_IDS),
-    criteriaPassCount: CRITERION_IDS.length,
-    criteriaItemCount: CRITERION_IDS.length,
-  };
   const fieldVerification = {
     version: 1,
     source: 'trebuchet-v2-field-verification',
@@ -225,55 +191,16 @@ function completeV2Evidence() {
     ready: true,
     passCount: REQUIREMENT_IDS.length,
     itemCount: REQUIREMENT_IDS.length,
-    criteriaPassCount: CRITERION_IDS.length,
-    criteriaItemCount: CRITERION_IDS.length,
+    criteriaPassCount: 0,
+    criteriaItemCount: 0,
     blockerCount: 0,
     criteriaBlockerCount: 0,
     nextAction: 'none',
     nextDetail: 'Field verification is complete.',
     requirements: passingRows(REQUIREMENT_IDS, { actions: true }),
     blockers: [],
-    replacementCriteria: passingRows(CRITERION_IDS, { actions: true }),
+    replacementCriteria: [],
     criteriaBlockers: [],
-  };
-  const rawClassicArtifact = JSON.stringify({
-    source: 'classic',
-    launch: {
-      mint: proof.token.mint,
-      launchWallet: proof.walletPublicKey,
-      destinationWallet: proof.transfer.destinationWallet,
-      token: proof.token,
-      liquidity: proof.liquidity,
-      airdrop: proof.airdrop,
-      transfer: proof.transfer,
-    },
-  });
-  const comparisonRowIds = requiredClassicComparisonRowIds(proof);
-  const classicReportComparison = {
-    input: rawClassicArtifact,
-    comparedAt: EXPORTED_AT,
-    error: null,
-    result: {
-      status: 'pass',
-      comparedAt: EXPORTED_AT,
-      artifactKind: 'json',
-      artifactSource: 'classic-or-external',
-      structuredEvidence: true,
-      proofFingerprint: fingerprint,
-      passCount: comparisonRowIds.length,
-      warnCount: 0,
-      missingCount: 0,
-      mismatchCount: 0,
-      fieldCount: comparisonRowIds.length,
-      classicMint: proof.token.mint,
-      classicPoolCount: 1,
-      rows: comparisonRowIds.map((id) => ({
-        id,
-        label: id,
-        state: 'pass',
-        detail: 'Exact structured match.',
-      })),
-    },
   };
   const launchData = {
     dataVersion: 13,
@@ -283,7 +210,6 @@ function completeV2Evidence() {
     launchWallet: proof.walletPublicKey,
     mint: proof.token.mint,
     reportParityAudit,
-    classicRetirementGate,
     fieldVerification,
   };
   return {
@@ -295,9 +221,7 @@ function completeV2Evidence() {
     launchConfig,
     launchData,
     reportParityAudit,
-    classicRetirementGate,
     fieldVerification,
-    classicReportComparison,
   };
 }
 
@@ -313,7 +237,6 @@ function completeAttestation(bytes, evidence) {
     releaseTag: 'v2.0.0',
     decision: 'approved-for-v2-production',
     evidenceSha256: digest(bytes),
-    classicArtifactSha256: digest(Buffer.from(evidence.classicReportComparison.input.trim(), 'utf8')),
     fieldRunCommit: FIELD_RUN_COMMIT,
     fieldRunCompletedAt: '2026-07-16T11:55:00.000Z',
     operatedBy: 'field-operator',
@@ -357,7 +280,7 @@ test('v2 release evidence independently verifies the full non-demo parity packet
   assert.equal(result.poolCount, 1);
   assert.equal(result.positionCount, 1);
   assert.match(result.fingerprint, /^\{/);
-  assert.match(result.classicArtifactSha256, /^[a-f0-9]{64}$/);
+  assert.equal(result.classicArtifactSha256, undefined);
 
   const serverShapedProof = clone(completeV2Evidence());
   delete serverShapedProof.proof.liquidity.positionCount;
@@ -371,19 +294,12 @@ test('v2 release evidence independently verifies the full non-demo parity packet
   tamperedTransaction.proof.liquidity.results[0].mainPositions[0].txIds.open = 'TamperedOpenTx';
   assert.throws(() => validateV2ReleaseEvidence(tamperedTransaction), /independently derived proof evidence/);
 
-  const staleComparison = clone(completeV2Evidence());
-  staleComparison.classicReportComparison.result.proofFingerprint = 'stale-proof';
-  assert.throws(() => validateV2ReleaseEvidence(staleComparison), /Classic comparison fingerprint/);
-
-  const thinComparison = clone(completeV2Evidence());
-  thinComparison.classicReportComparison.result.rows = thinComparison.classicReportComparison.result.rows.slice(0, 2);
-  thinComparison.classicReportComparison.result.passCount = 2;
-  thinComparison.classicReportComparison.result.fieldCount = 2;
-  assert.throws(() => validateV2ReleaseEvidence(thinComparison), /missing required rows/);
-
-  const rawArtifactMissingTx = clone(completeV2Evidence());
-  rawArtifactMissingTx.classicReportComparison.input = rawArtifactMissingTx.classicReportComparison.input.replace('OpenPositionTx111', 'MissingTx');
-  assert.throws(() => validateV2ReleaseEvidence(rawArtifactMissingTx), /raw Classic artifact is missing/);
+  // A packet in the old Classic shape no longer passes: the release needs exactly these requirements.
+  const classicShaped = clone(completeV2Evidence());
+  classicShaped.fieldVerification.requirements.push({ id: 'classic-comparison', label: 'classic-comparison', pass: true, action: 'none', detail: 'Proof attached.' });
+  classicShaped.fieldVerification.passCount += 1; classicShaped.fieldVerification.itemCount += 1;
+  classicShaped.launchData.fieldVerification = classicShaped.fieldVerification;
+  assert.throws(() => validateV2ReleaseEvidence(classicShaped), /requirement count is incomplete|must be|field verification/);
 
   const wrongSweepHash = clone(completeV2Evidence());
   wrongSweepHash.proof.localDossier.sweepEvidenceHash = 'forged-sweep-hash';
@@ -398,7 +314,6 @@ test('v2 release attestation binds hashes, ancestry, freshness, and two-person r
     releaseTag: 'v2.0.0',
     releaseCommit: RELEASE_COMMIT,
     evidenceSha256: digest(bytes),
-    classicArtifactSha256: digest(Buffer.from(evidence.classicReportComparison.input.trim(), 'utf8')),
     exportedAt: evidence.exportedAt,
     now: NOW,
     isAncestor: ancestorCheck,

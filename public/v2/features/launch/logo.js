@@ -352,25 +352,6 @@ function validateProofFile(file) {
   return file;
 }
 
-function validateClassicArtifactFile(file) {
-  if (!file) return null;
-  const name = String(file.name || '');
-  const type = String(file.type || '');
-  const artifactLike = type === 'application/json'
-    || type === 'text/json'
-    || type === 'text/html'
-    || type === 'text/plain'
-    || (!type && /\.(json|html?|txt)$/i.test(name))
-    || /\.(json|html?|txt)$/i.test(name);
-  if (!artifactLike) {
-    throw new Error('Classic artifact must be JSON, HTML, or text');
-  }
-  if (file.size <= 0 || file.size > CLASSIC_ARTIFACT_IMPORT_LIMIT) {
-    throw new Error('Classic artifact must be 1MB or smaller');
-  }
-  return file;
-}
-
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     if (typeof FileReader !== 'function') {
