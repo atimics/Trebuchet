@@ -17569,7 +17569,7 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
 #view-wallet .wallet-module-heading { display: none; }
 .plan-preview.is-liquidity { grid-template-columns: minmax(0, 1fr); }
 .plan-preview.is-liquidity .preview-rows { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
-.plan-preview .preview-rows dd { white-space: nowrap; }
+
 .phase-tree-drawer { display: none; }
 #assetTable:not(:empty) { margin-top: 12px; }
 
@@ -17606,7 +17606,24 @@ body .logo-upload-meta { margin: 0; overflow: visible; text-overflow: clip; whit
   .coin-state-layout { grid-template-rows: auto minmax(0, 1fr); }
   .coin-state-layout > .launch-next-rail { align-self: start; }
 }
-#classicBridge[data-fund-tab="cost"] [data-fund-part="tokens"],
-#classicBridge[data-fund-tab="tokens"] [data-fund-part="cost"] { display: none; }
+#classicBridge[data-fund-tab="cost"] [data-fund-part]:not([data-fund-part="cost"]),
+#classicBridge[data-fund-tab="acquire"] [data-fund-part]:not([data-fund-part="acquire"]),
+#classicBridge[data-fund-tab="prefund"] [data-fund-part]:not([data-fund-part="prefund"]) { display: none; }
+
+/* Pair tokens: one line per pair, so the whole map fits a page. */
+.quote-guidance-head p, .quote-guidance-list article small { display: none; }
+.quote-guidance-list article { grid-template-columns: 18px minmax(0, 1fr) auto auto; align-items: center; padding: 6px 10px; }
+.quote-acquire-head p { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.quote-acquire-feed article small { display: none; }
 .funding-wallet-hint { grid-template-columns: minmax(0, 1fr) !important; }
 .funding-wallet-hint .operator-toolbar { flex-wrap: wrap; justify-content: flex-start; }
+
+/* Preview rows wrap long values (a full vanity address) instead of running under the rail. */
+.plan-preview, .plan-preview > * { min-width: 0; }
+.plan-preview .preview-rows > div { min-width: 0; }
+.plan-preview .preview-rows dt { flex: none; }
+.plan-preview .preview-rows dd { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+@container phase (max-width: 640px) {
+  .plan-preview, .plan-preview.is-liquidity { grid-template-columns: minmax(0, 1fr); }
+  .plan-preview.is-liquidity .preview-rows { grid-template-columns: minmax(0, 1fr); }
+}

@@ -5505,7 +5505,20 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(Number(builtInPool?.supplyPercent || 0));
   if ($('#quotePoolVenue') && builtInVenue) $('#quotePoolVenue').value = builtInVenue.key;
   state.customPools = customPools.map(customPoolFromRecovery);
-  state.customPoolCounter = Math.max(state.customPoolCounter, state.customPools.length);
+  // Keep the id counter past every restored id (pairs may be numbered 2 and 3 after one was
+  // removed), and give a pair that was saved with a repeated id its own, so each pair edits itself.
+  state.customPoolCounter = Math.max(
+    state.customPoolCounter,
+    state.customPools.length,
+    ...state.customPools.map((pool) => Number(/^custom-pool-(\d+)$/.exec(pool.id)?.[1] || 0)),
+  );
+  const seenPoolIds = new Set();
+  state.customPools.forEach((pool) => {
+    if (seenPoolIds.has(pool.id)) {
+      do { state.customPoolCounter += 1; pool.id = `custom-pool-${state.customPoolCounter}`; } while (seenPoolIds.has(pool.id));
+    }
+    seenPoolIds.add(pool.id);
+  });
 
   const feeKeyRecipient = String(
     topology.feeKeyRecipient
@@ -6034,9 +6047,12 @@ function fundTabs() {
   const config = currentLaunchConfig();
   const estimate = classicFundingEstimateStatus(config).matchesConfig ? state.classicFundingEstimate : null;
   const pairTokens = (estimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount();
-  return estimate && pairTokens
-    ? [{ id: 'cost', label: 'Cost' }, { id: 'tokens', label: 'Pair tokens' }]
-    : null;
+  if (!estimate || !pairTokens) return null;
+  return [
+    { id: 'cost', label: 'Cost' },
+    { id: 'acquire', label: 'Pair tokens' },
+    ...(quoteAcquireManualCount() ? [{ id: 'prefund', label: 'Send yourself' }] : []),
+  ];
 }
 function phaseTabsFor(workspace) {
   return workspace === 'fund' ? fundTabs() : PHASE_TABS[workspace] || null;
@@ -6056,7 +6072,8 @@ function phaseTabValue(id, runValue) {
     case 'return': return [text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge'), text('#reportSummary')].filter(Boolean).join(' · ') || '—';
     case 'airdrop': return text('#airdropSummary') || 'Off';
     case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
-    case 'tokens': return `${(state.classicFundingEstimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount()} to acquire`;
+    case 'acquire': return `${state.classicFundingEstimate?.autoSwapPlan?.length || 0} to buy`;
+    case 'prefund': return `${quoteAcquireManualCount()} to send`;
     default: return runValue || supply;
   }
 }
@@ -6068,7 +6085,8 @@ function currentPhaseSlide(workspace, runDone) {
   const chosen = state.phaseSlide[workspace];
   if (chosen && tabs.some((tab) => tab.id === chosen)) return chosen;
   // A phase that already holds its fact opens on its action, which shows the result.
-  return runDone ? 'run' : tabs[0].id;
+  // Funding has no action tab: its parts are Cost, Pair tokens and Send yourself.
+  return runDone && workspace !== 'fund' ? 'run' : tabs[0].id;
 }
 
 function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
@@ -6140,6 +6158,12 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
       }).observe(track);
     }
   }
+}
+
+// Re-applies the open phase's tabs after something redrew the panel under them.
+function syncPlanSlides() {
+  const workspace = state.launchWorkspace;
+  renderPlanSlides(workspace, coinFacts().find((fact) => fact.id === workspace));
 }
 
 function setPlanSlide(id) {
@@ -14097,8 +14121,10 @@ function renderQuoteAcquirePanel() {
     ? '<button class="pill-button" type="button" data-action="clear-quote-acquire">Clear</button>'
     : '';
 
+  const manualPanel = renderManualPrefundPanel();
+  // Two parts, each its own tab on the Funding row: the acquire routes, then the tokens you send yourself.
   return `
-    <div class="quote-acquire-panel">
+    <div class="quote-acquire-panel" data-fund-part="acquire">
       <div class="quote-acquire-head">
         <span>
           <span class="eyebrow">Quote-token acquire</span>
@@ -14121,9 +14147,9 @@ function renderQuoteAcquirePanel() {
         ${rows || '<article><i class="fa-solid fa-wallet"></i><span><strong>No route rows yet</strong><small>Estimate funding first</small></span></article>'}
       </div>
       <div class="operator-toolbar compact">${button}${clear}</div>
-      ${renderManualPrefundPanel()}
       ${state.quoteAcquire.error ? `<p class="quote-acquire-error">${escapeHtml(state.quoteAcquire.error)}</p>` : ''}
     </div>
+    ${manualPanel ? `<div data-fund-part="prefund">${manualPanel}</div>` : ''}
   `;
 }
 
@@ -15024,7 +15050,7 @@ function renderClassicBridge() {
       <div data-fund-part="cost">
         ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
       </div>
-      ${estimate && (routeCount || manualQuoteCount) ? `<div data-fund-part="tokens">${renderQuoteAcquirePanel()}</div>` : ''}
+      ${estimate && (routeCount || manualQuoteCount) ? renderQuoteAcquirePanel() : ''}
       <div class="launch-phase-actions">
         <button class="primary-button" type="button" data-next-fact hidden></button>
       </div>
@@ -15127,6 +15153,8 @@ function renderClassicBridge() {
       <div class="launch-phase-secondary"><button class="text-button" type="button" data-view="history"><i class="fa-solid fa-life-ring"></i> Open full recovery history</button></div>` : ''}
     </section>
   `;
+  // The bridge was just rewritten: which Funding tab shows has to follow it.
+  syncPlanSlides();
   // Balance polling and other async refreshes rebuild this bridge directly.
   // Reapply the active workspace immediately so only one launch phase is visible.
   renderLaunchWorkspace();
@@ -19542,10 +19570,20 @@ function useHubToken() {
   resolveCustomQuoteToken(poolId, { quiet: true }).catch(() => {});
 }
 
+// Every pair has its own id: its settings are looked up by it, so two pairs sharing
+// one would edit the same pair and show the same values.
+function nextCustomPoolId() {
+  let id;
+  do {
+    state.customPoolCounter += 1;
+    id = `custom-pool-${state.customPoolCounter}`;
+  } while (state.customPools.some((pool) => pool.id === id));
+  return id;
+}
+
 function addCustomPool(hub = null) {
-  state.customPoolCounter += 1;
   state.customPools.push({
-    id: `custom-pool-${state.customPoolCounter}`,
+    id: nextCustomPoolId(),
     quoteSymbol: hub?.symbol || 'QUOTE',
     quoteMint: hub?.mint || '',
     supplyPercent: 5,
@@ -25256,7 +25294,7 @@ function handleClick(event) {
     }[action];
     if (actionWorkspace) {
       // Each of these acts on the phase's own panel, or on the address settings.
-      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : 'run' };
+      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : actionWorkspace === 'fund' ? 'cost' : 'run' };
       setLaunchWorkspace(actionWorkspace);
     }
   }

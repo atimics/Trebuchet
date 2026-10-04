@@ -895,7 +895,7 @@ function renderClassicBridge() {
       <div data-fund-part="cost">
         ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
       </div>
-      ${estimate && (routeCount || manualQuoteCount) ? `<div data-fund-part="tokens">${renderQuoteAcquirePanel()}</div>` : ''}
+      ${estimate && (routeCount || manualQuoteCount) ? renderQuoteAcquirePanel() : ''}
       <div class="launch-phase-actions">
         <button class="primary-button" type="button" data-next-fact hidden></button>
       </div>
@@ -998,6 +998,8 @@ function renderClassicBridge() {
       <div class="launch-phase-secondary"><button class="text-button" type="button" data-view="history"><i class="fa-solid fa-life-ring"></i> Open full recovery history</button></div>` : ''}
     </section>
   `;
+  // The bridge was just rewritten: which Funding tab shows has to follow it.
+  syncPlanSlides();
   // Balance polling and other async refreshes rebuild this bridge directly.
   // Reapply the active workspace immediately so only one launch phase is visible.
   renderLaunchWorkspace();
