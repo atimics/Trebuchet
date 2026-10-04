@@ -132,3 +132,55 @@ test('the page says what each wallet did, and counts it', () => {
   assert.match(html, /Sold 10 · older history not read/);
   assert.match(html, /What happened/);
 });
+
+test('a later read starts from the saved cursor and adds only the new transactions', async () => {
+  const program = TOKEN_2022_PROGRAM_ID.toBase58();
+  const account = getAssociatedTokenAddressSync(new PublicKey(mint), new PublicKey(sold), true, TOKEN_2022_PROGRAM_ID).toBase58();
+  const asked = [];
+  const sigs = { s2: tx({ pre: [balance(sold, mint, 60)], post: [balance(sold, mint, 0)], keys: [sold], lamports: [0, 9_000_000] }) };
+  const connection = {
+    getParsedTokenAccountsByOwner: async () => ({ value: [] }),
+    getSignaturesForAddress: async (key, options) => { asked.push({ key: key.toBase58(), until: options.until }); return [{ signature: 's2' }]; },
+    getParsedTransactions: async (list) => list.map((sig) => sigs[sig] || null),
+  };
+  const known = { [sold]: { soldRaw: '40', burnedRaw: '5', boughtRaw: '0', sentRaw: '0', transferredInRaw: '0', cursors: { [account]: 's1' }, partial: false } };
+  const [row] = await readAirdropHistory(connection, { mint, tokenProgram: program, recipients: [{ wallet: sold, txIds: [] }], known });
+  assert.deepEqual(asked, [{ key: account, until: 's1' }], 'only what is newer than the saved cursor is asked for');
+  assert.deepEqual([row.soldRaw, row.burnedRaw], ['100', '5'], 'new sales add to the saved totals');
+  assert.equal(row.cursors[account], 's2', 'the cursor moves to the newest transaction read');
+});
+
+test('a failed read keeps what was already known', async () => {
+  const connection = {
+    getParsedTokenAccountsByOwner: async () => ({ value: [] }),
+    getSignaturesForAddress: async () => { throw new Error('429 Too Many Requests'); },
+  };
+  const known = { [sold]: { soldRaw: '40', burnedRaw: '0', boughtRaw: '0', sentRaw: '0', transferredInRaw: '0', cursors: { a: 's1' }, partial: false } };
+  const [row] = await readAirdropHistory(connection, { mint, tokenProgram: TOKEN_2022_PROGRAM_ID.toBase58(), recipients: [{ wallet: sold, txIds: [] }], known });
+  assert.deepEqual([row.soldRaw, row.cursors, row.error], ['40', { a: 's1' }, '429 Too Many Requests']);
+});
+
+test('history is saved on disk per mint and wallet, and survives a restart', async (t) => {
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'airdrop-history-'));
+  const previous = process.env.TREBUCHET_CONFIG_DIR;
+  process.env.TREBUCHET_CONFIG_DIR = dir;
+  t.after(() => { if (previous === undefined) delete process.env.TREBUCHET_CONFIG_DIR; else process.env.TREBUCHET_CONFIG_DIR = previous; });
+  const store = await import(`../airdropHistoryStore.js?fresh=${Date.now()}`);
+  assert.deepEqual(store.get(mint), {});
+  store.save(mint, { [held]: { soldRaw: '1', nowRaw: '9', cursors: { a: 's1' } } });
+  store.save(mint, { [sold]: { burnedRaw: '2', nowRaw: '0', cursors: {} } });
+  const again = await import(`../airdropHistoryStore.js?fresh=${Date.now() + 1}`);
+  assert.deepEqual(Object.keys(again.get(mint)).sort(), [held, sold].sort(), 'a save keeps the wallets saved before');
+  assert.equal(again.get(mint)[held].cursors.a, 's1');
+});
+
+test('the route rereads only wallets whose balance moved since the saved read', () => {
+  const server = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  assert.match(server, /const known = airdropHistoryStore\.get\(mint\);/);
+  assert.match(server, /if \(saved\) return saved\.nowRaw !== row\.nowRaw \|\| Boolean\(saved\.error\);/);
+  assert.match(server, /readAirdropHistory\(connection, \{ mint, tokenProgram: account\.program, recipients: stale, known \}\)/);
+  const coins = fs.readFileSync(new URL('../public/v2/features/discovery/coins.js', import.meta.url), 'utf8');
+  assert.match(coins, /const seen = target\?\.mint \? coinPageCache\.get\(target\.mint\) : null;/);
+});

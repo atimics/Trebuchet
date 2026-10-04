@@ -191,32 +191,59 @@ async function parsedTransactions(connection, signatures) {
   }
 }
 
+const TOTAL_FIELDS = ['burnedRaw', 'soldRaw', 'boughtRaw', 'sentRaw', 'transferredInRaw'];
+const MAX_PAGES = 6;
+
+// A token account's transactions newer than `until`, newest first, a page at a time.
+// `complete` is false when there were more than the pages read allow.
+async function signaturesSince(connection, account, until) {
+  const found = [];
+  let before;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const list = await connection.getSignaturesForAddress(new PublicKey(account), { limit: HISTORY_LIMIT, ...(until ? { until } : {}), ...(before ? { before } : {}) }, 'confirmed');
+    found.push(...list);
+    if (list.length < HISTORY_LIMIT) return { list: found, complete: true };
+    before = list[list.length - 1].signature;
+  }
+  return { list: found, complete: false };
+}
+
 /**
- * Each wallet's burns, sells, buys, sends, and receipts of the mint since its airdrop,
- * read from its token accounts' history. The airdrop's own transactions are skipped.
+ * Each wallet's burns, sells, buys, sends, and receipts of the mint since its airdrop.
+ * `known` is what was read before (per wallet: totals, and the newest transaction read on
+ * each token account); only transactions newer than that are read and added to it.
+ * The airdrop's own transactions are skipped. A wallet whose read fails keeps what was known.
  */
-export async function readAirdropHistory(connection, { mint, tokenProgram, recipients }) {
+export async function readAirdropHistory(connection, { mint, tokenProgram, recipients, known = {} }) {
   const mintKey = new PublicKey(mint);
   const programKey = new PublicKey(tokenProgram);
   const results = new Map();
   const work = [...recipients];
   const next = async () => {
     for (let row = work.shift(); row; row = work.shift()) {
-      const totals = { burnedRaw: 0n, soldRaw: 0n, boughtRaw: 0n, sentRaw: 0n, transferredInRaw: 0n, partial: false, error: null };
+      const before = known[row.wallet] || null;
+      const totals = Object.fromEntries(TOTAL_FIELDS.map((field) => {
+        try { return [field, BigInt(before?.[field] || '0')]; } catch { return [field, 0n]; }
+      }));
+      const cursors = { ...(before?.cursors || {}) };
+      let partial = Boolean(before?.partial);
       try {
         const owner = new PublicKey(row.wallet);
-        const accounts = new Set([getAssociatedTokenAddressSync(mintKey, owner, true, programKey).toBase58()]);
+        const accounts = new Set([getAssociatedTokenAddressSync(mintKey, owner, true, programKey).toBase58(), ...Object.keys(cursors)]);
         const owned = await connection.getParsedTokenAccountsByOwner(owner, { mint: mintKey }, 'confirmed').catch(() => ({ value: [] }));
         owned.value.forEach((item) => accounts.add(keyOf(item.pubkey)));
         const skip = new Set(row.txIds || []);
         const signatures = new Set();
+        const newest = {};
         for (const account of accounts) {
-          const list = await connection.getSignaturesForAddress(new PublicKey(account), { limit: HISTORY_LIMIT }, 'confirmed');
-          if (list.length >= HISTORY_LIMIT) totals.partial = true;
+          const { list, complete } = await signaturesSince(connection, account, cursors[account]);
+          // Older history past the pages read is left unread on a first read only; later reads start from the cursor.
+          if (!complete && !cursors[account]) partial = true;
+          if (list[0]) newest[account] = list[0].signature;
           list.filter((item) => !item.err && !skip.has(item.signature)).forEach((item) => signatures.add(item.signature));
         }
         const { txs, unread } = signatures.size ? await parsedTransactions(connection, [...signatures]) : { txs: [], unread: 0 };
-        if (unread) totals.partial = true;
+        if (unread) partial = true;
         for (const tx of txs) {
           const change = classifyHoldingChange(tx, { owner: row.wallet, mint });
           if (!change) continue;
@@ -224,25 +251,25 @@ export async function readAirdropHistory(connection, { mint, tokenProgram, recip
           const field = { sold: 'soldRaw', bought: 'boughtRaw', sent: 'sentRaw', received: 'transferredInRaw' }[change.kind];
           if (field) totals[field] += change.amountRaw;
         }
+        Object.assign(cursors, newest);
+        results.set(row.wallet, { totals, cursors, partial, error: null });
       } catch (error) {
-        totals.error = error.message || 'History not readable';
+        results.set(row.wallet, before
+          ? { totals, cursors: before.cursors || {}, partial: Boolean(before.partial), error: error.message || 'History not readable' }
+          : { totals, cursors: {}, partial, error: error.message || 'History not readable' });
       }
-      results.set(row.wallet, totals);
     }
   };
   await Promise.all(Array.from({ length: HISTORY_CONCURRENCY }, next));
   return recipients.map((row) => {
-    const totals = results.get(row.wallet);
-    const text = (value) => value.toString();
+    const { totals, cursors, partial, error } = results.get(row.wallet);
     return {
       wallet: row.wallet,
-      burnedRaw: text(totals.burnedRaw),
-      soldRaw: text(totals.soldRaw),
-      boughtRaw: text(totals.boughtRaw),
-      sentRaw: text(totals.sentRaw),
-      transferredInRaw: text(totals.transferredInRaw),
-      partial: totals.partial,
-      error: totals.error,
+      ...Object.fromEntries(TOTAL_FIELDS.map((field) => [field, totals[field].toString()])),
+      cursors,
+      partial,
+      error,
+      readAt: new Date().toISOString(),
     };
   });
 }

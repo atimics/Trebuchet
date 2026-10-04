@@ -83,6 +83,7 @@ import {
 import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
 import { airdropDeliveries, readAirdropHistory, readAirdropHolders } from './coinAirdrop.js';
+import * as airdropHistoryStore from './airdropHistoryStore.js';
 import * as secretStore from './secretStore.js';
 import { secretInventory, walletSecretState } from './secretInventory.js';
 import { resetWithArchive } from './secretReset.js';
@@ -2539,6 +2540,18 @@ app.post('/api/cancel-vanity-grind', async (req, res) => {
   }
 });
 
+// Measure this computer's grind speed: a 3-second split-key run that saves nothing.
+app.post('/api/v2/vanity/calibrate', async (_req, res) => {
+  try {
+    if (!(await vanityAvailability()).available) return res.status(503).json({ success: false, error: 'This build has no grinder.' });
+    const mod = await import('./vanityKeygen.js');
+    res.json({ success: true, calibration: await mod.calibrateVanityRate({ seconds: 3 }) });
+  } catch (error) {
+    const busy = /already in progress/i.test(error.message || '');
+    res.status(busy ? 409 : 500).json({ success: false, error: busy ? 'A grind is running' : error.message });
+  }
+});
+
 app.post('/api/generate-vanity-wallet', async (req, res) => {
   try {
     const demoMode = isDemoMode();
@@ -2654,10 +2667,12 @@ app.post('/api/check-balance-detailed', async (req, res) => {
 // app holds the address's key. Reads are kept 15 seconds.
 const TOKEN_PROGRAM_ADDRESSES = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'];
 const walletContentsCache = new Map();
+// Read from the stored records only: decrypting every saved key to answer this, once per
+// wallet read, logged a failure per key while the PIN was locked.
 function heldKeyKind(address) {
-  const launch = pendingWallets.get(address);
+  const launch = pendingWallets.keyRecord(address);
   if (launch) return launch.retiredAt ? 'retired' : 'launch';
-  return vanityCaStore.listMetadata().some((entry) => entry.publicKey === address) ? 'vanity' : null;
+  return vanityCaStore.hasAddress(address) ? 'vanity' : null;
 }
 async function readWalletContents(address) {
   const key = new PublicKey(address).toBase58();
@@ -3388,7 +3403,7 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
     // The page shows the wallet itself (its chip lists what it holds), not a sentence about it.
     detail: launchWalletLamports === null ? 'Not checked on-chain.' : null,
   });
-  const walletEntry = journal?.walletPublicKey ? pendingWallets.get(journal.walletPublicKey) : null;
+  const walletEntry = journal?.walletPublicKey ? pendingWallets.keyRecord(journal.walletPublicKey) : null;
   const { events: _events, ...journalWithoutEvents } = journal || {};
   return {
     journalId: journal?.id || null,
@@ -3498,12 +3513,24 @@ app.get('/api/v2/coins/:mint/airdrop', async (req, res) => {
     const account = await readMintAccount(connection, mint);
     if (!account) return res.status(404).json({ success: false, error: 'Not a readable mint' });
     const recipients = await readAirdropHolders(connection, { mint, tokenProgram: account.program, deliveries });
-    // History only for wallets whose balance moved: those are the ones that burned, sold, bought, or sent.
-    const moved = recipients.filter((row) => row.nowRaw != null && row.nowRaw !== row.receivedRaw);
-    const history = moved.length ? await readAirdropHistory(connection, { mint, tokenProgram: account.program, recipients: moved }) : [];
-    const byWallet = new Map(history.map((row) => [row.wallet, row]));
-    const rows = recipients.map((row) => (byWallet.has(row.wallet) ? { ...row, history: byWallet.get(row.wallet) } : row));
-    res.json({ success: true, airdrop: { mint, decimals: account.decimals, recipients: rows, readAt: new Date().toISOString() } });
+    // History is saved per wallet with the balance it explains. It is read again, from where it
+    // left off, only for a wallet whose balance has moved since, or whose last read failed.
+    const known = airdropHistoryStore.get(mint);
+    const stale = recipients.filter((row) => {
+      if (row.nowRaw == null) return false;
+      const saved = known[row.wallet];
+      if (saved) return saved.nowRaw !== row.nowRaw || Boolean(saved.error);
+      return row.nowRaw !== row.receivedRaw;
+    });
+    const fresh = stale.length
+      ? await readAirdropHistory(connection, { mint, tokenProgram: account.program, recipients: stale, known })
+      : [];
+    const nowByWallet = new Map(recipients.map((row) => [row.wallet, row.nowRaw]));
+    airdropHistoryStore.save(mint, Object.fromEntries(fresh.map((row) => [row.wallet, { ...row, nowRaw: nowByWallet.get(row.wallet) }])));
+    const history = { ...known, ...Object.fromEntries(fresh.map((row) => [row.wallet, row])) };
+    const shown = ({ cursors: _cursors, nowRaw: _nowRaw, ...rest }) => rest;
+    const rows = recipients.map((row) => (history[row.wallet] ? { ...row, history: shown(history[row.wallet]) } : row));
+    res.json({ success: true, airdrop: { mint, decimals: account.decimals, recipients: rows, historyRead: fresh.length, readAt: new Date().toISOString() } });
   } catch (error) {
     sendErrorResponse(res, error, 502);
   }
@@ -3517,7 +3544,15 @@ app.get('/api/v2/coins/:mint/positions', async (req, res) => {
       return res.json({ success: true, positions: demoChainService.listDemoPositions(mint) });
     }
     if (!validMint(mint)) return res.status(400).json({ success: false, error: 'Invalid mint' });
-    const owners = pendingWallets.list().map((wallet) => wallet.publicKey).filter(Boolean);
+    // Positions sit with wallets still in use, or with this coin's own launch wallets. A swept,
+    // retired wallet holds none, and reading every saved wallet cut off the list at 25.
+    const launchWallets = launchJournal.list({ includeCompleted: true, includeArchived: true })
+      .filter((journal) => String(journal?.token?.mint || '') === mint)
+      .map((journal) => journal.walletPublicKey);
+    const owners = [...new Set([
+      ...launchWallets,
+      ...pendingWallets.records().filter((wallet) => !wallet.retiredAt).map((wallet) => wallet.publicKey),
+    ].filter(Boolean))];
     const positions = await listCoinPositions({ tokenMint: mint, owners });
     res.json({ success: true, positions });
   } catch (error) {

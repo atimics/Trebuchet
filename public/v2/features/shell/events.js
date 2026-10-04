@@ -389,6 +389,21 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'stop-grind-job') {
+    stopGrindJob(actionTarget.dataset.job).catch(() => null);
+    return;
+  }
+
+  if (action === 'dismiss-grind-job') {
+    dismissGrindJob(actionTarget.dataset.job);
+    return;
+  }
+
+  if (action === 'calibrate-vanity') {
+    calibrateVanity().catch(() => null);
+    return;
+  }
+
   if (action === 'focus-recovery-pin') {
     focusRecoveryPinGate();
     return;
