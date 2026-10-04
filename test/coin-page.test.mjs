@@ -141,3 +141,8 @@ test('a used address is greyed out in the grinder, never auto-picked, and droppe
   assert.match(guards, /'select-vanity': \(element\) => vanityAddressUsedReason\(element\.dataset\.publicKey\)/);
   assert.match(read('public/v2/features/shell/connection.js'), /freeVanityCandidates\(\)\.at\(-1\)/);
 });
+
+test('the Send SOL button copies the launch wallet address, where the SOL goes', () => {
+  assert.match(workspace, /\/\^Send \/\.test\(fundFact\.action \|\| ''\) && walletKey\s*\? `<button class="primary-button rail-act" type="button" data-action="copy-wallet-address"/);
+  assert.match(read('public/v2/features/shell/events.js'), /action === 'copy-wallet-address'\) \{\n    copyText\(selectedLaunchWalletPublicKey\(\), 'Funding address'\);/);
+});

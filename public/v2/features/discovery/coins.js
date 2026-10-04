@@ -153,8 +153,83 @@ function openCoin(key) {
   if (target?.kind === 'onchain') {
     loadCoinDetail(target.mint).catch(() => null);
     loadCoinPositions(target.mint).catch(() => null);
+    loadCoinAirdrop(target.mint).catch(() => null);
   }
   renderAll();
+}
+
+// The coin's airdrop: what each wallet received, and what the chain says it holds now.
+async function loadCoinAirdrop(mint) {
+  if (!state.apiClient?.getCoinAirdrop) return;
+  const previous = state.coins.airdrop?.mint === mint ? state.coins.airdrop : null;
+  state.coins = { ...state.coins, airdrop: { mint, recipients: previous?.recipients || null, decimals: previous?.decimals ?? null, loading: true, error: null } };
+  renderCoins();
+  try {
+    const response = await state.apiClient.getCoinAirdrop(mint);
+    if (state.coins.key !== `mint:${mint}`) return;
+    state.coins = { ...state.coins, airdrop: { mint, ...response.airdrop, loading: false, error: null } };
+  } catch (error) {
+    if (state.coins.key !== `mint:${mint}`) return;
+    state.coins = { ...state.coins, airdrop: { ...state.coins.airdrop, loading: false, error: error.message || 'Could not read the balances' } };
+  }
+  renderCoins();
+}
+
+// Received against held now, as a fact: all of it, more, part, or none.
+function airdropHolding(row) {
+  if (row.nowRaw == null) return { tone: 'unknown', label: 'Not read', rank: 3 };
+  const received = BigInt(row.receivedRaw || '0');
+  const now = BigInt(row.nowRaw);
+  if (now === 0n) return { tone: 'none', label: 'None left', rank: 0 };
+  if (now < received) {
+    const left = Number((now * 1000n) / (received || 1n)) / 10;
+    return { tone: 'part', label: `${left.toFixed(left < 10 ? 1 : 0)}% left`, rank: 1 };
+  }
+  return { tone: 'all', label: now > received ? 'Holds more' : 'Holds all', rank: 2 };
+}
+
+// What the chain's history shows a wallet did with the coin since its airdrop.
+const AIRDROP_ACTIVITY = [['burnedRaw', 'Burned'], ['soldRaw', 'Sold'], ['boughtRaw', 'Bought'], ['sentRaw', 'Sent'], ['transferredInRaw', 'Got']];
+function airdropActivity(row, amount) {
+  const history = row.history;
+  if (!history) return [];
+  if (history.error) return ['History not read'];
+  const done = AIRDROP_ACTIVITY.filter(([field]) => BigInt(history[field] || '0') > 0n)
+    .map(([field, label]) => `${label} ${amount(history[field])}`);
+  if (history.partial) done.push('older history not read');
+  return done;
+}
+
+function coinAirdropHtml(airdrop) {
+  if (!airdrop) return '';
+  if (airdrop.error && !airdrop.recipients) return `<p class="pool-support-error">${escapeHtml(airdrop.error)}</p>`;
+  const rows = airdrop.recipients || [];
+  if (!rows.length) return airdrop.loading ? '<p class="coins-empty">Reading the airdrop…</p>' : '';
+  const decimals = Number.isFinite(Number(airdrop.decimals)) ? Number(airdrop.decimals) : null;
+  const amount = (raw) => (raw == null || decimals == null ? '—' : compactAmount(Number(BigInt(raw)) / 10 ** decimals));
+  const ranked = rows.map((row) => ({ row, holding: airdropHolding(row), activity: airdropActivity(row, amount) }))
+    .sort((a, b) => a.holding.rank - b.holding.rank || Number(BigInt(b.row.receivedRaw) - BigInt(a.row.receivedRaw)));
+  const count = (tone) => ranked.filter((item) => item.holding.tone === tone).length;
+  const did = (field) => rows.filter((row) => BigInt(row.history?.[field] || '0') > 0n).length;
+  const totals = [
+    count('all') ? `${count('all')} hold all${ranked.some((item) => item.holding.label === 'Holds more') ? ' or more' : ''}` : null,
+    count('part') ? `${count('part')} hold part` : null,
+    count('none') ? `${count('none')} hold none` : null,
+    ...[['burnedRaw', 'burned'], ['soldRaw', 'sold'], ['boughtRaw', 'bought'], ['sentRaw', 'sent']]
+      .map(([field, label]) => (did(field) ? `${did(field)} ${label}` : null)),
+  ].filter(Boolean);
+  return `
+    <p class="coin-airdrop-totals">${rows.length} wallet${rows.length === 1 ? '' : 's'}${totals.length ? ` · ${totals.join(' · ')}` : ''}${airdrop.loading ? ' · reading…' : ''}</p>
+    <div class="coin-airdrop" role="table" aria-label="Airdrop recipients">
+      <div class="coin-airdrop-row is-head" role="row"><span role="columnheader">Wallet</span><span role="columnheader">Received</span><span role="columnheader">Holds now</span><span role="columnheader">What happened</span></div>
+      ${ranked.map(({ row, holding, activity }) => `
+        <div class="coin-airdrop-row is-${holding.tone}" role="row">
+          <span role="cell">${walletChipHtml(row.wallet)}</span>
+          <span role="cell">${escapeHtml(amount(row.receivedRaw))}</span>
+          <span role="cell">${escapeHtml(amount(row.nowRaw))}</span>
+          <span role="cell">${escapeHtml(activity.length ? activity.join(' · ') : holding.label)}</span>
+        </div>`).join('')}
+    </div>`;
 }
 
 // The on-chain coin the page shows, or null while it shows a coin being created.
@@ -813,6 +888,10 @@ function renderChainCoinPane(coin, workspace) {
         ['Freeze authority', account.freezeAuthority ? walletChipHtml(account.freezeAuthority) : 'Revoked'],
         ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${walletChipHtml(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
       ]), coin.practice ? '' : `<span class="coin-links"><a class="pill-button link-button" href="https://solscan.io/token/${escapeHtml(coin.mint)}" target="_blank" rel="noopener">Solscan</a><a class="pill-button link-button" href="https://raydium.io/swap/?inputMint=sol&outputMint=${escapeHtml(coin.mint)}" target="_blank" rel="noopener">Raydium</a></span>`));
+    }
+    const airdrop = state.coins.airdrop?.mint === coin.mint ? state.coins.airdrop : null;
+    if (airdrop?.recipients?.length || airdrop?.error) {
+      parts.push(chainCoinSection('Airdrop', 'Who received it', coinAirdropHtml(airdrop), '<button class="pill-button" type="button" data-action="refresh-coin-airdrop">Refresh</button>'));
     }
   } else if (workspace === 'liquidity') {
     if (detail?.markets) parts.push(chainCoinSection('Markets', 'Pools', coinMarketsHtml(detail.markets), '<button class="pill-button" type="button" data-action="refresh-coin">Refresh</button>'));

@@ -17236,3 +17236,20 @@ body[data-coin-mode="onchain"] #view-launch #launchNextRail {
   body[data-active-view="launch"] .coin-state-layout { border-left: 0; border-right: 0; border-radius: 0; }
   body[data-active-view="launch"] .coin-state { border-left: 0; border-radius: 0; }
 }
+
+/* A coin's airdrop recipients: received against held now. */
+.coin-airdrop-totals { margin: 0; color: var(--muted); font-size: 12px; }
+.coin-airdrop { display: grid; }
+.coin-airdrop-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.4fr) minmax(70px, 1fr) minmax(70px, 1fr) minmax(90px, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.coin-airdrop-row.is-head { color: var(--muted); font-size: 11px; }
+.coin-airdrop-row.is-none > span:last-child { color: var(--red, #ff6b6b); }
+.coin-airdrop-row.is-part > span:last-child { color: var(--amber); }
+.coin-airdrop-row.is-all > span:last-child { color: var(--green); }

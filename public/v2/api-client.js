@@ -748,6 +748,10 @@
       return request(`/api/v2/coins/${encodeURIComponent(mint)}`, { timeoutMs: 90_000 });
     }
 
+    async function getCoinAirdrop(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}/airdrop`, { timeoutMs: 90_000 });
+    }
+
     async function getCoinEvidence(mint) {
       return request(`/api/v2/coins/${encodeURIComponent(mint)}/evidence`, { timeoutMs: 180_000 });
     }
@@ -1233,6 +1237,7 @@
       addCoin,
       removeCoin,
       getCoin,
+      getCoinAirdrop,
       getCoinEvidence,
       getSellQuote,
       listCoinPositions,

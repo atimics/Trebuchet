@@ -468,7 +468,10 @@ function renderLaunchNextRail(facts, next, workspace) {
   const fundingButton = !fundingTodo ? ''
     : !estimate || estimateStatus.stale
       ? `<button class="primary-button rail-act" type="button" data-action="estimate-funding" data-stay="1" ${state.fundingEstimating ? 'disabled' : ''}>${state.fundingEstimating ? 'Estimating…' : estimateStatus.stale ? 'Estimate funding again' : 'Estimate funding'}</button>`
-      : `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(fundFact.action || 'Fund the launch wallet')}</button>`;
+      // A "Send SOL" button copies the launch wallet's address: that is where the SOL goes.
+      : /^Send /.test(fundFact.action || '') && walletKey
+        ? `<button class="primary-button rail-act" type="button" data-action="copy-wallet-address" title="Copy ${escapeHtml(walletKey)}"><i class="fa-regular fa-copy" aria-hidden="true"></i> ${escapeHtml(fundFact.action)}</button>`
+        : `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(fundFact.action || 'Fund the launch wallet')}</button>`;
   // One button at a time: Launch, which reads Resume once the token exists and the launch is
   // unfinished, and Sweep only once the launch is complete (a sweep mid-launch empties the wallet
   // the remaining steps need).
