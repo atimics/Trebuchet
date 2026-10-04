@@ -39,7 +39,8 @@ test('the hover card lists what the wallet holds and whether Trebuchet has its k
 test('a wallet is worth sweeping when it holds tokens or SOL above dust', () => {
   const { walletSweepable, walletContentsSummary } = page();
   assert.equal(walletSweepable(contents()), true, 'open token accounts hold rent the sweep returns');
-  assert.equal(walletSweepable(contents({ openAccounts: 0, accountRentLamports: 0 })), false, 'the rent reserve alone');
+  assert.equal(walletSweepable(contents({ openAccounts: 0, accountRentLamports: 0 })), true, 'an old rent reserve drains too');
+  assert.equal(walletSweepable(contents({ lamports: 15_000, openAccounts: 0, accountRentLamports: 0 })), false, 'less than a few fees');
   assert.equal(walletSweepable(contents({ lamports: 5_000_000 })), true);
   assert.equal(walletSweepable(contents({ tokens: [{ mint: 'm', amountRaw: '1', decimals: 0 }] })), true);
   assert.equal(walletSweepable(contents({ lamports: 5_000_000, ownerProgram: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' })), false, 'a mint is not a wallet');
@@ -78,7 +79,7 @@ function walletPage({ rows, sweepFails = [] }) {
 test('the Wallet page lists only keys that hold something and sweeps each launch wallet once', async () => {
   const rows = [
     { address: 'empty-1', kind: 'launch', contents: contents({ lamports: 0, openAccounts: 0 }) },
-    { address: 'rent-only', kind: 'retired', contents: contents({ openAccounts: 0, accountRentLamports: 0 }) },
+    { address: 'rent-only', kind: 'retired', contents: contents({ lamports: 15_000, openAccounts: 0, accountRentLamports: 0 }) },
     { address: 'open-accounts', kind: 'retired', contents: contents() },
     { address: 'has-sol', kind: 'retired', contents: contents({ lamports: 50_000_000 }) },
     { address: 'has-token', kind: 'launch', contents: contents({ lamports: 0, tokens: [{ mint: 'mint-treb', amountRaw: '5', decimals: 0 }] }) },
@@ -97,7 +98,7 @@ test('the Wallet page lists only keys that hold something and sweeps each launch
 });
 
 test('Sweep all is greyed out with nothing to sweep, and asks for the PIN when it is locked', () => {
-  const idle = walletPage({ rows: [{ address: 'rent-only', kind: 'retired', contents: contents({ openAccounts: 0, accountRentLamports: 0 }) }] });
+  const idle = walletPage({ rows: [{ address: 'rent-only', kind: 'retired', contents: contents({ lamports: 15_000, openAccounts: 0, accountRentLamports: 0 }) }] });
   idle.context.renderHeldWallets();
   assert.match(idle.target.innerHTML, /data-action="sweep-all-wallets" disabled/);
   assert.match(idle.target.innerHTML, /Nothing to sweep/);
@@ -143,7 +144,7 @@ test('old launch wallets count only when the chain shows something to sweep', ()
   return Promise.all([
     context.walletContents.call(null, 'rent-only'),
   ]).then(() => {
-    context.state.apiClient.getWalletContents = async (address) => contents({ address, lamports: address === 'has-sol' ? 50_000_000 : 660241, openAccounts: 0, accountRentLamports: 0 });
+    context.state.apiClient.getWalletContents = async (address) => contents({ address, lamports: address === 'has-sol' ? 50_000_000 : 15_000, openAccounts: 0, accountRentLamports: 0 });
     return Promise.all(['rent-only', 'has-sol', 'in-use'].map((address) => context.walletContents(address, { fresh: true })));
   }).then(() => {
     assert.equal(JSON.stringify(context.recoveryWalletsNeedingAttention().map((wallet) => wallet.publicKey)), JSON.stringify(['has-sol']));

@@ -205,3 +205,20 @@ test('the final RPC network check preserves approval expiry and owner boundaries
     assert.equal(f.state.sends.length, 0);
   }
 });
+
+test('with nothing reserved the sweep sends everything but the exact fee and leaves the wallet at zero', async (t) => {
+  const f = fixture(t, { feePolicy: async () => ({ reserveLamports: 0, feeCeilingLamports: 16000, microLamports: 50000, computeUnitLimit: 20000 }) });
+  const result = await f.service().sweep(f.input);
+  assert.equal(result.solTransferred, (10_000_000 - 6000) / 1e9);
+  assert.equal(f.state.balance, 0);
+  const operation = f.store.getOperation(result.operationId);
+  assert.equal(operation.payload.feeCeilingLamports, 6000, 'the quoted fee is the limit');
+  assert.equal(operation.payload.reserveLamports, 0);
+  assert.equal(operation.evidence.chain.feeLamports, 6000);
+});
+
+test('a quoted fee above the saved limit stops a draining sweep before anything is signed', async (t) => {
+  const f = fixture(t, { feePolicy: async () => ({ reserveLamports: 0, feeCeilingLamports: 5000, microLamports: 50000, computeUnitLimit: 20000 }) });
+  await assert.rejects(f.service().sweep(f.input), { code: 'SPEND_LIMIT_EXCEEDED' });
+  assert.equal(f.state.sends.length, 0); assert.equal(f.active(), null);
+});
