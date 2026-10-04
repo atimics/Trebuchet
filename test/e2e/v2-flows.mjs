@@ -388,11 +388,13 @@ try {
       body: JSON.stringify({ publicKey: selectedLaunchWalletPublicKey(), sol: 1 }),
     });
   });
-  // The practiced coin is listed under Coins with its own page; buy support
-  // is an action there.
+  // The practiced coin opens on the same page as its steps, now read from the
+  // chain; buy support is an action on its Liquidity row.
   await page.click('#viewEyebrow [data-action="coins-back"]');
   await page.click('.coin-card-ui:has-text("Test coin")');
-  await page.waitForSelector('#view-coins.is-active #coinPage:not([hidden])');
+  await page.waitForSelector('body[data-coin-mode="onchain"] #view-launch.is-active');
+  await page.click('.coin-fact[data-coin-fact="liquidity"]');
+  await page.waitForSelector('#coinChainPane:not([hidden])');
   await page.waitForSelector('#poolSupportPanel:not([hidden])');
   await page.fill('#poolSupportSol', '0.1');
   await page.click('[data-action="preview-pool-support"]');
@@ -416,6 +418,8 @@ try {
   await page.fill('#operatorPromptInput', 'WITHDRAW');
   await page.click('#operatorPromptSubmit');
   await page.waitForFunction(() => document.querySelectorAll('.coin-positions li').length === 0, null, { timeout: 30_000 });
+  assert.equal(await page.locator('[data-action="read-coin-evidence"]').count(), 0, 'Practice coins explain how to inspect a live coin');
+  await page.click('.coin-fact[data-coin-fact="wallet"]');
   await page.waitForFunction(() => /Position withdrawn/.test(document.querySelector('.coin-activity')?.textContent || ''), null, { timeout: 30_000 });
   assert.equal(await page.locator('[data-action="read-coin-evidence"]').count(), 0, 'Practice coins explain how to inspect a live coin');
 

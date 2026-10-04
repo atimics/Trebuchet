@@ -14730,7 +14730,7 @@ body[data-launch-running="true"] .workspace {
 
 /* Coins: the list, the coin page, and the coin bar over the create flow. */
 .coins-list-view,
-.coin-page {
+.coin-chain-pane {
   display: grid;
   gap: 16px;
   align-content: start;
@@ -14766,15 +14766,6 @@ body[data-launch-running="true"] .workspace {
   margin: 0;
   color: var(--muted);
   font-size: 12px;
-}
-
-.coin-back {
-  justify-self: start;
-}
-
-.coin-page-body {
-  display: grid;
-  gap: 16px;
 }
 
 .coin-links {
@@ -17217,4 +17208,22 @@ body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }
   text-transform: none;
   white-space: normal;
   text-align: left;
+}
+
+/* An on-chain coin's page: the same rows as creating one, read from the chain. The create
+   flow's controls (plan, cost, launch rail) have nothing to do there. */
+.coin-chain-pane[hidden] { display: none; }
+.coin-chain-pane, #view-launch .pool-support { padding: 14px 18px; }
+.coin-chain-pane > .coin-section:first-child { border-top: 0; padding-top: 0; }
+body[data-coin-mode="onchain"] #view-launch .quick-launch-card,
+body[data-coin-mode="onchain"] #view-launch .launch-toolbar,
+body[data-coin-mode="onchain"] #view-launch #liveLaunchMonitor,
+body[data-coin-mode="onchain"] #view-launch #launchIdentityDock,
+body[data-coin-mode="onchain"] #view-launch #launchNextRail {
+  display: none !important;
+}
+@media (min-width: 901px) {
+  body[data-coin-mode="onchain"] .coin-state-layout { grid-template-columns: 236px minmax(0, 1fr); }
+  body[data-coin-mode="onchain"] .coin-state-layout > .coin-state { grid-column: 1; grid-row: 1; }
+  body[data-coin-mode="onchain"] .coin-state-layout > .launch-workspace-viewport { grid-column: 2; grid-row: 1; }
 }

@@ -95,31 +95,6 @@
           </div>
           <div class="coins-list" id="coinsList" aria-live="polite"></div>
         </div>
-        <div class="coin-page" id="coinPage" hidden>
-          <button class="text-button coin-back" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> All coins</button>
-          <div class="coin-page-body" id="coinPageBody"></div>
-        <section class="coin-section pool-support" id="poolSupportPanel" hidden aria-labelledby="poolSupportTitle">
-          <div class="section-heading">
-            <div>
-              <span class="eyebrow">Action</span>
-              <h2 id="poolSupportTitle">Add buy support</h2>
-            </div>
-          </div>
-          <div class="pool-support-form">
-            <input id="poolSupportTarget" data-support-field="target" type="hidden">
-            <label><span>SOL to add</span><input id="poolSupportSol" data-support-field="solAmount" type="text" inputmode="decimal" autocomplete="off" value="0.1"></label>
-            <label><span>Spread down to</span><select id="poolSupportDepth" data-support-field="depthPct" data-choice="slider">
-              <option value="12">−12%</option>
-              <option value="25">−25%</option>
-              <option value="50" selected>−50%</option>
-              <option value="75">−75%</option>
-            </select></label>
-            <button class="secondary-button" type="button" data-action="preview-pool-support"><i class="fa-solid fa-magnifying-glass-chart"></i><span>Preview</span></button>
-          </div>
-          <div class="pool-support-result" id="poolSupportResult" aria-live="polite"></div>
-        </section>
-        <div class="coin-page-footer" id="coinPageFooter"></div>
-        </div>
       </section>
 
       <section class="view" id="view-launch" aria-labelledby="viewTitle">
@@ -258,6 +233,27 @@
             <aside class="launch-next-rail" id="launchNextRail" aria-label="Next action, cost and supply"></aside>
 
             <div class="launch-workspace-viewport" id="launchWorkspaceViewport" role="region" tabindex="0" aria-live="polite">
+            <section class="coin-chain-pane" id="coinChainPane" aria-live="polite" hidden></section>
+            <section class="coin-section pool-support" id="poolSupportPanel" hidden aria-labelledby="poolSupportTitle">
+              <div class="section-heading">
+                <div>
+                  <span class="eyebrow">Action</span>
+                  <h2 id="poolSupportTitle">Add buy support</h2>
+                </div>
+              </div>
+              <div class="pool-support-form">
+                <input id="poolSupportTarget" data-support-field="target" type="hidden">
+                <label><span>SOL to add</span><input id="poolSupportSol" data-support-field="solAmount" type="text" inputmode="decimal" autocomplete="off" value="0.1"></label>
+                <label><span>Spread down to</span><select id="poolSupportDepth" data-support-field="depthPct" data-choice="slider">
+                  <option value="12">−12%</option>
+                  <option value="25">−25%</option>
+                  <option value="50" selected>−50%</option>
+                  <option value="75">−75%</option>
+                </select></label>
+                <button class="secondary-button" type="button" data-action="preview-pool-support"><i class="fa-solid fa-magnifying-glass-chart"></i><span>Preview</span></button>
+              </div>
+              <div class="pool-support-result" id="poolSupportResult" aria-live="polite"></div>
+            </section>
             <section class="launch-identity-dock" id="launchIdentityDock" aria-label="Active token launch identity" hidden></section>
             <section class="setup-dock" data-launch-pane="fund mint liquidity finish" aria-label="Phase settings">
               <div class="setup-dock-head">

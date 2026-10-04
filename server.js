@@ -3382,7 +3382,8 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
     walletManaged: Boolean(walletEntry),
     journal: journalWithoutEvents,
     steps,
-    nextStep: steps.find((step) => step.state !== 'done')?.id || null,
+    // A step the chain can't check (liquidity locks) holds once it is recorded, as the coin's status says.
+    nextStep: steps.find((step) => !['done', 'recorded'].includes(step.state))?.id || null,
   };
 }
 
