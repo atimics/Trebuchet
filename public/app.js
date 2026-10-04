@@ -20640,9 +20640,8 @@ function buildLaunchJournalRow(journal, wallet) {
             <span>Unlock PIN</span>
           </button>
         </div>` : '';
-  // The removal action also discards the wallet secret when one is attached,
-  // so the label and confirmation make that consequence explicit.
-  const removeLabel = hasSecret ? 'Dismiss &amp; discard wallet' : 'Dismiss journal';
+  // Dismissing also hides the attached wallet; its key is kept.
+  const removeLabel = 'Dismiss journal';
 
   wrap.innerHTML = `
     <div class="mb-1">
@@ -20843,59 +20842,12 @@ function buildLaunchJournalRow(journal, wallet) {
     await resumeLaunchJournal(journal, wallet, event.currentTarget);
   });
   wrap.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
-    // When a recoverable wallet is attached, removal clears both the journal
-    // summary AND the wallet secret — so the confirmation spells out that the
-    // recovery phrase is permanently deleted. With no wallet attached it's the
-    // harmless journal-only dismiss.
-    //
-    // For the secret-attached case, also check the live balance first and
-    // put the concrete numbers in the dialog: discarding the key of a
-    // wallet that still holds funds is irreversible money loss. Best
-    // effort — a failed lookup falls back to the generic warning rather
-    // than blocking the dismissal (same pattern as pending-wallets.js).
-    let balanceLine = '';
-    if (hasSecret && journal.walletPublicKey) {
-      try {
-        const resp = await fetch('/api/check-balance-detailed', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ publicKey: journal.walletPublicKey }),
-        });
-        const data = await resp.json();
-        if (data.success && data.balance) {
-          const sol = Number(data.balance.sol || 0);
-          const tokenCount = Object.values(data.balance.tokens || {})
-            .filter((t) => { try { return BigInt(t.amountRaw) > 0n; } catch (_) { return false; } })
-            .length;
-          // Mirror the server's dust rule (walletRecovery.js).
-          if (sol >= 0.001 || tokenCount > 0) {
-            const parts = [];
-            if (sol > 0) parts.push(`<strong>${sol.toFixed(6)} SOL</strong>`);
-            if (tokenCount > 0) parts.push(`<strong>${tokenCount} token balance${tokenCount === 1 ? '' : 's'}</strong>`);
-            balanceLine =
-              `<p class="has-text-danger">This wallet still holds ${parts.join(' and ')}. ` +
-              `Discarding the recovery entry makes those funds unrecoverable unless ` +
-              `you have saved the recovery phrase somewhere else.</p>`;
-          } else {
-            balanceLine = '<p>On-chain check: this wallet is empty (dust only).</p>';
-          }
-        }
-      } catch (_) { /* offline / RPC error — keep the generic warning */ }
-    }
+    // Dismissing hides the journal and any attached wallet. Nothing is deleted: the wallet's key is kept.
     const ok = await confirmDialog({
-      title: hasSecret ? 'Dismiss and discard wallet?' : 'Dismiss launch journal?',
-      body: hasSecret
-        ? `<p>Remove the recovery entry for <strong>${escapeHtml(tokenLabel)}</strong>?</p>` +
-          balanceLine +
-          `<p>This permanently deletes the recovery phrase / secret key for the launch wallet ` +
-          `(<span class="is-family-monospace">${escapeHtml(walletShort)}</span>) and clears the ` +
-          `journal summary. Make sure you've moved any funds out of this wallet, or are certain ` +
-          `none were ever sent there — this cannot be undone.</p>`
-        : `<p>Dismiss the journal for <strong>${escapeHtml(tokenLabel)}</strong>?</p>` +
-          `<p>This hides the recovery summary but does not move funds or delete any on-chain assets. ` +
-          `Only dismiss it after you have recovered, swept, or intentionally abandoned the launch wallet.</p>`,
-      confirmLabel: hasSecret ? 'Discard wallet & dismiss' : 'Dismiss journal',
-      danger: true,
+      title: 'Dismiss launch journal?',
+      body: `<p>Dismiss the journal for <strong>${escapeHtml(tokenLabel)}</strong>?</p>` +
+        `<p>It leaves this list. Nothing on chain changes${hasSecret ? `, and Trebuchet keeps the key for <span class="is-family-monospace">${escapeHtml(walletShort)}</span>` : ''}.</p>`,
+      confirmLabel: 'Dismiss journal',
     });
     if (!ok) return;
     try {
@@ -20904,8 +20856,8 @@ function buildLaunchJournalRow(journal, wallet) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: journal.id }),
       });
-      // Also discard the matching wallet secret when one is attached, so the
-      // whole entry is cleaned up in a single action.
+      // Also hide the matching wallet (its key is kept), so the whole entry
+      // leaves the list in a single action.
       if (hasSecret) {
         await fetch('/api/pending-wallets/dismiss', {
           method: 'POST',
@@ -21003,7 +20955,7 @@ async function loadPendingWallets() {
 }
 
 // Construct one row in the recovery panel. Truncated public key, age,
-// "Copy secret key" button, "Discard" button.
+// "Copy secret key" button, "Hide" button.
 function buildPendingWalletRow(wallet) {
   const wrap = document.createElement('div');
   wrap.className = 'box p-3 mb-2 is-size-7';
@@ -21039,7 +20991,7 @@ function buildPendingWalletRow(wallet) {
         <div class="control">
           <button class="button is-small is-danger is-light" data-action="dismiss">
             <span class="icon is-small"><i class="fas fa-trash"></i></span>
-            <span>Discard</span>
+            <span>Hide</span>
           </button>
         </div>
       </div>
@@ -21077,7 +21029,7 @@ function buildPendingWalletRow(wallet) {
         <div class="control">
           <button class="button is-small is-danger is-light" data-action="dismiss">
             <span class="icon is-small"><i class="fas fa-trash"></i></span>
-            <span>Discard</span>
+            <span>Hide</span>
           </button>
         </div>
       </div>
@@ -21115,7 +21067,7 @@ function buildPendingWalletRow(wallet) {
       <div class="control">
         <button class="button is-small is-danger is-light" data-action="dismiss">
           <span class="icon is-small"><i class="fas fa-trash"></i></span>
-          <span>Discard</span>
+          <span>Hide</span>
         </button>
       </div>
     </div>
@@ -21178,51 +21130,11 @@ function wireRowButtons(wrap, wallet, pubShort, { hasMnemonic = false } = {}) {
   });
 
   wrap.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
-    // Check the live balance before letting the user discard the only
-    // stored copy of this wallet's key. Dismissing a wallet that still
-    // holds funds is irreversible money loss (unless the user saved the
-    // phrase elsewhere), so a generic "are you sure" isn't enough — say
-    // exactly what's in it. Best effort: if the balance lookup fails
-    // (offline, RPC down) fall back to the generic warning rather than
-    // blocking the dismissal.
-    let balanceLine = '';
-    try {
-      const resp = await fetch('/api/check-balance-detailed', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ publicKey: wallet.publicKey }),
-      });
-      const data = await resp.json();
-      if (data.success && data.balance) {
-        const sol = Number(data.balance.sol || 0);
-        const tokenCount = Object.values(data.balance.tokens || {})
-          .filter((t) => { try { return BigInt(t.amountRaw) > 0n; } catch (_) { return false; } })
-          .length;
-        // Mirror the server's dust rule (walletRecovery.js): under
-        // 0.001 SOL with no token balances is unsweepable dust, not funds.
-        if (sol >= 0.001 || tokenCount > 0) {
-          const parts = [];
-          if (sol > 0) parts.push(`<strong>${sol.toFixed(6)} SOL</strong>`);
-          if (tokenCount > 0) parts.push(`<strong>${tokenCount} token balance${tokenCount === 1 ? '' : 's'}</strong>`);
-          balanceLine =
-            `<p class="has-text-danger">This wallet still holds ${parts.join(' and ')}. ` +
-            `Discarding the recovery entry makes those funds unrecoverable unless ` +
-            `you have saved the recovery phrase somewhere else.</p>`;
-        } else {
-          balanceLine = '<p>On-chain check: this wallet is empty (dust only).</p>';
-        }
-      }
-    } catch (_) { /* offline / RPC error — keep the generic warning */ }
-
+    // Hiding keeps the wallet's key in Trebuchet; it only leaves this list.
     const ok = await confirmDialog({
-      title: 'Discard recovery entry?',
-      body:
-        `<p>Discard recovery entry for <strong>${escapeHtml(pubShort)}</strong>?</p>` +
-        balanceLine +
-        `<p>Only do this if you've already moved any funds out of this wallet, ` +
-        `or you're sure none were ever sent there. This action cannot be undone.</p>`,
-      confirmLabel: 'Discard',
-      danger: true,
+      title: 'Hide this wallet?',
+      body: `<p><strong>${escapeHtml(pubShort)}</strong> leaves this list. Trebuchet keeps its key.</p>`,
+      confirmLabel: 'Hide',
     });
     if (!ok) return;
     try {

@@ -162,7 +162,7 @@ function renderWallet() {
           <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked || pinLockedForUnlock ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
         </button>
         <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
-          <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
+          <i class="fa-solid fa-eye-slash"></i><span>${discardBusy ? 'Hiding' : 'Hide'}</span>
         </button>
       </span>
     </header>

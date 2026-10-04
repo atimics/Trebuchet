@@ -132,7 +132,7 @@ import { registerNftRoutes } from './nftRoutes.js';
 import { registerDammV2Routes } from './dammV2Routes.js';
 import { combineSplitKey, createSplitSecret, matchesVanityPattern, scalarPublicKey } from '@trebuchet/core/split-key';
 import { normalizeDistribution } from './lpDistribution.js';
-import { isWalletEffectivelyEmpty } from './walletRecovery.js';
+import { isWalletEffectivelyEmpty, SOL_DUST_THRESHOLD } from './walletRecovery.js';
 import {
   buildV2RecoveryAuthorizationPlan,
   buildV2ExecutionReadiness,
@@ -3338,7 +3338,10 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
       detail: token.sealedMetadataPending === true ? 'The identity is still sealed.' : 'Recorded as revealed.',
     });
   }
-  const walletEmptyOnChain = launchWalletLamports === null ? 'unknown' : launchWalletLamports === 0 ? 'done' : 'not-done';
+  // Swept means what the sweep itself checks: under the dust line. The sweep keeps a small rent
+  // reserve on purpose, so a swept wallet is rarely at exactly zero.
+  const sweptLamports = Math.round(SOL_DUST_THRESHOLD * 1e9);
+  const walletEmptyOnChain = launchWalletLamports === null ? 'unknown' : launchWalletLamports < sweptLamports ? 'done' : 'not-done';
   steps.push({
     id: 'return',
     label: 'Launch wallet',
@@ -3346,8 +3349,10 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
     detail: launchWalletLamports === null
       ? 'Not checked on-chain.'
       : launchWalletLamports === 0
-        ? 'The launch wallet is empty on-chain.'
-        : `The launch wallet still holds ${(launchWalletLamports / 1e9).toFixed(4)} SOL.`,
+        ? 'Swept. The launch wallet is empty.'
+        : launchWalletLamports < sweptLamports
+          ? `Swept. ${(launchWalletLamports / 1e9).toFixed(5)} SOL stays as the wallet's rent reserve.`
+          : `${(launchWalletLamports / 1e9).toFixed(4)} SOL is still in the launch wallet.`,
   });
   const walletEntry = journal?.walletPublicKey ? pendingWallets.get(journal.walletPublicKey) : null;
   const { events: _events, ...journalWithoutEvents } = journal || {};
@@ -8131,7 +8136,8 @@ app.post('/api/pending-wallets/dismiss', (req, res) => {
     if (!publicKey) {
       return res.status(400).json({ success: false, error: 'publicKey required' });
     }
-    pendingWallets.remove(publicKey);
+    // Hiding keeps the key: it only leaves the list (see pendingWallets.retire).
+    pendingWallets.retire(publicKey);
     res.json({ success: true });
   } catch (error) {
     console.error('Error dismissing pending wallet:', error);
