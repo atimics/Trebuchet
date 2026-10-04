@@ -242,6 +242,8 @@ function handleClick(event) {
 
   const actionTarget = event.target.closest('[data-action]');
   if (!actionTarget) return;
+  // A greyed-out action shows its reason beside it; clicking it does nothing.
+  if (actionTarget.dataset.blockedReason) return;
 
   const { action } = actionTarget.dataset;
   if (action === 'quick-launch-run') {

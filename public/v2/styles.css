@@ -17199,3 +17199,22 @@ body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }
 .held-wallets-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .held-wallets-list li > span:not(.wallet-chip) { color: var(--muted); font-variant-numeric: tabular-nums; }
 .held-wallets-result { margin: 10px 0 0; color: var(--muted); }
+
+/* An action that can't run: greyed out, with the reason under its label. */
+[data-blocked-reason] {
+  flex-wrap: wrap;
+  cursor: not-allowed;
+}
+[data-blocked-reason]::after {
+  content: attr(data-blocked-reason);
+  flex-basis: 100%;
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+  text-align: left;
+}
