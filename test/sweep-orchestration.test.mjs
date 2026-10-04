@@ -234,3 +234,39 @@ test('a failed second-pass checkpoint stops before further asset transfers', asy
   assert.equal(h.calls.sweepTokens, 0);
   assert.equal(h.calls.sweepSol, 0);
 });
+
+// --- closing empty token accounts before the SOL sweep ----------------------
+
+test('empty token accounts are closed after a clean sweep and before the SOL sweep', async () => {
+  const h = harness();
+  const order = [];
+  h.deps.closeAccounts = async ({ tempWalletSecretKey }) => { order.push('close'); assert.deepEqual(tempWalletSecretKey, [1, 2, 3]); return { closed: ['a', 'b'], reclaimedLamports: 4_078_560, errors: [] }; };
+  const sweepSol = h.deps.sweepSol; h.deps.sweepSol = async (input) => { order.push('sol'); return sweepSol(input); };
+  const out = await runGate(h);
+  assert.deepEqual(order, ['close', 'sol']);
+  assert.equal(out.accountClose.reclaimedLamports, 4_078_560);
+  assert.ok(h.calls.events.includes('token_accounts_closed'));
+});
+
+test('no account is closed when assets remain', async () => {
+  const h = harness({ enumerations: [balanceWith(['m1']), balanceWith(['m1'])] });
+  let closes = 0;
+  h.deps.closeAccounts = async () => { closes += 1; return { closed: [], reclaimedLamports: 0, errors: [] }; };
+  const out = await runGate(h);
+  assert.equal(closes, 0); assert.equal(out.accountClose, null); assert.ok(out.solSweepSkipped);
+});
+
+test('a refused close is reported and the SOL sweep still runs', async () => {
+  const h = harness();
+  h.deps.closeAccounts = async () => { throw new Error('account closed elsewhere'); };
+  const out = await runGate(h);
+  assert.equal(h.calls.sweepSol, 1);
+  assert.equal(out.accountClose.errors[0].error, 'account closed elsewhere');
+});
+
+test('an unconfirmed close stops the sweep before the SOL leaves', async () => {
+  const h = harness();
+  h.deps.closeAccounts = async () => { throw Object.assign(new Error('close not confirmed'), { code: 'EXECUTION_RECOVERY_REQUIRED' }); };
+  await assert.rejects(runGate(h), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  assert.equal(h.calls.sweepSol, 0);
+});

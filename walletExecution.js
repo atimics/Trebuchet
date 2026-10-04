@@ -5,9 +5,10 @@ import { createSolanaSigner, SOLANA_GENESIS_HASHES } from '@trebuchet/runtime/so
 import { createSolSweepService } from '@trebuchet/runtime/sol-sweep';
 import { createTokenTransferService } from '@trebuchet/runtime/token-transfer';
 import { createMetadataUpdateService } from '@trebuchet/runtime/metadata-update';
-import { getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
+import { createTokenAccountCloseService, closableTokenAccount, TOKEN_ACCOUNT_CLOSE_BATCH } from '@trebuchet/runtime/token-account-close';
+import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { getNetwork, getRpcUrl } from './rpcConfig.js';
-import { samplePriorityFeeMicroLamports, priorityFeeLamports, CU_SOL_TRANSFER, CU_TOKEN_TRANSFER, CU_METADATA_OPS, SWEEP_FEE_PAD_LAMPORTS } from './priorityFees.js';
+import { samplePriorityFeeMicroLamports, priorityFeeLamports, CU_SOL_TRANSFER, CU_TOKEN_TRANSFER, CU_TOKEN_ACCOUNT_CLOSE, CU_METADATA_OPS, SWEEP_FEE_PAD_LAMPORTS } from './priorityFees.js';
 import { createExecutionConnection } from './rpcConnection.js';
 
 // Called after the launch service verifies the transfer request and return
@@ -41,8 +42,8 @@ export function createWalletExecutionRuntime({
       if (!genesisHash) throw new Error('Choose mainnet or devnet for this local runtime');
       const connection = createConnection();
       const pending = store.getActiveOperation(walletPublicKey);
-      operationKind = method === 'recover' ? pending?.kind : method === 'transfer' ? 'token-transfer' : method === 'update' ? 'metadata-update' : 'sol-sweep';
-      if (!['sol-sweep', 'token-transfer', 'metadata-update'].includes(operationKind)) throw new Error('Resume the saved wallet operation with its matching adapter');
+      operationKind = method === 'recover' ? pending?.kind : method === 'transfer' ? 'token-transfer' : method === 'update' ? 'metadata-update' : method === 'close' ? 'token-account-close' : 'sol-sweep';
+      if (!['sol-sweep', 'token-transfer', 'metadata-update', 'token-account-close'].includes(operationKind)) throw new Error('Resume the saved wallet operation with its matching adapter');
       const tokenInput = operationKind === 'token-transfer' ? (method === 'recover' ? pending.payload : {
         mint: new PublicKey(input.mint).toBase58(), programId: new PublicKey(input.programId).toBase58(),
         sourceTokenAccount: input.sourceTokenAccount ? new PublicKey(input.sourceTokenAccount).toBase58()
@@ -53,6 +54,7 @@ export function createWalletExecutionRuntime({
         mint: new PublicKey(input.mint).toBase58(), newAuthority: new PublicKey(destinationWallet).toBase58(),
         fields: input.fields || {}, makeImmutable: input.makeImmutable === true,
       }) : null;
+      const closeInput = operationKind === 'token-account-close' ? { accounts: method === 'recover' ? pending.payload.accounts.map((account) => account.address) : [...input.accounts].sort() } : null;
       const scopeId = getScopeId(walletPublicKey);
       if (typeof scopeId !== 'string' || !scopeId) throw new Error('Save the launch recovery record before transferring assets');
       const action = method === 'recover' ? store.getLaunch(pending.launchId)?.config.action : input.action;
@@ -64,8 +66,10 @@ export function createWalletExecutionRuntime({
         maxSpendLamports: Math.max(current.value, pending ? (pending.payload.amountLamports || pending.payload.rentCeilingLamports || pending.payload.rentLamports || 0) + pending.payload.feeCeilingLamports : 0),
         ...(metadataInput ? { metadata: { mint: metadataInput.mint, newAuthority: metadataInput.newAuthority, fields: metadataInput.fields, makeImmutable: metadataInput.makeImmutable } } : {}),
         ...(tokenInput ? { token: { mint: tokenInput.mint, programId: tokenInput.programId, sourceTokenAccount: tokenInput.sourceTokenAccount, amountRaw: tokenInput.amountRaw, decimals: tokenInput.decimals } } : {}),
+        ...(closeInput ? { close: { accounts: closeInput.accounts } } : {}),
       };
-      const createService = operationKind === 'token-transfer' ? createTokenTransferService : operationKind === 'metadata-update' ? createMetadataUpdateService : createSolSweepService;
+      const createService = operationKind === 'token-transfer' ? createTokenTransferService : operationKind === 'metadata-update' ? createMetadataUpdateService
+        : operationKind === 'token-account-close' ? createTokenAccountCloseService : createSolSweepService;
       const service = createService({
         owner, store, connection, network, expectedGenesisHash: genesisHash, now, timeoutMs,
         signer: createSolanaSigner({ getSigners: async ({ launch }) => {
@@ -73,9 +77,10 @@ export function createWalletExecutionRuntime({
           return [wallet];
         } }),
         authorize: async ({ approval: candidate }) => candidate === approval && networkForRequest() === network && getScopeId(walletPublicKey) === scopeId,
-        feePolicy: async () => {
+        feePolicy: async ({ accountCount = 0 } = {}) => {
           const microLamports = await samplePriorityFeeMicroLamports(connection);
-          const computeUnitLimit = operationKind === 'token-transfer' ? CU_TOKEN_TRANSFER : operationKind === 'metadata-update' ? CU_METADATA_OPS : CU_SOL_TRANSFER;
+          const computeUnitLimit = operationKind === 'token-transfer' ? CU_TOKEN_TRANSFER : operationKind === 'metadata-update' ? CU_METADATA_OPS
+            : operationKind === 'token-account-close' ? CU_SOL_TRANSFER + CU_TOKEN_ACCOUNT_CLOSE * accountCount : CU_SOL_TRANSFER;
           return {
             reserveLamports: operationKind === 'sol-sweep' ? await connection.getMinimumBalanceForRentExemption(0, 'finalized') : 0,
             feeCeilingLamports: 5000 + priorityFeeLamports(computeUnitLimit, microLamports) + SWEEP_FEE_PAD_LAMPORTS,
@@ -83,12 +88,12 @@ export function createWalletExecutionRuntime({
           };
         },
       });
-      return await service[method]({ ...tokenInput, ...metadataInput, scopeId, walletPublicKey, destinationWallet, action, approval });
+      return await service[method]({ ...tokenInput, ...metadataInput, ...closeInput, scopeId, walletPublicKey, destinationWallet, action, approval });
     } catch (cause) {
       if (cause.code === 'RECOVERY_STORAGE_UNAVAILABLE') throw cause;
       // Say what failed and what to press: the same action checks the chain for this transfer first.
       console.error(`[wallet] ${operationKind} ${cause.code || 'EXECUTION_INTERRUPTED'}: ${cause.message}`);
-      const what = { 'token-transfer': 'A token transfer', 'sol-sweep': 'The SOL transfer', 'metadata-update': 'The metadata update' }[operationKind] || 'A wallet transfer';
+      const what = { 'token-transfer': 'A token transfer', 'sol-sweep': 'The SOL transfer', 'metadata-update': 'The metadata update', 'token-account-close': 'Closing empty token accounts' }[operationKind] || 'A wallet transfer';
       // A transfer that names the wrong token program is refused before anything is signed.
       const message = cause.code === 'TOKEN_PROGRAM_MISMATCH' ? `${what} from the launch wallet was not sent. ${cause.message}.`
         : `${what} from the launch wallet could not be confirmed (${cause.message || 'interrupted'}). Nothing after it was sent.`;
@@ -152,6 +157,35 @@ export function createWalletExecutionRuntime({
       ...await execute('update', { tempWalletSecretKey, mint: tokenMint, destinationWallet: newAuthority }), transferred: true, newAuthority,
     }),
     sweepSolToDestination: (input) => execute('sweep', input),
+    // Close every empty token account the launch wallet owns, returning the rent to the wallet so
+    // the SOL sweep that follows sends it on. A batch the chain refuses is reported and skipped;
+    // an unconfirmed one stops here, held by its saved operation until it is recovered.
+    closeEmptyTokenAccounts: async ({ tempWalletSecretKey }) => {
+      owner.assertActive();
+      const wallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey)), walletPublicKey = wallet.publicKey.toBase58();
+      const connection = createConnection();
+      const found = [];
+      for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+        const response = await connection.getTokenAccountsByOwner(wallet.publicKey, { programId }, 'finalized');
+        for (const { pubkey, account } of response.value) {
+          const row = closableTokenAccount(pubkey.toBase58(), account, walletPublicKey);
+          if (row) found.push(row.address);
+        }
+      }
+      const closed = [], errors = [];
+      let reclaimedLamports = 0;
+      for (let index = 0; index < found.length; index += TOKEN_ACCOUNT_CLOSE_BATCH) {
+        const accounts = found.slice(index, index + TOKEN_ACCOUNT_CLOSE_BATCH);
+        try {
+          const result = await execute('close', { tempWalletSecretKey, accounts });
+          closed.push(...result.closed); reclaimedLamports += result.reclaimedLamports;
+        } catch (error) {
+          if (!['TRANSACTION_FAILED', 'INVALID_INPUT', 'INSUFFICIENT_FUNDS'].includes(error.errorDetails?.code)) throw error;
+          errors.push({ accounts, error: error.errorDetails.message });
+        }
+      }
+      return { closed, reclaimedLamports, errors };
+    },
     transferToken: (input) => execute('transfer', input),
     transferTokenWithProgram: async ({ ownerKeypair, destination, mint, programId, sourceTokenAccount, amount, decimals }) => {
       const result = await execute('transfer', { tempWalletSecretKey: Array.from(ownerKeypair.secretKey), destinationWallet: destination.toBase58(),

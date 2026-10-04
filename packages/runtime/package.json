@@ -32,7 +32,8 @@
     "./position-withdrawal": "./src/position-withdrawal.js",
     "./support-position-plan": "./src/support-position-plan.js",
     "./support-position": "./src/support-position.js",
-    "./launch-budget": "./src/launch-budget.js"
+    "./launch-budget": "./src/launch-budget.js",
+    "./token-account-close": "./src/token-account-close.js"
   },
   "engines": {
     "node": ">=22.13.0"

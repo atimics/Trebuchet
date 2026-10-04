@@ -71,7 +71,8 @@
     "test:e2e:runtime-upload:localnet": "node test/e2e/runtime-upload-localnet.mjs",
     "test:e2e:runtime-swap:localnet": "node test/e2e/runtime-swap-localnet.mjs",
     "test:e2e:runtime-withdrawal:localnet": "node test/e2e/runtime-withdrawal-localnet.mjs",
-    "test:e2e:runtime-support:localnet": "node test/e2e/runtime-support-localnet.mjs"
+    "test:e2e:runtime-support:localnet": "node test/e2e/runtime-support-localnet.mjs",
+    "test:e2e:runtime-close:localnet": "node test/e2e/runtime-account-close-localnet.mjs"
   },
   "files": [
     "build/**/*",
