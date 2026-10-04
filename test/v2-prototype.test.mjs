@@ -1984,16 +1984,14 @@ test('v2 concrete data-action controls have delegated handlers', () => {
   assert.deepEqual(missing, []);
 });
 
-test('v2 is the Electron default with an explicit tested Classic fallback', () => {
+test('the desktop app always opens the v2 page; the classic UI is gone', () => {
   assert.equal(packageJson.scripts.start, 'electron .');
   assert.equal(packageJson.scripts['start:v2'], 'electron . --v2');
-  assert.equal(packageJson.scripts['start:classic'], 'electron . --classic');
+  assert.equal(packageJson.scripts['start:classic'], undefined);
   assert.equal(packageJson.scripts['test:e2e:v2'], 'node test/e2e/v2-flows.mjs');
   assert.equal(packageJson.scripts['test:electron:v2:packaged'], 'node test/e2e/electron-v2-smoke.mjs --packaged');
-  assert.match(electronMainJs, /process\.argv\.includes\('--classic'\)/);
-  assert.match(electronMainJs, /requestedDesktopUi === 'classic'/);
-  assert.match(electronMainJs, /requestedDesktopUi === 'v1'/);
-  assert.match(electronMainJs, /const desktopUiPath = classicUiRequested \? '\/' : '\/v2\/'/);
+  assert.doesNotMatch(electronMainJs, /--classic|requestedDesktopUi/);
+  assert.match(electronMainJs, /const desktopUiPath = '\/v2\/';/);
   assert.match(electronMainJs, /app\.requestSingleInstanceLock\(\)/);
   assert.match(electronMainJs, /app\.on\('second-instance'/);
   assert.match(electronMainJs, /BrowserWindow\.getAllWindows\(\)/);
@@ -2002,8 +2000,7 @@ test('v2 is the Electron default with an explicit tested Classic fallback', () =
   assert.match(v2BrowserE2eJs, /data-action=\"launch-rail-act\"/);
   assert.match(v2BrowserE2eJs, /dataset\.apiStatus === 'connected'/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\)/);
-  assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\{ classic: true \}\)/);
-  assert.match(v2ElectronSmokeJs, /const expectedPath = classic \? '\/' : '\/v2\/'/);
+  assert.match(v2ElectronSmokeJs, /const expectedPath = '\/v2\/';/);
 });
 
 test('v2 Discovery combines a personal wallet graph with live evidence and no social mechanics', () => {
@@ -2927,8 +2924,6 @@ test('v2 new pools use the 0.25% tier and pairs open above the SOL price', () =>
   assert.match(html, /id="targetMarketCapUsd"[^>]*value="25,000"/);
   assert.match(js, /targetMarketCapUsd: 25000,/);
   assert.match(js, /\$\('#targetMarketCapUsd'\)\) \$\('#targetMarketCapUsd'\)\.value = '25,000'/);
-  assert.match(read('public/index.html'), /id="targetMarketCap"[^>]*value="25,000"/);
-  assert.match(read('public/modules/token-config.js'), /ammConfigIndex: 1,/);
   assert.match(js, /const PAIR_START_PREMIUM_PCT = 25;/);
   assert.match(js, /ammConfigIndex: state\.solPoolConfigIndex,/);
   assert.match(js, /ammConfigIndex: state\.pairPoolConfigIndex,/);

@@ -36,10 +36,9 @@ function packagedExecutable() {
   return found;
 }
 
-async function launchRouteSmoke({ classic = false } = {}) {
-  const profileDir = mkdtempSync(path.join(tmpdir(), `trebuchet-electron-${classic ? 'classic' : 'v2'}-`));
+async function launchRouteSmoke() {
+  const profileDir = mkdtempSync(path.join(tmpdir(), 'trebuchet-electron-v2-'));
   const switches = [`--user-data-dir=${profileDir}`];
-  if (classic) switches.push('--classic');
   if (process.platform === 'linux') switches.push('--no-sandbox');
 
   const env = { ...process.env, NODE_ENV: 'test' };
@@ -58,13 +57,13 @@ async function launchRouteSmoke({ classic = false } = {}) {
       await dialog.dismiss();
     });
 
-    const expectedPath = classic ? '/' : '/v2/';
+    const expectedPath = '/v2/';
     await page.waitForFunction((pathname) => window.location.pathname === pathname, expectedPath, {
       timeout: 30_000,
     });
     assert.equal(new URL(page.url()).pathname, expectedPath);
 
-    if (!classic) {
+    {
       await page.waitForFunction(() => (
         document.body.dataset.apiStatus === 'connected'
       ), null, { timeout: 30_000 });
@@ -88,5 +87,4 @@ async function launchRouteSmoke({ classic = false } = {}) {
 }
 
 await launchRouteSmoke();
-await launchRouteSmoke({ classic: true });
-console.log(`Electron route smoke passed (${packaged ? 'packaged' : 'source'}): v2 default, Classic fallback`);
+console.log(`Electron route smoke passed (${packaged ? 'packaged' : 'source'})`);

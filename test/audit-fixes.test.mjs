@@ -102,7 +102,6 @@ test('v2 runtime state derives wallet/network/funding truth from authoritative i
 test('v2 removes cosmetic controls, native confirms, and false completion', () => {
   const app = read('public/v2/app.js');
   const server = read('server.js');
-  const e2e = read('test/e2e/ui-flows.mjs');
   assert.doesNotMatch(app, /window\.confirm|data-action="noop"|state\.network\s*=|state\.connected\s*=/);
   assert.match(app, /RPC changes are made in authoritative settings/);
   assert.match(app, /new URLSearchParams\(\{ token, client: 'v2' \}\)/);
@@ -115,7 +114,4 @@ test('v2 removes cosmetic controls, native confirms, and false completion', () =
   assert.match(server, /executedOperationCount: 0/);
   assert.match(server, /: 'check-readiness-and-execute'/);
   assert.match(server, /priceSource: 'demo-ledger'/);
-  assert.doesNotMatch(e2e, /disabled\s*=\s*false|forceClick/);
-  assert.match(e2e, /demoFundBtn/);
-  assert.match(e2e, /createLpConfirmProceedBtn/);
 });

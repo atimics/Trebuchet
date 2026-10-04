@@ -8,12 +8,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      update_visual_baseline:
-        description: Generate canonical Linux visual baselines as an artifact
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -39,15 +33,12 @@ jobs:
       - name: Syntax check
         run: npm run check:syntax
 
-      # public/app.js is a generated artifact: build-app-js.mjs concatenates
-      # public/modules/* (the modules now tile app.js exactly). Rebuild it and
-      # fail if the committed copy differs from a fresh build. Catches editing
-      # app.js directly (lost on next build) and editing a module without
-      # rebuilding (a stale bundle would ship).
+      # public/v2/app.js and core.js are generated from public/v2/features and
+      # @trebuchet/core. Rebuild them and fail if the committed copies differ.
       - name: Verify browser bundles are in sync with their sources
         run: |
           npm run build:js
-          git diff --exit-code -- public/app.js public/v2/app.js public/v2/core.js \
+          git diff --exit-code -- public/v2/app.js public/v2/core.js \
             || (echo '::error::Browser bundles are out of sync with their sources. Run "npm run build:js" and commit the result.' && exit 1)
 
       # Guards against the recurring bug where a new module is imported but
@@ -218,69 +209,9 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium
 
-      - name: Run Classic E2E tests
-        if: ${{ !inputs.update_visual_baseline }}
-        run: node test/e2e/ui-flows.mjs 01 02 03 04 05 06 07 08 09 --mobile
-
       - name: Run v2 API-backed E2E test
-        if: ${{ !inputs.update_visual_baseline }}
         run: npm run test:e2e:v2
 
       - name: Run v2 desktop and mobile viewport smoke
-        if: ${{ !inputs.update_visual_baseline }}
         run: npm run test:v2:viewport
 
-      - name: Visual regression test
-        if: ${{ !inputs.update_visual_baseline }}
-        run: npm run test:visual
-
-      - name: Generate canonical Linux visual baselines
-        if: ${{ inputs.update_visual_baseline }}
-        run: npm run test:visual:golden:linux
-
-      - name: Upload canonical Linux visual baselines
-        if: ${{ inputs.update_visual_baseline }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: visual-golden-linux
-          path: test/ui/golden-linux
-          if-no-files-found: error
-
-      - name: Upload visual diff artifacts
-        if: ${{ failure() && !inputs.update_visual_baseline }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: visual-diffs
-          path: |
-            test/ui/diffs
-            test/ui/actual
-          if-no-files-found: ignore
-
-      - name: Convert videos to GIF
-        if: always()
-        run: |
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            apt-get update -qq
-            apt-get install -y -qq ffmpeg
-          fi
-          for f in test/e2e/videos/*.webm; do
-            [ -s "$f" ] || { echo "::warning::Skipping empty video $f"; continue; }
-            name="${f%.webm}"
-            timeout 60s ffmpeg -y -i "$f" -vf "fps=6,scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" -loop 0 "${name}.gif" 2>/dev/null \
-              || echo "::warning::Could not convert $f to GIF"
-          done
-
-      - name: Build tutorial page
-        if: always()
-        run: |
-          mkdir -p _tutorial
-          cp test/e2e/videos/*.gif _tutorial/ 2>/dev/null || true
-          cp test/e2e/tutorial.html _tutorial/index.html
-
-      - name: Upload tutorial artifact
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ui-walkthrough
-          path: _tutorial
-          if-no-files-found: ignore

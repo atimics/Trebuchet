@@ -87,18 +87,6 @@ test('server.js routes quote-token-info to the demo handler in demo mode', () =>
 
 // ---- 3. Risk acknowledgement ----------------------------------------------------
 
-test('freeze-authority risk is acknowledgeable in the editor, and resets when the token changes', () => {
-  const src = read('public/modules/pool-editor.js');
-  assert.match(src, /data-field="riskAcknowledged"/, 'the pool card renders an acknowledge checkbox');
-  assert.match(src, /if \(p\.riskAcknowledged === true\) \{[\s\S]{0,400}warnings\.push/, 'acknowledged -> warning');
-  assert.match(src, /Tick "I understand this risk"/, 'unacknowledged -> blocking reason that says how to proceed');
-  assert.match(src, /pool\.riskAcknowledged = false;/, 'acknowledgement is tied to the token it was given for');
-  // Token-2022 incompatibility stays a hard block — it is technical, not risk.
-  assert.match(src, /if \(p\.resolvedCompatible === false\) \{[\s\S]{0,300}reasons\.push/);
-});
-
-// ---- 4. Demo accounting + airdrop hardening -------------------------------------
-
 test('demo: preallocation stays in the wallet after LP, airdrop deducts, malformed amounts fail per-recipient', async () => {
   const kp = Keypair.generate(); const sk = Array.from(kp.secretKey); const pk = kp.publicKey.toBase58();
   const balance = () => { const r = res(); demo.handleCheckBalanceDetailed({ body: { publicKey: pk } }, r); const t = r.body.balance.tokens; return Object.values(t)[0]?.amountUi; };

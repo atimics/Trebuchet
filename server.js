@@ -1108,49 +1108,10 @@ function readV2ViewportSmokeProof() {
 app.use(express.static(publicDir));
 
 // Routes
+// The app lives at /v2/.
 app.get('/', (_req, res) => {
-  res.sendFile(path.join(publicDir, 'index.html'));
+  res.redirect(302, '/v2/');
 });
-
-// Opt-in diagnostic endpoint for splash-video 404 debugging. It reports local
-// filesystem/process paths, so keep it unavailable in normal desktop/web runs.
-// Enable only for targeted troubleshooting:
-//
-//   TREBUCHET_ENABLE_SPLASH_DEBUG=1 npm run web
-//   fetch('/api/_splash-debug').then(r => r.json()).then(console.log)
-if (process.env.TREBUCHET_ENABLE_SPLASH_DEBUG === '1') {
-  app.get('/api/_splash-debug', (_req, res) => {
-    const introPath = path.join(publicDir, 'intro.mp4');
-    let publicListing = null;
-    let publicListingError = null;
-    try {
-      publicListing = fs.readdirSync(publicDir);
-    } catch (e) {
-      publicListingError = e.message;
-    }
-    let introStat = null;
-    let introStatError = null;
-    try {
-      const s = fs.statSync(introPath);
-      introStat = { size: s.size, isFile: s.isFile(), mtime: s.mtime };
-    } catch (e) {
-      introStatError = e.message;
-    }
-    res.json({
-      __dirname,
-      publicDir,
-      publicDirExists: fs.existsSync(publicDir),
-      publicListing,
-      publicListingError,
-      introPath,
-      introExists: fs.existsSync(introPath),
-      introStat,
-      introStatError,
-      cwd: process.cwd(),
-      execPath: process.execPath,
-    });
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Server log streaming
@@ -2791,9 +2752,7 @@ app.post('/api/rpc-config/set-network', (req, res) => {
 // ---------------------------------------------------------------------------
 // User preferences.
 //
-// Small key/value store for user-toggleable settings. Currently only one
-// knob: checkForUpdatesOnStartup. The "don't check automatically" checkbox
-// on the update-check modal in public/app.js POSTs here to flip it.
+// Small key/value store for user-toggleable settings (Settings in the app).
 //
 // Backed by userPrefs.json in TREBUCHET_CONFIG_DIR — same persistence
 // pattern as rpcConfig.json. See userPrefs.js for the schema and defaults.
@@ -6488,13 +6447,8 @@ app.get('/api/clmm-fee-tiers', async (_req, res) => {
   }
 });
 
-// Image proxy for token logos. The 3D coin preview (coinRenderer.js) draws the
-// back-face token logo into a WebGL texture, which requires the source image to
-// be CORS-clean — many logo hosts (CDNs, indexers) don't send CORS headers, so
-// loading them directly with crossOrigin fails and the coin falls back to
-// embossing the symbol text. Re-serving the logo from our own origin sidesteps
-// CORS entirely, so the coin shows the real logo for every token — the same
-// logo the pool-configuration rows already display via plain <img> tags.
+// Image proxy for token logos. Many logo hosts (CDNs, indexers) don't send CORS
+// headers; re-serving the logo from our own origin lets the page read it.
 //
 // This is a read-only passthrough, but we still guard it like a proxy: https
 // only, block loopback/private/link-local hosts (SSRF), enforce a timeout, only

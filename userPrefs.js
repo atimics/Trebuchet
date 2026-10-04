@@ -92,7 +92,7 @@ const DEFAULTS = Object.freeze({
   playIntroVideo: true,
   // Click sound effect. A short tick played when the user activates a button
   // or other clickable control. On by default; toggled in settings. Handled
-  // entirely in the renderer (public/modules/audio.js) — the server only
+  // entirely in the renderer — the server only
   // stores the flag.
   playSoundEffects: true,
   // Looping background music. Starts once the intro splash is gone and the

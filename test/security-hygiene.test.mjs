@@ -4,26 +4,20 @@ import { readFileSync } from 'node:fs';
 
 const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
 
-test('public frontend has no inline JavaScript event handlers', () => {
-  const app = read('public/app.js');
-  const html = read('public/index.html');
-  const combined = `${app}\n${html}`;
-
+test('the app page has no inline JavaScript event handlers', () => {
+  const combined = `${read('public/v2/app.js')}\n${read('public/v2/index.html')}`;
   assert.equal(/\bon(?:click|load|error)=["']/i.test(combined), false);
   assert.equal(/javascript:/i.test(combined), false);
 });
 
-test('frontend assets are local and guarded by CSP', () => {
-  const html = read('public/index.html');
+test('the app page loads local assets and the server sends its CSP', () => {
+  const html = read('public/v2/index.html');
   const middleware = read('serverMiddleware.js');
-
-  assert.match(html, /Content-Security-Policy/);
   assert.match(middleware, /Content-Security-Policy/);
   assert.match(middleware, /frame-ancestors 'none'/);
   assert.match(middleware, /X-Frame-Options/);
-  assert.match(html, /vendor\/bulma\/bulma\.min\.css/);
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.doesNotMatch(html, /cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com/);
+  assert.doesNotMatch(html, /cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com|unpkg\.com/);
 });
 
 test('release artifacts stay out of git and lockfile is trackable', () => {
@@ -78,12 +72,3 @@ test('pending-wallet list API does not bulk-return secret material', () => {
   assert.doesNotMatch(listRoute, /out\.mnemonic\s*=/);
 });
 
-test('splash debug endpoint is opt-in only', () => {
-  const server = read('server.js');
-  const gatedRoute = "if (process.env.TREBUCHET_ENABLE_SPLASH_DEBUG === '1') {";
-  const gateStart = server.indexOf(gatedRoute);
-  const routeStart = server.indexOf("app.get('/api/_splash-debug'");
-
-  assert.ok(gateStart >= 0, 'splash debug env gate missing');
-  assert.ok(routeStart > gateStart, 'splash debug route must be inside the env-gated block');
-});

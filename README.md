@@ -10,17 +10,13 @@ resulting Fee Key NFTs, publishes or downloads a launch dossier, and sweeps the
 temporary launch wallet. The signer and launch journal stay on the operator's
 machine; core execution does not depend on a hosted Trebuchet backend.
 
-The desktop app opens Trebuchet by default. The parchment interface remains
-available as **Classic** while Trebuchet completes production field verification.
-
 ## Release status
 
 The Trebuchet desktop application is a release candidate, not a published
 `v2.0.0` production release.
 
 - The Trebuchet desktop shell, guarded execution bridge, recovery flows, proof export,
-  packaged runtime smoke, API-backed E2E, viewport checks, and Classic fallback
-  are implemented and tested.
+  packaged runtime smoke, API-backed E2E and viewport checks are implemented and tested.
 - A `v2+` tag fails closed unless the repository contains a recent, non-demo
   mainnet field proof and a separate two-person release attestation bound to the
   exact evidence bytes and release history.
@@ -71,9 +67,8 @@ Useful launch variants:
 
 ```bash
 npm start              # Trebuchet desktop
-npm run start:v2       # compatibility alias for the current Trebuchet shell
-npm run start:classic  # parchment Classic fallback
-npm run web            # local Express app; open /v2/ for the Trebuchet shell
+npm run start:v2       # same as npm start
+npm run web            # local Express app at /v2/
 ```
 
 The Electron process starts an authenticated loopback Express server on a free
@@ -308,19 +303,15 @@ Common commands:
 | `npm test` | Run the Node test suite. |
 | `npm run test:cli` | Verify the experimental CLI contract and binary. |
 | `npm run cli -- doctor --json` | Check the headless CLI/Core runtime. |
-| `npm run test:e2e` | Run the Classic Playwright flow. |
 | `npm run test:e2e:v2` | Run the API-backed Trebuchet flow. |
 | `npm run test:e2e:devnet` | Run the secret-gated funded devnet transaction smoke. |
 | `npm run test:v2:viewport` | Verify the Trebuchet desktop/mobile cockpit and proof contract. |
 | `npm run test:electron:v2` | Smoke the Trebuchet Electron runtime. |
 | `npm run test:electron:v2:packaged` | Smoke a packaged Trebuchet application. |
-| `npm run test:visual` | Compare UI screenshots with visual goldens. |
-| `npm run test:visual:golden:linux` | Regenerate canonical Linux goldens in the pinned CI container. |
-| `npm run shots` | Regenerate the Classic reference walkthrough. |
 | `npm run shots:marketing` | Regenerate the current Trebuchet website screenshots and social preview. |
 | `npm run smoke:mainnet:readonly` | Run read-only mainnet compatibility probes. |
 | `npm run build:c` | Build the native Vanity CA helper. |
-| `npm run build:js` | Rebuild Classic `public/app.js` from `public/modules/`. |
+| `npm run build:js` | Rebuild `public/v2/app.js` and `public/v2/core.js` from their sources. |
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and
 [ENG.md](ENG.md) before changing execution, storage, proof, or packaging code.
