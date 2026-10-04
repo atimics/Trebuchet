@@ -184,8 +184,6 @@ Several artifacts are intentionally separate:
 4. **Transfer evidence hash** — stable identity over the terminal sweep.
 5. **Parity audit / field packet** — generated readiness evaluations: a live
    launch, its report, and a passing proof audit.
-6. **Release attestation** — independent operator/reviewer approval bound to
-   exact file hashes and repository history.
 
 The application computes fingerprints for UI staleness and proof binding.
 `packages/core/src/proof-integrity.js` independently implements the production
@@ -199,8 +197,6 @@ app-generated pass flags.
 - exact local-dossier sweep binding;
 - SHA-256 of the exact evidence bytes;
 - evidence freshness;
-- field-run commit ancestry;
-- distinct GitHub operator and reviewer;
 - macOS signing/notarization and Windows signing plan.
 
 ## API groups

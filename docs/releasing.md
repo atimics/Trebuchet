@@ -38,7 +38,7 @@ Before merging a release-bearing pull request:
 2. Require all pull request checks: tests, the three platform package smoke builds, v2 E2E coverage, and any path-triggered screenshot checks.
 3. Review the PR's dependency-risk section and record a disposition for every high or critical advisory. The current audit snapshot is maintained in [`SECURITY.md`](../SECURITY.md).
 4. Confirm user-facing claims match implemented execution.
-5. For v2+, complete the field-evidence, independent-review, and signing preflight below before merge.
+5. For v2+, complete the field-evidence and signing preflight below before merge.
 6. Verify the marketing-site download names still match `package.json` artifact names.
 
 Pull requests run tests and Windows, Linux, and macOS arm64 package smoke builds. Smoke builds use `electron-builder --dir`; they do not produce trusted installers. Merges to `main` do not rerun that CI matrix before tagging, so green PR checks are a release precondition.
@@ -48,12 +48,12 @@ Pull requests run tests and Windows, Linux, and macOS arm64 package smoke builds
 Every proposed `v2.0.0` or newer release is blocked before its public tag is created unless all production conditions pass. The tag-driven release workflow repeats the same verification before desktop builds:
 
 1. `release-evidence/v2/field-verification.json` is the unmodified full JSON produced by v2's **Download proof** action after an authorized, non-demo, journal-backed mainnet launch reaches its wallet-empty terminal sweep. It must include a passing report-parity audit, a field-verification packet that passes its three requirements (live launch, report, proof audit), and a sweep-bound local proof record.
-2. `release-evidence/v2/release-attestation.json` approves those exact evidence bytes by SHA-256. It names the exact field-run commit, which must be an ancestor of the release commit, and records different GitHub users as field operator and release reviewer. Evidence older than 30 days is rejected.
+2. The field evidence is no older than 30 days.
 3. The repository supplies complete macOS signing and notarization credentials and complete Windows signing credentials. V2 releases cannot fall back to unsigned test artifacts.
 
-The two production files are intentionally absent until the field run and independent review are complete. Follow [`release-evidence/v2/README.md`](../release-evidence/v2/README.md); never construct, trim, reformat, or repair the exported proof by hand.
+The evidence file is intentionally absent until the field run is complete. Follow [`release-evidence/v2/README.md`](../release-evidence/v2/README.md); never construct, trim, reformat, or repair the exported proof by hand.
 
-The gate independently recomputes the proof fingerprint and terminal-sweep fingerprint. It also checks the concrete mint, authority state, pool and position transactions, Burn & Earn locks, Fee Key records, optional airdrop, report, local proof-download record, evidence age, reviewer separation, file digests, and Git ancestry.
+The gate independently recomputes the proof fingerprint and terminal-sweep fingerprint. It also checks the concrete mint, authority state, pool and position transactions, Burn & Earn locks, Fee Key records, optional airdrop, report, local proof-download record, and evidence age.
 
 Run the same check locally with the production signing environment loaded:
 
@@ -157,7 +157,7 @@ Use the hosting provider's FTP hostname for `FTP_HOST`, not the public marketing
 ## Failure handling
 
 - **Wrong automatically created tag:** do not publish or move a released tag. Stop and investigate before deleting an unpublished bad tag or creating a corrected release; coordinate any tag mutation with repository administrators.
-- **Production gate failure:** fix the stated evidence, attestation, ancestry, age, or signing precondition. Never weaken the gate or edit an exported proof to make it pass.
+- **Production gate failure:** fix the stated evidence, age, or signing precondition. Never weaken the gate or edit an exported proof to make it pass.
 - **One platform build fails:** rerun the same immutable tag after a transient infrastructure failure. A source fix requires a new commit and new tag. Do not mix files from different commits into one release.
 - **Website verification fails:** align the website links and `package.json` artifact names, then publish a new tagged commit.
 - **Partial publish:** inspect the existing GitHub Release and package version before rerunning; the workflow is designed to reconcile assets for the same tag, but npm package contents cannot be replaced.

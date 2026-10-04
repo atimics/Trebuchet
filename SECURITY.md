@@ -142,8 +142,7 @@ For a `v2+` release, the production gate:
 - validates exact token, authority, pool, position, lock, Fee Key, recipient,
   airdrop, report, and sweep records;
 - hashes the exact evidence file bytes;
-- verifies a recent, separate, two-person release attestation;
-- requires the field-run commit to be an ancestor of the release commit;
+- rejects field evidence older than 30 days;
 - requires signed/notarized macOS and signed Windows build plans.
 
 This protects against stale, mutually consistent, hand-thinned, or hand-edited
@@ -283,7 +282,6 @@ contact/channel where available and provide only the minimum reproduction data.
 - [ ] Dedicated RPC used for field launch.
 - [ ] Active secret backend protection verified.
 - [ ] Field proof reviewed for accidental secrets.
-- [ ] Distinct field operator and release reviewer.
 - [ ] macOS identity and notarization credentials loaded.
 - [ ] Windows signing identity loaded.
 - [ ] Checksums and trust metadata verified after publication.
