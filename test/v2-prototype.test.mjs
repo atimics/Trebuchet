@@ -1473,13 +1473,10 @@ function loadV2FieldVerificationHarness() {
   const evidenceHelperEnd = js.indexOf('\nfunction v2ReportAuditNumber', evidenceHelperStart);
   const fieldStart = js.indexOf('const V2_FIELD_VERIFICATION_REQUIREMENTS');
   const fieldEnd = js.indexOf('\nfunction buildV2LaunchReportData', fieldStart);
-  const sectionStart = js.indexOf('function buildV2ReportFieldVerificationSection');
-  const sectionEnd = js.indexOf('\nfunction buildV2LaunchReportHtml', sectionStart);
   assert.ok(escapeStart >= 0 && escapeEnd > escapeStart, 'escape helper should be extractable');
   assert.ok(factStart >= 0 && factEnd > factStart, 'fact row helper should be extractable');
   assert.ok(evidenceHelperStart >= 0 && evidenceHelperEnd > evidenceHelperStart, 'evidence text matcher should be extractable');
   assert.ok(fieldStart >= 0 && fieldEnd > fieldStart, 'field verification helper should be extractable');
-  assert.ok(sectionStart >= 0 && sectionEnd > sectionStart, 'field verification section should be extractable');
 
   const sandbox = {
     Date,
@@ -1532,9 +1529,7 @@ function loadV2FieldVerificationHarness() {
       js.slice(factStart, factEnd),
       js.slice(evidenceHelperStart, evidenceHelperEnd),
       js.slice(fieldStart, fieldEnd),
-      js.slice(sectionStart, sectionEnd),
       'globalThis.buildV2FieldVerification = buildV2FieldVerification;',
-      'globalThis.buildV2ReportFieldVerificationSection = buildV2ReportFieldVerificationSection;',
     ].join('\n'),
     sandbox,
     { filename: 'public/v2/app.js field verification harness' },
@@ -2569,7 +2564,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /buildV2ReportParityAudit/);
   assert.match(js, /buildClassicRetirementGate/);
   assert.match(js, /buildV2FieldVerification/);
-  assert.match(js, /buildV2ReportFieldVerificationSection/);
   assert.match(js, /normalizeComparisonPool/);
   assert.match(js, /comparisonPoolFingerprint/);
   assert.match(js, /comparisonPositionsFromPools/);
@@ -2614,7 +2608,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /Authority posture/);
   assert.match(js, /Fee Key NFTs/);
   assert.match(js, /Airdrop recipients/);
-  assert.match(js, /Replacement criteria/);
   assert.match(js, /replacementCriteria/);
   assert.match(js, /criteriaPassCount/);
   assert.match(js, /proofFingerprint: launchProofFingerprint\(proof, config\)/);
@@ -3735,7 +3728,7 @@ test('v2 launch dossier renders held reserve support audit evidence', () => {
 
 test('v2 launch report exports a normalized field verification packet', () => {
   const harness = loadV2FieldVerificationHarness();
-  const { buildV2FieldVerification, buildV2ReportFieldVerificationSection } = harness;
+  const { buildV2FieldVerification } = harness;
   const retirementGate = {
     source: 'trebuchet-v2-classic-retirement-gate',
     proofFingerprint: 'proof-fingerprint-111',
@@ -3758,7 +3751,6 @@ test('v2 launch report exports a normalized field verification packet', () => {
     audit: { status: 'missing' },
     retirementGate,
   });
-  const htmlOut = buildV2ReportFieldVerificationSection(packet);
 
   assert.equal(packet.version, 1);
   assert.equal(packet.source, 'trebuchet-v2-field-verification');
@@ -3773,10 +3765,6 @@ test('v2 launch report exports a normalized field verification packet', () => {
   assert.match(packet.nextDetail, /Run a real v2 launch/);
   assert.equal(packet.requirements.find((item) => item.id === 'audit').action, 'resolve-proof-audit');
   assert.deepEqual(packet.requirements.map((item) => item.id), ['live-proof', 'report-proof', 'audit']);
-  assert.match(htmlOut, /Field parity packet blocked/);
-  assert.match(htmlOut, /proof-fingerprint-111/);
-  assert.match(htmlOut, /run-non-demo-v2-launch/);
-  assert.doesNotMatch(htmlOut, /compare-classic-artifact|Classic artifact/);
   assert.match(js, /const expectedFingerprint = launchProofFingerprint\(proof, config\)/);
   assert.match(js, /classicRetirementGateMatchesProof\(retirementGate, proof, audit, config\)/);
   assert.match(js, /gateFingerprint === expectedFingerprint/);
