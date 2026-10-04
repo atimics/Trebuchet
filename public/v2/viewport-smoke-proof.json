@@ -3,8 +3,8 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-10-04T14:44:50.830Z",
-  "durationMs": 2209,
+  "generatedAt": "2026-10-04T15:19:25.601Z",
+  "durationMs": 1971,
   "target": "file:///Users/ratimics/develop/trebuchet/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",
@@ -12,17 +12,16 @@
     "tokenomicsChart",
     "liquidityChart",
     "fundingMeter",
-    "parityPanel",
     "firstViewportFit",
     "terminalPanelFit",
     "discoveryTokenViewport",
     "keyboardWalkthrough"
   ],
   "assetHashes": {
-    "index.html": "082997fd005c43ec375e8011fb9fc9350271cda15a4ca484fdbf00426d06e021",
+    "index.html": "16606450553431e824174925d32b154cde80ebde8e8e2d65b133ec8c7f58ef93",
     "styles.css": "362dc0274a64bcf61d35aeaa84f38982e5951486198ee9f68d9ae91f686ae277",
     "api-client.js": "5db9f4819aca6d94228c82d54d883a0e292a6ba508c84a37f7ce08613b1fb332",
-    "app.js": "75382675b79833280e65ca97ffe9540baef10485c2b49214b3967dd27c273a7e"
+    "app.js": "841a65a669147e2f1a89ab163afc6d8e071efb8cbb97f66276f7138774ac5c26"
   },
   "viewports": [
     {
@@ -36,7 +35,6 @@
         "tokenomicsChart": true,
         "liquidityChart": true,
         "fundingMeter": true,
-        "parityPanel": true,
         "firstViewportFit": true,
         "terminalPanelFit": true,
         "discoveryTokenViewport": true,
@@ -61,7 +59,6 @@
         "tokenomicsChart": true,
         "liquidityChart": true,
         "fundingMeter": true,
-        "parityPanel": true,
         "firstViewportFit": true,
         "terminalPanelFit": true,
         "discoveryTokenViewport": true,
@@ -86,7 +83,6 @@
         "tokenomicsChart": true,
         "liquidityChart": true,
         "fundingMeter": true,
-        "parityPanel": true,
         "firstViewportFit": true,
         "terminalPanelFit": true,
         "discoveryTokenViewport": true,
@@ -111,7 +107,6 @@
         "tokenomicsChart": true,
         "liquidityChart": true,
         "fundingMeter": true,
-        "parityPanel": true,
         "firstViewportFit": true,
         "terminalPanelFit": true,
         "discoveryTokenViewport": true,

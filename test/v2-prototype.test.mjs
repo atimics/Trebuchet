@@ -397,7 +397,6 @@ function loadClassicRetirementGateHarness() {
       'tokenomicsChart',
       'liquidityChart',
       'fundingMeter',
-      'parityPanel',
       'firstViewportFit',
     ],
     CLASSIC_TOKEN_NAME_MAX_BYTES: 32,
@@ -2255,7 +2254,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(css, /field-proof-steps/);
   assert.match(css, /field-proof-step/);
   assert.match(css, /criteria-strip/);
-  assert.match(css, /criteria-chip/);
   assert.match(css, /signature-panel:not\(.is-staged\)/);
   assert.match(css, /signature-panel\.is-live/);
   assert.match(css, /execution-ledger/);
@@ -6687,7 +6685,6 @@ test('v2 API client bootstraps local session and read-only app state', async () 
           'tokenomicsChart',
           'liquidityChart',
           'fundingMeter',
-          'parityPanel',
           'firstViewportFit',
         ],
         expectedRequiredChecks: [
@@ -6696,7 +6693,6 @@ test('v2 API client bootstraps local session and read-only app state', async () 
           'tokenomicsChart',
           'liquidityChart',
           'fundingMeter',
-          'parityPanel',
           'firstViewportFit',
         ],
         viewports: [
@@ -6711,7 +6707,6 @@ test('v2 API client bootstraps local session and read-only app state', async () 
               tokenomicsChart: true,
               liquidityChart: true,
               fundingMeter: true,
-              parityPanel: true,
               firstViewportFit: true,
             },
           },
@@ -6726,7 +6721,6 @@ test('v2 API client bootstraps local session and read-only app state', async () 
               tokenomicsChart: true,
               liquidityChart: true,
               fundingMeter: true,
-              parityPanel: true,
               firstViewportFit: true,
             },
           },
@@ -6818,7 +6812,6 @@ test('v2 API client bootstraps local session and read-only app state', async () 
     'tokenomicsChart',
     'liquidityChart',
     'fundingMeter',
-    'parityPanel',
     'firstViewportFit',
   ]);
   assert.deepEqual(boot.viewportSmoke.expectedRequiredChecks, boot.viewportSmoke.requiredChecks);

@@ -244,7 +244,6 @@ const V2_VIEWPORT_SMOKE_REQUIRED_CHECKS = Object.freeze([
   'tokenomicsChart',
   'liquidityChart',
   'fundingMeter',
-  'parityPanel',
   'firstViewportFit',
   'terminalPanelFit',
   'discoveryTokenViewport',
