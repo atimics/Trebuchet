@@ -18453,9 +18453,10 @@ function formatSol(lamports) {
   return Number((Number(lamports || 0) / 1e9).toFixed(6)).toString();
 }
 
+// The sweep moves tokens and SOL, and closes empty token accounts to return their rent.
 function walletSweepable(contents) {
   return Boolean(contents && contents.ownerProgram === '11111111111111111111111111111111'
-    && (contents.tokens.length > 0 || contents.lamports >= SWEEP_DUST_LAMPORTS));
+    && (contents.tokens.length > 0 || contents.lamports >= SWEEP_DUST_LAMPORTS || contents.openAccounts > 0));
 }
 
 function walletContentsSummary(contents) {

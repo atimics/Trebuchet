@@ -38,7 +38,8 @@ test('the hover card lists what the wallet holds and whether Trebuchet has its k
 
 test('a wallet is worth sweeping when it holds tokens or SOL above dust', () => {
   const { walletSweepable, walletContentsSummary } = page();
-  assert.equal(walletSweepable(contents()), false, 'rent reserve and empty accounts only');
+  assert.equal(walletSweepable(contents()), true, 'open token accounts hold rent the sweep returns');
+  assert.equal(walletSweepable(contents({ openAccounts: 0, accountRentLamports: 0 })), false, 'the rent reserve alone');
   assert.equal(walletSweepable(contents({ lamports: 5_000_000 })), true);
   assert.equal(walletSweepable(contents({ tokens: [{ mint: 'm', amountRaw: '1', decimals: 0 }] })), true);
   assert.equal(walletSweepable(contents({ lamports: 5_000_000, ownerProgram: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' })), false, 'a mint is not a wallet');
@@ -77,25 +78,26 @@ function walletPage({ rows, sweepFails = [] }) {
 test('the Wallet page lists only keys that hold something and sweeps each launch wallet once', async () => {
   const rows = [
     { address: 'empty-1', kind: 'launch', contents: contents({ lamports: 0, openAccounts: 0 }) },
-    { address: 'rent-only', kind: 'retired', contents: contents() },
+    { address: 'rent-only', kind: 'retired', contents: contents({ openAccounts: 0, accountRentLamports: 0 }) },
+    { address: 'open-accounts', kind: 'retired', contents: contents() },
     { address: 'has-sol', kind: 'retired', contents: contents({ lamports: 50_000_000 }) },
     { address: 'has-token', kind: 'launch', contents: contents({ lamports: 0, tokens: [{ mint: 'mint-treb', amountRaw: '5', decimals: 0 }] }) },
     { address: 'vanity-sol', kind: 'vanity', contents: contents({ lamports: 50_000_000, key: 'vanity' }) },
   ];
   const { context, target, calls } = walletPage({ rows, sweepFails: ['has-token'] });
   context.renderHeldWallets();
-  assert.match(target.innerHTML, /5 keys · 4 holding anything/);
-  assert.match(target.innerHTML, /data-action="sweep-all-wallets" ><i class="fa-solid fa-broom"><\/i><span>Sweep all \(2\)/);
+  assert.match(target.innerHTML, /6 keys · 5 holding anything/);
+  assert.match(target.innerHTML, /data-action="sweep-all-wallets" ><i class="fa-solid fa-broom"><\/i><span>Sweep all \(3\)/);
   assert.doesNotMatch(target.innerHTML, /data-wallet-chip="empty-1"/);
   await context.sweepAllWallets();
-  assert.equal(JSON.stringify(calls), JSON.stringify([['confirm', { publicKey: '2 launch wallets', defaultDestination: 'return-wallet' }],
-    ['sweep', 'has-sol', 'return-wallet'], ['sweep', 'has-token', 'return-wallet']]));
-  assert.match(target.innerHTML, /Swept 1 of 2; 1 not swept\./);
+  assert.equal(JSON.stringify(calls), JSON.stringify([['confirm', { publicKey: '3 launch wallets', defaultDestination: 'return-wallet' }],
+    ['sweep', 'open-accounts', 'return-wallet'], ['sweep', 'has-sol', 'return-wallet'], ['sweep', 'has-token', 'return-wallet']]));
+  assert.match(target.innerHTML, /Swept 2 of 3; 1 not swept\./);
   assert.match(target.innerHTML, /title="RPC busy">Not swept/);
 });
 
 test('Sweep all is greyed out with nothing to sweep, and asks for the PIN when it is locked', () => {
-  const idle = walletPage({ rows: [{ address: 'rent-only', kind: 'retired', contents: contents() }] });
+  const idle = walletPage({ rows: [{ address: 'rent-only', kind: 'retired', contents: contents({ openAccounts: 0, accountRentLamports: 0 }) }] });
   idle.context.renderHeldWallets();
   assert.match(idle.target.innerHTML, /data-action="sweep-all-wallets" disabled/);
   assert.match(idle.target.innerHTML, /Nothing to sweep/);
@@ -141,7 +143,7 @@ test('old launch wallets count only when the chain shows something to sweep', ()
   return Promise.all([
     context.walletContents.call(null, 'rent-only'),
   ]).then(() => {
-    context.state.apiClient.getWalletContents = async (address) => contents({ address, lamports: address === 'has-sol' ? 50_000_000 : 660241 });
+    context.state.apiClient.getWalletContents = async (address) => contents({ address, lamports: address === 'has-sol' ? 50_000_000 : 660241, openAccounts: 0, accountRentLamports: 0 });
     return Promise.all(['rent-only', 'has-sol', 'in-use'].map((address) => context.walletContents(address, { fresh: true })));
   }).then(() => {
     assert.equal(JSON.stringify(context.recoveryWalletsNeedingAttention().map((wallet) => wallet.publicKey)), JSON.stringify(['has-sol']));

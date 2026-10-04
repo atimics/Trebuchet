@@ -723,6 +723,7 @@ const requireWalletExecution = () => {
   return walletExecution;
 };
 const sweepSolToDestination = (input) => requireWalletExecution().sweepSolToDestination(input);
+const closeEmptyTokenAccounts = (input) => requireWalletExecution().closeEmptyTokenAccounts(input);
 const transferMetadataAuthority = (input) => requireWalletExecution().transferMetadataAuthority(input);
 const reconcileWalletOperation = async (input) => {
   const wallet = Keypair.fromSecretKey(Uint8Array.from(input.tempWalletSecretKey)).publicKey.toBase58();
@@ -757,7 +758,7 @@ function claimLaunchOp(walletPublicKey, op, workflowId = null) {
   const canResumeFeeKey = pending?.kind === 'token-transfer' && ['create-lp', 'resume-launch'].includes(op) && feeKeyExecution?.canRecover(walletPublicKey);
   const canResumeAirdrop = ['token-transfer', 'airdrop-observed-delivery'].includes(pending?.kind) && op === 'run-airdrop' && airdropExecution?.canRecover(walletPublicKey);
   if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity && !canResumeFeeKey && !canResumeAirdrop && !canResumeQuotes && !canResumeWithdrawal && !canResumeSupport) {
-    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: `An earlier ${({ 'token-transfer': 'token transfer', 'sol-sweep': 'SOL transfer', 'metadata-update': 'metadata update', [LIQUIDITY_OPERATION_KIND]: 'pool step' })[pending.kind] || 'wallet step'} from this launch wallet is not confirmed yet, so this action did not start.` });
+    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: `An earlier ${({ 'token-transfer': 'token transfer', 'sol-sweep': 'SOL transfer', 'metadata-update': 'metadata update', 'token-account-close': 'token account close', [LIQUIDITY_OPERATION_KIND]: 'pool step' })[pending.kind] || 'wallet step'} from this launch wallet is not confirmed yet, so this action did not start.` });
   }
   claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
 }
@@ -5332,6 +5333,7 @@ const launchServices = autoResumingLaunchServices(createLaunchExecutionServices(
   sweepAllTokensToDestination,
   sweepNftsToDestination,
   sweepSolToDestination,
+  closeEmptyTokenAccounts,
   transferJournalSummary,
   transferMetadataAuthority,
   unsafeSweepDestinationReason,

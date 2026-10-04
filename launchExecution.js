@@ -80,6 +80,7 @@ export function createLaunchExecutionServices({
   sweepAllTokensToDestination,
   sweepNftsToDestination,
   sweepSolToDestination,
+  closeEmptyTokenAccounts = null,
   transferJournalSummary,
   transferMetadataAuthority,
   unsafeSweepDestinationReason,
@@ -1359,7 +1360,7 @@ export function createLaunchExecutionServices({
       //    deps are the real walletHelpers functions; the journal recorder is
       //    a closure over this wallet.
       const {
-        solSweep, solSweepError, solSweepSkipped,
+        solSweep, solSweepError, solSweepSkipped, accountClose,
       } = await finishSweepWithSolGate({
         walletPublicKey,
         tempWalletSecretKey: secretKeyArr,
@@ -1370,6 +1371,7 @@ export function createLaunchExecutionServices({
           sweepNfts: sweepNftsToDestination,
           sweepTokens: sweepAllTokensToDestination,
           sweepSol: sweepSolToDestination,
+          closeAccounts: closeEmptyTokenAccounts,
           enumerate: (pk, opts) => checkWalletBalanceMultiToken(pk, opts),
           recordEvent: (event) => launchJournal.recordEvent(walletPublicKey, event),
         },
@@ -1470,6 +1472,7 @@ export function createLaunchExecutionServices({
         walletEmpty,
         hasPartialFailure,
         airdrop: airdropResult,
+        accountClose,
       };
     } catch (error) {
       throwIfExecutionPaused(error);
