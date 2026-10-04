@@ -51,7 +51,7 @@
       ${job?.error ? `<p role="alert">${esc(job.error)}</p>` : ''}
       ${!active || d.status !== 'active' ? `<p>Setup estimate: ${sol(d.estimate.totalLamports)} SOL, including account rent and fees.</p>
         ${control('Setup spend cap in SOL', `<input id="feeCap" type="number" min="0.001" step="0.001" value="${(d.estimate.totalLamports / 1e9 * 1.2).toFixed(3)}">`)}
-        <label class="nft-inline"><input id="feeApprove" type="checkbox"> I approve the listed NFT shares. The vault will hold this backing NFT for the collection.</label>
+        <label class="nft-inline"><input id="feeApprove" type="checkbox"> I approve the listed NFT shares and permanent backing custody.</label>
         <button class="primary-button" data-fee-action="run" ${ui.busy || job?.status === 'running' ? 'disabled' : ''}>${d.status === 'draft' ? 'Back collection and send NFTs' : 'Resume setup'}</button>` : ''}
       ${!active && d.operations.backing?.status === 'confirmed' ? '<button class="secondary-button" data-fee-action="recover">Return backing NFT to signing wallet</button>' : ''}
       ${active ? `<p>Fee rights are active. Collect pool fees into the vault, then claim your NFT’s share. SOL fees arrive as wrapped SOL in your wallet.</p>
@@ -66,7 +66,7 @@
   }
   async function refresh() {
     ui.data = await request('/api/v2/fee-nfts');
-    ui.wallets = (await request('/api/v2/wallets')).wallets || [];
+    ui.wallets = ((await request('/api/v2/wallets')).wallets || []).filter((w) => w.hasSecretKey && !w.decryptionFailed);
     ui.wallet ||= ui.wallets[0]?.publicKey || null;
     if (ui.selected) ui.detail = (await request(`/api/v2/fee-nfts/${ui.selected}`)).vault;
   }

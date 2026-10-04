@@ -96,6 +96,14 @@ try {
   const receivedNft = await getAccount(connection, (await connection.getTokenAccountsByOwner(new PublicKey(record.vault), { mint: new PublicKey(launched.positionNft) })).value[0].pubkey, 'confirmed', new PublicKey(record.plan.source.nativeTokenProgram));
   assert.equal(receivedNft.amount, 1n);
   console.log('PASS: branded NFTs sent, locked position held by vault, shares fixed');
+  const interrupted = store.get(record.id);
+  interrupted.operations['send-0'].status = 'prepared'; store.save(interrupted);
+  service.startRun(record.id, { rpcUrl: rpc, walletPublicKey: payer.publicKey.toBase58(), secretKey: [...payer.secretKey], approvedDigest: record.plan.digest, confirmNativeNftMint: launched.positionNft, maxSpendLamports: 100_000_000 });
+  for (let i = 0; service.jobStatus(record.id).status === 'running'; i++) { assert.ok(i < 30); await new Promise((r) => setTimeout(r, 500)); }
+  assert.equal(service.jobStatus(record.id).status, 'complete', JSON.stringify(service.jobStatus(record.id)));
+  assert.equal(store.get(record.id).operations['send-0'].status, 'confirmed');
+  assert.equal(service.activeWallet(payer.publicKey.toBase58()), null);
+  console.log('PASS: an NFT already delivered settles its saved send and releases the wallet');
 
   const cp = new CpAmm(connection); const pool = await cp.fetchPoolState(new PublicKey(launched.pool));
   const buy = async () => sendAndConfirmTransaction(connection, await cp.swap({ payer: buyer.publicKey, pool: new PublicKey(launched.pool), inputTokenMint: NATIVE_MINT, outputTokenMint: token, amountIn: new BN(1_000_000_000), minimumAmountOut: new BN(0), tokenAMint: pool.tokenAMint, tokenBMint: pool.tokenBMint, tokenAVault: pool.tokenAVault, tokenBVault: pool.tokenBVault, tokenAProgram: TOKEN_PROGRAM_ID, tokenBProgram: TOKEN_PROGRAM_ID, referralTokenAccount: null }), [buyer]);
