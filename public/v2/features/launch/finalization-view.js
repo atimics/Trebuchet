@@ -457,7 +457,7 @@ function renderCancelRefundPanel(config = currentLaunchConfig()) {
         <button class="pill-button danger" type="button" data-action="cancel-refund-launch" ${canCancel ? '' : 'disabled'}>
           ${state.cancelRefund.running ? 'Refunding' : 'Cancel & refund'}
         </button>
-        <button class="pill-button" type="button" data-action="inspect-recovery">Open coin</button>
+        ${proofTokenMint(currentLaunchProof()) ? '<button class="pill-button" type="button" data-action="inspect-recovery">Open coin</button>' : ''}
       </div>
     </div>
   `;

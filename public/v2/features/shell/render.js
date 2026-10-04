@@ -86,4 +86,6 @@ function renderAll() {
   renderLaunchWorkspace();
   enhanceNumberSteppers();
   drawLaunchCanvas();
+  // State can change without new markup (the app connecting, a PIN unlock): re-check guards.
+  scheduleActionGuards();
 }
