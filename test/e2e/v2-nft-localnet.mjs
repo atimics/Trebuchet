@@ -38,10 +38,6 @@ const ITEM_COUNT = 12;
 
 fs.writeFileSync(path.join(configDir, 'userPrefs.json'), JSON.stringify({
   demoMode: false,
-  playIntroVideo: false,
-  playSoundEffects: false,
-  playBackgroundMusic: false,
-  coinPreview: false,
 }));
 fs.writeFileSync(path.join(configDir, 'rpcConfig.json'), JSON.stringify({
   active: rpcUrl,

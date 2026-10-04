@@ -6,7 +6,7 @@ import { supportLayersProblem } from '../packages/core/src/lp-constants.js';
 
 const source = readFileSync(new URL('../public/v2/features/launch/presets.js', import.meta.url), 'utf8');
 const sandbox = {};
-vm.runInNewContext(`${source}\nthis.api = { LAUNCH_PRESETS, launchPresetById, launchPresetForBudget, launchPresetPositionCount, launchPresetMarketPlan, launchPresetSummary };`, sandbox);
+vm.runInNewContext(`${source}\nthis.api = { LAUNCH_PRESETS, launchPresetById, launchPresetPositionCount, launchPresetMarketPlan, launchPresetSummary };`, sandbox);
 const api = sandbox.api;
 
 test('the four presets have the budgets and position counts the spec gives', () => {
@@ -16,8 +16,6 @@ test('the four presets have the budgets and position counts the spec gives', () 
     ['constellation', 10, 18],
     ['vortex', 100, 40],
   ]);
-  assert.equal(api.launchPresetForBudget(10).id, 'constellation');
-  assert.equal(api.launchPresetForBudget(7), null);
 });
 
 test('market shares add up to 100%, and the quote deposited adds up to the budget', () => {

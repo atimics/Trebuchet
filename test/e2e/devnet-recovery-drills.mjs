@@ -284,10 +284,6 @@ export async function runDevnetRecoveryDrills(env = process.env) {
   const configDir = mkdtempSync(path.join(tmpdir(), 'trebuchet-devnet-drill-'));
   writeFileSync(path.join(configDir, 'userPrefs.json'), JSON.stringify({
     demoMode: false,
-    playIntroVideo: false,
-    playSoundEffects: false,
-    playBackgroundMusic: false,
-    coinPreview: false,
     publishLaunchReport: false,
   }, null, 2));
   writeFileSync(path.join(configDir, 'rpcConfig.json'), JSON.stringify({

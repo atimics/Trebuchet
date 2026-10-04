@@ -215,9 +215,6 @@ function loadClassicComparisonPersistenceHarness() {
   assert.ok(normalizeStart >= 0 && normalizeEnd > normalizeStart, 'classic comparison persistence helpers should be extractable');
   const sandbox = {
     Date,
-    CLASSIC_REPORT_COMPARISON_INPUT_LIMIT: 1_000_000,
-    CLASSIC_REPORT_COMPARISON_MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000,
-    CLASSIC_REPORT_COMPARISON_ROW_LIMIT: 80,
     compactLedgerText: (value, limit = 120) => String(value || '').slice(0, limit),
   };
   vm.runInNewContext(
@@ -390,7 +387,6 @@ function loadClassicRetirementGateHarness() {
   const sandbox = {
     console,
     state: harnessState,
-    V2_VIEWPORT_SMOKE_REQUIRED_ASSETS: ['index.html', 'styles.css', 'api-client.js', 'app.js'],
     V2_VIEWPORT_SMOKE_REQUIRED_CHECKS: [
       'launchVisible',
       'horizontalOverflow',
@@ -399,9 +395,6 @@ function loadClassicRetirementGateHarness() {
       'fundingMeter',
       'firstViewportFit',
     ],
-    CLASSIC_TOKEN_NAME_MAX_BYTES: 32,
-    CLASSIC_TOKEN_SYMBOL_MAX_BYTES: 10,
-    CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES: 1000,
     CLASSIC_MAX_WHOLE_TOKEN_SUPPLY: 10_000_000_000n,
     CLASSIC_LOGO_MAX_BYTES: 100 * 1024,
     CLASSIC_LOGO_MAX_DIMENSION: 1024,
@@ -1018,7 +1011,6 @@ function loadClassicRetirementGateHarness() {
       'globalThis.launchPlanWalletFingerprint = launchPlanWalletFingerprint;',
       'globalThis.stampLaunchPlanConfigFingerprint = stampLaunchPlanConfigFingerprint;',
       'globalThis.localApiLaunchPlanStatus = localApiLaunchPlanStatus;',
-      'globalThis.localApiLaunchPlanStaleReason = localApiLaunchPlanStaleReason;',
       'globalThis.classicFundingEstimateFingerprint = classicFundingEstimateFingerprint;',
       'globalThis.stampClassicFundingEstimate = stampClassicFundingEstimate;',
       'globalThis.buildClassicRetirementGate = buildClassicRetirementGate;',
@@ -2274,12 +2266,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /const walletReady = Boolean\(selectedWalletPublicKey && selectedWallet && walletSecretAvailable && !walletSecretLocked && !selectedWallet\.decryptionFailed\)/);
   assert.match(js, /Unlock the Recovery PIN before Trebuchet can sign launch calls/);
   assert.doesNotMatch(js, /proof\?\.walletPublicKey && \(hasCompletedLiveProof \|\| demoRunComplete\)/);
-  assert.match(js, /const CLASSIC_TOKEN_NAME_MAX_BYTES = 32/);
-  assert.match(js, /const CLASSIC_TOKEN_SYMBOL_MAX_BYTES = 10/);
-  assert.match(js, /const CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES = 1000/);
   assert.match(js, /const CLASSIC_MAX_WHOLE_TOKEN_SUPPLY = 10_000_000_000n/);
-  assert.match(js, /function tokenConfigStatus\(config = currentLaunchConfig\(\)\)/);
-  assert.match(js, /const V2_VIEWPORT_SMOKE_REQUIRED_ASSETS = Object\.freeze\(\['index\.html', 'styles\.css', 'api-client\.js', 'app\.js'\]\)/);
   assert.match(js, /const V2_VIEWPORT_SMOKE_REQUIRED_CHECKS = Object\.freeze\(\[/);
   assert.match(js, /fundingMeter/);
   assert.match(js, /state\.viewportSmoke = boot\.viewportSmoke \|\| null/);
@@ -2315,9 +2302,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /const operationSequenceEvidence = Boolean\(decodedOperationEvidence && sequence\.ready\)/);
   assert.match(js, /const matchesWallet = Boolean\(/);
   assert.match(js, /missingOperationIds: sequence\.missingOperationIds/);
-  assert.match(js, /function localApiLaunchPlanStaleReason\(planStatus = localApiLaunchPlanStatus\(\)\)/);
-  assert.match(js, /function localApiLaunchPlanIncompleteReason\(planStatus = localApiLaunchPlanStatus\(\)\)/);
-  assert.match(js, /it is missing required operation/);
   assert.match(js, /if \(localApiLaunchPlanStatus\(\)\.ready\) return \{ label: 'Model', className: 'warn' \}/);
   assert.doesNotMatch(js, /\|\| config\?\.poolTopology\s*\)/);
   assert.match(js, /function classicFundingEstimateFingerprint\(config = currentLaunchConfig\(\)\)/);
@@ -2394,8 +2378,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /loadV2ProofFile/);
   assert.match(js, /requestV2ProofImport/);
   assert.match(js, /rawProof\.source === 'demo-run'/);
-  assert.match(js, /CLASSIC_REPORT_COMPARISON_STORAGE_KEY/);
-  assert.match(js, /CLASSIC_ARTIFACT_IMPORT_LIMIT/);
   assert.match(js, /downloadTextFile/);
   assert.match(js, /localStorage/);
   assert.match(js, /Interrupted before completion/);
@@ -2412,7 +2394,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /Still needed/);
   assert.match(js, /Spent so far/);
   assert.match(js, /Pair tokens bought/);
-  assert.match(js, /vanityCandidateDetail/);
   assert.match(js, /vanityAvailabilityMeta/);
   assert.match(js, /vanityPatternEstimate/);
   assert.match(js, /vanityEstimateSummary/);
@@ -3186,9 +3167,6 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /airdropCompletionStatus/);
   assert.match(js, /retryRequired: evidence\.failed > 0/);
   assert.match(js, /missing: evidence\.missing \|\| \[\]/);
-  assert.match(js, /fullRunPendingAirdropCount\(proof\) \{\s*const config = proofConfigForFingerprint\(proof, currentLaunchConfig\(\)\);\s*return airdropCompletionStatus\(proof, config\.poolTopology\)\.pending;/);
-  const fullRunPendingBody = js.match(/function fullRunPendingAirdropCount\(proof\) \{([\s\S]*?)\n\}/)?.[1] || '';
-  assert.doesNotMatch(fullRunPendingBody, /planned - delivered - failed/);
   assert.match(js, /state\.fullRunStep = 'Retrying airdrop'/);
   assert.match(js, /runV2Airdrop\(\{ retry: true, skipConfirm: true, quiet: true, refreshReadiness: false \}\)/);
   assert.match(js, /Airdrop still has/);
@@ -3250,7 +3228,6 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /fieldVerification: parityBundle\.fieldVerification/);
   assert.match(js, /Launch record summary/);
   assert.match(js, /startVanityGrind/);
-  assert.match(js, /vanityCandidateDetail/);
   assert.match(js, /vanityAvailabilityMeta/);
   assert.match(apiClientJs, /\/api\/estimate-lp-funding/);
   assert.match(apiClientJs, /\/api\/clmm-fee-tiers/);
@@ -5440,7 +5417,7 @@ test('v2 proof config snapshots fill sweep destination until proof-bound report 
 
 test('v2 manual run-next preserves classic finalization before sweep', () => {
   const helperStart = js.indexOf('function executeNextTransferFinalizationIssue');
-  const helperEnd = js.indexOf('\nfunction fullRunPendingAirdropCount', helperStart);
+  const helperEnd = js.indexOf('\nfunction fullRunCompletionAudit', helperStart);
   const helper = js.slice(helperStart, helperEnd);
   const runNextStart = js.indexOf('async function executeNextRunOperation()');
   const runNextEnd = js.indexOf('\nfunction executeNextTransferFinalizationIssue', runNextStart);

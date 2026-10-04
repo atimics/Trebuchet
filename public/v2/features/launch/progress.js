@@ -1,9 +1,3 @@
-function riskClass(value) {
-  if (['High', 'Watch', 'Low confidence'].includes(value)) return 'danger';
-  if (['Medium', 'Warn', 'Medium confidence'].includes(value)) return 'warn';
-  return '';
-}
-
 function defaultSignatureRows() {
   return state.transactions.length
     ? state.transactions
