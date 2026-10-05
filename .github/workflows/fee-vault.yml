@@ -3,6 +3,9 @@ on:
   pull_request:
     paths:
       - 'programs/fee-vault/**'
+      - 'feeNft*.js'
+      - 'feeVaultClient.js'
+      - 'test/fee-nft*.test.mjs'
       - '.github/workflows/fee-vault.yml'
   workflow_dispatch:
 permissions:

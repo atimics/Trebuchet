@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Keypair } from '@solana/web3.js';
 import { CORE_PROGRAM_ID } from '../feeVaultClient.js';
-import { checkFeeNftAccount, checkFeeMint, checkFeeBackingRelease, MAINNET_GENESIS } from '../feeNftSafety.js';
+import { checkFeeNftAccount, checkFeeMint, checkFeeBackingRelease, MAINNET_GENESIS, DEVNET_GENESIS, feeWalletChain } from '../feeNftSafety.js';
 import { getAssetV1AccountDataSerializer } from '@metaplex-foundation/mpl-core/dist/src/generated/types/assetV1AccountData.js';
 import { getCollectionV1AccountDataSerializer } from '@metaplex-foundation/mpl-core/dist/src/generated/types/collectionV1AccountData.js';
 
@@ -52,7 +52,21 @@ test('freeze authority and transfer-changing fee token extensions are refused', 
   for (const bytes of [[18, 0, 5, 0], [18, 0, 0], [18, 0, 0, 0, 18, 0, 0, 0], [18, 0, 0, 0, 9]]) assert.throws(() => checkFeeMint({ ...mint, tlvData: Buffer.from(bytes) }));
 });
 test('actual mainnet genesis requires independent review before backing', () => {
+  assert.equal(MAINNET_GENESIS, '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d');
   assert.throws(() => checkFeeBackingRelease(MAINNET_GENESIS), { code: 'FEE_SECURITY_REVIEW' });
-  checkFeeBackingRelease('EtWTRABZaYq6iMfeYKouRu166VU2xqa1');
+  checkFeeBackingRelease(DEVNET_GENESIS);
   checkFeeBackingRelease('isolated-validator');
+});
+test('wallet proposals use full RPC genesis hashes for mainnet and devnet', () => {
+  assert.equal(feeWalletChain('5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d'), 'solana:mainnet');
+  assert.equal(feeWalletChain('EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG'), 'solana:devnet');
+  assert.equal(feeWalletChain('isolated-validator'), 'solana:localnet');
+});
+test('native Meteora freeze authority is restricted to its verified pool', () => {
+  const pool = Keypair.generate().publicKey;
+  const mint = { freezeAuthority: pool, decimals: 0, supply: 1n, tlvData: Buffer.from([3, 0, 0, 0]) };
+  checkFeeMint(mint, { venue: 'meteora', pool: pool.toBase58() });
+  assert.throws(() => checkFeeMint(mint, { venue: 'meteora', pool: address() }));
+  assert.throws(() => checkFeeMint(mint));
+  assert.throws(() => checkFeeMint({ ...mint, supply: 2n }, { venue: 'meteora', pool: pool.toBase58() }));
 });

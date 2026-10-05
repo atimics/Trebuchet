@@ -76,6 +76,7 @@
     "test:fee-vault": "cargo test --locked --manifest-path programs/fee-vault/Cargo.toml",
     "build:fee-vault": "cargo build-sbf --manifest-path programs/fee-vault/Cargo.toml --sbf-out-dir programs/fee-vault/target/deploy -- --locked",
     "test:e2e:fee-nfts:localnet": "node test/e2e/fee-nfts-localnet.mjs",
+    "test:e2e:fee-nfts:raydium:localnet": "node test/e2e/fee-nfts-raydium-localnet.mjs",
     "test:e2e:fee-nfts:ui": "node test/e2e/fee-nfts-ui.mjs"
   },
   "files": [
@@ -174,7 +175,6 @@
     "packages/runtime/**/*",
     "feeVaultClient.js",
     "feeNftPlan.js",
-      "feeNftSafety.js",
     "feeNftSafety.js",
     "feeNftStore.js",
     "feeNftService.js",
@@ -346,6 +346,7 @@
       "packages/runtime/**/*",
       "feeVaultClient.js",
       "feeNftPlan.js",
+      "feeNftSafety.js",
       "feeNftStore.js",
       "feeNftService.js",
       "feeNftRoutes.js",

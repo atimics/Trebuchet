@@ -249,3 +249,154 @@ fn malformed_instruction_dispatch_fails_closed() {
     }
     assert!(process_instruction(&id, &[], &[]).is_err());
 }
+
+fn source_check(
+    d: &[u8],
+    position_key: Pubkey,
+    position_owner: Pubkey,
+    mut p: Vec<u8>,
+    pool_key: Pubkey,
+    pool_owner: Pubkey,
+    mut q: Vec<u8>,
+) -> ProgramResult {
+    let mut p_lamports = 1;
+    let mut q_lamports = 1;
+    let position = AccountInfo::new(
+        &position_key,
+        false,
+        false,
+        &mut p_lamports,
+        &mut p,
+        &position_owner,
+        false,
+        0,
+    );
+    let pool = AccountInfo::new(
+        &pool_key,
+        false,
+        false,
+        &mut q_lamports,
+        &mut q,
+        &pool_owner,
+        false,
+        0,
+    );
+    locked_source(d, &position, &pool)
+}
+
+#[test]
+fn activation_and_harvest_bind_venue_accounts_pool_mints_and_programs() {
+    let nft = Pubkey::new_unique();
+    let pool = Pubkey::new_unique();
+    let a = Pubkey::new_unique();
+    let b = Pubkey::new_unique();
+    for venue in 0..3 {
+        let program = [DAMM, LOCK, DLOCK][venue];
+        let pool_program = [DAMM, CLMM, DCLMM][venue];
+        let seed: &[u8] = if venue == 0 {
+            b"position"
+        } else {
+            b"locked_position"
+        };
+        let position = Pubkey::find_program_address(&[seed, nft.as_ref()], &program).0;
+        let mut d = vec![0; HEADER];
+        d[104] = venue as u8;
+        for (at, value) in [
+            (105, pool),
+            (137, position),
+            (169, nft),
+            (201, a),
+            (233, b),
+            (265, TOKEN),
+            (297, TOKEN),
+        ] {
+            d[at..at + 32].copy_from_slice(value.as_ref());
+        }
+        let mut p = vec![0; if venue == 0 { 200 } else { 241 }];
+        let mut q = vec![0; if venue == 0 { 484 } else { 137 }];
+        let (pool_offset, nft_offset, mint_offset) = if venue == 0 {
+            p[..8].copy_from_slice(&[170, 188, 143, 228, 122, 64, 247, 208]);
+            q[..8].copy_from_slice(&[241, 154, 109, 4, 17, 177, 109, 188]);
+            p[184] = 1;
+            (8, 40, 168)
+        } else {
+            p[..8].copy_from_slice(&[52, 23, 5, 7, 170, 90, 108, 213]);
+            q[..8].copy_from_slice(&[247, 237, 227, 245, 215, 195, 222, 70]);
+            (41, 137, 73)
+        };
+        p[pool_offset..pool_offset + 32].copy_from_slice(pool.as_ref());
+        p[nft_offset..nft_offset + 32].copy_from_slice(nft.as_ref());
+        q[mint_offset..mint_offset + 32].copy_from_slice(a.as_ref());
+        q[mint_offset + 32..mint_offset + 64].copy_from_slice(b.as_ref());
+        assert!(source_check(
+            &d,
+            position,
+            program,
+            p.clone(),
+            pool,
+            pool_program,
+            q.clone()
+        )
+        .is_ok());
+        let mut wrong = d.clone();
+        wrong[201] ^= 1;
+        assert!(source_check(
+            &wrong,
+            position,
+            program,
+            p.clone(),
+            pool,
+            pool_program,
+            q.clone()
+        )
+        .is_err());
+        let mut wrong_p = p.clone();
+        wrong_p[0] ^= 1;
+        assert!(source_check(
+            &d,
+            position,
+            program,
+            wrong_p,
+            pool,
+            pool_program,
+            q.clone()
+        )
+        .is_err());
+        assert!(source_check(&d, position, program, p.clone(), pool, CORE, q.clone()).is_err());
+        assert!(source_check(
+            &d,
+            Pubkey::new_unique(),
+            program,
+            p.clone(),
+            pool,
+            pool_program,
+            q.clone()
+        )
+        .is_err());
+        if venue == 0 {
+            let mut wrong = d.clone();
+            wrong[265..297].copy_from_slice(TOKEN22.as_ref());
+            assert!(source_check(
+                &wrong,
+                position,
+                program,
+                p.clone(),
+                pool,
+                pool_program,
+                q.clone()
+            )
+            .is_err());
+            p[152] = 1;
+            assert!(source_check(
+                &d,
+                position,
+                program,
+                p.clone(),
+                pool,
+                pool_program,
+                q.clone()
+            )
+            .is_err());
+        }
+    }
+}

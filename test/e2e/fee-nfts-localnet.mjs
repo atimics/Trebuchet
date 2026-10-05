@@ -87,6 +87,24 @@ try {
   await sendAndConfirmTransaction(connection, new Transaction().add(recoverFeeBacking({ programId: program, vault: recoveryVault, source: record.plan.source, creator: payer.publicKey })), [payer]);
   assert.equal((await getAccount(connection, payerNftAta, 'confirmed', nativeProgram)).amount, 1n);
   console.log('PASS: creator can recover backing during setup; another wallet is refused');
+  for (const type of ['PermanentTransferDelegate', 'PermanentBurnDelegate', 'PermanentFreezeDelegate']) {
+    const unsafeAsset = generateSigner(umi);
+    await create(umi, { asset: unsafeAsset, collection: await fetchCollectionV1(umi, collection.publicKey), name: type, uri: 'https://example.com/unsafe', plugins: [{ type, ...(type === 'PermanentFreezeDelegate' ? { frozen: false } : {}) }] }).sendAndConfirm(umi);
+    const unsafeRecord = collections.create({ name: type, symbol: 'TEST', description: '', creators: [], royaltyBps: 0 });
+    collections.update(unsafeRecord.id, (r) => { r.collectionKey = { address: String(collection.publicKey) }; r.collectionSignature = 'local'; r.items = [unsafeAsset.publicKey, assets[0]].map((address, index) => ({ index, key: { address: String(address) }, name: type, mintSignature: 'local' })); });
+    await assert.rejects(() => service.prepare({ rpcUrl: rpc, network: 'devnet', walletPublicKey: payer.publicKey.toBase58(), collectionId: unsafeRecord.id, venue: 'meteora', nativeNftMint: launched.positionNft, recipients: [alice.publicKey.toBase58(), bob.publicKey.toBase58()] }), /standard ownership controls/);
+    const before = (await connection.getAccountInfo(recoveryVault)).data;
+    await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction().add(registerFeeShare({ programId: program, creator: payer.publicKey, vault: recoveryVault, collection: collection.publicKey, asset: unsafeAsset.publicKey, index: 0, weight: 1 })), [payer]), /invalid account data/);
+    assert.deepEqual((await connection.getAccountInfo(recoveryVault)).data, before);
+  }
+  const unsafeCollection = generateSigner(umi);
+  await createCollection(umi, { collection: unsafeCollection, name: 'Unsafe collection', uri: 'https://example.com/unsafe', plugins: [{ type: 'PermanentTransferDelegate' }] }).sendAndConfirm(umi);
+  const unsafeAsset = generateSigner(umi);
+  await create(umi, { asset: unsafeAsset, collection: await fetchCollectionV1(umi, unsafeCollection.publicKey), name: 'Unsafe inherited controls', uri: 'https://example.com/unsafe' }).sendAndConfirm(umi);
+  const unsafeSeed = [...Keypair.generate().publicKey.toBytes()]; const unsafeVault = feeVaultAddress(program, payer.publicKey, unsafeSeed);
+  await sendAndConfirmTransaction(connection, new Transaction().add(initializeFeeVault({ programId: program, creator: payer.publicKey, seed: unsafeSeed, collection: unsafeCollection.publicKey, source: record.plan.source, count: 1, totalWeight: 1 })), [payer]);
+  await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction().add(registerFeeShare({ programId: program, creator: payer.publicKey, vault: unsafeVault, collection: unsafeCollection.publicKey, asset: unsafeAsset.publicKey, index: 0, weight: 1 })), [payer]), /invalid account data/);
+  console.log('PASS: real NFT and collection permanent delegates are refused by the app and contract');
   service.startRun(record.id, { rpcUrl: rpc, walletPublicKey: payer.publicKey.toBase58(), secretKey: [...payer.secretKey], approvedDigest: record.plan.digest, confirmNativeNftMint: launched.positionNft, maxSpendLamports: 100_000_000 });
   for (let i = 0; service.jobStatus(record.id).status === 'running'; i++) { assert.ok(i < 180, 'Setup completes'); await new Promise((r) => setTimeout(r, 500)); }
   assert.equal(service.jobStatus(record.id).status, 'complete', JSON.stringify(service.jobStatus(record.id)));
@@ -122,6 +140,11 @@ try {
   const wrongSource = claimFeeShare({ programId: program, vault: record.vault, collection: record.plan.collection, source: record.plan.source, owner: alice.publicKey, asset: assets[0], index: 0 });
   wrongSource.keys[3].pubkey = alternate;
   await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction().add(wrongSource), [alice]));
+  const wrongCollection = claimFeeShare({ programId: program, vault: record.vault, collection: unsafeCollection.publicKey, source: record.plan.source, owner: alice.publicKey, asset: assets[0], index: 0 });
+  await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction().add(wrongCollection), [alice]));
+  const unsignedOwner = claimFeeShare({ programId: program, vault: record.vault, collection: collection.publicKey, source: record.plan.source, owner: alice.publicKey, asset: assets[0], index: 0 });
+  unsignedOwner.keys[0].isSigner = false;
+  await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction({ feePayer: bob.publicKey }).add(unsignedOwner), [bob]));
   console.log('PASS: actual trading fees collected through vault CPI; equal claims; repeat claim pays zero');
 
   const aliceUmi = createNftUmi({ rpcUrl: rpc, payerSecretKey: alice.secretKey });

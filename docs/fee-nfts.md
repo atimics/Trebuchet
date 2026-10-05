@@ -1,6 +1,6 @@
 # Branded fee NFTs
 
-The **Fee NFTs** view gives branded Metaplex Core NFTs equal shares of trading fees from one permanently locked liquidity position. It supports Meteora DAMM v2 positions and Raydium CLMM Burn & Earn Fee Keys. The sample recipient list contains 54 wallets, including both added addresses.
+The **Fee NFTs** view gives branded Metaplex Core NFTs equal shares of trading fees from one permanently locked liquidity position. It supports Meteora DAMM v2 positions and Raydium CLMM Burn & Earn Fee Keys. The sample recipient list contains 54 wallets, including both added addresses. New backing is available on devnet while the independent security review is pending.
 
 Each NFT gets one fixed share. A 54-NFT collection gives each holder 1/54 of the backing position's LP fees. The fee vault holds the native position NFT or Fee Key. It collects fees into two token accounts. Each current branded NFT owner can claim their share of both tokens. SOL fees arrive as wrapped SOL. Holders can unwrap them through their wallet.
 
@@ -34,6 +34,10 @@ Keep the Trebuchet profile directory and its `feeNfts` records backed up. Portab
 ## Program setup
 
 The app checks both the deployed program's build hash and its immutable deployment before accepting backing. Building the app prepares this feature for deployment. The operator chooses the network, funding wallet and deployment spend cap before sending a deployment transaction.
+
+The app checks the RPC's actual genesis hash before preparing or resuming setup. Mainnet backing requires a later reviewed release with the independent audit and funded venue test results. The code has a fixed mainnet backing gate. Environment variables and a request's network label keep that gate in place. Holder claims and backing recovery remain separate from the new-backing gate.
+
+The v2 wire format uses `TFEEV002` vault accounts and `trebuchet.fee-nfts.v2` proofs. Registration, activation and claims include the exact Core collection account. Deploy the v2 binary to a fresh program address. Keep earlier local test profiles with their original app and program versions.
 
 Requirements: Node 22, Rust, Solana/Agave CLI and `cargo-build-sbf`. The checked-in Cargo lockfile pins versions supported by the Solana SBF compiler.
 
@@ -76,4 +80,14 @@ TREBUCHET_DAMM_SO=/path/to/cp-amm.so npm run test:e2e:fee-nfts:localnet
 npm run test:e2e:fee-nfts:ui
 ```
 
-The Raydium path has SDK layout tests. Its live harvest still needs a funded devnet Burn & Earn position test before production use. The initial local validator evidence covers Meteora. Deployment and recipient transfers require the operator's selected backing position and spend cap.
+The Raydium path also has a full local validator test with the real Raydium lock and CLMM programs. It copies public account state, assigns the Fee Key to a local signer at genesis, and seeds 1,000 owed fee units per token in that local position. It exercises the actual native harvest, fixed payouts, repeats, NFT transfer and attempted payment redirection. Its funded devnet test remains part of the mainnet release review.
+
+```sh
+TREBUCHET_CORE_SO=/path/to/mpl-core.so \
+TREBUCHET_RAY_LOCK_SO=/path/to/raydium-lock.so \
+TREBUCHET_RAY_CLMM_SO=/path/to/raydium-clmm.so \
+TREBUCHET_FEE_RAY_EVIDENCE=/path/to/evidence.json \
+  npm run test:e2e:fee-nfts:raydium:localnet
+```
+
+See [the security review pack](fee-nfts-security-review.md) for authority checks, trust boundaries, test commands and release requirements.

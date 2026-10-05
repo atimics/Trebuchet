@@ -183,6 +183,10 @@ fn mint(info: &AccountInfo, program: &Pubkey) -> Result<u8, ProgramError> {
     require(info.owner == program && token_program(program))?;
     let d = info.try_borrow_data()?;
     require(d.len() >= 82 && d[45] == 1 && d[46..50] == [0; 4])?;
+    mint_extensions(&d, program, false)?;
+    Ok(d[44])
+}
+fn mint_extensions(d: &[u8], program: &Pubkey, native: bool) -> ProgramResult {
     // Fee mints accept standard mint data and metadata-only Token-2022 extensions.
     // Transfer fees, hooks, delegates, frozen defaults and confidential transfers
     // change the payout contract and need a separate implementation.
@@ -197,7 +201,7 @@ fn mint(info: &AccountInfo, program: &Pubkey) -> Result<u8, ProgramError> {
             require(at + 4 <= d.len())?;
             let kind = u16::from_le_bytes([d[at], d[at + 1]]);
             let len = u16::from_le_bytes([d[at + 2], d[at + 3]]) as usize;
-            require(matches!(kind, 18 | 19))?; // MetadataPointer, TokenMetadata
+            require(matches!(kind, 18 | 19) || (native && kind == 3))?; // NFT MintCloseAuthority
             let bit = 1u32 << kind;
             require(seen & bit == 0)?;
             seen |= bit;
@@ -205,7 +209,7 @@ fn mint(info: &AccountInfo, program: &Pubkey) -> Result<u8, ProgramError> {
             require(at <= d.len())?;
         }
     }
-    Ok(d[44])
+    Ok(())
 }
 fn vault<'a>(id: &Pubkey, info: &'a AccountInfo) -> Result<Vec<u8>, ProgramError> {
     require(info.owner == id && info.is_writable)?;
@@ -226,9 +230,16 @@ fn native_holding(
     mint_info: &AccountInfo,
     vault_key: &Pubkey,
 ) -> ProgramResult {
-    require(key(data, 169)? == *mint_info.key && token_program(mint_info.owner))?;
+    let native_program = if data[104] == 0 { TOKEN22 } else { TOKEN };
+    require(key(data, 169)? == *mint_info.key && *mint_info.owner == native_program)?;
     let m = mint_info.try_borrow_data()?;
-    require(m.len() >= 82 && m[44] == 0 && m[45] == 1 && m[46..50] == [0; 4] && num(&m, 36)? == 1)?;
+    require(m.len() >= 82 && m[44] == 0 && m[45] == 1 && num(&m, 36)? == 1)?;
+    // Meteora's native NFT freeze authority is its verified pool account.
+    require(
+        m[46..50] == [0; 4]
+            || (data[104] == 0 && m[46..50] == [1, 0, 0, 0] && key(&m, 50)? == key(data, 105)?),
+    )?;
+    mint_extensions(&m, mint_info.owner, true)?;
     require(token_account(holder, mint_info.key, vault_key, mint_info.owner)? == 1)
 }
 fn locked_source(data: &[u8], position: &AccountInfo, pool: &AccountInfo) -> ProgramResult {
@@ -449,6 +460,11 @@ fn harvest(id: &Pubkey, a: &[AccountInfo], i: &[u8]) -> ProgramResult {
             && *c[source_index].key == key(&d, 137)?
             && *c[owner_index].key == *a[0].key,
     )?;
+    locked_source(&d, &c[source_index], &c[pool_index])?;
+    if d[104] > 0 {
+        require(c.len() >= 20 && *c[4].key == if d[104] == 1 { CLMM } else { DCLMM })?;
+        require(*c[18].key == key(&d, 201)? && *c[19].key == key(&d, 233)?)?;
+    }
     require(*c[out_a].key == *a[1].key && *c[out_b].key == *a[2].key)?;
     for n in 0..2 {
         fee_account(

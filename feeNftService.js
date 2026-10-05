@@ -18,7 +18,7 @@ import { clmmLockPrograms } from './clmmLockEvidence.js';
 import * as collections from './nftCollectionStore.js';
 import * as store from './feeNftStore.js';
 import { feeNftPlan, recipientList } from './feeNftPlan.js';
-import { checkFeeNftAccount, checkFeeMint, checkFeeBackingRelease } from './feeNftSafety.js';
+import { checkFeeNftAccount, checkFeeMint, checkFeeBackingRelease, feeWalletChain } from './feeNftSafety.js';
 import {
   CORE_PROGRAM_ID, FEE_VAULT_HEADER, FEE_VAULT_ENTRY, feeVaultAddress, feeVaultTokenAccounts,
   initializeFeeVault, registerFeeShare, activateFeeVault, harvestFeeVault, claimFeeShare, recoverFeeBacking, decodeFeeVault, feeEntitlement,
@@ -60,6 +60,9 @@ async function sourceFor(connection, venue, nativeNftMint, network) {
     if (pool.rewardInfos?.some((r) => !r.tokenMint.equals(PublicKey.default))) throw codeError('Choose a position with trading fees only');
     source = { venue: network === 'devnet' ? 'raydium-devnet' : 'raydium', pool: lock.poolId.toBase58(), position: position.toBase58(), nativeNftMint: nft.toBase58(), mints: [pool.mintA.toBase58(), pool.mintB.toBase58()], poolVaults: [pool.vaultA.toBase58(), pool.vaultB.toBase58()], nativeTokenProgram: TOKEN_PROGRAM_ID.toBase58() };
   } else { throw codeError('Choose Meteora or Raydium'); }
+  const nativeInfo = await connection.getAccountInfo(nft, 'confirmed');
+  if (!nativeInfo?.owner.equals(pub(source.nativeTokenProgram))) throw codeError('Native NFT token program differs from its venue');
+  checkFeeMint(unpackMint(nft, nativeInfo, nativeInfo.owner), source);
   source.tokenPrograms = []; source.decimals = [];
   for (const address of source.mints) {
     const info = await connection.getAccountInfo(pub(address), 'confirmed');
@@ -333,7 +336,7 @@ export async function prepareHolderClaim(id, { rpcUrl, walletPublicKey, index, m
   const fee = (await c.getFeeForMessage(tx.compileMessage(), 'confirmed')).value;
   if (fee == null || fee + rent > maxSpendLamports) throw codeError('Increase the approved claim spend cap', 'FEE_SPEND_CAP');
   const genesis = p.network;
-  const chain = genesis === '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp' ? 'solana:mainnet' : genesis === 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1' ? 'solana:devnet' : 'solana:localnet';
+  const chain = feeWalletChain(genesis);
   return { transaction: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64'), chain, maxDebitLamports: fee + rent, lastValidBlockHeight: block.lastValidBlockHeight, asset: action === 'claim' ? p.shares[index].asset : null };
 }
 export async function transact(id, options) {
