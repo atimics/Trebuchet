@@ -1590,6 +1590,16 @@ var TrebuchetCore = (() => {
       };
     }
     const supportSol = totalSupportSol(topology.pools);
+    const solPool = (topology.pools || []).find((pool) => pool.id === "sol-main") || (topology.pools || []).find((pool) => String(pool.quoteSymbol || pool.quoteToken || "").toUpperCase() === "SOL");
+    if (solPool?.venue === METEORA_VENUE && supportSol <= 0) {
+      return {
+        required: true,
+        state: "warn",
+        meteora: true,
+        detail: `Airdrop and held tokens: ${formatPlanPercent(heldReservePercent)} of supply. The SOL pool is on Meteora, which holds no buy support: sells of these tokens are paid from buyers' SOL.`,
+        supportSol
+      };
+    }
     const targetMarketCapUsd = positiveFinite(topology.targetMarketCapUsd, 0);
     const solUsd = fundingEstimateSolUsd(estimate);
     if (targetMarketCapUsd <= 0) {
@@ -2560,7 +2570,7 @@ var TrebuchetCore = (() => {
       state: airdropBacking.state,
       detail: airdropBacking.detail
     });
-    if (airdropBacking.required && airdropBacking.state !== "pass" && setupSafetyGateRequired && (fundingEstimateAttached || Number(airdropBacking.supportSol || 0) <= 0)) {
+    if (airdropBacking.required && airdropBacking.state !== "pass" && !airdropBacking.meteora && setupSafetyGateRequired && (fundingEstimateAttached || Number(airdropBacking.supportSol || 0) <= 0)) {
       addBlocker({
         id: "airdrop-support-underbacked",
         phase: "liquidity",

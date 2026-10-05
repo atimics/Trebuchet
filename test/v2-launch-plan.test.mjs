@@ -3280,3 +3280,33 @@ test('server selects the proof-bound journal for v2 report publishing', () => {
     null,
   );
 });
+
+test('a Meteora SOL pool cannot hold buy support: an unbacked airdrop is a warning, not a dead-end blocker', () => {
+  const readiness = buildV2ExecutionReadiness(
+    {
+      token: { name: 'MoonKit', symbol: 'MKT', supply: '1000000' },
+      poolTopology: {
+        targetMarketCapUsd: 20000,
+        sweepDestination: VALID_SWEEP_DESTINATION,
+        pools: [
+          { id: 'sol-main', quoteToken: 'SOL', quoteSymbol: 'SOL', supplyPercent: 80, venue: 'meteora-damm-v2', damm: { feeBps: 25, rangeMultiple: 1000 }, support: { mode: 'off' } },
+        ],
+        airdrop: { enabled: true, recipientCount: 1, supplyPercent: 0.1, recipients: [{ wallet: VALID_AIRDROP_WALLET_ONE, tokens: 1000 }] },
+      },
+      funding: { estimate: { totalSol: 2.4, solUsd: 120 } },
+    },
+    {
+      demoMode: false,
+      walletPublicKey: '11111111111111111111111111111111',
+      walletAvailable: true,
+      secretAvailable: true,
+      secretPinLocked: false,
+      now: '2026-06-20T12:00:00.000Z',
+    },
+  );
+  assert.doesNotMatch(readiness.blockers.map((item) => item.id).join(','), /airdrop-support-underbacked/);
+  const warning = (readiness.warnings || []).find((item) => item.id === 'airdrop-support-underbacked');
+  assert.ok(warning, 'still said, as a warning');
+  assert.match(warning.detail, /The SOL pool is on Meteora, which holds no buy support/);
+  assert.equal(warning.fix, undefined, 'no button that could not work');
+});
