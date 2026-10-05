@@ -6013,6 +6013,18 @@ function renderLaunchWorkspace() {
   refreshLaunchChainCheck(facts);
 }
 
+// "Get the pair tokens" is the buy button itself, so when buying can't run it is greyed out with
+// the reason beside it (see the start-quote-acquire guard), never a press that does nothing.
+// A pair token whose check failed (often a rate-limited RPC) offers to check it again instead.
+function pairTokensRailButton() {
+  const failed = state.customPools.find((pool) => Number(pool.supplyPercent || 0) > 0 && customQuoteInfoRecord(pool)?.error);
+  if (failed) {
+    const symbol = failed.quoteSymbol ? `$${failed.quoteSymbol}` : 'the pair token';
+    return `<button class="primary-button rail-act" type="button" data-action="resolve-custom-quote" data-pool-id="${escapeHtml(failed.id)}">Check ${escapeHtml(symbol)} again</button>`;
+  }
+  return '<button class="primary-button rail-act" type="button" data-action="start-quote-acquire">Get the pair tokens</button>';
+}
+
 // The right-hand column. One button, then the wallet it acts on: balances, what
 // the launch needs against what the wallet holds, and what has been opened.
 // Nothing here repeats a row or a tab; those say what the plan is.
@@ -6067,7 +6079,9 @@ function renderLaunchNextRail(facts, next, workspace) {
       // A "Send SOL" button copies the launch wallet's address: that is where the SOL goes.
       : /^Send /.test(fundFact.action || '') && walletKey
         ? `<button class="primary-button rail-act" type="button" data-action="copy-wallet-address" title="Copy ${escapeHtml(walletKey)}"><i class="fa-regular fa-copy" aria-hidden="true"></i> ${escapeHtml(fundFact.action)}</button>`
-        : `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(fundFact.action || 'Fund the launch wallet')}</button>`;
+        : fundFact.action === 'Get the pair tokens'
+          ? pairTokensRailButton()
+          : `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(fundFact.action || 'Fund the launch wallet')}</button>`;
   // One button at a time: Launch, which reads Resume once the token exists and the launch is
   // unfinished, and Sweep only once the launch is complete (a sweep mid-launch empties the wallet
   // the remaining steps need).
@@ -23137,6 +23151,9 @@ const firstReason = (...checks) => {
 const ACTION_GUARDS = {
   'add-coin': () => noDesktopApp(),
   'start-quote-acquire': () => firstReason(noDesktopApp, noLaunchWallet, () => {
+    const blocked = quoteAcquireBlockedPools()[0];
+    if (blocked) return `${blocked.pool.quoteSymbol ? `$${blocked.pool.quoteSymbol}` : 'A pair token'}: ${blocked.badge.label}`;
+    if (state.customPools.some((pool) => customQuoteInfoRecord(pool)?.loading)) return 'Checking the pair tokens';
     const status = classicFundingEstimateStatus(currentLaunchConfig());
     if (!status.matchesConfig) return status.stale ? 'Funding estimate is out of date' : 'No funding estimate yet';
     if (!quoteAcquireRoutes().length) return quoteAcquireManualCount() ? 'Pair tokens need a manual deposit' : 'No pair tokens to buy';
