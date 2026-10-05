@@ -409,6 +409,8 @@ const state = {
   vanityReason: null,
   vanityRunning: false,
   grindJobs: [],
+  airdropLists: null,
+  kolWallets: null,
   vanityCalibrating: false,
   vanityCalibrationError: null,
   vanityProgress: null,

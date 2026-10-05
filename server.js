@@ -82,7 +82,7 @@ import {
 
 import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
-import { airdropDeliveries, readAirdropHistory, readAirdropHolders } from './coinAirdrop.js';
+import { airdropDeliveries, previousAirdropLists, readAirdropHistory, readAirdropHolders } from './coinAirdrop.js';
 import * as airdropHistoryStore from './airdropHistoryStore.js';
 import * as secretStore from './secretStore.js';
 import { secretInventory, walletSecretState } from './secretInventory.js';
@@ -3497,6 +3497,30 @@ app.post('/api/v2/coins/:mint/sell-quote', async (req, res) => {
     const quote = await fetchSellQuote({ mint, decimals: account.decimals, amount: req.body?.amount });
     res.json({ success: true, quote });
   } catch (error) { sendErrorResponse(res, error, 400); }
+});
+
+// The bundled KOL wallet list (public labels, with their source), or null when it can't be read.
+function readKolWallets() {
+  try {
+    const list = JSON.parse(fs.readFileSync(path.join(__dirname, 'public', 'v2', 'kol-wallets.json'), 'utf8'));
+    return Array.isArray(list?.wallets) ? list : null;
+  } catch {
+    return null;
+  }
+}
+
+// Airdrop lists used before: each launch's recipients (wallet and tokens), newest first, one
+// per distinct list, so a new coin can airdrop to the same wallets.
+app.get('/api/v2/airdrop-lists', (_req, res) => {
+  try {
+    res.json({
+      success: true,
+      lists: previousAirdropLists(launchJournal.list({ includeCompleted: true, includeArchived: true })),
+      kol: readKolWallets(),
+    });
+  } catch (error) {
+    sendErrorResponse(res, error);
+  }
 });
 
 // The coin's airdrop: each wallet it reached, what it received, and what it holds now.
