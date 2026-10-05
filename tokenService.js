@@ -29,9 +29,11 @@ import {
   createInitializeMint2Instruction,
   getMetadataPointerState,
   getTokenMetadata,
-  tokenMetadataInitializeWithRentTransfer,
-  tokenMetadataUpdateFieldWithRentTransfer,
   tokenMetadataUpdateAuthority,
+  createInitializeInstruction as createTokenMetadataInitializeInstruction,
+  createUpdateFieldInstruction as createTokenMetadataUpdateFieldInstruction,
+  getNewAccountLenForExtensionLen,
+  updateTokenMetadata,
   ASSOCIATED_TOKEN_PROGRAM_ID,
   MINT_SIZE,
   createMintToInstruction,
@@ -267,6 +269,61 @@ async function sendIxsWithPriority({ payer, instructions, signers = [], units = 
   });
   console.log(`  ${label}: ${sig} (prio ${microLamports} uL/CU)`);
   return sig;
+}
+
+// Token-2022 inline metadata, sent like every other launch transaction: with a sampled priority
+// fee. The spl-token helpers send without one, and under load such a transaction can sit until
+// its blockhash expires ("block height exceeded"), which stopped a launch mid-token.
+//
+// Packed metadata: update authority and mint (32 bytes each), then name, symbol and uri, then the
+// additional fields, each string as a 4-byte length and its UTF-8 bytes.
+export function packedTokenMetadataLength({ name = '', symbol = '', uri = '', additionalMetadata = [] }) {
+  const text = (value) => 4 + Buffer.byteLength(String(value), 'utf8');
+  return 32 + 32 + text(name) + text(symbol) + text(uri) + 4
+    + additionalMetadata.reduce((sum, [key, value]) => sum + text(key) + text(value), 0);
+}
+
+// Lamports the mint needs before its metadata grows to `metadata`: the rent for the larger account.
+async function metadataRentTopUp(mint, metadata, programId) {
+  const info = await connection.getAccountInfo(mint, 'confirmed');
+  if (!info) throw new Error(`Mint ${mint.toBase58()} not found`);
+  const length = getNewAccountLenForExtensionLen(info, mint, ExtensionType.TokenMetadata, packedTokenMetadataLength(metadata), programId);
+  if (length <= info.data.length) return 0;
+  return Math.max(0, await connection.getMinimumBalanceForRentExemption(length) - info.lamports);
+}
+
+function rentTopUpInstructions(payer, mint, lamports) {
+  return lamports > 0 ? [SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: mint, lamports })] : [];
+}
+
+async function initializeTokenMetadataWithPriority({ payer, mint, programId, name, symbol, uri, label = 'metadata' }) {
+  const lamports = await metadataRentTopUp(mint, { name, symbol, uri }, programId);
+  return sendIxsWithPriority({
+    payer,
+    units: CU_MINT_OPS,
+    label,
+    instructions: [
+      ...rentTopUpInstructions(payer, mint, lamports),
+      createTokenMetadataInitializeInstruction({
+        programId, metadata: mint, updateAuthority: payer.publicKey, mint, mintAuthority: payer.publicKey, name, symbol, uri,
+      }),
+    ],
+  });
+}
+
+async function updateTokenMetadataFieldWithPriority({ payer, mint, programId, field, value, label = `metadata ${field}` }) {
+  const current = await getTokenMetadata(connection, mint, 'confirmed', programId);
+  if (!current) throw new Error(`Mint ${mint.toBase58()} has no metadata to update`);
+  const lamports = await metadataRentTopUp(mint, updateTokenMetadata(current, field, value), programId);
+  return sendIxsWithPriority({
+    payer,
+    units: CU_MINT_OPS,
+    label,
+    instructions: [
+      ...rentTopUpInstructions(payer, mint, lamports),
+      createTokenMetadataUpdateFieldInstruction({ programId, metadata: mint, updateAuthority: payer.publicKey, field, value }),
+    ],
+  });
 }
 
 // Ensure an associated token account exists for (mint, owner), payer pays.
@@ -566,33 +623,26 @@ async function createToken2022WithOnMintMetadata({
     tokenProgram: programId.toBase58(),
   });
 
-  const metadataCreateTx = await tokenMetadataInitializeWithRentTransfer(
-    connection,
-    tempWallet,
+  const metadataCreateTx = await initializeTokenMetadataWithPriority({
+    payer: tempWallet,
     mint,
-    tempWallet.publicKey,
-    tempWallet,
-    onChainMetadataName,
-    onChainMetadataSymbol,
-    onChainMetadataUri,
-    [],
-    { commitment: 'finalized' },
     programId,
-  );
+    name: onChainMetadataName,
+    symbol: onChainMetadataSymbol,
+    uri: onChainMetadataUri,
+    label: 'metadata',
+  });
   // Bind the public identity document to the mint itself. Indexers can read
   // the ordinary name/symbol/URI fields; Trebuchet proof can additionally
   // verify that the URI content still matches this launch-time commitment.
-  const commitmentTx = await tokenMetadataUpdateFieldWithRentTransfer(
-    connection,
-    tempWallet,
+  const commitmentTx = await updateTokenMetadataFieldWithPriority({
+    payer: tempWallet,
     mint,
-    tempWallet,
-    'trebuchet:sha256',
-    metadataHash,
-    [],
-    { commitment: 'finalized' },
     programId,
-  );
+    field: 'trebuchet:sha256',
+    value: metadataHash,
+    label: 'metadata commitment',
+  });
   progress({
     stage: 'metadata_account_created',
     tokenMint: mint.toBase58(),
@@ -1482,31 +1532,13 @@ export async function finishTokenCreation({
       throw new Error('finish-token: metadata account is missing and no metadataUri was provided to recreate it');
     }
     if (isToken2022) {
-      await tokenMetadataInitializeWithRentTransfer(
-        connection,
-        tempWallet,
-        mint,
-        tempWallet.publicKey,
-        tempWallet,
-        name,
-        symbol,
-        metadataUri,
-        [],
-        { commitment: 'finalized' },
-        programId,
-      );
+      await initializeTokenMetadataWithPriority({
+        payer: tempWallet, mint, programId, name, symbol, uri: metadataUri, label: 'metadata',
+      });
       if (/^[a-f0-9]{64}$/i.test(String(metadataHash || ''))) {
-        await tokenMetadataUpdateFieldWithRentTransfer(
-          connection,
-          tempWallet,
-          mint,
-          tempWallet,
-          'trebuchet:sha256',
-          String(metadataHash).toLowerCase(),
-          [],
-          { commitment: 'finalized' },
-          programId,
-        );
+        await updateTokenMetadataFieldWithPriority({
+          payer: tempWallet, mint, programId, field: 'trebuchet:sha256', value: String(metadataHash).toLowerCase(), label: 'metadata commitment',
+        });
       }
     } else {
       await landTxWithRetry({
@@ -1821,17 +1853,7 @@ export async function revealSealedTokenMetadata({
     if (finalHash !== expectedMetadataHash) fields.push(['trebuchet:sha256', finalHash]);
     fields.push(['Uri', metadataUri]);
     for (const [field, value] of fields) {
-      await tokenMetadataUpdateFieldWithRentTransfer(
-        connection,
-        tempWallet,
-        mint,
-        tempWallet,
-        field,
-        value,
-        [],
-        { commitment: 'finalized' },
-        programId,
-      );
+      await updateTokenMetadataFieldWithPriority({ payer: tempWallet, mint, programId, field, value });
     }
     await tokenMetadataUpdateAuthority(
       connection,
