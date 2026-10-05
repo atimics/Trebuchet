@@ -3,8 +3,8 @@
   "kind": "trebuchet-v2-viewport-smoke",
   "passed": true,
   "command": "npm run test:v2:viewport",
-  "generatedAt": "2026-10-05T03:45:52.342Z",
-  "durationMs": 2002,
+  "generatedAt": "2026-10-05T03:55:37.986Z",
+  "durationMs": 1755,
   "target": "file:///Users/ratimics/develop/trebuchet/public/v2/index.html",
   "requiredChecks": [
     "launchVisible",

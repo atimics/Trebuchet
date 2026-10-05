@@ -1,3 +1,5 @@
+// First: web3.js captures fetch when it loads, and every RPC request must go through the limiter.
+import './rpcLimiter.js';
 import { listFlywheelHubs, resolveFlywheelHub } from './hubPoolService.js';
 import { setRentLamportsPerByte, rentLamportsPerByte as currentRentRate } from './lpConstants.js';
 import { createSupportPositionRuntime } from './supportPosition.js';
@@ -1374,7 +1376,7 @@ function rememberManagedDiscoveryWallet(wallet, label = 'Trebuchet wallet') {
 function syncManagedDiscoveryWallets() {
   const sourceWallets = isDemoMode()
     ? Array.from(demoManagedWallets.values())
-    : pendingWallets.list();
+    : pendingWallets.records();
   try {
     discoveryStore.syncManagedWallets(sourceWallets.map((wallet, index) => ({
       publicKey: wallet?.publicKey,

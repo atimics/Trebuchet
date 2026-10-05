@@ -33,7 +33,7 @@ const INTENTIONALLY_UNPACKAGED = new Set([
 ]);
 
 // Resolve the set of root-level .js files reachable from the entry points by
-// static `import ... from './x.js'` / `import('./x.js')` specifiers.
+// static `import ... from './x.js'`, `import './x.js'` and `import('./x.js')` specifiers.
 function reachableRootModules() {
   const seen = new Set();
   const queue = [...ENTRY_POINTS];
@@ -48,10 +48,11 @@ function reachableRootModules() {
       continue; // not a root file (e.g. a subdirectory module) — ignore
     }
     // Match relative specifiers that resolve to a sibling root module.
-    const re = /from\s+['"]\.\/([\w.-]+\.js)['"]|import\(\s*['"]\.\/([\w.-]+\.js)['"]/g;
+    // Also side-effect imports (`import './x.js';`), which load a module only for what it does.
+    const re = /from\s+['"]\.\/([\w.-]+\.js)['"]|import\(\s*['"]\.\/([\w.-]+\.js)['"]|^import\s+['"]\.\/([\w.-]+\.js)['"]/gm;
     let m;
     while ((m = re.exec(src)) !== null) {
-      const dep = m[1] || m[2];
+      const dep = m[1] || m[2] || m[3];
       if (dep && !seen.has(dep)) queue.push(dep);
     }
   }

@@ -11,6 +11,8 @@
 // a desktop app, which is fine in practice — plenty of real Electron
 // apps are built this way.
 
+// First: web3.js captures fetch when it loads, and every RPC request must go through the limiter.
+import './rpcLimiter.js';
 import { app, BrowserWindow, Menu, shell, safeStorage, dialog } from 'electron';
 import { promises as fs } from 'node:fs';
 import net from 'node:net';
