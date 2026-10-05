@@ -18,6 +18,7 @@ import { clmmLockPrograms } from './clmmLockEvidence.js';
 import * as collections from './nftCollectionStore.js';
 import * as store from './feeNftStore.js';
 import { feeNftPlan, recipientList } from './feeNftPlan.js';
+import { checkFeeNftAccount, checkFeeMint, checkFeeBackingRelease } from './feeNftSafety.js';
 import {
   CORE_PROGRAM_ID, FEE_VAULT_HEADER, FEE_VAULT_ENTRY, feeVaultAddress, feeVaultTokenAccounts,
   initializeFeeVault, registerFeeShare, activateFeeVault, harvestFeeVault, claimFeeShare, recoverFeeBacking, decodeFeeVault, feeEntitlement,
@@ -65,16 +66,7 @@ async function sourceFor(connection, venue, nativeNftMint, network) {
     if (!info) throw codeError('Fee mint is missing');
     if (![TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].some((p) => info.owner.equals(p))) throw codeError('Choose SPL fee tokens');
     const mint = unpackMint(pub(address), info, info.owner);
-    // The contract permits metadata extensions only.
-    if (mint.tlvData.length) {
-      let at = 0;
-      while (at + 4 <= mint.tlvData.length) {
-        const kind = mint.tlvData.readUInt16LE(at); const len = mint.tlvData.readUInt16LE(at + 2);
-        if (!kind) break;
-        if (![18, 19].includes(kind)) throw codeError('Choose fee tokens with standard transfers');
-        at += 4 + len;
-      }
-    }
+    checkFeeMint(mint);
     source.tokenPrograms.push(info.owner.toBase58()); source.decimals.push(mint.decimals);
   }
   return source;
@@ -109,14 +101,17 @@ async function backingAccount(connection, owner, source) {
 }
 export async function prepare({ rpcUrl, network, walletPublicKey, collectionId, venue, nativeNftMint, recipients }) {
   const connection = connectionFor(rpcUrl);
+  checkFeeBackingRelease(await connection.getGenesisHash());
   const id = programId(); await requireProgram(connection, id);
   const source = await sourceFor(connection, venue, nativeNftMint, network);
   if (!await backingAccount(connection, walletPublicKey, source)) throw codeError('Choose a backing NFT held by the signing wallet');
   const collection = collections.get(collectionId);
   const plan = feeNftPlan({ collection, source, recipients: recipientList(recipients), creator: walletPublicKey, seed: [...randomBytes(32)], programId: id, network: await connection.getGenesisHash() });
   const assets = await assetAccounts(connection, plan.shares);
+  checkFeeNftAccount(await connection.getAccountInfo(pub(plan.collection)), true);
   for (let i = 0; i < assets.length; i++) {
     const info = assets[i];
+    checkFeeNftAccount(info);
     if (!info?.owner.equals(CORE_PROGRAM_ID) || info.data[0] !== 1 || info.data[33] !== 2 || !new PublicKey(info.data.subarray(34, 66)).equals(pub(plan.collection)) || !new PublicKey(info.data.subarray(1, 33)).equals(pub(walletPublicKey))) throw codeError(`Keep branded NFT #${i + 1} in the signing wallet until setup`);
   }
   const record = store.create(plan);
@@ -209,10 +204,13 @@ async function run(id, { rpcUrl, walletPublicKey, secretKey, approvedDigest, con
   if (createHash('sha256').update(JSON.stringify(planBody)).digest('hex') !== savedDigest) throw codeError('Prepare a fresh fee plan');
   if (approvedDigest !== p.digest || confirmNativeNftMint !== p.source.nativeNftMint || walletPublicKey !== p.creator || !Number.isSafeInteger(maxSpendLamports) || maxSpendLamports <= 0) throw codeError('Review the backing NFT and approve the saved plan and spend cap');
   const connection = connectionFor(rpcUrl); const signer = Keypair.fromSecretKey(Uint8Array.from(secretKey));
+  checkFeeBackingRelease(await connection.getGenesisHash());
   if (signer.publicKey.toBase58() !== p.creator || await connection.getGenesisHash() !== p.network || programId() !== p.programId) throw codeError('Use the network, program and wallet saved in this plan');
   await requireProgram(connection, p.programId);
   const refreshedSource = await sourceFor(connection, p.source.venue === 'meteora' ? 'meteora' : 'raydium', p.source.nativeNftMint, p.source.venue === 'raydium-devnet' ? 'devnet' : 'mainnet');
   if (JSON.stringify(refreshedSource) !== JSON.stringify(p.source)) throw codeError('Review the current backing position before setup');
+  checkFeeNftAccount(await connection.getAccountInfo(pub(p.collection)), true);
+  for (const info of await assetAccounts(connection, p.shares)) checkFeeNftAccount(info);
   const v = pub(record.vault);
   const nftMint = pub(p.source.nativeNftMint); const nftProgram = pub(p.source.nativeTokenProgram);
   const nftTarget = getAssociatedTokenAddressSync(nftMint, v, true, nftProgram);
@@ -229,7 +227,7 @@ async function run(id, { rpcUrl, walletPublicKey, secretKey, approvedDigest, con
   const umi = createNftUmi({ rpcUrl, payerSecretKey: secretKey });
   for (const s of p.shares) {
     job.step = `Registering fee NFT ${s.index + 1} of ${p.count}`;
-    await sendStep(record, connection, signer, `share-${s.index}`, [registerFeeShare({ programId: p.programId, creator: p.creator, vault: v, ...s })]);
+    await sendStep(record, connection, signer, `share-${s.index}`, [registerFeeShare({ programId: p.programId, creator: p.creator, vault: v, collection: p.collection, ...s })]);
     job.done = s.index + 1;
   }
   job.step = 'Backing the collection';
@@ -239,7 +237,7 @@ async function run(id, { rpcUrl, walletPublicKey, secretKey, approvedDigest, con
   if (from) backing.push(createTransferCheckedInstruction(from, nftMint, nftTarget, signer.publicKey, 1n, 0, [], nftProgram));
   await sendStep(record, connection, signer, 'backing', backing, tokenRent * 3);
   job.step = 'Activating fee rights';
-  await sendStep(record, connection, signer, 'activate', [activateFeeVault({ programId: p.programId, creator: p.creator, vault: v, source: p.source, nativeNftAccount: nftTarget })]);
+  await sendStep(record, connection, signer, 'activate', [activateFeeVault({ programId: p.programId, creator: p.creator, vault: v, collection: p.collection, source: p.source, nativeNftAccount: nftTarget })]);
   for (const s of p.shares) {
     job.step = `Sending fee NFT ${s.index + 1} of ${p.count}`;
     if (s.recipient === p.creator) continue;
@@ -295,7 +293,7 @@ export async function snapshot(record, rpcUrl) {
 }
 export async function importProof(proof, rpcUrl) {
   const p = proof?.plan;
-  if (!p || p.schema !== 'trebuchet.fee-nfts.v1' || p.programId !== programId()) throw codeError('Choose a fee proof for the configured program');
+  if (!p || p.schema !== 'trebuchet.fee-nfts.v2' || p.programId !== programId()) throw codeError('Choose a fee proof for the configured program');
   const { digest, ...body } = p;
   if (createHash('sha256').update(JSON.stringify(body)).digest('hex') !== digest) throw codeError('Choose the original fee proof');
   if (p.totalWeight !== String(p.count) || !Array.isArray(p.shares) || p.shares.length !== p.count || p.shares.some((s) => s.weight !== '1')) throw codeError('Choose a proof with one equal share per NFT');
@@ -303,6 +301,8 @@ export async function importProof(proof, rpcUrl) {
   if (await c.getGenesisHash() !== p.network) throw codeError('Select the fee proof’s network');
   const verifiedSource = await sourceFor(c, p.source.venue === 'meteora' ? 'meteora' : 'raydium', p.source.nativeNftMint, p.source.venue === 'raydium-devnet' ? 'devnet' : 'mainnet');
   if (JSON.stringify(verifiedSource) !== JSON.stringify(p.source)) throw codeError('Fee proof backing differs from the pool');
+  checkFeeNftAccount(await c.getAccountInfo(pub(p.collection)), true);
+  for (const info of await assetAccounts(c, p.shares)) checkFeeNftAccount(info);
   const vault = feeVaultAddress(p.programId, p.creator, p.seed).toBase58();
   const state = assertVault({ plan: p }, await c.getAccountInfo(pub(vault)));
   if (!state.active || state.registered !== p.count || p.shares.length !== p.count) throw codeError('Choose an active fee collection');
@@ -328,7 +328,7 @@ export async function prepareHolderClaim(id, { rpcUrl, walletPublicKey, index, m
   const block = await c.getLatestBlockhash('confirmed');
   const instructions = action === 'harvest' ? [harvestFeeVault({ programId: p.programId, vault: record.vault, source: p.source, instruction: await harvestInstruction(c, record) })] : [
     ...p.source.mints.map((m, n) => createAssociatedTokenAccountIdempotentInstruction(owner, outputs[n], owner, pub(m), pub(p.source.tokenPrograms[n]))),
-    claimFeeShare({ programId: p.programId, vault: record.vault, source: p.source, owner, asset: p.shares[index].asset, index })];
+    claimFeeShare({ programId: p.programId, vault: record.vault, collection: p.collection, source: p.source, owner, asset: p.shares[index].asset, index })];
   const tx = new Transaction({ feePayer: owner, ...block }).add(ComputeBudgetProgram.setComputeUnitLimit({ units: 600_000 }), ...instructions);
   const fee = (await c.getFeeForMessage(tx.compileMessage(), 'confirmed')).value;
   if (fee == null || fee + rent > maxSpendLamports) throw codeError('Increase the approved claim spend cap', 'FEE_SPEND_CAP');
@@ -367,7 +367,7 @@ async function transactLocked(id, { rpcUrl, walletPublicKey, secretKey, action, 
     const tokenRent = await c.getMinimumBalanceForRentExemption(200);
     instructions = p.source.mints.map((m, n) => { const ata = getAssociatedTokenAddressSync(pub(m), owner, false, pub(p.source.tokenPrograms[n])); return createAssociatedTokenAccountIdempotentInstruction(owner, ata, owner, pub(m), pub(p.source.tokenPrograms[n])); });
     rent = tokenRent * 2;
-    instructions.push(claimFeeShare({ programId: p.programId, vault: record.vault, source: p.source, owner, asset: s.asset, index }));
+    instructions.push(claimFeeShare({ programId: p.programId, vault: record.vault, collection: p.collection, source: p.source, owner, asset: s.asset, index }));
   } else { throw codeError('Choose a fee collection or claim action'); }
   // Each action has its own durable record and approved spend cap.
   const pending = Object.keys(record.operations).find((k) => k.startsWith(`${action}-${index ?? 'all'}-`) && record.operations[k].status === 'prepared' && record.operations[k].signer === walletPublicKey);

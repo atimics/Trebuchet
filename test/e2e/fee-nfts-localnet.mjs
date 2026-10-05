@@ -119,7 +119,7 @@ try {
   const aliceQuote = await getOrCreateAssociatedTokenAccount(connection, alice, NATIVE_MINT, alice.publicKey);
   assert.equal((await getAccount(connection, aliceQuote.address)).amount, aliceBefore);
   const alternate = await createAccount(connection, payer, token, new PublicKey(record.vault), Keypair.generate());
-  const wrongSource = claimFeeShare({ programId: program, vault: record.vault, source: record.plan.source, owner: alice.publicKey, asset: assets[0], index: 0 });
+  const wrongSource = claimFeeShare({ programId: program, vault: record.vault, collection: record.plan.collection, source: record.plan.source, owner: alice.publicKey, asset: assets[0], index: 0 });
   wrongSource.keys[3].pubkey = alternate;
   await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction().add(wrongSource), [alice]));
   console.log('PASS: actual trading fees collected through vault CPI; equal claims; repeat claim pays zero');
@@ -137,9 +137,9 @@ try {
   assert.ok(BigInt(state.paid[1]) > 0n);
   console.log('PASS: transfer moves fee rights; previous owner refused; lifetime balances conserve funds');
 
-  await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction().add(registerFeeShare({ programId: program, creator: payer.publicKey, vault: record.vault, asset: assets[0], index: 0, weight: 2 })), [payer]));
-  await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction().add(claimFeeShare({ programId: program, vault: record.vault, source: record.plan.source, owner: payer.publicKey, asset: assets[0], index: 0 })), [payer]));
-  await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction().add(recoverFeeBacking({ programId: program, vault: record.vault, source: record.plan.source, creator: payer.publicKey })), [payer]));
+  await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction().add(registerFeeShare({ programId: program, creator: payer.publicKey, vault: record.vault, collection: collection.publicKey, asset: assets[0], index: 0, weight: 2 })), [payer]));
+  await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction().add(claimFeeShare({ programId: program, vault: record.vault, collection: record.plan.collection, source: record.plan.source, owner: payer.publicKey, asset: assets[0], index: 0 })), [payer]));
+  await assert.rejects(() => sendAndConfirmTransaction(connection, new Transaction().add(recoverFeeBacking({ programId: program, vault: record.vault, collection: record.plan.collection, source: record.plan.source, creator: payer.publicKey })), [payer]));
   console.log('PASS: shares stay fixed after activation; creator gets holder rights through NFT ownership');
   // Resume completed setup: original transaction receipts prevent duplicate sends.
   const signatures = Object.values(store.get(record.id).operations).filter((o) => o.scope === 'setup').map((o) => o.signature);

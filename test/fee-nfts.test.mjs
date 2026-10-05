@@ -40,7 +40,7 @@ test('wire format matches the Rust contract account layout', () => {
   const ix = initializeFeeVault({ programId, creator, seed, collection, source, count: 54, totalWeight: 54 });
   assert.equal(ix.data.length, 300); assert.equal(ix.data.readUInt16LE(33), 54);
   assert.equal(ix.keys[1].pubkey.toBase58(), feeVaultAddress(programId, creator, seed).toBase58());
-  const d = Buffer.alloc(FEE_VAULT_HEADER + 54 * FEE_VAULT_ENTRY); d.write('TFEEV001');
+  const d = Buffer.alloc(FEE_VAULT_HEADER + 54 * FEE_VAULT_ENTRY); d.write('TFEEV002');
   for (const [at, key] of [[8, creator], [72, collection], [105, source.pool], [137, source.position], [169, source.nativeNftMint], [201, source.mints[0]], [233, source.mints[1]], [265, source.tokenPrograms[0]], [297, source.tokenPrograms[1]]]) new PublicKey(key).toBuffer().copy(d, at);
   Buffer.from(seed).copy(d, 40); d.writeUInt16LE(54, 329); d.writeBigUInt64LE(54n, 333);
   const decoded = decodeFeeVault(d); assert.equal(decoded.count, 54); assert.equal(decoded.creator, creator); assert.deepEqual(decoded.source.mints, source.mints);

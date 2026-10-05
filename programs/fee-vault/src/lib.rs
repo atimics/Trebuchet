@@ -24,12 +24,14 @@ const ATA: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const DAMM: Pubkey = pubkey!("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG");
 const LOCK: Pubkey = pubkey!("LockrWmn6K5twhz3y9w1dQERbmgSaRkfnTeTKbpofwE");
 const DLOCK: Pubkey = pubkey!("DLockwT7X7sxtLmGH9g5kmfcjaBtncdbUmi738m5bvQC");
+const CLMM: Pubkey = pubkey!("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK");
+const DCLMM: Pubkey = pubkey!("devi51mZmdwUJGU9hjN27vEz64Gps7uUefqxg27EAtH");
 // Header: magic, creator, seed, collection, venue, pool, source position/lock,
 // native NFT mint, fee mints, token programs, count, registered, total weight,
 // registered weight, active, total paid A/B. Entries: asset, weight, paid A/B.
 pub const HEADER: usize = 366;
 pub const ENTRY: usize = 56;
-const MAGIC: &[u8; 8] = b"TFEEV001";
+const MAGIC: &[u8; 8] = b"TFEEV002";
 const CLAIM_DAMM: [u8; 8] = [180, 38, 154, 17, 133, 33, 162, 211];
 const CLAIM_LOCK: [u8; 8] = [16, 72, 250, 198, 14, 162, 212, 19];
 
@@ -76,6 +78,81 @@ fn add(a: u64, b: u64) -> Result<u64, ProgramError> {
 fn token_program(id: &Pubkey) -> bool {
     *id == TOKEN || *id == TOKEN22
 }
+// Core base and registry layouts are Borsh. Check raw plugin types because
+// clients may hide unknown plugins. Account ownership is checked by callers.
+fn core_controls(d: &[u8], collection: bool) -> ProgramResult {
+    fn take(d: &[u8], at: &mut usize, n: usize) -> Result<usize, ProgramError> {
+        let start = *at;
+        *at = at.checked_add(n).ok_or_else(fail)?;
+        require(*at <= d.len())?;
+        Ok(start)
+    }
+    fn byte(d: &[u8], at: &mut usize) -> Result<u8, ProgramError> {
+        Ok(d[take(d, at, 1)?])
+    }
+    fn uint(d: &[u8], at: &mut usize) -> Result<usize, ProgramError> {
+        let start = take(d, at, 4)?;
+        Ok(u32::from_le_bytes(d[start..start + 4].try_into().map_err(|_| fail())?) as usize)
+    }
+    let mut at = 0;
+    require(byte(d, &mut at)? == if collection { 5 } else { 1 })?;
+    take(d, &mut at, 32)?;
+    if !collection {
+        let authority = byte(d, &mut at)?;
+        require(authority <= 2)?;
+        if authority > 0 {
+            take(d, &mut at, 32)?;
+        }
+    }
+    for _ in 0..2 {
+        let len = uint(d, &mut at)?;
+        let start = take(d, &mut at, len)?;
+        require(std::str::from_utf8(&d[start..at]).is_ok())?;
+    }
+    if collection {
+        take(d, &mut at, 8)?;
+    } else {
+        let seq = byte(d, &mut at)?;
+        require(seq <= 1)?;
+        if seq == 1 {
+            take(d, &mut at, 8)?;
+        }
+    }
+    if at == d.len() {
+        return Ok(());
+    }
+    require(byte(d, &mut at)? == 3)?;
+    let header = take(d, &mut at, 8)?;
+    let registry = usize::try_from(num(d, header)?).map_err(|_| fail())?;
+    let plugins_start = at;
+    require(registry >= plugins_start && registry < d.len())?;
+    at = registry;
+    require(byte(d, &mut at)? == 4)?;
+    let n = uint(d, &mut at)?;
+    require(n <= (d.len() - at) / 10)?;
+    let mut seen = 0u16;
+    for _ in 0..n {
+        let kind = byte(d, &mut at)?;
+        require(matches!(kind, 0..=4 | 6 | 9..=14))?;
+        let bit = 1u16 << kind;
+        require(seen & bit == 0)?;
+        seen |= bit;
+        let authority = byte(d, &mut at)?;
+        require(authority <= 3)?;
+        if authority == 3 {
+            take(d, &mut at, 32)?;
+        }
+        let pos = take(d, &mut at, 8)?;
+        let offset = usize::try_from(num(d, pos)?).map_err(|_| fail())?;
+        require(offset >= plugins_start && offset < registry && d[offset] == kind)?;
+    }
+    // External hooks and new plugin types need their own reviewed support.
+    require(uint(d, &mut at)? == 0 && at == d.len())
+}
+fn core_collection(data: &[u8], info: &AccountInfo) -> ProgramResult {
+    require(*info.owner == CORE && *info.key == key(data, 72)?)?;
+    core_controls(&info.try_borrow_data()?, true)
+}
 fn fee_account(
     info: &AccountInfo,
     mint: &Pubkey,
@@ -105,20 +182,25 @@ fn token_account(
 fn mint(info: &AccountInfo, program: &Pubkey) -> Result<u8, ProgramError> {
     require(info.owner == program && token_program(program))?;
     let d = info.try_borrow_data()?;
-    require(d.len() >= 82 && d[45] == 1)?;
+    require(d.len() >= 82 && d[45] == 1 && d[46..50] == [0; 4])?;
     // Fee mints accept standard mint data and metadata-only Token-2022 extensions.
     // Transfer fees, hooks, delegates, frozen defaults and confidential transfers
     // change the payout contract and need a separate implementation.
     if d.len() > 82 {
         require(*program == TOKEN22 && d.len() >= 166 && d[165] == 1)?;
         let mut at = 166;
-        while at + 4 <= d.len() {
-            let kind = u16::from_le_bytes([d[at], d[at + 1]]);
-            let len = u16::from_le_bytes([d[at + 2], d[at + 3]]) as usize;
-            if kind == 0 {
+        let mut seen = 0u32;
+        while at < d.len() {
+            if d[at..].iter().all(|b| *b == 0) {
                 break;
             }
+            require(at + 4 <= d.len())?;
+            let kind = u16::from_le_bytes([d[at], d[at + 1]]);
+            let len = u16::from_le_bytes([d[at + 2], d[at + 3]]) as usize;
             require(matches!(kind, 18 | 19))?; // MetadataPointer, TokenMetadata
+            let bit = 1u32 << kind;
+            require(seen & bit == 0)?;
+            seen |= bit;
             at = at.checked_add(4 + len).ok_or_else(fail)?;
             require(at <= d.len())?;
         }
@@ -146,23 +228,53 @@ fn native_holding(
 ) -> ProgramResult {
     require(key(data, 169)? == *mint_info.key && token_program(mint_info.owner))?;
     let m = mint_info.try_borrow_data()?;
-    require(m.len() >= 82 && m[44] == 0 && num(&m, 36)? == 1)?;
+    require(m.len() >= 82 && m[44] == 0 && m[45] == 1 && m[46..50] == [0; 4] && num(&m, 36)? == 1)?;
     require(token_account(holder, mint_info.key, vault_key, mint_info.owner)? == 1)
 }
 fn locked_source(data: &[u8], position: &AccountInfo, pool: &AccountInfo) -> ProgramResult {
     require(key(data, 137)? == *position.key && key(data, 105)? == *pool.key)?;
     let p = position.try_borrow_data()?;
+    let q = pool.try_borrow_data()?;
     let nft = key(data, 169)?;
     match data[104] {
         0 => {
-            require(*position.owner == DAMM && *pool.owner == DAMM && p.len() >= 200)?;
+            require(
+                *position.owner == DAMM && *pool.owner == DAMM && p.len() >= 200 && q.len() >= 484,
+            )?;
+            require(
+                p[..8] == [170, 188, 143, 228, 122, 64, 247, 208]
+                    && q[..8] == [241, 154, 109, 4, 17, 177, 109, 188],
+            )?;
+            let (expected, _) = Pubkey::find_program_address(&[b"position", nft.as_ref()], &DAMM);
+            require(*position.key == expected)?;
             require(key(&p, 8)? == *pool.key && key(&p, 40)? == nft)?;
             require(p[152..184].iter().all(|x| *x == 0) && p[184..200].iter().any(|x| *x != 0))?;
+            for n in 0..2 {
+                require(key(&q, 168 + n * 32)? == key(data, 201 + n * 32)?)?;
+                let flag = q[482 + n];
+                require(
+                    flag <= 1
+                        && key(data, 265 + n * 32)? == if flag == 0 { TOKEN } else { TOKEN22 },
+                )?;
+            }
         }
         1 | 2 => {
             let lock_program = if data[104] == 1 { LOCK } else { DLOCK };
-            require(*position.owner == lock_program && p.len() >= 177)?;
+            let pool_program = if data[104] == 1 { CLMM } else { DCLMM };
+            require(
+                *position.owner == lock_program
+                    && p.len() == 241
+                    && *pool.owner == pool_program
+                    && q.len() >= 137,
+            )?;
+            require(
+                p[..8] == [52, 23, 5, 7, 170, 90, 108, 213]
+                    && q[..8] == [247, 237, 227, 245, 215, 195, 222, 70],
+            )?;
             require(key(&p, 41)? == *pool.key && key(&p, 137)? == nft)?;
+            for n in 0..2 {
+                require(key(&q, 73 + n * 32)? == key(data, 201 + n * 32)?)?;
+            }
             let (expected, _) =
                 Pubkey::find_program_address(&[b"locked_position", nft.as_ref()], &lock_program);
             require(expected == *position.key)?;
@@ -272,14 +384,16 @@ fn initialize(id: &Pubkey, a: &[AccountInfo], i: &[u8]) -> ProgramResult {
     Ok(())
 }
 fn register(id: &Pubkey, a: &[AccountInfo], i: &[u8]) -> ProgramResult {
-    require(a.len() == 3 && i.len() == 11)?;
+    require(a.len() == 4 && i.len() == 11)?;
     let mut d = vault(id, &a[1])?;
     creator(&d, &a[0])?;
     require(d[349] == 0 && *a[2].owner == CORE)?;
+    core_collection(&d, &a[3])?;
     let index = count(i, 1)?;
     let weight = num(i, 3)?;
     require(index < count(&d, 329)? && weight > 0)?;
     let asset = a[2].try_borrow_data()?;
+    core_controls(&asset, false)?;
     require(
         asset.len() >= 66 && asset[0] == 1 && asset[33] == 2 && key(&asset, 34)? == key(&d, 72)?,
     )?;
@@ -302,9 +416,10 @@ fn register(id: &Pubkey, a: &[AccountInfo], i: &[u8]) -> ProgramResult {
     Ok(())
 }
 fn activate(id: &Pubkey, a: &[AccountInfo], i: &[u8]) -> ProgramResult {
-    require(a.len() == 8 && i.len() == 1)?;
+    require(a.len() == 9 && i.len() == 1)?;
     let mut d = vault(id, &a[1])?;
     creator(&d, &a[0])?;
+    core_collection(&d, &a[8])?;
     require(count(&d, 329)? == count(&d, 331)? && num(&d, 333)? == num(&d, 341)?)?;
     native_holding(&d, &a[3], &a[2], a[1].key)?;
     locked_source(&d, &a[4], &a[5])?;
@@ -368,15 +483,23 @@ fn harvest(id: &Pubkey, a: &[AccountInfo], i: &[u8]) -> ProgramResult {
     )
 }
 fn claim(id: &Pubkey, a: &[AccountInfo], i: &[u8]) -> ProgramResult {
-    require(a.len() == 11 && i.len() == 3)?;
+    require(a.len() == 12 && i.len() == 3)?;
     let mut d = vault(id, &a[1])?;
     require(d[349] == 1 && a[0].is_signer)?;
+    core_collection(&d, &a[11])?;
     let index = count(i, 1)?;
     require(index < count(&d, 329)?)?;
     let off = HEADER + index * ENTRY;
     require(key(&d, off)? == *a[2].key && *a[2].owner == CORE)?;
     let asset = a[2].try_borrow_data()?;
-    require(asset.len() >= 33 && asset[0] == 1 && key(&asset, 1)? == *a[0].key)?;
+    core_controls(&asset, false)?;
+    require(
+        asset.len() >= 66
+            && asset[0] == 1
+            && key(&asset, 1)? == *a[0].key
+            && asset[33] == 2
+            && key(&asset, 34)? == key(&d, 72)?,
+    )?;
     drop(asset);
     let creator = key(&d, 8)?;
     let (_, bump) = Pubkey::find_program_address(&[b"fee-vault", creator.as_ref(), &d[40..72]], id);
@@ -431,6 +554,9 @@ fn claim(id: &Pubkey, a: &[AccountInfo], i: &[u8]) -> ProgramResult {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod security_tests;
 
 #[cfg(test)]
 mod tests {

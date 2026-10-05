@@ -14,7 +14,7 @@ export function feeNftPlan({ collection, source, recipients, creator, seed, prog
   if (!collection.collectionSignature || items.length !== collection.items.length || items.length !== wallets.length) throw new Error('Mint one branded NFT for each recipient in the NFTs view');
   const shares = items.map((item, index) => ({ index, asset: new PublicKey(item.key.address).toBase58(), name: item.name, recipient: wallets[index], weight: '1' }));
   if (new Set(shares.map((v) => v.asset)).size !== shares.length) throw new Error('Each fee share needs its own NFT');
-  const plan = { schema: 'trebuchet.fee-nfts.v1', name: collection.config.name, collectionId: collection.id, collection: collection.collectionKey.address,
+  const plan = { schema: 'trebuchet.fee-nfts.v2', name: collection.config.name, collectionId: collection.id, collection: collection.collectionKey.address,
     creator: new PublicKey(creator).toBase58(), seed, programId: new PublicKey(programId).toBase58(), network, source, count: shares.length, totalWeight: String(shares.length), shares,
     transferRule: 'The current NFT owner receives its unclaimed fees. Paid amounts stay with the NFT.',
     backingRule: 'All LP fees from this permanently locked position belong to the collection.' };
