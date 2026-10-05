@@ -11,13 +11,23 @@ test('the token bucket lets a burst through, then spaces requests to the rate', 
   let clock = 0;
   const waits = [];
   const options = { now: () => clock, wait: async (ms) => { waits.push(ms); clock += ms; } };
-  for (let i = 0; i < 8; i += 1) await acquire('burst.example', options);
+  for (let i = 0; i < 8; i += 1) await acquire('burst.example', { ...options, rate: 8 });
   assert.equal(clock, 0, 'eight go at once');
-  await acquire('burst.example', options);
-  await acquire('burst.example', options);
+  await acquire('burst.example', { ...options, rate: 8 });
+  await acquire('burst.example', { ...options, rate: 8 });
   assert.equal(clock, 250, 'then one every 125 ms');
-  await acquire('other.example', options);
+  await acquire('other.example', { ...options, rate: 8 });
   assert.equal(clock, 250, 'each host has its own budget');
+  await acquire('heavy.example#heavy', { ...options, rate: 1 });
+  await acquire('heavy.example#heavy', { ...options, rate: 1 });
+  assert.equal(clock, 1250, 'a heavy method waits a second between calls');
+});
+
+test('heavy methods are recognised in single and batched requests', async () => {
+  const { rpcMethods } = await import(`../rpcLimiter.js?methods=${Date.now()}`);
+  assert.deepEqual(rpcMethods('{"jsonrpc":"2.0","id":1,"method":"getProgramAccounts","params":[]}'), ['getProgramAccounts']);
+  assert.deepEqual(rpcMethods('[{"jsonrpc":"2.0","method":"getAsset"},{"jsonrpc":"2.0","method":"getSlot"}]'), ['getAsset', 'getSlot']);
+  assert.deepEqual(rpcMethods('not json'), []);
 });
 
 test('web3.js loaded after the limiter sends its RPC calls through it', () => {
@@ -59,4 +69,13 @@ test('the limiter loads before anything that loads web3.js', () => {
   const support = fs.readFileSync(`${root}/supportPositionRoutes.js`, 'utf8');
   assert.doesNotMatch(support, /pendingWallets\.list\(\)/, 'the support job list is polled: it must not decrypt keys');
   assert.doesNotMatch(fs.readFileSync(`${root}/positionWithdrawalRoutes.js`, 'utf8'), /pendingWallets\.list\(\)/);
+});
+
+test('page requests that read the chain wait up to a minute, not the 3.5 s default', () => {
+  const client = fs.readFileSync(`${root}/public/v2/api-client.js`, 'utf8');
+  assert.match(client, /const CHAIN_REQUEST_TIMEOUT_MS = 60_000;/);
+  for (const name of ['estimateClassicFunding', 'checkExecutionReadiness', 'getQuoteTokenInfo', 'checkDetailedBalance', 'findFundingWallet', 'listDestinations', 'stageLaunchPlan']) {
+    const body = client.match(new RegExp(`async function ${name}\\([^)]*\\)[^{]*\\{([\\s\\S]*?)\\n    \\}`))?.[1] || '';
+    assert.match(body, /timeoutMs: CHAIN_REQUEST_TIMEOUT_MS/, name);
+  }
 });
