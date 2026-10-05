@@ -17127,3 +17127,6 @@ body[data-coin-mode="onchain"] #view-launch #launchNextRail {
 .grind-job.is-stopped > i, .grind-job.is-queued > i { color: var(--muted); }
 .grind-job.is-failed > i { color: var(--red); }
 .grind-job-close { display: inline-flex; align-items: center; gap: 6px; }
+
+/* A rail button's label wraps rather than running past the button. */
+.launch-next-rail .rail-act { white-space: normal; overflow-wrap: anywhere; line-height: 1.25; padding-block: 8px; height: auto; }

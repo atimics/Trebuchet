@@ -6078,7 +6078,7 @@ function renderLaunchNextRail(facts, next, workspace) {
       ? `<button class="primary-button rail-act" type="button" data-action="estimate-funding" data-stay="1" ${state.fundingEstimating ? 'disabled' : ''}>${state.fundingEstimating ? 'Estimating…' : estimateStatus.stale ? 'Estimate funding again' : 'Estimate funding'}</button>`
       // A "Send SOL" button copies the launch wallet's address: that is where the SOL goes.
       : /^Send /.test(fundFact.action || '') && walletKey
-        ? `<button class="primary-button rail-act" type="button" data-action="copy-wallet-address" title="Copy ${escapeHtml(walletKey)}"><i class="fa-regular fa-copy" aria-hidden="true"></i> ${escapeHtml(fundFact.action)}</button>`
+        ? `<button class="primary-button rail-act" type="button" data-action="copy-wallet-address" title="${escapeHtml(`${fundFact.action}: copies ${walletKey}`)}"><i class="fa-regular fa-copy" aria-hidden="true"></i> ${escapeHtml(fundFact.action.replace(/ to the launch wallet$/, ''))}</button>`
         : fundFact.action === 'Get the pair tokens'
           ? pairTokensRailButton()
           : `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(fundFact.action || 'Fund the launch wallet')}</button>`;
