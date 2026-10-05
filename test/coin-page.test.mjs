@@ -164,3 +164,22 @@ test('the Send SOL button keeps a short label that fits; the full text is its to
   assert.match(workspace, /\$\{escapeHtml\(fundFact\.action\.replace\(\/ to the launch wallet\$\/, ''\)\)\}<\/button>/);
   assert.match(read('public/v2/styles.css'), /\.launch-next-rail \.rail-act \{ white-space: normal;/);
 });
+
+test('a blocker the app can fix offers the fix as one button: Add N SOL support', () => {
+  const from = workspace.indexOf('// A blocker the app can fix itself carries the fix');
+  const to = workspace.indexOf('// "Get the pair tokens" is the buy button itself');
+  const input = { value: '0.5', dispatchEvent: () => {} };
+  let checked = 0, invalidated = 0;
+  const context = vm.createContext({
+    escapeHtml: (value) => String(value), $: () => input, parseNumericInput: (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback),
+    Event: class { constructor(type) { this.type = type; } }, invalidateClassicOutputs: () => { invalidated += 1; }, renderAll: () => {},
+    checkExecutionReadiness: async () => { checked += 1; },
+  });
+  vm.runInContext(workspace.slice(from, to), context);
+  assert.match(context.blockerFixHtml({ fix: { action: 'add-sol-support', sol: 0.17 } }), /data-action="add-sol-support" data-sol="0\.17">Add 0\.17 SOL support</);
+  assert.equal(context.blockerFixHtml({ id: 'other' }), '');
+  context.addSolPoolSupport('0.17');
+  assert.equal(input.value, '0.67', 'added to the SOL pool support already set');
+  assert.equal(invalidated, 1);
+  assert.equal(checked, 1, 'readiness is checked again');
+});

@@ -1058,6 +1058,19 @@ function airdropSupportBackingStatus(plan = {}, estimate = {}) {
   }
 
   const supportSol = totalSupportSol(topology.pools);
+  // A Meteora pool is one single-sided position: it can't hold buy support, so this can't be
+  // fixed there. Say so as a warning instead of blocking a launch nothing could unblock.
+  const solPool = (topology.pools || []).find((pool) => pool.id === 'sol-main')
+    || (topology.pools || []).find((pool) => String(pool.quoteSymbol || pool.quoteToken || '').toUpperCase() === 'SOL');
+  if (solPool?.venue === METEORA_VENUE && supportSol <= 0) {
+    return {
+      required: true,
+      state: 'warn',
+      meteora: true,
+      detail: `Airdrop and held tokens: ${formatPlanPercent(heldReservePercent)} of supply. The SOL pool is on Meteora, which holds no buy support: sells of these tokens are paid from buyers' SOL.`,
+      supportSol,
+    };
+  }
   const targetMarketCapUsd = positiveFinite(topology.targetMarketCapUsd, 0);
   const solUsd = fundingEstimateSolUsd(estimate);
   if (targetMarketCapUsd <= 0) {
@@ -1097,13 +1110,13 @@ function airdropSupportBackingStatus(plan = {}, estimate = {}) {
   }
 
   const shortSol = Math.max(0, requiredSupportSol - supportSol);
-  const supportDetail = supportSol > 0
-    ? `support backs ${formatPlanSol(supportSol)} (${formatPlanUsd(supportUsd)})`
-    : 'support is off';
+  // The fix the page offers: the shortfall, rounded up to a hundredth of a SOL.
+  const addSol = Math.ceil(shortSol * 100) / 100;
   return {
     required: true,
     state: 'danger',
-    detail: `Held reserves ${formatPlanPercent(heldReservePercent)} of supply (${formatPlanUsd(reserveUsd)}), but ${supportDetail}. Add at least ${formatPlanSol(shortSol)} total support or lower the prealloc/airdrop budget.`,
+    detail: `Airdrop and held tokens: ${formatPlanPercent(heldReservePercent)} of supply (${formatPlanUsd(reserveUsd)}). Buy support: ${supportSol > 0 ? `${formatPlanSol(supportSol)} (${formatPlanUsd(supportUsd)})` : 'none'}. Needs ${formatPlanSol(requiredSupportSol)}.`,
+    fix: addSol > 0 ? { action: 'add-sol-support', sol: addSol } : null,
     supportSol,
     supportUsd,
     requiredSupportSol,
@@ -1261,8 +1274,8 @@ function ladderRouteIssues(pools = []) {
   return issues;
 }
 
-function readinessIssue({ id, phase, title, detail, severity = 'blocker' }) {
-  return { id, phase, title, detail, severity };
+function readinessIssue({ id, phase, title, detail, severity = 'blocker', fix = null }) {
+  return { id, phase, title, detail, severity, ...(fix ? { fix } : {}) };
 }
 
 function readinessPhase({
@@ -2146,22 +2159,25 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
   if (
     airdropBacking.required
     && airdropBacking.state !== 'pass'
+    && !airdropBacking.meteora
     && setupSafetyGateRequired
     && (fundingEstimateAttached || Number(airdropBacking.supportSol || 0) <= 0)
   ) {
     addBlocker({
       id: 'airdrop-support-underbacked',
       phase: 'liquidity',
-      title: 'Held reserve support underbacked',
+      title: 'Airdrop not backed by buy support',
       detail: airdropBacking.detail,
+      fix: airdropBacking.fix,
     });
   } else if (airdropBacking.required && airdropBacking.state !== 'pass') {
     warnings.push(readinessIssue({
       id: 'airdrop-support-underbacked',
       phase: 'liquidity',
-      title: 'Held reserve support underbacked',
+      title: 'Airdrop not backed by buy support',
       detail: airdropBacking.detail,
       severity: 'warning',
+      fix: airdropBacking.fix,
     }));
   }
 

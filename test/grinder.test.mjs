@@ -69,6 +69,8 @@ test('stopping a grind keeps its stats on screen until dismissed with the ×', a
   state.vanityRunning = true;
   await context.stopGrindJob('A');
   assert.equal(state.grindJobs[0].status, 'stopped');
+  // Pin the stop time so the stats don't depend on how fast the test runs.
+  state.grindJobs[0].endedAt = state.grindJobs[0].startedAt + 4000;
   assert.equal(cancelled.length, 1, 'the server grind is cancelled');
   assert.equal(state.vanityRunning, false);
   const html = context.grindJobHtml(state.grindJobs[0]);

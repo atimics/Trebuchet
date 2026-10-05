@@ -1590,6 +1590,16 @@ var TrebuchetCore = (() => {
       };
     }
     const supportSol = totalSupportSol(topology.pools);
+    const solPool = (topology.pools || []).find((pool) => pool.id === "sol-main") || (topology.pools || []).find((pool) => String(pool.quoteSymbol || pool.quoteToken || "").toUpperCase() === "SOL");
+    if (solPool?.venue === METEORA_VENUE && supportSol <= 0) {
+      return {
+        required: true,
+        state: "warn",
+        meteora: true,
+        detail: `Airdrop and held tokens: ${formatPlanPercent(heldReservePercent)} of supply. The SOL pool is on Meteora, which holds no buy support: sells of these tokens are paid from buyers' SOL.`,
+        supportSol
+      };
+    }
     const targetMarketCapUsd = positiveFinite(topology.targetMarketCapUsd, 0);
     const solUsd = fundingEstimateSolUsd(estimate);
     if (targetMarketCapUsd <= 0) {
@@ -1625,11 +1635,12 @@ var TrebuchetCore = (() => {
       };
     }
     const shortSol = Math.max(0, requiredSupportSol - supportSol);
-    const supportDetail = supportSol > 0 ? `support backs ${formatPlanSol(supportSol)} (${formatPlanUsd(supportUsd)})` : "support is off";
+    const addSol = Math.ceil(shortSol * 100) / 100;
     return {
       required: true,
       state: "danger",
-      detail: `Held reserves ${formatPlanPercent(heldReservePercent)} of supply (${formatPlanUsd(reserveUsd)}), but ${supportDetail}. Add at least ${formatPlanSol(shortSol)} total support or lower the prealloc/airdrop budget.`,
+      detail: `Airdrop and held tokens: ${formatPlanPercent(heldReservePercent)} of supply (${formatPlanUsd(reserveUsd)}). Buy support: ${supportSol > 0 ? `${formatPlanSol(supportSol)} (${formatPlanUsd(supportUsd)})` : "none"}. Needs ${formatPlanSol(requiredSupportSol)}.`,
+      fix: addSol > 0 ? { action: "add-sol-support", sol: addSol } : null,
       supportSol,
       supportUsd,
       requiredSupportSol,
@@ -1776,8 +1787,8 @@ var TrebuchetCore = (() => {
     });
     return issues;
   }
-  function readinessIssue({ id, phase, title, detail, severity = "blocker" }) {
-    return { id, phase, title, detail, severity };
+  function readinessIssue({ id, phase, title, detail, severity = "blocker", fix = null }) {
+    return { id, phase, title, detail, severity, ...fix ? { fix } : {} };
   }
   function readinessPhase({
     id,
@@ -2559,20 +2570,22 @@ var TrebuchetCore = (() => {
       state: airdropBacking.state,
       detail: airdropBacking.detail
     });
-    if (airdropBacking.required && airdropBacking.state !== "pass" && setupSafetyGateRequired && (fundingEstimateAttached || Number(airdropBacking.supportSol || 0) <= 0)) {
+    if (airdropBacking.required && airdropBacking.state !== "pass" && !airdropBacking.meteora && setupSafetyGateRequired && (fundingEstimateAttached || Number(airdropBacking.supportSol || 0) <= 0)) {
       addBlocker({
         id: "airdrop-support-underbacked",
         phase: "liquidity",
-        title: "Held reserve support underbacked",
-        detail: airdropBacking.detail
+        title: "Airdrop not backed by buy support",
+        detail: airdropBacking.detail,
+        fix: airdropBacking.fix
       });
     } else if (airdropBacking.required && airdropBacking.state !== "pass") {
       warnings.push(readinessIssue({
         id: "airdrop-support-underbacked",
         phase: "liquidity",
-        title: "Held reserve support underbacked",
+        title: "Airdrop not backed by buy support",
         detail: airdropBacking.detail,
-        severity: "warning"
+        severity: "warning",
+        fix: airdropBacking.fix
       }));
     }
     const hardBlocked = blockers.length > 0;
