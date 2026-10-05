@@ -409,6 +409,7 @@ const state = {
   vanityReason: null,
   vanityRunning: false,
   grindJobs: [],
+  airdropLists: null,
   vanityCalibrating: false,
   vanityCalibrationError: null,
   vanityProgress: null,
@@ -8648,7 +8649,34 @@ function renderClassicPhaseTree(topology) {
   `;
 }
 
+// Airdrop lists from earlier launches, read once a session: each loads as this coin's CSV.
+// With none yet, the sample shows the format instead.
+function loadAirdropLists() {
+  if (state.airdropLists || state.apiStatus !== 'connected' || !state.apiClient?.listAirdropLists) return;
+  state.airdropLists = [];
+  state.apiClient.listAirdropLists()
+    .then(({ lists }) => { state.airdropLists = Array.isArray(lists) ? lists : []; renderAirdropListButtons(); })
+    .catch(() => { state.airdropLists = null; });
+}
+
+function renderAirdropListButtons() {
+  const host = document.getElementById('airdropListButtons');
+  if (!host) return;
+  const lists = state.airdropLists || [];
+  host.innerHTML = lists.length
+    ? lists.map((list) => `<button class="pill-button" type="button" data-action="load-airdrop-list" data-list="${escapeHtml(list.id)}" title="${escapeHtml(`${list.name || list.symbol || 'Earlier launch'} · ${list.createdAt ? formatDate(list.createdAt) : ''}`)}">${escapeHtml(list.symbol ? `$${list.symbol}` : 'Earlier')} list · ${list.recipients.length}</button>`).join('')
+    : '<button class="pill-button" type="button" data-action="sample-airdrop">Sample CSV</button>';
+}
+
+function loadAirdropList(id) {
+  const list = (state.airdropLists || []).find((item) => item.id === id);
+  if (!list) return;
+  setAirdropText(['wallet,tokens', ...list.recipients.map((row) => `${row.wallet},${row.tokens}`)].join('\n'));
+}
+
 function renderAirdropPanel() {
+  loadAirdropLists();
+  renderAirdropListButtons();
   const topology = currentClassicModel();
   const airdrop = topology.airdrop;
   const summary = $('#airdropSummary');
@@ -23890,6 +23918,11 @@ function handleClick(event) {
 
   if (action === 'remove-custom-pool') {
     removeCustomPool(actionTarget.dataset.poolId);
+    return;
+  }
+
+  if (action === 'load-airdrop-list') {
+    loadAirdropList(actionTarget.dataset.list);
     return;
   }
 

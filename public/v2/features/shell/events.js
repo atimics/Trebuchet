@@ -703,6 +703,11 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'load-airdrop-list') {
+    loadAirdropList(actionTarget.dataset.list);
+    return;
+  }
+
   if (action === 'sample-airdrop') {
     setAirdropText([
       'wallet,tokens',

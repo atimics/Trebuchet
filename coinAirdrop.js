@@ -273,3 +273,24 @@ export async function readAirdropHistory(connection, { mint, tokenProgram, recip
     };
   });
 }
+
+/**
+ * Airdrop lists used by earlier launches, newest first: each launch's planned recipients
+ * (wallet and tokens), one per distinct set of wallets, at most `limit`.
+ */
+export function previousAirdropLists(journals = [], limit = 5) {
+  const seen = new Set();
+  const lists = [];
+  const ordered = journals.slice().sort((a, b) => String(b?.createdAt || '').localeCompare(String(a?.createdAt || '')));
+  for (const journal of ordered) {
+    const recipients = (journal?.launchConfig?.poolTopology?.airdrop?.recipients || [])
+      .map((row) => ({ wallet: String(row?.wallet || '').trim(), tokens: Number(row?.tokens) }))
+      .filter((row) => row.wallet && Number.isFinite(row.tokens) && row.tokens > 0);
+    if (!recipients.length) continue;
+    const key = recipients.map((row) => row.wallet).sort().join(',');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lists.push({ id: journal.id, symbol: journal.token?.symbol || null, name: journal.token?.name || null, createdAt: journal.createdAt || null, recipients });
+  }
+  return lists.slice(0, limit);
+}

@@ -408,6 +408,7 @@ const state = {
   vanityReason: null,
   vanityRunning: false,
   grindJobs: [],
+  airdropLists: null,
   vanityCalibrating: false,
   vanityCalibrationError: null,
   vanityProgress: null,
