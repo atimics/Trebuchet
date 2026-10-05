@@ -99,3 +99,9 @@ test('buying pair tokens says why it can\'t run: a failed or running token check
   ready.context.applyActionGuards();
   assert.equal(button3.dataset.blockedReason, undefined);
 });
+
+test('a greyed-out button shows the not-allowed cursor, never the wait cursor (the macOS beachball)', () => {
+  const css = read('public/v2/styles.css');
+  assert.match(css, /button:disabled \{\n  cursor: not-allowed;/);
+  assert.doesNotMatch(css, /button:disabled \{\n  cursor: wait;/);
+});
