@@ -1,0 +1,25 @@
+{
+  "scope": "isolated local validator with public Raydium state",
+  "seededFeeUnits": 1000,
+  "lock": "9Ed6m2hwTHkMyPJgeqS3Mc7JuiKZXUC21HTFrh1XtesA",
+  "wrapperHash": "1ed4ef396f1cb33bcc64fa92855e8f7d22503ba1d69477964b2bbae46add476a",
+  "programHashes": [
+    "96fa631a61234766afa538437c5166c628100dbc70e5c3ddb2f306d5dc5a8ba5",
+    "efd657a986796e1b204ebae198e691d4137d5f89a401693b83f7fb1a142f802d",
+    "b1e8b3eb1c0027b3c05b059dec773661cbe93e2b304c1166e575b502ee2ca6d2"
+  ],
+  "passed": [
+    "native harvest CPI",
+    "equal payouts",
+    "repeat claims",
+    "ownership transfer",
+    "claim redirection refused",
+    "harvest redirection refused",
+    "actual mainnet genesis backing gate"
+  ],
+  "compiler": {
+    "solana": "2.3.13",
+    "platformTools": "1.48",
+    "sbfRust": "1.84.1"
+  }
+}

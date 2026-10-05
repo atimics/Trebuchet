@@ -22,7 +22,7 @@ const creator = addr(); const holder = addr(); const programId = addr();
 const sample = JSON.parse(fs.readFileSync('docs/airdrop-lists/sample.json'));
 const source = { venue: 'meteora', pool: addr(), position: addr(), nativeNftMint: addr(), nativeTokenProgram: TOKEN_PROGRAM_ID.toBase58(), mints: [addr(), addr()], tokenPrograms: [TOKEN_PROGRAM_ID.toBase58(), TOKEN_PROGRAM_ID.toBase58()], decimals: [6, 9] };
 const shares = sample.wallets.map((recipient, index) => ({ index, name: `Brand #${index + 1}`, asset: addr(), recipient, weight: '1' }));
-const record = { id: 'fee_ui', vault: addr(), status: 'draft', estimate: { totalLamports: 30_000_000 }, operations: {}, plan: { name: 'Brand fees', creator, source, digest: 'reviewed', count: 54, shares, transferRule: 'The current NFT owner receives its unclaimed fees. Paid amounts stay with the NFT.' } };
+const record = { id: 'fee_ui', vault: addr(), status: 'draft', estimate: { totalLamports: 30_000_000 }, operations: {}, plan: { collection: addr(), name: 'Brand fees', creator, source, digest: 'reviewed', count: 54, shares, transferRule: 'The current NFT owner receives its unclaimed fees. Paid amounts stay with the NFT.' } };
 let detail = record; let claims = 0;
 try {
   for (let i = 0; ; i++) {
@@ -44,7 +44,7 @@ try {
     if (u.pathname.endsWith('/prepare-claim')) {
       const body = r.request().postDataJSON(); claims++; assert.equal(body.walletPublicKey, holder);
       const tx = new Transaction({ feePayer: new PublicKey(holder), recentBlockhash: addr() });
-      tx.add(claimFeeShare({ programId, vault: record.vault, source, owner: holder, asset: shares[0].asset, index: 0 }));
+      tx.add(claimFeeShare({ programId, vault: record.vault, collection: record.plan.collection, source, owner: holder, asset: shares[0].asset, index: 0 }));
       return r.fulfill({ json: { success: true, transaction: tx.serialize({ requireAllSignatures: false }).toString('base64'), chain: 'solana:devnet', maxDebitLamports: 5000 } });
     }
     if (u.pathname.endsWith('/fee_ui')) return r.fulfill({ json: { success: true, vault: detail } });

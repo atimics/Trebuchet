@@ -25,23 +25,23 @@ export function initializeFeeVault({ programId, creator, seed, collection, sourc
     ...[source.pool, source.position, source.nativeNftMint, source.tokenPrograms[0], source.mints[0], source.mints[1], source.tokenPrograms[1]].map((v) => pk(v).toBuffer())]);
   return new TransactionInstruction({ programId: pk(programId), keys: [meta(creator, true, true), meta(vault, true), meta(SystemProgram.programId)], data });
 }
-export function registerFeeShare({ programId, creator, vault, asset, index, weight }) {
-  return new TransactionInstruction({ programId: pk(programId), keys: [meta(creator, false, true), meta(vault, true), meta(asset)], data: Buffer.concat([Buffer.from([1]), u16(index), u64(weight)]) });
+export function registerFeeShare({ programId, creator, vault, collection, asset, index, weight }) {
+  return new TransactionInstruction({ programId: pk(programId), keys: [meta(creator, false, true), meta(vault, true), meta(asset), meta(collection)], data: Buffer.concat([Buffer.from([1]), u16(index), u64(weight)]) });
 }
-export function activateFeeVault({ programId, creator, vault, source, nativeNftAccount }) {
+export function activateFeeVault({ programId, creator, vault, collection, source, nativeNftAccount }) {
   return new TransactionInstruction({ programId: pk(programId), keys: [meta(creator, false, true), meta(vault, true),
-    ...[source.nativeNftMint, nativeNftAccount, source.position, source.pool, ...source.mints].map((v) => meta(v))], data: Buffer.from([2]) });
+    ...[source.nativeNftMint, nativeNftAccount, source.position, source.pool, ...source.mints, collection].map((v) => meta(v))], data: Buffer.from([2]) });
 }
 export function harvestFeeVault({ programId, vault, source, instruction }) {
   const tokens = feeVaultTokenAccounts(vault, source);
   return new TransactionInstruction({ programId: pk(programId), keys: [meta(vault, true), ...tokens.map((v) => meta(v, true)), meta(instruction.programId),
     ...instruction.keys.map((k) => ({ ...k, isSigner: false }))], data: Buffer.from([3]) });
 }
-export function claimFeeShare({ programId, vault, source, owner, asset, index }) {
+export function claimFeeShare({ programId, vault, collection, source, owner, asset, index }) {
   const inputs = feeVaultTokenAccounts(vault, source);
   const outputs = source.mints.map((mint, i) => getAssociatedTokenAddressSync(pk(mint), pk(owner), false, pk(source.tokenPrograms[i])));
   return new TransactionInstruction({ programId: pk(programId), keys: [meta(owner, true, true), meta(vault, true), meta(asset),
-    ...inputs.map((v) => meta(v, true)), ...outputs.map((v) => meta(v, true)), ...source.mints.map((v) => meta(v)), ...source.tokenPrograms.map((v) => meta(v))], data: Buffer.concat([Buffer.from([4]), u16(index)]) });
+    ...inputs.map((v) => meta(v, true)), ...outputs.map((v) => meta(v, true)), ...source.mints.map((v) => meta(v)), ...source.tokenPrograms.map((v) => meta(v)), meta(collection)], data: Buffer.concat([Buffer.from([4]), u16(index)]) });
 }
 export function recoverFeeBacking({ programId, vault, source, creator }) {
   const mint = pk(source.nativeNftMint); const tokenProgram = pk(source.nativeTokenProgram);
@@ -50,7 +50,7 @@ export function recoverFeeBacking({ programId, vault, source, creator }) {
 }
 export function decodeFeeVault(raw) {
   const d = Buffer.from(raw);
-  if (d.length < FEE_VAULT_HEADER || d.subarray(0, 8).toString() !== 'TFEEV001') throw new Error('Unknown fee vault account');
+  if (d.length < FEE_VAULT_HEADER || d.subarray(0, 8).toString() !== 'TFEEV002') throw new Error('Unknown fee vault account');
   const count = d.readUInt16LE(329);
   if (!count || count > 128 || d.length !== FEE_VAULT_HEADER + count * FEE_VAULT_ENTRY) throw new Error('Invalid fee vault size');
   return {

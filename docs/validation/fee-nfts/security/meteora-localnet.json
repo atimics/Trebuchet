@@ -1,0 +1,16 @@
+{
+  "scope": "isolated local validator with real Core and DAMM v2 programs",
+  "wrapperHash": "1ed4ef396f1cb33bcc64fa92855e8f7d22503ba1d69477964b2bbae46add476a",
+  "passed": [
+    "backing waits for verified immutable program deployment",
+    "creator can recover backing during setup; another wallet is refused",
+    "real NFT and collection permanent delegates are refused by the app and contract",
+    "branded NFTs sent, locked position held by vault, shares fixed",
+    "an NFT already delivered settles its saved send and releases the wallet",
+    "actual trading fees collected through vault CPI; equal claims; repeat claim pays zero",
+    "transfer moves fee rights; previous owner refused; lifetime balances conserve funds",
+    "shares stay fixed after activation; creator gets holder rights through NFT ownership",
+    "completed setup resumes with the same receipts",
+    "portable proof and unsigned holder claim keep signing in the holder wallet"
+  ]
+}
