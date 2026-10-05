@@ -1,5 +1,7 @@
 (function installTrebuchetV2Api(global) {
   const API_SESSION_PATH = '/api/session';
+  // Requests that read the chain wait their turn behind the app's RPC rate limit: give them a minute.
+  const CHAIN_REQUEST_TIMEOUT_MS = 60_000;
   const LAUNCH_PLAN_PATH = '/api/v2/launch-plan';
   const V2_EXECUTION_READINESS_PATH = '/api/v2/execution-readiness';
   const V2_DEMO_LAUNCH_RUN_PATH = '/api/v2/demo-launch/run';
@@ -478,6 +480,7 @@
 
     async function stageLaunchPlan(config) {
       const data = await request(LAUNCH_PLAN_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: config || {},
       });
@@ -496,6 +499,7 @@
       airdropRecipients,
     } = {}) {
       const data = await request(V2_EXECUTION_READINESS_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { walletPublicKey, config: config || {}, tokenMint, priorResults, fundingEstimate, airdropRecipients },
       });
@@ -523,7 +527,7 @@
 
     // Rent changes the funding estimate; the server reads it from the chain.
     async function syncRentRate() {
-      const data = await request('/api/rent');
+      const data = await request('/api/rent', { timeoutMs: CHAIN_REQUEST_TIMEOUT_MS });
       globalThis.TrebuchetCore?.setRentLamportsPerByte?.(data?.rentLamportsPerByte);
       return data?.rentLamportsPerByte;
     }
@@ -805,7 +809,7 @@
 
     async function listDestinations(launchWallet = '') {
       const query = launchWallet ? `?launchWallet=${encodeURIComponent(launchWallet)}` : '';
-      return request(`/api/v2/destinations${query}`);
+      return request(`/api/v2/destinations${query}`, { timeoutMs: CHAIN_REQUEST_TIMEOUT_MS });
     }
 
     async function saveLaunch({ id = null, name = null, config }) {
@@ -816,15 +820,18 @@
     }
 
     async function pickFlywheelMint({ kind = 'meme', last = null } = {}) {
-      return request(`${FLYWHEEL_POOLS_PATH}/pick`, { method: 'POST', body: { kind, last } });
+      return request(`${FLYWHEEL_POOLS_PATH}/pick`, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS, method: 'POST', body: { kind, last } });
     }
 
     async function listFlywheelPools() {
-      return request(FLYWHEEL_POOLS_PATH, { method: 'GET' });
+      return request(FLYWHEEL_POOLS_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS, method: 'GET' });
     }
 
     async function addFlywheelMint({ kind = 'meme', mint }) {
-      return request(`${FLYWHEEL_POOLS_PATH}/add`, { method: 'POST', body: { kind, mint } });
+      return request(`${FLYWHEEL_POOLS_PATH}/add`, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS, method: 'POST', body: { kind, mint } });
     }
 
     async function removeFlywheelMint({ kind = 'meme', mint }) {
@@ -847,6 +854,7 @@
       airdrop,
     }) {
       const data = await request(ESTIMATE_LP_FUNDING_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: {
           allocations,
@@ -864,7 +872,7 @@
     }
 
     async function listFlywheelHubs() {
-      return request('/api/v2/flywheel-hubs');
+      return request('/api/v2/flywheel-hubs', { timeoutMs: CHAIN_REQUEST_TIMEOUT_MS });
     }
 
     async function getTokenLogos(mints) {
@@ -884,6 +892,7 @@
       const token = String(quoteToken || '').trim();
       if (!token) throw new V2ApiError('Quote token is required.', { code: 'BAD_QUOTE_TOKEN' });
       const data = await request(QUOTE_TOKEN_INFO_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { quoteToken: token },
       });
@@ -894,7 +903,7 @@
     }
 
     async function getClmmFeeTiers() {
-      const data = await request(CLMM_FEE_TIERS_PATH);
+      const data = await request(CLMM_FEE_TIERS_PATH, { timeoutMs: CHAIN_REQUEST_TIMEOUT_MS });
       return safeArray(data.tiers);
     }
 
@@ -938,6 +947,7 @@
 
     async function checkDetailedBalance(publicKey) {
       const data = await request(CHECK_BALANCE_DETAILED_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { publicKey },
       });
@@ -949,6 +959,7 @@
 
     async function findFundingWallet(publicKey) {
       const data = await request(FIND_FUNDER_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { publicKey },
       });
