@@ -20190,11 +20190,17 @@ async function runClassicFundingEstimate() {
 // is verified quietly. No clicking through per-token verify buttons.
 let quoteVerifyInFlight = null;
 
-function pairTokensNeedingCheck() {
+// A pair token is checked automatically once; a check that failed is tried again after a minute,
+// not on every readiness check (each one scans the chain for the token's pools).
+const PAIR_TOKEN_RECHECK_MS = 60 * 1000;
+function pairTokensNeedingCheck(now = Date.now()) {
   return state.customPools.filter((pool) => {
     if (!String(pool.quoteMint || '').trim() || !customQuoteLookupValue(pool)) return false;
     const record = customQuoteInfoRecord(pool);
-    return !record || (!record.loading && !record.info);
+    if (!record) return true;
+    if (record.loading || record.info) return false;
+    const failedAt = Date.parse(record.checkedAt || '');
+    return !Number.isFinite(failedAt) || now - failedAt >= PAIR_TOKEN_RECHECK_MS;
   });
 }
 
