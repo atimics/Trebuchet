@@ -10,7 +10,7 @@ export function installPositionWithdrawalRoutes(app, { runtime, isDemoMode, demo
     return sendErrorResponse(res, error, status);
   };
   app.get('/api/v2/positions/withdrawals', (req, res) => {
-    try { res.json({ success: true, withdrawals: isDemoMode() ? [] : requireRuntime().list(pendingWallets.list().map((wallet) => wallet.publicKey), req.query.tokenMint) }); }
+    try { res.json({ success: true, withdrawals: isDemoMode() ? [] : requireRuntime().list(pendingWallets.records().map((wallet) => wallet.publicKey), req.query.tokenMint) }); }
     catch (error) { onError(res, error); }
   });
   app.get('/api/v2/positions/withdrawals/:jobId', (req, res) => {

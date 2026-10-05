@@ -53,7 +53,7 @@ export function installSupportPositionRoutes(app, { runtime, isDemoMode, demoCha
 
   app.get('/api/v2/support/jobs', (req, res) => {
     try {
-      const wallets = pendingWallets.list().map((wallet) => wallet.publicKey).filter((wallet) => !req.query.walletPublicKey || wallet === req.query.walletPublicKey);
+      const wallets = pendingWallets.records().map((wallet) => wallet.publicKey).filter((wallet) => !req.query.walletPublicKey || wallet === req.query.walletPublicKey);
       res.json({ success: true, jobs: isDemoMode() ? [] : requireRuntime().list(wallets) });
     } catch (error) { onError(res, error); }
   });

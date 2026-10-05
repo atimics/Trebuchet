@@ -4364,8 +4364,10 @@ textarea:focus {
   border-color: var(--line-strong);
 }
 
+/* A disabled button can't be used; it isn't busy. The wait cursor is the macOS beachball and
+   made a greyed-out button look like the app had frozen. */
 button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.58;
 }
 
