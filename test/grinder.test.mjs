@@ -80,7 +80,7 @@ test('stopping a grind keeps its stats on screen until dismissed with the ×', a
 
 test('a running grind shows live tries, speed, and time to expected, with Stop', () => {
   const { context } = page();
-  const html = context.grindJobHtml(job('A', { status: 'running', startedAt: Date.now() - 2000, attempts: 164_000_000, rate: 85_600_000, expected: 656_000_000 }));
+  const html = context.grindJobHtml(job('A', { status: 'running', startedAt: Date.now() - 1500, attempts: 164_000_000, rate: 85_600_000, expected: 656_000_000 }));
   assert.match(html, /164M tries · 25% of expected · 85.6M\/s · ~6s to expected · 2s so far/);
   assert.match(html, /data-action="stop-grind-job"[\s\S]*Stop/);
 });
