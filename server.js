@@ -83,6 +83,9 @@ import {
 import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
 import { cachedTokenDisplay } from './tokenInfoService.js';
+import { installRpcTrace } from './rpcTrace.js';
+
+if (process.env.TREBUCHET_RPC_TRACE === '1') installRpcTrace();
 import { airdropDeliveries, previousAirdropLists, readAirdropHistory, readAirdropHolders } from './coinAirdrop.js';
 import * as airdropHistoryStore from './airdropHistoryStore.js';
 import * as secretStore from './secretStore.js';
@@ -6814,6 +6817,7 @@ const STEP2_PROBE_TTL_MS = 3 * 60 * 1000;  // 3 minutes
 // a transient failure); read errors are not, so the user can retry.
 const onChainPriceCache = new Map();
 const ON_CHAIN_PRICE_TTL_MS = 60 * 1000;
+const ON_CHAIN_PRICE_MISS_TTL_MS = 60 * 1000;
 
 // Quote-token info: when the user picks/enters a quote token in the UI,
 // we look up its symbol/decimals/USD price for inline display. For known
@@ -6952,9 +6956,10 @@ app.post('/api/quote-token-info', async (req, res) => {
         } else {
           const solUsdForDisplay = await getUsdPrice(WSOL_MINT_ADDRESS);
           oc = await getQuoteTokenOnChainPrice({ mint: quoteToken, solUsd: solUsdForDisplay });
-          // Cache a price or a spread finding; leave null (nothing usable /
-          // read failure) uncached so a transient RPC blip is retried.
-          if (oc) onChainPriceCache.set(ocKey, { result: oc, expiresAt: Date.now() + ON_CHAIN_PRICE_TTL_MS });
+          // Cache a price or a spread finding. Nothing usable is kept for a minute too: retrying
+          // at once re-ran the whole pool scan on every readiness check while the RPC was
+          // rate-limited, which kept it rate-limited.
+          onChainPriceCache.set(ocKey, { result: oc, expiresAt: Date.now() + (oc ? ON_CHAIN_PRICE_TTL_MS : ON_CHAIN_PRICE_MISS_TTL_MS) });
         }
         if (oc && oc.priceUsd) {
           infoOut.priceUsd = oc.priceUsd.toString();

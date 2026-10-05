@@ -559,6 +559,10 @@ export function decryptString(token) {
     }
   }
   console.warn('secretPinStore: decryptString failed');
+  // With the RPC trace on, say which code asked: a locked PIN makes every read of a saved key fail.
+  if (process.env.TREBUCHET_RPC_TRACE === '1') {
+    console.warn(`  from ${String(new Error().stack).split('\n').slice(6, 11).map((line) => line.trim().replace(/^at /, '').replace(/\(?file:\/\/[^)]*\/([^/]+:\d+):\d+\)?/, '$1')).join(' ← ')}`);
+  }
   return null;
 }
 
