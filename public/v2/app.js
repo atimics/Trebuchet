@@ -410,6 +410,7 @@ const state = {
   vanityRunning: false,
   grindJobs: [],
   airdropLists: null,
+  kolWallets: null,
   vanityCalibrating: false,
   vanityCalibrationError: null,
   vanityProgress: null,
@@ -8649,29 +8650,45 @@ function renderClassicPhaseTree(topology) {
   `;
 }
 
-// Airdrop lists from earlier launches, read once a session: each loads as this coin's CSV.
-// With none yet, the sample shows the format instead.
+// Lists to airdrop to: the bundled KOL wallets (public labels, copied from runner-watch with
+// their source), and each earlier launch's airdrop, read once a session. Each loads as this
+// coin's CSV. A launch list with the same wallets as the KOL list is not offered twice.
 function loadAirdropLists() {
   if (state.airdropLists || state.apiStatus !== 'connected' || !state.apiClient?.listAirdropLists) return;
   state.airdropLists = [];
   state.apiClient.listAirdropLists()
-    .then(({ lists }) => { state.airdropLists = Array.isArray(lists) ? lists : []; renderAirdropListButtons(); })
+    .then(({ lists, kol }) => {
+      state.airdropLists = Array.isArray(lists) ? lists : [];
+      state.kolWallets = kol && Array.isArray(kol.wallets) ? kol : null;
+      renderAirdropListButtons();
+    })
     .catch(() => { state.airdropLists = null; });
 }
 
 function renderAirdropListButtons() {
   const host = document.getElementById('airdropListButtons');
   if (!host) return;
-  const lists = state.airdropLists || [];
-  host.innerHTML = lists.length
-    ? lists.map((list) => `<button class="pill-button" type="button" data-action="load-airdrop-list" data-list="${escapeHtml(list.id)}" title="${escapeHtml(`${list.name || list.symbol || 'Earlier launch'} · ${list.createdAt ? formatDate(list.createdAt) : ''}`)}">${escapeHtml(list.symbol ? `$${list.symbol}` : 'Earlier')} list · ${list.recipients.length}</button>`).join('')
-    : '<button class="pill-button" type="button" data-action="sample-airdrop">Sample CSV</button>';
+  const kol = state.kolWallets?.wallets || [];
+  const kolSet = kol.map((wallet) => wallet.address).sort().join(',');
+  const lists = (state.airdropLists || []).filter((list) => list.recipients.map((row) => row.wallet).sort().join(',') !== kolSet);
+  const buttons = [
+    kol.length ? `<button class="pill-button" type="button" data-action="load-kol-wallets" title="${escapeHtml(`KOL labels from ${state.kolWallets.label_date || 'the source list'}`)}">KOL wallets · ${kol.length}</button>` : '',
+    ...lists.map((list) => `<button class="pill-button" type="button" data-action="load-airdrop-list" data-list="${escapeHtml(list.id)}" title="${escapeHtml(`${list.name || list.symbol || 'Earlier launch'} · ${list.createdAt ? formatDate(list.createdAt) : ''}`)}">${escapeHtml(list.symbol ? `$${list.symbol}` : 'Earlier')} list · ${list.recipients.length}</button>`),
+  ].filter(Boolean);
+  host.innerHTML = buttons.length ? buttons.join('') : '<button class="pill-button" type="button" data-action="sample-airdrop">Sample CSV</button>';
 }
 
 function loadAirdropList(id) {
   const list = (state.airdropLists || []).find((item) => item.id === id);
   if (!list) return;
   setAirdropText(['wallet,tokens', ...list.recipients.map((row) => `${row.wallet},${row.tokens}`)].join('\n'));
+}
+
+// KOL wallets without amounts: the airdrop budget splits evenly across them.
+function loadKolWallets() {
+  const list = state.kolWallets;
+  if (!list?.wallets?.length) return;
+  setAirdropText(['wallet', `# KOL wallets, labels from ${list.label_date || 'the source list'}`, ...list.wallets.map((wallet) => wallet.address)].join('\n'));
 }
 
 function renderAirdropPanel() {
@@ -23918,6 +23935,11 @@ function handleClick(event) {
 
   if (action === 'remove-custom-pool') {
     removeCustomPool(actionTarget.dataset.poolId);
+    return;
+  }
+
+  if (action === 'load-kol-wallets') {
+    loadKolWallets();
     return;
   }
 

@@ -200,7 +200,7 @@ test('earlier launches\' airdrop lists, newest first, one per set of wallets', a
 
 test('the airdrop panel offers those lists in place of the sample, and loads one as the CSV', () => {
   const editor = fs.readFileSync(new URL('../public/v2/features/launch/pool-editor.js', import.meta.url), 'utf8');
-  const from = editor.indexOf('// Airdrop lists from earlier launches');
+  const from = editor.indexOf('// Lists to airdrop to');
   const to = editor.indexOf('function renderAirdropPanel() {');
   const host = { innerHTML: '' };
   let loaded = null;
@@ -217,5 +217,41 @@ test('the airdrop panel offers those lists in place of the sample, and loads one
   assert.equal(loaded, 'wallet,tokens\nK1,1618\nK2,1950');
   context.state.airdropLists = [];
   context.renderAirdropListButtons();
-  assert.match(host.innerHTML, /data-action="sample-airdrop">Sample CSV/, 'with no earlier list, the sample shows the format');
+  assert.match(host.innerHTML, /data-action="sample-airdrop">Sample CSV/, 'with no list at all, the sample shows the format');
+});
+
+test('the bundled KOL wallets load as a CSV the parser reads, and a launch with the same wallets is not offered twice', () => {
+  const kol = JSON.parse(fs.readFileSync(new URL('../public/v2/kol-wallets.json', import.meta.url), 'utf8'));
+  assert.equal(kol.wallets.length, 52);
+  assert.match(kol.source_url, /sn3ll\/KOL-Wallets-BULLX/);
+  const editor = fs.readFileSync(new URL('../public/v2/features/launch/pool-editor.js', import.meta.url), 'utf8');
+  const distribution = fs.readFileSync(new URL('../public/v2/features/launch/distribution.js', import.meta.url), 'utf8');
+  const host = { innerHTML: '' };
+  let loaded = null;
+  const context = vm.createContext({
+    state: { kolWallets: kol, airdropLists: [
+      { id: 'trebuchet', symbol: 'TREBUCHET', recipients: kol.wallets.map((wallet) => ({ wallet: wallet.address, tokens: 1000 })) },
+      { id: 'other', symbol: 'OTHER', recipients: [{ wallet: 'K1', tokens: 5 }] },
+    ] },
+    document: { getElementById: () => host }, escapeHtml: (value) => String(value), formatDate: (value) => value,
+    setAirdropText: (text) => { loaded = text; },
+    isProbablySolanaAddress: (value) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value), parseNumericInput: Number,
+  });
+  vm.runInContext(editor.slice(editor.indexOf('// Lists to airdrop to'), editor.indexOf('function renderAirdropPanel() {')), context);
+  vm.runInContext(distribution.slice(distribution.indexOf('function parseAirdropCsv'), distribution.indexOf('function computeAirdropExecutionCostSol')), context);
+  context.renderAirdropListButtons();
+  assert.match(host.innerHTML, /data-action="load-kol-wallets"[^>]*>KOL wallets · 52</);
+  assert.doesNotMatch(host.innerHTML, /TREBUCHET list/, 'the same 52 wallets are the KOL button');
+  assert.match(host.innerHTML, /\$OTHER list · 1/);
+  context.loadKolWallets();
+  const parsed = context.parseAirdropCsv(loaded);
+  assert.equal(parsed.error, null);
+  assert.equal(parsed.recipients.length, 52);
+  assert.ok(parsed.recipients.every((row) => row.tokens === null), 'no amounts: the budget splits evenly');
+});
+
+test('the server returns the bundled KOL list with the earlier launches\' lists', () => {
+  const server = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  assert.match(server, /path\.join\(__dirname, 'public', 'v2', 'kol-wallets\.json'\)/);
+  assert.match(server, /kol: readKolWallets\(\),/);
 });

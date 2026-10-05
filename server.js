@@ -3488,11 +3488,25 @@ app.post('/api/v2/coins/:mint/sell-quote', async (req, res) => {
   } catch (error) { sendErrorResponse(res, error, 400); }
 });
 
+// The bundled KOL wallet list (public labels, with their source), or null when it can't be read.
+function readKolWallets() {
+  try {
+    const list = JSON.parse(fs.readFileSync(path.join(__dirname, 'public', 'v2', 'kol-wallets.json'), 'utf8'));
+    return Array.isArray(list?.wallets) ? list : null;
+  } catch {
+    return null;
+  }
+}
+
 // Airdrop lists used before: each launch's recipients (wallet and tokens), newest first, one
 // per distinct list, so a new coin can airdrop to the same wallets.
 app.get('/api/v2/airdrop-lists', (_req, res) => {
   try {
-    res.json({ success: true, lists: previousAirdropLists(launchJournal.list({ includeCompleted: true, includeArchived: true })) });
+    res.json({
+      success: true,
+      lists: previousAirdropLists(launchJournal.list({ includeCompleted: true, includeArchived: true })),
+      kol: readKolWallets(),
+    });
   } catch (error) {
     sendErrorResponse(res, error);
   }
