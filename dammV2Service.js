@@ -280,13 +280,14 @@ export async function verifyLockedPool({ connection, pool, position, mint, suppl
     isNewTokenSideA: poolState.tokenAMint.equals(mint),
     isQuoteSol: poolState.tokenBMint.equals(NATIVE_MINT),
     isExpectedQuote: poolState.tokenBMint.equals(quoteMint),
+    positionInPool: positionState.pool.equals(pool),
     permanentlyLocked: cpAmm.isPermanentLockedPosition(positionState),
     nothingWithdrawable: positionState.unlockedLiquidity.isZero(),
     vaultHoldsSupply: vaultA.amount >= BigInt(supplyRaw),
     quoteSideEmpty: true,
     feesInQuote: poolState.collectFeeMode === CollectFeeMode.OnlyB,
   };
-  checks.passed = checks.isNewTokenSideA && checks.isExpectedQuote && checks.permanentlyLocked
+  checks.passed = checks.positionInPool && checks.isNewTokenSideA && checks.isExpectedQuote && checks.permanentlyLocked
     && checks.nothingWithdrawable && checks.vaultHoldsSupply && checks.feesInQuote;
   return checks;
 }

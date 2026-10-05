@@ -1,6 +1,7 @@
 // A Meteora DAMM v2 pool as one of a launch's pools: priced like the others, made once, adopted on
 // a resume, and costed without Raydium's tick arrays or bootstrap.
 import test from 'node:test';
+import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import Decimal from 'decimal.js';
 import { Keypair, PublicKey } from '@solana/web3.js';
@@ -128,4 +129,50 @@ test('the plan keeps a Meteora SOL pool as one locked position next to Raydium p
   assert.equal(solAllocation.venue, 'meteora-damm-v2');
   assert.deepEqual(solAllocation.damm, { feeBps: 100, rangeMultiple: 100 });
   assert.equal(usdcAllocation.venue, undefined);
+});
+
+test('each Meteora pool in a launch gets its own position key; the SOL pool keeps the original', async () => {
+  const rug = 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG';
+  const usdc = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  const original = lp.meteoraPositionSeed(owner.secretKey, base.tokenMint);
+  assert.deepEqual(lp.meteoraPositionSeed(owner.secretKey, base.tokenMint, WSOL_MINT), original, 'SOL pools made before still resume');
+  assert.notDeepEqual(lp.meteoraPositionSeed(owner.secretKey, base.tokenMint, rug), original);
+  assert.notDeepEqual(lp.meteoraPositionSeed(owner.secretKey, base.tokenMint, rug), lp.meteoraPositionSeed(owner.secretKey, base.tokenMint, usdc));
+  // Three pools in one launch: three different position NFTs created.
+  const damm = fakeDamm();
+  lp.setDammServiceForTests(damm);
+  try {
+    for (const [index, quote] of [[0, { address: WSOL_MINT, decimals: 9, symbol: 'SOL' }], [1, { address: rug, decimals: 9, symbol: 'RUG' }], [2, { address: usdc, decimals: 6, symbol: 'USDC' }]]) {
+      await hooks.createMeteoraPoolForAllocation({ ...base, allocIdx: index, quote, alloc: { venue: 'meteora-damm-v2', supplyPercent: 5 }, progress: () => {} });
+    }
+  } finally { lp.setDammServiceForTests(null); }
+  const nfts = damm.calls.filter((call) => call[0] === 'create').map((call) => call[5]);
+  assert.equal(new Set(nfts).size, 3, 'no two pools share a position NFT');
+});
+
+test('a pair pool made with the original key is adopted on a resume', async () => {
+  const rug = 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG';
+  const originalNft = Keypair.fromSeed(lp.meteoraPositionSeed(owner.secretKey, base.tokenMint)).publicKey.toBase58();
+  const calls = [];
+  lp.setDammServiceForTests({
+    async findExistingPool({ positionNft }) {
+      calls.push(positionNft.toBase58());
+      return { pool: new PublicKey(rug), position: Keypair.generate().publicKey, poolExists: true, positionExists: positionNft.toBase58() === originalNft };
+    },
+    async verifyLockedPool() { return { passed: true }; },
+    async createLockedPool() { throw new Error('must not create a second pool'); },
+  });
+  try {
+    const result = await hooks.createMeteoraPoolForAllocation({ ...base, allocIdx: 1, quote: { address: rug, decimals: 9, symbol: 'RUG' }, alloc: { venue: 'meteora-damm-v2', supplyPercent: 5 }, progress: () => {} });
+    assert.equal(calls.length, 2, 'looked for the new key, then the original');
+    assert.equal(calls[1], originalNft);
+    assert.equal(result.damm.adopted, true);
+    assert.equal(result.mainPositions[0].nftMint, originalNft, 'the Fee Key is the NFT the pool was made with');
+  } finally { lp.setDammServiceForTests(null); }
+});
+
+test('a position is only adopted when it belongs to the pool being checked', () => {
+  const source = fs.readFileSync(new URL('../dammV2Service.js', import.meta.url), 'utf8');
+  assert.match(source, /positionInPool: positionState\.pool\.equals\(pool\)/);
+  assert.match(source, /checks\.passed = checks\.positionInPool && /);
 });
