@@ -15,9 +15,6 @@ const views = {
   coins: { eyebrow: '', title: 'Coins' },
   // A coin being created: the coin page with its creation steps.
   launch: { eyebrow: '', title: 'Coins' },
-  nfts: { eyebrow: '', title: 'NFT collections' },
-  'fee-nfts': { eyebrow: '', title: 'Fee NFTs' },
-  lean: { eyebrow: '', title: 'Meteora launches' },
   wallet: { eyebrow: '', title: 'Wallet' },
   discovery: { eyebrow: '', title: 'Discovery' },
   settings: { eyebrow: '', title: 'Settings' },
@@ -5738,7 +5735,7 @@ function setView(view) {
     state.approvalOpen = false;
   }
   // A coin's creation steps are part of its coin page, under Coins.
-  const navView = view === 'launch' || view === 'lean' ? 'coins' : view;
+  const navView = view === 'launch' ? 'coins' : view;
   $$('.nav-item').forEach((button) => {
     button.classList.toggle('is-active', button.dataset.view === navView);
   });
@@ -5747,10 +5744,7 @@ function setView(view) {
   });
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
-  if (view === 'nfts') window.TrebuchetNfts?.onShow();
-  if (view === 'fee-nfts') window.TrebuchetFeeNfts?.onShow();
   if (view === 'wallet') refreshHeldWallets();
-  if (view === 'lean') window.TrebuchetLean?.onShow();
   renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();

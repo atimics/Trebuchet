@@ -1848,7 +1848,7 @@ test('v2 navigation and views stay wired together', () => {
   // view (still "launch" internally) is opened from a coin, not the nav.
   // 'lean' is not a nav item: earlier Meteora launches open from a link on Coins
   // (test/damm-v2-ui.test.mjs checks it is not in the nav).
-  assert.deepEqual(navViews, ['coins', 'discovery', 'fee-nfts', 'lean', 'nfts', 'settings', 'wallet']);
+  assert.deepEqual(navViews, ['coins', 'discovery', 'settings', 'wallet']);
   assert.deepEqual(sectionViews, [...navViews, 'launch'].sort());
   assert.deepEqual(viewKeys, [...navViews, 'launch'].sort());
 });
@@ -2038,23 +2038,6 @@ test('v2 makes custody risk visible without replacing semantic UI colors', () =>
   assert.match(css, /body\[data-custody-signal="live"\][\s\S]*?--custody-signal: #f2c84b/);
   assert.match(css, /body\[data-custody-signal="funded"\][\s\S]*?--custody-signal: #ff5d5d/);
   assert.doesNotMatch(css, /data-custody-signal="(?:live|funded)"[^}]*--green/);
-});
-
-test('v2 keeps the old staged NFT surface out; NFTs run on the real executor', () => {
-  const combined = `${html}\n${css}\n${js}`;
-  const nfts = read('public/v2/nfts.js');
-
-  // The NFTs view is backed by nftRoutes.js (real Core transactions, a
-  // journal, and on-chain verification), not a staged manifest.
-  assert.match(html, /id="view-nfts"/);
-  assert.match(html, /nfts\.js\?v=\d+/);
-  assert.match(nfts, /\/api\/v2\/nfts/);
-  assert.match(nfts, /\/verify`/);
-  assert.doesNotMatch(combined, /avatarCollection/);
-  assert.doesNotMatch(combined, /avatar-collection/);
-  assert.doesNotMatch(combined, /v2-avatar-collection/);
-  assert.doesNotMatch(combined, /holder runtime/i);
-  assert.match(combined, /data-action="select-discovery"/);
 });
 
 test('v2 applies Trebuchet branding from the v1 launch site', () => {
@@ -7740,15 +7723,6 @@ test('the coin page and the create view share one facts vocabulary', () => {
   assert.match(js, /unrecorded: \{ icon: 'fa-circle-question'/);
   // The same action words in both places.
   assert.match(js, /return: 'Sweep the launch wallet'/);
-});
-
-test('an NFT collection shows its facts, not numbered phases', () => {
-  const nfts = read('public/v2/nfts.js');
-  assert.match(nfts, /<nav class="nft-fact-list" aria-label="What is true about this collection">/);
-  assert.doesNotMatch(nfts, /nft-tab-n|Collection phases|<span class="eyebrow">0[1-6]<\/span>|'Not started'|'After import'/);
-  assert.doesNotMatch(css, /\.nft-tabs\b|\.nft-tab-n/);
-  // The rail keeps one action; the facts list replaces its checks.
-  assert.doesNotMatch(nfts, /nft-gap">Checks</);
 });
 
 test('a coin is called Live only once the chain agrees', () => {

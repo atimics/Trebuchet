@@ -137,7 +137,7 @@ function setView(view) {
     state.approvalOpen = false;
   }
   // A coin's creation steps are part of its coin page, under Coins.
-  const navView = view === 'launch' || view === 'lean' ? 'coins' : view;
+  const navView = view === 'launch' ? 'coins' : view;
   $$('.nav-item').forEach((button) => {
     button.classList.toggle('is-active', button.dataset.view === navView);
   });
@@ -146,10 +146,7 @@ function setView(view) {
   });
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
-  if (view === 'nfts') window.TrebuchetNfts?.onShow();
-  if (view === 'fee-nfts') window.TrebuchetFeeNfts?.onShow();
   if (view === 'wallet') refreshHeldWallets();
-  if (view === 'lean') window.TrebuchetLean?.onShow();
   renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();

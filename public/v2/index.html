@@ -23,14 +23,6 @@
           <i class="fa-solid fa-coins"></i>
           <span>Coins</span>
         </button>
-        <button class="nav-item" type="button" data-view="nfts">
-          <i class="fa-solid fa-images"></i>
-          <span>NFTs</span>
-        </button>
-        <button class="nav-item" type="button" data-view="fee-nfts">
-          <i class="fa-solid fa-receipt"></i>
-          <span>Fee NFTs</span>
-        </button>
         <button class="nav-item" type="button" data-view="wallet">
           <i class="fa-solid fa-wallet"></i>
           <span>Wallet</span>
@@ -95,7 +87,6 @@
               <input id="addCoinMint" type="text" autocomplete="off" spellcheck="false" placeholder="Add an existing coin: paste its mint address" aria-label="Mint address of an existing coin">
               <button class="secondary-button" type="button" data-action="add-coin"><i class="fa-solid fa-link"></i><span>Add</span></button>
             </div>
-            <button class="text-button" type="button" data-view="lean" title="Launches made on their own Meteora pool before Meteora became a pool option"><i class="fa-solid fa-bolt" aria-hidden="true"></i> Meteora launches</button>
           </div>
           <div class="coins-list" id="coinsList" aria-live="polite"></div>
         </div>
@@ -497,16 +488,7 @@
         </div>
       </section>
 
-      <section class="view" id="view-nfts" aria-labelledby="viewTitle">
-        <div class="nft-root" id="nftRoot" aria-live="polite"></div>
-      </section>
-      <section class="view" id="view-fee-nfts" aria-labelledby="viewTitle">
-        <div class="nft-root" id="feeNftRoot" aria-live="polite"></div>
-      </section>
 
-      <section class="view" id="view-lean" aria-labelledby="viewTitle">
-        <div class="nft-root" id="leanRoot" aria-live="polite"></div>
-      </section>
 
       <section class="view" id="view-wallet" aria-labelledby="viewTitle">
         <div class="two-column">
@@ -734,8 +716,5 @@
   <script src="./core.js?v=6"></script>
   <script src="./market-evidence.js?v=1"></script>
   <script src="./app.js?v=275"></script>
-  <script src="./nfts.js?v=2"></script>
-  <script src="./fee-nfts.js?v=1"></script>
-  <script src="./lean.js?v=2"></script>
 </body>
 </html>

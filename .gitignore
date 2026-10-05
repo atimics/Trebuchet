@@ -43,5 +43,3 @@ docs/RELEASE-AUDIT-BACKLOG.md
 /.secretPin.json*
 /.tmp-*.json
 
-/programs/fee-vault/target/
-/feeNfts/
