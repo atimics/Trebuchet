@@ -4299,14 +4299,18 @@ export async function preflightCreatePoolsAndPositions({
 // when the pool is created. It has no slices, ladder, support or bootstrap. It opens at the same
 // price as every other pool (the launch's target market cap over the whole supply).
 //
-// The position NFT's key is derived from the launch wallet and the mint, so a run that stops after
-// sending can find the pool again and adopt it instead of creating a second one.
-export function meteoraPositionSeed(ownerSecretKey, tokenMint) {
-  return createHash('sha256')
+// The position NFT's key is derived from the launch wallet, the mint and the pool's quote, so a run
+// that stops after sending can find each pool again and adopt it instead of creating a second one.
+// The SOL pool keeps the original derivation (wallet and mint only), so pools made before the quote
+// was part of it are still found. Every other quote adds itself: one key for all of a launch's
+// Meteora pools meant only the first could be created ("Allocate: account … already in use").
+export function meteoraPositionSeed(ownerSecretKey, tokenMint, quoteMint = WSOL_MINT) {
+  const hash = createHash('sha256')
     .update(Buffer.from(ownerSecretKey))
     .update(String(tokenMint))
-    .update('trebuchet/meteora-damm-v2/position')
-    .digest();
+    .update('trebuchet/meteora-damm-v2/position');
+  if (String(quoteMint) !== WSOL_MINT) hash.update(`/quote/${String(quoteMint)}`);
+  return hash.digest();
 }
 
 // The pool's tokens and its starting value in the quote's raw units. The service prices a pool as
@@ -4338,10 +4342,19 @@ async function createMeteoraPoolForAllocation({
   const feeBps = Number(alloc.damm?.feeBps) || DAMM_V2_DEFAULTS.feeBps;
   const rangeMultiple = Number(alloc.damm?.rangeMultiple) || DAMM_V2_DEFAULTS.rangeMultiple;
   const mint = new PublicKey(tokenMint);
-  const positionNft = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint));
+  let positionNft = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint, quoteMint.toBase58()));
   progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple });
 
-  const existing = await damm.findExistingPool({ connection, mint, positionNft: positionNft.publicKey, quoteMint });
+  let existing = await damm.findExistingPool({ connection, mint, positionNft: positionNft.publicKey, quoteMint });
+  // A pair pool made with the original derivation (wallet and mint only) is this launch's too.
+  if (existing.poolExists && !existing.positionExists && quoteMint.toBase58() !== WSOL_MINT) {
+    const original = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint));
+    const found = await damm.findExistingPool({ connection, mint, positionNft: original.publicKey, quoteMint });
+    if (found.positionExists) {
+      positionNft = original;
+      existing = found;
+    }
+  }
   let created;
   if (existing.poolExists && existing.positionExists) {
     const verification = await damm.verifyLockedPool({ connection, pool: existing.pool, position: existing.position, mint, supplyRaw: params.poolRaw, quoteMint });
