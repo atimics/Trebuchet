@@ -20,7 +20,6 @@
     "./validators": "./src/validators.js",
     "./lp-constants": "./src/lp-constants.js",
     "./split-key": "./src/split-key.js",
-    "./nft-plan": "./src/nft-plan.js",
     "./damm-v2-plan": "./src/damm-v2-plan.js",
     "./browser": "./src/browser.js",
     "./packet-approval": "./src/packet-approval.js"

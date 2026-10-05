@@ -33,8 +33,6 @@ var TrebuchetCore = (() => {
     BS_BOOTSTRAP_USD: () => BS_BOOTSTRAP_USD,
     BS_FALLBACK_WHOLE: () => BS_FALLBACK_WHOLE,
     CLASSIC_TOKEN_PROGRAM_ADDRESS: () => CLASSIC_TOKEN_PROGRAM_ADDRESS,
-    CORE_ASSET_CREATE_LAMPORTS: () => CORE_ASSET_CREATE_LAMPORTS,
-    CORE_COLLECTION_CREATE_LAMPORTS: () => CORE_COLLECTION_CREATE_LAMPORTS,
     COST_BS_QUOTE_SOL: () => COST_BS_QUOTE_SOL,
     COST_LAUNCH_REPORT_SOL: () => COST_LAUNCH_REPORT_SOL,
     COST_LOCK_SOL: () => COST_LOCK_SOL,
@@ -48,10 +46,8 @@ var TrebuchetCore = (() => {
     CPMM_LP_MINT_RENT_SOL: () => CPMM_LP_MINT_RENT_SOL,
     CPMM_POOL_RENT_SOL: () => CPMM_POOL_RENT_SOL,
     CPMM_VAULT_ATA_RENT_SOL: () => CPMM_VAULT_ATA_RENT_SOL,
-    DEFAULT_GRIND_KEYS_PER_SEC: () => DEFAULT_GRIND_KEYS_PER_SEC,
     FALLBACK_SOL_USD: () => FALLBACK_SOL_USD,
     INCINERATOR_ADDRESS: () => INCINERATOR_ADDRESS,
-    LAMPORTS_PER_SOL: () => LAMPORTS_PER_SOL,
     LAUNCH_REPORT_EST_BYTES: () => LAUNCH_REPORT_EST_BYTES,
     LOGO_MAX_BYTES: () => LOGO_MAX_BYTES,
     LOGO_MAX_DIMENSION_PX: () => LOGO_MAX_DIMENSION_PX,
@@ -60,16 +56,6 @@ var TrebuchetCore = (() => {
     MAX_SUPPORT_LAYERS: () => MAX_SUPPORT_LAYERS,
     MIN_BASE_TOKENS_WHEN_GAPPED: () => MIN_BASE_TOKENS_WHEN_GAPPED,
     MIN_QUOTE_LIQUIDITY_USD: () => MIN_QUOTE_LIQUIDITY_USD,
-    NFT_BUFFER_PCT: () => NFT_BUFFER_PCT,
-    NFT_DESCRIPTION_MAX: () => NFT_DESCRIPTION_MAX,
-    NFT_MAX_CREATORS: () => NFT_MAX_CREATORS,
-    NFT_MAX_IMAGE_BYTES: () => NFT_MAX_IMAGE_BYTES,
-    NFT_MAX_ITEMS: () => NFT_MAX_ITEMS,
-    NFT_NAME_MAX: () => NFT_NAME_MAX,
-    NFT_PRIORITY_FEE_LAMPORTS: () => NFT_PRIORITY_FEE_LAMPORTS,
-    NFT_ROYALTY_WARN_BPS: () => NFT_ROYALTY_WARN_BPS,
-    NFT_STANDARD_CORE: () => NFT_STANDARD_CORE,
-    NFT_SYMBOL_MAX: () => NFT_SYMBOL_MAX,
     RENT_BASELINE_LAMPORTS_PER_BYTE: () => RENT_BASELINE_LAMPORTS_PER_BYTE,
     SAFETY_BUFFER_PCT: () => SAFETY_BUFFER_PCT,
     STREAMLINED_CLASSIC_REFERENCE_POOLS: () => STREAMLINED_CLASSIC_REFERENCE_POOLS,
@@ -97,7 +83,6 @@ var TrebuchetCore = (() => {
     USDT_MINT: () => USDT_MINT,
     V2_LP_RECOVERABLE_STAGES: () => V2_LP_RECOVERABLE_STAGES,
     WSOL_MINT: () => WSOL_MINT,
-    addressMatchesVanity: () => addressMatchesVanity,
     applyLpEventToResults: () => applyLpEventToResults,
     assertLogoConstraints: () => assertLogoConstraints,
     buildClassicReferenceLedger: () => buildClassicReferenceLedger,
@@ -109,7 +94,6 @@ var TrebuchetCore = (() => {
     buildV2ExecutionReadiness: () => buildV2ExecutionReadiness,
     buildV2LaunchPlan: () => buildV2LaunchPlan,
     buildV2RecoveryAuthorizationPlan: () => buildV2RecoveryAuthorizationPlan,
-    collectionConfigIssues: () => collectionConfigIssues,
     compareStreamlinedLedger: () => compareStreamlinedLedger,
     createTrebuchetCore: () => createTrebuchetCore,
     detectLogoImageDimensions: () => detectLogoImageDimensions,
@@ -123,8 +107,6 @@ var TrebuchetCore = (() => {
     invalidBase58Characters: () => invalidBase58Characters,
     isPlaceholderSweepDestination: () => isPlaceholderSweepDestination,
     isResumeCheckpointResult: () => isResumeCheckpointResult,
-    isSolanaAddress: () => isSolanaAddress,
-    itemReviewIssues: () => itemReviewIssues,
     journalResultList: () => journalResultList,
     latestEventsByIndex: () => latestEventsByIndex,
     launchPlanConfigFingerprint: () => launchPlanConfigFingerprint,
@@ -132,11 +114,6 @@ var TrebuchetCore = (() => {
     launchPlanWalletFingerprint: () => launchPlanWalletFingerprint,
     mergePriorResults: () => mergePriorResults,
     mergeResultCheckpoint: () => mergeResultCheckpoint,
-    nftCostModel: () => nftCostModel,
-    nftMetadataJson: () => nftMetadataJson,
-    normalizeCollectionConfig: () => normalizeCollectionConfig,
-    normalizeCreators: () => normalizeCreators,
-    normalizeItems: () => normalizeItems,
     normalizeLogoImageMime: () => normalizeLogoImageMime,
     normalizeStreamlinedFees: () => normalizeStreamlinedFees,
     normalizeTokenAmountRaw: () => normalizeTokenAmountRaw,
@@ -144,7 +121,6 @@ var TrebuchetCore = (() => {
     normalizeTokenMintFormat: () => normalizeTokenMintFormat,
     normalizeTokenName: () => normalizeTokenName,
     normalizeTokenSymbol: () => normalizeTokenSymbol,
-    normalizeVanityPattern: () => normalizeVanityPattern,
     normalizeVanityTargetBase58: () => normalizeVanityTargetBase58,
     normalizeWholeTokenSupply: () => normalizeWholeTokenSupply,
     priorResultsFromJournal: () => priorResultsFromJournal,
@@ -156,7 +132,6 @@ var TrebuchetCore = (() => {
     supportLayersProblem: () => supportLayersProblem,
     tokenCreationComplete: () => tokenCreationComplete,
     tokenProgramAddressForMintFormat: () => tokenProgramAddressForMintFormat,
-    traitDistribution: () => traitDistribution,
     unsafeCreatedPoolEvents: () => unsafeCreatedPoolEvents,
     unsafeSweepDestinationReason: () => unsafeSweepDestinationReason,
     v2FundingEstimateFingerprint: () => v2FundingEstimateFingerprint,
@@ -164,8 +139,6 @@ var TrebuchetCore = (() => {
     v2TransferEvidenceHash: () => v2TransferEvidenceHash,
     v2TransferHasWalletEmptyFinalSweepEvidence: () => v2TransferHasWalletEmptyFinalSweepEvidence,
     v2TransferSweepErrorCount: () => v2TransferSweepErrorCount,
-    vanityOddsTable: () => vanityOddsTable,
-    vanityPatternAttempts: () => vanityPatternAttempts,
     verifyLaunchPlan: () => verifyLaunchPlan,
     verifyStreamlinedPlan: () => verifyStreamlinedPlan,
     verifyTrebuchetProof: () => verifyTrebuchetProof,
@@ -2869,209 +2842,6 @@ var TrebuchetCore = (() => {
       if (r && Number.isInteger(r.allocationIndex)) byAlloc.set(r.allocationIndex, r);
     }
     return [...byAlloc.values()].filter((r) => r && r.poolId).sort((x, y) => (x.allocationIndex ?? 0) - (y.allocationIndex ?? 0));
-  }
-
-  // packages/core/src/nft-plan.js
-  var NFT_STANDARD_CORE = "core";
-  var NFT_NAME_MAX = 32;
-  var NFT_SYMBOL_MAX = 10;
-  var NFT_DESCRIPTION_MAX = 1e3;
-  var NFT_MAX_ITEMS = 1e4;
-  var NFT_MAX_IMAGE_BYTES = 25 * 1024 * 1024;
-  var NFT_ROYALTY_WARN_BPS = 1e3;
-  var NFT_MAX_CREATORS = 5;
-  var CORE_COLLECTION_CREATE_LAMPORTS = 1951840;
-  var CORE_ASSET_CREATE_LAMPORTS = 3173440;
-  var NFT_PRIORITY_FEE_LAMPORTS = 3e3;
-  var NFT_BUFFER_PCT = 0.2;
-  var LAMPORTS_PER_SOL = 1e9;
-  var DEFAULT_GRIND_KEYS_PER_SEC = 28e6;
-  var BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-  var IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp)$/i;
-  function cleanText(value, max) {
-    return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
-  }
-  function isSolanaAddress(value) {
-    return BASE58_RE.test(String(value || ""));
-  }
-  function normalizeVanityPattern(input = {}) {
-    const mode = input.mode === "prefix" ? "prefix" : input.mode === "suffix" ? "suffix" : "none";
-    const pattern = String(input.pattern ?? "").trim();
-    if (mode === "none" || !pattern) return { mode: "none", pattern: "", caseInsensitive: false };
-    const invalid = invalidBase58Characters(pattern);
-    if (invalid.length) {
-      throw new Error(`Pattern has characters Solana addresses never use: ${invalid.join(", ")}`);
-    }
-    if (pattern.length > 8) throw new Error("Pattern can be at most 8 characters");
-    return { mode, pattern, caseInsensitive: input.caseInsensitive === true };
-  }
-  function vanityPatternAttempts(vanity) {
-    if (!vanity || vanity.mode === "none") return 1;
-    return vanity.mode === "prefix" ? expectedVanityAttempts(vanity.pattern, "", { caseInsensitive: vanity.caseInsensitive }) : expectedVanityAttempts("", vanity.pattern, { caseInsensitive: vanity.caseInsensitive });
-  }
-  function addressMatchesVanity(address, vanity) {
-    if (!vanity || vanity.mode === "none") return true;
-    const a = vanity.caseInsensitive ? String(address).toLowerCase() : String(address);
-    const p = vanity.caseInsensitive ? vanity.pattern.toLowerCase() : vanity.pattern;
-    return vanity.mode === "prefix" ? a.startsWith(p) : a.endsWith(p);
-  }
-  function vanityOddsTable({ mode = "suffix", pattern = "", caseInsensitive = true, itemCount = 1, keysPerSec = DEFAULT_GRIND_KEYS_PER_SEC } = {}) {
-    const clean = normalizeVanityPattern({ mode, pattern, caseInsensitive });
-    if (clean.mode === "none") return [];
-    const rows = [];
-    for (let len = Math.min(clean.pattern.length, 8); len >= 1; len--) {
-      const part = clean.mode === "suffix" ? clean.pattern.slice(-len) : clean.pattern.slice(0, len);
-      const attempts = vanityPatternAttempts({ ...clean, pattern: part });
-      rows.push({
-        pattern: part,
-        attempts,
-        secondsEach: Number.isFinite(attempts) ? attempts / keysPerSec : Infinity,
-        secondsAll: Number.isFinite(attempts) ? attempts * Math.max(1, itemCount) / keysPerSec : Infinity
-      });
-    }
-    return rows.reverse();
-  }
-  function normalizeCreators(list, fallbackAddress = null) {
-    const rows = (Array.isArray(list) ? list : []).map((row) => ({ address: String(row?.address || "").trim(), percentage: Math.round(Number(row?.percentage)) })).filter((row) => row.address);
-    if (!rows.length && fallbackAddress) return [{ address: fallbackAddress, percentage: 100 }];
-    return rows;
-  }
-  function normalizeCollectionConfig(input = {}) {
-    return {
-      name: cleanText(input.name, NFT_NAME_MAX),
-      symbol: cleanText(input.symbol, NFT_SYMBOL_MAX).toUpperCase(),
-      description: cleanText(input.description, NFT_DESCRIPTION_MAX),
-      externalUrl: cleanText(input.externalUrl, 200),
-      royaltyBps: Math.max(0, Math.min(1e4, Math.round(Number(input.royaltyBps ?? 500)) || 0)),
-      creators: normalizeCreators(input.creators),
-      standard: NFT_STANDARD_CORE,
-      collectionVanity: normalizeVanityPattern(input.collectionVanity || {}),
-      itemVanity: normalizeVanityPattern(input.itemVanity || {})
-    };
-  }
-  function collectionConfigIssues(config) {
-    const issues = [];
-    const add = (level, code, detail) => issues.push({ level, code, detail });
-    if (!config.name) add("error", "name", "Collection name is required.");
-    if (!config.symbol) add("error", "symbol", "Symbol is required.");
-    if (config.royaltyBps > NFT_ROYALTY_WARN_BPS) add("warn", "royalty", `Royalties of ${(config.royaltyBps / 100).toFixed(2)}% are above the usual 10%.`);
-    if (config.creators.length > NFT_MAX_CREATORS) add("error", "creators", `At most ${NFT_MAX_CREATORS} creators.`);
-    if (config.creators.some((c) => !isSolanaAddress(c.address))) add("error", "creators", "Every creator needs a valid Solana address.");
-    const total = config.creators.reduce((sum, c) => sum + (Number.isFinite(c.percentage) ? c.percentage : 0), 0);
-    if (config.creators.length && total !== 100) add("error", "creators", `Creator shares total ${total}, not 100.`);
-    if (config.creators.some((c) => !(c.percentage >= 0 && c.percentage <= 100))) add("error", "creators", "Creator shares must be 0 to 100.");
-    return issues;
-  }
-  function normalizeAttributes(value) {
-    if (!Array.isArray(value)) return [];
-    return value.map((a) => ({ trait_type: cleanText(a?.trait_type, 64), value: typeof a?.value === "number" ? a.value : cleanText(a?.value, 128) })).filter((a) => a.trait_type);
-  }
-  function normalizeItems(list) {
-    if (!Array.isArray(list)) throw new Error("items must be a list");
-    if (list.length > NFT_MAX_ITEMS) throw new Error(`At most ${NFT_MAX_ITEMS} items per collection`);
-    return list.map((raw, i) => ({
-      index: Number.isInteger(raw?.index) ? raw.index : i,
-      name: cleanText(raw?.name, NFT_NAME_MAX),
-      description: cleanText(raw?.description, NFT_DESCRIPTION_MAX),
-      attributes: normalizeAttributes(raw?.attributes),
-      imageName: cleanText(raw?.imageName, 200),
-      imageType: IMAGE_EXT_RE.test(raw?.imageName || "") ? String(raw.imageName).split(".").pop().toLowerCase().replace("jpg", "jpeg") : null,
-      imageBytes: Number.isFinite(Number(raw?.imageBytes)) ? Number(raw.imageBytes) : null,
-      imageWidth: Number.isFinite(Number(raw?.imageWidth)) ? Number(raw.imageWidth) : null,
-      imageHeight: Number.isFinite(Number(raw?.imageHeight)) ? Number(raw.imageHeight) : null,
-      imageSha256: /^[0-9a-f]{64}$/.test(String(raw?.imageSha256 || "")) ? raw.imageSha256 : null,
-      accepted: raw?.accepted === true
-    })).sort((a, b) => a.index - b.index);
-  }
-  function itemReviewIssues(items) {
-    const issues = [];
-    const traitTypes = /* @__PURE__ */ new Map();
-    for (const item of items) for (const a of item.attributes) traitTypes.set(a.trait_type, (traitTypes.get(a.trait_type) || 0) + 1);
-    const common = [...traitTypes].filter(([, n]) => n >= items.length / 2).map(([t]) => t);
-    const names = /* @__PURE__ */ new Map();
-    const hashes = /* @__PURE__ */ new Map();
-    for (const item of items) {
-      names.set(item.name, [...names.get(item.name) || [], item.index]);
-      if (item.imageSha256) hashes.set(item.imageSha256, [...hashes.get(item.imageSha256) || [], item.index]);
-    }
-    const indexes = /* @__PURE__ */ new Set();
-    items.forEach((item, pos) => {
-      if (item.index !== pos) indexes.add(item.index);
-    });
-    for (const item of items) {
-      const add = (level, code, detail) => issues.push({ index: item.index, level, code, detail });
-      if (!item.name) add("error", "name", "Missing name.");
-      if (!item.imageName) add("error", "image", "No image file.");
-      else if (!item.imageType) add("error", "image", `Unsupported image type: ${item.imageName}`);
-      if (item.imageBytes > NFT_MAX_IMAGE_BYTES) add("error", "image", `Image is ${(item.imageBytes / 1048576).toFixed(1)} MB; limit is 25 MB.`);
-      if (item.accepted) continue;
-      const missing = common.filter((t) => !item.attributes.some((a) => a.trait_type === t));
-      if (missing.length) add("warn", "traits", `Missing trait${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
-      if (item.name && names.get(item.name).length > 1) add("warn", "duplicate-name", `Same name as #${names.get(item.name).filter((i) => i !== item.index).join(", #")}`);
-      if (item.imageSha256 && hashes.get(item.imageSha256).length > 1) add("warn", "duplicate-image", `Same image as #${hashes.get(item.imageSha256).filter((i) => i !== item.index).join(", #")}`);
-      if (item.imageWidth && item.imageHeight && Math.max(item.imageWidth, item.imageHeight) > 4096) add("warn", "image-size", `${item.imageWidth}×${item.imageHeight} is large; marketplaces may not show it.`);
-    }
-    if (indexes.size) issues.push({ index: null, level: "error", code: "numbering", detail: "Items must be numbered 0 to N-1 with no gaps." });
-    return issues;
-  }
-  function traitDistribution(items) {
-    const byType = /* @__PURE__ */ new Map();
-    for (const item of items) {
-      for (const a of item.attributes) {
-        if (!byType.has(a.trait_type)) byType.set(a.trait_type, /* @__PURE__ */ new Map());
-        const values = byType.get(a.trait_type);
-        values.set(String(a.value), (values.get(String(a.value)) || 0) + 1);
-      }
-    }
-    return [...byType].map(([traitType, values]) => ({
-      traitType,
-      values: [...values].map(([value, count]) => ({ value, count, share: items.length ? count / items.length : 0 })).sort((a, b) => b.count - a.count)
-    }));
-  }
-  function nftMetadataJson({ name, symbol, description, imageUri, imageType, attributes = [], externalUrl = "", royaltyBps = 0, creators = [] }) {
-    const mime = imageType ? `image/${imageType === "jpg" ? "jpeg" : imageType}` : "image/png";
-    return {
-      name,
-      symbol,
-      description,
-      image: imageUri,
-      ...externalUrl ? { external_url: externalUrl } : {},
-      attributes,
-      seller_fee_basis_points: royaltyBps,
-      properties: {
-        files: [{ uri: imageUri, type: mime }],
-        category: "image",
-        creators: creators.map((c) => ({ address: c.address, share: c.percentage }))
-      }
-    };
-  }
-  function nftCostModel({
-    itemCount = 0,
-    collectionCreated = false,
-    mintedCount = 0,
-    storageLamports = null,
-    priorityLamportsEach = NFT_PRIORITY_FEE_LAMPORTS
-  } = {}) {
-    const remaining = Math.max(0, itemCount - mintedCount);
-    const collection = collectionCreated ? 0 : CORE_COLLECTION_CREATE_LAMPORTS;
-    const assets = remaining * CORE_ASSET_CREATE_LAMPORTS;
-    const priority = (remaining + (collectionCreated ? 0 : 1)) * priorityLamportsEach;
-    const storage = Number.isFinite(storageLamports) ? storageLamports : 0;
-    const subtotal = collection + assets + priority + storage;
-    const buffer = Math.ceil(subtotal * NFT_BUFFER_PCT);
-    const toSol = (l) => l / LAMPORTS_PER_SOL;
-    return {
-      remainingItems: remaining,
-      collectionSol: toSol(collection),
-      assetsSol: toSol(assets),
-      perAssetSol: toSol(CORE_ASSET_CREATE_LAMPORTS),
-      priorityFeesSol: toSol(priority),
-      storageSol: Number.isFinite(storageLamports) ? toSol(storage) : null,
-      subtotalSol: toSol(subtotal),
-      bufferSol: toSol(buffer),
-      totalSol: toSol(subtotal + buffer),
-      totalLamports: subtotal + buffer
-    };
   }
 
   // packages/core/src/proof-integrity.js

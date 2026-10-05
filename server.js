@@ -130,11 +130,6 @@ import {
 import { expectedVanityAttempts, unsafeSweepDestinationReason } from '@trebuchet/core/validators';
 import * as destinationProofStore from './destinationProofStore.js';
 import * as splitJobStore from './splitJobStore.js';
-import * as nftCollectionStore from './nftCollectionStore.js';
-import { registerNftRoutes } from './nftRoutes.js';
-import { registerFeeNftRoutes } from './feeNftRoutes.js';
-import { activeWallet as activeFeeNftWallet } from './feeNftService.js';
-import { registerDammV2Routes } from './dammV2Routes.js';
 import { combineSplitKey, createSplitSecret, matchesVanityPattern, scalarPublicKey } from '@trebuchet/core/split-key';
 import { normalizeDistribution } from './lpDistribution.js';
 import { isWalletEffectivelyEmpty, SOL_DUST_THRESHOLD } from './walletRecovery.js';
@@ -744,10 +739,6 @@ const sweepAllTokensToDestination = (input) => sweepTokensWithSigner({ ...input,
 
 // Live services and HTTP jobs share wallet admission and durable recovery state.
 function claimLaunchOp(walletPublicKey, op, workflowId = null) {
-  const feeId = activeFeeNftWallet(walletPublicKey);
-  if (feeId && (op !== 'fee-nfts' || workflowId !== feeId)) {
-    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', error: 'Resume the saved fee NFT action in Fee NFTs.', workflowId: feeId });
-  }
   const workflow = walletExecution?.activeWorkflow(walletPublicKey);
   const canResumeSupport = op === 'support-position' && workflow?.kind === 'support-position' && workflow.id === workflowId;
   const canResumeWithdrawal = op === 'withdraw-position' && workflow?.kind === 'position-withdrawal' && workflow.id === workflowId;
@@ -2055,41 +2046,6 @@ function demoAllocationsForV2(allocations = []) {
 
 // SOL-only balance (kept for backwards compatibility / Step 1 display)
 // ---------------------------------------------------------------------------
-
-// NFT collections (v2 NFTs view). See nftRoutes.js.
-registerFeeNftRoutes(app, {
-  isDemoMode, rejectIfSecretPinLocked, sendErrorResponse, getRpcUrl, getNetwork,
-  claim: claimLaunchOp, release: clearLaunchOpInFlight,
-  getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
-});
-registerNftRoutes(app, {
-  isDemoMode,
-  rejectIfSecretPinLocked,
-  sendErrorResponse,
-  getRpcUrl,
-  getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
-});
-
-// Lean Meteora DAMM v2 launches. See dammV2Routes.js.
-registerDammV2Routes(app, {
-  isDemoMode,
-  rejectIfSecretPinLocked,
-  sendErrorResponse,
-  getRpcUrl,
-  getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
-  createToken: createTokenWithMetaplex,
-  getVanityCandidate: (publicKey) => vanityCaStore.get(publicKey),
-  removeVanityCandidate: (publicKey) => vanityCaStore.remove(publicKey),
-  getSolUsd: () => getUsdPrice(KNOWN_QUOTES.SOL.address),
-  addCoin: (coin) => coinStore.add({ ...coin, source: 'added' }),
-  // Same rule as the classic Fee Key send: no placeholder addresses, and an
-  // address the operator has proven, unless it is the wallet that funded the launch.
-  destinationRejection: async (destination, walletPublicKey) => {
-    const funder = (await findFundingWallet(walletPublicKey).catch(() => null))?.funder || null;
-    return unsafeSweepDestinationReason(destination, { launchWallet: walletPublicKey })
-      || await unverifiedDestinationReason(destination, walletPublicKey, { funder });
-  },
-});
 
 app.get('/api/vanity-ca-candidates', (req, res) => {
   try {

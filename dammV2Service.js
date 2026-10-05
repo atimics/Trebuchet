@@ -1,7 +1,7 @@
 // dammV2Service.js
 //
 // Chain work for the lean Meteora DAMM v2 launch. Pure planning (config, price
-// model, cost) lives in @trebuchet/core/damm-v2-plan; routes in dammV2Routes.js.
+// model, cost) lives in @trebuchet/core/damm-v2-plan.
 //
 // The launch is one pool holding the whole supply in a single position:
 //   - single-sided: tokens only, no SOL seed. The price range starts at the

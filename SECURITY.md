@@ -26,7 +26,7 @@ they cannot be fixed. Keep `ALLOWED_HIGH` in that script and this section in syn
 `GHSA-3GC7-FJRX-P6MG` advisory in the `bigint-buffer` dependency chain:
 
 - `bigint-buffer` through `@solana/spl-token` -> `@solana/buffer-layout-utils` (and `@raydium-io/raydium-sdk-v2`,
-  and `@meteora-ag/cp-amm-sdk`, the Meteora DAMM v2 SDK used by lean launches).
+  and `@meteora-ag/cp-amm-sdk`, the Meteora DAMM v2 SDK used for Meteora pools).
 - `@irys/upload-solana`, `@irys/web-upload-solana`, and `@metaplex-foundation/umi-uploader-irys` report high only
   because they carry `@solana/spl-token` (the bigint-buffer chain above).
 

@@ -14,9 +14,6 @@ const views = {
   coins: { eyebrow: '', title: 'Coins' },
   // A coin being created: the coin page with its creation steps.
   launch: { eyebrow: '', title: 'Coins' },
-  nfts: { eyebrow: '', title: 'NFT collections' },
-  'fee-nfts': { eyebrow: '', title: 'Fee NFTs' },
-  lean: { eyebrow: '', title: 'Meteora launches' },
   wallet: { eyebrow: '', title: 'Wallet' },
   discovery: { eyebrow: '', title: 'Discovery' },
   settings: { eyebrow: '', title: 'Settings' },
