@@ -312,10 +312,10 @@ function toggleHeldShareFunder(address) {
 
 function currentAirdropPlan() {
   const parsed = parseAirdropCsv(state.airdropCsvText);
-  const manualCount = parsePositiveInteger($('#airdropWallets').value, 0);
   const supply = parseWholeNumber($('#tokenSupply').value) || 1000000000;
   const share = heldSharePlan(supply);
-  const csvCount = parsed.recipients.length || manualCount;
+  // The recipients are the CSV's wallets: the count is how many it lists.
+  const csvCount = parsed.recipients.length;
   const recipientCount = csvCount + share.rows.length;
   const enabled = recipientCount > 0;
   const budgetConfig = currentAirdropBudgetConfig();
@@ -343,7 +343,7 @@ function currentAirdropPlan() {
     requestedSupplyPercent: budget.requestedSupplyPercent,
     requiredSupplyPercent: budget.requiredSupplyPercent,
     autoFit: budget.autoFit,
-    source: parsed.recipients.length ? 'csv' : manualCount ? 'manual-count' : share.active ? 'funders' : 'off',
+    source: parsed.recipients.length ? 'csv' : share.active ? 'funders' : 'off',
     csvRecipientCount: csvCount,
     funderShareCount: share.rows.length,
     funderSharePercent: share.active ? share.heldPercent : 0,

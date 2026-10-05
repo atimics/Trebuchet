@@ -1181,6 +1181,20 @@ export async function getTokenInfo(
  * Used by the launch flow when symbol/decimals are already known from
  * elsewhere (e.g. KNOWN_QUOTES) and only the price needs looking up.
  */
+/**
+ * What this process already knows about a mint: its symbol and a current USD price, from the
+ * cache only. Never fetches, so it is free to call for every token in a wallet.
+ */
+export function cachedTokenDisplay(mintAddress) {
+  const entry = cache.get(mintAddress);
+  if (!entry) return { symbol: null, priceUsd: null };
+  const priceFresh = entry.priceExpiresAt && Date.now() < entry.priceExpiresAt;
+  return {
+    symbol: entry.symbol || null,
+    priceUsd: priceFresh && Number.isFinite(Number(entry.priceUsd)) ? Number(entry.priceUsd) : null,
+  };
+}
+
 export async function getUsdPrice(mintAddress) {
   return resolvePriceUsd(mintAddress);
 }

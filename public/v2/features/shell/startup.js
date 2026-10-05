@@ -209,7 +209,6 @@ function bindEvents() {
     'sliceShares',
     'ladderBands',
     'supportSol',
-    'airdropWallets',
     'airdropSupplyPercent',
     'airdropAutoFit',
     'feeKeyRecipient',
