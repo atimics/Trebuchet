@@ -8,6 +8,8 @@ Review `programs/fee-vault/src/lib.rs`, `security_tests.rs`, `feeVaultClient.js`
 
 The v2 vault permanently holds one native locked position NFT or Fee Key. Core NFT ownership grants the right to claim a fixed share of both trading-fee tokens. Paid amounts remain attached to the asset address. Each vault has separate token accounts and accounting. All vaults on a network share the same program code.
 
+Use the PR's final commit as the review baseline. The state magic is `TFEEV002` and the proof schema is `trebuchet.fee-nfts.v2`. Registration, activation and claims now include the collection account. Record the commit and regenerated binary hash in the audit report. The package lock and Cargo lock belong to that same baseline.
+
 ## Authority policy
 
 - The app and contract check the raw Core plugin registry on assets and their collection. Permanent transfer, burn and freeze powers, execution plugins, compression, unknown types and external plugins are refused. Parsing checks lengths, offsets, duplicate types and plugin bytes. SDK decoders can hide unknown registry types, so the checks retain raw types.
@@ -55,6 +57,16 @@ Before enabling new mainnet backing, record an independent audit for the exact s
 Permanent deployment fixes the code and custody rules. A serious shared-code bug could trap fee access across collections. Any migration or recovery design needs its own reviewed holder authority rules. The mainnet release decision must account for this risk.
 
 Local wallet security also depends on the active secret backend, the signed app build and dependency review. See `SECURITY.md` for these app-wide boundaries. Treat green CI as test evidence. The independent audit is a separate result.
+
+## Questions for the independent reviewer
+
+- Check retained collection update authority and owner delegates. A later plugin or membership change can stop a share's claims. Decide whether the release needs an authority revocation step before permanent backing.
+- Review every account forwarded to the native venue instruction. Include nested program checks, token program selection, frozen destinations and full transaction rollback.
+- Check the RPC trust boundary. The app reads genesis, program bytes and authority state through its configured RPC. Verify the release policy for that endpoint and the holder's displayed network.
+- Review upgrade and recovery limits. The app's mainnet gate covers its own setup path. The contract accepts calls from other clients after deployment. Deployment and audit approval therefore need their own release controls.
+- Reproduce the recorded local tests, then run funded devnet tests for both venues. Keep copied state and seeded fees clearly marked in the test report.
+
+The requested audit deliverables are a finding list with severity and source lines, a check of each invariant above, test evidence, the reviewed commit and binary hash, and a written release decision. Add resolved findings and any accepted risks to this pack before a mainnet release.
 
 ## Layout references
 
