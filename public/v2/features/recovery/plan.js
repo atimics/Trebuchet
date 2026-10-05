@@ -232,7 +232,6 @@ function restoreLaunchConfigFromJournal(journal = {}) {
       : airdropRows.filter((row) => row?.source === 'funder').map((row) => String(row.wallet || '')).filter(Boolean),
   };
   if ($('#airdropCsvText')) $('#airdropCsvText').value = state.airdropCsvText;
-  if ($('#airdropWallets')) $('#airdropWallets').value = String(Number(airdrop.recipientCount || airdropRows.length || 0));
   if ($('#airdropSupplyPercent')) $('#airdropSupplyPercent').value = String(Number(airdrop.requestedSupplyPercent ?? airdrop.supplyPercent ?? 0));
   if ($('#airdropAutoFit')) $('#airdropAutoFit').checked = airdrop.autoFit !== false;
 

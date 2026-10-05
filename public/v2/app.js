@@ -2122,10 +2122,10 @@ function toggleHeldShareFunder(address) {
 
 function currentAirdropPlan() {
   const parsed = parseAirdropCsv(state.airdropCsvText);
-  const manualCount = parsePositiveInteger($('#airdropWallets').value, 0);
   const supply = parseWholeNumber($('#tokenSupply').value) || 1000000000;
   const share = heldSharePlan(supply);
-  const csvCount = parsed.recipients.length || manualCount;
+  // The recipients are the CSV's wallets: the count is how many it lists.
+  const csvCount = parsed.recipients.length;
   const recipientCount = csvCount + share.rows.length;
   const enabled = recipientCount > 0;
   const budgetConfig = currentAirdropBudgetConfig();
@@ -2153,7 +2153,7 @@ function currentAirdropPlan() {
     requestedSupplyPercent: budget.requestedSupplyPercent,
     requiredSupplyPercent: budget.requiredSupplyPercent,
     autoFit: budget.autoFit,
-    source: parsed.recipients.length ? 'csv' : manualCount ? 'manual-count' : share.active ? 'funders' : 'off',
+    source: parsed.recipients.length ? 'csv' : share.active ? 'funders' : 'off',
     csvRecipientCount: csvCount,
     funderShareCount: share.rows.length,
     funderSharePercent: share.active ? share.heldPercent : 0,
@@ -5579,7 +5579,6 @@ function restoreLaunchConfigFromJournal(journal = {}) {
       : airdropRows.filter((row) => row?.source === 'funder').map((row) => String(row.wallet || '')).filter(Boolean),
   };
   if ($('#airdropCsvText')) $('#airdropCsvText').value = state.airdropCsvText;
-  if ($('#airdropWallets')) $('#airdropWallets').value = String(Number(airdrop.recipientCount || airdropRows.length || 0));
   if ($('#airdropSupplyPercent')) $('#airdropSupplyPercent').value = String(Number(airdrop.requestedSupplyPercent ?? airdrop.supplyPercent ?? 0));
   if ($('#airdropAutoFit')) $('#airdropAutoFit').checked = airdrop.autoFit !== false;
 
@@ -7913,7 +7912,6 @@ const SUPPLY_SHARE_INPUT_IDS = new Set([
   'preallocationSupplyPercent',
   'airdropSupplyPercent',
   'airdropCsvText',
-  'airdropWallets',
   'airdropAutoFit',
   'tokenSupply',
 ]);
@@ -8736,7 +8734,7 @@ function renderAirdropPanel() {
   const valueRows = hasError ? '' : airdropValueHtml(airdrop);
   $('#airdropRecipientPreview').innerHTML = valueRows || (hasError
     ? `<div class="mini-row danger"><span>${escapeHtml(state.airdropParseError || state.airdropBudgetError)}</span><strong>Fix</strong></div>`
-    : previewRows || `<div class="mini-row"><span>${airdrop.enabled ? 'Manual count only; attach CSV before real transfer.' : 'No recipients attached.'}</span><strong>${airdrop.source}</strong></div>`);
+    : previewRows || '<div class="mini-row"><span>No recipients</span></div>');
 }
 
 
@@ -15836,9 +15834,8 @@ function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, 
 }
 
 
-// A wallet address anywhere on the page is one chip. Hovering or focusing it shows what the
-// wallet holds now, read from the chain: SOL, each token, and open token accounts with their
-// rent. It also says whether Trebuchet holds the wallet's key.
+// A wallet address anywhere on the page is one chip. Hovering or focusing it shows a small card:
+// what the wallet holds now, read from the chain, and whether Trebuchet holds its key.
 
 const WALLET_CONTENTS_MAX_AGE_MS = 15_000;
 // The sweep drains to zero, so anything above a few transaction fees is worth sending on.
@@ -15891,20 +15888,61 @@ function walletContentsSummary(contents) {
 }
 
 const WALLET_KEY_LABELS = { launch: 'Launch wallet', retired: 'Finished launch wallet', vanity: 'Vanity address' };
+const WALLET_CARD_WIDTH = 280;
+
+// A fixed-size card: what the wallet is, its value, what it is made of (a bar and the top three
+// holdings by value), and how many more. Values come from prices the app already has.
+const WALLET_CARD_TOP = 3;
+
+function formatUsd(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  if (number >= 1000) return `$${new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(number)}`;
+  if (number >= 1) return `$${number.toFixed(2)}`;
+  if (number > 0) return `$${number.toPrecision(2)}`;
+  return '$0';
+}
+
+function walletComposition(contents) {
+  const solAmount = Number(contents.lamports || 0) / 1e9;
+  const holdings = [
+    { name: 'SOL', amount: solAmount, valueUsd: contents.solUsd != null ? solAmount * contents.solUsd : null, sol: true },
+    ...contents.tokens.map((token) => ({
+      name: token.symbol || walletTokenSymbol(token.mint),
+      amount: Number(token.amountRaw) / 10 ** Number(token.decimals || 0),
+      valueUsd: token.valueUsd ?? null,
+    })),
+  ].filter((holding) => holding.amount > 0);
+  // Priced holdings by value first, then the rest as listed.
+  holdings.sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1));
+  const priced = holdings.filter((holding) => holding.valueUsd != null);
+  const totalUsd = priced.reduce((sum, holding) => sum + holding.valueUsd, 0);
+  return { holdings, totalUsd: priced.length ? totalUsd : null, unpriced: holdings.length - priced.length };
+}
 
 function walletCardHtml(address, contents, error) {
-  const rows = contents ? [
-    ['SOL', formatSol(contents.lamports)],
-    ...contents.tokens.map((token) => [walletTokenSymbol(token.mint), formatTokenAmount(token.amountRaw, token.decimals)]),
-    contents.openAccounts ? ['Open token accounts', `${contents.openAccounts} · ${formatSol(contents.accountRentLamports)} SOL rent`] : null,
-  ].filter(Boolean) : [];
   const kind = contents?.ownerProgram && contents.ownerProgram !== '11111111111111111111111111111111' && contents.lamports
     ? 'Program account'
-    : contents?.key ? `${WALLET_KEY_LABELS[contents.key]} · key in Trebuchet` : contents ? 'Key not in Trebuchet' : '';
-  return `
-    <header><code>${escapeHtml(address)}</code>${kind ? `<span>${escapeHtml(kind)}</span>` : ''}</header>
-    ${error ? `<p class="is-error">${escapeHtml(error)}</p>` : contents ? `<dl>${rows.map(([name, value]) => `<div><dt>${escapeHtml(name)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>` : '<p><span class="rail-spin" aria-hidden="true"></span></p>'}
-    <a href="${escapeHtml(solscanAccountUrl(address))}" target="_blank" rel="noopener">Solscan</a>`;
+    : contents?.key ? WALLET_KEY_LABELS[contents.key] : contents ? 'Key not in Trebuchet' : '';
+  const head = `<header><code title="${escapeHtml(address)}">${escapeHtml(shortAddress(address))}</code>${kind ? `<span>${escapeHtml(kind)}${contents?.key ? ' · key held' : ''}</span>` : ''}</header>`;
+  const foot = (extra = '') => `<footer>${extra}<a href="${escapeHtml(solscanAccountUrl(address))}" target="_blank" rel="noopener">Solscan</a></footer>`;
+  if (error) return `${head}<p class="wallet-card-body is-error">${escapeHtml(error)}</p>${foot()}`;
+  if (!contents) return `${head}<p class="wallet-card-body"><span class="rail-spin" aria-hidden="true"></span></p>${foot()}`;
+  const { holdings, totalUsd, unpriced } = walletComposition(contents);
+  if (!holdings.length) {
+    return `${head}<p class="wallet-card-body wallet-card-empty">Empty</p>${foot(contents.openAccounts ? `<span>${contents.openAccounts} open account${contents.openAccounts === 1 ? '' : 's'}</span>` : '')}`;
+  }
+  const top = holdings.slice(0, WALLET_CARD_TOP);
+  const more = holdings.length - top.length;
+  const share = (holding) => (totalUsd && holding.valueUsd != null ? holding.valueUsd / totalUsd : null);
+  const bar = totalUsd
+    ? `<div class="wallet-card-bar" aria-hidden="true">${top.map((holding, index) => `<span class="is-${index}" style="width:${Math.max(2, (share(holding) || 0) * 100)}%"></span>`).join('')}<span class="is-rest"></span></div>`
+    : '';
+  const rows = top.map((holding, index) => `<li><i class="is-${index}" aria-hidden="true"></i><span>${escapeHtml(holding.name)}</span><b>${escapeHtml(holding.sol ? formatSol(contents.lamports) : compactAmount(holding.amount))}</b><small>${share(holding) != null ? `${Math.round(share(holding) * 100)}%` : formatUsd(holding.valueUsd) || ''}</small></li>`).join('');
+  const value = totalUsd != null ? `${formatUsd(totalUsd)}${unpriced ? ` + ${unpriced} unpriced` : ''}` : `${holdings.length} holding${holdings.length === 1 ? '' : 's'}`;
+  return `${head}
+    <div class="wallet-card-body"><strong class="wallet-card-value">${escapeHtml(value)}</strong>${bar}<ul>${rows}</ul></div>
+    ${foot([more ? `<span>+${more} more</span>` : '', contents.openAccounts ? `<span>${contents.openAccounts} open account${contents.openAccounts === 1 ? '' : 's'}</span>` : ''].join(''))}`;
 }
 
 function walletChipCard() {
@@ -15926,7 +15964,7 @@ let walletChipHideTimer = null;
 
 function placeWalletChipCard(card, chip) {
   const box = chip.getBoundingClientRect();
-  const width = Math.min(340, window.innerWidth - 32);
+  const width = Math.min(WALLET_CARD_WIDTH, window.innerWidth - 32);
   card.style.width = `${width}px`;
   card.style.left = `${Math.max(16, Math.min(box.left, window.innerWidth - width - 16))}px`;
   const below = box.bottom + 6;
@@ -24664,7 +24702,6 @@ function bindEvents() {
     'sliceShares',
     'ladderBands',
     'supportSol',
-    'airdropWallets',
     'airdropSupplyPercent',
     'airdropAutoFit',
     'feeKeyRecipient',

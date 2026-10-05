@@ -82,6 +82,7 @@ import {
 
 import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
+import { cachedTokenDisplay } from './tokenInfoService.js';
 import { airdropDeliveries, previousAirdropLists, readAirdropHistory, readAirdropHolders } from './coinAirdrop.js';
 import * as airdropHistoryStore from './airdropHistoryStore.js';
 import * as secretStore from './secretStore.js';
@@ -2667,6 +2668,20 @@ app.post('/api/check-balance-detailed', async (req, res) => {
 // app holds the address's key. Reads are kept 15 seconds.
 const TOKEN_PROGRAM_ADDRESSES = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'];
 const walletContentsCache = new Map();
+// Symbols and USD values from prices this process already holds; nothing is fetched for this.
+function withCachedPrices(contents) {
+  const sol = cachedTokenDisplay('So11111111111111111111111111111111111111112').priceUsd;
+  return {
+    ...contents,
+    solUsd: sol,
+    tokens: contents.tokens.map((token) => {
+      const { symbol, priceUsd } = cachedTokenDisplay(token.mint);
+      const amount = Number(token.amountRaw) / 10 ** Number(token.decimals || 0);
+      return { ...token, symbol, valueUsd: priceUsd != null && Number.isFinite(amount) ? amount * priceUsd : null };
+    }),
+  };
+}
+
 // Read from the stored records only: decrypting every saved key to answer this, once per
 // wallet read, logged a failure per key while the PIN was locked.
 function heldKeyKind(address) {
@@ -2677,7 +2692,7 @@ function heldKeyKind(address) {
 async function readWalletContents(address) {
   const key = new PublicKey(address).toBase58();
   const cached = walletContentsCache.get(key);
-  if (cached && Date.now() - cached.at < 15_000) return { ...cached.value, key: heldKeyKind(key) };
+  if (cached && Date.now() - cached.at < 15_000) return withCachedPrices({ ...cached.value, key: heldKeyKind(key) });
   const connection = new Connection(getRpcUrl(), 'confirmed');
   const owner = new PublicKey(key);
   const [info, ...programs] = await Promise.all([
@@ -2699,7 +2714,7 @@ async function readWalletContents(address) {
   const value = { address: key, lamports: info?.lamports || 0, ownerProgram: info?.owner?.toBase58() || null,
     tokens: [...tokens.values()], openAccounts, accountRentLamports };
   walletContentsCache.set(key, { at: Date.now(), value });
-  return { ...value, key: heldKeyKind(key) };
+  return withCachedPrices({ ...value, key: heldKeyKind(key) });
 }
 app.get('/api/v2/wallets/contents', async (req, res) => {
   try {
