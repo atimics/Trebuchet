@@ -159,3 +159,8 @@ test('the rail\'s Get the pair tokens is the buy button itself, or a re-check af
   assert.match(context.pairTokensRailButton(), /data-action="resolve-custom-quote" data-pool-id="p1">Check \$RUG again</);
   assert.match(workspace, /fundFact\.action === 'Get the pair tokens'\s*\? pairTokensRailButton\(\)/);
 });
+
+test('the Send SOL button keeps a short label that fits; the full text is its tooltip', () => {
+  assert.match(workspace, /\$\{escapeHtml\(fundFact\.action\.replace\(\/ to the launch wallet\$\/, ''\)\)\}<\/button>/);
+  assert.match(read('public/v2/styles.css'), /\.launch-next-rail \.rail-act \{ white-space: normal;/);
+});
