@@ -17253,6 +17253,31 @@ body[data-coin-mode="onchain"] #view-launch #launchNextRail {
 .coin-airdrop-row.is-none > span:last-child { color: var(--red, #ff6b6b); }
 .coin-airdrop-row.is-part > span:last-child { color: var(--amber); }
 .coin-airdrop-row.is-all > span:last-child { color: var(--green); }
+/* Branded fee collections share the NFT view's form and card styles. */
+.fee-nft-form { display: grid; gap: 16px; }
+.fee-nft-form select, .fee-nft-form input, .fee-nft-form textarea { width: 100%; min-width: 0; }
+.fee-nft-form input[type="checkbox"] { width: auto; }
+.fee-nft-facts { display: grid; gap: 14px; min-width: 0; }
+.fee-nft-facts dd { margin-left: 0; overflow-wrap: anywhere; }
+.fee-nft-table { overflow-x: auto; }
+.fee-nft-table table { width: 100%; text-align: left; border-collapse: collapse; }
+.fee-nft-table td, .fee-nft-table th { padding: 10px; border-bottom: 1px solid var(--line, #34343c); }
+.fee-nft-wallets { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fee-nft-form input[hidden] { display: none; }
+@media (max-width: 900px) {
+  body #view-fee-nfts.is-active { max-height: calc(100dvh - 190px); overflow-y: auto; padding-bottom: 20px; scroll-padding-bottom: 24px; }
+}
+@media (max-width: 600px) {
+  .fee-nft-table { overflow: visible; }
+  .fee-nft-table table, .fee-nft-table tbody { display: block; }
+  .fee-nft-table thead { display: none; }
+  .fee-nft-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--line, #34343c); }
+  .fee-nft-table td { padding: 0; border: 0; overflow-wrap: anywhere; }
+  .fee-nft-table td:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .fee-nft-table td:nth-child(4) { grid-column: 2; grid-row: 1; }
+  .fee-nft-table td:nth-child(2), .fee-nft-table td:nth-child(3) { grid-column: 1 / -1; }
+  .fee-nft-table td[data-label]::before { content: attr(data-label) ': '; color: var(--muted); }
+}
 
 /* The grind area: speed and Calibrate, the typed pattern's estimate, then the grind jobs. */
 .grind-area { display: grid; gap: 8px; }

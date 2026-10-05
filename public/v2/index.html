@@ -27,6 +27,10 @@
           <i class="fa-solid fa-images"></i>
           <span>NFTs</span>
         </button>
+        <button class="nav-item" type="button" data-view="fee-nfts">
+          <i class="fa-solid fa-receipt"></i>
+          <span>Fee NFTs</span>
+        </button>
         <button class="nav-item" type="button" data-view="wallet">
           <i class="fa-solid fa-wallet"></i>
           <span>Wallet</span>
@@ -500,6 +504,9 @@
       <section class="view" id="view-nfts" aria-labelledby="viewTitle">
         <div class="nft-root" id="nftRoot" aria-live="polite"></div>
       </section>
+      <section class="view" id="view-fee-nfts" aria-labelledby="viewTitle">
+        <div class="nft-root" id="feeNftRoot" aria-live="polite"></div>
+      </section>
 
       <section class="view" id="view-lean" aria-labelledby="viewTitle">
         <div class="nft-root" id="leanRoot" aria-live="polite"></div>
@@ -732,6 +739,7 @@
   <script src="./market-evidence.js?v=1"></script>
   <script src="./app.js?v=275"></script>
   <script src="./nfts.js?v=2"></script>
+  <script src="./fee-nfts.js?v=1"></script>
   <script src="./lean.js?v=2"></script>
 </body>
 </html>

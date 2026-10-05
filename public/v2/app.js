@@ -16,6 +16,7 @@ const views = {
   // A coin being created: the coin page with its creation steps.
   launch: { eyebrow: '', title: 'Coins' },
   nfts: { eyebrow: '', title: 'NFT collections' },
+  'fee-nfts': { eyebrow: '', title: 'Fee NFTs' },
   lean: { eyebrow: '', title: 'Meteora launches' },
   wallet: { eyebrow: '', title: 'Wallet' },
   discovery: { eyebrow: '', title: 'Discovery' },
@@ -5746,6 +5747,7 @@ function setView(view) {
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
   if (view === 'nfts') window.TrebuchetNfts?.onShow();
+  if (view === 'fee-nfts') window.TrebuchetFeeNfts?.onShow();
   if (view === 'wallet') refreshHeldWallets();
   if (view === 'lean') window.TrebuchetLean?.onShow();
   renderCoinContext();
