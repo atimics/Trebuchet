@@ -1693,7 +1693,9 @@ test('buildV2ExecutionReadiness blocks underbacked airdrop support before fresh 
   assert.equal(readiness.status, 'blocked');
   assert.equal(readiness.nextEndpoint, null);
   assert.match(readiness.blockers.map((item) => item.id).join(','), /airdrop-support-underbacked/);
-  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /Add at least/);
+  const blocker = readiness.blockers.find((item) => item.id === 'airdrop-support-underbacked');
+  assert.equal(blocker.detail, 'Airdrop and held tokens: 2% of supply ($5,000). Buy support: 1.000 SOL ($100). Needs 50.00 SOL.');
+  assert.deepEqual(blocker.fix, { action: 'add-sol-support', sol: 49 }, 'the shortfall, offered as one button');
   assert.equal(readiness.phases.find((phase) => phase.id === 'liquidity')?.state, 'blocked');
   assert.equal(readiness.plan.guardrails.find((item) => item.id === 'classic-airdrop-backing')?.state, 'danger');
 });
@@ -1770,8 +1772,9 @@ test('buildV2ExecutionReadiness blocks underbacked held preallocation support be
 
   assert.equal(readiness.status, 'blocked');
   assert.match(readiness.blockers.map((item) => item.id).join(','), /airdrop-support-underbacked/);
-  assert.match(readiness.blockers.map((item) => item.title).join(' '), /Held reserve support underbacked/);
-  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /Held reserves 5% of supply/);
+  assert.match(readiness.blockers.map((item) => item.title).join(' '), /Airdrop not backed by buy support/);
+  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /Airdrop and held tokens: 5% of supply/);
+  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /Buy support: 1\.000 SOL \(\$100\)\. Needs 125\.00 SOL\./);
   assert.equal(readiness.plan.guardrails.find((item) => item.id === 'classic-airdrop-backing')?.state, 'danger');
 });
 

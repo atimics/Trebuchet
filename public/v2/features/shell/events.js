@@ -384,6 +384,11 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'add-sol-support') {
+    addSolPoolSupport(actionTarget.dataset.sol);
+    return;
+  }
+
   if (action === 'start-vanity') {
     startVanityGrind().catch((error) => notify(error.message || 'Vanity grind failed'));
     return;

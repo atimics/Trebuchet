@@ -6013,6 +6013,29 @@ function renderLaunchWorkspace() {
   refreshLaunchChainCheck(facts);
 }
 
+// A blocker the app can fix itself carries the fix; it is offered as one button beside it.
+function blockerFixHtml(item) {
+  const fix = item?.fix;
+  if (fix?.action === 'add-sol-support' && Number(fix.sol) > 0) {
+    return `<button class="secondary-button compact" type="button" data-action="add-sol-support" data-sol="${escapeHtml(String(fix.sol))}">Add ${escapeHtml(String(fix.sol))} SOL support</button>`;
+  }
+  return '';
+}
+
+// Raise the SOL pool's buy support by the amount a blocker asked for, then check again.
+function addSolPoolSupport(sol) {
+  const input = $('#supportSol');
+  const amount = Number(sol);
+  if (!input || !(amount > 0)) return;
+  const current = Math.max(0, parseNumericInput(input.value, 0));
+  input.value = String(Math.round((current + amount) * 100) / 100);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  invalidateClassicOutputs();
+  renderAll();
+  checkExecutionReadiness().catch(() => null);
+}
+
 // "Get the pair tokens" is the buy button itself, so when buying can't run it is greyed out with
 // the reason beside it (see the start-quote-acquire guard), never a press that does nothing.
 // A pair token whose check failed (often a rate-limited RPC) offers to check it again instead.
@@ -6148,7 +6171,7 @@ function renderLaunchNextRail(facts, next, workspace) {
       ${launchReady && !practice ? `<p class="rail-warn">${resuming ? 'Resume continues the launch on-chain.' : 'Launch cannot be undone.'}</p>` : ''}
       ${blockers.length && !beforePlan && !busy ? `<div class="rail-blockers" role="status">
         <span class="rail-label">Can't launch yet</span>
-        <ul>${blockers.map((item) => `<li><strong>${escapeHtml(item.title || 'Blocked')}</strong>${item.detail ? `<span>${escapeHtml(item.detail)}</span>` : ''}</li>`).join('')}</ul>
+        <ul>${blockers.map((item) => `<li><strong>${escapeHtml(item.title || 'Blocked')}</strong>${item.detail ? `<span>${escapeHtml(item.detail)}</span>` : ''}${blockerFixHtml(item)}</li>`).join('')}</ul>
         <button class="rail-link" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}>${state.executionChecking ? 'Checking…' : 'Check again'}</button>
       </div>` : ''}
     </section>
@@ -23673,6 +23696,11 @@ function handleClick(event) {
 
   if (action === 'generate-wallet') {
     generateManagedWallet().catch((error) => notify(error.message || 'Wallet generation failed'));
+    return;
+  }
+
+  if (action === 'add-sol-support') {
+    addSolPoolSupport(actionTarget.dataset.sol);
     return;
   }
 
