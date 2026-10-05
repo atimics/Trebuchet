@@ -146,3 +146,16 @@ test('the Send SOL button copies the launch wallet address, where the SOL goes',
   assert.match(workspace, /\/\^Send \/\.test\(fundFact\.action \|\| ''\) && walletKey\s*\? `<button class="primary-button rail-act" type="button" data-action="copy-wallet-address"/);
   assert.match(read('public/v2/features/shell/events.js'), /action === 'copy-wallet-address'\) \{\n    copyText\(selectedLaunchWalletPublicKey\(\), 'Funding address'\);/);
 });
+
+test('the rail\'s Get the pair tokens is the buy button itself, or a re-check after a failed check', () => {
+  const from = workspace.indexOf('// "Get the pair tokens" is the buy button itself');
+  const to = workspace.indexOf('// The right-hand column.');
+  const state = { customPools: [{ id: 'p1', quoteSymbol: 'RUG', supplyPercent: 5 }] };
+  const records = {};
+  const context = vm.createContext({ state, escapeHtml: (value) => String(value), customQuoteInfoRecord: (pool) => records[pool.id] || null });
+  vm.runInContext(workspace.slice(from, to), context);
+  assert.match(context.pairTokensRailButton(), /data-action="start-quote-acquire">Get the pair tokens</);
+  records.p1 = { error: '429 Too Many Requests' };
+  assert.match(context.pairTokensRailButton(), /data-action="resolve-custom-quote" data-pool-id="p1">Check \$RUG again</);
+  assert.match(workspace, /fundFact\.action === 'Get the pair tokens'\s*\? pairTokensRailButton\(\)/);
+});

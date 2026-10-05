@@ -15,7 +15,7 @@ function button(action, { disabled = false, wallet = '' } = {}) {
 
 function page(overrides = {}) {
   const state = { apiStatus: 'connected', fullRunRunning: false, realExecutionRunning: false, demoActive: false, secretPin: { locked: false, configured: true, damaged: false },
-    quoteAcquire: { running: false, job: null }, updateCheck: { checking: false }, rpcSaved: ['a', 'b'], vanityCandidates: [], selectedVanityPublicKey: '', ...overrides.state };
+    quoteAcquire: { running: false, job: null }, updateCheck: { checking: false }, rpcSaved: ['a', 'b'], vanityCandidates: [], selectedVanityPublicKey: '', customPools: [], ...overrides.state };
   const elements = overrides.elements || [];
   const context = vm.createContext({
     state, requestAnimationFrame: (run) => { run(); return 1; },
@@ -28,6 +28,7 @@ function page(overrides = {}) {
     airdropCompletionIssue: () => null, airdropCompletionStatus: () => ({}),
     pendingRecoveryWallet: (address) => (overrides.pending || {})[address] || null, isProbablySolanaAddress: (value) => /wallet/.test(value),
     VANITY_VISIBLE_CANDIDATE_LIMIT: 3, heldShareLocked: () => Boolean(overrides.heldLocked),
+    quoteAcquireBlockedPools: () => overrides.blocked || [], customQuoteInfoRecord: (pool) => (overrides.records || {})[pool.id] || null,
   });
   vm.runInContext(guards, context);
   return { context, state, elements };
@@ -82,4 +83,19 @@ test('reasons state a fact, never an instruction', () => {
 
 test('clicking a blocked action does nothing', () => {
   assert.match(events, /const actionTarget = event\.target\.closest\('\[data-action\]'\);\n  if \(!actionTarget\) return;\n  \/\/ [^\n]*\n  if \(actionTarget\.dataset\.blockedReason\) return;/);
+});
+
+test('buying pair tokens says why it can\'t run: a failed or running token check comes first', () => {
+  const button1 = button('start-quote-acquire');
+  const failed = page({ elements: [button1], blocked: [{ pool: { quoteSymbol: 'RUG' }, badge: { label: 'Check failed' } }] });
+  failed.context.applyActionGuards();
+  assert.equal(button1.dataset.blockedReason, '$RUG: Check failed');
+  const button2 = button('start-quote-acquire');
+  const checking = page({ elements: [button2], records: { p1: { loading: true } }, state: { customPools: [{ id: 'p1' }] } });
+  checking.context.applyActionGuards();
+  assert.equal(button2.dataset.blockedReason, 'Checking the pair tokens');
+  const button3 = button('start-quote-acquire');
+  const ready = page({ elements: [button3] });
+  ready.context.applyActionGuards();
+  assert.equal(button3.dataset.blockedReason, undefined);
 });

@@ -17,6 +17,9 @@ const firstReason = (...checks) => {
 const ACTION_GUARDS = {
   'add-coin': () => noDesktopApp(),
   'start-quote-acquire': () => firstReason(noDesktopApp, noLaunchWallet, () => {
+    const blocked = quoteAcquireBlockedPools()[0];
+    if (blocked) return `${blocked.pool.quoteSymbol ? `$${blocked.pool.quoteSymbol}` : 'A pair token'}: ${blocked.badge.label}`;
+    if (state.customPools.some((pool) => customQuoteInfoRecord(pool)?.loading)) return 'Checking the pair tokens';
     const status = classicFundingEstimateStatus(currentLaunchConfig());
     if (!status.matchesConfig) return status.stale ? 'Funding estimate is out of date' : 'No funding estimate yet';
     if (!quoteAcquireRoutes().length) return quoteAcquireManualCount() ? 'Pair tokens need a manual deposit' : 'No pair tokens to buy';
