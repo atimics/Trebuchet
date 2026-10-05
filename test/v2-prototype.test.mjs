@@ -3010,7 +3010,7 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(combined, /Position slices/);
   assert.match(combined, /Ladder bands/);
   assert.match(combined, /Support SOL/);
-  assert.match(combined, /Airdrop wallets/);
+  assert.doesNotMatch(combined, /id="airdropWallets"/, 'the recipient count comes from the CSV, not a typed number');
   assert.match(combined, /Budget %/);
   assert.match(combined, /Auto-fit/);
   assert.match(combined, /Fit budget/);

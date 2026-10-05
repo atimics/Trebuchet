@@ -269,7 +269,6 @@ const SUPPLY_SHARE_INPUT_IDS = new Set([
   'preallocationSupplyPercent',
   'airdropSupplyPercent',
   'airdropCsvText',
-  'airdropWallets',
   'airdropAutoFit',
   'tokenSupply',
 ]);
@@ -1092,7 +1091,7 @@ function renderAirdropPanel() {
   const valueRows = hasError ? '' : airdropValueHtml(airdrop);
   $('#airdropRecipientPreview').innerHTML = valueRows || (hasError
     ? `<div class="mini-row danger"><span>${escapeHtml(state.airdropParseError || state.airdropBudgetError)}</span><strong>Fix</strong></div>`
-    : previewRows || `<div class="mini-row"><span>${airdrop.enabled ? 'Manual count only; attach CSV before real transfer.' : 'No recipients attached.'}</span><strong>${airdrop.source}</strong></div>`);
+    : previewRows || '<div class="mini-row"><span>No recipients</span></div>');
 }
 
 

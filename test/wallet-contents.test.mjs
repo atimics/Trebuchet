@@ -15,7 +15,7 @@ function page(extra = {}) {
     state: { apiStatus: 'connected', coins: { list: [{ mint: 'mint-treb', symbol: 'TREB' }] }, secretPin: { locked: false },
       heldWallets: { list: null, loading: false, at: 0, error: null, sweep: null }, destinations: { signed: ['return-wallet'] }, activeView: 'wallet' },
     escapeHtml: html, shortAddress: (value) => `${value.slice(0, 4)}…`, solscanAccountUrl: (value) => `https://solscan.io/account/${value}`,
-    formatTokenAmount: (raw, decimals) => String(Number(raw) / 10 ** decimals), Promise, Date, Map, Number, setTimeout, clearTimeout,
+    formatTokenAmount: (raw, decimals) => String(Number(raw) / 10 ** decimals), compactAmount: (value) => String(Number(value)), Intl, Promise, Date, Map, Number, setTimeout, clearTimeout,
     ...extra,
   });
   vm.runInContext(chip, context);
@@ -24,15 +24,27 @@ function page(extra = {}) {
 
 const contents = (overrides = {}) => ({ address: 'wallet-a', lamports: 660241, ownerProgram: SYSTEM, tokens: [], openAccounts: 13, accountRentLamports: 19375120, key: 'retired', ...overrides });
 
-test('the hover card lists what the wallet holds and whether Trebuchet has its key', () => {
+test('the hover card is a fixed-size summary: value, a composition bar, the top three holdings, and how many more', () => {
   const { walletCardHtml } = page();
-  const card = walletCardHtml('wallet-a', contents({ tokens: [{ mint: 'mint-treb', amountRaw: '1500000000', decimals: 9 }] }), null);
-  assert.match(card, /Finished launch wallet · key in Trebuchet/);
-  assert.match(card, /<dt>SOL<\/dt><dd>0\.000660<\/dd>|<dt>SOL<\/dt><dd>0\.00066<\/dd>/);
-  assert.match(card, /<dt>TREB<\/dt><dd>1\.5<\/dd>/);
-  assert.match(card, /<dt>Open token accounts<\/dt><dd>13 · 0\.019375 SOL rent<\/dd>/);
-  assert.match(walletCardHtml('someone', contents({ key: null, openAccounts: 0 }), null), /Key not in Trebuchet/);
+  const tokens = [
+    { mint: 'mint-treb', symbol: null, amountRaw: '1500000000', decimals: 9, valueUsd: 30 },
+    { mint: 'mint-b', symbol: 'BBB', amountRaw: '2000000', decimals: 6, valueUsd: 50 },
+    { mint: 'mint-c', symbol: 'CCC', amountRaw: '5', decimals: 0, valueUsd: null },
+    { mint: 'mint-d', symbol: 'DDD', amountRaw: '7', decimals: 0, valueUsd: 1 },
+  ];
+  const card = walletCardHtml('wallet-a', contents({ lamports: 100_000_000, solUsd: 190, tokens }), null);
+  assert.match(card, /Finished launch wallet · key held/);
+  assert.match(card, /class="wallet-card-value">\$100\.00 \+ 1 unpriced</, 'total of the priced holdings');
+  assert.match(card, /class="wallet-card-bar"/);
+  const names = [...card.matchAll(/<li><i class="is-\d"[^>]*><\/i><span>([^<]+)<\/span>/g)].map((match) => match[1]);
+  assert.deepEqual(names, ['BBB', 'TREB', 'SOL'], 'top three by value; the symbol falls back to the coin list');
+  assert.match(card, /<span>BBB<\/span><b>2<\/b><small>50%<\/small>/);
+  assert.match(card, /\+2 more/);
+  assert.match(card, /13 open accounts/);
+  assert.equal((card.match(/<li>/g) || []).length, 3, 'never more than three rows, whatever the wallet holds');
+  assert.match(walletCardHtml('someone', contents({ key: null, openAccounts: 0, lamports: 0 }), null), /Key not in Trebuchet[\s\S]*Empty/);
   assert.match(walletCardHtml('mint-a', contents({ ownerProgram: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', key: 'vanity' }), null), /Program account/);
+  assert.match(walletCardHtml('w', contents({ lamports: 2_000_000_000 }), null), /2 holding|1 holding/, 'without prices it counts holdings instead of a value');
   assert.doesNotMatch(card, /deleted|disagree|rent reserve/i);
 });
 
@@ -124,13 +136,17 @@ test('the server reads SOL, token balances, and open token accounts with their r
   let reads = 0;
   class Connection { async getAccountInfo() { reads += 1; return { lamports: 660241, owner: new PublicKey(SYSTEM) }; }
     async getParsedTokenAccountsByOwner(_owner, { programId }) { return { value: accounts[programId.toBase58()] }; } }
-  const context = vm.createContext({ PublicKey, Connection, getRpcUrl: () => 'rpc', Map, BigInt, Date, Promise,
+  const prices = { coin: { symbol: 'COIN', priceUsd: 2 }, So11111111111111111111111111111111111111112: { symbol: 'SOL', priceUsd: 190 } };
+  const context = vm.createContext({ PublicKey, Connection, getRpcUrl: () => 'rpc', Map, BigInt, Date, Promise, Number,
+    cachedTokenDisplay: (mint) => prices[mint] || { symbol: null, priceUsd: null },
     pendingWallets: { keyRecord: (address) => (address === 'wallet-a' ? { retiredAt: '2026-10-03' } : null), get: () => { throw new Error('a lookup must not decrypt keys'); } }, vanityCaStore: { hasAddress: () => false, listMetadata: () => { throw new Error('a lookup must not decrypt keys'); } } });
   vm.runInContext(`${source}\nthis.readWalletContents = readWalletContents;`, context);
   const result = await context.readWalletContents('wallet-a');
   assert.equal(result.lamports, 660241); assert.equal(result.key, 'retired');
   assert.equal(result.openAccounts, 4); assert.equal(result.accountRentLamports, 8226720);
   assert.equal(JSON.stringify(result.tokens.map((token) => [token.mint, token.amountRaw])), JSON.stringify([['nft', '1'], ['coin', '10']]));
+  assert.equal(result.solUsd, 190);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.tokens.map((token) => [token.symbol, token.valueUsd]))), [[null, null], ['COIN', 2e-8]], 'values only from prices already held');
   await context.readWalletContents('wallet-a');
   assert.equal(reads, 1, 'a second read within 15 seconds uses the saved one');
 });

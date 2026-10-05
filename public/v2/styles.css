@@ -17165,19 +17165,36 @@ body #view-launch .classic-workspace-fund .funding-receipt-manual { order: 3; }
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   font-size: 13px;
 }
-.wallet-chip-card header {
+/* Fixed size: the same card whatever the wallet holds. */
+.wallet-chip-card {
   display: grid;
-  gap: 2px;
-  margin-bottom: 8px;
+  grid-template-rows: auto 1fr auto;
+  height: 172px;
+  overflow: hidden;
+  box-sizing: border-box;
 }
-.wallet-chip-card header code { overflow-wrap: anywhere; font-size: 12px; }
-.wallet-chip-card header span { color: var(--muted); font-size: 12px; }
-.wallet-chip-card dl { display: grid; gap: 4px; margin: 0 0 8px; }
-.wallet-chip-card dl div { display: flex; justify-content: space-between; gap: 12px; }
-.wallet-chip-card dt { color: var(--muted); }
-.wallet-chip-card dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
-.wallet-chip-card .is-error { color: var(--red); margin: 0 0 8px; }
-.wallet-chip-card a { color: var(--blue); font-size: 12px; }
+.wallet-chip-card[hidden] { display: none; }
+.wallet-chip-card header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; min-width: 0; }
+.wallet-chip-card header code { font-size: 12px; white-space: nowrap; }
+.wallet-chip-card header span { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wallet-card-body { display: grid; align-content: start; gap: 6px; margin: 8px 0 0; min-height: 0; }
+.wallet-card-value { font-size: 16px; font-variant-numeric: tabular-nums; }
+.wallet-card-empty { color: var(--muted); }
+.wallet-card-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--line); }
+.wallet-card-bar span { display: block; height: 100%; }
+.wallet-card-bar .is-rest { flex: 1; background: var(--line-strong); }
+.wallet-chip-card .is-0 { background: var(--green); }
+.wallet-chip-card .is-1 { background: var(--blue); }
+.wallet-chip-card .is-2 { background: var(--amber); }
+.wallet-card-body ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.wallet-card-body li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto 36px; align-items: center; gap: 8px; font-size: 12px; }
+.wallet-card-body li i { width: 8px; height: 8px; border-radius: 2px; }
+.wallet-card-body li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wallet-card-body li b { font-weight: 500; font-variant-numeric: tabular-nums; }
+.wallet-card-body li small { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.wallet-chip-card footer { display: flex; gap: 10px; align-items: center; font-size: 11px; color: var(--muted); }
+.wallet-chip-card footer a { margin-left: auto; color: var(--blue); }
+.wallet-chip-card .is-error { color: var(--red); }
 
 /* Wallet page: every key Trebuchet holds, and Sweep all. */
 .held-wallets { margin-bottom: 12px; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
