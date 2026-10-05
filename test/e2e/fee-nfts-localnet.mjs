@@ -71,6 +71,7 @@ try {
   process.env.TREBUCHET_FEE_VAULT_PROGRAM_SHA256 = 'unreviewed';
   await assert.rejects(() => service.prepare({ rpcUrl: rpc, network: 'devnet', walletPublicKey: payer.publicKey.toBase58(), collectionId: nftRecord.id, venue: 'meteora', nativeNftMint: launched.positionNft, recipients: [alice.publicKey.toBase58(), bob.publicKey.toBase58()] }), /build hash/);
   process.env.TREBUCHET_FEE_VAULT_PROGRAM_SHA256 = verifiedHash;
+  await assert.rejects(() => service.prepare({ rpcUrl: rpc, network: 'devnet', walletPublicKey: bob.publicKey.toBase58(), collectionId: nftRecord.id, venue: 'meteora', nativeNftMint: launched.positionNft, recipients: [alice.publicKey.toBase58(), bob.publicKey.toBase58()] }), /held by the signing wallet/);
   console.log('PASS: backing waits for verified immutable program deployment');
   const record = await service.prepare({ rpcUrl: rpc, network: 'devnet', walletPublicKey: payer.publicKey.toBase58(), collectionId: nftRecord.id, venue: 'meteora', nativeNftMint: launched.positionNft, recipients: [alice.publicKey.toBase58(), bob.publicKey.toBase58()] });
   // Exercise backing recovery before committing the fixed rights.

@@ -103,10 +103,15 @@ async function assetAccounts(connection, shares) {
   for (let at = 0; at < shares.length; at += 100) result.push(...await connection.getMultipleAccountsInfo(shares.slice(at, at + 100).map((s) => pub(s.asset)), 'confirmed'));
   return result;
 }
+async function backingAccount(connection, owner, source) {
+  const accounts = await connection.getTokenAccountsByOwner(pub(owner), { mint: pub(source.nativeNftMint) });
+  return accounts.value.find((a) => a.account.owner.equals(pub(source.nativeTokenProgram)) && a.account.data.length >= 165 && a.account.data.readBigUInt64LE(64) === 1n)?.pubkey;
+}
 export async function prepare({ rpcUrl, network, walletPublicKey, collectionId, venue, nativeNftMint, recipients }) {
   const connection = connectionFor(rpcUrl);
   const id = programId(); await requireProgram(connection, id);
   const source = await sourceFor(connection, venue, nativeNftMint, network);
+  if (!await backingAccount(connection, walletPublicKey, source)) throw codeError('Choose a backing NFT held by the signing wallet');
   const collection = collections.get(collectionId);
   const plan = feeNftPlan({ collection, source, recipients: recipientList(recipients), creator: walletPublicKey, seed: [...randomBytes(32)], programId: id, network: await connection.getGenesisHash() });
   const assets = await assetAccounts(connection, plan.shares);
@@ -206,10 +211,18 @@ async function run(id, { rpcUrl, walletPublicKey, secretKey, approvedDigest, con
   const connection = connectionFor(rpcUrl); const signer = Keypair.fromSecretKey(Uint8Array.from(secretKey));
   if (signer.publicKey.toBase58() !== p.creator || await connection.getGenesisHash() !== p.network || programId() !== p.programId) throw codeError('Use the network, program and wallet saved in this plan');
   await requireProgram(connection, p.programId);
+  const refreshedSource = await sourceFor(connection, p.source.venue === 'meteora' ? 'meteora' : 'raydium', p.source.nativeNftMint, p.source.venue === 'raydium-devnet' ? 'devnet' : 'mainnet');
+  if (JSON.stringify(refreshedSource) !== JSON.stringify(p.source)) throw codeError('Review the current backing position before setup');
+  const v = pub(record.vault);
+  const nftMint = pub(p.source.nativeNftMint); const nftProgram = pub(p.source.nativeTokenProgram);
+  const nftTarget = getAssociatedTokenAddressSync(nftMint, v, true, nftProgram);
+  const from = await backingAccount(connection, signer.publicKey, p.source);
+  const holding = await connection.getAccountInfo(nftTarget);
+  const backed = holding?.owner.equals(nftProgram) && holding.data.length >= 165 && holding.data.readBigUInt64LE(64) === 1n && new PublicKey(holding.data.subarray(32, 64)).equals(v);
+  if (!from && !backed) throw codeError('The signing wallet or saved vault must hold the backing NFT');
   record.maxSpendLamports = maxSpendLamports; record.status = 'setting-up'; store.save(record);
   const rent = await connection.getMinimumBalanceForRentExemption(FEE_VAULT_HEADER + p.count * FEE_VAULT_ENTRY);
   const tokenRent = await connection.getMinimumBalanceForRentExemption(200);
-  const v = pub(record.vault);
   const existing = await connection.getAccountInfo(v, 'confirmed');
   if (existing) assertVault(record, existing);
   await sendStep(record, connection, signer, 'vault', [initializeFeeVault({ programId: p.programId, creator: p.creator, seed: p.seed, collection: p.collection, source: p.source, count: p.count, totalWeight: p.totalWeight })], rent);
@@ -220,12 +233,7 @@ async function run(id, { rpcUrl, walletPublicKey, secretKey, approvedDigest, con
     job.done = s.index + 1;
   }
   job.step = 'Backing the collection';
-  const nftMint = pub(p.source.nativeNftMint); const nftProgram = pub(p.source.nativeTokenProgram);
-  const nftTarget = getAssociatedTokenAddressSync(nftMint, v, true, nftProgram);
   const feeAccounts = feeVaultTokenAccounts(v, p.source);
-  const tokenAccounts = await connection.getTokenAccountsByOwner(signer.publicKey, { mint: nftMint });
-  const from = tokenAccounts.value.find((e) => e.account.data.readBigUInt64LE(64) === 1n)?.pubkey;
-  if (!record.operations.backing && !from) throw codeError('The signing wallet must hold the backing NFT');
   const backing = [createAssociatedTokenAccountIdempotentInstruction(signer.publicKey, nftTarget, v, nftMint, nftProgram),
     ...p.source.mints.map((m, i) => createAssociatedTokenAccountIdempotentInstruction(signer.publicKey, feeAccounts[i], v, pub(m), pub(p.source.tokenPrograms[i])))];
   if (from) backing.push(createTransferCheckedInstruction(from, nftMint, nftTarget, signer.publicKey, 1n, 0, [], nftProgram));

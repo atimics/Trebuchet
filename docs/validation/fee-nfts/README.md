@@ -2,7 +2,7 @@
 
 Validated on 2026-10-04 with Node 22.22.3 and Agave 2.3.13.
 
-- App suite: 1,302 passed, 10 skipped, 0 failed.
+- App suite after the current wallet and grinder fixes: 1,314 passed, 10 skipped, 0 failed.
 - Core, runner and runtime contracts: 748 passed.
 - Fee NFT tests: 9 passed.
 - Rust contract tests: 5 passed.
