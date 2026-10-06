@@ -240,6 +240,7 @@ restoreLaunchProof();
 restoreDiscoveryRegistry();
 bindEvents();
 bindWalletChips();
+bindTokenCards();
 bindActionGuards();
 bindCloseGuard();
 initializeSolflareWallet();

@@ -620,7 +620,7 @@ function renderCoins() {
     {
       variant: 'row',
       tag: 'button',
-      attrs: `type="button" data-action="open-coin" data-coin-key="${escapeHtml(item.key)}"`,
+      attrs: `type="button" data-action="open-coin" data-coin-key="${escapeHtml(item.key)}"${tokenCardEligible(item.mint) ? ` data-token-card="${escapeHtml(item.mint)}"` : ''}`,
       status: coinStatus(item),
     },
   )).join('');
@@ -697,7 +697,7 @@ function coinMarketsHtml(markets) {
       <div class="coin-market-row is-head" role="row"><span role="columnheader">Pool</span><span role="columnheader">Price in SOL</span><span role="columnheader">vs SOL pool</span><span role="columnheader">Quote reserve</span><span role="columnheader">Coin side</span><span role="columnheader">Fee</span></div>
       ${pools.map((pool) => `
         <div class="coin-market-row ${pool.isMainSolPool ? 'is-main' : ''} ${pool.drainsSolPool ? 'is-drain' : ''}" role="row">
-          <span role="cell"><strong>${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}</strong><small>${escapeHtml([pool.venue === 'meteora-damm-v2' ? 'Meteora' : 'Raydium', pool.isMainSolPool ? 'main SOL pool' : shortAddress(pool.poolId)].join(' · '))}</small></span>
+          <span role="cell"><strong>${pool.isSolPool ? 'SOL' : tokenSymbolHtml(pool.quoteMint, pool.quoteSymbol)}</strong><small>${escapeHtml([pool.venue === 'meteora-damm-v2' ? 'Meteora' : 'Raydium', pool.isMainSolPool ? 'main SOL pool' : shortAddress(pool.poolId)].join(' · '))}</small></span>
           <span role="cell">${escapeHtml(fmtPoolPrice(pool.priceSol))}</span>
           <span role="cell">${pool.gapPct === null || pool.gapPct === undefined ? '—' : `${pool.gapPct > 0 ? '+' : ''}${pool.gapPct.toFixed(1)}%`}</span>
           <span role="cell">${pool.quoteReserve === null || pool.quoteReserve === undefined ? '—' : `${escapeHtml(Number(pool.quoteReserve).toLocaleString('en-US', { maximumFractionDigits: 9 }))} ${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}`}${!pool.isSolPool && pool.quoteReserveSol != null ? `<small>valued at ${escapeHtml(fmtPoolPrice(pool.quoteReserveSol))}</small>` : ''}</span>
@@ -966,8 +966,9 @@ function renderCoinContext() {
         symbol: account?.metadata?.symbol || detail?.info?.symbol || chainCoin.symbol,
         address: chainCoin.mint,
         image: detail?.image || chainCoin.image || null,
-      }, { variant: 'title', tag: 'span', status: coinStatus(chainCoin) });
+      }, { variant: 'title', tag: 'span', status: coinStatus(chainCoin), trailing: tokenPriceChipHtml(chainCoin.mint) });
       hydrateCoinCards();
+      hydrateTokenPriceChips();
     }
     return;
   }
