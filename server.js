@@ -3421,14 +3421,15 @@ app.get('/api/v2/coins/:mint', async (req, res) => {
     const latestJournal = journals
       .slice()
       .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
-    const [account, info, markets, launchWalletLamports] = await Promise.all([
+    const [account, info, listedMarkets, launchWalletLamports] = await Promise.all([
       readMintAccount(connection, mint).catch((error) => ({ error: error.message })),
       getTokenMetadata(mint).catch(() => null),
-      listTokenMarkets(mint).catch((error) => ({ error: error.message, pools: [] })),
+      listTokenMarkets(mint, { meteoraPoolIds: meteoraPoolIdsFor(journals) }).catch((error) => ({ error: error.message, pools: [] })),
       latestJournal?.walletPublicKey
         ? connection.getBalance(new PublicKey(latestJournal.walletPublicKey)).catch(() => null)
         : Promise.resolve(null),
     ]);
+    const markets = withRecordedQuoteSymbols(listedMarkets, journals);
     const creation = latestJournal
       ? coinCreationSteps(latestJournal, { account, markets, launchWalletLamports })
       : null;
@@ -3452,7 +3453,9 @@ app.get('/api/v2/coins/:mint/evidence', async (req, res) => {
     const connection = new Connection(getRpcUrl(), 'finalized');
     const account = await readMintAccount(connection, mint, 'finalized');
     if (!account) return res.status(404).json({ success: false, error: 'Token mint needs verification.' });
-    const markets = await listTokenMarkets(mint).catch(() => ({ pools: [] }));
+    const journals = launchJournal.list({ includeCompleted: true, includeArchived: true })
+      .filter((journal) => String(journal?.token?.mint || '') === mint);
+    const markets = await listTokenMarkets(mint, { meteoraPoolIds: meteoraPoolIdsFor(journals) }).catch(() => ({ pools: [] }));
     const evidence = await readTokenMarketEvidence(connection, mint, {
       supply: account.supply, pools: markets.pools, network: getNetwork(),
     });
@@ -4495,6 +4498,23 @@ function v2SortedTextList(values = []) {
 function v2SameTextList(left = [], right = []) {
   if (left.length !== right.length) return false;
   return left.every((value, index) => value === right[index]);
+}
+
+// The Meteora pools a coin's launches recorded. Raydium's API lists only Raydium pools, so these
+// are read from the chain by address to appear among the coin's markets.
+function meteoraPoolIdsFor(journals = []) {
+  return [...new Set(journals.flatMap((journal) => v2JournalLiquidityResults(journal))
+    .filter((result) => result?.venue === 'meteora-damm-v2' && result.poolId)
+    .map((result) => String(result.poolId)))];
+}
+
+// A Meteora pair pool's quote symbol, from the launch record (the pool account holds only mints).
+function withRecordedQuoteSymbols(markets, journals = []) {
+  if (!Array.isArray(markets?.pools)) return markets;
+  const symbols = new Map(journals.flatMap((journal) => v2JournalLiquidityResults(journal))
+    .filter((result) => result?.poolId && result.quoteSymbol)
+    .map((result) => [String(result.poolId), String(result.quoteSymbol)]));
+  return { ...markets, pools: markets.pools.map((pool) => (pool.quoteSymbol || !symbols.has(pool.poolId) ? pool : { ...pool, quoteSymbol: symbols.get(pool.poolId) })) };
 }
 
 function v2JournalLiquidityResults(journal = {}) {

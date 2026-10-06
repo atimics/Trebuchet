@@ -6868,10 +6868,53 @@ export async function cheapestTokenPriceInSol({ raydium, tokenMint, excludePoolI
  * the SOL pool (by more than the two pools' fees) drains SOL buyers:
  * arbitrage buys there and sells into the SOL pool.
  */
-export async function listTokenMarkets(tokenMint) {
+// A coin's Meteora DAMM v2 pools, read from the chain, as rows like the Raydium API's. The API lists
+// Raydium pools only, so the Meteora pools a launch made are passed in by address.
+async function meteoraMarketRows({ connection, tokenMint, poolIds, getUsd = getUsdPrice }) {
+  const rows = [];
+  let solUsd;
+  for (const poolId of poolIds) {
+    let market = null;
+    try {
+      market = await __dammService.readPoolMarket({ connection, pool: poolId, mint: tokenMint });
+    } catch (error) {
+      console.warn(`markets: could not read Meteora pool ${poolId}: ${error.message}`);
+    }
+    if (!market) continue;
+    const isSolPool = market.quoteMint === WSOL_MINT;
+    let solPerQuote = isSolPool ? 1 : null;
+    if (solPerQuote === null) {
+      solUsd = solUsd === undefined ? positiveNumber(await getUsd(WSOL_MINT).catch(() => null)) : solUsd;
+      const quoteUsd = solUsd ? positiveNumber(await getUsd(market.quoteMint).catch(() => null)) : null;
+      solPerQuote = quoteUsd ? quoteUsd / solUsd : null;
+    }
+    rows.push({
+      poolId: market.poolId,
+      type: 'Meteora DAMM v2',
+      venue: market.venue,
+      isSolPool,
+      quoteMint: market.quoteMint,
+      quoteSymbol: isSolPool ? 'SOL' : null,
+      feeRate: market.feeRate,
+      tokenReserve: market.tokenReserve,
+      quoteReserve: market.quoteReserve,
+      quoteReserveSol: solPerQuote ? market.quoteReserve * solPerQuote : null,
+      priceSol: market.quotePerToken && solPerQuote ? market.quotePerToken * solPerQuote : null,
+    });
+  }
+  return rows;
+}
+
+export async function listTokenMarkets(tokenMint, { meteoraPoolIds = [] } = {}) {
   const mint = new PublicKey(String(tokenMint || '').trim()).toBase58();
   const raydium = await readOnlySdk();
-  const { rows, tokenSymbol } = await tokenMarketRows({ raydium, tokenMint: mint });
+  const listed = await tokenMarketRows({ raydium, tokenMint: mint });
+  const known = new Set(listed.rows.map((row) => row.poolId));
+  const meteora = meteoraPoolIds.length
+    ? await meteoraMarketRows({ connection: raydium.connection, tokenMint: mint, poolIds: [...new Set(meteoraPoolIds)].filter((id) => id && !known.has(id)) })
+    : [];
+  const rows = [...listed.rows, ...meteora];
+  const { tokenSymbol } = listed;
   const solPools = rows.filter((row) => row.isSolPool && row.priceSol);
   const solPool = solPools.length
     ? solPools.reduce((deep, row) => (row.quoteReserve > deep.quoteReserve || (row.quoteReserve === deep.quoteReserve && row.tokenReserve > deep.tokenReserve) ? row : deep))
@@ -7165,6 +7208,7 @@ export const __testHooks = {
   bindLiquidityExecutor: (raydium, execution) => liquidityExecutors.set(raydium, execution),
   createSinglePool,
   createMeteoraPoolForAllocation,
+  meteoraMarketRows,
   openBootstrapPosition,
   lockAllPositions,
   transferFeeKeys,

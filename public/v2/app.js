@@ -21202,7 +21202,7 @@ function coinMarketsHtml(markets) {
   if (!markets) return '';
   if (markets.error) return `<p class="pool-support-error">Could not read the markets: ${escapeHtml(markets.error)}</p>`;
   const pools = markets.pools || [];
-  if (!pools.length) return '<p class="coins-empty">No Raydium pools hold this coin yet.</p>';
+  if (!pools.length) return '<p class="coins-empty">No pools found for this coin.</p>';
   const drains = pools.filter((pool) => pool.drainsSolPool);
   return `
     ${drains.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> This coin is cheaper in its ${drains.map((pool) => escapeHtml(pool.quoteSymbol || 'pair')).join(', ')} pool${drains.length === 1 ? '' : 's'} than in its SOL pool. Bots buy it there and sell it into the SOL pool, taking SOL buyers' money, until the gap closes. Buy support only holds below that price.</p>` : ''}
@@ -21210,7 +21210,7 @@ function coinMarketsHtml(markets) {
       <div class="coin-market-row is-head" role="row"><span role="columnheader">Pool</span><span role="columnheader">Price in SOL</span><span role="columnheader">vs SOL pool</span><span role="columnheader">Quote reserve</span><span role="columnheader">Coin side</span><span role="columnheader">Fee</span></div>
       ${pools.map((pool) => `
         <div class="coin-market-row ${pool.isMainSolPool ? 'is-main' : ''} ${pool.drainsSolPool ? 'is-drain' : ''}" role="row">
-          <span role="cell"><strong>${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}</strong><small>${escapeHtml(pool.isMainSolPool ? 'main SOL pool' : shortAddress(pool.poolId))}</small></span>
+          <span role="cell"><strong>${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}</strong><small>${escapeHtml([pool.venue === 'meteora-damm-v2' ? 'Meteora' : 'Raydium', pool.isMainSolPool ? 'main SOL pool' : shortAddress(pool.poolId)].join(' · '))}</small></span>
           <span role="cell">${escapeHtml(fmtPoolPrice(pool.priceSol))}</span>
           <span role="cell">${pool.gapPct === null || pool.gapPct === undefined ? '—' : `${pool.gapPct > 0 ? '+' : ''}${pool.gapPct.toFixed(1)}%`}</span>
           <span role="cell">${pool.quoteReserve === null || pool.quoteReserve === undefined ? '—' : `${escapeHtml(Number(pool.quoteReserve).toLocaleString('en-US', { maximumFractionDigits: 9 }))} ${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}`}${!pool.isSolPool && pool.quoteReserveSol != null ? `<small>valued at ${escapeHtml(fmtPoolPrice(pool.quoteReserveSol))}</small>` : ''}</span>
