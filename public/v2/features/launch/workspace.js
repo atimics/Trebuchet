@@ -147,6 +147,7 @@ function setView(view) {
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
   if (view === 'wallet') refreshHeldWallets();
+  if (view === 'launch' && !chainCoinOnPage()) autoVerifyQuoteTokens();
   renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();

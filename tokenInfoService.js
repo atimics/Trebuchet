@@ -54,6 +54,21 @@ const METADATA_PROGRAM_ID = new PublicKey(
 
 const GECKO_BASE = 'https://api.geckoterminal.com/api/v2/networks/solana';
 
+// GeckoTerminal's free API allows about 30 requests a minute. Requests wait their turn at one
+// every 2.1 s instead of bursting into 429s (a launch with eleven pair tokens sent them at once).
+const GECKO_SPACING_MS = 2100;
+let geckoQueue = Promise.resolve();
+let geckoLastAt = 0;
+export function geckoFetch(url, options, { now = Date.now, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), fetchImpl = (...args) => fetch(...args) } = {}) {
+  const turn = geckoQueue.then(async () => {
+    const delay = geckoLastAt + GECKO_SPACING_MS - now();
+    if (delay > 0) await wait(delay);
+    geckoLastAt = now();
+  });
+  geckoQueue = turn.catch(() => {});
+  return turn.then(() => fetchImpl(url, options));
+}
+
 // DexScreener Solana token endpoint. Used as a final fallback after
 // GeckoTerminal and Jupiter both miss. DexScreener tracks a much wider
 // long tail of tokens than Gecko's indexed pool set — particularly newer
@@ -105,7 +120,10 @@ export function setOnChainPriceFallback(fn) {
 // Simpler than maintaining two separate Maps and easier to inspect.
 
 const STATIC_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-const PRICE_TTL_MS  = 60 * 1000;            // 60s
+const PRICE_TTL_MS  = 60 * 1000;            // 60s: SOL and the stablecoins
+// Other tokens' prices are for display (launches read prices from the pools themselves): keep them
+// five minutes, so a page of a dozen tokens doesn't re-ask every price API each minute.
+const TOKEN_PRICE_TTL_MS = 5 * 60 * 1000;
 
 // Soft cap on cache entries. Map preserves insertion order, so removing
 // the first key on overflow gives us FIFO eviction. Set well above any
@@ -184,12 +202,18 @@ function writeCacheDisplayMeta(mint, { imageUrl, name }) {
   trimCache();
 }
 
+const FAST_PRICE_MINTS = new Set([
+  'So11111111111111111111111111111111111111112',
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+]);
+
 function writeCachePrice(mint, priceUsd) {
   const existing = cache.get(mint) || {};
   cache.set(mint, {
     ...existing,
     priceUsd,
-    priceExpiresAt: Date.now() + PRICE_TTL_MS,
+    priceExpiresAt: Date.now() + (FAST_PRICE_MINTS.has(mint) ? PRICE_TTL_MS : TOKEN_PRICE_TTL_MS),
   });
   trimCache();
 }
@@ -467,7 +491,7 @@ async function fetchPriceFromGecko(mintAddress) {
   // top_pools" — i.e., it's unambiguous about WHICH token it refers
   // to (the one we asked about). No disambiguation needed here.
   try {
-    const resp = await fetch(`${GECKO_BASE}/tokens/${mintAddress}`, {
+    const resp = await geckoFetch(`${GECKO_BASE}/tokens/${mintAddress}`, {
       headers: { Accept: 'application/json' },
     });
     if (resp.ok) {
@@ -494,7 +518,7 @@ async function fetchPriceFromGecko(mintAddress) {
   // The pure logic lives in extractPriceFromGeckoPools (exported so it
   // can be unit-tested with synthetic fixtures).
   try {
-    const resp = await fetch(`${GECKO_BASE}/tokens/${mintAddress}/pools`, {
+    const resp = await geckoFetch(`${GECKO_BASE}/tokens/${mintAddress}/pools`, {
       headers: { Accept: 'application/json' },
     });
     if (!resp.ok) {
@@ -863,7 +887,7 @@ async function fetchDisplayMetaFromDexScreener(mintAddress) {
 // Returns {imageUrl, name} or null.
 async function fetchDisplayMetaFromGecko(mintAddress) {
   try {
-    const resp = await fetch(`${GECKO_BASE}/tokens/${mintAddress}/info`, {
+    const resp = await geckoFetch(`${GECKO_BASE}/tokens/${mintAddress}/info`, {
       headers: { Accept: 'application/json' },
     });
     if (!resp.ok) {
