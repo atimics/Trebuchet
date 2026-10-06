@@ -176,3 +176,34 @@ test('a position is only adopted when it belongs to the pool being checked', () 
   assert.match(source, /positionInPool: positionState\.pool\.equals\(pool\)/);
   assert.match(source, /checks\.passed = checks\.positionInPool && /);
 });
+
+test('a coin\'s Meteora pools appear among its markets, read from the chain by address', async () => {
+  const rugMint = 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG';
+  const reads = [];
+  lp.setDammServiceForTests({
+    async readPoolMarket({ pool }) {
+      reads.push(pool);
+      if (pool === 'PoolSol') return { poolId: 'PoolSol', venue: 'meteora-damm-v2', quoteMint: WSOL_MINT, tokenReserve: 448000, quoteReserve: 0, quotePerToken: 0.0001656, feeRate: 0.02 };
+      if (pool === 'PoolRug') return { poolId: 'PoolRug', venue: 'meteora-damm-v2', quoteMint: rugMint, tokenReserve: 50000, quoteReserve: 0, quotePerToken: 2, feeRate: 0.0025 };
+      return null;
+    },
+  });
+  try {
+    const rows = await hooks.meteoraMarketRows({ connection: {}, tokenMint: 'Mint', poolIds: ['PoolSol', 'PoolRug', 'NotAPool'], getUsd: async (mint) => (mint === WSOL_MINT ? 120 : 0.006) });
+    assert.deepEqual(reads, ['PoolSol', 'PoolRug', 'NotAPool']);
+    assert.equal(rows.length, 2, 'an address that is not this token\'s pool is left out');
+    assert.deepEqual([rows[0].type, rows[0].isSolPool, rows[0].quoteSymbol, rows[0].priceSol], ['Meteora DAMM v2', true, 'SOL', 0.0001656]);
+    assert.equal(rows[1].isSolPool, false);
+    assert.ok(Math.abs(rows[1].priceSol - 2 * (0.006 / 120)) < 1e-12, 'a pair pool is priced in SOL through its quote');
+  } finally { lp.setDammServiceForTests(null); }
+  const server = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  assert.match(server, /listTokenMarkets\(mint, \{ meteoraPoolIds: meteoraPoolIdsFor\(journals\) \}\)/);
+  assert.match(server, /result\?\.venue === 'meteora-damm-v2' && result\.poolId/);
+});
+
+test('the verification counts Meteora vaults as pool supply and reads the pool\'s permanent lock', () => {
+  const source = fs.readFileSync(new URL('../tokenMarketEvidence.js', import.meta.url), 'utf8');
+  assert.match(source, /row\.owner === METEORA_POOL_AUTHORITY[\s\S]*?row\.kind = 'meteora-damm-v2-vault';\n      poolAmount \+= BigInt\(row\.amount\);/);
+  assert.match(source, /if \(info\?\.owner\?\.equals\(CP_AMM_PROGRAM_ID\)\) return readMeteoraPoolEvidence/);
+  assert.match(source, /kind: 'meteora-permanent-lock', lockedPercent/);
+});

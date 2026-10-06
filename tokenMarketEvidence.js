@@ -1,6 +1,7 @@
 import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, unpackAccount } from '@solana/spl-token';
 import { PoolInfoLayout, PositionInfoLayout, LockClPositionLayoutV2, getPdaPersonalPositionAddress } from '@raydium-io/raydium-sdk-v2';
+import { CP_AMM_PROGRAM_ID, CpAmm, derivePoolAuthority } from '@meteora-ag/cp-amm-sdk';
 import { clmmLockPrograms, decodeClmmLock } from './clmmLockEvidence.js';
 import { redactSensitiveText } from './logRedaction.js';
 
@@ -59,6 +60,10 @@ export async function readHolderSample(connection, mint, supply, network = 'main
     if (isPool) {
       row.kind = 'raydium-clmm-vault';
       poolAmount += BigInt(row.amount);
+    } else if (row.owner === METEORA_POOL_AUTHORITY) {
+      // Every Meteora DAMM v2 vault is owned by the program's one pool authority.
+      row.kind = 'meteora-damm-v2-vault';
+      poolAmount += BigInt(row.amount);
     } else if (info?.owner?.equals(SystemProgram.programId) && !info.executable && PublicKey.isOnCurve(new PublicKey(row.owner).toBytes())) {
       row.kind = 'wallet';
       wallets.set(row.owner, (wallets.get(row.owner) || 0n) + BigInt(row.amount));
@@ -71,7 +76,7 @@ export async function readHolderSample(connection, mint, supply, network = 'main
   const walletRows = [...wallets].map(([owner, amount]) => ({ owner, amount: amount.toString() }))
     .sort((a, b) => BigInt(a.amount) > BigInt(b.amount) ? -1 : BigInt(a.amount) < BigInt(b.amount) ? 1 : 0);
   return {
-    scope: 'Largest 20 token accounts; Raydium CLMM vaults verified on-chain.',
+    scope: 'Largest 20 token accounts; Raydium CLMM and Meteora DAMM v2 vaults verified on-chain.',
     slot: result.context?.slot ?? null,
     accounts: parsed,
     wallets: walletRows,
@@ -95,10 +100,39 @@ async function currentFeeOwner(connection, mint) {
   return { address: account.owner.toBase58(), tokenAccount: address.toBase58(), slot: largest.context?.slot ?? null };
 }
 
+const METEORA_POOL_AUTHORITY = derivePoolAuthority().toBase58();
+
+// A Meteora DAMM v2 pool: reserves from its vaults (owned by the pool authority), and its lock as
+// the share of the pool's liquidity that is permanently locked. There are no separate lock records.
+async function readMeteoraPoolEvidence(connection, address, mint, inspectedAt) {
+  const state = await new CpAmm(connection).fetchPoolState(address);
+  if (!state.tokenAMint.equals(new PublicKey(mint)) && !state.tokenBMint.equals(new PublicKey(mint))) {
+    throw new Error('This Meteora pool does not hold this token.');
+  }
+  const vaults = await connection.getMultipleParsedAccounts([state.tokenAVault, state.tokenBVault], { commitment: 'finalized' });
+  const [a, b] = vaults.value.map((account) => account?.data?.parsed?.info || null);
+  if (!a || !b || a.owner !== METEORA_POOL_AUTHORITY || b.owner !== METEORA_POOL_AUTHORITY) throw new Error('Pool vault ownership changed.');
+  const tokenIsA = state.tokenAMint.toBase58() === mint;
+  const reserves = [
+    { mint: state.tokenAMint.toBase58(), amount: a.tokenAmount.amount, decimals: a.tokenAmount.decimals },
+    { mint: state.tokenBMint.toBase58(), amount: b.tokenAmount.amount, decimals: b.tokenAmount.decimals },
+  ];
+  const liquidity = BigInt(state.liquidity.toString());
+  const locked = BigInt(state.permanentLockLiquidity.toString());
+  const lockedPercent = liquidity > 0n ? Number((locked * 10000n) / liquidity) / 100 : 0;
+  return {
+    poolId: address.toBase58(), venue: 'meteora-damm-v2', inspectedAt, token: reserves[tokenIsA ? 0 : 1], quote: reserves[tokenIsA ? 1 : 0],
+    reserveScope: 'Vault balances. Request a sell quote for proceeds.',
+    locks: locked > 0n ? [{ kind: 'meteora-permanent-lock', lockedPercent, liquidity: liquidity.toString(), lockedLiquidity: locked.toString() }] : [],
+    lockStatus: 'checked', lockError: null,
+  };
+}
+
 export async function readPoolEvidence(connection, poolId, mint, network = 'mainnet', { includeLocks = true } = {}) {
   const inspectedAt = new Date().toISOString();
   const address = new PublicKey(poolId);
   const info = await connection.getAccountInfo(address, 'finalized');
+  if (info?.owner?.equals(CP_AMM_PROGRAM_ID)) return readMeteoraPoolEvidence(connection, address, mint, inspectedAt);
   const pool = decodePool(info, network);
   if (!pool || (!pool.mintA.equals(new PublicKey(mint)) && !pool.mintB.equals(new PublicKey(mint)))) {
     throw new Error('This pool needs a supported Raydium CLMM account.');

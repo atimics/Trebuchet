@@ -42,6 +42,7 @@ import {
   derivePositionAddress,
   derivePositionNftAccount,
   getBaseFeeParams,
+  getPriceFromSqrtPrice,
   getUnClaimLpFee,
 } from '@meteora-ag/cp-amm-sdk';
 
@@ -363,4 +364,42 @@ export async function listPositions({ connection, owner }) {
     });
   }
   return rows;
+}
+
+// The pool's base fee: its first field is the cliff fee numerator, a u64 over 1e9.
+function baseFeeRate(poolFees) {
+  const data = poolFees?.baseFee?.baseFeeInfo?.data;
+  if (!Array.isArray(data) && !(data instanceof Uint8Array)) return null;
+  const bytes = Buffer.from(Array.from(data).slice(0, 8));
+  if (bytes.length < 8) return null;
+  const numerator = Number(bytes.readBigUInt64LE(0));
+  return Number.isFinite(numerator) ? numerator / 1e9 : null;
+}
+
+/**
+ * A Meteora DAMM v2 pool as a market row, read from the chain: which side the token is on, both
+ * reserves (the vault balances), the price in quote per token, and the base fee. Null when the
+ * account is not a pool holding this token.
+ */
+export async function readPoolMarket({ connection, pool, mint }) {
+  const poolKey = new PublicKey(pool);
+  const mintKey = new PublicKey(mint);
+  const state = await new CpAmm(connection).fetchPoolState(poolKey);
+  const tokenIsA = state.tokenAMint.equals(mintKey);
+  if (!tokenIsA && !state.tokenBMint.equals(mintKey)) return null;
+  const vaults = await connection.getMultipleParsedAccounts([state.tokenAVault, state.tokenBVault], { commitment: 'confirmed' });
+  const amount = (account) => account?.data?.parsed?.info?.tokenAmount || null;
+  const [a, b] = vaults.value.map(amount);
+  if (!a || !b) return null;
+  const bPerA = Number(getPriceFromSqrtPrice(state.sqrtPrice, a.decimals, b.decimals).toString());
+  const quoteMint = (tokenIsA ? state.tokenBMint : state.tokenAMint).toBase58();
+  return {
+    poolId: poolKey.toBase58(),
+    venue: 'meteora-damm-v2',
+    quoteMint,
+    tokenReserve: Number((tokenIsA ? a : b).uiAmountString),
+    quoteReserve: Number((tokenIsA ? b : a).uiAmountString),
+    quotePerToken: bPerA > 0 ? (tokenIsA ? bPerA : 1 / bPerA) : null,
+    feeRate: baseFeeRate(state.poolFees),
+  };
 }
