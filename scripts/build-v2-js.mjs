@@ -35,6 +35,7 @@ export const v2FeatureNames = [
   "launch/readiness.js",
   "proof/replacement-audit.js",
   "wallet/chip.js",
+  "discovery/token-card.js",
   "wallet/view.js",
   "discovery/view.js",
   "shell/settings.js",

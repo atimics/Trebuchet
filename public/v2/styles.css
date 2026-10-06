@@ -17132,3 +17132,46 @@ body[data-coin-mode="onchain"] #view-launch #launchNextRail {
 
 /* A rail button's label wraps rather than running past the button. */
 .launch-next-rail .rail-act { white-space: normal; overflow-wrap: anywhere; line-height: 1.25; padding-block: 8px; height: auto; }
+
+/* Token card: a coin's price and how its liquidity splits across its pools. Fixed size. */
+.token-card {
+  position: fixed;
+  z-index: 60;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 172px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
+  color: var(--ink);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+}
+.token-card[hidden] { display: none; }
+.token-card header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 8px; }
+.token-card header span { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.token-card header b { font-variant-numeric: tabular-nums; }
+.token-card-body { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 12px; margin: 8px 0 0; min-height: 0; }
+.token-card-body.is-error { display: block; color: var(--red); }
+.token-card-empty { display: block; color: var(--muted); }
+.token-card-body ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; min-width: 0; }
+.token-card-body li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 8px; font-size: 12px; }
+.token-card-body li i { width: 8px; height: 8px; border-radius: 2px; }
+.token-card-body li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.token-card-body li small { margin-left: 6px; color: var(--muted); }
+.token-card-body li b { font-weight: 500; font-variant-numeric: tabular-nums; }
+.token-card footer { display: flex; gap: 10px; align-items: center; font-size: 11px; color: var(--muted); }
+.token-card footer a { margin-left: auto; color: var(--blue); }
+.token-card i.is-0, .token-pie .is-0 { background: var(--green); stroke: var(--green); }
+.token-card i.is-1, .token-pie .is-1 { background: var(--blue); stroke: var(--blue); }
+.token-card i.is-2, .token-pie .is-2 { background: var(--amber); stroke: var(--amber); }
+.token-card i.is-3, .token-pie .is-3 { background: var(--violet); stroke: var(--violet); }
+.token-card i.is-rest, .token-pie .is-rest { background: var(--muted); stroke: var(--muted); }
+.token-pie { display: block; transform: none; }
+.token-pie-track { stroke: var(--line); }
+.token-symbol { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
+.token-price-chip { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; font-size: 13px; font-variant-numeric: tabular-nums; cursor: help; }
+.token-price-chip small { color: var(--muted); }
