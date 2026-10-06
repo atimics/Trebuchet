@@ -32,16 +32,18 @@ export function airdropChain(options = {}) {
   };
   return { ...first, connection, ledgers };
 }
-export function airdropContext({ owner, connection, updateJournal, seedPlan = true }) {
+export function airdropContext({ owner, connection, updateJournal, seedPlan = true, batchSize = 1, wrapWalletExecution = (value) => value }) {
   const journal = createProfileJournalStore(owner.profile), walletPublicKey = sweepWallet.publicKey.toBase58();
   if (!journal.activeForWallet(walletPublicKey)) {
     journal.start({ walletPublicKey });
     journal.upsertForWallet(walletPublicKey, { token: { mint: airdropInput.tokenMint },
       ...(seedPlan ? { poolPlan: { airdropPlan: { tokenMint: airdropInput.tokenMint, tokenDecimals: 6, recipients: airdropInput.recipients } } } : {}) });
   }
-  const walletExecution = createWalletExecutionRuntime({ owner, getScopeId: (wallet) => journal.activeForWallet(wallet)?.id,
-    networkForRequest: () => 'devnet', createConnection: () => connection, timeoutMs: 0 });
+  const walletExecution = wrapWalletExecution(createWalletExecutionRuntime({ owner, getScopeId: (wallet) => journal.activeForWallet(wallet)?.id,
+    networkForRequest: () => 'devnet', createConnection: () => connection, timeoutMs: 0 }), journal);
   const runtime = createAirdropExecutionRuntime({ owner, walletExecution, getJournal: (wallet) => journal.activeForWallet(wallet),
-    createConnection: () => connection, updateJournal: updateJournal || ((wallet, patch, event) => journal.upsertForWallet(wallet, patch, event)), networkForRequest: () => 'devnet', paceMs: 0 });
+    createConnection: () => connection, updateJournal: updateJournal || ((wallet, patch, event) => journal.upsertForWallet(wallet, patch, event)), networkForRequest: () => 'devnet', paceMs: 0,
+    // This simulated chain understands single-recipient transfers; batches are tested on a local validator.
+    batchSize });
   return { journal, walletExecution, runtime };
 }

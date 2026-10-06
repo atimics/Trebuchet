@@ -42,7 +42,7 @@ export function normalizeAirdropPlan(input, walletPublicKey) {
 }
 
 export function createAirdropExecutionRuntime({ owner, walletExecution, getJournal, updateJournal,
-  createConnection = () => createExecutionConnection(), networkForRequest = getNetwork, paceMs = 350, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  createConnection = () => createExecutionConnection(), networkForRequest = getNetwork, paceMs = 350, batchSize = 5, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
   const withStore = (run) => {
     owner.assertActive();
@@ -113,6 +113,21 @@ export function createAirdropExecutionRuntime({ owner, walletExecution, getJourn
             || value.planDigest !== root.launch.planDigest || !root.plan.recipients.some((row) => row.wallet === value.recipient && row.amountRaw === value.amountRaw)) throw paused('Resume the saved airdrop receipt verification', op.id);
         return { op, legacy: true, tokenMint: root.plan.tokenMint };
       }
+      if (op.kind === 'token-transfer-batch') {
+        const action = launch?.config.action;
+        if (action?.context?.purpose !== purpose) return null;
+        const value = action.context;
+        const saved = (value.recipients || []).map((row) => `${row.recipient}:${row.amountRaw}`);
+        const sent = op.payload.recipients.map((row) => `${row.destinationWallet}:${row.amountRaw}`);
+        if (launch.config.scopeId !== ctx.scopeId || launch.network !== ctx.network || launch.config.genesisHash !== SOLANA_GENESIS_HASHES[ctx.network]
+            || op.payload.mint !== value.tokenMint || op.payload.programId !== value.programId || op.payload.decimals !== value.decimals
+            || publicJson(saved) !== publicJson(sent)
+            || !root || value.planDigest !== root.launch.planDigest
+            || !value.recipients.every((row) => root.plan.recipients.some((planned) => planned.wallet === row.recipient && planned.amountRaw === row.amountRaw))) {
+          throw paused('Recover the original airdrop transfer intent', op.id);
+        }
+        return { op, action, batch: true };
+      }
       if (op.kind !== 'token-transfer') return null;
       const action = launch?.config.action;
       if (action?.context?.purpose !== purpose) return null;
@@ -122,7 +137,7 @@ export function createAirdropExecutionRuntime({ owner, walletExecution, getJourn
           || op.payload.destinationWallet !== value.recipient || op.payload.amountRaw !== value.amountRaw) throw paused('Recover the original airdrop transfer intent', op.id);
       return { op, action };
     });
-    if (saved && !saved.legacy) validateAction(walletPublicKey, saved.action, saved.op.id);
+    if (saved && !saved.legacy && !saved.batch) validateAction(walletPublicKey, saved.action, saved.op.id);
     return saved;
   };
   const checkpoint = (walletPublicKey, receipt, action) => {
@@ -132,7 +147,8 @@ export function createAirdropExecutionRuntime({ owner, walletExecution, getJourn
     const previous = saved.journal.airdrop || {}, delivered = previous.transferred || [];
     const row = { wallet: value.recipient, tokens: formatTokenAmountRaw(value.amountRaw, value.decimals), amountRaw: value.amountRaw,
       receivedRaw: receipt.receivedRaw, transferFeeRaw: receipt.transferFeeRaw, txId: receipt.txId, operationId: receipt.operationId, attempts: 1 };
-    const previousRow = delivered.find((item) => item.operationId === receipt.operationId);
+    // A batch delivers several recipients under one operation: match the row by its wallet too.
+    const previousRow = delivered.find((item) => item.operationId === receipt.operationId && item.wallet === row.wallet);
     if (previousRow && Object.entries(row).every(([key, value]) => previousRow[key] === value)) return;
     updateJournal(walletPublicKey, { airdrop: { ...previous, transferred: [...delivered.filter((item) => item.wallet !== row.wallet), row],
       failed: (previous.failed || []).filter((item) => item.wallet !== row.wallet) } },
@@ -221,7 +237,8 @@ export function createAirdropExecutionRuntime({ owner, walletExecution, getJourn
     let result = null;
     if (saved) {
       if (tokenMint && tokenMint !== (saved.legacy ? saved.tokenMint : saved.action.context.tokenMint)) throw paused('Resume the original airdrop token', saved.op.id);
-      if (!saved.legacy) result = await walletExecution.recover({ tempWalletSecretKey, destinationWallet: saved.action.context.recipient });
+      if (saved.batch) result = await walletExecution.recover({ tempWalletSecretKey });
+      else if (!saved.legacy) result = await walletExecution.recover({ tempWalletSecretKey, destinationWallet: saved.action.context.recipient });
     }
     replay(walletPublicKey);
     await verifyLegacy(walletPublicKey);
@@ -237,23 +254,40 @@ export function createAirdropExecutionRuntime({ owner, walletExecution, getJourn
       await recover(input);
       const saved = savedPlan(walletPublicKey), request = normalizeAirdropPlan(withProgram(input, saved?.plan.programId), walletPublicKey);
       matches(request, saved.plan);
-      const transferred = [];
-      for (const row of request.recipients) {
-        const done = getJournal(walletPublicKey)?.airdrop?.transferred?.find((item) => item.wallet === row.wallet);
-        if (done) { transferred.push(done); continue; }
-        if (transferred.length) await sleep(paceMs);
-        const action = { key: `airdrop/${row.wallet}`, context: { purpose, scopeId: saved.scopeId, network: saved.network,
-          planDigest: saved.launch.planDigest, tokenMint: saved.plan.tokenMint, programId: saved.plan.programId,
-          decimals: saved.plan.tokenDecimals, recipient: row.wallet, amountRaw: row.amountRaw } };
-        const receipt = await walletExecution.transferToken({ tempWalletSecretKey: input.tempWalletSecretKey, destinationWallet: row.wallet,
-          mint: saved.plan.tokenMint, programId: saved.plan.programId, decimals: saved.plan.tokenDecimals, amountRaw: row.amountRaw, action,
-          sourceTokenAccount: getAssociatedTokenAddressSync(new PublicKey(saved.plan.tokenMint), wallet.publicKey, false, new PublicKey(saved.plan.programId)).toBase58() });
-        checkpoint(walletPublicKey, receipt, action);
-        const delivered = getJournal(walletPublicKey).airdrop.transferred.find((item) => item.wallet === row.wallet);
-        transferred.push(delivered);
-        try { input.onProgress?.({ recipient: row.wallet, tokens: delivered.tokens, success: true }); }
-        catch (error) { throwIfExecutionPaused(error); }
+      const sourceTokenAccount = getAssociatedTokenAddressSync(new PublicKey(saved.plan.tokenMint), wallet.publicKey, false, new PublicKey(saved.plan.programId)).toBase58();
+      const base = { purpose, scopeId: saved.scopeId, network: saved.network, planDigest: saved.launch.planDigest,
+        tokenMint: saved.plan.tokenMint, programId: saved.plan.programId, decimals: saved.plan.tokenDecimals };
+      const deliveredRow = (row) => getJournal(walletPublicKey)?.airdrop?.transferred?.find((item) => item.wallet === row.wallet);
+      const remaining = request.recipients.filter((row) => !deliveredRow(row));
+      // Several recipients a transaction: one transaction in flight at a time, each landing whole.
+      const size = Math.max(1, Math.min(batchSize, walletExecution.transferBatchMax || 1));
+      for (let start = 0, sent = 0; start < remaining.length; start += size, sent += 1) {
+        const group = remaining.slice(start, start + size);
+        if (sent) await sleep(paceMs);
+        if (group.length === 1 || !walletExecution.transferTokenBatch) {
+          for (const row of group) {
+            const action = { key: `airdrop/${row.wallet}`, context: { ...base, recipient: row.wallet, amountRaw: row.amountRaw } };
+            const receipt = await walletExecution.transferToken({ tempWalletSecretKey: input.tempWalletSecretKey, destinationWallet: row.wallet,
+              mint: saved.plan.tokenMint, programId: saved.plan.programId, decimals: saved.plan.tokenDecimals, amountRaw: row.amountRaw, action, sourceTokenAccount });
+            checkpoint(walletPublicKey, receipt, action);
+          }
+        } else {
+          const action = { key: `airdrop-batch/${hash(group.map((row) => row.wallet))}`,
+            context: { ...base, recipients: group.map((row) => ({ recipient: row.wallet, amountRaw: row.amountRaw })) } };
+          await walletExecution.transferTokenBatch({ tempWalletSecretKey: input.tempWalletSecretKey, mint: saved.plan.tokenMint, programId: saved.plan.programId,
+            decimals: saved.plan.tokenDecimals, sourceTokenAccount, action,
+            recipients: group.map((row) => ({ destinationWallet: row.wallet, amountRaw: row.amountRaw })) });
+          // Each recipient is recorded from the batch's verified receipt, as a single transfer would be.
+          replay(walletPublicKey);
+        }
+        for (const row of group) {
+          const delivered = deliveredRow(row);
+          if (!delivered) throw paused('Verify each recipient of the airdrop transaction before continuing');
+          try { input.onProgress?.({ recipient: row.wallet, tokens: delivered.tokens, success: true }); }
+          catch (error) { throwIfExecutionPaused(error); }
+        }
       }
+      const transferred = request.recipients.map((row) => deliveredRow(row));
       return { transferred, failed: [] };
     },
   };
