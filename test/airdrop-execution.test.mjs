@@ -8,6 +8,7 @@ import { Keypair } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { acquireProfileOwner } from '../packages/runtime/src/owner.js';
 import { openRuntimeStore } from '../packages/runtime/src/store.js';
+import { SOLANA_GENESIS_HASHES } from '../packages/runtime/src/solana.js';
 import { airdropChain, airdropContext, airdropInput, recipients, sweepWallet } from './fixtures/airdrop-chain.mjs';
 
 const walletPublicKey = sweepWallet.publicKey.toBase58();
@@ -323,4 +324,51 @@ test('an older receipt remains recoverable after a failed chain read', async (t)
   assert.equal(f.state.sends.length, 2);
   const db = openRuntimeStore(f.profile);
   try { assert.equal(db.getOperation(operation.id).state, 'confirmed'); } finally { db.close(); }
+});
+
+// The batch service itself is tested against a local validator. This drives the airdrop runtime's
+// grouping, replay, and recovery through a stand-in that stores a confirmed batch as that service does.
+function batchFixture(t, { loseReply = false } = {}) {
+  const calls = [];
+  const f = fixture(t, { batchSize: 5, wrapWalletExecution: (walletExecution, journal) => ({ ...walletExecution, transferBatchMax: 5,
+    transferTokenBatch: async ({ mint, programId, decimals, sourceTokenAccount, recipients: rows, action }) => {
+      calls.push(rows);
+      const scopeId = journal.activeForWallet(walletPublicKey).id;
+      const db = openRuntimeStore(f.profile);
+      try {
+        const launch = db.saveLaunch({ id: `batch-${calls.length}`, walletPublicKey, network: 'devnet', planDigest: String(calls.length).padStart(64, "0"),
+          config: { scopeId, action, genesisHash: SOLANA_GENESIS_HASHES.devnet } });
+        const operation = db.prepareOperation({ launchId: launch.id, kind: 'token-transfer-batch',
+          payload: { mint, programId, decimals, sourceTokenAccount, recipients: rows } });
+        db.setOperationState(operation.id, 'confirmed', { chain: { signature: `sig-${calls.length}`, mint, programId, decimals, sourceTokenAccount,
+          recipients: rows.map((row) => ({ ...row, destinationTokenAccount: `ata-${row.destinationWallet}`, receivedRaw: row.amountRaw, transferFeeRaw: '0' })), feeLamports: 5000, rentLamports: 0 } });
+        if (loseReply && calls.length === 1) throw new Error('reply lost');
+        return { operationId: operation.id, txId: `sig-${calls.length}` };
+      } finally { db.close(); }
+    } }) });
+  return { ...f, calls };
+}
+
+test('airdrop recipients go out several to a transaction and each is recorded from its receipt', async (t) => {
+  const f = batchFixture(t);
+  const progress = [];
+  const result = await f.runtime.execute({ ...airdropInput, onProgress: (row) => progress.push(row.recipient) });
+  assert.equal(f.calls.length, 1, 'both recipients share one transaction');
+  assert.deepEqual(f.calls[0].map((row) => row.destinationWallet), recipients);
+  assert.equal(f.state.sends.length, 0, 'no single transfers are sent');
+  assert.deepEqual(result.transferred.map((row) => [row.wallet, row.amountRaw, row.txId]), recipients.map((wallet) => [wallet, '2500000', 'sig-1']));
+  assert.deepEqual(progress, recipients);
+  const journal = f.journal.activeForWallet(walletPublicKey);
+  assert.equal(journal.events.filter((event) => event.stage === 'airdrop_recipient_done').length, 2);
+  assert.deepEqual(await f.runtime.execute(airdropInput), result, 'a finished airdrop sends nothing again');
+  assert.equal(f.calls.length, 1);
+});
+
+test('a batch whose reply was lost is recorded from its saved receipt, not sent again', async (t) => {
+  const f = batchFixture(t, { loseReply: true });
+  await assert.rejects(f.runtime.execute(airdropInput), /reply lost/);
+  assert.equal(f.journal.activeForWallet(walletPublicKey).airdrop?.transferred?.length || 0, 0);
+  const result = await f.runtime.execute(airdropInput);
+  assert.equal(f.calls.length, 1, 'the confirmed batch is not sent again');
+  assert.deepEqual(result.transferred.map((row) => row.txId), ['sig-1', 'sig-1']);
 });
