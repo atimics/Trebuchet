@@ -641,11 +641,16 @@ function currentClassicModel() {
       ? { venue: state.solPoolVenue, damm: state.solPoolDamm }
       : String(pool.id || '').endsWith('-flywheel')
         ? { venue: state.quotePoolVenue, damm: state.quotePoolDamm }
-        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange } } : null;
+        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange, feeModel: custom.dammFeeModel, ramp: custom.dammRamp } } : null;
     if (choice?.venue !== 'meteora-damm-v2') return;
     Object.assign(pool, {
       venue: 'meteora-damm-v2',
-      damm: { feeBps: Number(choice.damm?.feeBps) || 25, rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000 },
+      damm: {
+        feeBps: Number(choice.damm?.feeBps) || 25,
+        rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000,
+        feeModel: choice.damm?.feeModel || 'fixed',
+        ...(choice.damm?.ramp ? { ramp: { endBps: Number(choice.damm.ramp.endBps) || 25, durationSec: Number(choice.damm.ramp.durationSec) || 30 * 24 * 3600 } } : {}),
+      },
       distribution: [{ sharePercent: 100, recipient: null }],
       ladder: { mode: 'off' },
       support: { mode: 'off' },

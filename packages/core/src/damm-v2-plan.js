@@ -42,12 +42,67 @@ export const DAMM_V2_DEFAULTS = Object.freeze({
   startingMarketCapUsd: 250_000,
   rangeMultiple: 1000,
   feeBps: 25,
+  feeModel: 'fixed',
 });
 export const DAMM_V2_LIMITS = Object.freeze({
   startingMarketCapUsd: [1_000, 1_000_000_000],
   rangeMultiple: [10, 100_000],
   feeBps: [1, 1_000],
+  // Ramp: startingFeeBps -> endingFeeBps over a total duration, in seconds.
+  rampFeeBps: [1, 1_000],
+  rampDurationSec: [1, 90 * 24 * 3600],
+  // Dynamic: the drop is bounded by the pool charging its base plus up to a
+  // max price-move premium. maxPriceChangeBps is the volatility swing bound.
+  dynamicMaxPriceChangeBps: [1, 5_000],
+  // Market-cap scheduler: fee decays as the pool's market cap crosses one
+  // priceMultiple, then expires after schedulerExpirationDuration seconds.
+  marketcapPriceMultiple: [1, 1_000_000],
+  marketcapExpirationSec: [1, 90 * 24 * 3600],
 });
+
+export const DAMM_FEE_MODELS = Object.freeze(['fixed', 'ramp', 'dynamic', 'marketcap']);
+
+/**
+ * Validate and normalize a Meteora DAMM v2 fee schedule. Most of the
+ * accepted shape mirrors what the cp-amm-sdk expects, expressed in bps:
+ *
+ *   { model: 'fixed', bps: 25 }
+ *   { model: 'ramp', bps: 100, ramp: { endBps: 25, durationSec: 30*86400 } }
+ *   { model: 'dynamic', bps: 25, dynamic: { maxPriceChangeBps: 500 } }
+ *   { model: 'marketcap', bps: 25, marketcap: { endBps, priceMultiple, expirationSec } }
+ *
+ * Returns a normalized schedule with every default explicit. Throws with a
+ * read-able message when a knob is out of range. Pure: no chain, no SDK.
+ */
+export function normalizeDammFeePlan(input = {}) {
+  const model = DAMM_FEE_MODELS.includes(String(input.model || 'fixed')) ? String(input.model || 'fixed') : 'fixed';
+  const bps = bounded('Fee schedule base', input.bps ?? DAMM_V2_DEFAULTS.feeBps, DAMM_V2_LIMITS.feeBps, true);
+  const rampBps = bounded('Ramp fee', input.ramp?.endBps ?? bps, DAMM_V2_LIMITS.rampFeeBps, true);
+  const durationSec = bounded('Ramp duration', input.ramp?.durationSec ?? 30 * 24 * 3600, DAMM_V2_LIMITS.rampDurationSec, true);
+  const maxPriceChangeBps = bounded('Dynamic fee swing', input.dynamic?.maxPriceChangeBps ?? 500, DAMM_V2_LIMITS.dynamicMaxPriceChangeBps, true);
+  const marketcapEndBps = bounded('Market-cap end fee', input.marketcap?.endBps ?? bps, DAMM_V2_LIMITS.rampFeeBps, true);
+  const priceMultiple = bounded('Market-cap multiple', input.marketcap?.priceMultiple ?? 10, DAMM_V2_LIMITS.marketcapPriceMultiple);
+  const expirationSec = bounded('Market-cap scheduler expiry', input.marketcap?.expirationSec ?? 30 * 24 * 3600, DAMM_V2_LIMITS.marketcapExpirationSec, true);
+
+  switch (model) {
+    case 'fixed':
+      return { model: 'fixed', bps };
+    case 'ramp':
+      if (rampBps > bps) {
+        throw new Error('A ramp fee must decay: the end fee must be at or below the start fee');
+      }
+      return { model: 'ramp', bps, ramp: { endBps: rampBps, durationSec } };
+    case 'dynamic':
+      return { model: 'dynamic', bps, dynamic: { maxPriceChangeBps } };
+    case 'marketcap':
+      if (marketcapEndBps > bps) {
+        throw new Error('A market-cap fee must decay: the end fee must be at or below the start fee');
+      }
+      return { model: 'marketcap', bps, marketcap: { endBps: marketcapEndBps, priceMultiple, expirationSec } };
+    default:
+      throw new Error(`Fee model must be one of: ${DAMM_FEE_MODELS.join(', ')}`);
+  }
+}
 
 function bounded(name, value, [min, max], integer = false) {
   const number = Number(value);
