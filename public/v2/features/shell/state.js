@@ -238,10 +238,10 @@ const V2_VIEWPORT_SMOKE_REQUIRED_CHECKS = Object.freeze([
   'keyboardWalkthrough',
 ]);
 const DEFAULT_CLMM_FEE_TIERS = Object.freeze([
-  { index: 4, tradeFeeRate: 100, tickSpacing: 1 },
-  { index: 5, tradeFeeRate: 500, tickSpacing: 1 },
-  { index: 1, tradeFeeRate: 2500, tickSpacing: 60 },
-  { index: 3, tradeFeeRate: 10000, tickSpacing: 120 },
+  { index: 4, tradeFeeRate: 100, tickSpacing: 1, feeModel: 'fixed' },
+  { index: 5, tradeFeeRate: 500, tickSpacing: 1, feeModel: 'fixed' },
+  { index: 1, tradeFeeRate: 2500, tickSpacing: 60, feeModel: 'fixed' },
+  { index: 3, tradeFeeRate: 10000, tickSpacing: 120, feeModel: 'fixed' },
 ]);
 
 const DISCOVERY_STORAGE_KEY = 'trebuchet:v2:discovery-registry:v1';

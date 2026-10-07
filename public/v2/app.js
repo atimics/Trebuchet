@@ -239,10 +239,10 @@ const V2_VIEWPORT_SMOKE_REQUIRED_CHECKS = Object.freeze([
   'keyboardWalkthrough',
 ]);
 const DEFAULT_CLMM_FEE_TIERS = Object.freeze([
-  { index: 4, tradeFeeRate: 100, tickSpacing: 1 },
-  { index: 5, tradeFeeRate: 500, tickSpacing: 1 },
-  { index: 1, tradeFeeRate: 2500, tickSpacing: 60 },
-  { index: 3, tradeFeeRate: 10000, tickSpacing: 120 },
+  { index: 4, tradeFeeRate: 100, tickSpacing: 1, feeModel: 'fixed' },
+  { index: 5, tradeFeeRate: 500, tickSpacing: 1, feeModel: 'fixed' },
+  { index: 1, tradeFeeRate: 2500, tickSpacing: 60, feeModel: 'fixed' },
+  { index: 3, tradeFeeRate: 10000, tickSpacing: 120, feeModel: 'fixed' },
 ]);
 
 const DISCOVERY_STORAGE_KEY = 'trebuchet:v2:discovery-registry:v1';
@@ -4475,7 +4475,11 @@ function normalizeClmmFeeTier(tier) {
   if (!Number.isInteger(index) || index < 0) return null;
   if (!Number.isInteger(tradeFeeRate) || tradeFeeRate <= 0) return null;
   if (!Number.isInteger(tickSpacing) || tickSpacing <= 0) return null;
-  return { index, tradeFeeRate, tickSpacing };
+  // Dynamic-fee configs (Raydium CLMM upgrade, May 2026) keep their model tag
+  // so the picker, glossary, and evidence rows can disclose that the rate is
+  // a baseline, not the fee the pool always charges.
+  const feeModel = tier.feeModel === 'dynamic' ? 'dynamic' : 'fixed';
+  return { index, tradeFeeRate, tickSpacing, feeModel };
 }
 
 function normalizeClmmFeeTiers(tiers) {
@@ -4492,7 +4496,8 @@ function normalizeClmmFeeTiers(tiers) {
 
 function feeTierLabel(tier) {
   const feePercent = Number(tier.tradeFeeRate || 0) / 10000;
-  return `${feePercent}% / spacing ${tier.tickSpacing}${Number(tier.index) === DEFAULT_POOL_CONFIG_INDEX ? ' (default)' : ''}`;
+  const dynamic = tier.feeModel === 'dynamic' ? ' · dynamic' : '';
+  return `${feePercent}% / spacing ${tier.tickSpacing}${dynamic}${Number(tier.index) === DEFAULT_POOL_CONFIG_INDEX ? ' (default)' : ''}`;
 }
 
 function feeTierOptionsHtml(selectedIndex) {
@@ -4500,7 +4505,7 @@ function feeTierOptionsHtml(selectedIndex) {
   const selected = Math.floor(Number(selectedIndex));
   const hasSelected = tiers.some((tier) => tier.index === selected);
   const options = tiers.map((tier) => `
-    <option value="${tier.index}" data-short="${escapeHtml(`${Number(tier.tradeFeeRate || 0) / 10000}%`)}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(feeTierLabel(tier))}</option>
+    <option value="${tier.index}" data-short="${escapeHtml(`${Number(tier.tradeFeeRate || 0) / 10000}%`)}" title="${tier.feeModel === 'dynamic' ? escapeHtml('Dynamic fee: the shown rate is the baseline; the pool charges more under volatility.') : ''}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(feeTierLabel(tier))}</option>
   `).join('');
   return `${options}${Number.isInteger(selected) && !hasSelected ? `<option value="${selected}" selected>Custom index ${selected}</option>` : ''}`;
 }
@@ -7803,6 +7808,7 @@ function feeTierInfo(index) {
     step: (Math.pow(1.0001, tier.tickSpacing) - 1) * 100,
     rank: tiers.indexOf(tier),
     count: tiers.length,
+    dynamic: tier.feeModel === 'dynamic',
   };
 }
 
@@ -7876,7 +7882,7 @@ function rowSwitchesHtml(row) {
     const shown = tiers.filter((tier) => RAYDIUM_ROW_TIERS.includes(tier.index) || tier.index === selected);
     fee = toggleGroupHtml({
       label: `${row.label} fee tier`, action: 'set-pool-tier', rowKey: row.key, selected,
-      options: (shown.length ? shown : tiers.slice(0, 4)).map((tier) => [tier.index, `${Number(tier.tradeFeeRate) / 10000}%`, `price steps of ${Number(((Math.pow(1.0001, tier.tickSpacing) - 1) * 100).toFixed(2))}%`])
+      options: (shown.length ? shown : tiers.slice(0, 4)).map((tier) => [tier.index, `${Number(tier.tradeFeeRate) / 10000}%${tier.feeModel === 'dynamic' ? ' · dynamic (base)' : ''}`, `price steps of ${Number(((Math.pow(1.0001, tier.tickSpacing) - 1) * 100).toFixed(2))}%`])
         .concat(tiers.some((tier) => tier.index === selected) ? [] : [[selected, `#${selected}`]]),
     });
   }
@@ -12377,7 +12383,8 @@ function v2ReportPoolFeeTierLabel(pool = {}, userPool = {}) {
   const tier = normalizeClmmFeeTiers(state.clmmFeeTiers).find((item) => item.index === index);
   if (tier) {
     const feePercent = Number(tier.tradeFeeRate || 0) / 10000;
-    return `${feePercent.toFixed(2)}% / spacing ${tickSpacing ?? tier.tickSpacing}`;
+    const dynamic = tier.feeModel === 'dynamic' ? ' · dynamic (base)' : '';
+    return `${feePercent.toFixed(2)}% / spacing ${tickSpacing ?? tier.tickSpacing}${dynamic}`;
   }
   if (Number.isFinite(tickSpacing) && Number.isFinite(index)) return `index ${index} / spacing ${tickSpacing}`;
   if (Number.isFinite(tickSpacing)) return `spacing ${tickSpacing}`;

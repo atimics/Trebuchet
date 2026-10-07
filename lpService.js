@@ -5380,6 +5380,13 @@ export async function createPoolsAndPositions({
         fundOwner: '',
         description: '',
       };
+      if (isDynamicFeeConfig(baseCfg)) {
+        console.log(
+          `AmmConfig index ${cfgIdx} is a DYNAMIC fee config: the pool charges its baseline ` +
+          `${(Number(baseCfg.tradeFeeRate) || 0) / 10000}% plus more under volatility. ` +
+          'The funding estimate and fee-key income must be read as ranges, not fixed rates.',
+        );
+      }
 
       // 6g. Phase 1: create the pool, open the wide main position(s)
       //     according to distribution, and open the ladder bands if
