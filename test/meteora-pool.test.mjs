@@ -116,7 +116,9 @@ test('the plan keeps a Meteora SOL pool as one locked position next to Raydium p
   }, { demoMode: true });
   const [sol, usdc] = plan.poolTopology.pools;
   assert.equal(sol.venue, 'meteora-damm-v2');
-  assert.deepEqual(sol.damm, { feeBps: 100, rangeMultiple: 100 });
+  // The normalized plan carries the full fee schedule: an explicit model and
+  // base bps from normalizeDammFeePlan, next to the UI's feeBps/rangeMultiple.
+  assert.deepEqual(sol.damm, { feeBps: 100, rangeMultiple: 100, model: 'fixed', bps: 100 });
   assert.deepEqual(sol.distribution.map((slice) => slice.sharePercent), [100]);
   assert.equal(sol.ladder.mode, 'off');
   assert.equal(sol.support.mode, 'off');
@@ -127,7 +129,7 @@ test('the plan keeps a Meteora SOL pool as one locked position next to Raydium p
   // The allocations the engine receives carry the venue: without it a Meteora pool was opened as Raydium CLMM.
   const [solAllocation, usdcAllocation] = plan.poolTopology.allocations;
   assert.equal(solAllocation.venue, 'meteora-damm-v2');
-  assert.deepEqual(solAllocation.damm, { feeBps: 100, rangeMultiple: 100 });
+  assert.deepEqual(solAllocation.damm, { feeBps: 100, rangeMultiple: 100, model: 'fixed', bps: 100 });
   assert.equal(usdcAllocation.venue, undefined);
 });
 
