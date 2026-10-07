@@ -522,9 +522,9 @@ const state = {
   launchPresetSignature: null,
   // The SOL pool's venue: Raydium CLMM, or a Meteora DAMM v2 pool (one locked position).
   solPoolVenue: 'raydium',
-  solPoolDamm: { feeBps: 25, rangeMultiple: 1000 },
+  solPoolDamm: { feeBps: 25, rangeMultiple: 1000, feeModel: 'fixed' },
   quotePoolVenue: 'raydium',
-  quotePoolDamm: { feeBps: 25, rangeMultiple: 1000 },
+  quotePoolDamm: { feeBps: 25, rangeMultiple: 1000, feeModel: 'fixed' },
   customPools: [],
   customPoolCounter: 0,
   airdropCsvText: '',
@@ -5076,11 +5076,16 @@ function currentClassicModel() {
       ? { venue: state.solPoolVenue, damm: state.solPoolDamm }
       : String(pool.id || '').endsWith('-flywheel')
         ? { venue: state.quotePoolVenue, damm: state.quotePoolDamm }
-        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange } } : null;
+        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange, feeModel: custom.dammFeeModel, ramp: custom.dammRamp } } : null;
     if (choice?.venue !== 'meteora-damm-v2') return;
     Object.assign(pool, {
       venue: 'meteora-damm-v2',
-      damm: { feeBps: Number(choice.damm?.feeBps) || 25, rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000 },
+      damm: {
+        feeBps: Number(choice.damm?.feeBps) || 25,
+        rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000,
+        feeModel: choice.damm?.feeModel || 'fixed',
+        ...(choice.damm?.ramp ? { ramp: { endBps: Number(choice.damm.ramp.endBps) || 25, durationSec: Number(choice.damm.ramp.durationSec) || 30 * 24 * 3600 } } : {}),
+      },
       distribution: [{ sharePercent: 100, recipient: null }],
       ladder: { mode: 'off' },
       support: { mode: 'off' },
@@ -7830,7 +7835,7 @@ function poolVenueFor(row) {
   if (row.key === 'sol') return { venue: state.solPoolVenue, damm: state.solPoolDamm };
   if (row.key === 'quote') return { venue: state.quotePoolVenue, damm: state.quotePoolDamm };
   const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
-  return { venue: pool?.venue, damm: { feeBps: pool?.dammFeeBps, rangeMultiple: pool?.dammRange } };
+  return { venue: pool?.venue, damm: { feeBps: pool?.dammFeeBps, rangeMultiple: pool?.dammRange, feeModel: pool?.dammFeeModel, ramp: pool?.dammRamp } };
 }
 
 function rowIsMeteora(row) {
@@ -7846,7 +7851,13 @@ function setPoolVenueChoice(rowKey, patch) {
   }
   if (rowKey === 'quote') {
     if (patch.venue) state.quotePoolVenue = patch.venue;
-    state.quotePoolDamm = { ...state.quotePoolDamm, ...(patch.feeBps ? { feeBps: patch.feeBps } : {}), ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}) };
+    state.quotePoolDamm = {
+      ...state.quotePoolDamm,
+      ...(patch.feeBps ? { feeBps: patch.feeBps } : {}),
+      ...(patch.feeModel ? { feeModel: patch.feeModel } : {}),
+      ...(patch.ramp ? { ramp: { endBps: patch.ramp.endBps, durationSec: state.quotePoolDamm?.ramp?.durationSec || 30 * 24 * 3600 } } : {}),
+      ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}),
+    };
     if (patch.tierIndex != null) state.pairPoolConfigIndex = patch.tierIndex;
     return;
   }
@@ -7854,6 +7865,8 @@ function setPoolVenueChoice(rowKey, patch) {
   if (!pool) return;
   if (patch.venue) pool.venue = patch.venue;
   if (patch.feeBps) pool.dammFeeBps = patch.feeBps;
+  if (patch.feeModel) pool.dammFeeModel = patch.feeModel;
+  if (patch.ramp) pool.dammRamp = { endBps: patch.ramp.endBps, durationSec: pool.dammRamp?.durationSec || 30 * 24 * 3600 };
   if (patch.rangeMultiple) pool.dammRange = patch.rangeMultiple;
   if (patch.tierIndex != null) pool.ammConfigIndex = patch.tierIndex;
 }
@@ -7875,7 +7888,20 @@ function rowSwitchesHtml(row) {
   let fee;
   if (meteora) {
     const current = Number(poolVenueFor(row).damm?.feeBps) || 25;
-    fee = toggleGroupHtml({ label: `${row.label} fee`, action: 'set-pool-fee', rowKey: row.key, selected: current, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+    const model = poolVenueFor(row).damm?.feeModel || 'fixed';
+    fee = toggleGroupHtml({
+      label: `${row.label} fee model`, action: 'set-pool-fee-model', rowKey: row.key, selected: model,
+      options: [
+        ['fixed', 'Fixed', 'The fee never changes.'],
+        ['ramp', 'Ramp', 'Starts at the shown fee and decays to the ramp end fee over 30 days.'],
+        ['dynamic', 'Dynamic', 'The shown fee is the base; the pool charges more when the price moves fast.'],
+      ],
+    });
+    fee += toggleGroupHtml({ label: `${row.label} fee`, action: 'set-pool-fee', rowKey: row.key, selected: current, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+    if (model === 'ramp') {
+      const end = Number(poolVenueFor(row).damm?.ramp?.endBps) || 25;
+      fee += toggleGroupHtml({ label: `${row.label} ramp end fee`, action: 'set-pool-ramp-end', rowKey: row.key, selected: end, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+    }
   } else {
     const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
     const selected = Math.floor(Number(rowTierIndex(row)));
@@ -8990,8 +9016,10 @@ function applyPoolSwitch(action, control) {
   const value = control.dataset.value;
   const patch = action === 'set-pool-venue' ? { venue: value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium' }
     : action === 'set-pool-fee' ? { feeBps: Number(value) }
-      : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
-        : { tierIndex: Math.floor(Number(value)) };
+      : action === 'set-pool-fee-model' ? { feeModel: value }
+        : action === 'set-pool-ramp-end' ? { ramp: { endBps: Number(value) } }
+          : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
+            : { tierIndex: Math.floor(Number(value)) };
   setPoolVenueChoice(control.dataset.rowKey, patch);
   invalidateClassicOutputs();
   refreshClassicPreview();
@@ -12378,6 +12406,27 @@ function v2ReportPoolConfig(config, result, index) {
 }
 
 function v2ReportPoolFeeTierLabel(pool = {}, userPool = {}) {
+  // Meteora DAMM v2 pool: state the full fee schedule from the plan, never
+  // a bare number — a dynamic or ramping fee is a schedule, not a rate.
+  const damm = pool.damm ?? userPool.damm;
+  if (damm) {
+    const bps = Number(damm.bps ?? damm.feeBps) || 25;
+    const model = damm.model ?? damm.feeModel ?? 'fixed';
+    if (model === 'ramp') {
+      const end = Number(damm.ramp?.endBps) || 25;
+      const days = Math.max(1, Math.round((Number(damm.ramp?.durationSec) || 30 * 86400) / 86400));
+      return `${(bps / 100).toFixed(2)}% → ${(end / 100).toFixed(2)}% over ${days}d (Meteora ramp)`;
+    }
+    if (model === 'dynamic') {
+      const swing = (Number(damm.dynamic?.maxPriceChangeBps) || 500) / 100;
+      return `${(bps / 100).toFixed(2)}% base + up to ${swing.toFixed(2)}% under volatility (Meteora dynamic)`;
+    }
+    if (model === 'marketcap') {
+      const end = Number(damm.marketcap?.endBps) || bps;
+      return `${(bps / 100).toFixed(2)}% → ${(end / 100).toFixed(2)}% by market cap (Meteora)`;
+    }
+    return `${(bps / 100).toFixed(2)}% (Meteora)`;
+  }
   const index = Math.floor(Number(pool.ammConfigIndex ?? userPool.ammConfigIndex));
   const tickSpacing = numberOrNull(pool.tickSpacing ?? userPool.tickSpacing);
   const tier = normalizeClmmFeeTiers(state.clmmFeeTiers).find((item) => item.index === index);

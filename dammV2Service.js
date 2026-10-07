@@ -42,6 +42,7 @@ import {
   derivePositionAddress,
   derivePositionNftAccount,
   getBaseFeeParams,
+  getDynamicFeeParams,
   getPriceFromSqrtPrice,
   getUnClaimLpFee,
 } from '@meteora-ag/cp-amm-sdk';
@@ -105,6 +106,61 @@ async function mintOwnerProgram(connection, mint) {
  * `supplyRaw` of the token. Returns the transaction and the keypair of the new
  * position NFT, which also has to sign.
  */
+/**
+ * Translate a normalized Meteora DAMM v2 fee schedule (the pure
+ * `normalizeDammFeePlan` in @trebuchet/core/damm-v2-plan) into the
+ * pool-fees struct the program stores. Every model expresses its schedule
+ * in bps; `dynamic` adds the volatility-dynamic surcharge on top of the
+ * base fee. Pure apart from the SDK's encoder, so it can be unit-tested.
+ *
+ * models: fixed | ramp | marketcap | dynamic.
+ */
+export function buildPoolFees({ model = 'fixed', bps, ramp = {}, dynamic = {}, marketcap = {} } = {}) {
+  const start = Number(bps) || 25;
+  const flat = () => ({
+    baseFeeMode: BaseFeeMode.FeeTimeSchedulerLinear,
+    feeTimeSchedulerParam: { startingFeeBps: start, endingFeeBps: start, numberOfPeriod: 0, totalDuration: 0 },
+  });
+  switch (model) {
+    case 'ramp':
+      return {
+        baseFee: getBaseFeeParams({
+          baseFeeMode: BaseFeeMode.FeeTimeSchedulerLinear,
+          feeTimeSchedulerParam: {
+            startingFeeBps: start,
+            endingFeeBps: Number(ramp.endBps) ?? start,
+            numberOfPeriod: 1,
+            totalDuration: Number(ramp.durationSec) || 30 * 24 * 3600,
+          },
+        }),
+        dynamicFee: null,
+      };
+    case 'marketcap':
+      return {
+        baseFee: getBaseFeeParams({
+          baseFeeMode: BaseFeeMode.FeeMarketCapSchedulerLinear,
+          feeMarketCapSchedulerParam: {
+            startingFeeBps: start,
+            endingFeeBps: Number(marketcap.endBps) ?? start,
+            numberOfPeriod: 1,
+            priceMultiple: Number(marketcap.priceMultiple) || 10,
+            schedulerExpirationDuration: Number(marketcap.expirationSec) || 30 * 24 * 3600,
+          },
+        }),
+        dynamicFee: null,
+      };
+    case 'dynamic':
+      return {
+        baseFee: getBaseFeeParams(flat()),
+        dynamicFee: getDynamicFeeParams(start, Number(dynamic.maxPriceChangeBps) || 500),
+      };
+    case 'fixed':
+      return { baseFee: getBaseFeeParams(flat()), dynamicFee: null };
+    default:
+      throw new Error(`Unknown Meteora fee model: ${model}`);
+  }
+}
+
 export async function buildLockedPoolTransaction({
   connection,
   creator,
@@ -113,6 +169,10 @@ export async function buildLockedPoolTransaction({
   startingMarketCapLamports,
   rangeMultiple,
   feeBps,
+  // Normalized fee schedule (packages/core/damm-v2-plan): fixed by default,
+  // or ramp / marketcap / dynamic with their params. Defaults to a flat fee
+  // at `feeBps`, so existing callers behave exactly as before.
+  feePlan = { model: 'fixed', bps: feeBps },
   priorityMicroLamports = 0,
   positionNft = Keypair.generate(),
   // The pool's other side: SOL unless a launch pairs this pool with another token.
@@ -143,13 +203,9 @@ export async function buildLockedPoolTransaction({
     liquidityDelta,
     initSqrtPrice: range.initSqrtPrice,
     poolFees: {
-      baseFee: getBaseFeeParams({
-        baseFeeMode: BaseFeeMode.FeeTimeSchedulerLinear,
-        feeTimeSchedulerParam: { startingFeeBps: feeBps, endingFeeBps: feeBps, numberOfPeriod: 0, totalDuration: 0 },
-      }),
+      ...buildPoolFees(feePlan),
       compoundingFeeBps: 0,
       padding: 0,
-      dynamicFee: null,
     },
     hasAlphaVault: false,
     activationType: ActivationType.Timestamp,
@@ -214,6 +270,7 @@ export async function createLockedPool({
   startingMarketCapLamports,
   rangeMultiple,
   feeBps,
+  feePlan = { model: 'fixed', bps: feeBps },
   priorityMicroLamports = 0,
   commitment = 'confirmed',
   positionNft = Keypair.generate(),
@@ -230,7 +287,7 @@ export async function createLockedPool({
   if (held < BigInt(supplyRaw)) throw new Error('The launch wallet holds less of this token than the pool needs.');
 
   const built = await buildLockedPoolTransaction({
-    connection, creator: payer.publicKey, mint, supplyRaw, startingMarketCapLamports, rangeMultiple, feeBps, priorityMicroLamports, positionNft, quoteMint,
+    connection, creator: payer.publicKey, mint, supplyRaw, startingMarketCapLamports, rangeMultiple, feeBps, feePlan, priorityMicroLamports, positionNft, quoteMint,
   });
   const signers = [payer, built.positionNft];
   const simulated = await simulateOrThrow(connection, built.transaction, signers);
