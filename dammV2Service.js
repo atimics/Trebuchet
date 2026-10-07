@@ -25,8 +25,6 @@ import {
   NATIVE_MINT,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
-  createAssociatedTokenAccountIdempotentInstruction,
-  createTransferCheckedInstruction,
   getAccount,
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
@@ -44,8 +42,12 @@ import {
   getBaseFeeParams,
   getDynamicFeeParams,
   getPriceFromSqrtPrice,
-  getUnClaimLpFee,
 } from '@meteora-ag/cp-amm-sdk';
+
+// Fee claiming for Meteora DAMM v2 lives in @trebuchet/claimer/venues/damm
+// (shared with the sealed runner). These functions re-export it so the launch
+// layer's callers are unchanged.
+import * as claimerDamm from '@trebuchet/claimer/venues/damm';
 
 export const DAMM_V2_PROGRAM_ID = CP_AMM_PROGRAM_ID;
 export const SOL_DECIMALS = 9;
@@ -356,71 +358,17 @@ export async function verifyLockedPool({ connection, pool, position, mint, suppl
  * token account.
  */
 export async function transferPositionNft({ connection, owner, positionNft, to, commitment = 'confirmed' }) {
-  const mint = new PublicKey(positionNft);
-  const recipient = new PublicKey(to);
-  // DAMM v2 holds the NFT in a program-derived token account owned by its holder.
-  const from = derivePositionNftAccount(mint);
-  const target = getAssociatedTokenAddressSync(mint, recipient, true, TOKEN_2022_PROGRAM_ID);
-  const transaction = new Transaction().add(
-    createAssociatedTokenAccountIdempotentInstruction(owner.publicKey, target, recipient, mint, TOKEN_2022_PROGRAM_ID),
-    createTransferCheckedInstruction(from, mint, target, owner.publicKey, 1n, 0, [], TOKEN_2022_PROGRAM_ID),
-  );
-  transaction.feePayer = owner.publicKey;
-  const signature = await sendAndConfirm(connection, transaction, [owner], commitment);
-  return { signature, to: recipient.toBase58() };
+  return claimerDamm.transferPositionNft({ connection, owner, positionNft, to, commitment });
 }
 
 /** Claim accrued fees from a locked position. Fees are SOL (quote side only). */
 export async function claimFees({ connection, owner, position, commitment = 'confirmed', receiver = null }) {
-  const cpAmm = new CpAmm(connection);
-  const positionKey = new PublicKey(position);
-  const positionState = await cpAmm.fetchPositionState(positionKey);
-  const pool = positionState.pool;
-  const poolState = await cpAmm.fetchPoolState(pool);
-  const tokenProgram = await mintOwnerProgram(connection, poolState.tokenAMint);
-  const tempWsol = Keypair.generate();
-  // Where the NFT is now: the original derived account, or the account it was sent to.
-  const held = (await cpAmm.getPositionsByUser(owner.publicKey)).find((entry) => entry.position.equals(positionKey));
-  if (!held) throw new Error('This wallet does not hold that position.');
-  const before = await connection.getBalance(owner.publicKey, commitment);
-  const transaction = await cpAmm.claimPositionFee({
-    owner: owner.publicKey,
-    position: positionKey,
-    pool,
-    positionNftAccount: held.positionNftAccount,
-    tokenAMint: poolState.tokenAMint,
-    tokenBMint: poolState.tokenBMint,
-    tokenAVault: poolState.tokenAVault,
-    tokenBVault: poolState.tokenBVault,
-    tokenAProgram: tokenProgram,
-    tokenBProgram: TOKEN_PROGRAM_ID,
-    receiver: receiver ? new PublicKey(receiver) : owner.publicKey,
-    tempWSolAccount: tempWsol.publicKey,
-  });
-  const signature = await sendAndConfirm(connection, transaction, [owner, tempWsol], commitment);
-  const after = await connection.getBalance(owner.publicKey, commitment);
-  return { signature, lamportsReceived: after - before };
+  return claimerDamm.claimFees({ connection, owner, position, commitment, receiver });
 }
 
 /** Positions owned by a wallet in this program, with unclaimed fees. */
 export async function listPositions({ connection, owner }) {
-  const cpAmm = new CpAmm(connection);
-  const rows = [];
-  for (const entry of await cpAmm.getPositionsByUser(new PublicKey(owner))) {
-    const state = entry.positionState;
-    const poolState = await cpAmm.fetchPoolState(state.pool);
-    const quoteIsB = poolState.tokenBMint.equals(NATIVE_MINT);
-    const fees = getUnClaimLpFee(poolState, state);
-    rows.push({
-      position: entry.position.toBase58(),
-      pool: state.pool.toBase58(),
-      positionNft: state.nftMint.toBase58(),
-      tokenMint: (quoteIsB ? poolState.tokenAMint : poolState.tokenBMint).toBase58(),
-      permanentlyLocked: cpAmm.isPermanentLockedPosition(state),
-      unclaimedQuoteLamports: (quoteIsB ? fees.feeTokenB : fees.feeTokenA).toString(),
-    });
-  }
-  return rows;
+  return claimerDamm.listPositions({ connection, owner });
 }
 
 // The pool's base fee: its first field is the cliff fee numerator, a u64 over 1e9.

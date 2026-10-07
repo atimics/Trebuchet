@@ -1,0 +1,27 @@
+{
+  "name": "@trebuchet/claimer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Modular fee claiming and routing core: inventory, unclaimed-fee readers, claim plans, route allocation, and crank journaling. Shared by the Trebuchet desktop app and the sealed runner.",
+  "exports": {
+    ".": "./src/index.js",
+    "./fee-growth": "./src/fee-growth.js",
+    "./inventory": "./src/inventory.js",
+    "./claim-plan": "./src/claim-plan.js",
+    "./route-plan": "./src/route-plan.js",
+    "./store": "./src/store.js",
+    "./venues/clmm": "./src/venues/clmm.js",
+    "./venues/damm": "./src/venues/damm.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "@solana/spl-token": "^0.4.14",
+    "@raydium-io/raydium-sdk-v2": "0.1.144-alpha",
+    "@meteora-ag/cp-amm-sdk": "^1.5.1",
+    "@trebuchet/runtime": "file:packages/runtime"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
