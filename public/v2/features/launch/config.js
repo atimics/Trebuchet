@@ -40,7 +40,11 @@ function normalizeClmmFeeTier(tier) {
   if (!Number.isInteger(index) || index < 0) return null;
   if (!Number.isInteger(tradeFeeRate) || tradeFeeRate <= 0) return null;
   if (!Number.isInteger(tickSpacing) || tickSpacing <= 0) return null;
-  return { index, tradeFeeRate, tickSpacing };
+  // Dynamic-fee configs (Raydium CLMM upgrade, May 2026) keep their model tag
+  // so the picker, glossary, and evidence rows can disclose that the rate is
+  // a baseline, not the fee the pool always charges.
+  const feeModel = tier.feeModel === 'dynamic' ? 'dynamic' : 'fixed';
+  return { index, tradeFeeRate, tickSpacing, feeModel };
 }
 
 function normalizeClmmFeeTiers(tiers) {
@@ -57,7 +61,8 @@ function normalizeClmmFeeTiers(tiers) {
 
 function feeTierLabel(tier) {
   const feePercent = Number(tier.tradeFeeRate || 0) / 10000;
-  return `${feePercent}% / spacing ${tier.tickSpacing}${Number(tier.index) === DEFAULT_POOL_CONFIG_INDEX ? ' (default)' : ''}`;
+  const dynamic = tier.feeModel === 'dynamic' ? ' · dynamic' : '';
+  return `${feePercent}% / spacing ${tier.tickSpacing}${dynamic}${Number(tier.index) === DEFAULT_POOL_CONFIG_INDEX ? ' (default)' : ''}`;
 }
 
 function feeTierOptionsHtml(selectedIndex) {
@@ -65,7 +70,7 @@ function feeTierOptionsHtml(selectedIndex) {
   const selected = Math.floor(Number(selectedIndex));
   const hasSelected = tiers.some((tier) => tier.index === selected);
   const options = tiers.map((tier) => `
-    <option value="${tier.index}" data-short="${escapeHtml(`${Number(tier.tradeFeeRate || 0) / 10000}%`)}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(feeTierLabel(tier))}</option>
+    <option value="${tier.index}" data-short="${escapeHtml(`${Number(tier.tradeFeeRate || 0) / 10000}%`)}" title="${tier.feeModel === 'dynamic' ? escapeHtml('Dynamic fee: the shown rate is the baseline; the pool charges more under volatility.') : ''}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(feeTierLabel(tier))}</option>
   `).join('');
   return `${options}${Number.isInteger(selected) && !hasSelected ? `<option value="${selected}" selected>Custom index ${selected}</option>` : ''}`;
 }

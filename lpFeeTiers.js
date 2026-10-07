@@ -6,18 +6,24 @@
 // Hardcoded fallback for when the Raydium API is unreachable. Keep these
 // aligned with https://api-v3.raydium.io/main/clmm-config; a stale config
 // index can select the wrong on-chain AmmConfig or make pool creation fail.
+// All four are fixed-fee configs; a dynamic tier is never invented here.
 export const FALLBACK_FEE_TIERS = [
-  { index: 4, tradeFeeRate:   100, tickSpacing:   1 }, // 0.01%
-  { index: 5, tradeFeeRate:   500, tickSpacing:   1 }, // 0.05%
-  { index: 1, tradeFeeRate:  2500, tickSpacing:  60 }, // 0.25%
-  { index: 3, tradeFeeRate: 10000, tickSpacing: 120 }, // 1%
+  { index: 4, tradeFeeRate:   100, tickSpacing:   1, feeModel: 'fixed' }, // 0.01%
+  { index: 5, tradeFeeRate:   500, tickSpacing:   1, feeModel: 'fixed' }, // 0.05%
+  { index: 1, tradeFeeRate:  2500, tickSpacing:  60, feeModel: 'fixed' }, // 0.25%
+  { index: 3, tradeFeeRate: 10000, tickSpacing: 120, feeModel: 'fixed' }, // 1%
 ];
 
 /**
  * Normalize a raw fee tier list from the Raydium CLMM config API into
- * a sorted array of { index, tradeFeeRate, tickSpacing } objects.
+ * a sorted array of { index, tradeFeeRate, tickSpacing, feeModel } objects.
  *
  *   - Accepts either a bare array or { data: [...] } wrapper
+ *   - Keeps dynamic-fee configs (Raydium CLMM upgrade, May 2026) but TAGS
+ *     them `feeModel: 'dynamic'`; a dynamic config's tradeFeeRate is its
+ *     baseline, and the pool charges more under volatility. The fee-tier
+ *     picker and the funding estimate must present a dynamic tier as a
+ *     base rate with a disclosure, never as a single fixed fee.
  *   - Filters out entries with non-integer index or rate
  *   - Sorts by ascending tradeFeeRate
  *   - Returns FALLBACK_FEE_TIERS if the input is empty or invalid
@@ -28,19 +34,11 @@ export function normalizeFeeTierList(raw) {
     return FALLBACK_FEE_TIERS;
   }
   const normalized = list
-    // Exclude dynamic-fee configs (Raydium CLMM upgrade, May 2026). Every
-    // downstream consumer — the fee-tier picker, the funding estimate, the
-    // Fee Key income projection, the "what is a fee tier" glossary — treats
-    // tradeFeeRate as the pool's FIXED fee. A dynamic config's rate is only
-    // its baseline; the pool charges more under volatility. Offering one as
-    // if it were static would misstate the fee to the user and misprice the
-    // estimate. The API surfaces the control field on newer responses;
-    // configs that don't carry it are static by definition.
-    .filter((c) => !isDynamicFeeConfig(c))
     .map((c) => ({
       index: c.index,
       tradeFeeRate: c.tradeFeeRate,
       tickSpacing: c.tickSpacing,
+      feeModel: isDynamicFeeConfig(c) ? 'dynamic' : 'fixed',
     }))
     .filter((c) => Number.isInteger(c.index) && Number.isInteger(c.tradeFeeRate));
   if (normalized.length === 0) {

@@ -129,6 +129,7 @@ function feeTierInfo(index) {
     step: (Math.pow(1.0001, tier.tickSpacing) - 1) * 100,
     rank: tiers.indexOf(tier),
     count: tiers.length,
+    dynamic: tier.feeModel === 'dynamic',
   };
 }
 
@@ -202,7 +203,7 @@ function rowSwitchesHtml(row) {
     const shown = tiers.filter((tier) => RAYDIUM_ROW_TIERS.includes(tier.index) || tier.index === selected);
     fee = toggleGroupHtml({
       label: `${row.label} fee tier`, action: 'set-pool-tier', rowKey: row.key, selected,
-      options: (shown.length ? shown : tiers.slice(0, 4)).map((tier) => [tier.index, `${Number(tier.tradeFeeRate) / 10000}%`, `price steps of ${Number(((Math.pow(1.0001, tier.tickSpacing) - 1) * 100).toFixed(2))}%`])
+      options: (shown.length ? shown : tiers.slice(0, 4)).map((tier) => [tier.index, `${Number(tier.tradeFeeRate) / 10000}%${tier.feeModel === 'dynamic' ? ' · dynamic (base)' : ''}`, `price steps of ${Number(((Math.pow(1.0001, tier.tickSpacing) - 1) * 100).toFixed(2))}%`])
         .concat(tiers.some((tier) => tier.index === selected) ? [] : [[selected, `#${selected}`]]),
     });
   }

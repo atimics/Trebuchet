@@ -777,7 +777,8 @@ function v2ReportPoolFeeTierLabel(pool = {}, userPool = {}) {
   const tier = normalizeClmmFeeTiers(state.clmmFeeTiers).find((item) => item.index === index);
   if (tier) {
     const feePercent = Number(tier.tradeFeeRate || 0) / 10000;
-    return `${feePercent.toFixed(2)}% / spacing ${tickSpacing ?? tier.tickSpacing}`;
+    const dynamic = tier.feeModel === 'dynamic' ? ' · dynamic (base)' : '';
+    return `${feePercent.toFixed(2)}% / spacing ${tickSpacing ?? tier.tickSpacing}${dynamic}`;
   }
   if (Number.isFinite(tickSpacing) && Number.isFinite(index)) return `index ${index} / spacing ${tickSpacing}`;
   if (Number.isFinite(tickSpacing)) return `spacing ${tickSpacing}`;
