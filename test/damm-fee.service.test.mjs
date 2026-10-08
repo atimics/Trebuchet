@@ -17,6 +17,13 @@ test('ramp fee uses a time scheduler with start, end and duration', () => {
   assert.ok(fees.baseFee);
 });
 
+test('ramp/marketcap schedules default their end fee instead of producing NaN', () => {
+  // A caller that omits ramp/marketcap params must not send NaN to the SDK.
+  assert.doesNotThrow(() => buildPoolFees({ model: 'ramp', bps: 50 }));
+  assert.doesNotThrow(() => buildPoolFees({ model: 'marketcap', bps: 50 }));
+  assert.doesNotThrow(() => buildPoolFees({ model: 'dynamic', bps: 50 }));
+});
+
 test('dynamic fee sets a dynamic surcharge on top of the base', () => {
   const fees = buildPoolFees({ model: 'dynamic', bps: 25, dynamic: { maxPriceChangeBps: 500 } });
   assert.ok(fees.baseFee, 'base fee still present');

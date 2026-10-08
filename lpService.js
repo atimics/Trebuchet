@@ -161,6 +161,7 @@ import { normalizeDistribution } from './lpDistribution.js';
 import {
   FALLBACK_FEE_TIERS,
   normalizeFeeTierList,
+  isDynamicFeeConfig,
 } from './lpFeeTiers.js';
 import {
   classifyToken2022Extensions,
@@ -951,6 +952,21 @@ export async function getClmmFeeTiers() {
     cachedFeeTiers = FALLBACK_FEE_TIERS;
     return cachedFeeTiers;
   }
+}
+
+// Synchronous access to the process-lifetime fee-tier cache (the last fetched
+// or fallback list, or null before the first fetch). The funding estimator
+// uses it so a live config's real tickSpacing is honored for a selected index
+// — including newer / dynamic configs that are NOT in FALLBACK_FEE_TIERS,
+// where guessing the fallback's spacing would misprice tick-array rent.
+export function cachedClmmFeeTiers() {
+  return cachedFeeTiers;
+}
+
+// Test seam for the funding estimator's tick-spacing path (same pattern as
+// setSdkFactoryForTests): lets a test seed the cache instead of fetching.
+export function setCachedClmmFeeTiersForTests(list) {
+  cachedFeeTiers = Array.isArray(list) && list.length ? list.slice() : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -5993,9 +6009,14 @@ function _estDiscoverRaydiumRoute(opts) {
   return __estRouteDiscoveryForTests ? __estRouteDiscoveryForTests(opts) : discoverSwapRoute(opts);
 }
 
-function resolveTickSpacingForConfig(ammConfigIndex) {
+export function resolveTickSpacingForConfig(ammConfigIndex) {
   const idx = ammConfigIndex ?? DEFAULT_AMM_CONFIG_INDEX;
-  const tier = FALLBACK_FEE_TIERS.find((t) => t.index === idx)
+  // Prefer the live config list (warmed by the fee-tier fetch) so a selected
+  // index — including newer / dynamic configs not in the fallback — prices its
+  // tick-array rent with its real spacing, never the default's.
+  const live = cachedClmmFeeTiers();
+  const tier = (Array.isArray(live) ? live.find((t) => t.index === idx) : null)
+    || FALLBACK_FEE_TIERS.find((t) => t.index === idx)
     || FALLBACK_FEE_TIERS.find((t) => t.index === DEFAULT_AMM_CONFIG_INDEX);
   return tier.tickSpacing;
 }
